@@ -1,0 +1,12 @@
+[project]
+name = "octomate"
+version = "0.0.1"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anyio>=4",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2",
+    "websockets>=15",
+]
