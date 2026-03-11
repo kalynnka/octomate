@@ -28,13 +28,16 @@ class BaseTentacle(ABC):
         self.name = name
 
     @abstractmethod
-    async def start(self) -> None: ...
+    async def activate(self) -> None:
+        """Start the tentacle and begin receiving events."""
 
     @abstractmethod
-    async def stop(self) -> None: ...
+    async def deactivate(self) -> None:
+        """Stop the tentacle and release resources."""
 
     @abstractmethod
-    async def send(self, action: ActionUnion) -> None: ...
+    async def act(self, action: ActionUnion) -> None:
+        """Send an outbound action through this tentacle."""
 
 
 class MessageBuffer:

@@ -5,7 +5,7 @@
       "name": "Octomate",
       "type": "debugpy",
       "request": "launch",
-      "module": "octomate.main",
+      "program": "${workspaceFolder}/main.py",
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal"
@@ -14,7 +14,7 @@
       "name": "Octomate (reload)",
       "type": "debugpy",
       "request": "launch",
-      "module": "octomate.main",
+      "program": "${workspaceFolder}/main.py",
       "args": ["--reload"],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",

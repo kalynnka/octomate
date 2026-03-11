@@ -22,7 +22,7 @@ def run() -> None:
 
         run_process(
             "octomate",
-            target="python -m octomate.main",
+            target="python main.py",
             target_type="command",
         )
     else:

@@ -32,7 +32,7 @@ class NapcatTentacle(BaseTentacle):
         self._ws: ClientConnection | None = None
         self._cancel_scope: anyio.CancelScope | None = None
 
-    async def start(self) -> None:
+    async def activate(self) -> None:
         """Connect to napcat and start the receive loop.
 
         This method is designed to be launched inside an
@@ -44,7 +44,7 @@ class NapcatTentacle(BaseTentacle):
         with self._cancel_scope:
             await self._connect_loop()
 
-    async def stop(self) -> None:
+    async def deactivate(self) -> None:
         """Cancel the receive loop and close the WebSocket."""
         if self._cancel_scope is not None:
             self._cancel_scope.cancel()
@@ -55,7 +55,7 @@ class NapcatTentacle(BaseTentacle):
                 pass
             self._ws = None
 
-    async def send(self, action: ActionUnion) -> None:
+    async def act(self, action: ActionUnion) -> None:
         """Serialize an action model to JSON and write it to the WebSocket."""
         if self._ws is None:
             logger.warning(
@@ -63,7 +63,7 @@ class NapcatTentacle(BaseTentacle):
             )
             return
 
-        frame = action.model_dump_json(exclude={"tentacle_id"}, exclude_none=True)
+        frame = action.model_dump_json(exclude_none=True)
         try:
             await self._ws.send(frame)
         except ConnectionClosed:
@@ -74,7 +74,7 @@ class NapcatTentacle(BaseTentacle):
         delay = self.config.backoff_base
         while True:
             try:
-                extra_headers: dict[str, str] = {}
+                extra_headers = {}
                 if self.config.access_token:
                     extra_headers["Authorization"] = (
                         f"Bearer {self.config.access_token}"

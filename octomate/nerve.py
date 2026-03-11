@@ -67,14 +67,14 @@ class OctopusNerve:
         async with anyio.create_task_group() as tg:
             self._buffer.bind(tg)
             for tentacle in self._tentacles.values():
-                tg.start_soon(tentacle.start, name=f"tentacle:{tentacle.name}")
+                tg.start_soon(tentacle.activate, name=f"tentacle:{tentacle.name}")
             tg.start_soon(self._react_pulses, name="outbound-dispatcher")
 
     async def deactivate(self) -> None:
         """Stop all tentacles and close streams."""
         for tentacle in self._tentacles.values():
             try:
-                await tentacle.stop()
+                await tentacle.deactivate()
             except Exception:
                 logger.exception("Error stopping tentacle %s", tentacle.name)
         await self._inbound_send.aclose()
@@ -103,7 +103,7 @@ class OctopusNerve:
                     continue
 
                 try:
-                    await tentacle.send(action)
+                    await tentacle.act(action)
                 except Exception:  # noqa: BLE001
                     logger.exception(
                         "Error sending action via tentacle %s", tentacle_id
