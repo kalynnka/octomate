@@ -7,7 +7,7 @@ Submodules
 - ``adaptors``: Pre-built TypeAdapters for common unions.
 """
 
-from octomate.schemas.adaptors import InboundFrame, inbound_adapter
+from octomate.schemas.adaptors import ActionUnion, InboundFrame, inbound_adapter
 from octomate.schemas.events import (
     ActionResponse,
     Anonymous,
@@ -74,6 +74,7 @@ from octomate.schemas.events import (
     Sender,
     SendGroupMsgAction,
     SendPrivateMsgAction,
+    SessionKey,
     ShareData,
     ShareSegment,
     TextData,
@@ -85,6 +86,7 @@ from octomate.schemas.events import (
 )
 
 __all__ = [
+    "ActionUnion",
     "InboundFrame",
     "inbound_adapter",
     "ActionResponse",
@@ -152,6 +154,7 @@ __all__ = [
     "Sender",
     "SendGroupMsgAction",
     "SendPrivateMsgAction",
+    "SessionKey",
     "ShareData",
     "ShareSegment",
     "TextData",

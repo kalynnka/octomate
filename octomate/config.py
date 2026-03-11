@@ -1,20 +1,21 @@
-"""Application and tentacle configuration via pydantic-settings."""
-
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 
 class TentacleConfig(BaseModel):
-    """Base configuration shared by all tentacle types."""
-
     name: str
+    tentacle_id: str = ""
+
+    def model_post_init(self, _context: Any) -> None:
+        if not self.tentacle_id:
+            self.tentacle_id = self.name
 
 
 class NapcatTentacleConfig(TentacleConfig):
-    """Configuration for a napcat WebSocket tentacle."""
-
     ws_url: str
     access_token: str | None = None
     backoff_base: float = 1.0
@@ -22,9 +23,27 @@ class NapcatTentacleConfig(TentacleConfig):
     backoff_factor: float = 2.0
 
 
+class BrainConfig(BaseModel):
+    model: str = "google-gla:gemini-3-flash-preview"
+    system_prompt: str = "You are a helpful assistant."
+    flush_delay: float = 0.5
+
+
 class OctomateConfig(BaseSettings):
-    """Root configuration loaded from env / dotenv / CLI."""
+    model_config = SettingsConfigDict(
+        env_prefix="OCTOMATE_",
+        env_nested_delimiter="__",
+        yaml_file=["octomate.default.yaml", "octomate.yaml"],
+    )
 
-    model_config = {"env_prefix": "OCTOMATE_", "env_nested_delimiter": "__"}
+    tentacles: list[NapcatTentacleConfig] = []
+    brain: BrainConfig = BrainConfig()
 
-    tentacles: list[TentacleConfig] = []
+    @classmethod
+    def settings_customise_sources(cls, settings_cls, **kwargs):
+        return (
+            kwargs["init_settings"],
+            kwargs["env_settings"],
+            YamlConfigSettingsSource(settings_cls),
+            kwargs["file_secret_settings"],
+        )

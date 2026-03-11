@@ -1,10 +1,43 @@
-# Python-generated files
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+*.egg
 
 # Virtual environments
-.venv
+.venv/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.pytest_cache/
+
+# mypy / pyright / type checkers
+.mypy_cache/
+.pytype/
+
+# Environments / secrets
+.env
+octomate.yaml
+
+# IDE
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

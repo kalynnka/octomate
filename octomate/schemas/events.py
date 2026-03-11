@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from abc import ABC
+from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired, Union
+from typing import Annotated, Any, Literal, NamedTuple, NotRequired, Union
 
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 from typing_extensions import TypedDict
+
+
+class SessionKey(NamedTuple):
+    tentacle_id: str
+    user_id: int
+    group_id: int | None = None
 
 
 class TextData(TypedDict):
@@ -274,37 +281,37 @@ class ActionResponse(BaseModel):
     wording: str | None = None
 
 
-class SendGroupMsgAction(BaseModel):
-    """Send a message to a group chat."""
-
-    action: Literal["send_group_msg"] = "send_group_msg"
-    tentacle_id: str = ""
+class SendGroupMsgParams(BaseModel):
     group_id: int
     message: list[MessageSegment]
     reply: int | None = None
 
 
-class SendPrivateMsgAction(BaseModel):
-    """Send a message to a private chat."""
+class SendGroupMsgAction(BaseModel):
+    action: Literal["send_group_msg"] = "send_group_msg"
+    tentacle_id: str
+    params: SendGroupMsgParams
 
-    action: Literal["send_private_msg"] = "send_private_msg"
-    tentacle_id: str = ""
+
+class SendPrivateMsgParams(BaseModel):
     user_id: int
     message: list[MessageSegment]
     reply: int | None = None
 
 
-class CallApiAction(BaseModel):
-    """Generic OneBot API call."""
+class SendPrivateMsgAction(BaseModel):
+    action: Literal["send_private_msg"] = "send_private_msg"
+    tentacle_id: str
+    params: SendPrivateMsgParams
 
+
+class CallApiAction(BaseModel):
     action: str
-    tentacle_id: str = ""
+    tentacle_id: str
     params: dict[str, Any] = Field(default_factory=dict)
 
 
 class OneBotEvent(BaseModel, ABC):
-    """Base for all OneBot 11 events."""
-
     time: int = 0
     self_id: int = 0
     tentacle_id: str = ""
@@ -322,6 +329,10 @@ class MessageEvent(OneBotEvent):
     message: list[MessageSegment] = Field(default_factory=list)
     raw_message: str = ""
 
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id)
+
     def text_content(self) -> str:
         return "".join(
             seg.data["text"] for seg in self.message if isinstance(seg, TextSegment)
@@ -333,6 +344,12 @@ class GroupMessageEvent(MessageEvent):
 
     group_id: int
     anonymous: Anonymous | None = None
+
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id
+        )
 
     def is_at(self, qq: int) -> bool:
         target = str(qq)
@@ -355,6 +372,10 @@ class PrivateMessageEvent(MessageEvent):
     message_type: Literal["private"] = "private"
     sub_type: str = "friend"
 
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id)
+
     @property
     def display_name(self) -> str:
         return self.sender.nickname or "anonymous"
@@ -373,6 +394,12 @@ class NoticeEvent(OneBotEvent):
 class GroupNoticeEvent(NoticeEvent):
     group_id: int
     user_id: int
+
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id
+        )
 
 
 class GroupUploadNotice(GroupNoticeEvent):
@@ -427,11 +454,19 @@ class FriendAddNotice(NoticeEvent):
     notice_type: Literal["friend_add"] = "friend_add"
     user_id: int
 
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id)
+
 
 class FriendRecallNotice(NoticeEvent):
     notice_type: Literal["friend_recall"] = "friend_recall"
     user_id: int
     message_id: int
+
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id)
 
 
 class GroupPokeNotice(NoticeEvent):
@@ -441,6 +476,16 @@ class GroupPokeNotice(NoticeEvent):
     user_id: int
     target_id: int
 
+    @cached_property
+    def session_key(self) -> SessionKey:
+        if self.group_id is not None:
+            return SessionKey(
+                tentacle_id=self.tentacle_id,
+                user_id=self.user_id,
+                group_id=self.group_id,
+            )
+        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id)
+
 
 class GroupLuckyKingNotice(NoticeEvent):
     notice_type: Literal["notify"] = "notify"
@@ -449,6 +494,12 @@ class GroupLuckyKingNotice(NoticeEvent):
     user_id: int
     target_id: int
 
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id
+        )
+
 
 class GroupHonorNotice(NoticeEvent):
     notice_type: Literal["notify"] = "notify"
@@ -456,6 +507,12 @@ class GroupHonorNotice(NoticeEvent):
     group_id: int
     user_id: int
     honor_type: str
+
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id
+        )
 
 
 class MsgEmojiLikeNotice(GroupNoticeEvent):
@@ -498,6 +555,10 @@ class FriendRequest(RequestEvent):
     comment: str = ""
     flag: str = ""
 
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id)
+
 
 class GroupRequest(RequestEvent):
     request_type: Literal["group"] = "group"
@@ -506,6 +567,12 @@ class GroupRequest(RequestEvent):
     user_id: int
     comment: str = ""
     flag: str = ""
+
+    @cached_property
+    def session_key(self) -> SessionKey:
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id
+        )
 
 
 RequestEventUnion = Annotated[

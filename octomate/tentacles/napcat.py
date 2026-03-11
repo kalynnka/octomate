@@ -16,8 +16,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from octomate.config import NapcatTentacleConfig
-from octomate.nerve import ActionUnion
-from octomate.schemas.adaptors import inbound_adapter
+from octomate.schemas.adaptors import ActionUnion, inbound_adapter
 from octomate.schemas.events import ActionResponse
 from octomate.tentacles.base import BaseTentacle
 
@@ -49,7 +48,12 @@ class NapcatTentacle(BaseTentacle):
         """Cancel the receive loop and close the WebSocket."""
         if self._cancel_scope is not None:
             self._cancel_scope.cancel()
-        await self._close_ws()
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._ws = None
 
     async def send(self, action: ActionUnion) -> None:
         """Serialize an action model to JSON and write it to the WebSocket."""
@@ -59,13 +63,11 @@ class NapcatTentacle(BaseTentacle):
             )
             return
 
-        frame = action.model_dump_json(exclude_none=True)
+        frame = action.model_dump_json(exclude={"tentacle_id"}, exclude_none=True)
         try:
             await self._ws.send(frame)
         except ConnectionClosed:
-            logger.warning(
-                "Tentacle %s: WebSocket closed while sending", self.name
-            )
+            logger.warning("Tentacle %s: WebSocket closed while sending", self.name)
 
     async def _connect_loop(self) -> None:
         """Connect with exponential back-off, delegating to _receive_loop."""
@@ -74,7 +76,9 @@ class NapcatTentacle(BaseTentacle):
             try:
                 extra_headers: dict[str, str] = {}
                 if self.config.access_token:
-                    extra_headers["Authorization"] = f"Bearer {self.config.access_token}"
+                    extra_headers["Authorization"] = (
+                        f"Bearer {self.config.access_token}"
+                    )
 
                 async with connect(
                     self.config.ws_url,
@@ -124,12 +128,5 @@ class NapcatTentacle(BaseTentacle):
                 )
                 continue
 
-            await self._push_event(frame)
-
-    async def _close_ws(self) -> None:
-        if self._ws is not None:
-            try:
-                await self._ws.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self._ws = None
+            frame.tentacle_id = self.name
+            await self.nerve.sense(frame)

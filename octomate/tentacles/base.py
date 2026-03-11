@@ -1,42 +1,73 @@
-"""Abstract base class for all tentacles (channel adapters)."""
-
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
+import anyio
+
+from octomate.schemas.events import SessionKey
+
 if TYPE_CHECKING:
-    from octomate.nerve import ActionUnion, Nerve
-    from octomate.schemas.events import OneBotEventUnion
+    from collections.abc import Awaitable, Callable
+
+    from anyio.abc import TaskGroup
+
+    from octomate.nerve import OctopusNerve
+    from octomate.schemas.adaptors import ActionUnion
+    from octomate.schemas.events import MessageEvent
+
+logger = logging.getLogger(__name__)
 
 
 class BaseTentacle(ABC):
-    """A tentacle bridges a single external connection to the Nerve.
-
-    Subclasses must implement :meth:`start`, :meth:`stop`, and
-    :meth:`send`.  The helper :meth:`_push_event` stamps the
-    ``tentacle_id`` on the event and publishes it to the inbound
-    stream of the Nerve.
-    """
-
-    nerve: Nerve
+    nerve: OctopusNerve
 
     def __init__(self, name: str) -> None:
         self.name = name
 
     @abstractmethod
-    async def start(self) -> None:
-        """Connect to the external service and begin receiving events."""
+    async def start(self) -> None: ...
 
     @abstractmethod
-    async def stop(self) -> None:
-        """Gracefully disconnect and release resources."""
+    async def stop(self) -> None: ...
 
     @abstractmethod
-    async def send(self, action: ActionUnion) -> None:
-        """Deliver an outbound action over this tentacle's connection."""
+    async def send(self, action: ActionUnion) -> None: ...
 
-    async def _push_event(self, event: OneBotEventUnion) -> None:
-        """Stamp ``tentacle_id`` and publish to the Nerve inbound stream."""
-        event.tentacle_id = self.name  # type: ignore[union-attr]
-        await self.nerve.publish_inbound(event)
+
+class MessageBuffer:
+    def __init__(
+        self,
+        flush_delay: float,
+        handler: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]],
+    ) -> None:
+        self._flush_delay = flush_delay
+        self._handler = handler
+        self._buckets: defaultdict[SessionKey, list[MessageEvent]] = defaultdict(list)
+        self._pending: set[SessionKey] = set()
+        self._tg: TaskGroup | None = None
+
+    def bind(self, tg: TaskGroup) -> None:
+        self._tg = tg
+
+    def push(self, event: MessageEvent) -> None:
+        key = event.session_key
+        self._buckets[key].append(event)
+        if key not in self._pending:
+            self._pending.add(key)
+            if self._tg is None:
+                raise RuntimeError("MessageBuffer.bind() must be called before push()")
+            self._tg.start_soon(self._flush_after_delay, key)
+
+    async def _flush_after_delay(self, key: SessionKey) -> None:
+        await anyio.sleep(self._flush_delay)
+        self._pending.discard(key)
+        batch = self._buckets.pop(key, [])
+        if not batch:
+            return
+        try:
+            await self._handler(key, batch)
+        except Exception:
+            logger.exception("Error handling batch for %s", key)
