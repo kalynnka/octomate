@@ -16,8 +16,8 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from octomate.config import NapcatTentacleConfig
+from octomate.schemas.actions import ActionResponse
 from octomate.schemas.adaptors import ActionUnion, inbound_adapter
-from octomate.schemas.events import ActionResponse
 from octomate.tentacles.base import BaseTentacle
 
 logger = logging.getLogger(__name__)

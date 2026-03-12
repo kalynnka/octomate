@@ -2,313 +2,12 @@ from __future__ import annotations
 
 from abc import ABC
 from functools import cached_property
-from pathlib import Path
-from typing import Annotated, Any, Literal, NamedTuple, NotRequired, Union
+from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
-from typing_extensions import TypedDict
+from pydantic import BaseModel, Discriminator, Field, Tag
 
-
-class SessionKey(NamedTuple):
-    tentacle_id: str
-    user_id: int
-    group_id: int | None = None
-
-
-class TextData(TypedDict):
-    text: str
-
-
-class AtData(TypedDict):
-    qq: str
-    name: NotRequired[str | None]
-
-
-class ImageData(BaseModel):
-    """Kept as BaseModel for the file-path validator."""
-
-    file: str
-    url: str | None = None
-    name: str | None = None
-    summary: str | None = None
-    sub_type: int | None = None
-
-    @field_validator("file")
-    @classmethod
-    def _normalize_file_uri(cls, v: str) -> str:
-        if not v.startswith(("http://", "https://", "base64://", "file://")):
-            return f"file://{Path(v).resolve()}"
-        return v
-
-
-class ReplyData(TypedDict):
-    id: str
-
-
-class FaceData(TypedDict):
-    id: str
-
-
-class RecordData(TypedDict):
-    file: str
-    url: NotRequired[str | None]
-
-
-class VideoData(TypedDict):
-    file: str
-    url: NotRequired[str | None]
-
-
-class PokeData(TypedDict):
-    type: str
-    id: str
-    name: NotRequired[str | None]
-
-
-class AnonymousData(TypedDict, total=False):
-    ignore: int | None
-
-
-class ShareData(TypedDict):
-    url: str
-    title: str
-    content: NotRequired[str | None]
-    image: NotRequired[str | None]
-
-
-class ContactData(TypedDict):
-    type: Literal["qq", "group"]
-    id: str
-
-
-class LocationData(TypedDict):
-    lat: str
-    lon: str
-    title: NotRequired[str | None]
-    content: NotRequired[str | None]
-
-
-class MusicData(TypedDict):
-    type: Literal["qq", "163", "xm", "custom"]
-    id: NotRequired[str | None]
-    url: NotRequired[str | None]
-    audio: NotRequired[str | None]
-    title: NotRequired[str | None]
-    content: NotRequired[str | None]
-    image: NotRequired[str | None]
-
-
-class ForwardData(TypedDict):
-    id: str
-
-
-class NodeData(TypedDict, total=False):
-    id: str | None
-    user_id: str | None
-    nickname: str | None
-    content: str | None
-
-
-class XmlData(TypedDict):
-    content: str
-
-
-class JsonData(TypedDict):
-    content: str
-
-
-class Segment(BaseModel):
-    """Base class for all message segments."""
-
-
-class TextSegment(Segment):
-    type: Literal["text"] = "text"
-    data: TextData
-
-
-class AtSegment(Segment):
-    type: Literal["at"] = "at"
-    data: AtData
-
-
-class ImageSegment(Segment):
-    type: Literal["image"] = "image"
-    data: ImageData
-
-
-class ReplySegment(Segment):
-    type: Literal["reply"] = "reply"
-    data: ReplyData
-
-
-class FaceSegment(Segment):
-    type: Literal["face"] = "face"
-    data: FaceData
-
-
-class RecordSegment(Segment):
-    type: Literal["record"] = "record"
-    data: RecordData
-
-
-class VideoSegment(Segment):
-    type: Literal["video"] = "video"
-    data: VideoData
-
-
-class RpsSegment(Segment):
-    type: Literal["rps"] = "rps"
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
-class DiceSegment(Segment):
-    type: Literal["dice"] = "dice"
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
-class ShakeSegment(Segment):
-    type: Literal["shake"] = "shake"
-    data: dict[str, Any] = Field(default_factory=dict)
-
-
-class PokeSegment(Segment):
-    type: Literal["poke"] = "poke"
-    data: PokeData
-
-
-class AnonymousSegment(Segment):
-    type: Literal["anonymous"] = "anonymous"
-    data: AnonymousData = Field(default_factory=AnonymousData)
-
-
-class ShareSegment(Segment):
-    type: Literal["share"] = "share"
-    data: ShareData
-
-
-class ContactSegment(Segment):
-    type: Literal["contact"] = "contact"
-    data: ContactData
-
-
-class LocationSegment(Segment):
-    type: Literal["location"] = "location"
-    data: LocationData
-
-
-class MusicSegment(Segment):
-    type: Literal["music"] = "music"
-    data: MusicData
-
-
-class ForwardSegment(Segment):
-    type: Literal["forward"] = "forward"
-    data: ForwardData
-
-
-class NodeSegment(Segment):
-    type: Literal["node"] = "node"
-    data: NodeData
-
-
-class XmlSegment(Segment):
-    type: Literal["xml"] = "xml"
-    data: XmlData
-
-
-class JsonSegment(Segment):
-    type: Literal["json"] = "json"
-    data: JsonData
-
-
-MessageSegment = Annotated[
-    Union[
-        TextSegment,
-        AtSegment,
-        ImageSegment,
-        ReplySegment,
-        FaceSegment,
-        RecordSegment,
-        VideoSegment,
-        RpsSegment,
-        DiceSegment,
-        ShakeSegment,
-        PokeSegment,
-        AnonymousSegment,
-        ShareSegment,
-        ContactSegment,
-        LocationSegment,
-        MusicSegment,
-        ForwardSegment,
-        NodeSegment,
-        XmlSegment,
-        JsonSegment,
-    ],
-    Discriminator("type"),
-]
-
-
-class Sender(BaseModel):
-    """Sender metadata attached to every message event."""
-
-    user_id: int = 0
-    nickname: str = ""
-    card: str | None = None
-    role: str | None = None
-    sex: str | None = None
-    age: int | None = None
-    area: str | None = None
-    level: str | None = None
-    title: str | None = None
-
-
-class Anonymous(BaseModel):
-    """Anonymous poster info (group events only)."""
-
-    id: int
-    name: str
-    flag: str
-
-
-class ActionResponse(BaseModel):
-    """Response received after sending an action via WebSocket."""
-
-    status: str = ""
-    retcode: int = 0
-    data: dict[str, Any] | None = None
-    echo: str | None = None
-    message: str | None = None
-    wording: str | None = None
-
-
-class SendGroupMsgParams(BaseModel):
-    group_id: int
-    message: list[MessageSegment]
-    reply: int | None = None
-
-
-class SendGroupMsgAction(BaseModel):
-    action: Literal["send_group_msg"] = "send_group_msg"
-    tentacle_id: str
-    params: SendGroupMsgParams
-
-
-class SendPrivateMsgParams(BaseModel):
-    user_id: int
-    message: list[MessageSegment]
-    reply: int | None = None
-
-
-class SendPrivateMsgAction(BaseModel):
-    action: Literal["send_private_msg"] = "send_private_msg"
-    tentacle_id: str
-    params: SendPrivateMsgParams
-
-
-class CallApiAction(BaseModel):
-    action: str
-    tentacle_id: str
-    params: dict[str, Any] = Field(default_factory=dict)
+from octomate.schemas.segments import AtSegment, MessageSegment, TextSegment
+from octomate.schemas.session import Anonymous, Sender, SessionKey
 
 
 class OneBotEvent(BaseModel, ABC):
@@ -317,7 +16,7 @@ class OneBotEvent(BaseModel, ABC):
     tentacle_id: str = ""
 
 
-class MessageEvent(OneBotEvent):
+class MessageEvent(OneBotEvent, ABC):
     post_type: Literal["message"] = "message"
     sub_type: str = "normal"
 
@@ -333,10 +32,23 @@ class MessageEvent(OneBotEvent):
     def session_key(self) -> SessionKey:
         return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id)
 
+    @property
+    def display_name(self) -> str:
+        return self.sender.nickname or "anonymous"
+
     def text_content(self) -> str:
         return "".join(
             seg.data["text"] for seg in self.message if isinstance(seg, TextSegment)
         )
+
+    def __str__(self) -> str:
+        body = "".join(str(seg) for seg in self.message)
+        return f"**{self.display_name}** ({self.user_id}):\n{body}"
+
+
+class PrivateMessageEvent(MessageEvent):
+    message_type: Literal["private"] = "private"
+    sub_type: str = "friend"
 
 
 class GroupMessageEvent(MessageEvent):
@@ -348,7 +60,9 @@ class GroupMessageEvent(MessageEvent):
     @cached_property
     def session_key(self) -> SessionKey:
         return SessionKey(
-            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id
+            tentacle_id=self.tentacle_id,
+            user_id=self.user_id,
+            group_id=self.group_id,
         )
 
     def is_at(self, qq: int) -> bool:
@@ -367,18 +81,9 @@ class GroupMessageEvent(MessageEvent):
     def display_name(self) -> str:
         return self.sender.card or self.sender.nickname or "anonymous"
 
-
-class PrivateMessageEvent(MessageEvent):
-    message_type: Literal["private"] = "private"
-    sub_type: str = "friend"
-
-    @cached_property
-    def session_key(self) -> SessionKey:
-        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id)
-
-    @property
-    def display_name(self) -> str:
-        return self.sender.nickname or "anonymous"
+    def __str__(self) -> str:
+        body = "".join(str(seg) for seg in self.message)
+        return f"**{self.display_name}** ({self.user_id}) [group: {self.group_id}]:\n{body}"
 
 
 MessageEventUnion = Annotated[

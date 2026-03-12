@@ -6,14 +6,13 @@ from typing import Annotated, Any, Union
 
 from pydantic import Discriminator, Tag, TypeAdapter
 
-from octomate.schemas.events import (
+from octomate.schemas.actions import (
     ActionResponse,
     CallApiAction,
-    OneBotEvent,
-    OneBotEventUnion,
     SendGroupMsgAction,
     SendPrivateMsgAction,
 )
+from octomate.schemas.events import OneBotEvent, OneBotEventUnion
 
 
 def inbound_discriminator(raw: Any) -> str:
@@ -32,11 +31,24 @@ InboundFrame = Annotated[
 
 inbound_adapter: TypeAdapter[InboundFrame] = TypeAdapter(InboundFrame)
 
+
+def action_discriminator(raw: Any) -> str:
+    if isinstance(raw, dict):
+        action = raw.get("action", "")
+    else:
+        action = getattr(raw, "action", "")
+    if action in ("send_group_msg", "send_private_msg"):
+        return action
+    return "__default__"
+
+
 ActionUnion = Annotated[
     Union[
         Annotated[SendGroupMsgAction, Tag("send_group_msg")],
         Annotated[SendPrivateMsgAction, Tag("send_private_msg")],
         Annotated[CallApiAction, Tag("__default__")],
     ],
-    Discriminator("action"),
+    Discriminator(action_discriminator),
 ]
+
+action_adapter: TypeAdapter[ActionUnion] = TypeAdapter(ActionUnion)

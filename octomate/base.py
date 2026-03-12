@@ -7,16 +7,15 @@ from pydantic_ai import Agent
 
 from octomate.config import BrainConfig
 from octomate.nerve import OctopusNerve
-from octomate.schemas.events import (
-    MessageEvent,
-    MessageSegment,
+from octomate.schemas.actions import (
     SendGroupMsgAction,
     SendGroupMsgParams,
     SendPrivateMsgAction,
     SendPrivateMsgParams,
-    SessionKey,
-    TextSegment,
 )
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import MessageSegment, TextSegment
+from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import BaseTentacle
 
 logger = logging.getLogger(__name__)
@@ -36,16 +35,16 @@ class Octopus:
     async def activate(self) -> None:
         async with anyio.create_task_group() as tg:
             tg.start_soon(self.nerve.activate)
-            tg.start_soon(self._consume_inbound)
+            tg.start_soon(self.receive)
 
-    async def _consume_inbound(self) -> None:
+    async def receive(self) -> None:
         async with self.nerve.inbound:
             async for key, batch in self.nerve.inbound:
-                await self._handle_batch(key, batch)
+                await self.think(key, batch)
 
-    async def _handle_batch(self, key: SessionKey, batch: list[MessageEvent]) -> None:
-        prompt = self._format_batch(batch)
-        logger.debug("Brain processing batch [%s] (%d messages)", key, len(batch))
+    async def think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
+        prompt = "\n".join(f"- {msg}" for msg in batch)
+        logger.debug("Octopus processing batch [%s] (%d messages)", key, len(batch))
 
         result = await self._agent.run(prompt)
         reply_text = result.output
@@ -70,13 +69,3 @@ class Octopus:
             )
 
         await self.nerve.pulse(action)
-
-    @staticmethod
-    def _format_batch(batch: list[MessageEvent]) -> str:
-        lines: list[str] = []
-        for msg in batch:
-            name = msg.sender.nickname
-            text = msg.text_content()
-            if text:
-                lines.append(f"{name}: {text}")
-        return "\n".join(lines)

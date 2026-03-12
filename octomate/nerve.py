@@ -8,7 +8,8 @@ from anyio import create_memory_object_stream as object_stream
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
 
 from octomate.schemas.adaptors import ActionUnion
-from octomate.schemas.events import MessageEvent, OneBotEventUnion, SessionKey
+from octomate.schemas.events import MessageEvent, OneBotEventUnion
+from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import MessageBuffer
 
 if TYPE_CHECKING:
@@ -68,7 +69,7 @@ class OctopusNerve:
             self._buffer.bind(tg)
             for tentacle in self._tentacles.values():
                 tg.start_soon(tentacle.activate, name=f"tentacle:{tentacle.name}")
-            tg.start_soon(self._react_pulses, name="outbound-dispatcher")
+            tg.start_soon(self.react, name="outbound-dispatcher")
 
     async def deactivate(self) -> None:
         """Stop all tentacles and close streams."""
@@ -89,7 +90,7 @@ class OctopusNerve:
     async def pulse(self, action: ActionUnion) -> None:
         await self._outbound_send.send(action)
 
-    async def _react_pulses(self) -> None:
+    async def react(self) -> None:
         logger.info("Outbound dispatcher started")
         async with self.outbound:
             async for action in self.outbound:

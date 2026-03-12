@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 
-from octomate.schemas.events import SessionKey
+from octomate.schemas.session import SessionKey
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
