@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict, deque
 
 import anyio
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelMessage
 
 from octomate.agents import SessionContext, create_companion_agent
 from octomate.config import BrainConfig
@@ -18,10 +19,12 @@ logger = logging.getLogger(__name__)
 class Octopus:
     nerve: OctopusNerve
     agent: Agent[SessionContext, str]
+    memory_store: dict[SessionKey, deque[ModelMessage]]
 
     def __init__(self, nerve: OctopusNerve, brain: BrainConfig) -> None:
         self.nerve = nerve
         self.agent = create_companion_agent(brain)
+        self.memory_store = defaultdict(lambda: deque(maxlen=brain.memory.max_messages))
 
     def connect(self, tentacle: BaseTentacle) -> None:
         self.nerve.connect(tentacle)
@@ -53,7 +56,12 @@ class Octopus:
         else:
             header = f"[private chat] [you are user: {identity}]"
         messages = "\n".join(f"- {msg}" for msg in batch)
-        prompt = f"{header}\n{messages}"
+        text = f"{header}\n{messages}"
+
+        prompt: list[str] = [text]
+
         logger.debug("Octopus processing batch [%s] (%d messages)", key, len(batch))
         deps = SessionContext(nerve=self.nerve, session_key=key)
-        await self.agent.run(prompt, deps=deps)
+        history = list(self.memory_store[key])
+        result = await self.agent.run(prompt, message_history=history, deps=deps)
+        self.memory_store[key].extend(result.new_messages())

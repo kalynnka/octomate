@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, HttpUrl, SecretStr
@@ -9,6 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettin
 class TentacleConfig(BaseModel):
     name: str
     tentacle_id: str = ""
+    files_dir: Path = Path("files")
 
     def model_post_init(self, _context: Any) -> None:
         if not self.tentacle_id:
@@ -16,6 +18,7 @@ class TentacleConfig(BaseModel):
 
 
 class NapcatTentacleConfig(TentacleConfig):
+    name: str = "napcat"
     ws_url: str
     http_url: HttpUrl
     access_token: SecretStr | None = None
@@ -24,10 +27,15 @@ class NapcatTentacleConfig(TentacleConfig):
     backoff_factor: float = 2.0
 
 
+class MemoryConfig(BaseModel):
+    max_messages: int = 32
+
+
 class BrainConfig(BaseModel):
     model: str = "google-gla:gemini-3-flash-preview"
     api_key: str = ""
     flush_delay: float = 0.5
+    memory: MemoryConfig = MemoryConfig()
 
 
 class OctomateConfig(BaseSettings):

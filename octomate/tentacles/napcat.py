@@ -9,7 +9,9 @@ Reference: https://napneko.github.io/onebot/
 
 from __future__ import annotations
 
+import base64
 import logging
+from mimetypes import guess_type
 
 import anyio
 import httpx
@@ -18,8 +20,13 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from octomate.config import NapcatTentacleConfig
-from octomate.schemas.actions import ActionResponse
+from octomate.schemas.actions import (
+    ActionResponse,
+    SendGroupMsgAction,
+    SendPrivateMsgAction,
+)
 from octomate.schemas.adaptors import ActionUnion, inbound_adapter
+from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.base import BaseTentacle
 
 logger = logging.getLogger(__name__)
@@ -54,7 +61,7 @@ class NapcatTentacle(BaseTentacle):
     _cancel_scope: anyio.CancelScope | None
 
     def __init__(self, config: NapcatTentacleConfig) -> None:
-        super().__init__(config.name)
+        super().__init__(config)
         self.config = config
         self.profile: AccountInfo | None = None
 
@@ -74,6 +81,7 @@ class NapcatTentacle(BaseTentacle):
 
     async def introspect(self) -> None:
         try:
+            # TODO: wrap and make napcat API tools for this tentacle's agent to use
             resp = await self.http_client.post("/get_login_info", json={})
             resp.raise_for_status()
             login_data = resp.json().get("data")
@@ -131,11 +139,40 @@ class NapcatTentacle(BaseTentacle):
             )
             return
 
+        if isinstance(action, (SendGroupMsgAction, SendPrivateMsgAction)):
+            await self.prefetch_images(action.params.message)
+
         frame = action.model_dump_json(exclude_none=True)
         try:
             await self._ws.send(frame)
         except ConnectionClosed:
             logger.warning("Tentacle %s: WebSocket closed while sending", self.name)
+
+    async def fetch_image(self, file_ref: str) -> tuple[bytes, str]:
+        url = file_ref
+        if not file_ref.startswith(("http://", "https://")):
+            resp = await self.http_client.post("/get_image", json={"file": file_ref})
+            resp.raise_for_status()
+            url = resp.json().get("data", {}).get("url") or file_ref
+
+        resp = await self.http_client.get(url)
+        resp.raise_for_status()
+        media_type = resp.headers.get("content-type", "").split(";")[0].strip()
+        if not media_type or not media_type.startswith("image/"):
+            media_type = guess_type(url)[0] or "image/png"
+        return resp.content, media_type
+
+    async def prefetch_images(self, segments: list) -> None:
+        for seg in segments:
+            if not isinstance(seg, ImageSegment):
+                continue
+            if not seg.data.file.startswith(("http://", "https://")):
+                continue
+            try:
+                data, _ = await self.fetch_image(seg.data.file)
+                seg.data.file = f"base64://{base64.b64encode(data).decode()}"
+            except Exception:
+                logger.warning("Tentacle %s: failed to prefetch image", self.name)
 
     async def _connect_loop(self) -> None:
         """Connect with exponential back-off, delegating to _receive_loop."""

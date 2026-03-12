@@ -105,7 +105,7 @@ class OctopusNerve:
 
                 try:
                     await tentacle.act(action)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     logger.exception(
                         "Error sending action via tentacle %s", tentacle_id
                     )

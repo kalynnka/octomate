@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 
+from octomate.config import TentacleConfig
 from octomate.schemas.session import SessionKey
 
 if TYPE_CHECKING:
@@ -23,12 +24,14 @@ logger = logging.getLogger(__name__)
 
 class BaseTentacle(ABC):
     nerve: OctopusNerve
+    config: TentacleConfig
     name: str
     self_id: int | None
     self_name: str | None
 
-    def __init__(self, name: str) -> None:
-        self.name = name
+    def __init__(self, config: TentacleConfig) -> None:
+        self.config = config
+        self.name = config.name
         self.self_id: int | None = None
         self.self_name: str | None = None
 
