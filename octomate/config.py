@@ -25,7 +25,7 @@ class NapcatTentacleConfig(TentacleConfig):
 
 class BrainConfig(BaseModel):
     model: str = "google-gla:gemini-3-flash-preview"
-    system_prompt: str = "You are a helpful assistant."
+    api_key: str = ""
     flush_delay: float = 0.5
 
 

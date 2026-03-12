@@ -1561,7 +1561,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-ai" },
     { name = "pydantic-settings" },
-    { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "websockets" },
 ]
@@ -1577,7 +1576,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-ai", specifier = ">=0.2" },
     { name = "pydantic-settings", specifier = ">=2" },
-    { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "websockets", specifier = ">=15" },
 ]

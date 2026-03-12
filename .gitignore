@@ -38,6 +38,9 @@ octomate.yaml
 # IDE
 .idea/
 
+# Github
+.github/prompts/
+
 # OS
 .DS_Store
 Thumbs.db

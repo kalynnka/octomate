@@ -1,6 +1,6 @@
 tentacles: []
 
 brain:
-  model: "google-gla:gemini-3-flash-preview"
-  system_prompt: "You are a helpful assistant."
+  model: "gemini-3-flash-preview"
+  api_key: ""
   flush_delay: 0.5

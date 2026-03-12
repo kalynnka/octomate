@@ -5,16 +5,10 @@ import logging
 import anyio
 from pydantic_ai import Agent
 
+from octomate.agents import SessionContext, create_companion_agent
 from octomate.config import BrainConfig
 from octomate.nerve import OctopusNerve
-from octomate.schemas.actions import (
-    SendGroupMsgAction,
-    SendGroupMsgParams,
-    SendPrivateMsgAction,
-    SendPrivateMsgParams,
-)
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import BaseTentacle
 
@@ -24,10 +18,7 @@ logger = logging.getLogger(__name__)
 class Octopus:
     def __init__(self, nerve: OctopusNerve, brain: BrainConfig) -> None:
         self.nerve = nerve
-        self._agent = Agent(
-            brain.model,
-            system_prompt=brain.system_prompt,
-        )
+        self.agent: Agent[SessionContext, str] = create_companion_agent(brain)
 
     def connect(self, tentacle: BaseTentacle) -> None:
         self.nerve.connect(tentacle)
@@ -43,29 +34,12 @@ class Octopus:
                 await self.think(key, batch)
 
     async def think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
-        prompt = "\n".join(f"- {msg}" for msg in batch)
-        logger.debug("Octopus processing batch [%s] (%d messages)", key, len(batch))
-
-        result = await self._agent.run(prompt)
-        reply_text = result.output
-
-        segments: list[MessageSegment] = [TextSegment(data={"text": reply_text})]
-
         if key.group_id is not None:
-            action = SendGroupMsgAction(
-                tentacle_id=key.tentacle_id,
-                params=SendGroupMsgParams(
-                    group_id=key.group_id,
-                    message=segments,
-                ),
-            )
+            header = f"[group chat: {key.group_id}] [you are: {key.tentacle_id}]"
         else:
-            action = SendPrivateMsgAction(
-                tentacle_id=key.tentacle_id,
-                params=SendPrivateMsgParams(
-                    user_id=key.user_id,
-                    message=segments,
-                ),
-            )
-
-        await self.nerve.pulse(action)
+            header = "[private chat]"
+        messages = "\n".join(f"- {msg}" for msg in batch)
+        prompt = f"{header}\n{messages}"
+        logger.debug("Octopus processing batch [%s] (%d messages)", key, len(batch))
+        deps = SessionContext(nerve=self.nerve, session_key=key)
+        await self.agent.run(prompt, deps=deps)

@@ -4,14 +4,12 @@ import logging
 import sys
 
 import anyio
-from dotenv import load_dotenv
 
 from octomate.base import Octopus
 from octomate.config import OctomateConfig
 from octomate.nerve import OctopusNerve
 from octomate.tentacles.napcat import NapcatTentacle
 
-load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
 

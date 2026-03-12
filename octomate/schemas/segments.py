@@ -117,6 +117,8 @@ class Segment(BaseModel):
 
 
 class TextSegment(Segment):
+    """Plain text content. Set data.text to the message text."""
+
     type: Literal["text"] = "text"
     data: TextData
 
@@ -125,6 +127,8 @@ class TextSegment(Segment):
 
 
 class AtSegment(Segment):
+    """Mention/at a user. Set data.qq to the user's QQ number (as string). Optionally set data.name."""
+
     type: Literal["at"] = "at"
     data: AtData
 
@@ -133,6 +137,8 @@ class AtSegment(Segment):
 
 
 class ImageSegment(Segment):
+    """Send an image. Set data.file to an http/https URL."""
+
     type: Literal["image"] = "image"
     data: ImageData
 
@@ -142,6 +148,8 @@ class ImageSegment(Segment):
 
 
 class ReplySegment(Segment):
+    """Quote/reply to a previous message. Set data.id to the message ID (as string). Must be the first segment in the message."""
+
     type: Literal["reply"] = "reply"
     data: ReplyData
 
@@ -278,5 +286,10 @@ MessageSegment = Annotated[
         XmlSegment,
         JsonSegment,
     ],
+    Discriminator("type"),
+]
+
+AgentSegment = Annotated[
+    Union[TextSegment, ImageSegment, AtSegment, ReplySegment],
     Discriminator("type"),
 ]

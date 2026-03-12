@@ -4,7 +4,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from octomate.schemas.segments import MessageSegment
+from octomate.schemas.segments import AgentSegment
+
+
+class AgentMessage(BaseModel):
+    """A single outgoing message composed of one or more segments."""
+
+    segments: list[AgentSegment]
 
 
 class ActionResponse(BaseModel):
@@ -20,7 +26,7 @@ class ActionResponse(BaseModel):
 
 class SendGroupMsgParams(BaseModel):
     group_id: int
-    message: list[MessageSegment]
+    message: list[AgentSegment]
     reply: int | None = None
 
 
@@ -32,7 +38,7 @@ class SendGroupMsgAction(BaseModel):
 
 class SendPrivateMsgParams(BaseModel):
     user_id: int
-    message: list[MessageSegment]
+    message: list[AgentSegment]
     reply: int | None = None
 
 

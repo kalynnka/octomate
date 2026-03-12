@@ -43,7 +43,9 @@ class MessageEvent(OneBotEvent, ABC):
 
     def __str__(self) -> str:
         body = "".join(str(seg) for seg in self.message)
-        return f"**{self.display_name}** ({self.user_id}):\n{body}"
+        return (
+            f"**{self.display_name}** ({self.user_id}) [msg:{self.message_id}]:\n{body}"
+        )
 
 
 class PrivateMessageEvent(MessageEvent):
@@ -83,7 +85,7 @@ class GroupMessageEvent(MessageEvent):
 
     def __str__(self) -> str:
         body = "".join(str(seg) for seg in self.message)
-        return f"**{self.display_name}** ({self.user_id}) [group: {self.group_id}]:\n{body}"
+        return f"**{self.display_name}** ({self.user_id}) [group:{self.group_id}] [msg:{self.message_id}]:\n{body}"
 
 
 MessageEventUnion = Annotated[
