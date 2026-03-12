@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 
 import anyio
+import httpx
+from pydantic import BaseModel
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
@@ -23,23 +25,89 @@ from octomate.tentacles.base import BaseTentacle
 logger = logging.getLogger(__name__)
 
 
+class AccountInfo(BaseModel):
+    user_id: int
+    nickname: str
+    uid: str = ""
+    qid: str = ""
+    uin: str = ""
+    nick: str = ""
+    long_nick: str = ""
+    sex: str = "unknown"
+    age: int = 0
+    qq_level: int = 0
+    login_days: int = 0
+    reg_time: int = 0
+    is_vip: bool = False
+    is_years_vip: bool = False
+    vip_level: int = 0
+
+
 class NapcatTentacle(BaseTentacle):
     """Forward-WebSocket tentacle that connects *to* a napcat instance."""
+
+    config: NapcatTentacleConfig
+    profile: AccountInfo | None
+    http_client: httpx.AsyncClient
+
+    _ws: ClientConnection | None
+    _cancel_scope: anyio.CancelScope | None
 
     def __init__(self, config: NapcatTentacleConfig) -> None:
         super().__init__(config.name)
         self.config = config
+        self.profile: AccountInfo | None = None
+
         self._ws: ClientConnection | None = None
         self._cancel_scope: anyio.CancelScope | None = None
 
-    async def activate(self) -> None:
-        """Connect to napcat and start the receive loop.
+        headers = {}
+        if config.access_token:
+            headers["Authorization"] = (
+                f"Bearer {config.access_token.get_secret_value()}"
+            )
 
-        This method is designed to be launched inside an
-        ``anyio.create_task_group`` so the receive loop runs as a
-        background task.
-        """
+        self.http_client = httpx.AsyncClient(
+            base_url=str(config.http_url),
+            headers=headers,
+        )
+
+    async def introspect(self) -> None:
+        try:
+            resp = await self.http_client.post("/get_login_info", json={})
+            resp.raise_for_status()
+            login_data = resp.json().get("data")
+
+            if not login_data or "user_id" not in login_data:
+                return
+
+            self.self_id = login_data["user_id"]
+            self.self_name = login_data.get("nickname")
+
+            resp = await self.http_client.post(
+                "/get_stranger_info", json={"user_id": self.self_id}
+            )
+            resp.raise_for_status()
+            profile_data = resp.json().get("data")
+
+            if profile_data:
+                self.profile = AccountInfo.model_validate(profile_data)
+
+            logger.info(
+                "Tentacle %s: introspected as %s (%s)",
+                self.name,
+                self.self_id,
+                self.self_name,
+            )
+        except Exception:
+            logger.warning(
+                "Tentacle %s: introspection failed, identity unknown",
+                self.name,
+            )
+
+    async def activate(self) -> None:
         logger.info("Tentacle %s: connecting to %s", self.name, self.config.ws_url)
+        await self.introspect()
         self._cancel_scope = anyio.CancelScope()
         with self._cancel_scope:
             await self._connect_loop()
@@ -77,7 +145,7 @@ class NapcatTentacle(BaseTentacle):
                 extra_headers = {}
                 if self.config.access_token:
                     extra_headers["Authorization"] = (
-                        f"Bearer {self.config.access_token}"
+                        f"Bearer {self.config.access_token.get_secret_value()}"
                     )
 
                 async with connect(

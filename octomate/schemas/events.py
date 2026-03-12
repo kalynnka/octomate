@@ -67,10 +67,10 @@ class GroupMessageEvent(MessageEvent):
             group_id=self.group_id,
         )
 
-    def is_at(self, qq: int) -> bool:
-        target = str(qq)
+    def is_at(self, user_id: int) -> bool:
+        target = str(user_id)
         return any(
-            isinstance(seg, AtSegment) and seg.data["qq"] == target
+            isinstance(seg, AtSegment) and seg.data.user_id == target
             for seg in self.message
         )
 

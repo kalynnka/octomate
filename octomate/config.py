@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 
@@ -17,7 +17,8 @@ class TentacleConfig(BaseModel):
 
 class NapcatTentacleConfig(TentacleConfig):
     ws_url: str
-    access_token: str | None = None
+    http_url: HttpUrl
+    access_token: SecretStr | None = None
     backoff_base: float = 1.0
     backoff_max: float = 60.0
     backoff_factor: float = 2.0

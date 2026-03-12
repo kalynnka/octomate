@@ -23,9 +23,18 @@ logger = logging.getLogger(__name__)
 
 class BaseTentacle(ABC):
     nerve: OctopusNerve
+    name: str
+    self_id: int | None
+    self_name: str | None
 
     def __init__(self, name: str) -> None:
         self.name = name
+        self.self_id: int | None = None
+        self.self_name: str | None = None
+
+    @abstractmethod
+    async def introspect(self) -> None:
+        """Discover and set this tentacle's own identity (self_id, self_name, ...)."""
 
     @abstractmethod
     async def activate(self) -> None:
@@ -41,6 +50,12 @@ class BaseTentacle(ABC):
 
 
 class MessageBuffer:
+    _flush_delay: float
+    _handler: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]]
+    _buckets: defaultdict[SessionKey, list[MessageEvent]]
+    _pending: set[SessionKey]
+    _tg: TaskGroup | None
+
     def __init__(
         self,
         flush_delay: float,

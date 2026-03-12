@@ -16,28 +16,42 @@ logger = logging.getLogger(__name__)
 
 
 class Octopus:
+    nerve: OctopusNerve
+    agent: Agent[SessionContext, str]
+
     def __init__(self, nerve: OctopusNerve, brain: BrainConfig) -> None:
         self.nerve = nerve
-        self.agent: Agent[SessionContext, str] = create_companion_agent(brain)
+        self.agent = create_companion_agent(brain)
 
     def connect(self, tentacle: BaseTentacle) -> None:
         self.nerve.connect(tentacle)
 
     async def activate(self) -> None:
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(self.nerve.activate)
-            tg.start_soon(self.receive)
+        try:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(self.nerve.activate)
+                tg.start_soon(self.receive)
+        except* Exception as eg:
+            for exc in eg.exceptions:
+                logger.exception("Fatal error in task group", exc_info=exc)
 
     async def receive(self) -> None:
         async with self.nerve.inbound:
             async for key, batch in self.nerve.inbound:
-                await self.think(key, batch)
+                try:
+                    await self.think(key, batch)
+                except Exception:
+                    logger.exception("Error processing batch [%s]", key)
 
     async def think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
+        tentacle = self.nerve.get(key.tentacle_id)
+        identity = (
+            str(tentacle.self_id) if tentacle and tentacle.self_id else key.tentacle_id
+        )
         if key.group_id is not None:
-            header = f"[group chat: {key.group_id}] [you are: {key.tentacle_id}]"
+            header = f"[group chat: {key.group_id}] [you are user: {identity}]"
         else:
-            header = "[private chat]"
+            header = f"[private chat] [you are user: {identity}]"
         messages = "\n".join(f"- {msg}" for msg in batch)
         prompt = f"{header}\n{messages}"
         logger.debug("Octopus processing batch [%s] (%d messages)", key, len(batch))

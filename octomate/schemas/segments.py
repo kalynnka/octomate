@@ -11,9 +11,9 @@ class TextData(TypedDict):
     text: str
 
 
-class AtData(TypedDict):
-    qq: str
-    name: NotRequired[str | None]
+class AtData(BaseModel):
+    user_id: str
+    name: str | None = None
 
 
 class ImageData(BaseModel):
@@ -127,13 +127,13 @@ class TextSegment(Segment):
 
 
 class AtSegment(Segment):
-    """Mention/at a user. Set data.qq to the user's QQ number (as string). Optionally set data.name."""
+    """Mention/at a user. Set data.user_id to the user's platform ID (as string). Optionally set data.name."""
 
     type: Literal["at"] = "at"
     data: AtData
 
     def __str__(self) -> str:
-        return f"@{self.data.get('name') or self.data['qq']}"
+        return f"@{self.data.name or self.data.user_id}"
 
 
 class ImageSegment(Segment):

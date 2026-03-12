@@ -1558,6 +1558,7 @@ version = "0.0.1"
 source = { virtual = "." }
 dependencies = [
     { name = "anyio" },
+    { name = "httpx" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
     { name = "pydantic-settings" },
@@ -1573,6 +1574,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", specifier = ">=4" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-ai", specifier = ">=0.2" },
     { name = "pydantic-settings", specifier = ">=2" },
