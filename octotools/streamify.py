@@ -4,12 +4,13 @@ import asyncio
 import logging
 import mimetypes
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import anyio
 import httpx
-from pydantic import BaseModel, Field, SecretStr, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, Field, SecretStr, TypeAdapter
 from pydantic_ai import RunContext
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
@@ -31,7 +32,7 @@ class StreamifyConfig(BaseSettings):
     api_version: str = "v1"
     username: str = ""
     password: SecretStr = SecretStr("")
-    device_id: str = "octomate-streamify-001"
+    device_id: str = "7608e47d-a8f5-4f43-9c9f-534783b2ccfb"
     device_name: str = "Octomate Streamify"
     device_model: str = "Bot/1.0"
     os_name: str = "Linux"
@@ -150,6 +151,15 @@ class TokenManager:
 token_manager = TokenManager()
 
 
+def _parse_timestamp(v: Any) -> datetime:
+    if isinstance(v, (int, float)):
+        return datetime.fromtimestamp(v, tz=timezone.utc)
+    return v
+
+
+Timestamp = Annotated[datetime, BeforeValidator(_parse_timestamp)]
+
+
 class FileInfo(BaseModel):
     id: str
     filename: str
@@ -160,9 +170,9 @@ class FileInfo(BaseModel):
     mimetype: str
     parent_file_id: str | None = None
     is_public: bool = False
-    expires_at: str | None = None
-    created_at: str = ""
-    updated_at: str = ""
+    expires_at: Timestamp | None = None
+    created_at: Timestamp | None = None
+    updated_at: Timestamp | None = None
 
 
 class KeyFrame(BaseModel):
@@ -182,15 +192,15 @@ class ArticleInfo(BaseModel):
     source: str = ""
     status: str = ""
     language: str = "en"
-    published_date: str | None = None
+    published_date: Timestamp | None = None
     error_message: str | None = None
     metadata: dict[str, Any] | None = None
     files: dict[str, FileInfo] = Field(default_factory=dict)
     key_frames: list[KeyFrame] = Field(default_factory=list)
     origin_files: list[FileInfo] = Field(default_factory=list)
     generated_files: dict[str, FileInfo] = Field(default_factory=dict)
-    created_at: str = ""
-    updated_at: str = ""
+    created_at: Timestamp | None = None
+    updated_at: Timestamp | None = None
 
 
 class TagInfo(BaseModel):
@@ -211,8 +221,8 @@ class NoteInfo(BaseModel):
     key_frames: list[KeyFrame] = Field(default_factory=list)
     article: ArticleInfo | None = None
     tags: list[TagInfo] = Field(default_factory=list)
-    created_at: str = ""
-    updated_at: str = ""
+    created_at: Timestamp | None = None
+    updated_at: Timestamp | None = None
 
     @property
     def title(self) -> str:
@@ -241,8 +251,8 @@ class ChunkResult(BaseModel):
     note_id: str | None = None
     file_id: str | None = None
     file: FileInfo | None = None
-    created_at: str = ""
-    updated_at: str = ""
+    created_at: Timestamp | None = None
+    updated_at: Timestamp | None = None
 
 
 class NoteSearchResult(BaseModel):

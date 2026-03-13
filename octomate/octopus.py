@@ -156,7 +156,6 @@ class Octopus:
 
         logger.debug("Octopus processing batch [%s] (%d messages)", key, len(batch))
         deps = SessionContext(nerve=self.nerve, session_key=key)
-
         result = await self.agent.run(
             user_prompt,
             message_history=history,
