@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from typing import Any, runtime_checkable
 
 from pydantic_ai import RunContext, ToolDefinition
@@ -9,10 +10,16 @@ from pydantic_ai.toolsets import (
     CombinedToolset,
     FilteredToolset,
     FunctionToolset,
+    PreparedToolset,
 )
 from typing_extensions import Protocol
 
 SKILL_METADATA_KEY = "skill"
+
+ToolsPrepareFunc = Callable[
+    [RunContext[Any], list[ToolDefinition]],
+    Awaitable[list[ToolDefinition] | None],
+]
 
 
 @runtime_checkable
@@ -30,6 +37,24 @@ def skill_filter(ctx: RunContext[Any], tool_def: ToolDefinition) -> bool:
     return skill_name in deps.active_skills
 
 
+def make_metadata_injector(
+    skill_name: str,
+) -> ToolsPrepareFunc:
+    """Create a prepare function that injects skill metadata into MCP tool definitions."""
+
+    async def inject(
+        ctx: RunContext[Any], tool_defs: list[ToolDefinition]
+    ) -> list[ToolDefinition]:
+        result: list[ToolDefinition] = []
+        for td in tool_defs:
+            meta = dict(td.metadata) if td.metadata else {}
+            meta[SKILL_METADATA_KEY] = skill_name
+            result.append(replace(td, metadata=meta))
+        return result
+
+    return inject
+
+
 @dataclass
 class SkillInfo:
     name: str
@@ -37,21 +62,38 @@ class SkillInfo:
 
 
 class SkillManager:
-    _skills: dict[str, SkillInfo]
-    _toolsets: dict[str, FunctionToolset]
+    skills: dict[str, SkillInfo]
+    toolsets: dict[str, FunctionToolset]
+    mcp_toolsets: dict[str, AbstractToolset[Any]]
 
     def __init__(self) -> None:
-        self._skills = {}
-        self._toolsets = {}
+        self.skills = {}
+        self.toolsets = {}
+        self.mcp_toolsets = {}
 
     def register(self, name: str, description: str) -> FunctionToolset:
         """Register a skill and return its FunctionToolset for adding tools."""
-        self._skills[name] = SkillInfo(name=name, description=description)
+        self.skills[name] = SkillInfo(name=name, description=description)
         toolset: FunctionToolset = FunctionToolset(
             metadata={SKILL_METADATA_KEY: name},
         )
-        self._toolsets[name] = toolset
+        self.toolsets[name] = toolset
         return toolset
+
+    def register_mcp(
+        self, name: str, description: str, toolset: AbstractToolset[Any]
+    ) -> None:
+        """Register an MCP-based skill.
+
+        The toolset is wrapped to inject skill metadata so it participates
+        in the load/unload gating via skill_filter.
+        """
+        self.skills[name] = SkillInfo(name=name, description=description)
+        prepared = PreparedToolset(
+            wrapped=toolset,
+            prepare_func=make_metadata_injector(name),
+        )
+        self.mcp_toolsets[name] = prepared
 
     def build_skillsets(self) -> list[AbstractToolset[Any]]:
         """Build the list of skills' toolsets to pass to Agent(toolsets=[...]).
@@ -60,10 +102,11 @@ class SkillManager:
         that only exposes tools whose skill is currently active.
         """
         discovery = self._build_discovery_toolset()
-        skill_toolsets = list(self._toolsets.values())
-        if not skill_toolsets:
+        all_toolsets: list[AbstractToolset[Any]] = list(self.toolsets.values())
+        all_toolsets.extend(self.mcp_toolsets.values())
+        if not all_toolsets:
             return [discovery]
-        combined = CombinedToolset(skill_toolsets)
+        combined = CombinedToolset(all_toolsets)
         filtered = FilteredToolset(combined, skill_filter)
         return [discovery, filtered]
 
@@ -76,16 +119,19 @@ class SkillManager:
         async def list_available_skills(ctx: RunContext[SkillDeps]) -> str:
             """List all skills that can be loaded. Shows name, status, and description."""
             lines: list[str] = []
-            for info in manager._skills.values():
-                status = "loaded" if info.name in ctx.deps.active_skills else "available"
+            for info in manager.skills.values():
+                if info.name in ctx.deps.active_skills:
+                    status = "loaded"
+                else:
+                    status = "available"
                 lines.append(f"- {info.name} [{status}]: {info.description}")
             return "\n".join(lines) or "No skills registered."
 
         @discovery.tool
         async def load_skill(ctx: RunContext[SkillDeps], skill_name: str) -> str:
             """Load a skill to make its tools available for use."""
-            if skill_name not in manager._skills:
-                available = ", ".join(manager._skills)
+            if skill_name not in manager.skills:
+                available = ", ".join(manager.skills)
                 return f"Unknown skill: {skill_name}. Available: {available}"
             if skill_name in ctx.deps.active_skills:
                 return f"Skill '{skill_name}' is already loaded."
