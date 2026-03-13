@@ -9,7 +9,7 @@ from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
 from octomate.agents.manager import SkillManager
-from octomate.config import BrainConfig
+from octomate.config import MindConfig
 from octomate.nerve import OctopusNerve
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.session import SessionKey
@@ -27,6 +27,7 @@ Guidelines:
   Always respond to what was just said, not to older history.
 - Be concise and direct. Avoid filler phrases and unnecessary preamble.
 - When asked a question, answer it. Don't repeat the question back.
+- Make your response with user's language.
 - If you don't know something, say so honestly instead of guessing.
 - Respect user privacy — never ask for personal information unprompted.
 - Refuse harmful, illegal, or unethical requests politely but firmly.
@@ -92,7 +93,7 @@ class RetryTransport(httpx.AsyncBaseTransport):
 
 
 def create_companion_agent(
-    config: BrainConfig,
+    config: MindConfig,
     skill_manager: SkillManager | None = None,
 ) -> Agent[SessionContext, list[AgentMessage]]:
     http_client = httpx.AsyncClient(

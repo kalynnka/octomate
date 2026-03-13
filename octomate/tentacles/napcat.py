@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import base64
 import logging
-from mimetypes import guess_type
+import uuid
+from pathlib import Path
 
 import anyio
 import httpx
@@ -26,10 +27,14 @@ from octomate.schemas.actions import (
     SendPrivateMsgAction,
 )
 from octomate.schemas.adaptors import ActionUnion, inbound_adapter
-from octomate.schemas.segments import ImageSegment
+from octomate.schemas.events import GroupMessageEvent, MessageEvent
+from octomate.schemas.segments import AgentSegment, ImageSegment
 from octomate.tentacles.base import BaseTentacle
+from octomate.utils import guess_image_ext, resolve_image_url
 
 logger = logging.getLogger(__name__)
+
+FILES_ROOT = Path(".octopus/files")
 
 
 class AccountInfo(BaseModel):
@@ -140,7 +145,7 @@ class NapcatTentacle(BaseTentacle):
             return
 
         if isinstance(action, (SendGroupMsgAction, SendPrivateMsgAction)):
-            await self.prefetch_images(action.params.message)
+            await self.prepare_outbound_message(action.params.message)
 
         frame = action.model_dump_json(exclude_none=True)
         try:
@@ -148,31 +153,62 @@ class NapcatTentacle(BaseTentacle):
         except ConnectionClosed:
             logger.warning("Tentacle %s: WebSocket closed while sending", self.name)
 
-    async def fetch_image(self, file_ref: str) -> tuple[bytes, str]:
-        url = file_ref
-        if not file_ref.startswith(("http://", "https://")):
-            resp = await self.http_client.post("/get_image", json={"file": file_ref})
+    async def download_image(self, seg: ImageSegment, save_dir: Path) -> None:
+        try:
+            url = seg.data.url or resolve_image_url(seg.data.file)
+            if not url:
+                resp = await self.http_client.post(
+                    "/get_image", json={"file": seg.data.file}
+                )
+                resp.raise_for_status()
+                url = resp.json().get("data", {}).get("url")
+            if not url:
+                return
+
+            resp = await self.http_client.get(url)
             resp.raise_for_status()
-            url = resp.json().get("data", {}).get("url") or file_ref
 
-        resp = await self.http_client.get(url)
-        resp.raise_for_status()
-        media_type = resp.headers.get("content-type", "").split(";")[0].strip()
-        if not media_type or not media_type.startswith("image/"):
-            media_type = guess_type(url)[0] or "image/png"
-        return resp.content, media_type
+            ext = guess_image_ext(resp.headers.get("content-type", ""), url)
+            path = save_dir / f"{uuid.uuid4().hex}{ext}"
+            path.write_bytes(resp.content)
 
-    async def prefetch_images(self, segments: list) -> None:
+            seg.data.file = str(path.resolve())
+            seg.data.url = url
+        except Exception:
+            logger.warning(
+                "Tentacle %s: failed to download image", self.name, exc_info=True
+            )
+
+    async def prepare_inbound_message(self, event: MessageEvent) -> None:
+        subdir = (
+            f"g{event.group_id}"
+            if isinstance(event, GroupMessageEvent)
+            else f"u{event.user_id}"
+        )
+        save_dir = FILES_ROOT / self.name / subdir
+
+        image_segs = [seg for seg in event.message if isinstance(seg, ImageSegment)]
+        if not image_segs:
+            return
+
+        save_dir.mkdir(parents=True, exist_ok=True)
+        async with anyio.create_task_group() as tg:
+            for seg in image_segs:
+                tg.start_soon(self.download_image, seg, save_dir)
+
+    async def prepare_outbound_message(self, segments: list[AgentSegment]) -> None:
         for seg in segments:
             if not isinstance(seg, ImageSegment):
                 continue
-            if not seg.data.file.startswith(("http://", "https://")):
-                continue
             try:
-                data, _ = await self.fetch_image(seg.data.file)
-                seg.data.file = f"base64://{base64.b64encode(data).decode()}"
+                path = Path(seg.data.file.removeprefix("file://"))
+                if path.exists():
+                    data = path.read_bytes()
+                    seg.data.file = f"base64://{base64.b64encode(data).decode()}"
             except Exception:
-                logger.warning("Tentacle %s: failed to prefetch image", self.name)
+                logger.warning(
+                    "Tentacle %s: failed to prepare outbound image", self.name
+                )
 
     async def _connect_loop(self) -> None:
         """Connect with exponential back-off, delegating to _receive_loop."""
@@ -234,4 +270,8 @@ class NapcatTentacle(BaseTentacle):
                 continue
 
             frame.tentacle_id = self.name
+
+            if isinstance(frame, MessageEvent):
+                await self.prepare_inbound_message(frame)
+
             await self.nerve.sense(frame)

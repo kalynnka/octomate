@@ -1,7 +1,6 @@
 octomate:
   tentacles: []
-
-  brain:
+  mind:
     model: "gemini-3-flash-preview"
     api_key: ""
     flush_delay: 0.5

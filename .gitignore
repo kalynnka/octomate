@@ -12,8 +12,8 @@ octomate.yaml
 ntqq/
 napcat/
 
-# Octopus runtime data
-.octopus/
+# Octomate runtime data
+.octomate/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

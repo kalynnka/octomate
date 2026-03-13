@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from mem0.configs.base import MemoryConfig as Mem0MemoryConfig
@@ -11,7 +10,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettin
 class TentacleConfig(BaseModel):
     name: str
     tentacle_id: str = ""
-    files_dir: Path = Path("files")
 
     def model_post_init(self, _context: Any) -> None:
         if not self.tentacle_id:
@@ -37,7 +35,7 @@ class MemoryConfig(BaseModel):
     mem0: Mem0Config = Mem0Config()
 
 
-class BrainConfig(BaseModel):
+class MindConfig(BaseModel):
     model: str = "google-gla:gemini-3-flash-preview"
     api_key: str = ""
     flush_delay: float = 0.5
@@ -53,7 +51,7 @@ class OctomateConfig(BaseSettings):
     )
 
     tentacles: list[NapcatTentacleConfig] = []
-    brain: BrainConfig = BrainConfig()
+    mind: MindConfig = MindConfig()
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):

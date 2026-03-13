@@ -17,7 +17,11 @@ class AtData(BaseModel):
 
 
 class ImageData(BaseModel):
-    """Kept as BaseModel for the file-path validator."""
+    """Image payload. `file` is always a local path as a file:// URI.
+
+    Inbound images are downloaded to local storage by the tentacle layer.
+    Outbound images are read from local files and uploaded by the tentacle.
+    """
 
     file: str
     url: str | None = None
@@ -28,9 +32,9 @@ class ImageData(BaseModel):
     @field_validator("file")
     @classmethod
     def _normalize_file_uri(cls, v: str) -> str:
-        if not v.startswith(("http://", "https://", "base64://", "file://")):
-            return f"file://{Path(v).resolve()}"
-        return v
+        if v.startswith("file://"):
+            return v
+        return f"file://{Path(v).resolve()}"
 
 
 class ReplyData(TypedDict):
@@ -137,7 +141,8 @@ class AtSegment(Segment):
 
 
 class ImageSegment(Segment):
-    """Send an image. Set data.file to an http/https URL."""
+    """Send an image. Set data.file to a local file path (absolute or file:// URI).
+    Never use http/https URLs — the system manages file storage automatically."""
 
     type: Literal["image"] = "image"
     data: ImageData

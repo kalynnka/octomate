@@ -7,8 +7,8 @@ import sys
 import octotools
 from octomate.agents.manager import SkillManager
 from octomate.config import OctomateConfig
-from octomate.mind import Octopus
 from octomate.nerve import OctopusNerve
+from octomate.octopus import Octopus
 from octomate.tentacles.napcat import NapcatTentacle
 
 logging.basicConfig(level=logging.INFO)
@@ -24,8 +24,8 @@ def _start() -> None:
     octotools.pixiv.register(skill_manager)
 
     octopus = Octopus(
-        OctopusNerve(flush_delay=config.brain.flush_delay),
-        config.brain,
+        OctopusNerve(flush_delay=config.mind.flush_delay),
+        config.mind,
         skill_manager=skill_manager,
     )
     for tc in config.tentacles:

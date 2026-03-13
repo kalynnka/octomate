@@ -13,7 +13,7 @@ from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from octomate.agents import SessionContext, create_companion_agent
 from octomate.agents.manager import SkillManager
-from octomate.config import BrainConfig
+from octomate.config import MindConfig
 from octomate.nerve import OctopusNerve
 from octomate.schemas.actions import (
     AgentMessage,
@@ -40,9 +40,9 @@ class Octopus:
     def __init__(
         self,
         nerve: OctopusNerve,
-        brain: BrainConfig,
+        brain: MindConfig,
         skill_manager: SkillManager | None = None,
-        store_path: Path = Path(".octopus/message_store"),
+        store_path: Path = Path(".octomate/message_store"),
     ) -> None:
         self.nerve = nerve
         self.agent = create_companion_agent(brain, skill_manager)
@@ -116,6 +116,7 @@ class Octopus:
     async def think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         tentacle = self.nerve[key.tentacle_id]
         identity = f"{tentacle.self_id}-{tentacle.self_name}"
+
         if key.group_id is not None:
             header = f"[group chat: {key.group_id}] [me: {identity}]"
         else:
