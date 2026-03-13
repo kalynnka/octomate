@@ -7,12 +7,12 @@ from pydantic import BaseModel
 
 class SessionKey(NamedTuple):
     tentacle_id: str
-    user_id: int
-    group_id: int | None = None
+    user_id: int | str
+    group_id: int | str | None = None
 
 
 class Sender(BaseModel):
-    user_id: int = 0
+    user_id: int | str = 0
     nickname: str = ""
     card: str | None = None
     role: str | None = None

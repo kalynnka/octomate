@@ -26,13 +26,13 @@ class BaseTentacle(ABC):
     nerve: OctopusNerve
     config: TentacleConfig
     name: str
-    self_id: int | None
+    self_id: int | str | None
     self_name: str | None
 
     def __init__(self, config: TentacleConfig) -> None:
         self.config = config
         self.name = config.name
-        self.self_id: int | None = None
+        self.self_id: int | str | None = None
         self.self_name: str | None = None
 
     @abstractmethod

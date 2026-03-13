@@ -3,12 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import warnings
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"lark_oapi")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")
 
 import octotools
 from octomate.agents.manager import SkillManager
-from octomate.config import OctomateConfig
+from octomate.config import LarkTentacleConfig, NapcatTentacleConfig, OctomateConfig
 from octomate.nerve import OctopusNerve
 from octomate.octopus import Octopus
+from octomate.tentacles.lark import LarkTentacle
 from octomate.tentacles.napcat import NapcatTentacle
 
 logging.basicConfig(level=logging.INFO)
@@ -29,7 +34,10 @@ def _start() -> None:
         skill_manager=skill_manager,
     )
     for tc in config.tentacles:
-        octopus.connect(NapcatTentacle(tc))
+        if isinstance(tc, NapcatTentacleConfig):
+            octopus.connect(NapcatTentacle(tc))
+        elif isinstance(tc, LarkTentacleConfig):
+            octopus.connect(LarkTentacle(tc))
     try:
         asyncio.run(octopus.activate())
     except KeyboardInterrupt:

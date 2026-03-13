@@ -11,12 +11,14 @@ octomate:
         llm:
           provider: "gemini"
           config:
+            api_key: ""
             model: "gemini-3-flash-preview"
             temperature: 0.1
             max_tokens: 2000
         embedder:
           provider: "gemini"
           config:
+            api_key: ""
             model: "gemini-embedding-001"
             embedding_dims: 768
         vector_store:

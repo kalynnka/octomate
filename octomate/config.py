@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal, Union
 
 from mem0.configs.base import MemoryConfig as Mem0MemoryConfig
-from pydantic import BaseModel, Field, HttpUrl, SecretStr
+from pydantic import BaseModel, Discriminator, Field, HttpUrl, SecretStr, Tag
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 
@@ -17,6 +17,7 @@ class TentacleConfig(BaseModel):
 
 
 class NapcatTentacleConfig(TentacleConfig):
+    type: Literal["napcat"] = "napcat"
     name: str = "napcat"
     ws_url: str
     http_url: HttpUrl
@@ -24,6 +25,22 @@ class NapcatTentacleConfig(TentacleConfig):
     backoff_base: float = 1.0
     backoff_max: float = 60.0
     backoff_factor: float = 2.0
+
+
+class LarkTentacleConfig(TentacleConfig):
+    type: Literal["lark"] = "lark"
+    name: str = "lark"
+    app_id: str
+    app_secret: SecretStr
+
+
+TentacleConfigUnion = Annotated[
+    Union[
+        Annotated[NapcatTentacleConfig, Tag("napcat")],
+        Annotated[LarkTentacleConfig, Tag("lark")],
+    ],
+    Discriminator("type"),
+]
 
 
 class Mem0Config(Mem0MemoryConfig):
@@ -44,13 +61,13 @@ class MindConfig(BaseModel):
 
 class OctomateConfig(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="OCTOMATE_",
+        env_prefix="OCTOMATE__",
         env_nested_delimiter="__",
         yaml_config_section="octomate",
         yaml_file=["octomate.default.yaml", "octomate.yaml"],
     )
 
-    tentacles: list[NapcatTentacleConfig] = []
+    tentacles: list[TentacleConfigUnion] = []
     mind: MindConfig = MindConfig()
 
     @classmethod

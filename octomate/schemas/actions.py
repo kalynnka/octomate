@@ -28,9 +28,9 @@ class ActionResponse(BaseModel):
 
 
 class SendGroupMsgParams(BaseModel):
-    group_id: int
+    group_id: int | str
     message: list[AgentSegment]
-    reply: int | None = None
+    reply: int | str | None = None
 
 
 class SendGroupMsgAction(BaseModel):
@@ -40,9 +40,9 @@ class SendGroupMsgAction(BaseModel):
 
 
 class SendPrivateMsgParams(BaseModel):
-    user_id: int
+    user_id: int | str
     message: list[AgentSegment]
-    reply: int | None = None
+    reply: int | str | None = None
 
 
 class SendPrivateMsgAction(BaseModel):

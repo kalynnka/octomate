@@ -15,7 +15,11 @@ dependencies = [
     "mem0ai>=0.1",
     "pymilvus>=2.6.9",
     "pixivpy-async>=1.2.14",
+    "lark-oapi>=1.4.8",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"main.py" = ["E402"]
 
 [dependency-groups]
 dev = [
