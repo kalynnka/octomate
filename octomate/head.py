@@ -14,8 +14,16 @@ from pydantic_ai.messages import ModelRequest, UserPromptPart
 from octomate.agents import SessionContext, create_companion_agent
 from octomate.config import BrainConfig
 from octomate.nerve import OctopusNerve
+from octomate.schemas.actions import (
+    AgentMessage,
+    SendGroupMsgAction,
+    SendGroupMsgParams,
+    SendPrivateMsgAction,
+    SendPrivateMsgParams,
+)
 from octomate.schemas.events import GroupMessageEvent, MessageEvent
 from octomate.schemas.session import SessionKey
+from octomate.skills.base import SkillManager
 from octomate.tentacles.base import BaseTentacle
 
 logger = logging.getLogger(__name__)
@@ -23,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 class Octopus:
     nerve: OctopusNerve
-    agent: Agent[SessionContext, str]
+    agent: Agent[SessionContext, list[AgentMessage]]
     message_store: dict[SessionKey, deque[ModelMessage]]
     memory: Memory | None
     _max_messages: int
@@ -33,10 +41,11 @@ class Octopus:
         self,
         nerve: OctopusNerve,
         brain: BrainConfig,
+        skill_manager: SkillManager | None = None,
         store_path: Path = Path(".octopus/message_store"),
     ) -> None:
         self.nerve = nerve
-        self.agent = create_companion_agent(brain)
+        self.agent = create_companion_agent(brain, skill_manager)
         self._max_messages = brain.memory.max_messages
         self._store_path = store_path
         self.message_store = self._load_store()
@@ -45,16 +54,15 @@ class Octopus:
     def _load_store(self) -> dict[SessionKey, deque[ModelMessage]]:
         if self._store_path.exists():
             try:
-                store: dict[SessionKey, deque[ModelMessage]] = pickle.loads(
-                    self._store_path.read_bytes()
-                )
-                logger.info("Loaded message store from %s", self._store_path)
+                store = pickle.loads(self._store_path.read_bytes())
+
             except Exception:
                 logger.warning(
                     "Failed to load message store, starting fresh", exc_info=True
                 )
-                store = defaultdict(lambda: deque(maxlen=self._max_messages))
-        return store
+            logger.info("Loaded message store from %s", self._store_path)
+            return store
+        return defaultdict(lambda: deque(maxlen=self._max_messages))
 
     def _save_store(self) -> None:
         self._store_path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +89,8 @@ class Octopus:
                 try:
                     tentacle = self.nerve[key.tentacle_id]
                     if key.group_id is not None and not any(
-                        isinstance(msg, GroupMessageEvent) and msg.is_at(tentacle.self_id)
+                        isinstance(msg, GroupMessageEvent)
+                        and msg.is_at(tentacle.self_id)
                         for msg in batch
                     ):
                         self.message_store[key].extend(
@@ -132,17 +141,46 @@ class Octopus:
 
         logger.debug("Octopus processing batch [%s] (%d messages)", key, len(batch))
         deps = SessionContext(nerve=self.nerve, session_key=key)
-        result = await self.agent.run(user_prompt, message_history=history, deps=deps)
+
+        result = await self.agent.run(
+            user_prompt,
+            message_history=history,
+            deps=deps,
+        )
         self.message_store[key].extend(result.new_messages())
+
+        for msg in result.output:
+            if key.group_id is not None:
+                action = SendGroupMsgAction(
+                    tentacle_id=key.tentacle_id,
+                    params=SendGroupMsgParams(
+                        group_id=key.group_id, message=msg.segments
+                    ),
+                )
+            else:
+                action = SendPrivateMsgAction(
+                    tentacle_id=key.tentacle_id,
+                    params=SendPrivateMsgParams(
+                        user_id=key.user_id, message=msg.segments
+                    ),
+                )
+            await self.nerve.pulse(action)
 
         if self.memory and query:
             await self.memory_add(
                 key,
-                [{"role": "user", "content": message} for message in messages]
+                [
+                    {
+                        "role": "user",
+                        "content": message,
+                    }
+                    for message in messages
+                ]
                 + [
                     {
                         "role": "assistant",
-                        "content": f"[me: {identity}]: {result.output}",
+                        "content": f"[me: {identity}]: {str(msg)}",
                     }
+                    for msg in result.output
                 ],
             )

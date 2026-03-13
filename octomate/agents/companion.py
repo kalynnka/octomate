@@ -1,23 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
 from octomate.config import BrainConfig
 from octomate.nerve import OctopusNerve
-from octomate.schemas.actions import (
-    AgentMessage,
-    SendGroupMsgAction,
-    SendGroupMsgParams,
-    SendPrivateMsgAction,
-    SendPrivateMsgParams,
-)
+from octomate.schemas.actions import AgentMessage
 from octomate.schemas.session import SessionKey
+from octomate.skills.base import SkillManager
 
 SYSTEM_PROMPT = """\
 You are an intelligent, curious, and adorable octopus companion named Octomate.
@@ -39,7 +34,7 @@ Guidelines:
 Group chat behavior:
 - You will be told your own user ID in the context header. When someone @mentions
   your user ID, you MUST respond to them.
-- If nobody is @mentioning you, just observe silently — do NOT reply to every message.
+- If nobody is @mentioning you, just observe silently — return an empty list.
   Other members' discussions don't need your input unless you are explicitly called.
 - In group chats, people often omit subjects and rely on context. Pay close attention
   to the conversation flow to understand what is being discussed before responding.
@@ -50,11 +45,15 @@ Private chat behavior:
 - In private chats, always respond to the user's messages.
 - No need to use the reply/quote segment — just send your response directly.
 
-How to send messages:
-- Use the send_messages tool. You can send multiple messages at once, each composed
-  of segments: text (plain content), image (by URL), at (mention a user by their user ID),
-  and reply (quote a previous message by its msg id — must be the first segment).
-- If you decide not to respond (e.g. observing in group chat), do NOT call send_messages.
+Message format:
+- Your output is a list of messages, each containing segments (text, image, at, reply).
+- Keep messages short. Don't write long paragraphs — split your response into
+  multiple small messages instead. Each message should be a bite-sized thought,
+  one or two sentences at most.
+- Available segment types: text (plain content), image (by URL),
+  at (mention a user by their user ID), reply (quote a previous message by its
+  msg id — must be the first segment in that message).
+- If you decide not to respond (e.g. observing in group chat), return an empty list.
 """
 
 
@@ -62,6 +61,7 @@ How to send messages:
 class SessionContext:
     nerve: OctopusNerve
     session_key: SessionKey
+    active_skills: set[str] = field(default_factory=set)
 
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -89,45 +89,23 @@ class RetryTransport(httpx.AsyncBaseTransport):
         return last_response  # type: ignore[return-value]
 
 
-def create_companion_agent(config: BrainConfig) -> Agent[SessionContext, str]:
+def create_companion_agent(
+    config: BrainConfig,
+    skill_manager: SkillManager | None = None,
+) -> Agent[SessionContext, list[AgentMessage]]:
     http_client = httpx.AsyncClient(
         transport=RetryTransport(httpx.AsyncHTTPTransport()),
         timeout=httpx.Timeout(30.0),
     )
     provider = GoogleProvider(api_key=config.api_key, http_client=http_client)
     model = GoogleModel(config.model, provider=provider)
-    agent: Agent[SessionContext, str] = Agent(
+
+    toolsets = skill_manager.build_skillsets() if skill_manager else None
+
+    return Agent(
         model,
         system_prompt=SYSTEM_PROMPT,
         deps_type=SessionContext,
-        tool_timeout=30,
+        output_type=list[AgentMessage],
+        toolsets=toolsets,
     )
-    agent.tool(send_messages)
-    return agent
-
-
-async def send_messages(
-    ctx: RunContext[SessionContext], messages: list[AgentMessage]
-) -> str:
-    """Send one or more messages to the current conversation.
-
-    Each message is a list of segments that will be sent as a single message.
-    Use multiple messages to split long content into separate bubbles.
-    """
-    key = ctx.deps.session_key
-    nerve = ctx.deps.nerve
-
-    for msg in messages:
-        if key.group_id is not None:
-            action = SendGroupMsgAction(
-                tentacle_id=key.tentacle_id,
-                params=SendGroupMsgParams(group_id=key.group_id, message=msg.segments),
-            )
-        else:
-            action = SendPrivateMsgAction(
-                tentacle_id=key.tentacle_id,
-                params=SendPrivateMsgParams(user_id=key.user_id, message=msg.segments),
-            )
-        await nerve.pulse(action)
-
-    return f"sent {len(messages)} message(s)"

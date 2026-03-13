@@ -12,6 +12,9 @@ class AgentMessage(BaseModel):
 
     segments: list[AgentSegment]
 
+    def __str__(self) -> str:
+        return "".join(str(seg) for seg in self.segments)
+
 
 class ActionResponse(BaseModel):
     """Response received after sending an action via WebSocket."""
