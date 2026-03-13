@@ -17,6 +17,91 @@ services:
     networks:
       - octomate_network
 
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+    volumes:
+      - milvus_etcd:/etcd
+    command: >
+      etcd -advertise-client-urls=http://milvus-etcd:2379
+           -listen-client-urls=http://0.0.0.0:2379
+           --data-dir /etcd
+    networks:
+      - octomate_network
+
+  milvus-rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
+    volumes:
+      - milvus_rustfs:/data
+    networks:
+      - octomate_network
+
+  milvus:
+    image: milvusdb/milvus:v2.4.0
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-rustfs:9000
+    ports:
+      - "127.0.0.1:19532:19530"
+    depends_on:
+      - milvus-etcd
+      - milvus-rustfs
+    networks:
+      - octomate_network
+
+  attu:
+    image: zilliz/attu:latest
+    restart: always
+    environment:
+      MILVUS_URL: http://milvus:19530
+    ports:
+      - "127.0.0.1:13000:3000"
+    depends_on:
+      - milvus
+    networks:
+      - octomate_network
+
+  postgres:
+    image: postgres:17
+    restart: always
+    environment:
+      POSTGRES_USER: octomate
+      POSTGRES_PASSWORD: octomate
+      POSTGRES_DB: octomate
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - octomate_network
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@octomate.ai
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "127.0.0.1:15080:80"
+    volumes:
+      - ./pgadmin-servers.json:/pgadmin4/servers.json:ro
+    depends_on:
+      - postgres
+    networks:
+      - octomate_network
+
 networks:
   octomate_network:
     driver: bridge
+
+volumes:
+  milvus_etcd:
+  milvus_rustfs:
+  postgres_data:

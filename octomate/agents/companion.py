@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
+import httpx
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
@@ -62,13 +64,43 @@ class SessionContext:
     session_key: SessionKey
 
 
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+MAX_RETRIES = 3
+
+
+class RetryTransport(httpx.AsyncBaseTransport):
+    def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
+        self._transport = transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        last_response: httpx.Response | None = None
+        for attempt in range(MAX_RETRIES + 1):
+            response = await self._transport.handle_async_request(request)
+            if response.status_code not in RETRYABLE_STATUS_CODES:
+                return response
+            last_response = response
+            if attempt < MAX_RETRIES:
+                retry_after = response.headers.get("retry-after")
+                if retry_after and retry_after.isdigit():
+                    delay = min(float(retry_after), 60.0)
+                else:
+                    delay = 2**attempt
+                await asyncio.sleep(delay)
+        return last_response  # type: ignore[return-value]
+
+
 def create_companion_agent(config: BrainConfig) -> Agent[SessionContext, str]:
-    provider = GoogleProvider(api_key=config.api_key)
+    http_client = httpx.AsyncClient(
+        transport=RetryTransport(httpx.AsyncHTTPTransport()),
+        timeout=httpx.Timeout(30.0),
+    )
+    provider = GoogleProvider(api_key=config.api_key, http_client=http_client)
     model = GoogleModel(config.model, provider=provider)
     agent: Agent[SessionContext, str] = Agent(
         model,
         system_prompt=SYSTEM_PROMPT,
         deps_type=SessionContext,
+        tool_timeout=30,
     )
     agent.tool(send_messages)
     return agent

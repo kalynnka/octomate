@@ -67,10 +67,9 @@ class GroupMessageEvent(MessageEvent):
             group_id=self.group_id,
         )
 
-    def is_at(self, user_id: int) -> bool:
-        target = str(user_id)
-        return any(
-            isinstance(seg, AtSegment) and seg.data.user_id == target
+    def is_at(self, user_id: int | None = None) -> bool:
+        return user_id is not None and any(
+            isinstance(seg, AtSegment) and seg.data.user_id == str(user_id)
             for seg in self.message
         )
 

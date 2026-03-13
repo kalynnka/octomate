@@ -12,6 +12,8 @@ dependencies = [
     "pydantic-settings>=2",
     "pyyaml>=6",
     "websockets>=15",
+    "mem0ai>=0.1",
+    "pymilvus>=2.6.9",
 ]
 
 [dependency-groups]

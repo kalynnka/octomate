@@ -8,7 +8,8 @@
       "program": "${workspaceFolder}/main.py",
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "justMyCode": false
     },
     {
       "name": "Octomate (reload)",
@@ -18,7 +19,8 @@
       "args": ["--reload"],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
-      "console": "integratedTerminal"
+      "console": "integratedTerminal",
+      "justMyCode": false
     }
   ]
 }

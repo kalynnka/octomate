@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, HttpUrl, SecretStr
+from mem0.configs.base import MemoryConfig as Mem0MemoryConfig
+from pydantic import BaseModel, Field, HttpUrl, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
 
@@ -27,8 +28,13 @@ class NapcatTentacleConfig(TentacleConfig):
     backoff_factor: float = 2.0
 
 
+class Mem0Config(Mem0MemoryConfig):
+    enabled: bool = Field(default=False, exclude=True)
+
+
 class MemoryConfig(BaseModel):
     max_messages: int = 32
+    mem0: Mem0Config = Mem0Config()
 
 
 class BrainConfig(BaseModel):

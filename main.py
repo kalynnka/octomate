@@ -1,17 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 
-import anyio
-
-from octomate.base import Octopus
 from octomate.config import OctomateConfig
+from octomate.head import Octopus
 from octomate.nerve import OctopusNerve
 from octomate.tentacles.napcat import NapcatTentacle
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
+
+
+def _start() -> None:
+    config = OctomateConfig()
+    octopus = Octopus(
+        OctopusNerve(flush_delay=config.brain.flush_delay),
+        config.brain,
+    )
+    for tc in config.tentacles:
+        octopus.connect(NapcatTentacle(tc))
+    try:
+        asyncio.run(octopus.activate())
+    except KeyboardInterrupt:
+        pass
 
 
 def run() -> None:
@@ -20,21 +33,11 @@ def run() -> None:
 
         run_process(
             "octomate",
-            target="python main.py",
-            target_type="command",
+            target="main._start",
+            target_type="function",
         )
     else:
-        config = OctomateConfig()
-        octopus = Octopus(
-            OctopusNerve(flush_delay=config.brain.flush_delay),
-            config.brain,
-        )
-        for tc in config.tentacles:
-            octopus.connect(NapcatTentacle(tc))
-        try:
-            anyio.run(octopus.activate)
-        except KeyboardInterrupt:
-            pass
+        _start()
 
 
 if __name__ == "__main__":
