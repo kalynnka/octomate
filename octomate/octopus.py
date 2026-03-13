@@ -83,7 +83,7 @@ class Octopus:
             self._save_store()
 
     async def receive(self) -> None:
-        async with self.nerve.inbound:
+        async with asyncio.TaskGroup() as tg, self.nerve.inbound:
             async for key, batch in self.nerve.inbound:
                 try:
                     tentacle = self.nerve[key.tentacle_id]
@@ -97,7 +97,7 @@ class Octopus:
                             for msg in batch
                         )
                         continue
-                    await self.think(key, batch)
+                    tg.create_task(self.think(key, batch))
                 except Exception:
                     logger.exception("Error processing batch [%s]", key)
 
@@ -110,8 +110,11 @@ class Octopus:
 
     async def memory_add(self, key: SessionKey, messages: list[dict]) -> None:
         if self.memory:
-            fn = functools.partial(self.memory.add, messages, user_id=str(key))
-            await asyncio.to_thread(fn)
+            try:
+                fn = functools.partial(self.memory.add, messages, user_id=str(key))
+                await asyncio.to_thread(fn)
+            except Exception:
+                logger.warning("Memory add failed", exc_info=True)
 
     async def think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         tentacle = self.nerve[key.tentacle_id]
@@ -133,7 +136,11 @@ class Octopus:
         if self.memory:
             query = " ".join(messages).strip()
             if query:
-                memories = await self.memory_search(key, query)
+                try:
+                    memories = await self.memory_search(key, query)
+                except Exception:
+                    logger.warning("Memory search failed, proceeding without", exc_info=True)
+                    memories = []
                 if memories:
                     facts = "\n".join(f"- {m['memory']}" for m in memories)
                     content = f"[relevant memories]\n{facts}"
@@ -169,20 +176,22 @@ class Octopus:
             await self.nerve.pulse(action)
 
         if self.memory and query:
-            await self.memory_add(
-                key,
-                [
-                    {
-                        "role": "user",
-                        "content": message,
-                    }
-                    for message in messages
-                ]
-                + [
-                    {
-                        "role": "assistant",
-                        "content": f"[me: {identity}]: {str(msg)}",
-                    }
-                    for msg in result.output
-                ],
+            asyncio.create_task(
+                self.memory_add(
+                    key,
+                    [
+                        {
+                            "role": "user",
+                            "content": message,
+                        }
+                        for message in messages
+                    ]
+                    + [
+                        {
+                            "role": "assistant",
+                            "content": f"[me: {identity}]: {str(msg)}",
+                        }
+                        for msg in result.output
+                    ],
+                )
             )

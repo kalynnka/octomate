@@ -28,3 +28,16 @@ octomate:
             token: ""
             embedding_model_dims: 768
 
+qweather:
+  api_host: "devapi.qweather.com"
+  key_id: ""
+  project_id: ""
+
+pixiv:
+  refresh_token: ""
+  search_limit: 8
+  ranking_limit: 8
+  image_dir: "./.octomate/pixiv/images"
+
+streamify:
+  base_url: "https://app.dev1.internal.holovita.ai"

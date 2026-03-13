@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 from pydantic import BaseModel, Field, SecretStr, TypeAdapter
 from pydantic_ai import RunContext
@@ -348,15 +349,16 @@ async def _download_single_file(
     file_id: str,
 ) -> DownloadFileResult:
     try:
-        config.cache_dir.mkdir(parents=True, exist_ok=True)
+        cache = anyio.Path(config.cache_dir)
+        await cache.mkdir(parents=True, exist_ok=True)
 
         prefix = f"{file_id}."
-        for existing in config.cache_dir.iterdir():
+        async for existing in cache.iterdir():
             if existing.name.startswith(prefix):
                 logger.debug("File cache hit: %s", existing)
                 return DownloadFileResult(
                     success=True,
-                    local_path=str(existing.absolute()),
+                    local_path=str(await existing.absolute()),
                     file_id=file_id,
                     message="File retrieved from cache",
                 )
@@ -371,13 +373,13 @@ async def _download_single_file(
 
         content_type = response.headers.get("content-type", "application/octet-stream")
         ext = mimetypes.guess_extension(content_type.split(";")[0].strip()) or ".bin"
-        file_path = config.cache_dir / f"{file_id}{ext}"
-        file_path.write_bytes(response.content)
+        file_path = cache / f"{file_id}{ext}"
+        await file_path.write_bytes(response.content)
 
         logger.info("Downloaded file to: %s", file_path)
         return DownloadFileResult(
             success=True,
-            local_path=str(file_path.absolute()),
+            local_path=str(await file_path.absolute()),
             file_id=file_id,
         )
     except httpx.HTTPStatusError as e:

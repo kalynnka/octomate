@@ -170,7 +170,7 @@ class NapcatTentacle(BaseTentacle):
 
             ext = guess_image_ext(resp.headers.get("content-type", ""), url)
             path = save_dir / f"{uuid.uuid4().hex}{ext}"
-            path.write_bytes(resp.content)
+            await anyio.Path(path).write_bytes(resp.content)
 
             seg.data.file = str(path.resolve())
             seg.data.url = url
@@ -191,7 +191,7 @@ class NapcatTentacle(BaseTentacle):
         if not image_segs:
             return
 
-        save_dir.mkdir(parents=True, exist_ok=True)
+        await anyio.Path(save_dir).mkdir(parents=True, exist_ok=True)
         async with anyio.create_task_group() as tg:
             for seg in image_segs:
                 tg.start_soon(self.download_image, seg, save_dir)
@@ -201,9 +201,9 @@ class NapcatTentacle(BaseTentacle):
             if not isinstance(seg, ImageSegment):
                 continue
             try:
-                path = seg.data.path
-                if path.exists():
-                    data = path.read_bytes()
+                apath = anyio.Path(seg.data.path)
+                if await apath.exists():
+                    data = await apath.read_bytes()
                     seg.data.file = f"base64://{base64.b64encode(data).decode()}"
             except Exception:
                 logger.warning(

@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
@@ -240,13 +241,13 @@ class LarkTentacle(BaseTentacle):
             )
 
     async def _upload_image(self, seg: ImageSegment) -> str | None:
-        path = seg.data.path
-        if not path.exists():
-            logger.warning("Tentacle %s: image file not found: %s", self.name, path)
+        apath = anyio.Path(seg.data.path)
+        if not await apath.exists():
+            logger.warning("Tentacle %s: image file not found: %s", self.name, apath)
             return None
 
         try:
-            image_data = path.read_bytes()
+            image_data = await apath.read_bytes()
             request = (
                 CreateImageRequest.builder()
                 .request_body(
@@ -299,12 +300,13 @@ class LarkTentacle(BaseTentacle):
                 )
                 return None
 
-            save_dir.mkdir(parents=True, exist_ok=True)
+            await anyio.Path(save_dir).mkdir(parents=True, exist_ok=True)
             file_name: str = resp.file_name or image_key
             ext = guess_image_ext("", file_name)
             file_path = save_dir / f"{uuid.uuid4().hex}{ext}"
             if resp.file:
-                file_path.write_bytes(resp.file.read())
+                data = resp.file.read()
+                await anyio.Path(file_path).write_bytes(data)
             return str(file_path.resolve())
         except Exception:
             logger.warning(
@@ -454,16 +456,26 @@ class LarkTentacle(BaseTentacle):
         )
         save_dir = FILES_ROOT / self.name / subdir
 
-        for seg in event.message:
-            if isinstance(seg, ImageSegment) and not seg.data.path.exists():
-                image_key = seg.data.file
-                local_path = await self._download_image(
-                    str(event.message_id),
-                    image_key,
-                    save_dir,
-                )
-                if local_path:
-                    seg.data.file = local_path
+        async def _download(seg: ImageSegment) -> None:
+            image_key = seg.data.file
+            local_path = await self._download_image(
+                str(event.message_id),
+                image_key,
+                save_dir,
+            )
+            if local_path:
+                seg.data.file = local_path
+
+        pending = [
+            seg
+            for seg in event.message
+            if isinstance(seg, ImageSegment) and not seg.data.path.exists()
+        ]
+        if not pending:
+            return
+        async with asyncio.TaskGroup() as tg:
+            for seg in pending:
+                tg.create_task(_download(seg))
 
     async def _run_ws_client(self) -> None:
         event_handler = (
