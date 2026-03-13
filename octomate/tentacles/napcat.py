@@ -30,11 +30,11 @@ from octomate.schemas.adaptors import ActionUnion, inbound_adapter
 from octomate.schemas.events import GroupMessageEvent, MessageEvent
 from octomate.schemas.segments import AgentSegment, ImageSegment
 from octomate.tentacles.base import BaseTentacle
-from octomate.utils import guess_image_ext, resolve_image_url
+from octomate.utils import guess_image_ext
 
 logger = logging.getLogger(__name__)
 
-FILES_ROOT = Path(".octopus/files")
+FILES_ROOT = Path(".octomate/files")
 
 
 class AccountInfo(BaseModel):
@@ -155,10 +155,10 @@ class NapcatTentacle(BaseTentacle):
 
     async def download_image(self, seg: ImageSegment, save_dir: Path) -> None:
         try:
-            url = seg.data.url or resolve_image_url(seg.data.file)
+            url = seg.data.url
             if not url:
                 resp = await self.http_client.post(
-                    "/get_image", json={"file": seg.data.file}
+                    "/get_image", json={"file": str(seg.data.file)}
                 )
                 resp.raise_for_status()
                 url = resp.json().get("data", {}).get("url")
@@ -201,7 +201,7 @@ class NapcatTentacle(BaseTentacle):
             if not isinstance(seg, ImageSegment):
                 continue
             try:
-                path = Path(seg.data.file.removeprefix("file://"))
+                path = seg.data.path
                 if path.exists():
                     data = path.read_bytes()
                     seg.data.file = f"base64://{base64.b64encode(data).decode()}"

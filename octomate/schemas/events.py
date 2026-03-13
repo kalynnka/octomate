@@ -5,6 +5,7 @@ from functools import cached_property
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic_ai.messages import UserContent
 
 from octomate.schemas.segments import AtSegment, MessageSegment, TextSegment
 from octomate.schemas.session import Anonymous, Sender, SessionKey
@@ -47,6 +48,12 @@ class MessageEvent(OneBotEvent, ABC):
             f"**{self.display_name}** ({self.user_id}) [msg:{self.message_id}]:\n{body}"
         )
 
+    def to_content_parts(self) -> list[UserContent]:
+        header = f"**{self.display_name}** ({self.user_id}) [msg:{self.message_id}]:"
+        parts: list[UserContent] = [header]
+        parts.extend(seg.to_content() for seg in self.message)
+        return parts
+
 
 class PrivateMessageEvent(MessageEvent):
     message_type: Literal["private"] = "private"
@@ -85,6 +92,12 @@ class GroupMessageEvent(MessageEvent):
     def __str__(self) -> str:
         body = "".join(str(seg) for seg in self.message)
         return f"**{self.display_name}** ({self.user_id}) [group:{self.group_id}] [msg:{self.message_id}]:\n{body}"
+
+    def to_content_parts(self) -> list[UserContent]:
+        header = f"**{self.display_name}** ({self.user_id}) [group:{self.group_id}] [msg:{self.message_id}]:"
+        parts: list[UserContent] = [header]
+        parts.extend(seg.to_content() for seg in self.message)
+        return parts
 
 
 MessageEventUnion = Annotated[

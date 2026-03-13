@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import mimetypes
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, Union
 
 from pydantic import BaseModel, Discriminator, Field, field_validator
+from pydantic_ai import BinaryContent
+from pydantic_ai.messages import UserContent
 from typing_extensions import TypedDict
 
 
@@ -17,10 +20,11 @@ class AtData(BaseModel):
 
 
 class ImageData(BaseModel):
-    """Image payload. `file` is always a local path as a file:// URI.
+    """Image payload. `file` is always a local file path (str).
 
     Inbound images are downloaded to local storage by the tentacle layer.
     Outbound images are read from local files and uploaded by the tentacle.
+    Use the `path` property to get it as a `Path` object.
     """
 
     file: str
@@ -29,12 +33,16 @@ class ImageData(BaseModel):
     summary: str | None = None
     sub_type: int | None = None
 
-    @field_validator("file")
+    @field_validator("file", mode="before")
     @classmethod
-    def _normalize_file_uri(cls, v: str) -> str:
-        if v.startswith("file://"):
-            return v
-        return f"file://{Path(v).resolve()}"
+    def _coerce_path(cls, v: Any) -> str:
+        if isinstance(v, Path):
+            return str(v.resolve())
+        return v
+
+    @property
+    def path(self) -> Path:
+        return Path(self.file)
 
 
 class ReplyData(TypedDict):
@@ -119,6 +127,9 @@ class Segment(BaseModel):
     def __str__(self) -> str:
         return f"[{getattr(self, 'type', 'unknown')}]"
 
+    def to_content(self) -> UserContent:
+        return str(self)
+
 
 class TextSegment(Segment):
     """Plain text content. Set data.text to the message text."""
@@ -141,7 +152,7 @@ class AtSegment(Segment):
 
 
 class ImageSegment(Segment):
-    """Send an image. Set data.file to a local file path (absolute or file:// URI).
+    """Send an image. Set data.file to a local file path.
     Never use http/https URLs — the system manages file storage automatically."""
 
     type: Literal["image"] = "image"
@@ -149,7 +160,14 @@ class ImageSegment(Segment):
 
     def __str__(self) -> str:
         label = self.data.summary or self.data.name or "image"
-        return f"[image: {label}]"
+        return f"[image: {label} | {self.data.file}]"
+
+    def to_content(self) -> UserContent:
+        path = self.data.path
+        if path.exists():
+            media_type = mimetypes.guess_type(path.name)[0] or "image/png"
+            return BinaryContent(data=path.read_bytes(), media_type=media_type)
+        return str(self)
 
 
 class ReplySegment(Segment):

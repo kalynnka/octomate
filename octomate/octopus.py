@@ -123,7 +123,9 @@ class Octopus:
             header = f"[private chat] [me: {identity}]"
 
         messages = [str(msg) for msg in batch]
-        user_prompt = [header, *messages]
+        user_prompt: list = [header]
+        for msg in batch:
+            user_prompt.extend(msg.to_content_parts())
 
         history = list(self.message_store[key])
 
