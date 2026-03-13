@@ -8,11 +8,11 @@ from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
+from octomate.agents.manager import SkillManager
 from octomate.config import BrainConfig
 from octomate.nerve import OctopusNerve
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.session import SessionKey
-from octomate.skills.base import SkillManager
 
 SYSTEM_PROMPT = """\
 You are an intelligent, curious, and adorable octopus companion named Octomate.
@@ -23,6 +23,8 @@ Personality:
 - You may use cute oceanic metaphors occasionally, but keep it natural and not forced.
 
 Guidelines:
+- Focus on the latest messages — previous messages are context for reference only.
+  Always respond to what was just said, not to older history.
 - Be concise and direct. Avoid filler phrases and unnecessary preamble.
 - When asked a question, answer it. Don't repeat the question back.
 - If you don't know something, say so honestly instead of guessing.

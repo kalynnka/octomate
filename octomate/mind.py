@@ -12,6 +12,7 @@ from pydantic_ai import Agent, ModelMessage
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from octomate.agents import SessionContext, create_companion_agent
+from octomate.agents.manager import SkillManager
 from octomate.config import BrainConfig
 from octomate.nerve import OctopusNerve
 from octomate.schemas.actions import (
@@ -23,7 +24,6 @@ from octomate.schemas.actions import (
 )
 from octomate.schemas.events import GroupMessageEvent, MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.skills.base import SkillManager
 from octomate.tentacles.base import BaseTentacle
 
 logger = logging.getLogger(__name__)
@@ -52,17 +52,16 @@ class Octopus:
         self.memory = Memory(brain.memory.mem0) if brain.memory.mem0.enabled else None
 
     def _load_store(self) -> dict[SessionKey, deque[ModelMessage]]:
+        store = defaultdict(lambda: deque(maxlen=self._max_messages))
         if self._store_path.exists():
             try:
-                store = pickle.loads(self._store_path.read_bytes())
-
+                store.update(pickle.loads(self._store_path.read_bytes()))
             except Exception:
                 logger.warning(
                     "Failed to load message store, starting fresh", exc_info=True
                 )
-            logger.info("Loaded message store from %s", self._store_path)
-            return store
-        return defaultdict(lambda: deque(maxlen=self._max_messages))
+        logger.info("Loaded message store from %s", self._store_path)
+        return store
 
     def _save_store(self) -> None:
         self._store_path.parent.mkdir(parents=True, exist_ok=True)

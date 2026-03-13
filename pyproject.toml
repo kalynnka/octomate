@@ -14,6 +14,7 @@ dependencies = [
     "websockets>=15",
     "mem0ai>=0.1",
     "pymilvus>=2.6.9",
+    "pixivpy-async>=1.2.14",
 ]
 
 [dependency-groups]
