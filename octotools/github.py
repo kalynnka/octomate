@@ -76,10 +76,12 @@ def register(manager: SkillManager) -> None:
     manager.register_mcp(
         name="github",
         description=(
-            "GitHub integration powered by GitHub's official MCP server. "
-            "Provides repository browsing, code reading/writing, issue and PR "
-            "management, CI/CD workflow monitoring, code security analysis, "
-            "Copilot features, and more. Supports all repos the token can access."
+            "Operates on GitHub or Copilot on behalf of the owner. "
+            "Only load and use this skill when it is confirmed to be necessary, "
+            "such as when the user explicitly requests GitHub-related information, "
+            "or using GitHub actions, creating/managing issues, pull requests, "
+            "reading repository files, checking CI/CD workflows, or browsing "
+            "code on GitHub. Do NOT load for general unrelated questions or tasks unrelated to GitHub."
         ),
         toolset=mcp_server,
     )

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 class Octopus:
     nerve: OctopusNerve
     agent: Agent[SessionContext, list[AgentMessage]]
-    message_store: dict[SessionKey, deque[ModelMessage]]
+    message_store: dict[SessionKey, deque[list[ModelMessage]]]
     memory: Memory | None
     _max_messages: int
     _store_path: Path
@@ -51,7 +51,7 @@ class Octopus:
         self.message_store = self._load_store()
         self.memory = Memory(brain.memory.mem0) if brain.memory.mem0.enabled else None
 
-    def _load_store(self) -> dict[SessionKey, deque[ModelMessage]]:
+    def _load_store(self) -> dict[SessionKey, deque[list[ModelMessage]]]:
         store = defaultdict(lambda: deque(maxlen=self._max_messages))
         if self._store_path.exists():
             try:
@@ -92,9 +92,11 @@ class Octopus:
                         and msg.is_at(tentacle.self_id)
                         for msg in batch
                     ):
-                        self.message_store[key].extend(
-                            ModelRequest(parts=[UserPromptPart(content=str(msg))])
-                            for msg in batch
+                        self.message_store[key].append(
+                            [
+                                ModelRequest(parts=[UserPromptPart(content=str(msg))])
+                                for msg in batch
+                            ]
                         )
                         continue
                     tg.create_task(self.think(key, batch))
@@ -130,7 +132,9 @@ class Octopus:
         for msg in batch:
             user_prompt.extend(msg.to_content_parts())
 
-        history = list(self.message_store[key])
+        history: list[ModelMessage] = [
+            msg for batch in self.message_store[key] for msg in batch
+        ]
 
         query = ""
         if self.memory:
@@ -139,7 +143,9 @@ class Octopus:
                 try:
                     memories = await self.memory_search(key, query)
                 except Exception:
-                    logger.warning("Memory search failed, proceeding without", exc_info=True)
+                    logger.warning(
+                        "Memory search failed, proceeding without", exc_info=True
+                    )
                     memories = []
                 if memories:
                     facts = "\n".join(f"- {m['memory']}" for m in memories)
@@ -156,7 +162,7 @@ class Octopus:
             message_history=history,
             deps=deps,
         )
-        self.message_store[key].extend(result.new_messages())
+        self.message_store[key].append(result.new_messages())
 
         for msg in result.output:
             if key.group_id is not None:
