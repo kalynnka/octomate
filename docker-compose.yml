@@ -12,8 +12,8 @@ services:
       - 3002:3002
       - 6099:6099
     volumes:
-      - ./napcat/config:/app/napcat/config
-      - ./ntqq:/app/.config/QQ
+      - napcat_config:/app/napcat/config
+      - napcat_qq:/app/.config/QQ
     networks:
       - octomate_network
 
@@ -49,7 +49,7 @@ services:
       ETCD_ENDPOINTS: milvus-etcd:2379
       MINIO_ADDRESS: milvus-rustfs:9000
     ports:
-      - "127.0.0.1:19532:19530"
+      - 19532:19530
     depends_on:
       - milvus-etcd
       - milvus-rustfs
@@ -62,21 +62,21 @@ services:
     environment:
       MILVUS_URL: http://milvus:19530
     ports:
-      - "127.0.0.1:13000:3000"
+      - 3000:3000
     depends_on:
       - milvus
     networks:
       - octomate_network
 
   postgres:
-    image: postgres:17
+    image: postgres:18
     restart: always
     environment:
       POSTGRES_USER: octomate
       POSTGRES_PASSWORD: octomate
       POSTGRES_DB: octomate
     ports:
-      - "127.0.0.1:15432:5432"
+      - 5432:5432
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -89,7 +89,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@octomate.ai
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
-      - "127.0.0.1:15080:80"
+      - 8080:80
     volumes:
       - ./pgadmin-servers.json:/pgadmin4/servers.json:ro
     depends_on:
@@ -102,6 +102,8 @@ networks:
     driver: bridge
 
 volumes:
+  napcat_config:
+  napcat_qq:
   milvus_etcd:
   milvus_rustfs:
   postgres_data:
