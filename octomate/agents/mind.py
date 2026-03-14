@@ -98,7 +98,11 @@ def create_companion_agent(
         transport=RetryTransport(httpx.AsyncHTTPTransport()),
         timeout=httpx.Timeout(30.0),
     )
-    provider = GoogleProvider(api_key=config.api_key, http_client=http_client)
+    provider = GoogleProvider(
+        api_key=config.api_key or None,
+        http_client=http_client,
+        base_url=config.base_url or None,
+    )
     model = GoogleModel(config.model, provider=provider)
 
     toolsets = skill_manager.build_skillsets() if skill_manager else None

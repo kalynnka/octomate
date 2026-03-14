@@ -55,6 +55,7 @@ class MemoryConfig(BaseModel):
 class MindConfig(BaseModel):
     model: str = "google-gla:gemini-3-flash-preview"
     api_key: str = ""
+    base_url: str = ""
     flush_delay: float = 0.5
     memory: MemoryConfig = MemoryConfig()
 

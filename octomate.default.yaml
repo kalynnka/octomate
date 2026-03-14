@@ -3,6 +3,7 @@ octomate:
   mind:
     model: "gemini-3-flash-preview"
     api_key: ""
+    base_url: ""
     flush_delay: 0.5
     memory:
       max_messages: 32
@@ -12,6 +13,7 @@ octomate:
           provider: "gemini"
           config:
             api_key: ""
+            api_base: ""
             model: "gemini-3-flash-preview"
             temperature: 0.1
             max_tokens: 2000
@@ -19,6 +21,7 @@ octomate:
           provider: "gemini"
           config:
             api_key: ""
+            api_base: ""
             model: "gemini-embedding-001"
             embedding_dims: 768
         vector_store:

@@ -28,7 +28,7 @@ def _start() -> None:
     octotools.qweather.register(skill_manager)
     octotools.pixiv.register(skill_manager)
     octotools.streamify.register(skill_manager)
-    octotools.github.register(skill_manager)
+    # octotools.github.register(skill_manager)
 
     octopus = Octopus(
         OctopusNerve(flush_delay=config.mind.flush_delay),
