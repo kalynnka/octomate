@@ -13,10 +13,11 @@ import base64
 import logging
 import uuid
 from pathlib import Path
+from typing import Annotated, Any
 
 import anyio
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Discriminator, Tag, TypeAdapter
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
@@ -26,13 +27,30 @@ from octomate.schemas.actions import (
     SendGroupMsgAction,
     SendPrivateMsgAction,
 )
-from octomate.schemas.adaptors import ActionUnion, inbound_adapter
-from octomate.schemas.events import GroupMessageEvent, MessageEvent
+from octomate.schemas.adaptors import ActionUnion
+from octomate.schemas.events import Event, EventUnion, GroupMessageEvent, MessageEvent
 from octomate.schemas.segments import AgentSegment, ImageSegment
 from octomate.tentacles.base import BaseTentacle
 from octomate.utils import guess_image_ext
 
 logger = logging.getLogger(__name__)
+
+
+def inbound_discriminator(raw: Any) -> str:
+    if isinstance(raw, dict) and "post_type" in raw:
+        return "event"
+    if isinstance(raw, Event):
+        return "event"
+    return "response"
+
+
+InboundFrame = Annotated[
+    Annotated[EventUnion, Tag("event")] | Annotated[ActionResponse, Tag("response")],
+    Discriminator(inbound_discriminator),
+]
+
+inbound_adapter: TypeAdapter[InboundFrame] = TypeAdapter(InboundFrame)
+
 
 FILES_ROOT = Path(".octomate/files")
 

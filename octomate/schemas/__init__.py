@@ -13,35 +13,31 @@ Submodules
 from octomate.schemas import actions, adaptors, events, segments, session
 from octomate.schemas.adaptors import (
     ActionUnion,
-    InboundFrame,
     action_adapter,
-    inbound_adapter,
 )
 from octomate.schemas.events import (
+    EventUnion,
     MessageEventUnion,
     MetaEventUnion,
     NoticeEventUnion,
     NotifyEventUnion,
-    OneBotEventUnion,
     RequestEventUnion,
 )
 from octomate.schemas.segments import MessageSegment
 
 __all__ = [
     "ActionUnion",
-    "InboundFrame",
     "action_adapter",
+    "EventUnion",
     "MessageEventUnion",
     "MessageSegment",
     "MetaEventUnion",
     "NoticeEventUnion",
     "NotifyEventUnion",
-    "OneBotEventUnion",
     "RequestEventUnion",
     "actions",
     "adaptors",
     "events",
-    "inbound_adapter",
     "segments",
     "session",
 ]

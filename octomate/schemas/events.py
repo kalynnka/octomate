@@ -11,13 +11,13 @@ from octomate.schemas.segments import AtSegment, MessageSegment, TextSegment
 from octomate.schemas.session import Anonymous, Sender, SessionKey
 
 
-class OneBotEvent(BaseModel, ABC):
+class Event(BaseModel, ABC):
     time: int = 0
     self_id: int | str = 0
     tentacle_id: str = ""
 
 
-class MessageEvent(OneBotEvent, ABC):
+class MessageEvent(Event, ABC):
     post_type: Literal["message"] = "message"
     sub_type: str = "normal"
 
@@ -106,7 +106,7 @@ MessageEventUnion = Annotated[
 ]
 
 
-class NoticeEvent(OneBotEvent):
+class NoticeEvent(Event):
     post_type: Literal["notice"] = "notice"
 
 
@@ -264,7 +264,7 @@ NoticeEventUnion = Annotated[
 ]
 
 
-class RequestEvent(OneBotEvent):
+class RequestEvent(Event):
     post_type: Literal["request"] = "request"
 
 
@@ -300,7 +300,7 @@ RequestEventUnion = Annotated[
 ]
 
 
-class MetaEvent(OneBotEvent):
+class MetaEvent(Event):
     post_type: Literal["meta_event"] = "meta_event"
 
 
@@ -321,7 +321,7 @@ MetaEventUnion = Annotated[
 ]
 
 
-OneBotEventUnion = Annotated[
+EventUnion = Annotated[
     Annotated[MessageEventUnion, Tag("message")]
     | Annotated[NoticeEventUnion, Tag("notice")]
     | Annotated[RequestEventUnion, Tag("request")]

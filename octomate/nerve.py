@@ -8,7 +8,7 @@ from anyio import create_memory_object_stream as object_stream
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
 
 from octomate.schemas.adaptors import ActionUnion
-from octomate.schemas.events import MessageEvent, OneBotEvent
+from octomate.schemas.events import Event, MessageEvent
 from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import MessageBuffer
 
@@ -83,7 +83,7 @@ class OctopusNerve:
         await self._outbound_send.aclose()
         await self._outbound_receive.aclose()
 
-    async def sense(self, event: OneBotEvent) -> None:
+    async def sense(self, event: Event) -> None:
         if isinstance(event, MessageEvent):
             self._buffer.push(event)
 
