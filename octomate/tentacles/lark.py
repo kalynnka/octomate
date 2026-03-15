@@ -49,7 +49,7 @@ from octomate.tentacles.base import Mask, SendTarget, Tentacle
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
-    from octomate.nerve import OctopusNerve
+    from octomate.octopus import Octopus
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class LarkTentacle(Tentacle):
     def __init__(
         self,
         tag: str,
-        nerve: OctopusNerve,
+        octopus: Octopus,
         *,
         app_id: str,
         app_secret: SecretStr,
@@ -86,7 +86,7 @@ class LarkTentacle(Tentacle):
         self._loop = None
         self._queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
         self._current_message_id = ""
-        super().__init__(tag, nerve, flush_delay=flush_delay)
+        super().__init__(tag, octopus, flush_delay=flush_delay)
 
     @cached_property
     def ink(self) -> httpx.AsyncClient:

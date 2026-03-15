@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
     from anyio.abc import TaskGroup
 
-    from octomate.nerve import OctopusNerve
+    from octomate.octopus import Octopus
     from octomate.schemas.adaptors import ActionUnion
     from octomate.schemas.events import MessageEvent
     from octomate.schemas.segments import AgentSegment
@@ -52,22 +52,15 @@ class Tentacle(ABC):
     FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
 
     tag: str
-    """Routing identifier — the key used in the Nerve registry and in event/action tentacle_id."""
-
     mask: Mask
-    """The identity (id + display name) this tentacle presents on the IM platform."""
-
-    nerve: OctopusNerve
-    """Central nervous system this tentacle is attached to."""
-
+    octopus: Octopus
     buffer: MessageBuffer
-    """Collects and batches inbound events before delivery."""
 
-    def __init__(self, tag: str, nerve: OctopusNerve, flush_delay: float = 0.5) -> None:
+    def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.5) -> None:
         self.tag = tag
-        self.nerve = nerve
+        self.octopus = octopus
         self.mask = self.inspect()
-        self.buffer = MessageBuffer(flush_delay=flush_delay, handler=nerve.kick)
+        self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
 
     @property
     def id(self) -> str:

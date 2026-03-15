@@ -10,7 +10,6 @@ from pydantic_ai.providers.google import GoogleProvider
 
 from octomate.agents.manager import SkillManager
 from octomate.config import MindConfig
-from octomate.nerve import OctopusNerve
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.session import SessionKey
 
@@ -60,7 +59,6 @@ Message format:
 
 @dataclass
 class SessionContext:
-    nerve: OctopusNerve
     session_key: SessionKey
     active_skills: set[str] = field(default_factory=set)
 

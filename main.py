@@ -11,7 +11,6 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websocke
 import octotools
 from octomate.agents.manager import SkillManager
 from octomate.config import LarkTentacleConfig, NapcatTentacleConfig, OctomateConfig
-from octomate.nerve import OctopusNerve
 from octomate.octopus import Octopus
 from octomate.tentacles.lark import LarkTentacle
 from octomate.tentacles.napcat import NapcatTentacle
@@ -30,9 +29,7 @@ def _start() -> None:
     octotools.streamify.register(skill_manager)
     # octotools.github.register(skill_manager)
 
-    nerve = OctopusNerve()
     octopus = Octopus(
-        nerve,
         config.mind,
         skill_manager=skill_manager,
     )
@@ -43,7 +40,7 @@ def _start() -> None:
             octopus.connect(
                 NapcatTentacle(
                     tc.name,
-                    nerve,
+                    octopus,
                     ws_url=tc.ws_url,
                     http_url=str(tc.http_url),
                     access_token=tc.access_token,
@@ -57,7 +54,7 @@ def _start() -> None:
             octopus.connect(
                 LarkTentacle(
                     tc.name,
-                    nerve,
+                    octopus,
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
                     flush_delay=flush_delay,
