@@ -12,7 +12,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 
 if TYPE_CHECKING:
-    from octomate.tentacles.base import BaseTentacle
+    from octomate.tentacles.base import Tentacle
 
 logger = logging.getLogger(__name__)
 
@@ -34,46 +34,45 @@ class OctopusNerve:
     def __init__(self, buffer_size: int = 64) -> None:
         self._inbound_send, self._inbound_receive = object_stream(buffer_size)
         self._outbound_send, self._outbound_receive = object_stream(buffer_size)
-        self._tentacles: dict[str, BaseTentacle] = {}
+        self._tentacles: dict[str, Tentacle] = {}
 
-    def __getitem__(self, name: str) -> BaseTentacle:
+    def __getitem__(self, name: str) -> Tentacle:
         """Look up a tentacle by name, raising ``KeyError`` if not found."""
         try:
             return self._tentacles[name]
         except KeyError:
             raise KeyError(f"No tentacle named {name!r}") from None
 
-    def connect(self, tentacle: BaseTentacle) -> None:
-        """Add a tentacle and bind its nerve reference."""
-        if tentacle.name in self._tentacles:
-            raise ValueError(f"Tentacle {tentacle.name!r} already connected")
-        tentacle.nerve = self
-        self._tentacles[tentacle.name] = tentacle
-        logger.info("Connected tentacle: %s", tentacle.name)
+    def connect(self, tentacle: Tentacle) -> None:
+        """Register a tentacle under its tag."""
+        if tentacle.tag in self._tentacles:
+            raise ValueError(f"Tentacle {tentacle.tag!r} already connected")
+        self._tentacles[tentacle.tag] = tentacle
+        logger.info("Connected tentacle: %s", tentacle.tag)
 
     def cut(self, name: str) -> None:
         """Remove a tentacle from the registry."""
         self._tentacles.pop(name, None)
 
-    def get(self, name: str) -> BaseTentacle | None:
+    def get(self, name: str) -> Tentacle | None:
         """Look up a tentacle by name, returning ``None`` if not found."""
         return self._tentacles.get(name)
 
     async def activate(self) -> None:
         async with anyio.create_task_group() as tg:
             for tentacle in self._tentacles.values():
-                tentacle._buffer.bind(tg)
-            for tentacle in self._tentacles.values():
-                tg.start_soon(tentacle.activate, name=f"tentacle:{tentacle.name}")
+                tentacle.buffer.bind(tg)
+            for name, tentacle in self._tentacles.items():
+                tg.start_soon(tentacle.activate, name=f"tentacle:{name}")
             tg.start_soon(self.react, name="outbound-dispatcher")
 
     async def deactivate(self) -> None:
         """Stop all tentacles and close streams."""
-        for tentacle in self._tentacles.values():
+        for name, tentacle in self._tentacles.items():
             try:
                 await tentacle.deactivate()
             except Exception:
-                logger.exception("Error stopping tentacle %s", tentacle.name)
+                logger.exception("Error stopping tentacle %s", name)
         await self._inbound_send.aclose()
         await self._inbound_receive.aclose()
         await self._outbound_send.aclose()
@@ -99,7 +98,7 @@ class OctopusNerve:
                     continue
 
                 try:
-                    await tentacle.act(action)
+                    await tentacle.twitch(action)
                 except Exception:
                     logger.exception(
                         "Error sending action via tentacle %s", tentacle_id

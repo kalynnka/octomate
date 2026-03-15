@@ -30,16 +30,39 @@ def _start() -> None:
     octotools.streamify.register(skill_manager)
     # octotools.github.register(skill_manager)
 
+    nerve = OctopusNerve()
     octopus = Octopus(
-        OctopusNerve(),
+        nerve,
         config.mind,
         skill_manager=skill_manager,
     )
+    flush_delay = config.mind.flush_delay
+
     for tc in config.tentacles:
         if isinstance(tc, NapcatTentacleConfig):
-            octopus.connect(NapcatTentacle(tc, flush_delay=config.mind.flush_delay))
+            octopus.connect(
+                NapcatTentacle(
+                    tc.name,
+                    nerve,
+                    ws_url=tc.ws_url,
+                    http_url=str(tc.http_url),
+                    access_token=tc.access_token,
+                    backoff_base=tc.backoff_base,
+                    backoff_max=tc.backoff_max,
+                    backoff_factor=tc.backoff_factor,
+                    flush_delay=flush_delay,
+                )
+            )
         elif isinstance(tc, LarkTentacleConfig):
-            octopus.connect(LarkTentacle(tc, flush_delay=config.mind.flush_delay))
+            octopus.connect(
+                LarkTentacle(
+                    tc.name,
+                    nerve,
+                    app_id=tc.app_id,
+                    app_secret=tc.app_secret,
+                    flush_delay=flush_delay,
+                )
+            )
     try:
         asyncio.run(octopus.activate())
     except KeyboardInterrupt:

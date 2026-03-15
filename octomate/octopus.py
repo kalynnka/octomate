@@ -25,7 +25,7 @@ from octomate.schemas.actions import (
 )
 from octomate.schemas.events import GroupMessageEvent, MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import BaseTentacle
+from octomate.tentacles.base import Tentacle
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class Octopus:
         self._store_path.write_bytes(pickle.dumps(dict(self.message_store)))
         logger.info("Saved message store to %s", self._store_path)
 
-    def connect(self, tentacle: BaseTentacle) -> None:
+    def connect(self, tentacle: Tentacle) -> None:
         self.nerve.connect(tentacle)
 
     async def activate(self) -> None:
@@ -92,7 +92,7 @@ class Octopus:
                     tentacle = self.nerve[key.tentacle_id]
                     if key.group_id is not None and not any(
                         isinstance(msg, GroupMessageEvent)
-                        and msg.is_at(tentacle.self_id)
+                        and msg.is_at(tentacle.id)
                         for msg in batch
                     ):
                         self.message_store[key].append(
@@ -123,7 +123,7 @@ class Octopus:
 
     async def think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         tentacle = self.nerve[key.tentacle_id]
-        identity = f"{tentacle.self_id}-{tentacle.self_name}"
+        identity = f"{tentacle.id}-{tentacle.name}"
 
         if key.group_id is not None:
             header = f"[group chat: {key.group_id}] [me: {identity}]"
