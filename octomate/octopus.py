@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import os
 import pickle
 from collections import defaultdict, deque
 from pathlib import Path
@@ -45,6 +46,8 @@ class Octopus:
         store_path: Path = Path(".octomate/message_store"),
     ) -> None:
         self.nerve = nerve
+        if brain.base_url:
+            os.environ.setdefault("GOOGLE_GEMINI_BASE_URL", brain.base_url)
         self.agent = create_companion_agent(brain, skill_manager)
         self._max_messages = brain.memory.max_messages
         self._store_path = store_path
@@ -154,7 +157,7 @@ class Octopus:
                         ModelRequest(parts=[UserPromptPart(content=content)])
                     )
 
-        logger.debug("Octopus processing batch [%s] (%d messages)", key, len(batch))
+        logger.info("Octopus processing batch [%s] (%d messages)", key, len(batch))
         deps = SessionContext(nerve=self.nerve, session_key=key)
         result = await self.agent.run(
             user_prompt,
@@ -162,6 +165,7 @@ class Octopus:
             deps=deps,
         )
         self.message_store[key].append(result.new_messages())
+        logger.info("Agent returned %d messages for [%s]", len(result.output), key)
 
         for msg in result.output:
             if key.group_id is not None:

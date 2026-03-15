@@ -8,7 +8,6 @@ dependencies = [
     "anyio>=4",
     "httpx>=0.28.1",
     "pydantic>=2.12.5",
-    "pydantic-ai-slim[google-gla]>=0.2",
     "pydantic-settings>=2",
     "pyyaml>=6",
     "websockets>=15",
@@ -16,6 +15,7 @@ dependencies = [
     "pymilvus>=2.6.9",
     "pixivpy-async>=1.2.14",
     "lark-oapi>=1.4.8",
+    "pydantic-ai>=1.68.0",
 ]
 
 [tool.ruff.lint.per-file-ignores]

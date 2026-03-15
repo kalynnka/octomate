@@ -49,7 +49,7 @@ services:
       ETCD_ENDPOINTS: milvus-etcd:2379
       MINIO_ADDRESS: milvus-rustfs:9000
     ports:
-      - 19532:19530
+      - 19530:19530
     depends_on:
       - milvus-etcd
       - milvus-rustfs

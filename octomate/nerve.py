@@ -8,9 +8,8 @@ from anyio import create_memory_object_stream as object_stream
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
 
 from octomate.schemas.adaptors import ActionUnion
-from octomate.schemas.events import Event, MessageEvent
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import MessageBuffer
 
 if TYPE_CHECKING:
     from octomate.tentacles.base import BaseTentacle
@@ -32,14 +31,10 @@ class OctopusNerve:
     def outbound(self) -> ObjectReceiveStream[ActionUnion]:
         return self._outbound_receive
 
-    def __init__(self, buffer_size: int = 64, flush_delay: float = 0.5) -> None:
+    def __init__(self, buffer_size: int = 64) -> None:
         self._inbound_send, self._inbound_receive = object_stream(buffer_size)
         self._outbound_send, self._outbound_receive = object_stream(buffer_size)
         self._tentacles: dict[str, BaseTentacle] = {}
-        self._buffer = MessageBuffer(
-            flush_delay=flush_delay,
-            handler=lambda key, batch: self._inbound_send.send((key, batch)),
-        )
 
     def __getitem__(self, name: str) -> BaseTentacle:
         """Look up a tentacle by name, raising ``KeyError`` if not found."""
@@ -66,7 +61,8 @@ class OctopusNerve:
 
     async def activate(self) -> None:
         async with anyio.create_task_group() as tg:
-            self._buffer.bind(tg)
+            for tentacle in self._tentacles.values():
+                tentacle._buffer.bind(tg)
             for tentacle in self._tentacles.values():
                 tg.start_soon(tentacle.activate, name=f"tentacle:{tentacle.name}")
             tg.start_soon(self.react, name="outbound-dispatcher")
@@ -83,9 +79,8 @@ class OctopusNerve:
         await self._outbound_send.aclose()
         await self._outbound_receive.aclose()
 
-    async def sense(self, event: Event) -> None:
-        if isinstance(event, MessageEvent):
-            self._buffer.push(event)
+    async def kick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
+        await self._inbound_send.send((key, batch))
 
     async def pulse(self, action: ActionUnion) -> None:
         await self._outbound_send.send(action)

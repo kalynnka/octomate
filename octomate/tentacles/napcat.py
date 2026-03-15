@@ -22,15 +22,11 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from octomate.config import NapcatTentacleConfig
-from octomate.schemas.actions import (
-    ActionResponse,
-    SendGroupMsgAction,
-    SendPrivateMsgAction,
-)
+from octomate.schemas.actions import ActionResponse
 from octomate.schemas.adaptors import ActionUnion
-from octomate.schemas.events import Event, EventUnion, GroupMessageEvent, MessageEvent
-from octomate.schemas.segments import AgentSegment, ImageSegment
-from octomate.tentacles.base import BaseTentacle
+from octomate.schemas.events import Event, EventUnion, MessageEvent
+from octomate.schemas.segments import ImageSegment
+from octomate.tentacles.base import BaseTentacle, SendTarget
 from octomate.utils import guess_image_ext
 
 logger = logging.getLogger(__name__)
@@ -50,9 +46,6 @@ InboundFrame = Annotated[
 ]
 
 inbound_adapter: TypeAdapter[InboundFrame] = TypeAdapter(InboundFrame)
-
-
-FILES_ROOT = Path(".octomate/files")
 
 
 class AccountInfo(BaseModel):
@@ -83,8 +76,8 @@ class NapcatTentacle(BaseTentacle):
     _ws: ClientConnection | None
     _cancel_scope: anyio.CancelScope | None
 
-    def __init__(self, config: NapcatTentacleConfig) -> None:
-        super().__init__(config)
+    def __init__(self, config: NapcatTentacleConfig, flush_delay: float = 0.5) -> None:
+        super().__init__(config, flush_delay=flush_delay)
         self.config = config
         self.profile: AccountInfo | None = None
 
@@ -155,17 +148,52 @@ class NapcatTentacle(BaseTentacle):
             self._ws = None
 
     async def act(self, action: ActionUnion) -> None:
-        """Serialize an action model to JSON and write it to the WebSocket."""
         if self._ws is None:
             logger.warning(
                 "Tentacle %s: cannot send, WebSocket not connected", self.name
             )
             return
+        await super().act(action)
 
-        if isinstance(action, (SendGroupMsgAction, SendPrivateMsgAction)):
-            await self.prepare_outbound_message(action.params.message)
+    async def send_message(
+        self, target: SendTarget, segments: list[ImageSegment | Any]
+    ) -> None:
+        from octomate.schemas.actions import (
+            SendGroupMsgAction,
+            SendGroupMsgParams,
+            SendPrivateMsgAction,
+            SendPrivateMsgParams,
+        )
 
+        if target.chat_type == "group":
+            action = SendGroupMsgAction(
+                tentacle_id=self.name,
+                params=SendGroupMsgParams(
+                    group_id=target.chat_id,
+                    message=segments,
+                    reply=target.reply_to,
+                ),
+            )
+        else:
+            action = SendPrivateMsgAction(
+                tentacle_id=self.name,
+                params=SendPrivateMsgParams(
+                    user_id=target.chat_id,
+                    message=segments,
+                    reply=target.reply_to,
+                ),
+            )
+        await self._ws_send(action)
+
+    async def handle_action(self, action: ActionUnion) -> None:
+        await self._ws_send(action)
+
+    async def _ws_send(self, action: Any) -> None:
+        if self._ws is None:
+            logger.warning("Tentacle %s: _ws_send called but WS is None", self.name)
+            return
         frame = action.model_dump_json(exclude_none=True)
+        logger.info("Tentacle %s: sending frame (%d bytes)", self.name, len(frame))
         try:
             await self._ws.send(frame)
         except ConnectionClosed:
@@ -197,36 +225,14 @@ class NapcatTentacle(BaseTentacle):
                 "Tentacle %s: failed to download image", self.name, exc_info=True
             )
 
-    async def prepare_inbound_message(self, event: MessageEvent) -> None:
-        subdir = (
-            f"g{event.group_id}"
-            if isinstance(event, GroupMessageEvent)
-            else f"u{event.user_id}"
-        )
-        save_dir = FILES_ROOT / self.name / subdir
-
-        image_segs = [seg for seg in event.message if isinstance(seg, ImageSegment)]
-        if not image_segs:
-            return
-
-        await anyio.Path(save_dir).mkdir(parents=True, exist_ok=True)
-        async with anyio.create_task_group() as tg:
-            for seg in image_segs:
-                tg.start_soon(self.download_image, seg, save_dir)
-
-    async def prepare_outbound_message(self, segments: list[AgentSegment]) -> None:
-        for seg in segments:
-            if not isinstance(seg, ImageSegment):
-                continue
-            try:
-                apath = anyio.Path(seg.data.path)
-                if await apath.exists():
-                    data = await apath.read_bytes()
-                    seg.data.file = f"base64://{base64.b64encode(data).decode()}"
-            except Exception:
-                logger.warning(
-                    "Tentacle %s: failed to prepare outbound image", self.name
-                )
+    async def prepare_image(self, seg: ImageSegment) -> None:
+        try:
+            apath = anyio.Path(seg.data.path)
+            if await apath.exists():
+                data = await apath.read_bytes()
+                seg.data.file = f"base64://{base64.b64encode(data).decode()}"
+        except Exception:
+            logger.warning("Tentacle %s: failed to prepare outbound image", self.name)
 
     async def _connect_loop(self) -> None:
         """Connect with exponential back-off, delegating to _receive_loop."""
@@ -291,5 +297,4 @@ class NapcatTentacle(BaseTentacle):
 
             if isinstance(frame, MessageEvent):
                 await self.prepare_inbound_message(frame)
-
-            await self.nerve.sense(frame)
+                self.sense(frame)

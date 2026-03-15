@@ -32,11 +32,6 @@ from lark_oapi.api.im.v1 import (
 )
 
 from octomate.config import LarkTentacleConfig
-from octomate.schemas.actions import (
-    SendGroupMsgAction,
-    SendPrivateMsgAction,
-)
-from octomate.schemas.adaptors import ActionUnion
 from octomate.schemas.events import GroupMessageEvent, MessageEvent, PrivateMessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -49,12 +44,10 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.session import Sender
-from octomate.tentacles.base import BaseTentacle
+from octomate.tentacles.base import BaseTentacle, SendTarget
 from octomate.utils import guess_image_ext
 
 logger = logging.getLogger(__name__)
-
-FILES_ROOT = Path(".octomate/files")
 
 
 class LarkTentacle(BaseTentacle):
@@ -64,9 +57,10 @@ class LarkTentacle(BaseTentacle):
     _task: asyncio.Task[None] | None
     _loop: asyncio.AbstractEventLoop | None
     _queue: asyncio.Queue[MessageEvent]
+    _current_message_id: str
 
-    def __init__(self, config: LarkTentacleConfig) -> None:
-        super().__init__(config)
+    def __init__(self, config: LarkTentacleConfig, flush_delay: float = 0.5) -> None:
+        super().__init__(config, flush_delay=flush_delay)
         self.config = config
         self._client = (
             lark.Client.builder()
@@ -78,6 +72,7 @@ class LarkTentacle(BaseTentacle):
         self._task = None
         self._loop = None
         self._queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
+        self._current_message_id = ""
 
     async def introspect(self) -> None:
         try:
@@ -130,22 +125,12 @@ class LarkTentacle(BaseTentacle):
             self._task.cancel()
             self._task = None
 
-    async def act(self, action: ActionUnion) -> None:
-        if isinstance(action, SendGroupMsgAction):
-            chat_id = str(action.params.group_id)
-            reply_id = str(action.params.reply) if action.params.reply else None
-            segments = action.params.message
-        elif isinstance(action, SendPrivateMsgAction):
-            chat_id = str(action.params.user_id)
-            reply_id = str(action.params.reply) if action.params.reply else None
-            segments = action.params.message
-        else:
-            logger.debug(
-                "Tentacle %s: unsupported action type %s",
-                self.name,
-                type(action).__name__,
-            )
-            return
+    async def send_message(
+        self, target: SendTarget, segments: list[AgentSegment]
+    ) -> None:
+        chat_id = str(target.chat_id)
+        reply_id = str(target.reply_to) if target.reply_to else None
+        is_group = target.chat_type == "group"
 
         reply_seg: ReplySegment | None = None
         remaining: list[AgentSegment] = []
@@ -172,24 +157,21 @@ class LarkTentacle(BaseTentacle):
                 if key:
                     image_keys.append(key)
 
+        receive_id_type = "chat_id" if is_group else "open_id"
+
         if text_parts:
             text = "".join(text_parts)
             content = json.dumps({"text": text})
-            if isinstance(action, SendGroupMsgAction):
-                await self._send_message(
-                    "chat_id", chat_id, "text", content, message_id
-                )
-            else:
-                await self._send_message(
-                    "open_id", chat_id, "text", content, message_id
-                )
+            await self._send_message(
+                receive_id_type, chat_id, "text", content, message_id
+            )
 
         for key in image_keys:
             content = json.dumps({"image_key": key})
-            if isinstance(action, SendGroupMsgAction):
-                await self._send_message("chat_id", chat_id, "image", content, None)
-            else:
-                await self._send_message("open_id", chat_id, "image", content, None)
+            await self._send_message(receive_id_type, chat_id, "image", content, None)
+
+    async def prepare_image(self, seg: ImageSegment) -> None:
+        pass
 
     async def _send_message(
         self,
@@ -449,33 +431,18 @@ class LarkTentacle(BaseTentacle):
         return segments
 
     async def prepare_inbound_message(self, event: MessageEvent) -> None:
-        subdir = (
-            f"g{event.group_id}"
-            if isinstance(event, GroupMessageEvent)
-            else f"u{event.user_id}"
+        self._current_message_id = str(event.message_id)
+        try:
+            await super().prepare_inbound_message(event)
+        finally:
+            self._current_message_id = ""
+
+    async def download_image(self, seg: ImageSegment, save_dir: Path) -> None:
+        local_path = await self._download_image(
+            self._current_message_id, seg.data.file, save_dir
         )
-        save_dir = FILES_ROOT / self.name / subdir
-
-        async def _download(seg: ImageSegment) -> None:
-            image_key = seg.data.file
-            local_path = await self._download_image(
-                str(event.message_id),
-                image_key,
-                save_dir,
-            )
-            if local_path:
-                seg.data.file = local_path
-
-        pending = [
-            seg
-            for seg in event.message
-            if isinstance(seg, ImageSegment) and not seg.data.path.exists()
-        ]
-        if not pending:
-            return
-        async with asyncio.TaskGroup() as tg:
-            for seg in pending:
-                tg.create_task(_download(seg))
+        if local_path:
+            seg.data.file = local_path
 
     async def _run_ws_client(self) -> None:
         event_handler = (
@@ -495,8 +462,7 @@ class LarkTentacle(BaseTentacle):
         while True:
             event = await self._queue.get()
             try:
-                if isinstance(event, MessageEvent):
-                    await self.prepare_inbound_message(event)
-                await self.nerve.sense(event)
+                await self.prepare_inbound_message(event)
+                self.sense(event)
             except Exception:
                 logger.exception("Tentacle %s: error processing event", self.name)

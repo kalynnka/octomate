@@ -31,15 +31,15 @@ def _start() -> None:
     # octotools.github.register(skill_manager)
 
     octopus = Octopus(
-        OctopusNerve(flush_delay=config.mind.flush_delay),
+        OctopusNerve(),
         config.mind,
         skill_manager=skill_manager,
     )
     for tc in config.tentacles:
         if isinstance(tc, NapcatTentacleConfig):
-            octopus.connect(NapcatTentacle(tc))
+            octopus.connect(NapcatTentacle(tc, flush_delay=config.mind.flush_delay))
         elif isinstance(tc, LarkTentacleConfig):
-            octopus.connect(LarkTentacle(tc))
+            octopus.connect(LarkTentacle(tc, flush_delay=config.mind.flush_delay))
     try:
         asyncio.run(octopus.activate())
     except KeyboardInterrupt:
