@@ -18,14 +18,23 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import anyio
 import httpx
-from pydantic import BaseModel, Discriminator, SecretStr, Tag, TypeAdapter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    SecretStr,
+    Tag,
+    TypeAdapter,
+)
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from octomate.schemas.actions import ActionResponse
+from octomate.schemas.adaptors import ActionUnion
 from octomate.schemas.events import Event, EventUnion, MessageEvent
 from octomate.schemas.segments import AgentSegment, ImageSegment
-from octomate.tentacles.base import Mask, SendTarget, Tentacle
+from octomate.tentacles.base import SendTarget, Tentacle
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
@@ -50,9 +59,16 @@ InboundFrame = Annotated[
 inbound_adapter: TypeAdapter[InboundFrame] = TypeAdapter(InboundFrame)
 
 
-class AccountInfo(BaseModel):
-    user_id: int
-    nickname: str
+class NapcatMask(BaseModel):
+    model_config = ConfigDict(
+        validate_by_alias=True,
+        validate_by_name=True,
+        extra="ignore",
+        coerce_numbers_to_str=True,
+    )
+
+    id: str = Field(default="", alias="user_id")
+    name: str = Field(default="", alias="nickname")
     uid: str = ""
     qid: str = ""
     uin: str = ""
@@ -77,7 +93,6 @@ class NapcatTentacle(Tentacle):
     backoff_base: float
     backoff_max: float
     backoff_factor: float
-    profile: AccountInfo | None
     _ws: ClientConnection | None
     _cancel_scope: anyio.CancelScope | None
 
@@ -100,7 +115,6 @@ class NapcatTentacle(Tentacle):
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
         self.backoff_factor = backoff_factor
-        self.profile = None
         self._ws = None
         self._cancel_scope = None
         super().__init__(tag, octopus, flush_delay=flush_delay)
@@ -112,7 +126,7 @@ class NapcatTentacle(Tentacle):
             headers["Authorization"] = f"Bearer {self.access_token.get_secret_value()}"
         return httpx.AsyncClient(base_url=self.http_url, headers=headers)
 
-    def inspect(self) -> Mask:
+    def inspect(self) -> NapcatMask:
         headers: dict[str, str] = {}
         if self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token.get_secret_value()}"
@@ -123,46 +137,39 @@ class NapcatTentacle(Tentacle):
             resp.raise_for_status()
             login_data = resp.json().get("data")
 
-            if not login_data or "user_id" not in login_data:
-                return Mask(id="", name="")
-
             resp = httpx.post(
                 f"{self.http_url}/get_stranger_info",
                 json={"user_id": login_data["user_id"]},
                 headers=headers,
             )
             resp.raise_for_status()
-            profile_data = resp.json().get("data")
-            if profile_data:
-                self.profile = AccountInfo.model_validate(profile_data)
-
-            mask = Mask(
-                id=str(login_data["user_id"]),
-                name=login_data.get("nickname", ""),
-            )
+            mask = NapcatMask.model_validate(resp.json().get("data", {}))
             logger.info("Tentacle %s: probed as %s (%s)", self.tag, mask.id, mask.name)
             return mask
         except Exception:
             logger.warning("Tentacle %s: probe failed, identity unknown", self.tag)
-            return Mask(id="", name="")
+            raise
 
-    async def deactivate(self) -> None:
-        if self._cancel_scope is not None:
-            self._cancel_scope.cancel()
-        if self._ws is not None:
+    async def sense(self, ws: ClientConnection) -> None:
+        async for raw in ws:
             try:
-                await self._ws.close()
+                frame = inbound_adapter.validate_json(raw)
             except Exception:
-                pass
-            self._ws = None
+                logger.debug(
+                    "Tentacle %s: unrecognised frame: %s",
+                    self.tag,
+                    raw[:200],
+                )
+                continue
 
-    async def twitch(self, action: Any) -> None:
-        if self._ws is None:
-            logger.warning(
-                "Tentacle %s: cannot send, WebSocket not connected", self.tag
-            )
-            return
-        await super().twitch(action)
+            if isinstance(frame, ActionResponse):
+                continue
+
+            frame.tentacle_id = self.tag
+
+            if isinstance(frame, MessageEvent):
+                await self.submerge(frame)
+                self.buffer.push(frame)
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: connecting to %s", self.tag, self.ws_url)
@@ -183,27 +190,8 @@ class NapcatTentacle(Tentacle):
                     ) as ws:
                         self._ws = ws
                         delay = self.backoff_base
-                        logger.info("Tentacle %s: connected", self.tag)
-
-                        async for raw in ws:
-                            try:
-                                frame = inbound_adapter.validate_json(raw)
-                            except Exception:
-                                logger.debug(
-                                    "Tentacle %s: unrecognised frame: %s",
-                                    self.tag,
-                                    raw[:200],
-                                )
-                                continue
-
-                            if isinstance(frame, ActionResponse):
-                                continue
-
-                            frame.tentacle_id = self.tag
-
-                            if isinstance(frame, MessageEvent):
-                                await self.submerge(frame)
-                                self.sense(frame)
+                        logger.info("Tentacle %s: wired with Napcat", self.tag)
+                        await self.sense(ws)
 
                 except ConnectionClosed:
                     logger.warning(
@@ -223,6 +211,24 @@ class NapcatTentacle(Tentacle):
 
                 await anyio.sleep(delay)
                 delay = min(delay * self.backoff_factor, self.backoff_max)
+
+    async def deactivate(self) -> None:
+        if self._cancel_scope is not None:
+            self._cancel_scope.cancel()
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+    async def twitch(self, action: ActionUnion) -> None:
+        if self._ws is None:
+            logger.warning(
+                "Tentacle %s: Action cancelled, WebSocket not connected", self.tag
+            )
+            return
+        await super().twitch(action)
 
     async def splash(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         from octomate.schemas.actions import (
@@ -251,14 +257,6 @@ class NapcatTentacle(Tentacle):
                 ),
             )
         frame = msg.model_dump_json(exclude_none=True)
-        if self._ws:
-            try:
-                await self._ws.send(frame)
-            except ConnectionClosed:
-                logger.warning("Tentacle %s: WebSocket closed while sending", self.tag)
-
-    async def jet(self, action: Any) -> None:
-        frame = action.model_dump_json(exclude_none=True)
         if self._ws:
             try:
                 await self._ws.send(frame)

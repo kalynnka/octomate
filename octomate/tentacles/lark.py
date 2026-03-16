@@ -139,7 +139,7 @@ class LarkTentacle(Tentacle):
                 event = await self._queue.get()
                 try:
                     await self.submerge(event)
-                    self.sense(event)
+                    self.buffer.push(event)
                 except Exception:
                     logger.exception("Tentacle %s: error processing event", self.tag)
 
@@ -291,6 +291,48 @@ class LarkTentacle(Tentacle):
     async def secrete(self, seg: ImageSegment) -> None:
         pass
 
+    async def submerge(self, event: MessageEvent) -> None:
+        self._current_message_id = str(event.message_id)
+        try:
+            await super().submerge(event)
+        finally:
+            self._current_message_id = ""
+
+    async def absorb(self, seg: ImageSegment, save_dir: Path) -> None:
+        try:
+            request = (
+                GetMessageResourceRequest.builder()
+                .message_id(self._current_message_id)
+                .file_key(seg.data.file)
+                .type("image")
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message_resource.get,  # type: ignore[union-attr]
+                request,
+            )
+            if not resp.success():
+                logger.warning(
+                    "Tentacle %s: image download failed: %s %s",
+                    self.tag,
+                    resp.code,
+                    resp.msg,
+                )
+                return
+
+            await anyio.Path(save_dir).mkdir(parents=True, exist_ok=True)
+            file_name: str = resp.file_name or seg.data.file
+            ext = guess_image_ext("", file_name)
+            file_path = save_dir / f"{uuid.uuid4().hex}{ext}"
+            if resp.file:
+                data = resp.file.read()
+                await anyio.Path(file_path).write_bytes(data)
+            seg.data.file = str(file_path.resolve())
+        except Exception:
+            logger.warning(
+                "Tentacle %s: failed to download image", self.tag, exc_info=True
+            )
+
     def _on_message_receive(self, data: Any) -> None:
         try:
             event = data.event
@@ -427,48 +469,6 @@ class LarkTentacle(Tentacle):
             segments.append(TextSegment(data={"text": f"[{msg_type}]"}))
 
         return segments
-
-    async def submerge(self, event: MessageEvent) -> None:
-        self._current_message_id = str(event.message_id)
-        try:
-            await super().submerge(event)
-        finally:
-            self._current_message_id = ""
-
-    async def absorb(self, seg: ImageSegment, save_dir: Path) -> None:
-        try:
-            request = (
-                GetMessageResourceRequest.builder()
-                .message_id(self._current_message_id)
-                .file_key(seg.data.file)
-                .type("image")
-                .build()
-            )
-            resp = await asyncio.to_thread(
-                self._client.im.v1.message_resource.get,  # type: ignore[union-attr]
-                request,
-            )
-            if not resp.success():
-                logger.warning(
-                    "Tentacle %s: image download failed: %s %s",
-                    self.tag,
-                    resp.code,
-                    resp.msg,
-                )
-                return
-
-            await anyio.Path(save_dir).mkdir(parents=True, exist_ok=True)
-            file_name: str = resp.file_name or seg.data.file
-            ext = guess_image_ext("", file_name)
-            file_path = save_dir / f"{uuid.uuid4().hex}{ext}"
-            if resp.file:
-                data = resp.file.read()
-                await anyio.Path(file_path).write_bytes(data)
-            seg.data.file = str(file_path.resolve())
-        except Exception:
-            logger.warning(
-                "Tentacle %s: failed to download image", self.tag, exc_info=True
-            )
 
     async def _run_ws_client(self) -> None:
         event_handler = (

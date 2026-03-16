@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websocke
 import octotools
 from octomate.agents.manager import SkillManager
 from octomate.config import LarkTentacleConfig, NapcatTentacleConfig, OctomateConfig
+from octomate.memory import Mem0Memory, OctopusMemory
 from octomate.octopus import Octopus
 from octomate.tentacles.lark import LarkTentacle
 from octomate.tentacles.napcat import NapcatTentacle
@@ -29,8 +30,18 @@ def _start() -> None:
     octotools.streamify.register(skill_manager)
     # octotools.github.register(skill_manager)
 
+    mem_cfg = config.mind.memory
+    if mem_cfg.mem0.enabled:
+        memory: OctopusMemory = Mem0Memory(
+            max_messages=mem_cfg.max_messages,
+            config=mem_cfg.mem0,
+        )
+    else:
+        memory = OctopusMemory(max_messages=mem_cfg.max_messages)
+
     octopus = Octopus(
         config.mind,
+        memory=memory,
         skill_manager=skill_manager,
     )
     flush_delay = config.mind.flush_delay

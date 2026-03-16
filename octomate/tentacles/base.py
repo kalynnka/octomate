@@ -93,10 +93,6 @@ class Tentacle(ABC):
         """Fetch own identity from the IM platform (sync). Called during __init__."""
         ...
 
-    def sense(self, event: MessageEvent) -> None:
-        """Push a received event into the tank for batched delivery to the Nerve."""
-        self.buffer.push(event)
-
     async def twitch(self, action: ActionUnion) -> None:
         """Dispatch an outbound action: resolve media, then squirt the message out."""
         from octomate.schemas.actions import SendGroupMsgAction, SendPrivateMsgAction
