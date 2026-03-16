@@ -4,6 +4,7 @@ import asyncio
 import io
 import logging
 
+import httpx
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateImageRequest,
@@ -25,6 +26,7 @@ class LarkInk:
     app_id: str
     app_secret: SecretStr
     client: lark.Client
+    sync_http: httpx.Client
 
     def __init__(self, app_id: str, app_secret: SecretStr) -> None:
         self.app_id = app_id
@@ -35,14 +37,13 @@ class LarkInk:
             .app_secret(app_secret.get_secret_value())
             .build()
         )
+        self.sync_http = httpx.Client(base_url="https://open.feishu.cn")
 
     def inspect(self) -> Mask:
-        import httpx
-
         try:
             secret = self.app_secret.get_secret_value()
-            resp = httpx.post(
-                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            resp = self.sync_http.post(
+                "/open-apis/auth/v3/tenant_access_token/internal",
                 json={"app_id": self.app_id, "app_secret": secret},
             )
             resp.raise_for_status()
@@ -50,8 +51,8 @@ class LarkInk:
             if not token:
                 return Mask(id="", name="")
 
-            resp = httpx.get(
-                "https://open.feishu.cn/open-apis/bot/v3/info",
+            resp = self.sync_http.get(
+                "/open-apis/bot/v3/info",
                 headers={"Authorization": f"Bearer {token}"},
             )
             resp.raise_for_status()

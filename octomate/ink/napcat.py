@@ -36,31 +36,27 @@ class NapcatMask(BaseModel):
 class NapcatInk:
     http_url: str
     access_token: SecretStr | None
-    http: httpx.AsyncClient
+    httpx: httpx.AsyncClient
+    sync_httpx: httpx.Client
 
     def __init__(self, http_url: str, access_token: SecretStr | None = None) -> None:
-        self.http_url = http_url
+        self.http_url = str(http_url).rstrip("/")
         self.access_token = access_token
         headers: dict[str, str] = {}
         if access_token:
             headers["Authorization"] = f"Bearer {access_token.get_secret_value()}"
-        self.http = httpx.AsyncClient(base_url=http_url, headers=headers)
+        self.httpx = httpx.AsyncClient(base_url=self.http_url, headers=headers)
+        self.sync_httpx = httpx.Client(base_url=self.http_url, headers=headers)
 
     def inspect(self) -> NapcatMask:
-        headers: dict[str, str] = {}
-        if self.access_token:
-            headers["Authorization"] = f"Bearer {self.access_token.get_secret_value()}"
         try:
-            resp = httpx.post(
-                f"{self.http_url}/get_login_info", json={}, headers=headers
-            )
+            resp = self.sync_httpx.post("/get_login_info", json={})
             resp.raise_for_status()
             login_data = resp.json().get("data")
 
-            resp = httpx.post(
-                f"{self.http_url}/get_stranger_info",
+            resp = self.sync_httpx.post(
+                "/get_stranger_info",
                 json={"user_id": login_data["user_id"]},
-                headers=headers,
             )
             resp.raise_for_status()
             return NapcatMask.model_validate(resp.json().get("data", {}))
@@ -69,11 +65,11 @@ class NapcatInk:
             raise
 
     async def get_image_url(self, file: str) -> str | None:
-        resp = await self.http.post("/get_image", json={"file": file})
+        resp = await self.httpx.post("/get_image", json={"file": file})
         resp.raise_for_status()
         return resp.json().get("data", {}).get("url")
 
     async def download(self, url: str) -> httpx.Response:
-        resp = await self.http.get(url)
+        resp = await self.httpx.get(url)
         resp.raise_for_status()
         return resp
