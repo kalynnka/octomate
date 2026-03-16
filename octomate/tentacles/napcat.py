@@ -144,7 +144,7 @@ class NapcatTentacle(Tentacle):
                         self.tag,
                         delay,
                     )
-                except OSError as exc:
+                except Exception as exc:
                     logger.error(
                         "Tentacle %s: connection failed (%s), retrying in %.1fs",
                         self.tag,
