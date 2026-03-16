@@ -12,17 +12,12 @@ from __future__ import annotations
 import base64
 import logging
 import uuid
-from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
 import anyio
-import httpx
 from pydantic import (
-    BaseModel,
-    ConfigDict,
     Discriminator,
-    Field,
     SecretStr,
     Tag,
     TypeAdapter,
@@ -30,6 +25,7 @@ from pydantic import (
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
+from octomate.ink.napcat import NapcatInk, NapcatMask
 from octomate.schemas.actions import ActionResponse
 from octomate.schemas.adaptors import ActionUnion
 from octomate.schemas.events import Event, EventUnion, MessageEvent
@@ -59,36 +55,11 @@ InboundFrame = Annotated[
 inbound_adapter: TypeAdapter[InboundFrame] = TypeAdapter(InboundFrame)
 
 
-class NapcatMask(BaseModel):
-    model_config = ConfigDict(
-        validate_by_alias=True,
-        validate_by_name=True,
-        extra="ignore",
-        coerce_numbers_to_str=True,
-    )
-
-    id: str = Field(default="", alias="user_id")
-    name: str = Field(default="", alias="nickname")
-    uid: str = ""
-    qid: str = ""
-    uin: str = ""
-    nick: str = ""
-    long_nick: str = ""
-    sex: str = "unknown"
-    age: int = 0
-    qq_level: int = 0
-    login_days: int = 0
-    reg_time: int = 0
-    is_vip: bool = False
-    is_years_vip: bool = False
-    vip_level: int = 0
-
-
 class NapcatTentacle(Tentacle):
     """Forward-WebSocket tentacle that connects *to* a napcat instance."""
 
     ws_url: str
-    http_url: str
+    ink: NapcatInk
     access_token: SecretStr | None
     backoff_base: float
     backoff_max: float
@@ -110,8 +81,8 @@ class NapcatTentacle(Tentacle):
         flush_delay: float = 0.5,
     ) -> None:
         self.ws_url = ws_url
-        self.http_url = http_url
         self.access_token = access_token
+        self.ink = NapcatInk(http_url, access_token)
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
         self.backoff_factor = backoff_factor
@@ -119,36 +90,10 @@ class NapcatTentacle(Tentacle):
         self._cancel_scope = None
         super().__init__(tag, octopus, flush_delay=flush_delay)
 
-    @cached_property
-    def ink(self) -> httpx.AsyncClient:
-        headers: dict[str, str] = {}
-        if self.access_token:
-            headers["Authorization"] = f"Bearer {self.access_token.get_secret_value()}"
-        return httpx.AsyncClient(base_url=self.http_url, headers=headers)
-
     def inspect(self) -> NapcatMask:
-        headers: dict[str, str] = {}
-        if self.access_token:
-            headers["Authorization"] = f"Bearer {self.access_token.get_secret_value()}"
-        try:
-            resp = httpx.post(
-                f"{self.http_url}/get_login_info", json={}, headers=headers
-            )
-            resp.raise_for_status()
-            login_data = resp.json().get("data")
-
-            resp = httpx.post(
-                f"{self.http_url}/get_stranger_info",
-                json={"user_id": login_data["user_id"]},
-                headers=headers,
-            )
-            resp.raise_for_status()
-            mask = NapcatMask.model_validate(resp.json().get("data", {}))
-            logger.info("Tentacle %s: probed as %s (%s)", self.tag, mask.id, mask.name)
-            return mask
-        except Exception:
-            logger.warning("Tentacle %s: probe failed, identity unknown", self.tag)
-            raise
+        mask = self.ink.inspect()
+        logger.info("Tentacle %s: probed as %s (%s)", self.tag, mask.id, mask.name)
+        return mask
 
     async def sense(self, ws: ClientConnection) -> None:
         async for raw in ws:
@@ -263,20 +208,15 @@ class NapcatTentacle(Tentacle):
             except ConnectionClosed:
                 logger.warning("Tentacle %s: WebSocket closed while sending", self.tag)
 
-    async def absorb(self, seg: ImageSegment, save_dir: Path) -> None:
+    async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         try:
             url = seg.data.url
             if not url:
-                resp = await self.ink.post(
-                    "/get_image", json={"file": str(seg.data.file)}
-                )
-                resp.raise_for_status()
-                url = resp.json().get("data", {}).get("url")
+                url = await self.ink.get_image_url(str(seg.data.file))
             if not url:
                 return
 
-            resp = await self.ink.get(url)
-            resp.raise_for_status()
+            resp = await self.ink.download(url)
 
             ext = guess_image_ext(resp.headers.get("content-type", ""), url)
             path = save_dir / f"{uuid.uuid4().hex}{ext}"

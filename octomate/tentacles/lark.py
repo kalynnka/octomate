@@ -10,29 +10,18 @@ Reference: https://open.feishu.cn/document/
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import logging
 import time
 import uuid
-from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
-import httpx
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import (
-    CreateImageRequest,
-    CreateImageRequestBody,
-    CreateMessageRequest,
-    CreateMessageRequestBody,
-    GetMessageResourceRequest,
-    ReplyMessageRequest,
-    ReplyMessageRequestBody,
-)
 from pydantic import SecretStr
 
+from octomate.ink.lark import LarkInk
 from octomate.schemas.events import GroupMessageEvent, MessageEvent, PrivateMessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -55,14 +44,11 @@ logger = logging.getLogger(__name__)
 
 
 class LarkTentacle(Tentacle):
-    app_id: str
-    app_secret: SecretStr
-    _client: lark.Client
+    ink: LarkInk
     _ws_client: lark.ws.Client | None
     _task: asyncio.Task[None] | None
     _loop: asyncio.AbstractEventLoop | None
     _queue: asyncio.Queue[MessageEvent]
-    _current_message_id: str
 
     def __init__(
         self,
@@ -73,62 +59,20 @@ class LarkTentacle(Tentacle):
         app_secret: SecretStr,
         flush_delay: float = 0.5,
     ) -> None:
-        self.app_id = app_id
-        self.app_secret = app_secret
-        self._client = (
-            lark.Client.builder()
-            .app_id(app_id)
-            .app_secret(app_secret.get_secret_value())
-            .build()
-        )
+        self.ink = LarkInk(app_id, app_secret)
         self._ws_client = None
         self._task = None
         self._loop = None
         self._queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
-        self._current_message_id = ""
         super().__init__(tag, octopus, flush_delay=flush_delay)
 
-    @cached_property
-    def ink(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url="https://open.feishu.cn/open-apis")
-
     def inspect(self) -> Mask:
-        try:
-            secret = self.app_secret.get_secret_value()
-            resp = httpx.post(
-                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-                json={"app_id": self.app_id, "app_secret": secret},
-            )
-            resp.raise_for_status()
-            token = resp.json().get("tenant_access_token")
-            if not token:
-                return Mask(id="", name="")
-
-            resp = httpx.get(
-                "https://open.feishu.cn/open-apis/bot/v3/info",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            resp.raise_for_status()
-            bot = resp.json().get("bot", {})
-            if bot:
-                mask = Mask(
-                    id=bot.get("open_id", ""),
-                    name=bot.get("app_name", ""),
-                )
-                logger.info(
-                    "Tentacle %s: probed as %s (%s)",
-                    self.tag,
-                    mask.id,
-                    mask.name,
-                )
-                return mask
-        except Exception:
-            logger.warning(
-                "Tentacle %s: probe failed, identity unknown",
-                self.tag,
-                exc_info=True,
-            )
-        return Mask(id="", name="")
+        mask = self.ink.inspect()
+        if mask.id:
+            logger.info("Tentacle %s: probed as %s (%s)", self.tag, mask.id, mask.name)
+        else:
+            logger.warning("Tentacle %s: probe failed, identity unknown", self.tag)
+        return mask
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: starting Lark WebSocket client", self.tag)
@@ -186,29 +130,9 @@ class LarkTentacle(Tentacle):
                     continue
                 try:
                     image_data = await apath.read_bytes()
-                    request = (
-                        CreateImageRequest.builder()
-                        .request_body(
-                            CreateImageRequestBody.builder()
-                            .image_type("message")
-                            .image(io.BytesIO(image_data))
-                            .build()
-                        )
-                        .build()
-                    )
-                    resp = await asyncio.to_thread(
-                        self._client.im.v1.image.create,  # type: ignore[union-attr]
-                        request,
-                    )
-                    if resp.success() and resp.data and resp.data.image_key:
-                        image_keys.append(resp.data.image_key)
-                    else:
-                        logger.warning(
-                            "Tentacle %s: image upload failed: %s %s",
-                            self.tag,
-                            resp.code,
-                            resp.msg,
-                        )
+                    image_key = await self.ink.upload_image(image_data)
+                    if image_key:
+                        image_keys.append(image_key)
                 except Exception:
                     logger.warning(
                         "Tentacle %s: failed to upload image",
@@ -222,110 +146,28 @@ class LarkTentacle(Tentacle):
             text = "".join(text_parts)
             content = json.dumps({"text": text})
             if message_id:
-                request = (
-                    ReplyMessageRequest.builder()
-                    .message_id(message_id)
-                    .request_body(
-                        ReplyMessageRequestBody.builder()
-                        .content(content)
-                        .msg_type("text")
-                        .build()
-                    )
-                    .build()
-                )
-                resp = await asyncio.to_thread(
-                    self._client.im.v1.message.reply,  # type: ignore[union-attr]
-                    request,
-                )
+                await self.ink.reply_message(message_id, "text", content)
             else:
-                request = (
-                    CreateMessageRequest.builder()
-                    .receive_id_type(receive_id_type)
-                    .request_body(
-                        CreateMessageRequestBody.builder()
-                        .receive_id(chat_id)
-                        .msg_type("text")
-                        .content(content)
-                        .build()
-                    )
-                    .build()
-                )
-                resp = await asyncio.to_thread(
-                    self._client.im.v1.message.create,  # type: ignore[union-attr]
-                    request,
-                )
-            if not resp.success():
-                logger.warning(
-                    "Tentacle %s: failed to send message: %s %s",
-                    self.tag,
-                    resp.code,
-                    resp.msg,
-                )
+                await self.ink.send_message(chat_id, receive_id_type, "text", content)
 
         for key in image_keys:
             content = json.dumps({"image_key": key})
-            request = (
-                CreateMessageRequest.builder()
-                .receive_id_type(receive_id_type)
-                .request_body(
-                    CreateMessageRequestBody.builder()
-                    .receive_id(chat_id)
-                    .msg_type("image")
-                    .content(content)
-                    .build()
-                )
-                .build()
-            )
-            resp = await asyncio.to_thread(
-                self._client.im.v1.message.create,  # type: ignore[union-attr]
-                request,
-            )
-            if not resp.success():
-                logger.warning(
-                    "Tentacle %s: failed to send image: %s %s",
-                    self.tag,
-                    resp.code,
-                    resp.msg,
-                )
+            await self.ink.send_message(chat_id, receive_id_type, "image", content)
 
     async def secrete(self, seg: ImageSegment) -> None:
         pass
 
-    async def submerge(self, event: MessageEvent) -> None:
-        self._current_message_id = str(event.message_id)
+    async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         try:
-            await super().submerge(event)
-        finally:
-            self._current_message_id = ""
-
-    async def absorb(self, seg: ImageSegment, save_dir: Path) -> None:
-        try:
-            request = (
-                GetMessageResourceRequest.builder()
-                .message_id(self._current_message_id)
-                .file_key(seg.data.file)
-                .type("image")
-                .build()
-            )
-            resp = await asyncio.to_thread(
-                self._client.im.v1.message_resource.get,  # type: ignore[union-attr]
-                request,
-            )
-            if not resp.success():
-                logger.warning(
-                    "Tentacle %s: image download failed: %s %s",
-                    self.tag,
-                    resp.code,
-                    resp.msg,
-                )
+            result = await self.ink.download_image(message_id, seg.data.file)
+            if not result:
                 return
 
+            data, file_name = result
             await anyio.Path(save_dir).mkdir(parents=True, exist_ok=True)
-            file_name: str = resp.file_name or seg.data.file
             ext = guess_image_ext("", file_name)
             file_path = save_dir / f"{uuid.uuid4().hex}{ext}"
-            if resp.file:
-                data = resp.file.read()
+            if data:
                 await anyio.Path(file_path).write_bytes(data)
             seg.data.file = str(file_path.resolve())
         except Exception:
@@ -477,8 +319,8 @@ class LarkTentacle(Tentacle):
             .build()
         )
         self._ws_client = lark.ws.Client(
-            self.app_id,
-            self.app_secret.get_secret_value(),
+            self.ink.app_id,
+            self.ink.app_secret.get_secret_value(),
             event_handler=event_handler,
             log_level=lark.LogLevel.INFO,
         )

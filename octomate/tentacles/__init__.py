@@ -1,6 +1,7 @@
-from octomate.tentacles.base import Mask, MessageBuffer, SendTarget, Tentacle
+from octomate.tentacles.base import Ink, Mask, MessageBuffer, SendTarget, Tentacle
 
 __all__ = [
+    "Ink",
     "Mask",
     "MessageBuffer",
     "SendTarget",

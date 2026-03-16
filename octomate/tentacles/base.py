@@ -4,12 +4,10 @@ import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
-from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, runtime_checkable
 
 import anyio
-import httpx
 
 from octomate.schemas.events import GroupMessageEvent
 from octomate.schemas.segments import ImageSegment
@@ -43,6 +41,34 @@ class SendTarget:
     reply_to: int | str | None = None
 
 
+@runtime_checkable
+class Ink(Protocol):
+    """Structural protocol for platform API clients."""
+
+    def inspect(self) -> Mask: ...
+
+    async def send_message(
+        self,
+        receive_id: str,
+        receive_id_type: str,
+        msg_type: str,
+        content: str,
+    ) -> bool: ...
+
+    async def reply_message(
+        self,
+        message_id: str,
+        msg_type: str,
+        content: str,
+    ) -> bool: ...
+
+    async def upload_image(self, data: bytes) -> str | None: ...
+
+    async def download_image(
+        self, message_id: str, file_key: str
+    ) -> tuple[bytes, str] | None: ...
+
+
 class Tentacle(ABC):
     """A tentacle wraps a single IM platform connection and exposes it
     through a unified interface. It receives events from the IM, resolves
@@ -71,12 +97,6 @@ class Tentacle(ABC):
     def name(self) -> str:
         """The bot's display name."""
         return self.mask.name
-
-    @cached_property
-    @abstractmethod
-    def ink(self) -> httpx.AsyncClient:
-        """The HTTP client for this tentacle's IM REST API."""
-        ...
 
     @abstractmethod
     async def activate(self) -> None:
@@ -112,10 +132,11 @@ class Tentacle(ABC):
         if not pending:
             return
         save = self.den(event)
+        message_id = str(event.message_id)
         await anyio.Path(save).mkdir(parents=True, exist_ok=True)
         async with anyio.create_task_group() as tg:
             for seg in pending:
-                tg.start_soon(self.absorb, seg, save)
+                tg.start_soon(self.absorb, seg, save, message_id)
 
     async def emerge(self, segments: list[AgentSegment]) -> None:
         """Prepare outbound media: process images in segments before sending."""
@@ -129,7 +150,7 @@ class Tentacle(ABC):
         ...
 
     @abstractmethod
-    async def absorb(self, seg: ImageSegment, save_dir: Path) -> None:
+    async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         """Download a single inbound image to save_dir.
         Must update seg.data.file to the local path on success."""
         ...
