@@ -14,16 +14,10 @@ from octomate.agents import SessionContext, create_companion_agent
 from octomate.agents.manager import SkillManager
 from octomate.config import MindConfig
 from octomate.memory.base import OctopusMemory
-from octomate.schemas.actions import (
-    AgentMessage,
-    SendGroupMsgAction,
-    SendGroupMsgParams,
-    SendPrivateMsgAction,
-    SendPrivateMsgParams,
-)
+from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import GroupMessageEvent, MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import Tentacle
+from octomate.tentacles.base import SendTarget, Tentacle
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +119,13 @@ class Octopus:
                 history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
 
         logger.info("Octopus processing batch [%s] (%d messages)", key, len(batch))
-        deps = SessionContext(session_key=key)
+
+        if key.group_id is not None:
+            target = SendTarget("group", key.group_id)
+        else:
+            target = SendTarget("private", key.user_id)
+
+        deps = SessionContext(session_key=key, tentacle=tentacle)
         result = await self.agent.run(
             user_prompt,
             message_history=history,
@@ -135,20 +135,6 @@ class Octopus:
         logger.info("Agent returned %d messages for [%s]", len(result.output), key)
 
         for msg in result.output:
-            if key.group_id is not None:
-                action = SendGroupMsgAction(
-                    tentacle_id=key.tentacle_id,
-                    params=SendGroupMsgParams(
-                        group_id=key.group_id, message=msg.segments
-                    ),
-                )
-            else:
-                action = SendPrivateMsgAction(
-                    tentacle_id=key.tentacle_id,
-                    params=SendPrivateMsgParams(
-                        user_id=key.user_id, message=msg.segments
-                    ),
-                )
-            await tentacle.twitch(action)
+            await tentacle.twitch(target, msg.segments)
 
         asyncio.create_task(self.memory.memo(key, result.new_messages()))

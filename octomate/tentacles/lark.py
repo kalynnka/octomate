@@ -35,7 +35,7 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.session import Sender
 from octomate.tentacles.base import Mask, SendTarget, Tentacle
-from octomate.utils import guess_image_ext
+from octomate.utils import guess_image_ext, has_markdown
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
@@ -110,52 +110,86 @@ class LarkTentacle(Tentacle):
                 remaining.append(seg)
 
         message_id = reply_seg.data["id"] if reply_seg else reply_id
-
-        text_parts: list[str] = []
-        image_keys: list[str] = []
-
-        for seg in remaining:
-            if isinstance(seg, TextSegment):
-                text_parts.append(seg.data["text"])
-            elif isinstance(seg, AtSegment):
-                text_parts.append(
-                    f'<at user_id="{seg.data.user_id}">{seg.data.name or ""}</at>'
-                )
-            elif isinstance(seg, ImageSegment):
-                apath = anyio.Path(seg.data.path)
-                if not await apath.exists():
-                    logger.warning(
-                        "Tentacle %s: image file not found: %s", self.tag, apath
-                    )
-                    continue
-                try:
-                    image_data = await apath.read_bytes()
-                    image_key = await self.ink.upload_image(image_data)
-                    if image_key:
-                        image_keys.append(image_key)
-                except Exception:
-                    logger.warning(
-                        "Tentacle %s: failed to upload image",
-                        self.tag,
-                        exc_info=True,
-                    )
-
         receive_id_type = "chat_id" if is_group else "open_id"
 
-        if text_parts:
-            text = "".join(text_parts)
-            content = json.dumps({"text": text})
-            if message_id:
-                await self.ink.reply_message(message_id, "text", content)
-            else:
-                await self.ink.send_message(chat_id, receive_id_type, "text", content)
+        md_parts: list[str] = []
+        has_text = False
+        for seg in remaining:
+            if isinstance(seg, TextSegment):
+                md_parts.append(seg.data["text"])
+                has_text = True
+            elif isinstance(seg, AtSegment):
+                md_parts.append(f"<at id={seg.data.user_id}></at>")
+                has_text = True
+        full_text = "".join(md_parts)
+        use_card = has_text and has_markdown(full_text)
 
-        for key in image_keys:
-            content = json.dumps({"image_key": key})
-            await self.ink.send_message(chat_id, receive_id_type, "image", content)
+        if use_card:
+            md_buf: list[str] = []
+            for seg in remaining:
+                if isinstance(seg, TextSegment):
+                    md_buf.append(seg.data["text"])
+                elif isinstance(seg, AtSegment):
+                    md_buf.append(f"<at id={seg.data.user_id}></at>")
+                elif isinstance(seg, ImageSegment) and seg.data.url:
+                    md_buf.append(f"\n![image]({seg.data.url})\n")
+
+            elements = [{"tag": "markdown", "content": "".join(md_buf)}]
+            card = json.dumps({"schema": "2.0", "body": {"elements": elements}})
+            if message_id:
+                await self.ink.reply_message(message_id, "interactive", card)
+            else:
+                await self.ink.send_message(
+                    chat_id, receive_id_type, "interactive", card
+                )
+        else:
+            for seg in remaining:
+                if isinstance(seg, TextSegment):
+                    content = json.dumps({"text": seg.data["text"]})
+                    if message_id:
+                        await self.ink.reply_message(message_id, "text", content)
+                        message_id = None
+                    else:
+                        await self.ink.send_message(
+                            chat_id, receive_id_type, "text", content
+                        )
+                elif isinstance(seg, AtSegment):
+                    at_text = (
+                        f'<at user_id="{seg.data.user_id}">'
+                        f"{seg.data.name or ''}</at>"
+                    )
+                    content = json.dumps({"text": at_text})
+                    if message_id:
+                        await self.ink.reply_message(message_id, "text", content)
+                        message_id = None
+                    else:
+                        await self.ink.send_message(
+                            chat_id, receive_id_type, "text", content
+                        )
+                elif isinstance(seg, ImageSegment) and seg.data.url:
+                    content = json.dumps({"image_key": seg.data.url})
+                    if message_id:
+                        await self.ink.reply_message(message_id, "image", content)
+                        message_id = None
+                    else:
+                        await self.ink.send_message(
+                            chat_id, receive_id_type, "image", content
+                        )
 
     async def secrete(self, seg: ImageSegment) -> None:
-        pass
+        apath = anyio.Path(seg.data.path)
+        if not await apath.exists():
+            logger.warning("Tentacle %s: image file not found: %s", self.tag, apath)
+            return
+        try:
+            image_data = await apath.read_bytes()
+            image_key = await self.ink.upload_image(image_data)
+            if image_key:
+                seg.data.url = image_key
+        except Exception:
+            logger.warning(
+                "Tentacle %s: failed to upload image", self.tag, exc_info=True
+            )
 
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         try:

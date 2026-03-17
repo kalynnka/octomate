@@ -27,11 +27,10 @@ from websockets.exceptions import ConnectionClosed
 
 from octomate.ink.napcat import NapcatInk, NapcatMask
 from octomate.schemas.actions import ActionResponse
-from octomate.schemas.adaptors import ActionUnion
 from octomate.schemas.events import Event, EventUnion, MessageEvent
-from octomate.schemas.segments import AgentSegment, ImageSegment
+from octomate.schemas.segments import AgentSegment, ImageSegment, TextSegment
 from octomate.tentacles.base import SendTarget, Tentacle
-from octomate.utils import guess_image_ext
+from octomate.utils import guess_image_ext, strip_markdown
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
@@ -167,15 +166,19 @@ class NapcatTentacle(Tentacle):
                 pass
             self._ws = None
 
-    async def twitch(self, action: ActionUnion) -> None:
+    async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         if self._ws is None:
             logger.warning(
                 "Tentacle %s: Action cancelled, WebSocket not connected", self.tag
             )
             return
-        await super().twitch(action)
+        await super().twitch(target, segments)
 
     async def splash(self, target: SendTarget, segments: list[AgentSegment]) -> None:
+        for seg in segments:
+            if isinstance(seg, TextSegment):
+                seg.data["text"] = strip_markdown(seg.data["text"])
+
         from octomate.schemas.actions import (
             SendGroupMsgAction,
             SendGroupMsgParams,

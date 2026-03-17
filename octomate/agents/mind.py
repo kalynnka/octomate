@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import httpx
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
 from octomate.agents.manager import SkillManager
 from octomate.config import MindConfig
 from octomate.schemas.actions import AgentMessage
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.session import SessionKey
+from octomate.tentacles.base import SendTarget
+
+if TYPE_CHECKING:
+    from octomate.tentacles.base import Tentacle
 
 SYSTEM_PROMPT = """\
 You are an intelligent, curious, and adorable octopus companion named Octomate.
@@ -50,10 +56,20 @@ Message format:
 - Keep messages short. Don't write long paragraphs — split your response into
   multiple small messages instead. Each message should be a bite-sized thought,
   one or two sentences at most.
-- Available segment types: text (plain content), image (by URL),
+- You can use markdown in text segments: **bold**, *italic*, ~~strikethrough~~,
+  `inline code`, code blocks (```), headers (#), lists (- or 1.), links ([text](url)),
+  blockquotes (>). Keep formatting light and natural — use it when it genuinely
+  aids readability (code snippets, structured lists, key emphasis), not for every message.
+- Available segment types: text (content, supports markdown), image (by URL),
   at (mention a user by their user ID), reply (quote a previous message by its
   msg id — must be the first segment in that message).
 - If you decide not to respond (e.g. observing in group chat), return an empty list.
+
+Acknowledge tool:
+- When you are about to call a skill or tool that may take a few seconds (e.g. weather,
+  search, knowledge base), call the `acknowledge` tool FIRST with a short message
+  so the user knows you're working on it. Example: acknowledge("let me look that up~")
+- Do NOT use acknowledge for simple replies that don't involve tool calls.
 """
 
 
@@ -61,6 +77,7 @@ Message format:
 class SessionContext:
     session_key: SessionKey
     active_skills: set[str] = field(default_factory=set)
+    tentacle: Tentacle | None = None
 
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -105,10 +122,26 @@ def create_companion_agent(
 
     toolsets = skill_manager.build_skillsets() if skill_manager else None
 
-    return Agent(
+    agent = Agent(
         model,
         system_prompt=SYSTEM_PROMPT,
         deps_type=SessionContext,
         output_type=list[AgentMessage],
         toolsets=toolsets,
     )
+
+    @agent.tool
+    async def acknowledge(ctx: RunContext[SessionContext], text: str) -> str:
+        """Send a quick message to the user immediately, before doing heavy work
+        like calling skills or tools. Use this so the user knows you received
+        their message and are working on it."""
+        if ctx.deps.tentacle:
+            key = ctx.deps.session_key
+            if key.group_id is not None:
+                target = SendTarget("group", key.group_id)
+            else:
+                target = SendTarget("private", key.user_id)
+            await ctx.deps.tentacle.twitch(target, [TextSegment(data={"text": text})])
+        return "acknowledged"
+
+    return agent

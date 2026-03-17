@@ -38,7 +38,7 @@ class StreamifyConfig(BaseSettings):
     os_name: str = "Linux"
     os_version: str = "1.0"
     app_version: str = "1.0.0"
-    cache_dir: Path = Path("./streamify/files")
+    cache_dir: Path = Path(".octomate/streamify/files")
 
     @property
     def api_base(self) -> str:

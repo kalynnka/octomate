@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from anyio.abc import TaskGroup
 
     from octomate.octopus import Octopus
-    from octomate.schemas.adaptors import ActionUnion
     from octomate.schemas.events import MessageEvent
     from octomate.schemas.segments import AgentSegment
 
@@ -113,16 +112,8 @@ class Tentacle(ABC):
         """Fetch own identity from the IM platform (sync). Called during __init__."""
         ...
 
-    async def twitch(self, action: ActionUnion) -> None:
+    async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         """Dispatch an outbound action: resolve media, then squirt the message out."""
-        from octomate.schemas.actions import SendGroupMsgAction, SendPrivateMsgAction
-
-        if isinstance(action, SendGroupMsgAction):
-            target = SendTarget("group", action.params.group_id, action.params.reply)
-            segments = action.params.message
-        elif isinstance(action, SendPrivateMsgAction):
-            target = SendTarget("private", action.params.user_id, action.params.reply)
-            segments = action.params.message
         await self.emerge(segments)
         await self.splash(target, segments)
 
