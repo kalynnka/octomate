@@ -26,9 +26,20 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from octomate.ink.napcat import NapcatInk, NapcatMask
-from octomate.schemas.actions import ActionResponse
+from octomate.schemas.actions import (
+    ActionResponse,
+    SendGroupMsgAction,
+    SendGroupMsgParams,
+    SendPrivateMsgAction,
+    SendPrivateMsgParams,
+)
 from octomate.schemas.events import Event, EventUnion, MessageEvent
-from octomate.schemas.segments import AgentSegment, ImageSegment, TextSegment
+from octomate.schemas.segments import (
+    AgentSegment,
+    ImageSegment,
+    MarkdownSegment,
+    TextSegment,
+)
 from octomate.tentacles.base import SendTarget, Tentacle
 from octomate.utils import guess_image_ext, strip_markdown
 
@@ -63,8 +74,8 @@ class NapcatTentacle(Tentacle):
     backoff_base: float
     backoff_max: float
     backoff_factor: float
-    _ws: ClientConnection | None
-    _cancel_scope: anyio.CancelScope | None
+    ws_client: ClientConnection | None
+    ws_scope: anyio.CancelScope | None
 
     def __init__(
         self,
@@ -85,8 +96,8 @@ class NapcatTentacle(Tentacle):
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
         self.backoff_factor = backoff_factor
-        self._ws = None
-        self._cancel_scope = None
+        self.ws_client = None
+        self.ws_scope = None
         super().__init__(tag, octopus, flush_delay=flush_delay)
 
     def inspect(self) -> NapcatMask:
@@ -118,8 +129,8 @@ class NapcatTentacle(Tentacle):
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: connecting to %s", self.tag, self.ws_url)
-        self._cancel_scope = anyio.CancelScope()
-        with self._cancel_scope:
+        self.ws_scope = anyio.CancelScope()
+        with self.ws_scope:
             delay = self.backoff_base
             while True:
                 try:
@@ -133,7 +144,7 @@ class NapcatTentacle(Tentacle):
                         self.ws_url,
                         additional_headers=extra_headers or None,
                     ) as ws:
-                        self._ws = ws
+                        self.ws_client = ws
                         delay = self.backoff_base
                         logger.info("Tentacle %s: wired with Napcat", self.tag)
                         await self.sense(ws)
@@ -152,23 +163,23 @@ class NapcatTentacle(Tentacle):
                         delay,
                     )
                 finally:
-                    self._ws = None
+                    self.ws_client = None
 
                 await anyio.sleep(delay)
                 delay = min(delay * self.backoff_factor, self.backoff_max)
 
     async def deactivate(self) -> None:
-        if self._cancel_scope is not None:
-            self._cancel_scope.cancel()
-        if self._ws is not None:
+        if self.ws_scope is not None:
+            self.ws_scope.cancel()
+        if self.ws_client is not None:
             try:
-                await self._ws.close()
+                await self.ws_client.close()
             except Exception:
                 pass
-            self._ws = None
+            self.ws_client = None
 
     async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
-        if self._ws is None:
+        if self.ws_client is None:
             logger.warning(
                 "Tentacle %s: Action cancelled, WebSocket not connected", self.tag
             )
@@ -176,23 +187,24 @@ class NapcatTentacle(Tentacle):
         await super().twitch(target, segments)
 
     async def splash(self, target: SendTarget, segments: list[AgentSegment]) -> None:
+        resolved: list[AgentSegment] = []
         for seg in segments:
-            if isinstance(seg, TextSegment):
+            if isinstance(seg, MarkdownSegment):
+                resolved.append(
+                    TextSegment(data={"text": strip_markdown(seg.data["text"])})
+                )
+            elif isinstance(seg, TextSegment):
                 seg.data["text"] = strip_markdown(seg.data["text"])
-
-        from octomate.schemas.actions import (
-            SendGroupMsgAction,
-            SendGroupMsgParams,
-            SendPrivateMsgAction,
-            SendPrivateMsgParams,
-        )
+                resolved.append(seg)
+            else:
+                resolved.append(seg)
 
         if target.chat_type == "group":
             msg = SendGroupMsgAction(
                 tentacle_id=self.tag,
                 params=SendGroupMsgParams(
                     group_id=target.chat_id,
-                    message=segments,
+                    message=resolved,
                     reply=target.reply_to,
                 ),
             )
@@ -201,14 +213,14 @@ class NapcatTentacle(Tentacle):
                 tentacle_id=self.tag,
                 params=SendPrivateMsgParams(
                     user_id=target.chat_id,
-                    message=segments,
+                    message=resolved,
                     reply=target.reply_to,
                 ),
             )
         frame = msg.model_dump_json(exclude_none=True)
-        if self._ws:
+        if self.ws_client:
             try:
-                await self._ws.send(frame)
+                await self.ws_client.send(frame)
             except ConnectionClosed:
                 logger.warning("Tentacle %s: WebSocket closed while sending", self.tag)
 

@@ -45,6 +45,10 @@ class ImageData(BaseModel):
         return Path(self.file)
 
 
+class MarkdownData(TypedDict):
+    text: str
+
+
 class ReplyData(TypedDict):
     id: str
 
@@ -168,6 +172,18 @@ class ImageSegment(Segment):
             media_type = mimetypes.guess_type(path.name)[0] or "image/png"
             return BinaryContent(data=path.read_bytes(), media_type=media_type)
         return str(self)
+
+
+class MarkdownSegment(Segment):
+    """Markdown-formatted text. Set data.text to the markdown content.
+    Platforms that support markdown render it natively; others strip it to plain text.
+    Images can be embedded inline using ![alt](image_key) syntax — no separate ImageSegment needed."""
+
+    type: Literal["markdown"] = "markdown"
+    data: MarkdownData
+
+    def __str__(self) -> str:
+        return self.data["text"]
 
 
 class ReplySegment(Segment):
@@ -313,6 +329,6 @@ MessageSegment = Annotated[
 ]
 
 AgentSegment = Annotated[
-    Union[TextSegment, ImageSegment, AtSegment, ReplySegment],
+    Union[TextSegment, MarkdownSegment, ImageSegment, AtSegment, ReplySegment],
     Discriminator("type"),
 ]

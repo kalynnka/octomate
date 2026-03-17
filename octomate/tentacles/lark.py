@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 import anyio
 import anyio.from_thread
 import anyio.to_thread
-import lark_oapi as lark
+import lark_oapi
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import SecretStr
 
@@ -31,13 +31,14 @@ from octomate.schemas.segments import (
     AtSegment,
     ImageData,
     ImageSegment,
+    MarkdownSegment,
     MessageSegment,
     ReplySegment,
     TextSegment,
 )
 from octomate.schemas.session import Sender
 from octomate.tentacles.base import Mask, SendTarget, Tentacle
-from octomate.utils import guess_image_ext, has_markdown
+from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 class LarkTentacle(Tentacle):
     ink: LarkInk
-    lark_ws_client: lark.ws.Client
+    ws_client: lark_oapi.ws.Client
 
     def __init__(
         self,
@@ -60,15 +61,15 @@ class LarkTentacle(Tentacle):
     ) -> None:
         self.ink = LarkInk(app_id, app_secret)
         event_handler = (
-            lark.EventDispatcherHandler.builder("", "")
+            lark_oapi.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self.sense)
             .build()
         )
-        self.lark_ws_client = lark.ws.Client(
+        self.ws_client = lark_oapi.ws.Client(
             self.ink.app_id,
             self.ink.app_secret.get_secret_value(),
             event_handler=event_handler,
-            log_level=lark.LogLevel.INFO,
+            log_level=lark_oapi.LogLevel.INFO,
         )
         super().__init__(tag, octopus, flush_delay=flush_delay)
 
@@ -82,9 +83,7 @@ class LarkTentacle(Tentacle):
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: starting Lark WebSocket client", self.tag)
-        await anyio.to_thread.run_sync(
-            self.lark_ws_client.start, abandon_on_cancel=True
-        )
+        await anyio.to_thread.run_sync(self.ws_client.start, abandon_on_cancel=True)
 
     async def deactivate(self) -> None:
         pass
@@ -105,68 +104,33 @@ class LarkTentacle(Tentacle):
         message_id = reply_seg.data["id"] if reply_seg else reply_id
         receive_id_type = "chat_id" if is_group else "open_id"
 
-        md_parts: list[str] = []
-        has_text = False
         for seg in remaining:
-            if isinstance(seg, TextSegment):
-                md_parts.append(seg.data["text"])
-                has_text = True
+            msg_type: str | None = None
+            content: str | None = None
+
+            if isinstance(seg, MarkdownSegment):
+                msg_type = "interactive"
+                elements = [{"tag": "markdown", "content": seg.data["text"]}]
+                content = json.dumps({"schema": "2.0", "body": {"elements": elements}})
+            elif isinstance(seg, TextSegment):
+                msg_type = "text"
+                content = json.dumps({"text": seg.data["text"]})
             elif isinstance(seg, AtSegment):
-                md_parts.append(f"<at id={seg.data.user_id}></at>")
-                has_text = True
-        full_text = "".join(md_parts)
-        use_card = has_text and has_markdown(full_text)
+                msg_type = "text"
+                at_text = f'<at user_id="{seg.data.user_id}">{seg.data.name or ""}</at>'
+                content = json.dumps({"text": at_text})
+            elif isinstance(seg, ImageSegment) and seg.data.url:
+                msg_type = "image"
+                content = json.dumps({"image_key": seg.data.url})
 
-        if use_card:
-            md_buf: list[str] = []
-            for seg in remaining:
-                if isinstance(seg, TextSegment):
-                    md_buf.append(seg.data["text"])
-                elif isinstance(seg, AtSegment):
-                    md_buf.append(f"<at id={seg.data.user_id}></at>")
-                elif isinstance(seg, ImageSegment) and seg.data.url:
-                    md_buf.append(f"\n![image]({seg.data.url})\n")
-
-            elements = [{"tag": "markdown", "content": "".join(md_buf)}]
-            card = json.dumps({"schema": "2.0", "body": {"elements": elements}})
-            if message_id:
-                await self.ink.reply_message(message_id, "interactive", card)
-            else:
-                await self.ink.send_message(
-                    chat_id, receive_id_type, "interactive", card
-                )
-        else:
-            for seg in remaining:
-                if isinstance(seg, TextSegment):
-                    content = json.dumps({"text": seg.data["text"]})
-                    if message_id:
-                        await self.ink.reply_message(message_id, "text", content)
-                        message_id = None
-                    else:
-                        await self.ink.send_message(
-                            chat_id, receive_id_type, "text", content
-                        )
-                elif isinstance(seg, AtSegment):
-                    at_text = (
-                        f'<at user_id="{seg.data.user_id}">{seg.data.name or ""}</at>'
+            if msg_type and content:
+                if message_id:
+                    await self.ink.reply_message(message_id, msg_type, content)
+                    message_id = None
+                else:
+                    await self.ink.send_message(
+                        chat_id, receive_id_type, msg_type, content
                     )
-                    content = json.dumps({"text": at_text})
-                    if message_id:
-                        await self.ink.reply_message(message_id, "text", content)
-                        message_id = None
-                    else:
-                        await self.ink.send_message(
-                            chat_id, receive_id_type, "text", content
-                        )
-                elif isinstance(seg, ImageSegment) and seg.data.url:
-                    content = json.dumps({"image_key": seg.data.url})
-                    if message_id:
-                        await self.ink.reply_message(message_id, "image", content)
-                        message_id = None
-                    else:
-                        await self.ink.send_message(
-                            chat_id, receive_id_type, "image", content
-                        )
 
     async def secrete(self, seg: ImageSegment) -> None:
         apath = anyio.Path(seg.data.path)
