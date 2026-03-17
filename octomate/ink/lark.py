@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import io
 import logging
+from functools import partial
 
+import anyio.to_thread
 import httpx
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
@@ -77,9 +78,8 @@ class LarkInk:
             )
             .build()
         )
-        resp = await asyncio.to_thread(
-            self.client.im.v1.image.create,  # type: ignore[union-attr]
-            request,
+        resp = await anyio.to_thread.run_sync(
+            partial(self.client.im.v1.image.create, request),  # type: ignore[union-attr]
         )
         if resp.success() and resp.data and resp.data.image_key:
             return resp.data.image_key
@@ -105,9 +105,8 @@ class LarkInk:
             )
             .build()
         )
-        resp = await asyncio.to_thread(
-            self.client.im.v1.message.create,  # type: ignore[union-attr]
-            request,
+        resp = await anyio.to_thread.run_sync(
+            partial(self.client.im.v1.message.create, request),  # type: ignore[union-attr]
         )
         if not resp.success():
             logger.warning("LarkInk: send_message failed: %s %s", resp.code, resp.msg)
@@ -130,9 +129,8 @@ class LarkInk:
             )
             .build()
         )
-        resp = await asyncio.to_thread(
-            self.client.im.v1.message.reply,  # type: ignore[union-attr]
-            request,
+        resp = await anyio.to_thread.run_sync(
+            partial(self.client.im.v1.message.reply, request),  # type: ignore[union-attr]
         )
         if not resp.success():
             logger.warning("LarkInk: reply_message failed: %s %s", resp.code, resp.msg)
@@ -148,9 +146,8 @@ class LarkInk:
             .type("image")
             .build()
         )
-        resp = await asyncio.to_thread(
-            self.client.im.v1.message_resource.get,  # type: ignore[union-attr]
-            request,
+        resp = await anyio.to_thread.run_sync(
+            partial(self.client.im.v1.message_resource.get, request),  # type: ignore[union-attr]
         )
         if not resp.success():
             logger.warning("LarkInk: download_image failed: %s %s", resp.code, resp.msg)

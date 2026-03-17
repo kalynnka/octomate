@@ -95,6 +95,7 @@ class NapcatTentacle(Tentacle):
         return mask
 
     async def sense(self, ws: ClientConnection) -> None:
+        """Listen on the WebSocket and ingest each incoming MessageEvent."""
         async for raw in ws:
             try:
                 frame = inbound_adapter.validate_json(raw)

@@ -9,7 +9,6 @@ Reference: https://open.feishu.cn/document/
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -18,7 +17,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
+import anyio.from_thread
+import anyio.to_thread
 import lark_oapi as lark
+from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import SecretStr
 
 from octomate.ink.lark import LarkInk
@@ -45,10 +47,7 @@ logger = logging.getLogger(__name__)
 
 class LarkTentacle(Tentacle):
     ink: LarkInk
-    _ws_client: lark.ws.Client | None
-    _task: asyncio.Task[None] | None
-    _loop: asyncio.AbstractEventLoop | None
-    _queue: asyncio.Queue[MessageEvent]
+    lark_ws_client: lark.ws.Client
 
     def __init__(
         self,
@@ -60,10 +59,17 @@ class LarkTentacle(Tentacle):
         flush_delay: float = 0.5,
     ) -> None:
         self.ink = LarkInk(app_id, app_secret)
-        self._ws_client = None
-        self._task = None
-        self._loop = None
-        self._queue: asyncio.Queue[MessageEvent] = asyncio.Queue()
+        event_handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(self.sense)
+            .build()
+        )
+        self.lark_ws_client = lark.ws.Client(
+            self.ink.app_id,
+            self.ink.app_secret.get_secret_value(),
+            event_handler=event_handler,
+            log_level=lark.LogLevel.INFO,
+        )
         super().__init__(tag, octopus, flush_delay=flush_delay)
 
     def inspect(self) -> Mask:
@@ -76,25 +82,12 @@ class LarkTentacle(Tentacle):
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: starting Lark WebSocket client", self.tag)
-        self._loop = asyncio.get_running_loop()
-
-        async def _consume_queue() -> None:
-            while True:
-                event = await self._queue.get()
-                try:
-                    await self.submerge(event)
-                    self.buffer.push(event)
-                except Exception:
-                    logger.exception("Tentacle %s: error processing event", self.tag)
-
-        async with asyncio.TaskGroup() as tg:
-            self._task = tg.create_task(self._run_ws_client())
-            tg.create_task(_consume_queue())
+        await anyio.to_thread.run_sync(
+            self.lark_ws_client.start, abandon_on_cancel=True
+        )
 
     async def deactivate(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-            self._task = None
+        pass
 
     async def splash(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         chat_id = str(target.chat_id)
@@ -155,8 +148,7 @@ class LarkTentacle(Tentacle):
                         )
                 elif isinstance(seg, AtSegment):
                     at_text = (
-                        f'<at user_id="{seg.data.user_id}">'
-                        f"{seg.data.name or ''}</at>"
+                        f'<at user_id="{seg.data.user_id}">{seg.data.name or ""}</at>'
                     )
                     content = json.dumps({"text": at_text})
                     if message_id:
@@ -209,52 +201,86 @@ class LarkTentacle(Tentacle):
                 "Tentacle %s: failed to download image", self.tag, exc_info=True
             )
 
-    def _on_message_receive(self, data: Any) -> None:
+    def sense(self, data: P2ImMessageReceiveV1) -> None:
+        """Lark SDK event callback: convert a raw Lark event into a MessageEvent and ingest it."""
         try:
             event = data.event
+            if event is None:
+                logger.warning("Tentacle %s: received event with no payload", self.tag)
+                return
+
             message = event.message
             sender = event.sender
+            if message is None or sender is None:
+                logger.warning(
+                    "Tentacle %s: event missing message or sender (message=%s, sender=%s)",
+                    self.tag,
+                    message,
+                    sender,
+                )
+                return
 
-            msg_type: str = message.message_type
+            msg_type = message.message_type
+            chat_type = message.chat_type
+            if not msg_type or not chat_type:
+                logger.warning(
+                    "Tentacle %s: message missing type info (message_type=%s, chat_type=%s)",
+                    self.tag,
+                    msg_type,
+                    chat_type,
+                )
+                return
+
             content_json: str | None = message.content
-            chat_type: str = message.chat_type
             mentions: list[Any] | None = message.mentions
 
-            segments = self._parse_lark_content(msg_type, content_json, mentions)
-            sender_id: str = sender.sender_id.open_id if sender.sender_id else ""
+            segments = self.digest(msg_type, content_json, mentions)
+
+            sender_id_obj = sender.sender_id
+            sender_id: str = (sender_id_obj.open_id or "") if sender_id_obj else ""
             sender_name: str = (
-                sender.sender_id.open_id if sender.sender_id else "unknown"
+                (sender_id_obj.open_id or "unknown") if sender_id_obj else "unknown"
             )
 
             now = int(time.time())
-            result: MessageEvent | None = None
+            message_id: str = message.message_id or ""
+            message_event: MessageEvent | None = None
 
             if chat_type == "group":
-                result = GroupMessageEvent(
+                message_event = GroupMessageEvent(
                     time=now,
                     self_id=self.mask.id,
                     tentacle_id=self.tag,
-                    message_id=message.message_id,
+                    message_id=message_id,
                     user_id=sender_id,
-                    group_id=message.chat_id,
+                    group_id=message.chat_id or "",
                     sender=Sender(user_id=sender_id, nickname=sender_name),
                     message=segments,
                     raw_message=content_json or "",
                 )
             elif chat_type == "p2p":
-                result = PrivateMessageEvent(
+                message_event = PrivateMessageEvent(
                     time=now,
                     self_id=self.mask.id,
                     tentacle_id=self.tag,
-                    message_id=message.message_id,
+                    message_id=message_id,
                     user_id=sender_id,
                     sender=Sender(user_id=sender_id, nickname=sender_name),
                     message=segments,
                     raw_message=content_json or "",
                 )
+            else:
+                logger.warning(
+                    "Tentacle %s: unsupported chat_type %r, message_id=%s",
+                    self.tag,
+                    chat_type,
+                    message_id,
+                )
+                return
 
-            if result and self._loop:
-                self._loop.call_soon_threadsafe(self._queue.put_nowait, result)
+            if message_event:
+                anyio.from_thread.run(self.submerge, message_event)
+                self.buffer.push(message_event)
         except Exception:
             logger.warning(
                 "Tentacle %s: failed to convert Lark event",
@@ -262,12 +288,13 @@ class LarkTentacle(Tentacle):
                 exc_info=True,
             )
 
-    def _parse_lark_content(
+    def digest(
         self,
         msg_type: str,
         content_json: str | None,
         mentions: list[Any] | None,
     ) -> list[MessageSegment]:
+        """Break down raw Lark message content into a list of MessageSegments."""
         if not content_json:
             return []
 
@@ -282,17 +309,18 @@ class LarkTentacle(Tentacle):
             text: str = content.get("text", "")
             if mentions:
                 for m in mentions:
-                    placeholder: str = m.key
-                    if placeholder in text:
-                        before, _, after = text.partition(placeholder)
-                        if before:
-                            segments.append(TextSegment(data={"text": before}))
-                        segments.append(
-                            AtSegment(
-                                data=AtData(user_id=m.id.open_id or m.key, name=m.name)
-                            )
-                        )
-                        text = after
+                    placeholder: str | None = m.key
+                    if not placeholder or placeholder not in text:
+                        continue
+                    before, _, after = text.partition(placeholder)
+                    if before:
+                        segments.append(TextSegment(data={"text": before}))
+                    m_id = m.id
+                    user_id = (m_id.open_id if m_id else None) or placeholder
+                    segments.append(
+                        AtSegment(data=AtData(user_id=user_id, name=m.name or ""))
+                    )
+                    text = after
                 if text:
                     segments.append(TextSegment(data={"text": text}))
             else:
@@ -345,17 +373,3 @@ class LarkTentacle(Tentacle):
             segments.append(TextSegment(data={"text": f"[{msg_type}]"}))
 
         return segments
-
-    async def _run_ws_client(self) -> None:
-        event_handler = (
-            lark.EventDispatcherHandler.builder("", "")
-            .register_p2_im_message_receive_v1(self._on_message_receive)
-            .build()
-        )
-        self._ws_client = lark.ws.Client(
-            self.ink.app_id,
-            self.ink.app_secret.get_secret_value(),
-            event_handler=event_handler,
-            log_level=lark.LogLevel.INFO,
-        )
-        await asyncio.to_thread(self._ws_client.start)
