@@ -23,7 +23,7 @@ import lark_oapi
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import SecretStr
 
-from octomate.ink.lark import LarkInk, LarkUserProfile
+from octomate.tentacles.lark.ink import LarkInk, LarkUserProfile
 from octomate.schemas.events import GroupMessageEvent, MessageEvent, PrivateMessageEvent
 from octomate.schemas.segments import (
     AgentSegment,

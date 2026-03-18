@@ -8,10 +8,6 @@ octomate.yaml
 # Github
 .github/prompts/
 
-# napcat
-ntqq/
-napcat/
-
 # Octomate runtime data
 .octomate/
 

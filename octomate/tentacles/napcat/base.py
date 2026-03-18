@@ -25,7 +25,7 @@ from pydantic import (
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
-from octomate.ink.napcat import NapcatInk
+from octomate.tentacles.napcat.ink import NapcatInk
 from octomate.schemas.actions import (
     ActionResponse,
     SendGroupMsgAction,
