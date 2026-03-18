@@ -31,6 +31,12 @@ class Mem0Memory(OctopusMemory):
         super().__init__(max_messages=max_messages, store_path=store_path)
         self.mem0 = Mem0(**mem0_kwargs)
 
+    @staticmethod
+    def run_id(key: SessionKey) -> str:
+        if key.group_id is not None:
+            return f"{key.tentacle_id}:group:{key.group_id}"
+        return f"{key.tentacle_id}:private:{key.user_id}"
+
     async def recall(
         self,
         key: SessionKey,
@@ -41,14 +47,33 @@ class Mem0Memory(OctopusMemory):
         query = " ".join(str(e) for e in events).strip()
         if not query:
             return []
-        fn = functools.partial(
-            self.mem0.search,
-            query,
-            user_id=str(key),
-            limit=limit,
-        )
+
         try:
-            result = await asyncio.to_thread(fn)
+            rid = self.run_id(key)
+
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        functools.partial(
+                            self.mem0.add,
+                            [{"role": "user", "content": content}],
+                            user_id=str(event.user_id),
+                            run_id=rid,
+                        )
+                    )
+                    for event in events
+                    if (content := str(event))
+                )
+            )
+
+            result = await asyncio.to_thread(
+                functools.partial(
+                    self.mem0.search,
+                    query,
+                    run_id=rid,
+                    limit=limit,
+                )
+            )
             items = (
                 result.get("results", result) if isinstance(result, dict) else result
             )
@@ -65,9 +90,15 @@ class Mem0Memory(OctopusMemory):
     ) -> None:
         if not messages:
             return
+        rid = self.run_id(key)
         dicts = [{"role": "assistant", "content": str(msg)} for msg in messages]
         try:
-            fn = functools.partial(self.mem0.add, dicts, user_id=str(key))
+            fn = functools.partial(
+                self.mem0.add,
+                dicts,
+                user_id=tentacle.profile.user_id,
+                run_id=rid,
+            )
             await asyncio.to_thread(fn)
         except Exception:
             logger.warning("Memory memo failed", exc_info=True)

@@ -20,8 +20,8 @@ class UserProfile(BaseModel):
         frozen=True,
     )
 
-    user_id: str
-    name: str
+    user_id: str = "0"
+    name: str = ""
     nickname: str | None = None
     gender: str | None = None
     age: int | None = None
@@ -29,6 +29,7 @@ class UserProfile(BaseModel):
 
 
 class Anonymous(BaseModel):
-    id: int
-    name: str
-    flag: str
+    model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
+
+    id: str = "0"
+    name: str = ""

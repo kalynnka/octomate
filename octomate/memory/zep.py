@@ -82,9 +82,9 @@ class ZepMemory(OctopusMemory):
             return []
 
         try:
-            thread_id = self.thread_id(key)
+            tid = self.thread_id(key)
             await self.ensure_thread(
-                thread_id,
+                tid,
                 tentacle.profile.user_id
                 if key.group_id  # group chat uses tentacle user_id as thread owner
                 else key.user_id,  # private chat uses user_id as thread owner
@@ -97,22 +97,20 @@ class ZepMemory(OctopusMemory):
                     for user_profile in current_users.values()
                 ),
                 self.ensure_user(tentacle.profile),
-                self.ensure_thread(thread_id, tentacle.profile.user_id),
+                self.ensure_thread(tid, tentacle.profile.user_id),
             )
 
             messages = [
                 ZepMessage(
-                    content=content,
+                    content=str(event),
                     role="user",
                     name=event.display_name,
                 )
                 for event in events
-                # TODO: Text content only at the moment
-                if (content := event.text_content())
             ]
 
             result = await self.client.thread.add_messages(
-                thread_id,
+                tid,
                 messages=messages,
                 return_context=True,
             )
@@ -131,12 +129,12 @@ class ZepMemory(OctopusMemory):
         if not messages:
             return
 
-        thread_id = self.thread_id(key)
+        tid = self.thread_id(key)
 
         try:
             await asyncio.gather(
                 self.ensure_user(tentacle.profile),
-                self.ensure_thread(thread_id, tentacle.profile.user_id),
+                self.ensure_thread(tid, tentacle.profile.user_id),
             )
 
             zep_messages = [
@@ -148,6 +146,6 @@ class ZepMemory(OctopusMemory):
                 for msg in messages
             ]
             if zep_messages:
-                await self.client.thread.add_messages(thread_id, messages=zep_messages)
+                await self.client.thread.add_messages(tid, messages=zep_messages)
         except Exception:
             logger.warning("Zep memo failed", exc_info=True)

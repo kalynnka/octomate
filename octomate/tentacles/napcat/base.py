@@ -107,12 +107,8 @@ class NapcatTentacle(Tentacle):
         async for raw in ws:
             try:
                 frame = inbound_adapter.validate_json(raw)
-            except Exception:
-                logger.debug(
-                    "Tentacle %s: unrecognised frame: %s",
-                    self.tag,
-                    raw[:200],
-                )
+            except Exception as e:
+                logger.warning("Tentacle %s: unrecognised frame: %s", self.tag, e)
                 continue
 
             if isinstance(frame, ActionResponse):
@@ -121,6 +117,7 @@ class NapcatTentacle(Tentacle):
             frame.tentacle_id = self.tag
 
             if isinstance(frame, MessageEvent):
+                frame.sender = await self.get_user_profile(frame.user_id)
                 await self.submerge(frame)
                 self.buffer.push(frame)
 

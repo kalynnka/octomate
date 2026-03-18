@@ -36,7 +36,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.tentacles.base import SendTarget, Tentacle
-from octomate.tentacles.lark.ink import LarkInk, LarkUserProfile
+from octomate.tentacles.lark.ink import LarkInk
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
@@ -194,9 +194,8 @@ class LarkTentacle(Tentacle):
 
             sender_id_obj = sender.sender_id
             sender_id: str = (sender_id_obj.open_id or "") if sender_id_obj else ""
-            sender_name: str = (
-                (sender_id_obj.open_id or "unknown") if sender_id_obj else "unknown"
-            )
+
+            sender_profile = anyio.from_thread.run(self.get_user_profile, sender_id)
 
             now = int(time.time())
             message_id: str = message.message_id or ""
@@ -210,7 +209,7 @@ class LarkTentacle(Tentacle):
                     message_id=message_id,
                     user_id=sender_id,
                     group_id=message.chat_id or "",
-                    sender=LarkUserProfile(user_id=sender_id, name=sender_name),
+                    sender=sender_profile,
                     message=segments,
                     raw_message=content_json or "",
                 )
@@ -221,7 +220,7 @@ class LarkTentacle(Tentacle):
                     tentacle_id=self.tag,
                     message_id=message_id,
                     user_id=sender_id,
-                    sender=LarkUserProfile(user_id=sender_id, name=sender_name),
+                    sender=sender_profile,
                     message=segments,
                     raw_message=content_json or "",
                 )

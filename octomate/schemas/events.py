@@ -4,7 +4,7 @@ from abc import ABC
 from functools import cached_property
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag
 from pydantic_ai.messages import UserContent
 
 from octomate.schemas.segments import AtSegment, MessageSegment, TextSegment
@@ -12,6 +12,8 @@ from octomate.schemas.session import Anonymous, SessionKey, UserProfile
 
 
 class Event(BaseModel, ABC):
+    model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
+
     time: int = 0
     self_id: str = "0"
     tentacle_id: str = ""
@@ -25,7 +27,7 @@ class MessageEvent(Event, ABC):
     user_id: str
     font: int = 0
 
-    sender: UserProfile
+    sender: UserProfile = Field(default=UserProfile())
     message: list[MessageSegment] = Field(default_factory=list)
     raw_message: str = ""
 
@@ -36,11 +38,6 @@ class MessageEvent(Event, ABC):
     @property
     def display_name(self) -> str:
         return self.sender.name or self.sender.nickname or "anonymous"
-
-    def text_content(self) -> str:
-        return "".join(
-            seg.data["text"] for seg in self.message if isinstance(seg, TextSegment)
-        )
 
     def __str__(self) -> str:
         body = "\n".join(f"  {seg}" for seg in self.message)

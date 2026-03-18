@@ -77,44 +77,51 @@ class Octopus:
         async with asyncio.TaskGroup() as tg, self._nerve_receive:
             async for key, batch in self._nerve_receive:
                 try:
-                    tentacle = self.tentacles[key.tentacle_id]
-                    if key.group_id is not None and not any(
-                        isinstance(msg, GroupMessageEvent) and msg.is_at(tentacle.id)
-                        for msg in batch
-                    ):
-                        self.memory.record(
-                            key,
-                            [
-                                ModelRequest(parts=[UserPromptPart(content=str(msg))])
-                                for msg in batch
-                            ],
-                        )
-                        continue
                     tg.create_task(self.think(key, batch))
                 except Exception:
                     logger.exception("Error processing batch [%s]", key)
 
     async def think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
+        if not batch:
+            return
+
         tentacle = self.tentacles[key.tentacle_id]
         profile = tentacle.profile
+
+        if key.group_id is not None and not any(
+            isinstance(msg, GroupMessageEvent) and msg.is_at(tentacle.id)
+            for msg in batch
+        ):
+            self.memory.record(
+                key,
+                [
+                    ModelRequest(parts=[UserPromptPart(content=str(msg))])
+                    for msg in batch
+                ],
+            )
+            return
 
         if key.group_id is not None:
             header = f"[me: {profile.name} ({profile.user_id})] [group: {key.group_id}]"
         else:
             header = f"[me: {profile.name} ({profile.user_id})] [chat: private]"
 
+        history = []
+        # history = self.memory.history(key)
+        self.memory.record(
+            key,
+            [ModelRequest(parts=[UserPromptPart(content=str(msg))]) for msg in batch],
+        )
+
         user_prompt: list = [header]
         for msg in batch:
             user_prompt.extend(msg.to_content_parts())
 
-        history = self.memory.history(key)
-
-        if batch:
-            memories = await self.memory.recall(key, batch, tentacle)
-            if memories:
-                facts = "\n".join(f"- {m}" for m in memories)
-                content = f"[relevant memories]\n{facts}"
-                history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+        memories = await self.memory.recall(key, batch, tentacle)
+        if memories:
+            facts = "\n".join(f"- {m}" for m in memories)
+            content = f"[relevant memories]\n{facts}"
+            history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
 
         logger.info("Octopus processing batch [%s] (%d messages)", key, len(batch))
 
