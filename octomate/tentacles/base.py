@@ -11,7 +11,7 @@ import anyio
 
 from octomate.schemas.events import GroupMessageEvent
 from octomate.schemas.segments import ImageSegment
-from octomate.schemas.session import SessionKey
+from octomate.schemas.session import SessionKey, UserProfile
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -26,14 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Mask:
-    """The identity a tentacle presents on its IM platform — the 'face' it wears."""
-
-    id: str
-    name: str
-
-
-@dataclass
 class SendTarget:
     chat_type: Literal["group", "private"]
     chat_id: int | str
@@ -44,7 +36,7 @@ class SendTarget:
 class Ink(Protocol):
     """Structural protocol for platform API clients."""
 
-    def inspect(self) -> Mask: ...
+    def inspect(self) -> UserProfile: ...
 
     async def send_message(
         self,
@@ -67,6 +59,8 @@ class Ink(Protocol):
         self, message_id: str, file_key: str
     ) -> tuple[bytes, str] | None: ...
 
+    async def get_user_profile(self, user_id: str) -> UserProfile: ...
+
 
 class Tentacle(ABC):
     """A tentacle wraps a single IM platform connection and exposes it
@@ -77,25 +71,28 @@ class Tentacle(ABC):
     FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
 
     tag: str
-    mask: Mask
+    profile: UserProfile
+    ink: Ink
     octopus: Octopus
     buffer: MessageBuffer
+    user_profiles: dict[str, UserProfile]
 
     def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.5) -> None:
         self.tag = tag
         self.octopus = octopus
-        self.mask = self.inspect()
+        self.profile = self.inspect()
         self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
+        self.user_profiles = {}
 
     @property
     def id(self) -> str:
         """The bot's platform ID."""
-        return self.mask.id
+        return self.profile.user_id
 
     @property
     def name(self) -> str:
         """The bot's display name."""
-        return self.mask.name
+        return self.profile.name
 
     @abstractmethod
     async def activate(self) -> None:
@@ -107,10 +104,21 @@ class Tentacle(ABC):
         """Gracefully shut down the connection and release resources."""
         ...
 
-    @abstractmethod
-    def inspect(self) -> Mask:
+    def inspect(self) -> UserProfile:
         """Fetch own identity from the IM platform (sync). Called during __init__."""
-        ...
+        profile = self.ink.inspect()
+        logger.info(
+            "Tentacle %s: probed as %s (%s)", self.tag, profile.user_id, profile.name
+        )
+        return profile
+
+    async def get_user_profile(self, user_id: str) -> UserProfile:
+        cached = self.user_profiles.get(user_id)
+        if cached is not None:
+            return cached
+        profile = await self.ink.get_user_profile(user_id)
+        self.user_profiles[user_id] = profile
+        return profile
 
     async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         """Dispatch an outbound action: resolve media, then squirt the message out."""

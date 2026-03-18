@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websocke
 import octotools
 from octomate.agents.manager import SkillManager
 from octomate.config import LarkTentacleConfig, NapcatTentacleConfig, OctomateConfig
-from octomate.memory import Mem0Memory, OctopusMemory
+from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
 from octomate.octopus import Octopus
 from octomate.tentacles.lark import LarkTentacle
 from octomate.tentacles.napcat import NapcatTentacle
@@ -35,6 +35,11 @@ def _start() -> None:
         memory: OctopusMemory = Mem0Memory(
             max_messages=mem_cfg.max_messages,
             config=mem_cfg.mem0,
+        )
+    elif mem_cfg.zep.enabled:
+        memory = ZepMemory(
+            api_key=mem_cfg.zep.api_key,
+            max_messages=mem_cfg.max_messages,
         )
     else:
         memory = OctopusMemory(max_messages=mem_cfg.max_messages)

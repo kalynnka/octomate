@@ -111,12 +111,12 @@ def create_companion_agent(
 ) -> Agent[SessionContext, list[AgentMessage]]:
     http_client = httpx.AsyncClient(
         transport=RetryTransport(httpx.AsyncHTTPTransport()),
-        timeout=httpx.Timeout(30.0),
+        timeout=httpx.Timeout(20.0),
     )
     provider = GoogleProvider(
+        base_url=config.base_url or None,
         api_key=config.api_key or None,
         http_client=http_client,
-        base_url=config.base_url or None,
     )
     model = GoogleModel(config.model, provider=provider)
 

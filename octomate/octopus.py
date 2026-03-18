@@ -137,4 +137,8 @@ class Octopus:
         for msg in result.output:
             await tentacle.twitch(target, msg.segments)
 
-        asyncio.create_task(self.memory.memo(key, result.new_messages()))
+        asyncio.create_task(
+            self.memory.memo(
+                key, result.new_messages(), events=batch, tentacle=tentacle
+            )
+        )

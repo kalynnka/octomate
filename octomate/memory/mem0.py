@@ -4,13 +4,17 @@ import asyncio
 import functools
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mem0 import Memory as Mem0
 from pydantic_ai.messages import ModelMessage
 
 from octomate.memory.base import OctopusMemory
 from octomate.schemas.session import SessionKey
+
+if TYPE_CHECKING:
+    from octomate.schemas.events import MessageEvent
+    from octomate.tentacles.base import Tentacle
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +50,13 @@ class Mem0Memory(OctopusMemory):
             logger.warning("Memory recall failed", exc_info=True)
             return []
 
-    async def memo(self, key: SessionKey, messages: list[ModelMessage]) -> None:
+    async def memo(
+        self,
+        key: SessionKey,
+        messages: list[ModelMessage],
+        events: list[MessageEvent] | None = None,
+        tentacle: Tentacle | None = None,
+    ) -> None:
         dicts = self.messages_to_dicts(messages)
         if not dicts:
             return

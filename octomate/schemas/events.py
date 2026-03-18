@@ -8,7 +8,7 @@ from pydantic import BaseModel, Discriminator, Field, Tag
 from pydantic_ai.messages import UserContent
 
 from octomate.schemas.segments import AtSegment, MessageSegment, TextSegment
-from octomate.schemas.session import Anonymous, Sender, SessionKey
+from octomate.schemas.session import Anonymous, SessionKey, UserProfile
 
 
 class Event(BaseModel, ABC):
@@ -25,7 +25,7 @@ class MessageEvent(Event, ABC):
     user_id: int | str
     font: int = 0
 
-    sender: Sender
+    sender: UserProfile
     message: list[MessageSegment] = Field(default_factory=list)
     raw_message: str = ""
 
@@ -35,7 +35,7 @@ class MessageEvent(Event, ABC):
 
     @property
     def display_name(self) -> str:
-        return self.sender.nickname or "anonymous"
+        return self.sender.name or self.sender.nickname or "anonymous"
 
     def text_content(self) -> str:
         return "".join(
@@ -87,7 +87,7 @@ class GroupMessageEvent(MessageEvent):
 
     @property
     def display_name(self) -> str:
-        return self.sender.card or self.sender.nickname or "anonymous"
+        return self.sender.name or self.sender.nickname or "anonymous"
 
     def __str__(self) -> str:
         body = "".join(str(seg) for seg in self.message)

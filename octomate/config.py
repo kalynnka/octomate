@@ -47,9 +47,15 @@ class Mem0Config(Mem0MemoryConfig):
     enabled: bool = Field(default=False, exclude=True)
 
 
+class ZepConfig(BaseModel):
+    enabled: bool = False
+    api_key: str = ""
+
+
 class MemoryConfig(BaseModel):
     max_messages: int = 32
     mem0: Mem0Config = Mem0Config()
+    zep: ZepConfig = ZepConfig()
 
 
 class MindConfig(BaseModel):

@@ -25,7 +25,7 @@ from pydantic import (
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
-from octomate.ink.napcat import NapcatInk, NapcatMask
+from octomate.ink.napcat import NapcatInk
 from octomate.schemas.actions import (
     ActionResponse,
     SendGroupMsgAction,
@@ -99,11 +99,6 @@ class NapcatTentacle(Tentacle):
         self.ws_client = None
         self.ws_scope = None
         super().__init__(tag, octopus, flush_delay=flush_delay)
-
-    def inspect(self) -> NapcatMask:
-        mask = self.ink.inspect()
-        logger.info("Tentacle %s: probed as %s (%s)", self.tag, mask.id, mask.name)
-        return mask
 
     async def sense(self, ws: ClientConnection) -> None:
         """Listen on the WebSocket and ingest each incoming MessageEvent."""

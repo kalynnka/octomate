@@ -23,7 +23,7 @@ import lark_oapi
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import SecretStr
 
-from octomate.ink.lark import LarkInk
+from octomate.ink.lark import LarkInk, LarkUserProfile
 from octomate.schemas.events import GroupMessageEvent, MessageEvent, PrivateMessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -36,8 +36,7 @@ from octomate.schemas.segments import (
     ReplySegment,
     TextSegment,
 )
-from octomate.schemas.session import Sender
-from octomate.tentacles.base import Mask, SendTarget, Tentacle
+from octomate.tentacles.base import SendTarget, Tentacle
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
@@ -72,14 +71,6 @@ class LarkTentacle(Tentacle):
             log_level=lark_oapi.LogLevel.INFO,
         )
         super().__init__(tag, octopus, flush_delay=flush_delay)
-
-    def inspect(self) -> Mask:
-        mask = self.ink.inspect()
-        if mask.id:
-            logger.info("Tentacle %s: probed as %s (%s)", self.tag, mask.id, mask.name)
-        else:
-            logger.warning("Tentacle %s: probe failed, identity unknown", self.tag)
-        return mask
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: starting Lark WebSocket client", self.tag)
@@ -213,23 +204,23 @@ class LarkTentacle(Tentacle):
             if chat_type == "group":
                 message_event = GroupMessageEvent(
                     time=now,
-                    self_id=self.mask.id,
+                    self_id=self.profile.user_id,
                     tentacle_id=self.tag,
                     message_id=message_id,
                     user_id=sender_id,
                     group_id=message.chat_id or "",
-                    sender=Sender(user_id=sender_id, nickname=sender_name),
+                    sender=LarkUserProfile(user_id=sender_id, name=sender_name),
                     message=segments,
                     raw_message=content_json or "",
                 )
             elif chat_type == "p2p":
                 message_event = PrivateMessageEvent(
                     time=now,
-                    self_id=self.mask.id,
+                    self_id=self.profile.user_id,
                     tentacle_id=self.tag,
                     message_id=message_id,
                     user_id=sender_id,
-                    sender=Sender(user_id=sender_id, nickname=sender_name),
+                    sender=LarkUserProfile(user_id=sender_id, name=sender_name),
                     message=segments,
                     raw_message=content_json or "",
                 )

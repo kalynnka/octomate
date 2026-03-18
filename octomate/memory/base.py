@@ -4,6 +4,7 @@ import logging
 import pickle
 from collections import defaultdict, deque
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic_ai.messages import (
     ModelMessage,
@@ -14,6 +15,10 @@ from pydantic_ai.messages import (
 )
 
 from octomate.schemas.session import SessionKey
+
+if TYPE_CHECKING:
+    from octomate.schemas.events import MessageEvent
+    from octomate.tentacles.base import Tentacle
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +65,13 @@ class OctopusMemory:
     async def recall(self, key: SessionKey, query: str, limit: int = 5) -> list[str]:
         return []
 
-    async def memo(self, key: SessionKey, messages: list[ModelMessage]) -> None:
+    async def memo(
+        self,
+        key: SessionKey,
+        messages: list[ModelMessage],
+        events: list[MessageEvent] | None = None,
+        tentacle: Tentacle | None = None,
+    ) -> None:
         pass
 
     @staticmethod

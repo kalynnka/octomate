@@ -30,6 +30,9 @@ octomate:
             url: "http://localhost:19532"
             token: ""
             embedding_model_dims: 768
+      zep:
+        enabled: false
+        api_key: ""
 
 qweather:
   api_host: "devapi.qweather.com"
