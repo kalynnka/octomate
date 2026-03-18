@@ -96,23 +96,21 @@ class Octopus:
 
     async def think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         tentacle = self.tentacles[key.tentacle_id]
-        identity = f"{tentacle.id}-{tentacle.name}"
+        profile = tentacle.profile
 
         if key.group_id is not None:
-            header = f"[group chat: {key.group_id}] [me: {identity}]"
+            header = f"[me: {profile.name} ({profile.user_id})] [group: {key.group_id}]"
         else:
-            header = f"[private chat] [me: {identity}]"
+            header = f"[me: {profile.name} ({profile.user_id})] [chat: private]"
 
-        messages = [str(msg) for msg in batch]
         user_prompt: list = [header]
         for msg in batch:
             user_prompt.extend(msg.to_content_parts())
 
         history = self.memory.history(key)
 
-        query = " ".join(messages).strip()
-        if query:
-            memories = await self.memory.recall(key, query)
+        if batch:
+            memories = await self.memory.recall(key, batch, tentacle)
             if memories:
                 facts = "\n".join(f"- {m}" for m in memories)
                 content = f"[relevant memories]\n{facts}"
@@ -137,8 +135,4 @@ class Octopus:
         for msg in result.output:
             await tentacle.twitch(target, msg.segments)
 
-        asyncio.create_task(
-            self.memory.memo(
-                key, result.new_messages(), events=batch, tentacle=tentacle
-            )
-        )
+        asyncio.create_task(self.memory.memo(key, result.output, tentacle))

@@ -6,14 +6,9 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    TextPart,
-    UserPromptPart,
-)
+from pydantic_ai.messages import ModelMessage
 
+from octomate.schemas.actions import AgentMessage
 from octomate.schemas.session import SessionKey
 
 if TYPE_CHECKING:
@@ -62,32 +57,19 @@ class OctopusMemory:
     def history(self, key: SessionKey) -> list[ModelMessage]:
         return [msg for batch in self.message_store[key] for msg in batch]
 
-    async def recall(self, key: SessionKey, query: str, limit: int = 5) -> list[str]:
+    async def recall(
+        self,
+        key: SessionKey,
+        events: list[MessageEvent],
+        tentacle: Tentacle,
+        limit: int = 5,
+    ) -> list[str]:
         return []
 
     async def memo(
         self,
         key: SessionKey,
-        messages: list[ModelMessage],
-        events: list[MessageEvent] | None = None,
-        tentacle: Tentacle | None = None,
+        messages: list[AgentMessage],
+        tentacle: Tentacle,
     ) -> None:
         pass
-
-    @staticmethod
-    def messages_to_dicts(
-        messages: list[ModelMessage],
-    ) -> list[dict[str, str]]:
-        result: list[dict[str, str]] = []
-        for msg in messages:
-            if isinstance(msg, ModelRequest):
-                for part in msg.parts:
-                    if isinstance(part, UserPromptPart) and isinstance(
-                        part.content, str
-                    ):
-                        result.append({"role": "user", "content": part.content})
-            elif isinstance(msg, ModelResponse):
-                for part in msg.parts:
-                    if isinstance(part, TextPart):
-                        result.append({"role": "assistant", "content": part.content})
-        return result

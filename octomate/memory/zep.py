@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic_ai.messages import ModelMessage
 from zep_cloud.client import AsyncZep
+from zep_cloud.types import Message as ZepMessage
 
 from octomate.memory.base import OctopusMemory
-from octomate.schemas.session import SessionKey
+from octomate.schemas.actions import AgentMessage
+from octomate.schemas.session import SessionKey, UserProfile
 
 if TYPE_CHECKING:
     from octomate.schemas.events import MessageEvent
@@ -22,7 +24,7 @@ BOT_USER_ID = "octomate"
 class ZepMemory(OctopusMemory):
     client: AsyncZep
     known_users: set[str]
-    known_graphs: set[str]
+    known_threads: set[str]
 
     def __init__(
         self,
@@ -35,85 +37,117 @@ class ZepMemory(OctopusMemory):
         self.client = AsyncZep(api_key=api_key)
         self.bot_name = bot_name
         self.known_users = set()
-        self.known_graphs = set()
+        self.known_threads = set()
 
-    async def ensure_user(self, user_id: str, first_name: str | None = None) -> None:
-        if user_id in self.known_users:
+    async def ensure_user(self, profile: UserProfile) -> None:
+        if profile.user_id in self.known_users:
             return
         try:
-            await self.client.user.get(user_id)
+            await self.client.user.get(profile.user_id)
         except Exception:
             await self.client.user.add(
-                user_id=user_id, first_name=first_name or user_id
+                user_id=profile.user_id,
+                first_name=profile.name or profile.nickname or profile.user_id,
+                last_name=None,
+                email=getattr(profile, "email", None),
             )
-        self.known_users.add(user_id)
+        self.known_users.add(profile.user_id)
 
-    async def ensure_graph(self, graph_id: str) -> None:
-        if graph_id in self.known_graphs:
+    async def ensure_thread(self, thread_id: str, user_id: str) -> None:
+        if thread_id in self.known_threads:
             return
         try:
-            await self.client.graph.get(graph_id)
+            await self.client.thread.get(thread_id)
         except Exception:
-            await self.client.graph.create(graph_id=graph_id)
-        self.known_graphs.add(graph_id)
+            await self.client.thread.create(
+                thread_id=thread_id,
+                user_id=user_id,
+            )
+        self.known_threads.add(thread_id)
 
     @staticmethod
-    def session_graph_id(key: SessionKey) -> str:
+    def thread_id(key: SessionKey) -> str:
         if key.group_id is not None:
             return f"{key.tentacle_id}:group:{key.group_id}"
         return f"{key.tentacle_id}:private:{key.user_id}"
 
-    async def recall(self, key: SessionKey, query: str, limit: int = 5) -> list[str]:
-        if not query:
+    async def recall(
+        self,
+        key: SessionKey,
+        events: list[MessageEvent],
+        tentacle: Tentacle,
+        limit: int = 5,
+    ) -> list[str]:
+        if not events:
             return []
-        user_id = str(key.user_id)
-        graph_id = self.session_graph_id(key)
-        facts: list[str] = []
-        half = max(limit // 2, 1)
 
-        for search_kwargs in [
-            {"user_id": user_id, "limit": half},
-            {"graph_id": graph_id, "limit": limit - half},
-        ]:
-            try:
-                result = await self.client.graph.search(
-                    query=query, scope="edges", **search_kwargs
+        try:
+            thread_id = self.thread_id(key)
+            await self.ensure_thread(
+                thread_id,
+                tentacle.profile.user_id
+                if key.group_id  # group chat uses tentacle user_id as thread owner
+                else key.user_id,  # private chat uses user_id as thread owner
+            )
+            current_users = {event.user_id: event.sender for event in events}
+
+            await asyncio.gather(
+                *(
+                    self.ensure_user(user_profile)
+                    for user_profile in current_users.values()
+                ),
+                self.ensure_user(tentacle.profile),
+                self.ensure_thread(thread_id, tentacle.profile.user_id),
+            )
+
+            messages = [
+                ZepMessage(
+                    content=content,
+                    role="user",
+                    name=event.display_name,
                 )
-                for e in result.edges or []:
-                    if e.fact and e.fact not in facts:
-                        facts.append(e.fact)
-            except Exception:
-                logger.warning("Zep recall failed for %s", search_kwargs, exc_info=True)
-        return facts[:limit]
+                for event in events
+                # TODO: Text content only at the moment
+                if (content := event.text_content())
+            ]
+
+            result = await self.client.thread.add_messages(
+                thread_id,
+                messages=messages,
+                return_context=True,
+            )
+            if result.context:
+                return [result.context]
+        except Exception:
+            logger.warning("Zep recall failed", exc_info=True)
+        return []
 
     async def memo(
         self,
         key: SessionKey,
-        messages: list[ModelMessage],
-        events: list[MessageEvent] | None = None,
-        tentacle: Tentacle | None = None,
+        messages: list[AgentMessage],
+        tentacle: Tentacle,
     ) -> None:
-        dicts = self.messages_to_dicts(messages)
-        if not dicts:
+        if not messages:
             return
 
-        graph_id = self.session_graph_id(key)
-        user_id = str(key.user_id)
+        thread_id = self.thread_id(key)
 
         try:
-            await self.ensure_graph(graph_id)
-            await self.ensure_user(BOT_USER_ID, self.bot_name)
+            await asyncio.gather(
+                self.ensure_user(tentacle.profile),
+                self.ensure_thread(thread_id, tentacle.profile.user_id),
+            )
 
-            if tentacle and events:
-                for event in events:
-                    eid = str(event.user_id)
-                    if eid not in self.known_users:
-                        profile = await tentacle.get_user_profile(eid)
-                        await self.ensure_user(eid, profile.nickname)
-
-            data = "\n".join(f"{m['role']}: {m['content']}" for m in dicts)
-
-            await self.client.graph.add(data=data, type="text", user_id=user_id)
-            await self.client.graph.add(data=data, type="text", graph_id=graph_id)
+            zep_messages = [
+                ZepMessage(
+                    content=str(msg),
+                    role="assistant",
+                    name=tentacle.profile.name,
+                )
+                for msg in messages
+            ]
+            if zep_messages:
+                await self.client.thread.add_messages(thread_id, messages=zep_messages)
         except Exception:
             logger.warning("Zep memo failed", exc_info=True)

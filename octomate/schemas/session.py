@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict
 
 class SessionKey(NamedTuple):
     tentacle_id: str
-    user_id: int | str
-    group_id: int | str | None = None
+    user_id: str
+    group_id: str | None = None
 
 
 class UserProfile(BaseModel):
@@ -17,6 +17,7 @@ class UserProfile(BaseModel):
         validate_by_name=True,
         extra="ignore",
         coerce_numbers_to_str=True,
+        frozen=True,
     )
 
     user_id: str

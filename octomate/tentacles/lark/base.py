@@ -23,7 +23,6 @@ import lark_oapi
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import SecretStr
 
-from octomate.tentacles.lark.ink import LarkInk, LarkUserProfile
 from octomate.schemas.events import GroupMessageEvent, MessageEvent, PrivateMessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -37,6 +36,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.tentacles.base import SendTarget, Tentacle
+from octomate.tentacles.lark.ink import LarkInk, LarkUserProfile
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
@@ -46,8 +46,9 @@ logger = logging.getLogger(__name__)
 
 
 class LarkTentacle(Tentacle):
-    ink: LarkInk
     ws_client: lark_oapi.ws.Client
+
+    ink: LarkInk
 
     def __init__(
         self,

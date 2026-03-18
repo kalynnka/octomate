@@ -25,7 +25,6 @@ from pydantic import (
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
-from octomate.tentacles.napcat.ink import NapcatInk
 from octomate.schemas.actions import (
     ActionResponse,
     SendGroupMsgAction,
@@ -41,6 +40,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.tentacles.base import SendTarget, Tentacle
+from octomate.tentacles.napcat.ink import NapcatInk
 from octomate.utils import guess_image_ext, strip_markdown
 
 if TYPE_CHECKING:
@@ -69,13 +69,15 @@ class NapcatTentacle(Tentacle):
     """Forward-WebSocket tentacle that connects *to* a napcat instance."""
 
     ws_url: str
-    ink: NapcatInk
+    ws_client: ClientConnection | None
+    ws_scope: anyio.CancelScope | None
+
     access_token: SecretStr | None
     backoff_base: float
     backoff_max: float
     backoff_factor: float
-    ws_client: ClientConnection | None
-    ws_scope: anyio.CancelScope | None
+
+    ink: NapcatInk
 
     def __init__(
         self,

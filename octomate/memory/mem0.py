@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mem0 import Memory as Mem0
-from pydantic_ai.messages import ModelMessage
 
 from octomate.memory.base import OctopusMemory
+from octomate.schemas.actions import AgentMessage
 from octomate.schemas.session import SessionKey
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class Mem0Memory(OctopusMemory):
-    provider: Mem0
+    mem0: Mem0
 
     def __init__(
         self,
@@ -29,13 +29,20 @@ class Mem0Memory(OctopusMemory):
         **mem0_kwargs: Any,
     ) -> None:
         super().__init__(max_messages=max_messages, store_path=store_path)
-        self.provider = Mem0(**mem0_kwargs)
+        self.mem0 = Mem0(**mem0_kwargs)
 
-    async def recall(self, key: SessionKey, query: str, limit: int = 5) -> list[str]:
+    async def recall(
+        self,
+        key: SessionKey,
+        events: list[MessageEvent],
+        tentacle: Tentacle,
+        limit: int = 5,
+    ) -> list[str]:
+        query = " ".join(str(e) for e in events).strip()
         if not query:
             return []
         fn = functools.partial(
-            self.provider.search,
+            self.mem0.search,
             query,
             user_id=str(key),
             limit=limit,
@@ -53,15 +60,14 @@ class Mem0Memory(OctopusMemory):
     async def memo(
         self,
         key: SessionKey,
-        messages: list[ModelMessage],
-        events: list[MessageEvent] | None = None,
-        tentacle: Tentacle | None = None,
+        messages: list[AgentMessage],
+        tentacle: Tentacle,
     ) -> None:
-        dicts = self.messages_to_dicts(messages)
-        if not dicts:
+        if not messages:
             return
+        dicts = [{"role": "assistant", "content": str(msg)} for msg in messages]
         try:
-            fn = functools.partial(self.provider.add, dicts, user_id=str(key))
+            fn = functools.partial(self.mem0.add, dicts, user_id=str(key))
             await asyncio.to_thread(fn)
         except Exception:
             logger.warning("Memory memo failed", exc_info=True)

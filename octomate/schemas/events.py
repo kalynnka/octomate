@@ -13,16 +13,16 @@ from octomate.schemas.session import Anonymous, SessionKey, UserProfile
 
 class Event(BaseModel, ABC):
     time: int = 0
-    self_id: int | str = 0
+    self_id: str = "0"
     tentacle_id: str = ""
 
 
 class MessageEvent(Event, ABC):
     post_type: Literal["message"] = "message"
-    sub_type: str = "normal"
+    message_type: Literal["private", "group"]
 
-    message_id: int | str
-    user_id: int | str
+    message_id: str
+    user_id: str
     font: int = 0
 
     sender: UserProfile
@@ -43,16 +43,12 @@ class MessageEvent(Event, ABC):
         )
 
     def __str__(self) -> str:
-        body = "".join(str(seg) for seg in self.message)
-        return (
-            f"**{self.display_name}** ({self.user_id}) [msg:{self.message_id}]:\n{body}"
-        )
+        body = "\n".join(f"  {seg}" for seg in self.message)
+        return f"{self.display_name} ({self.user_id}) #msg:{self.message_id}:\n{body}"
 
     def to_content_parts(self) -> list[UserContent]:
-        header = f"**{self.display_name}** ({self.user_id}) [msg:{self.message_id}]:"
-        parts: list[UserContent] = [header]
-        parts.extend(seg.to_content() for seg in self.message)
-        return parts
+        header = f"{self.display_name} ({self.user_id}) #msg:{self.message_id}:"
+        return [header] + [seg.to_content() for seg in self.message]
 
 
 class PrivateMessageEvent(MessageEvent):
@@ -63,7 +59,7 @@ class PrivateMessageEvent(MessageEvent):
 class GroupMessageEvent(MessageEvent):
     message_type: Literal["group"] = "group"
 
-    group_id: int | str
+    group_id: str
     anonymous: Anonymous | None = None
 
     @cached_property
@@ -74,9 +70,9 @@ class GroupMessageEvent(MessageEvent):
             group_id=self.group_id,
         )
 
-    def is_at(self, user_id: int | str | None = None) -> bool:
+    def is_at(self, user_id: str | None = None) -> bool:
         return user_id is not None and any(
-            isinstance(seg, AtSegment) and seg.data.user_id == str(user_id)
+            isinstance(seg, AtSegment) and seg.data.user_id == user_id
             for seg in self.message
         )
 
@@ -88,16 +84,6 @@ class GroupMessageEvent(MessageEvent):
     @property
     def display_name(self) -> str:
         return self.sender.name or self.sender.nickname or "anonymous"
-
-    def __str__(self) -> str:
-        body = "".join(str(seg) for seg in self.message)
-        return f"**{self.display_name}** ({self.user_id}) [group:{self.group_id}] [msg:{self.message_id}]:\n{body}"
-
-    def to_content_parts(self) -> list[UserContent]:
-        header = f"**{self.display_name}** ({self.user_id}) [group:{self.group_id}] [msg:{self.message_id}]:"
-        parts: list[UserContent] = [header]
-        parts.extend(seg.to_content() for seg in self.message)
-        return parts
 
 
 MessageEventUnion = Annotated[
@@ -111,8 +97,8 @@ class NoticeEvent(Event):
 
 
 class GroupNoticeEvent(NoticeEvent):
-    group_id: int | str
-    user_id: int | str
+    group_id: str
+    user_id: str
 
     @cached_property
     def session_key(self) -> SessionKey:
@@ -134,26 +120,26 @@ class GroupAdminNotice(GroupNoticeEvent):
 class GroupDecreaseNotice(GroupNoticeEvent):
     notice_type: Literal["group_decrease"] = "group_decrease"
     sub_type: Literal["leave", "kick", "kick_me"]
-    operator_id: int | str
+    operator_id: str
 
 
 class GroupIncreaseNotice(GroupNoticeEvent):
     notice_type: Literal["group_increase"] = "group_increase"
     sub_type: Literal["approve", "invite"]
-    operator_id: int | str
+    operator_id: str
 
 
 class GroupBanNotice(GroupNoticeEvent):
     notice_type: Literal["group_ban"] = "group_ban"
     sub_type: Literal["ban", "lift_ban"]
-    operator_id: int | str
+    operator_id: str
     duration: int = 0
 
 
 class GroupRecallNotice(GroupNoticeEvent):
     notice_type: Literal["group_recall"] = "group_recall"
-    operator_id: int | str
-    message_id: int | str
+    operator_id: str
+    message_id: str
 
 
 class GroupCardNotice(GroupNoticeEvent):
@@ -165,13 +151,13 @@ class GroupCardNotice(GroupNoticeEvent):
 class GroupEssenceNotice(GroupNoticeEvent):
     notice_type: Literal["group_essence"] = "group_essence"
     sub_type: Literal["add", "delete"]
-    operator_id: int | str
-    message_id: int | str
+    operator_id: str
+    message_id: str
 
 
 class FriendAddNotice(NoticeEvent):
     notice_type: Literal["friend_add"] = "friend_add"
-    user_id: int | str
+    user_id: str
 
     @cached_property
     def session_key(self) -> SessionKey:
@@ -180,8 +166,8 @@ class FriendAddNotice(NoticeEvent):
 
 class FriendRecallNotice(NoticeEvent):
     notice_type: Literal["friend_recall"] = "friend_recall"
-    user_id: int | str
-    message_id: int | str
+    user_id: str
+    message_id: str
 
     @cached_property
     def session_key(self) -> SessionKey:
@@ -191,9 +177,9 @@ class FriendRecallNotice(NoticeEvent):
 class GroupPokeNotice(NoticeEvent):
     notice_type: Literal["notify"] = "notify"
     sub_type: Literal["poke"] = "poke"
-    group_id: int | str | None = None
-    user_id: int | str
-    target_id: int | str
+    group_id: str | None = None
+    user_id: str
+    target_id: str
 
     @cached_property
     def session_key(self) -> SessionKey:
@@ -209,9 +195,9 @@ class GroupPokeNotice(NoticeEvent):
 class GroupLuckyKingNotice(NoticeEvent):
     notice_type: Literal["notify"] = "notify"
     sub_type: Literal["lucky_king"] = "lucky_king"
-    group_id: int | str
-    user_id: int | str
-    target_id: int | str
+    group_id: str
+    user_id: str
+    target_id: str
 
     @cached_property
     def session_key(self) -> SessionKey:
@@ -223,8 +209,8 @@ class GroupLuckyKingNotice(NoticeEvent):
 class GroupHonorNotice(NoticeEvent):
     notice_type: Literal["notify"] = "notify"
     sub_type: Literal["honor"] = "honor"
-    group_id: int | str
-    user_id: int | str
+    group_id: str
+    user_id: str
     honor_type: str
 
     @cached_property
@@ -236,7 +222,7 @@ class GroupHonorNotice(NoticeEvent):
 
 class MsgEmojiLikeNotice(GroupNoticeEvent):
     notice_type: Literal["group_msg_emoji_like"] = "group_msg_emoji_like"
-    message_id: int | str
+    message_id: str
     likes: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -270,7 +256,7 @@ class RequestEvent(Event):
 
 class FriendRequest(RequestEvent):
     request_type: Literal["friend"] = "friend"
-    user_id: int | str
+    user_id: str
     comment: str = ""
     flag: str = ""
 
@@ -282,8 +268,8 @@ class FriendRequest(RequestEvent):
 class GroupRequest(RequestEvent):
     request_type: Literal["group"] = "group"
     sub_type: str = "add"
-    group_id: int | str
-    user_id: int | str
+    group_id: str
+    user_id: str
     comment: str = ""
     flag: str = ""
 
