@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -15,8 +16,6 @@ from octomate.schemas.session import SessionKey, UserProfile
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-    from anyio.abc import TaskGroup
 
     from octomate.octopus import Octopus
     from octomate.schemas.events import MessageEvent
@@ -133,9 +132,9 @@ class Tentacle(ABC):
         save = self.den(event)
         message_id = str(event.message_id)
         await anyio.Path(save).mkdir(parents=True, exist_ok=True)
-        async with anyio.create_task_group() as tg:
+        async with asyncio.TaskGroup() as tg:
             for seg in pending:
-                tg.start_soon(self.absorb, seg, save, message_id)
+                tg.create_task(self.absorb(seg, save, message_id))
 
     async def emerge(self, segments: list[AgentSegment]) -> None:
         """Prepare outbound media: process images in segments before sending."""
@@ -174,7 +173,6 @@ class MessageBuffer:
     _handler: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]]
     _buckets: defaultdict[SessionKey, list[MessageEvent]]
     _pending: set[SessionKey]
-    _tg: TaskGroup | None
 
     def __init__(
         self,
@@ -185,22 +183,16 @@ class MessageBuffer:
         self._handler = handler
         self._buckets: defaultdict[SessionKey, list[MessageEvent]] = defaultdict(list)
         self._pending: set[SessionKey] = set()
-        self._tg: TaskGroup | None = None
-
-    def bind(self, tg: TaskGroup) -> None:
-        self._tg = tg
 
     def push(self, event: MessageEvent) -> None:
         key = event.session_key
         self._buckets[key].append(event)
         if key not in self._pending:
             self._pending.add(key)
-            if self._tg is None:
-                raise RuntimeError("MessageBuffer.bind() must be called before push()")
-            self._tg.start_soon(self._flush_after_delay, key)
+            asyncio.create_task(self._flush_after_delay(key))
 
     async def _flush_after_delay(self, key: SessionKey) -> None:
-        await anyio.sleep(self._flush_delay)
+        await asyncio.sleep(self._flush_delay)
         self._pending.discard(key)
         batch = self._buckets.pop(key, [])
         if not batch:

@@ -9,6 +9,7 @@ Reference: https://napneko.github.io/onebot/
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import uuid
@@ -114,12 +115,15 @@ class NapcatTentacle(Tentacle):
             if isinstance(frame, ActionResponse):
                 continue
 
-            frame.tentacle_id = self.tag
+            try:
+                frame.tentacle_id = self.tag
 
-            if isinstance(frame, MessageEvent):
-                frame.sender = await self.get_user_profile(frame.user_id)
-                await self.submerge(frame)
-                self.buffer.push(frame)
+                if isinstance(frame, MessageEvent):
+                    frame.sender = await self.get_user_profile(frame.user_id)
+                    await self.submerge(frame)
+                    self.buffer.push(frame)
+            except Exception:
+                logger.exception("Tentacle %s: error processing event", self.tag)
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: connecting to %s", self.tag, self.ws_url)
@@ -159,7 +163,7 @@ class NapcatTentacle(Tentacle):
                 finally:
                     self.ws_client = None
 
-                await anyio.sleep(delay)
+                await asyncio.sleep(delay)
                 delay = min(delay * self.backoff_factor, self.backoff_max)
 
     async def deactivate(self) -> None:

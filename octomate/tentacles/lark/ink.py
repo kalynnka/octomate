@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from functools import partial
 from typing import Any
 
-import anyio.to_thread
 import httpx
 import lark_oapi as lark
 from lark_oapi.api.contact.v3 import GetUserRequest
@@ -114,7 +114,7 @@ class LarkInk:
             )
             .build()
         )
-        resp = await anyio.to_thread.run_sync(
+        resp = await asyncio.to_thread(
             partial(self.client.im.v1.image.create, request),  # type: ignore[union-attr]
         )
         if resp.success() and resp.data and resp.data.image_key:
@@ -141,7 +141,7 @@ class LarkInk:
             )
             .build()
         )
-        resp = await anyio.to_thread.run_sync(
+        resp = await asyncio.to_thread(
             partial(self.client.im.v1.message.create, request),  # type: ignore[union-attr]
         )
         if not resp.success():
@@ -165,7 +165,7 @@ class LarkInk:
             )
             .build()
         )
-        resp = await anyio.to_thread.run_sync(
+        resp = await asyncio.to_thread(
             partial(self.client.im.v1.message.reply, request),  # type: ignore[union-attr]
         )
         if not resp.success():
@@ -180,7 +180,7 @@ class LarkInk:
                 .user_id(user_id)
                 .build()
             )
-            resp = await anyio.to_thread.run_sync(
+            resp = await asyncio.to_thread(
                 partial(self.client.contact.v3.user.get, request),  # type: ignore[union-attr]
             )
             if resp.success() and resp.data and resp.data.user:
@@ -205,7 +205,7 @@ class LarkInk:
             .type("image")
             .build()
         )
-        resp = await anyio.to_thread.run_sync(
+        resp = await asyncio.to_thread(
             partial(self.client.im.v1.message_resource.get, request),  # type: ignore[union-attr]
         )
         if not resp.success():

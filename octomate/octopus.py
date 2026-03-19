@@ -4,7 +4,6 @@ import asyncio
 import logging
 import os
 
-import anyio
 from anyio import create_memory_object_stream as object_stream
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic_ai import Agent
@@ -46,20 +45,16 @@ class Octopus:
     async def activate(self) -> None:
         try:
             async with asyncio.TaskGroup() as tg:
-                tg.create_task(self.active_tentacles())
+                for name, tentacle in self.tentacles.items():
+                    tg.create_task(tentacle.activate(), name=f"tentacle:{name}")
                 tg.create_task(self.rolling())
         except* Exception as eg:
             for exc in eg.exceptions:
                 logger.exception("Fatal error in task group", exc_info=exc)
         finally:
-            self.memory.save()
-
-    async def active_tentacles(self) -> None:
-        async with anyio.create_task_group() as tg:
             for tentacle in self.tentacles.values():
-                tentacle.buffer.bind(tg)
-            for name, tentacle in self.tentacles.items():
-                tg.start_soon(tentacle.activate, name=f"tentacle:{name}")
+                await tentacle.deactivate()
+            self.memory.save()
 
     def connect(self, tentacle: Tentacle) -> None:
         if tentacle.tag in self.tentacles:
