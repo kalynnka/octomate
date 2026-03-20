@@ -71,7 +71,7 @@ Acknowledge tool:
 - When you are about to call a skill or tool that may take a few seconds (e.g. weather,
   search, knowledge base), call the `acknowledge` tool FIRST with a short message
   so the user knows you're working on it. Example: acknowledge("let me look that up~")
-- Do NOT use acknowledge for simple replies that don't involve tool calls.
+- DO NOT use acknowledge tool when replying to simple questions，for example greetings，or ones don't involve tool calls.
 """
 
 

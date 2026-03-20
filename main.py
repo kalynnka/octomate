@@ -5,16 +5,14 @@ import logging
 import sys
 import warnings
 
-warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"lark_oapi")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")
+warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
 import octotools
 from octomate.agents.manager import SkillManager
 from octomate.config import LarkTentacleConfig, NapcatTentacleConfig, OctomateConfig
 from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
 from octomate.octopus import Octopus
-from octomate.tentacles.lark import LarkTentacle
-from octomate.tentacles.napcat import NapcatTentacle
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
@@ -58,6 +56,8 @@ def _start() -> None:
 
     for tc in config.tentacles:
         if isinstance(tc, NapcatTentacleConfig):
+            from octomate.tentacles.napcat import NapcatTentacle
+
             octopus.connect(
                 NapcatTentacle(
                     tc.name,
@@ -72,6 +72,11 @@ def _start() -> None:
                 )
             )
         elif isinstance(tc, LarkTentacleConfig):
+            from octomate.tentacles.lark import LarkTentacle
+
+            warnings.filterwarnings(
+                "ignore", category=DeprecationWarning, module=r"lark_oapi"
+            )
             octopus.connect(
                 LarkTentacle(
                     tc.name,

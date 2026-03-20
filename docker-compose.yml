@@ -1,4 +1,17 @@
 services:
+  octomate:
+    build: .
+    container_name: octomate
+    profiles:
+      - app
+    environment:
+      UV_LINK_MODE: copy
+    volumes:
+      - .:/app
+      - /app/.venv
+    networks:
+      - octomate_network
+
   napcat:
     image: mlikiowa/napcat-docker:latest
     container_name: napcat

@@ -17,6 +17,7 @@ dependencies = [
     "lark-oapi>=1.4.8",
     "pydantic-ai>=1.68.0",
     "zep-cloud>=3.0",
+    "watchfiles>=1.1.1",
 ]
 
 [tool.ruff.lint.per-file-ignores]
