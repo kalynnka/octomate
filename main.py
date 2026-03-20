@@ -6,6 +6,7 @@ import sys
 import warnings
 
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")
+warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
 import octotools
 from octomate.agents.manager import SkillManager
