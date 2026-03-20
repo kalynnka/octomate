@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, Discriminator, Field, Tag, TypeAdapter
 
 from octomate.schemas.segments import AgentSegment
+from octomate.schemas.session import SessionKey
 
 
 class AgentMessage(BaseModel):
@@ -55,6 +56,18 @@ class CallApiAction(BaseModel):
     action: str
     tentacle_id: str
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConfirmAction(BaseModel):
+    confirmation_id: str
+    session_key: SessionKey
+    tool_name: str
+    tool_call_id: str
+    args: dict[str, Any]
+    description: str = ""
+    created_at: float
+    expires_at: float
+    status: Literal["pending", "approved", "denied", "expired"] = "pending"
 
 
 def action_discriminator(raw: Any) -> str:

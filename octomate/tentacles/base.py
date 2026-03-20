@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from octomate.octopus import Octopus
+    from octomate.schemas.actions import ConfirmAction
     from octomate.schemas.events import MessageEvent
     from octomate.schemas.segments import AgentSegment
 
@@ -123,6 +124,14 @@ class Tentacle(ABC):
         """Dispatch an outbound action: resolve media, then squirt the message out."""
         await self.emerge(segments)
         await self.splash(target, segments)
+
+    async def send_confirmation(
+        self, target: SendTarget, action: ConfirmAction
+    ) -> bool:
+        """Send a HITL confirmation card to the user. Returns True if the card was
+        sent (the tentacle supports interactive cards), False otherwise.
+        Unsupported tentacles return False, causing immediate auto-deny."""
+        return False
 
     async def submerge(self, event: MessageEvent) -> None:
         """Resolve inbound media: download images from the event to local storage."""

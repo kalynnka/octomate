@@ -8,6 +8,7 @@ import httpx
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.agents.manager import SkillManager
 from octomate.config import MindConfig
@@ -109,7 +110,7 @@ class RetryTransport(httpx.AsyncBaseTransport):
 def create_companion_agent(
     config: MindConfig,
     skill_manager: SkillManager | None = None,
-) -> Agent[SessionContext, list[AgentMessage]]:
+) -> Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]:
     http_client = httpx.AsyncClient(
         transport=RetryTransport(httpx.AsyncHTTPTransport()),
         timeout=httpx.Timeout(20.0),
@@ -127,7 +128,7 @@ def create_companion_agent(
         model,
         system_prompt=SYSTEM_PROMPT,
         deps_type=SessionContext,
-        output_type=list[AgentMessage],
+        output_type=[list[AgentMessage], DeferredToolRequests],
         toolsets=toolsets,
     )
 

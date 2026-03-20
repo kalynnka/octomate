@@ -6,12 +6,14 @@ import os
 
 from anyio import create_memory_object_stream as object_stream
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
-from pydantic_ai import Agent
+from pydantic_ai import Agent, AgentRunResult, DeferredToolResults
 from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai.tools import DeferredToolApprovalResult, DeferredToolRequests
 
 from octomate.agents import SessionContext, create_companion_agent
 from octomate.agents.manager import SkillManager
 from octomate.config import MindConfig
+from octomate.hitl import ConfirmationStore
 from octomate.memory.base import OctopusMemory
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import GroupMessageEvent, MessageEvent
@@ -22,7 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 class Octopus:
-    agent: Agent[SessionContext, list[AgentMessage]]
+    agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]
+    confirmations: ConfirmationStore
     memory: OctopusMemory
     tentacles: dict[str, Tentacle]
     _nerve_send: ObjectSendStream[tuple[SessionKey, list[MessageEvent]]]
@@ -36,6 +39,7 @@ class Octopus:
         buffer_size: int = 64,
     ) -> None:
         self.tentacles = {}
+        self.confirmations = ConfirmationStore()
         self.memory = memory
         self._nerve_send, self._nerve_receive = object_stream(buffer_size)
         if brain.base_url:
@@ -64,6 +68,9 @@ class Octopus:
 
     def cut(self, name: str) -> None:
         self.tentacles.pop(name, None)
+
+    async def confirm(self, confirmation_id: str, approved: bool) -> bool:
+        return self.confirmations.resolve(confirmation_id, approved)
 
     async def kick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         await self._nerve_send.send((key, batch))
@@ -140,10 +147,63 @@ class Octopus:
             message_history=history,
             deps=deps,
         )
-        self.memory.record(key, result.new_messages())
-        logger.info("Agent returned %d messages for [%s]", len(result.output), key)
 
-        for msg in result.output:
-            await tentacle.twitch(target, msg.segments)
+        if isinstance(result.output, DeferredToolRequests):
+            await self.handle_deferred(
+                result=result,  # type: ignore[arg-type]
+                deps=deps,
+                key=key,
+                target=target,
+                tentacle=tentacle,
+            )
+        else:
+            self.memory.record(key, result.new_messages())
+            logger.info("Agent returned %d messages for [%s]", len(result.output), key)
 
-        asyncio.create_task(self.memory.memo(key, result.output, tentacle))
+            for msg in result.output:
+                await tentacle.twitch(target, msg.segments)
+
+            asyncio.create_task(self.memory.memo(key, result.output, tentacle))
+
+    async def handle_deferred(
+        self,
+        result: AgentRunResult[DeferredToolRequests],
+        key: SessionKey,
+        deps: SessionContext,
+        target: SendTarget,
+        tentacle: Tentacle,
+    ) -> DeferredToolResults:
+        approvals: dict[str, bool | DeferredToolApprovalResult] = {}
+
+        for call in result.output.approvals:
+            action, future = self.confirmations.create(
+                session_key=key,
+                tool_name=call.tool_name,
+                tool_call_id=call.tool_call_id,
+                args=call.args_as_dict(),
+                description=result.output.metadata.get(call.tool_call_id, {}).get(
+                    "description", ""
+                ),
+            )
+
+            sent = await tentacle.send_confirmation(target, action)
+            if not sent:
+                self.confirmations.expire(action.confirmation_id)
+                approvals[call.tool_call_id] = False
+                continue
+
+            try:
+                approved = await asyncio.wait_for(
+                    future, timeout=self.confirmations.timeout
+                )
+            except TimeoutError:
+                self.confirmations.expire(action.confirmation_id)
+                approved = False
+
+            approvals[call.tool_call_id] = approved
+
+        return await self.agent.run(
+            message_history=result.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals=approvals),
+            deps=deps,
+        )  # type: ignore[return-value]

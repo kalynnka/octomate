@@ -21,8 +21,14 @@ import anyio.from_thread
 import anyio.to_thread
 import lark_oapi
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
+from lark_oapi.event.callback.model.p2_card_action_trigger import (
+    CallBackToast,
+    P2CardActionTrigger,
+    P2CardActionTriggerResponse,
+)
 from pydantic import SecretStr
 
+from octomate.schemas.actions import ConfirmAction
 from octomate.schemas.events import GroupMessageEvent, MessageEvent, PrivateMessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -64,6 +70,7 @@ class LarkTentacle(Tentacle):
         event_handler = (
             lark_oapi.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self.sense)
+            .register_p2_card_action_trigger(self.on_card_action)
             .build()
         )
         self.ws_client = lark_oapi.ws.Client(
@@ -333,3 +340,99 @@ class LarkTentacle(Tentacle):
             segments.append(TextSegment(data={"text": f"[{msg_type}]"}))
 
         return segments
+
+    def on_card_action(self, data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
+        """Lark SDK callback: handle interactive card button clicks."""
+        resp = P2CardActionTriggerResponse()
+        try:
+            event = data.event
+            if event is None or event.action is None:
+                return resp
+
+            value: dict = event.action.value or {}
+            if value.get("action") != "hitl_confirm":
+                return resp
+
+            confirmation_id = value.get("confirmation_id", "")
+            approved = bool(value.get("approved", False))
+
+            resolved = anyio.from_thread.run(
+                self.octopus.confirm, confirmation_id, approved
+            )
+
+            toast = CallBackToast()
+            toast.type = "info" if resolved else "warning"
+            toast.content = (
+                ("Approved" if approved else "Denied")
+                if resolved
+                else "Already handled"
+            )
+            resp.toast = toast
+        except Exception:
+            logger.warning(
+                "Tentacle %s: failed to handle card action",
+                self.tag,
+                exc_info=True,
+            )
+        return resp
+
+    async def send_confirmation(
+        self, target: SendTarget, action: ConfirmAction
+    ) -> bool:
+        chat_id = str(target.chat_id)
+        is_group = target.chat_type == "group"
+        receive_id_type = "chat_id" if is_group else "open_id"
+
+        args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
+        description = action.description or action.tool_name
+
+        card = json.dumps(
+            {
+                "schema": "2.0",
+                "header": {
+                    "title": {"tag": "plain_text", "content": "Action Confirmation"},
+                    "template": "orange",
+                },
+                "body": {
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": (
+                                f"**Tool:** {action.tool_name}\n"
+                                f"**Description:** {description}\n"
+                                f"**Arguments:**\n```json\n{args_json}\n```"
+                            ),
+                        },
+                        {
+                            "tag": "action",
+                            "actions": [
+                                {
+                                    "tag": "button",
+                                    "text": {"tag": "plain_text", "content": "Approve"},
+                                    "type": "primary",
+                                    "value": {
+                                        "action": "hitl_confirm",
+                                        "confirmation_id": action.confirmation_id,
+                                        "approved": True,
+                                    },
+                                },
+                                {
+                                    "tag": "button",
+                                    "text": {"tag": "plain_text", "content": "Deny"},
+                                    "type": "danger",
+                                    "value": {
+                                        "action": "hitl_confirm",
+                                        "confirmation_id": action.confirmation_id,
+                                        "approved": False,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            }
+        )
+
+        return await self.ink.send_message(
+            chat_id, receive_id_type, "interactive", card
+        )
