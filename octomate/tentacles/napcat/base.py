@@ -14,15 +14,10 @@ import base64
 import logging
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING
 
 import anyio
-from pydantic import (
-    Discriminator,
-    SecretStr,
-    Tag,
-    TypeAdapter,
-)
+from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
@@ -33,7 +28,7 @@ from octomate.schemas.actions import (
     SendPrivateMsgAction,
     SendPrivateMsgParams,
 )
-from octomate.schemas.events import Event, EventUnion, MessageEvent
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
     ImageSegment,
@@ -42,28 +37,13 @@ from octomate.schemas.segments import (
 )
 from octomate.tentacles.base import SendTarget, Tentacle
 from octomate.tentacles.napcat.ink import NapcatInk
+from octomate.tentacles.napcat.schema import inbound_adapter
 from octomate.utils import guess_image_ext, strip_markdown
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
 
 logger = logging.getLogger(__name__)
-
-
-def inbound_discriminator(raw: Any) -> str:
-    if isinstance(raw, dict) and "post_type" in raw:
-        return "event"
-    if isinstance(raw, Event):
-        return "event"
-    return "response"
-
-
-InboundFrame = Annotated[
-    Annotated[EventUnion, Tag("event")] | Annotated[ActionResponse, Tag("response")],
-    Discriminator(inbound_discriminator),
-]
-
-inbound_adapter: TypeAdapter[InboundFrame] = TypeAdapter(InboundFrame)
 
 
 class NapcatTentacle(Tentacle):
@@ -109,7 +89,12 @@ class NapcatTentacle(Tentacle):
             try:
                 frame = inbound_adapter.validate_json(raw)
             except Exception as e:
-                logger.warning("Tentacle %s: unrecognised frame: %s", self.tag, e)
+                logger.warning(
+                    "Tentacle %s: unrecognised frame: %s",
+                    self.tag,
+                    e,
+                    exc_info=True,
+                )
                 continue
 
             if isinstance(frame, ActionResponse):

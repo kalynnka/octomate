@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from zep_cloud.client import AsyncZep
+from zep_cloud.errors import NotFoundError
 from zep_cloud.types import Message as ZepMessage
 
 from octomate.memory.base import OctopusMemory
@@ -47,7 +48,7 @@ class ZepMemory(OctopusMemory):
             return
         try:
             await self.client.user.get(profile.user_id)
-        except Exception:
+        except NotFoundError:
             await self.client.user.add(
                 user_id=profile.user_id,
                 first_name=profile.name or profile.nickname or profile.user_id,
@@ -61,7 +62,7 @@ class ZepMemory(OctopusMemory):
             return
         try:
             await self.client.thread.get(thread_id)
-        except Exception:
+        except NotFoundError:
             await self.client.thread.create(
                 thread_id=thread_id,
                 user_id=user_id,
