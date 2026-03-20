@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag, TypeAdapter
 
 from octomate.schemas.segments import AgentSegment
 
@@ -55,3 +55,25 @@ class CallApiAction(BaseModel):
     action: str
     tentacle_id: str
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+def action_discriminator(raw: Any) -> str:
+    if isinstance(raw, dict):
+        action = raw.get("action", "")
+    else:
+        action = getattr(raw, "action", "")
+    if action in ("send_group_msg", "send_private_msg"):
+        return action
+    return "__default__"
+
+
+ActionUnion = Annotated[
+    Union[
+        Annotated[SendGroupMsgAction, Tag("send_group_msg")],
+        Annotated[SendPrivateMsgAction, Tag("send_private_msg")],
+        Annotated[CallApiAction, Tag("__default__")],
+    ],
+    Discriminator(action_discriminator),
+]
+
+action_adapter: TypeAdapter[ActionUnion] = TypeAdapter(ActionUnion)

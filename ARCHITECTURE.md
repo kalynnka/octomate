@@ -31,13 +31,13 @@
 ```
 
 Problems:
+
 - Single agent handles all tentacles — can't customize per platform
 - Nerve is too thin to justify as a class, but owns responsibilities that should be split
 - Event schema (`OneBotEvent`) is named after one platform, yet serves as lingua franca
 - Both tentacles duplicate image pipeline, file management, and action dispatch logic
 - Agent has no tools to query platform APIs (user profiles, group info, etc.)
 - No support for background-triggered messages (cron, webhooks, admin)
-
 
 ## Target Architecture
 
@@ -153,7 +153,6 @@ Cross-chat / proactive flow:
 
 The `send_message` tool is provided by the Nerve (not the tentacle), since it needs to resolve any tentacle by name.
 
-
 ## Implementation Plan
 
 ### Phase 1: Schema cleanup
@@ -162,7 +161,7 @@ Rename OneBot-specific naming to platform-neutral names. No logic changes.
 
 1. Rename `OneBotEvent` → `Event` in `schemas/events.py`
 2. Rename `OneBotEventUnion` → `EventUnion`
-3. Move `inbound_adapter` (the OneBot JSON deserializer) from `schemas/adaptors.py` into `tentacles/napcat.py` — it's napcat-specific
+3. ~~Move `inbound_adapter` (the OneBot JSON deserializer) from `schemas/adaptors.py` into `tentacles/napcat.py`~~ Done — `adaptors.py` removed, content moved to `actions.py`
 4. Update all imports across the codebase
 
 ### Phase 2: Enrich BaseTentacle
