@@ -90,6 +90,7 @@ class Octopus:
             isinstance(msg, GroupMessageEvent) and msg.is_at(tentacle.id)
             for msg in batch
         ):
+            # record and memo messages but skip thinking
             self.memory.record(
                 key,
                 [
@@ -97,6 +98,7 @@ class Octopus:
                     for msg in batch
                 ],
             )
+            await self.memory.memo(key, batch, tentacle)
             return
 
         header = (

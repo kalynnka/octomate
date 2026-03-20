@@ -10,10 +10,10 @@ from mem0 import Memory as Mem0
 
 from octomate.memory.base import OctopusMemory
 from octomate.schemas.actions import AgentMessage
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 
 if TYPE_CHECKING:
-    from octomate.schemas.events import MessageEvent
     from octomate.tentacles.base import Tentacle
 
 logger = logging.getLogger(__name__)
@@ -52,23 +52,9 @@ class Mem0Memory(OctopusMemory):
             return []
 
         try:
+            await self.memo(key, events, tentacle)
+
             rid = self.run_id(key)
-
-            await asyncio.gather(
-                *(
-                    asyncio.to_thread(
-                        functools.partial(
-                            self.mem0.add,
-                            [{"role": "user", "content": content}],
-                            user_id=str(event.user_id),
-                            run_id=rid,
-                        )
-                    )
-                    for event in events
-                    if (content := str(event))
-                )
-            )
-
             result = await asyncio.to_thread(
                 functools.partial(
                     self.mem0.search,
@@ -88,20 +74,35 @@ class Mem0Memory(OctopusMemory):
     async def memo(
         self,
         key: SessionKey,
-        messages: list[AgentMessage],
+        messages: list[AgentMessage] | list[MessageEvent],
         tentacle: Tentacle,
     ) -> None:
         if not messages:
             return
         rid = self.run_id(key)
-        dicts = [{"role": "assistant", "content": str(msg)} for msg in messages]
         try:
-            fn = functools.partial(
-                self.mem0.add,
-                dicts,
-                user_id=tentacle.profile.user_id,
-                run_id=rid,
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        functools.partial(
+                            self.mem0.add,
+                            [
+                                {
+                                    "role": "user"
+                                    if isinstance(msg, MessageEvent)
+                                    else "assistant",
+                                    "content": str(msg),
+                                }
+                            ],
+                            user_id=str(msg.user_id)
+                            if isinstance(msg, MessageEvent)
+                            else tentacle.profile.user_id,
+                            run_id=rid,
+                        )
+                    )
+                    for msg in messages
+                    if str(msg)
+                )
             )
-            await asyncio.to_thread(fn)
         except Exception:
             logger.warning("Memory memo failed", exc_info=True)

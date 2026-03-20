@@ -11,10 +11,10 @@ from zep_cloud.types import Message as ZepMessage
 
 from octomate.memory.base import OctopusMemory
 from octomate.schemas.actions import AgentMessage
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey, UserProfile
 
 if TYPE_CHECKING:
-    from octomate.schemas.events import MessageEvent
     from octomate.tentacles.base import Tentacle
 
 logger = logging.getLogger(__name__)
@@ -86,35 +86,10 @@ class ZepMemory(OctopusMemory):
             return []
 
         try:
+            await self.memo(key, events, tentacle)
+
             tid = self.thread_id(key)
-            thread_owner_id = (
-                tentacle.profile.user_id if key.group_id is None else key.user_id
-            )
-
-            current_users = {event.user_id: event.sender for event in events}
-            await asyncio.gather(
-                *(
-                    self.ensure_user(user_profile)
-                    for user_profile in current_users.values()
-                ),
-                self.ensure_user(tentacle.profile),
-            )
-            await self.ensure_thread(tid, thread_owner_id)
-
-            messages = [
-                ZepMessage(
-                    content=str(event),
-                    role="user",
-                    name=event.display_name,
-                )
-                for event in events
-            ]
-
-            result = await self.client.thread.add_messages(
-                tid,
-                messages=messages,
-                return_context=True,
-            )
+            result = await self.client.thread.get_user_context(tid)
             if result.context:
                 return [result.context]
         except Exception:
@@ -124,26 +99,48 @@ class ZepMemory(OctopusMemory):
     async def memo(
         self,
         key: SessionKey,
-        messages: list[AgentMessage],
+        messages: list[AgentMessage] | list[MessageEvent],
         tentacle: Tentacle,
     ) -> None:
         if not messages:
             return
 
         tid = self.thread_id(key)
+        thread_owner_id = (
+            tentacle.profile.user_id if key.group_id is None else key.user_id
+        )
 
         try:
-            await self.ensure_user(tentacle.profile)
-            await self.ensure_thread(tid, tentacle.profile.user_id)
+            current_users: dict[str, UserProfile] = {}
+            for msg in messages:
+                if isinstance(msg, MessageEvent):
+                    current_users[msg.user_id] = msg.sender
 
-            zep_messages = [
-                ZepMessage(
-                    content=str(msg),
-                    role="assistant",
-                    name=tentacle.profile.name,
-                )
-                for msg in messages
-            ]
+            await asyncio.gather(
+                *(self.ensure_user(profile) for profile in current_users.values()),
+                self.ensure_user(tentacle.profile),
+            )
+            await self.ensure_thread(tid, thread_owner_id)
+
+            zep_messages = []
+            for msg in messages:
+                if isinstance(msg, MessageEvent):
+                    zep_messages.append(
+                        ZepMessage(
+                            content=str(msg),
+                            role="user",
+                            name=msg.display_name,
+                        )
+                    )
+                else:
+                    zep_messages.append(
+                        ZepMessage(
+                            content=str(msg),
+                            role="assistant",
+                            name=tentacle.profile.name,
+                        )
+                    )
+
             if zep_messages:
                 await self.client.thread.add_messages(tid, messages=zep_messages)
         except Exception:

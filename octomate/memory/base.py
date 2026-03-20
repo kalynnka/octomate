@@ -90,12 +90,18 @@ class OctopusMemory:
         tentacle: Tentacle,
         limit: int = 5,
     ) -> list[str]:
+        """Persist user messages via memo, then retrieve relevant memories.
+
+        Calls ``memo`` with the incoming *events* first so that user messages
+        are recorded before the retrieval step.
+        """
+        await self.memo(key, events, tentacle)
         return []
 
     async def memo(
         self,
         key: SessionKey,
-        messages: list[AgentMessage],
+        messages: list[AgentMessage] | list[MessageEvent],
         tentacle: Tentacle,
     ) -> None:
         pass
