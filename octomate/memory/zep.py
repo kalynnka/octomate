@@ -31,9 +31,12 @@ class ZepMemory(OctopusMemory):
         api_key: str,
         bot_name: str = "Octomate",
         max_messages: int = 32,
+        history_size: int = 16,
         store_path: Path = Path(".octomate/message_store"),
     ) -> None:
-        super().__init__(max_messages=max_messages, store_path=store_path)
+        super().__init__(
+            max_messages=max_messages, history_size=history_size, store_path=store_path
+        )
         self.client = AsyncZep(api_key=api_key)
         self.bot_name = bot_name
         self.known_users = set()
@@ -83,22 +86,19 @@ class ZepMemory(OctopusMemory):
 
         try:
             tid = self.thread_id(key)
-            await self.ensure_thread(
-                tid,
-                tentacle.profile.user_id
-                if key.group_id  # group chat uses tentacle user_id as thread owner
-                else key.user_id,  # private chat uses user_id as thread owner
+            thread_owner_id = (
+                tentacle.profile.user_id if key.group_id is None else key.user_id
             )
-            current_users = {event.user_id: event.sender for event in events}
 
+            current_users = {event.user_id: event.sender for event in events}
             await asyncio.gather(
                 *(
                     self.ensure_user(user_profile)
                     for user_profile in current_users.values()
                 ),
                 self.ensure_user(tentacle.profile),
-                self.ensure_thread(tid, tentacle.profile.user_id),
             )
+            await self.ensure_thread(tid, thread_owner_id)
 
             messages = [
                 ZepMessage(
@@ -132,10 +132,8 @@ class ZepMemory(OctopusMemory):
         tid = self.thread_id(key)
 
         try:
-            await asyncio.gather(
-                self.ensure_user(tentacle.profile),
-                self.ensure_thread(tid, tentacle.profile.user_id),
-            )
+            await self.ensure_user(tentacle.profile)
+            await self.ensure_thread(tid, tentacle.profile.user_id)
 
             zep_messages = [
                 ZepMessage(

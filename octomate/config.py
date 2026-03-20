@@ -54,6 +54,7 @@ class ZepConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     max_messages: int = 32
+    history_size: int = 16
     mem0: Mem0Config = Mem0Config()
     zep: ZepConfig = ZepConfig()
 

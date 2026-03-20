@@ -71,12 +71,15 @@ class Octopus:
     async def rolling(self) -> None:
         async with asyncio.TaskGroup() as tg, self._nerve_receive:
             async for key, batch in self._nerve_receive:
-                try:
-                    tg.create_task(self.think(key, batch))
-                except Exception:
-                    logger.exception("Error processing batch [%s]", key)
+                tg.create_task(self.think(key, batch))
 
     async def think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
+        try:
+            await self._think(key, batch)
+        except Exception:
+            logger.exception("Error processing batch [%s]", key)
+
+    async def _think(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         if not batch:
             return
 
@@ -96,13 +99,17 @@ class Octopus:
             )
             return
 
-        if key.group_id is not None:
-            header = f"[me: {profile.name} ({profile.user_id})] [group: {key.group_id}]"
-        else:
-            header = f"[me: {profile.name} ({profile.user_id})] [chat: private]"
+        header = (
+            f"[me: {profile.name} ({profile.user_id})]"
+            + " "
+            + (
+                f"[group: {key.group_id}]"
+                if key.group_id is not None
+                else "[chat: private]"
+            )
+        )
 
-        history = []
-        # history = self.memory.history(key)
+        history = self.memory.history(key)
         self.memory.record(
             key,
             [ModelRequest(parts=[UserPromptPart(content=str(msg))]) for msg in batch],

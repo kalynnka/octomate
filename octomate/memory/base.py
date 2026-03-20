@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 import pickle
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.session import SessionKey
@@ -21,14 +28,17 @@ logger = logging.getLogger(__name__)
 class OctopusMemory:
     message_store: dict[SessionKey, deque[list[ModelMessage]]]
     max_messages: int
+    history_size: int
     store_path: Path
 
     def __init__(
         self,
         max_messages: int = 32,
+        history_size: int = 16,
         store_path: Path = Path(".octomate/message_store"),
     ) -> None:
         self.max_messages = max_messages
+        self.history_size = min(history_size, max_messages)
         self.store_path = store_path
         self.message_store = self.load()
 
@@ -48,14 +58,30 @@ class OctopusMemory:
 
     def save(self) -> None:
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        self.store_path.write_bytes(pickle.dumps(dict(self.message_store)))
+        tmp = self.store_path.with_suffix(".tmp")
+        tmp.write_bytes(pickle.dumps(dict(self.message_store)))
+        tmp.replace(self.store_path)
         logger.info("Saved message store to %s", self.store_path)
 
     def record(self, key: SessionKey, messages: list[ModelMessage]) -> None:
-        self.message_store[key].append(messages)
+        filtered: list[ModelMessage] = []
+        for msg in messages:
+            if isinstance(msg, ModelRequest):
+                parts = [p for p in msg.parts if isinstance(p, UserPromptPart)]
+                if parts:
+                    filtered.append(dataclasses.replace(msg, parts=parts))
+            elif isinstance(msg, ModelResponse):
+                parts = [p for p in msg.parts if isinstance(p, TextPart)]
+                if parts:
+                    filtered.append(dataclasses.replace(msg, parts=parts))
+        if filtered:
+            self.message_store[key].append(filtered)
 
-    def history(self, key: SessionKey) -> list[ModelMessage]:
-        return [msg for batch in self.message_store[key] for msg in batch]
+    def history(self, key: SessionKey, size: int | None = None) -> list[ModelMessage]:
+        batches = self.message_store[key]
+        n = min(size or self.history_size, self.max_messages)
+        recent = list(batches)[-n:]
+        return [msg for batch in recent for msg in batch]
 
     async def recall(
         self,

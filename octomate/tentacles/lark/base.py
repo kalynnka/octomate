@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 import anyio.from_thread
+import anyio.to_thread
 import lark_oapi
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import SecretStr
@@ -78,7 +79,7 @@ class LarkTentacle(Tentacle):
         logger.info("Tentacle %s: starting Lark WebSocket client", self.tag)
         with anyio.CancelScope() as scope:
             self.ws_scope = scope
-            self.ws_client.start()
+            await anyio.to_thread.run_sync(self.ws_client.start)
 
     async def deactivate(self) -> None:
         if self.ws_scope is not None:

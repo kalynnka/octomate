@@ -34,15 +34,20 @@ def _start() -> None:
     if mem_cfg.mem0.enabled:
         memory: OctopusMemory = Mem0Memory(
             max_messages=mem_cfg.max_messages,
+            history_size=mem_cfg.history_size,
             config=mem_cfg.mem0,
         )
     elif mem_cfg.zep.enabled:
         memory = ZepMemory(
             api_key=mem_cfg.zep.api_key,
             max_messages=mem_cfg.max_messages,
+            history_size=mem_cfg.history_size,
         )
     else:
-        memory = OctopusMemory(max_messages=mem_cfg.max_messages)
+        memory = OctopusMemory(
+            max_messages=mem_cfg.max_messages,
+            history_size=mem_cfg.history_size,
+        )
 
     octopus = Octopus(
         config.mind,
