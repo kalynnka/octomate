@@ -65,9 +65,8 @@ Message format:
   at (mention a user by their user ID), reply (quote a previous message by its
   msg id — must be the first segment in that message).
 - If you decide not to respond (e.g. observing in group chat), return an empty list.
-"""
-"""
-Acknowledge tool:
+
+Acknowledge messages:
 - When you are about to call a skill or tool that may take a few seconds (e.g. weather,
   search, knowledge base), call the `acknowledge` tool FIRST with a short message
   so the user knows you're working on it. Example: acknowledge("let me look that up~")
@@ -134,7 +133,8 @@ def create_companion_agent(
 
     @agent.tool
     async def acknowledge(ctx: RunContext[SessionContext], text: str) -> str:
-        """Send a quick message to the user immediately, before doing heavy work
+        """
+        Send a quick message to the user immediately, before doing heavy work
         like calling skills or tools. Use this so the user knows you received
         their message and are working on it."""
         if ctx.deps.tentacle:
