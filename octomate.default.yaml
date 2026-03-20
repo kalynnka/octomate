@@ -48,4 +48,5 @@ pixiv:
 streamify:
   base_url: "https://app.dev1.internal.holovita.ai"
 
-github: {}
+github:
+  approvers: {}

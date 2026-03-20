@@ -23,10 +23,10 @@ def _start() -> None:
 
     skill_manager = SkillManager()
 
-    octotools.qweather.register(skill_manager)
-    octotools.pixiv.register(skill_manager)
-    octotools.streamify.register(skill_manager)
-    # octotools.github.register(skill_manager)
+    # octotools.qweather.register(skill_manager)
+    # octotools.pixiv.register(skill_manager)
+    # octotools.streamify.register(skill_manager)
+    octotools.github.register(skill_manager)
 
     mem_cfg = config.mind.memory
     if mem_cfg.mem0.enabled:

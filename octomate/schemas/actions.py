@@ -65,6 +65,7 @@ class ConfirmAction(BaseModel):
     tool_call_id: str
     args: dict[str, Any]
     description: str = ""
+    approvers: list[str] = Field(default_factory=list)
     created_at: float
     expires_at: float
     status: Literal["pending", "approved", "denied", "expired"] = "pending"

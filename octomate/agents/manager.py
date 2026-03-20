@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from typing import Any, runtime_checkable
 
@@ -14,6 +15,8 @@ from pydantic_ai.toolsets import (
 )
 from typing_extensions import Protocol
 
+from octomate.schemas.session import SessionKey
+
 SKILL_METADATA_KEY = "skill"
 
 ToolsPrepareFunc = Callable[
@@ -25,6 +28,7 @@ ToolsPrepareFunc = Callable[
 @runtime_checkable
 class SkillDeps(Protocol):
     active_skills: set[str]
+    session_key: SessionKey
 
 
 def skill_filter(ctx: RunContext[Any], tool_def: ToolDefinition) -> bool:
@@ -39,17 +43,33 @@ def skill_filter(ctx: RunContext[Any], tool_def: ToolDefinition) -> bool:
 
 def make_metadata_injector(
     skill_name: str,
+    approvers: dict[str, list[str]] | None = None,
 ) -> ToolsPrepareFunc:
-    """Create a prepare function that injects skill metadata into MCP tool definitions."""
+    """Create a prepare function that injects skill metadata into MCP tool definitions.
+
+    When *approvers* is provided, tool definitions for tentacles with a matching
+    entry are upgraded to ``kind='unapproved'`` so pydantic-ai triggers the
+    human-in-the-loop approval flow.
+    """
 
     async def inject(
         ctx: RunContext[Any], tool_defs: list[ToolDefinition]
     ) -> list[ToolDefinition]:
+        tentacle_id: str | None = None
+        allowed: list[str] | None = None
+        if approvers and isinstance(ctx.deps, SkillDeps):
+            tentacle_id = ctx.deps.session_key.tentacle_id
+            allowed = approvers.get(tentacle_id)
+
         result: list[ToolDefinition] = []
         for td in tool_defs:
             meta = dict(td.metadata) if td.metadata else {}
             meta[SKILL_METADATA_KEY] = skill_name
-            result.append(replace(td, metadata=meta))
+            if allowed is not None:
+                meta["approvers"] = allowed
+                result.append(replace(td, metadata=meta, kind="unapproved"))
+            else:
+                result.append(replace(td, metadata=meta))
         return result
 
     return inject
@@ -81,7 +101,11 @@ class SkillManager:
         return toolset
 
     def register_mcp(
-        self, name: str, description: str, toolset: AbstractToolset[Any]
+        self,
+        name: str,
+        description: str,
+        toolset: AbstractToolset[Any],
+        approvers: dict[str, list[str]] | None = None,
     ) -> None:
         """Register an MCP-based skill.
 
@@ -91,9 +115,23 @@ class SkillManager:
         self.skills[name] = SkillInfo(name=name, description=description)
         prepared = PreparedToolset(
             wrapped=toolset,
-            prepare_func=make_metadata_injector(name),
+            prepare_func=make_metadata_injector(name, approvers),
         )
         self.mcp_toolsets[name] = prepared
+
+    async def __aenter__(self):
+        """Pre-enter MCP servers to pin the anyio cancel scope to this task.
+
+        This prevents a RuntimeError when concurrent agent.run() calls race
+        to close the MCP connection from different asyncio tasks.
+        """
+        self._exit_stack = AsyncExitStack()
+        for server in self.mcp_toolsets.values():
+            await self._exit_stack.enter_async_context(server)
+        return self
+
+    async def __aexit__(self, *args):
+        await self._exit_stack.aclose()
 
     def build_skillsets(self) -> list[AbstractToolset[Any]]:
         """Build the list of skills' toolsets to pass to Agent(toolsets=[...]).

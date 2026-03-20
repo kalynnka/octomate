@@ -46,6 +46,7 @@ class GitHubConfig(BaseSettings):
 
     token: SecretStr = SecretStr("")
     toolsets: list[GitHubToolset] = ["default"]
+    approvers: dict[str, list[str]] = {}
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):
@@ -84,4 +85,5 @@ def register(manager: SkillManager) -> None:
             "code on GitHub. Do NOT load for general unrelated questions or tasks unrelated to GitHub."
         ),
         toolset=mcp_server,
+        approvers=config.approvers or None,
     )

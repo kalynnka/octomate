@@ -356,6 +356,26 @@ class LarkTentacle(Tentacle):
             confirmation_id = value.get("confirmation_id", "")
             approved = bool(value.get("approved", False))
 
+            entry = self.octopus.confirmations.pending.get(confirmation_id)
+            if entry is None:
+                toast = CallBackToast()
+                toast.type = "warning"
+                toast.content = "Already handled"
+                resp.toast = toast
+                return resp
+
+            action, _ = entry
+            if action.approvers:
+                clicker_id = ""
+                if event.operator:
+                    clicker_id = event.operator.open_id or ""
+                if clicker_id not in action.approvers:
+                    toast = CallBackToast()
+                    toast.type = "warning"
+                    toast.content = "You are not authorized to approve this action"
+                    resp.toast = toast
+                    return resp
+
             resolved = anyio.from_thread.run(
                 self.octopus.confirm, confirmation_id, approved
             )
@@ -386,6 +406,11 @@ class LarkTentacle(Tentacle):
         args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
         description = action.description or action.tool_name
 
+        mention_line = ""
+        if action.approvers:
+            mentions = " ".join(f'<at id="{uid}"></at>' for uid in action.approvers)
+            mention_line = f"\n**Approvers:** {mentions}"
+
         card = json.dumps(
             {
                 "schema": "2.0",
@@ -401,6 +426,7 @@ class LarkTentacle(Tentacle):
                                 f"**Tool:** {action.tool_name}\n"
                                 f"**Description:** {description}\n"
                                 f"**Arguments:**\n```json\n{args_json}\n```"
+                                + mention_line
                             ),
                         },
                         {

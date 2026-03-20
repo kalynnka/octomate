@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 
@@ -27,6 +28,7 @@ class Octopus:
     agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]
     confirmations: ConfirmationStore
     memory: OctopusMemory
+    skill_manager: SkillManager | None
     tentacles: dict[str, Tentacle]
     _nerve_send: ObjectSendStream[tuple[SessionKey, list[MessageEvent]]]
     _nerve_receive: ObjectReceiveStream[tuple[SessionKey, list[MessageEvent]]]
@@ -41,6 +43,7 @@ class Octopus:
         self.tentacles = {}
         self.confirmations = ConfirmationStore()
         self.memory = memory
+        self.skill_manager = skill_manager
         self._nerve_send, self._nerve_receive = object_stream(buffer_size)
         if brain.base_url:
             os.environ.setdefault("GOOGLE_GEMINI_BASE_URL", brain.base_url)
@@ -48,10 +51,13 @@ class Octopus:
 
     async def activate(self) -> None:
         try:
-            async with asyncio.TaskGroup() as tg:
-                for name, tentacle in self.tentacles.items():
-                    tg.create_task(tentacle.activate(), name=f"tentacle:{name}")
-                tg.create_task(self.rolling())
+            async with contextlib.AsyncExitStack() as stack:
+                if self.skill_manager:
+                    await stack.enter_async_context(self.skill_manager)
+                async with asyncio.TaskGroup() as tg:
+                    for name, tentacle in self.tentacles.items():
+                        tg.create_task(tentacle.activate(), name=f"tentacle:{name}")
+                    tg.create_task(self.rolling())
         except* Exception as eg:
             for exc in eg.exceptions:
                 logger.exception("Fatal error in task group", exc_info=exc)
@@ -176,14 +182,14 @@ class Octopus:
         approvals: dict[str, bool | DeferredToolApprovalResult] = {}
 
         for call in result.output.approvals:
+            tool_meta = result.output.metadata.get(call.tool_call_id, {})
             action, future = self.confirmations.create(
                 session_key=key,
                 tool_name=call.tool_name,
                 tool_call_id=call.tool_call_id,
                 args=call.args_as_dict(),
-                description=result.output.metadata.get(call.tool_call_id, {}).get(
-                    "description", ""
-                ),
+                description=tool_meta.get("description", ""),
+                approvers=tool_meta.get("approvers"),
             )
 
             sent = await tentacle.send_confirmation(target, action)
