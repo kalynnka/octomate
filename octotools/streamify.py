@@ -6,7 +6,7 @@ import mimetypes
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, TypedDict
 
 import anyio
 import httpx
@@ -284,6 +284,13 @@ class CreateNoteResult(BaseModel):
     message: str = ""
 
 
+class NoteListPage(TypedDict):
+    notes: list[NoteInfo]
+    total: int
+    limit: int
+    offset: int
+
+
 class DeleteNoteResult(BaseModel):
     success: bool
     message: str = ""
@@ -308,12 +315,9 @@ class BulkDownloadResult(BaseModel):
         return [r for r in self.results if not r.success]
 
 
-_note_search_result_list_adapter: TypeAdapter[list[NoteSearchResult]] = TypeAdapter(
-    list[NoteSearchResult]
-)
-_chunk_result_list_adapter: TypeAdapter[list[ChunkResult]] = TypeAdapter(
-    list[ChunkResult]
-)
+note_search_result_list_adapter = TypeAdapter(list[NoteSearchResult])
+chunk_result_list_adapter = TypeAdapter(list[ChunkResult])
+note_list_page_adapter = TypeAdapter(NoteListPage)
 
 
 async def _api_get(
@@ -404,7 +408,7 @@ async def _download_single_file(
 
 def register(manager: SkillManager) -> None:
     config = StreamifyConfig()
-    ts = manager.register(
+    toolset = manager.register(
         name="streamify",
         description=(
             "Search and manage notes in the Streamify knowledge base (Holovita). "
@@ -414,7 +418,43 @@ def register(manager: SkillManager) -> None:
         ),
     )
 
-    @ts.tool
+    @toolset.tool
+    async def list_notes(
+        ctx: RunContext[SkillDeps],
+        status: str | None = None,
+        source: str | None = None,
+    ) -> NoteListPage:
+        """List recent notes in the knowledge base.
+
+        Returns up to 10 most recent notes. Use this to browse what's saved
+        without a specific search query.
+
+        Args:
+            ctx: Run context.
+            status: Optional filter by status (queued, processing, ready, error).
+            source: Optional filter by source (file, text, or platform name).
+
+        Returns:
+            NoteListPage with notes, total count, limit, and offset.
+        """
+        try:
+            params: dict[str, Any] = {"limit": 10, "offset": 0}
+            if status:
+                params["status"] = status
+            if source:
+                params["source"] = source
+            response = await _api_get(config, "/notes/", params=params)
+            response.raise_for_status()
+            page = note_list_page_adapter.validate_json(response.content)
+            logger.info(
+                "Listed %d notes (total: %d)", len(page["notes"]), page["total"]
+            )
+            return page
+        except Exception as e:
+            logger.error("List notes failed: %s", e)
+            return NoteListPage(notes=[], total=0, limit=10, offset=0)
+
+    @toolset.tool
     async def search_notes(
         ctx: RunContext[SkillDeps],
         query: str,
@@ -440,7 +480,7 @@ def register(manager: SkillManager) -> None:
                 config, "/retrievals", json_data={"query": query}
             )
             response.raise_for_status()
-            all_results = _note_search_result_list_adapter.validate_json(
+            all_results = note_search_result_list_adapter.validate_json(
                 response.content
             )
             results = all_results[:limit]
@@ -450,7 +490,7 @@ def register(manager: SkillManager) -> None:
             logger.error("Search failed: %s", e)
             return SearchNotesResult(query=query, results=[])
 
-    @ts.tool
+    @toolset.tool
     async def retrieve_chunks(
         ctx: RunContext[SkillDeps],
         query: str,
@@ -479,7 +519,7 @@ def register(manager: SkillManager) -> None:
                 config, "/retrievals/chunks", json_data={"query": query}
             )
             response.raise_for_status()
-            all_results = _chunk_result_list_adapter.validate_json(response.content)
+            all_results = chunk_result_list_adapter.validate_json(response.content)
             results = all_results[:limit]
             logger.info("Retrieved %d chunks for query: %s", len(results), query[:50])
             return SearchChunksResult(query=query, results=results)
@@ -487,7 +527,7 @@ def register(manager: SkillManager) -> None:
             logger.error("Chunk retrieval failed: %s", e)
             return SearchChunksResult(query=query, results=[])
 
-    @ts.tool
+    @toolset.tool
     async def get_note(
         ctx: RunContext[SkillDeps],
         note_id: str,
@@ -519,7 +559,7 @@ def register(manager: SkillManager) -> None:
             logger.error("Get note failed: %s", e)
             return None
 
-    @ts.tool
+    @toolset.tool
     async def create_note_from_url(
         ctx: RunContext[SkillDeps],
         url: str,
@@ -560,7 +600,7 @@ def register(manager: SkillManager) -> None:
             logger.error(msg)
             return CreateNoteResult(success=False, message=msg)
 
-    @ts.tool
+    @toolset.tool
     async def delete_note(
         ctx: RunContext[SkillDeps],
         note_id: str,
@@ -594,7 +634,7 @@ def register(manager: SkillManager) -> None:
             logger.error(msg)
             return DeleteNoteResult(success=False, message=msg)
 
-    @ts.tool
+    @toolset.tool
     async def download_files(
         ctx: RunContext[SkillDeps],
         note_id: str,
