@@ -13,11 +13,11 @@ from pydantic_ai.tools import DeferredToolApprovalResult, DeferredToolRequests
 from octomate.agents import SessionContext, create_companion_agent
 from octomate.agents.manager import SkillManager
 from octomate.config import MindConfig
-from octomate.hitl import ConfirmationStore
 from octomate.memory.base import OctopusMemory
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import GroupMessageEvent, MessageEvent
 from octomate.schemas.session import SessionKey
+from octomate.store import ConfirmationStore
 from octomate.tentacles.base import SendTarget, Tentacle
 
 logger = logging.getLogger(__name__)
