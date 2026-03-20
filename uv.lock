@@ -1805,6 +1805,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pymilvus" },
     { name = "pyyaml" },
+    { name = "watchfiles" },
     { name = "websockets" },
     { name = "zep-cloud" },
 ]
@@ -1826,6 +1827,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2" },
     { name = "pymilvus", specifier = ">=2.6.9" },
     { name = "pyyaml", specifier = ">=6" },
+    { name = "watchfiles", specifier = ">=1.1.1" },
     { name = "websockets", specifier = ">=15" },
     { name = "zep-cloud", specifier = ">=3.0" },
 ]

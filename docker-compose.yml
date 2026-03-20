@@ -8,6 +8,7 @@ services:
       UV_LINK_MODE: copy
     volumes:
       - .:/app
+      - /app/.venv
     networks:
       - octomate_network
 
