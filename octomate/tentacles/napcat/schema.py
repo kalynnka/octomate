@@ -7,7 +7,6 @@ frame adapter used by NapcatTentacle.
 
 from __future__ import annotations
 
-import time as _time
 from abc import ABC
 from functools import cached_property
 from typing import Annotated, Any, Literal, NotRequired, Union
@@ -15,11 +14,13 @@ from typing import Annotated, Any, Literal, NotRequired, Union
 from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, TypeAdapter
 from typing_extensions import TypedDict
 
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
     AtData,
     AtSegment,
     ImageSegment,
+    MessageSegment,
     ReplySegment,
     Segment,
     TextSegment,
@@ -27,11 +28,7 @@ from octomate.schemas.segments import (
 from octomate.schemas.session import SessionKey, UserProfile
 
 
-# ---------------------------------------------------------------------------
 # OneBot 11 — action types (moved from schemas/actions.py)
-# ---------------------------------------------------------------------------
-
-
 class ActionResponse(BaseModel):
     """Response received after sending an action via WebSocket."""
 
@@ -95,11 +92,7 @@ ActionUnion = Annotated[
 action_adapter: TypeAdapter[ActionUnion] = TypeAdapter(ActionUnion)
 
 
-# ---------------------------------------------------------------------------
 # OneBot 11 — segment types (moved from schemas/segments.py)
-# ---------------------------------------------------------------------------
-
-
 class FaceData(TypedDict):
     id: str
 
@@ -278,9 +271,7 @@ class JsonSegment(Segment):
     data: JsonData
 
 
-# ---------------------------------------------------------------------------
-# OneBot 11 ��� event types (moved from schemas/events.py)
-# ---------------------------------------------------------------------------
+# OneBot 11 event types (moved from schemas/events.py)
 
 
 class Anonymous(BaseModel):
@@ -576,11 +567,7 @@ OneBotEventUnion = Annotated[
 ]
 
 
-# ---------------------------------------------------------------------------
 # Napcat-specific overrides
-# ---------------------------------------------------------------------------
-
-
 class NapcatAtData(AtData):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -661,18 +648,16 @@ InboundFrame = Annotated[
 inbound_adapter: TypeAdapter[InboundFrame] = TypeAdapter(InboundFrame)
 
 
-# ---------------------------------------------------------------------------
+COMPATIBLE = (TextSegment, AtSegment, ImageSegment, ReplySegment)
+
+
 # Conversion: Napcat event → platform-agnostic MessageEvent
-# ---------------------------------------------------------------------------
-
-
 def to_message_event(
     ev: NapcatGroupMessageEvent | NapcatPrivateMessageEvent,
-) -> Any:
-    from octomate.schemas.events import MessageEvent  # avoid circular at module level
-
-    _COMPATIBLE = (TextSegment, AtSegment, ImageSegment, ReplySegment)
-    segments = [s for s in ev.message if isinstance(s, _COMPATIBLE)]
+) -> MessageEvent:
+    segments: list[MessageSegment] = [
+        s for s in ev.message if isinstance(s, COMPATIBLE)
+    ]
 
     if isinstance(ev, NapcatGroupMessageEvent):
         chat_type: Literal["private", "group"] = "group"

@@ -6,20 +6,20 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import anyio
 
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import ImageSegment
+from octomate.schemas.segments import AgentSegment, ImageSegment, ReplySegment
 from octomate.schemas.session import SessionKey, UserProfile
+from octomate.tentacles.chromo import Chromo, PlatformMessage
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from octomate.octopus import Octopus
     from octomate.schemas.actions import ConfirmAction
-    from octomate.schemas.segments import AgentSegment
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,7 @@ class Tentacle(ABC):
     tag: str
     profile: UserProfile
     ink: Ink
+    chromo: Chromo
     octopus: Octopus
     buffer: MessageBuffer
     user_profiles: dict[str, UserProfile]
@@ -85,31 +86,64 @@ class Tentacle(ABC):
 
     @property
     def id(self) -> str:
-        """The bot's platform ID."""
         return self.profile.user_id
 
     @property
     def name(self) -> str:
-        """The bot's display name."""
         return self.profile.name
 
     @abstractmethod
-    async def activate(self) -> None:
-        """Start the tentacle: connect to the IM and begin receiving events."""
-        ...
+    async def activate(self) -> None: ...
 
     @abstractmethod
-    async def deactivate(self) -> None:
-        """Gracefully shut down the connection and release resources."""
-        ...
+    async def deactivate(self) -> None: ...
 
     def inspect(self) -> UserProfile:
-        """Fetch own identity from the IM platform (sync). Called during __init__."""
         profile = self.ink.inspect()
         logger.info(
             "Tentacle %s: probed as %s (%s)", self.tag, profile.user_id, profile.name
         )
         return profile
+
+    async def ingest(self, raw: Any) -> None:
+        """Inbound pipeline: decode → enrich sender → resolve media → buffer."""
+        try:
+            event = await self.chromo.decode(raw)
+            if event is None:
+                return
+            event.tentacle_id = self.tag
+            event.self_id = self.profile.user_id
+            event.sender = await self.get_user_profile(event.user_id)
+            await self.submerge(event)
+            self.buffer.push(event)
+        except Exception:
+            logger.exception("Tentacle %s: error in ingest", self.tag)
+
+    async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
+        """Outbound pipeline: resolve media → encode → send."""
+        await self.emerge(segments)
+        reply_to: str | None = str(target.reply_to) if target.reply_to else None
+        for seg in segments:
+            if isinstance(seg, ReplySegment):
+                reply_to = seg.data["id"]
+                break
+        remaining: list[AgentSegment] = [s for s in segments if not isinstance(s, ReplySegment)]
+        messages: list[PlatformMessage] = await self.chromo.encode(remaining)
+        await self.send_platform_message(str(target.chat_id), target.chat_type, messages, reply_to)
+
+    @abstractmethod
+    async def send_platform_message(
+        self,
+        chat_id: str,
+        chat_type: str,
+        messages: list[PlatformMessage],
+        reply_to: str | None = None,
+    ) -> bool: ...
+
+    async def send_confirmation(
+        self, target: SendTarget, action: ConfirmAction
+    ) -> bool:
+        return False
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
         cached = self.user_profiles.get(user_id)
@@ -118,19 +152,6 @@ class Tentacle(ABC):
         profile = await self.ink.get_user_profile(user_id)
         self.user_profiles[user_id] = profile
         return profile
-
-    async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
-        """Dispatch an outbound action: resolve media, then squirt the message out."""
-        await self.emerge(segments)
-        await self.splash(target, segments)
-
-    async def send_confirmation(
-        self, target: SendTarget, action: ConfirmAction
-    ) -> bool:
-        """Send a HITL confirmation card to the user. Returns True if the card was
-        sent (the tentacle supports interactive cards), False otherwise.
-        Unsupported tentacles return False, causing immediate auto-deny."""
-        return False
 
     async def submerge(self, event: MessageEvent) -> None:
         """Resolve inbound media: download images from the event to local storage."""
@@ -145,30 +166,22 @@ class Tentacle(ABC):
                 tg.create_task(self.absorb(seg, save, message_id))
 
     async def emerge(self, segments: list[AgentSegment]) -> None:
-        """Prepare outbound media: process images in segments before sending."""
+        """Prepare outbound media: upload images before sending."""
         for seg in segments:
             if isinstance(seg, ImageSegment):
                 await self.secrete(seg)
 
     @abstractmethod
-    async def splash(self, target: SendTarget, segments: list[AgentSegment]) -> None:
-        """Send a resolved message to the target chat via the IM's protocol."""
-        ...
-
-    @abstractmethod
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
-        """Download a single inbound image to save_dir.
-        Must update seg.data.file to the local path on success."""
+        """Download a single inbound image to save_dir."""
         ...
 
     @abstractmethod
     async def secrete(self, seg: ImageSegment) -> None:
-        """Prepare a single outbound image for sending
-        (e.g. base64 encode, upload to IM). Must update seg.data accordingly."""
+        """Prepare a single outbound image for sending."""
         ...
 
     def den(self, event: MessageEvent) -> Path:
-        """Compute the local storage directory for an event's media files."""
         subdir = event.chat_id if event.chat_type == "group" else event.user_id
         return self.FILES_ROOT / self.tag / subdir
 

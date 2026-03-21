@@ -1,18 +1,10 @@
-"""napcat WebSocket tentacle — forward-WS connection to a napcat instance.
-
-Connects to a napcat (NapNeko) OneBot 11 WebSocket endpoint, receives
-events as JSON frames and pushes them through the Nerve, and sends
-outbound actions over the same WebSocket.
-
-Reference: https://napneko.github.io/onebot/
-"""
+"""napcat WebSocket tentacle — forward-WS connection to a napcat instance."""
 
 from __future__ import annotations
 
 import asyncio
-import base64
+import json
 import logging
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,27 +13,20 @@ from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
-from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import (
-    AgentSegment,
-    ImageSegment,
-    MarkdownSegment,
-    TextSegment,
-)
+from octomate.schemas.segments import AgentSegment, ImageSegment
 from octomate.tentacles.base import SendTarget, Tentacle
+from octomate.tentacles.chromo import PlatformMessage
+from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.napcat.ink import NapcatInk
 from octomate.tentacles.napcat.schema import (
-    ActionResponse,
-    NapcatGroupMessageEvent,
-    NapcatPrivateMessageEvent,
     SendGroupMsgAction,
     SendGroupMsgParams,
     SendPrivateMsgAction,
     SendPrivateMsgParams,
-    inbound_adapter,
-    to_message_event,
 )
-from octomate.utils import guess_image_ext, strip_markdown
+from octomate.utils import guess_image_ext
+import base64
+import uuid
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
@@ -79,6 +64,7 @@ class NapcatTentacle(Tentacle):
         self.ws_url = ws_url
         self.access_token = access_token
         self.ink = NapcatInk(http_url, access_token)
+        self.chromo = NapcatChromo()
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
         self.backoff_factor = backoff_factor
@@ -87,32 +73,8 @@ class NapcatTentacle(Tentacle):
         super().__init__(tag, octopus, flush_delay=flush_delay)
 
     async def sense(self, ws: ClientConnection) -> None:
-        """Listen on the WebSocket and ingest each incoming MessageEvent."""
         async for raw in ws:
-            try:
-                frame = inbound_adapter.validate_json(raw)
-            except Exception as e:
-                logger.warning(
-                    "Tentacle %s: unrecognised frame: %s",
-                    self.tag,
-                    e,
-                    exc_info=True,
-                )
-                continue
-
-            if isinstance(frame, ActionResponse):
-                continue
-
-            try:
-                frame.tentacle_id = self.tag
-
-                if isinstance(frame, (NapcatGroupMessageEvent, NapcatPrivateMessageEvent)):
-                    event: MessageEvent = to_message_event(frame)
-                    event.sender = await self.get_user_profile(event.user_id)
-                    await self.submerge(event)
-                    self.buffer.push(event)
-            except Exception:
-                logger.exception("Tentacle %s: error processing event", self.tag)
+            await self.ingest(raw)
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: connecting to %s", self.tag, self.ws_url)
@@ -168,48 +130,42 @@ class NapcatTentacle(Tentacle):
     async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         if self.ws_client is None:
             logger.warning(
-                "Tentacle %s: Action cancelled, WebSocket not connected", self.tag
+                "Tentacle %s: action cancelled, WebSocket not connected", self.tag
             )
             return
         await super().twitch(target, segments)
 
-    async def splash(self, target: SendTarget, segments: list[AgentSegment]) -> None:
-        resolved: list[AgentSegment] = []
-        for seg in segments:
-            if isinstance(seg, MarkdownSegment):
-                resolved.append(
-                    TextSegment(data={"text": strip_markdown(seg.data["text"])})
+    async def send_platform_message(
+        self,
+        chat_id: str,
+        chat_type: str,
+        messages: list[PlatformMessage],
+        reply_to: str | None = None,
+    ) -> bool:
+        if self.ws_client is None:
+            return False
+        for msg in messages:
+            seg_data = json.loads(msg.content)
+            if chat_type == "group":
+                action = SendGroupMsgAction(
+                    tentacle_id=self.tag,
+                    params=SendGroupMsgParams(
+                        group_id=chat_id, message=seg_data, reply=reply_to
+                    ),
                 )
-            elif isinstance(seg, TextSegment):
-                seg.data["text"] = strip_markdown(seg.data["text"])
-                resolved.append(seg)
             else:
-                resolved.append(seg)
-
-        if target.chat_type == "group":
-            msg = SendGroupMsgAction(
-                tentacle_id=self.tag,
-                params=SendGroupMsgParams(
-                    group_id=target.chat_id,
-                    message=resolved,
-                    reply=target.reply_to,
-                ),
-            )
-        else:
-            msg = SendPrivateMsgAction(
-                tentacle_id=self.tag,
-                params=SendPrivateMsgParams(
-                    user_id=target.chat_id,
-                    message=resolved,
-                    reply=target.reply_to,
-                ),
-            )
-        frame = msg.model_dump_json(exclude_none=True)
-        if self.ws_client:
+                action = SendPrivateMsgAction(
+                    tentacle_id=self.tag,
+                    params=SendPrivateMsgParams(
+                        user_id=chat_id, message=seg_data, reply=reply_to
+                    ),
+                )
             try:
-                await self.ws_client.send(frame)
+                await self.ws_client.send(action.model_dump_json(exclude_none=True))
             except ConnectionClosed:
                 logger.warning("Tentacle %s: WebSocket closed while sending", self.tag)
+                return False
+        return True
 
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         try:

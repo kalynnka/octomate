@@ -1,20 +1,12 @@
-"""Lark (Feishu) WebSocket tentacle — connects via lark-oapi SDK.
-
-Uses the lark-oapi SDK's WebSocket client to receive events from Feishu,
-converts them into the internal schema, and pushes them through the Nerve.
-Outbound actions are sent via the Lark IM API.
-
-Reference: https://open.feishu.cn/document/
-"""
+"""Lark (Feishu) WebSocket tentacle — connects via lark-oapi SDK."""
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import anyio
 import anyio.from_thread
@@ -28,19 +20,10 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 from pydantic import SecretStr
 
 from octomate.schemas.actions import ConfirmAction
-from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import (
-    AgentSegment,
-    AtData,
-    AtSegment,
-    ImageData,
-    ImageSegment,
-    MarkdownSegment,
-    MessageSegment,
-    ReplySegment,
-    TextSegment,
-)
+from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.base import SendTarget, Tentacle
+from octomate.tentacles.chromo import PlatformMessage
+from octomate.tentacles.lark.chromo import LarkChromo
 from octomate.tentacles.lark.ink import LarkInk
 from octomate.utils import guess_image_ext
 
@@ -66,6 +49,7 @@ class LarkTentacle(Tentacle):
         flush_delay: float = 0.5,
     ) -> None:
         self.ink = LarkInk(app_id, app_secret)
+        self.chromo = LarkChromo()
         event_handler = (
             lark_oapi.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self.sense)
@@ -91,49 +75,24 @@ class LarkTentacle(Tentacle):
         if self.ws_scope is not None:
             self.ws_scope.cancel()
 
-    async def splash(self, target: SendTarget, segments: list[AgentSegment]) -> None:
-        chat_id = str(target.chat_id)
-        reply_id = str(target.reply_to) if target.reply_to else None
-        is_group = target.chat_type == "group"
+    def sense(self, data: P2ImMessageReceiveV1) -> None:
+        anyio.from_thread.run(self.ingest, data)
 
-        reply_seg: ReplySegment | None = None
-        remaining: list[AgentSegment] = []
-        for seg in segments:
-            if isinstance(seg, ReplySegment) and reply_seg is None:
-                reply_seg = seg
+    async def send_platform_message(
+        self,
+        chat_id: str,
+        chat_type: str,
+        messages: list[PlatformMessage],
+        reply_to: str | None = None,
+    ) -> bool:
+        receive_id_type = "chat_id" if chat_type == "group" else "open_id"
+        for msg in messages:
+            if reply_to:
+                await self.ink.reply_message(reply_to, msg.msg_type, msg.content)
+                reply_to = None
             else:
-                remaining.append(seg)
-
-        message_id = reply_seg.data["id"] if reply_seg else reply_id
-        receive_id_type = "chat_id" if is_group else "open_id"
-
-        for seg in remaining:
-            msg_type: str | None = None
-            content: str | None = None
-
-            if isinstance(seg, MarkdownSegment):
-                msg_type = "interactive"
-                elements = [{"tag": "markdown", "content": seg.data["text"]}]
-                content = json.dumps({"schema": "2.0", "body": {"elements": elements}})
-            elif isinstance(seg, TextSegment):
-                msg_type = "text"
-                content = json.dumps({"text": seg.data["text"]})
-            elif isinstance(seg, AtSegment):
-                msg_type = "text"
-                at_text = f'<at user_id="{seg.data.user_id}">{seg.data.name or ""}</at>'
-                content = json.dumps({"text": at_text})
-            elif isinstance(seg, ImageSegment) and seg.data.url:
-                msg_type = "image"
-                content = json.dumps({"image_key": seg.data.url})
-
-            if msg_type and content:
-                if message_id:
-                    await self.ink.reply_message(message_id, msg_type, content)
-                    message_id = None
-                else:
-                    await self.ink.send_message(
-                        chat_id, receive_id_type, msg_type, content
-                    )
+                await self.ink.send_message(chat_id, receive_id_type, msg.msg_type, msg.content)
+        return True
 
     async def secrete(self, seg: ImageSegment) -> None:
         apath = anyio.Path(seg.data.path)
@@ -155,7 +114,6 @@ class LarkTentacle(Tentacle):
             result = await self.ink.download_image(message_id, seg.data.file)
             if not result:
                 return
-
             data, file_name = result
             await anyio.Path(save_dir).mkdir(parents=True, exist_ok=True)
             ext = guess_image_ext("", file_name)
@@ -168,183 +126,7 @@ class LarkTentacle(Tentacle):
                 "Tentacle %s: failed to download image", self.tag, exc_info=True
             )
 
-    def sense(self, data: P2ImMessageReceiveV1) -> None:
-        """Lark SDK event callback: convert a raw Lark event into a MessageEvent and ingest it."""
-        try:
-            event = data.event
-            if event is None:
-                logger.warning("Tentacle %s: received event with no payload", self.tag)
-                return
-
-            message = event.message
-            sender = event.sender
-            if message is None or sender is None:
-                logger.warning(
-                    "Tentacle %s: event missing message or sender (message=%s, sender=%s)",
-                    self.tag,
-                    message,
-                    sender,
-                )
-                return
-
-            msg_type = message.message_type
-            chat_type = message.chat_type
-            if not msg_type or not chat_type:
-                logger.warning(
-                    "Tentacle %s: message missing type info (message_type=%s, chat_type=%s)",
-                    self.tag,
-                    msg_type,
-                    chat_type,
-                )
-                return
-
-            content_json: str | None = message.content
-            mentions: list[Any] | None = message.mentions
-
-            segments = self.digest(msg_type, content_json, mentions)
-
-            sender_id_obj = sender.sender_id
-            sender_id: str = (sender_id_obj.open_id or "") if sender_id_obj else ""
-
-            sender_profile = anyio.from_thread.run(self.get_user_profile, sender_id)
-
-            now = time.time()
-            message_id: str = message.message_id or ""
-            message_event: MessageEvent | None = None
-
-            if chat_type == "group":
-                message_event = MessageEvent(
-                    timestamp=float(now),
-                    self_id=self.profile.user_id,
-                    tentacle_id=self.tag,
-                    message_id=message_id,
-                    user_id=sender_id,
-                    chat_id=message.chat_id or "",
-                    chat_type="group",
-                    sender=sender_profile,
-                    segments=segments,
-                    raw=content_json or "",
-                )
-            elif chat_type == "p2p":
-                message_event = MessageEvent(
-                    timestamp=float(now),
-                    self_id=self.profile.user_id,
-                    tentacle_id=self.tag,
-                    message_id=message_id,
-                    user_id=sender_id,
-                    chat_id=sender_id,
-                    chat_type="private",
-                    sender=sender_profile,
-                    segments=segments,
-                    raw=content_json or "",
-                )
-            else:
-                logger.warning(
-                    "Tentacle %s: unsupported chat_type %r, message_id=%s",
-                    self.tag,
-                    chat_type,
-                    message_id,
-                )
-                return
-
-            if message_event:
-                anyio.from_thread.run(self.submerge, message_event)
-                anyio.from_thread.run_sync(self.buffer.push, message_event)
-        except Exception:
-            logger.warning(
-                "Tentacle %s: failed to convert Lark event",
-                self.tag,
-                exc_info=True,
-            )
-
-    def digest(
-        self,
-        msg_type: str,
-        content_json: str | None,
-        mentions: list[Any] | None,
-    ) -> list[MessageSegment]:
-        """Break down raw Lark message content into a list of MessageSegments."""
-        if not content_json:
-            return []
-
-        try:
-            content: dict[str, Any] = json.loads(content_json)
-        except (json.JSONDecodeError, TypeError):
-            return [TextSegment(data={"text": content_json})]
-
-        segments: list[MessageSegment] = []
-
-        if msg_type == "text":
-            text: str = content.get("text", "")
-            if mentions:
-                for m in mentions:
-                    placeholder: str | None = m.key
-                    if not placeholder or placeholder not in text:
-                        continue
-                    before, _, after = text.partition(placeholder)
-                    if before:
-                        segments.append(TextSegment(data={"text": before}))
-                    m_id = m.id
-                    user_id = (m_id.open_id if m_id else None) or placeholder
-                    segments.append(
-                        AtSegment(data=AtData(user_id=user_id, name=m.name or ""))
-                    )
-                    text = after
-                if text:
-                    segments.append(TextSegment(data={"text": text}))
-            else:
-                segments.append(TextSegment(data={"text": text}))
-
-        elif msg_type == "image":
-            image_key: str = content.get("image_key", "")
-            segments.append(
-                ImageSegment(data=ImageData(file=image_key, name=image_key))
-            )
-
-        elif msg_type == "post":
-            title: str = content.get("title", "")
-            if title:
-                segments.append(TextSegment(data={"text": f"[{title}]\n"}))
-            for lang_content in content.values():
-                if isinstance(lang_content, list):
-                    for line in lang_content:
-                        for element in line:
-                            tag: str = element.get("tag", "")
-                            if tag == "text":
-                                segments.append(
-                                    TextSegment(data={"text": element.get("text", "")})
-                                )
-                            elif tag == "a":
-                                segments.append(
-                                    TextSegment(data={"text": element.get("href", "")})
-                                )
-                            elif tag == "at":
-                                segments.append(
-                                    AtSegment(
-                                        data=AtData(
-                                            user_id=element.get("user_id", ""),
-                                            name=element.get("user_name", ""),
-                                        )
-                                    )
-                                )
-                            elif tag == "img":
-                                segments.append(
-                                    ImageSegment(
-                                        data=ImageData(
-                                            file=element.get("image_key", ""),
-                                            name=element.get("image_key", ""),
-                                        )
-                                    )
-                                )
-                    break
-
-        else:
-            segments.append(TextSegment(data={"text": f"[{msg_type}]"}))
-
-        return segments
-
     def on_card_action(self, data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
-        """Lark SDK callback: handle interactive card button clicks."""
         try:
             event = data.event
             if event is None or event.action is None:

@@ -23,9 +23,20 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.session import UserProfile
 from octomate.tentacles.base import SendTarget, Tentacle
+from octomate.tentacles.chromo import PlatformMessage
 
 BOT_USER_ID = "bot-001"
 BOT_NAME = "TestBot"
+
+
+class MockChromo:
+    async def decode(self, raw: Any) -> MessageEvent | None:
+        return None
+
+    async def encode(
+        self, segments: list[AgentSegment], *, reply_to: str | None = None
+    ) -> list[PlatformMessage]:
+        return []
 
 
 class MockInk:
@@ -60,6 +71,7 @@ class MockTentacle(Tentacle):
         self.sent = []
         self.confirmations_requested = 0
         self.ink = MockInk()
+        self.chromo = MockChromo()
         super().__init__(tag, octopus, flush_delay=flush_delay)
 
     def inject(self, event: MessageEvent) -> None:
@@ -72,8 +84,17 @@ class MockTentacle(Tentacle):
     async def deactivate(self) -> None:
         pass
 
-    async def splash(self, target: SendTarget, segments: list[AgentSegment]) -> None:
+    async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         self.sent.append((target, list(segments)))
+
+    async def send_platform_message(
+        self,
+        chat_id: str,
+        chat_type: str,
+        messages: list[PlatformMessage],
+        reply_to: str | None = None,
+    ) -> bool:
+        return True
 
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         pass
