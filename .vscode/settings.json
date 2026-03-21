@@ -25,7 +25,6 @@
     "ruff.lint.enable": true,
     "python.testing.pytestArgs": [
         "tests",
-        "benchmark",
     ],
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true
