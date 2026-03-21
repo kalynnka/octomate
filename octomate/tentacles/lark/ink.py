@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import io
 import logging
-from functools import partial
 from typing import Any
 
 import httpx
@@ -114,9 +112,7 @@ class LarkInk:
             )
             .build()
         )
-        resp = await asyncio.to_thread(
-            partial(self.client.im.v1.image.create, request),  # type: ignore[union-attr]
-        )
+        resp = await self.client.im.v1.image.acreate(request)  # type: ignore[union-attr]
         if resp.success() and resp.data and resp.data.image_key:
             return resp.data.image_key
         logger.warning("LarkInk: image upload failed: %s %s", resp.code, resp.msg)
@@ -141,9 +137,7 @@ class LarkInk:
             )
             .build()
         )
-        resp = await asyncio.to_thread(
-            partial(self.client.im.v1.message.create, request),  # type: ignore[union-attr]
-        )
+        resp = await self.client.im.v1.message.acreate(request)  # type: ignore[union-attr]
         if not resp.success():
             logger.warning("LarkInk: send_message failed: %s %s", resp.code, resp.msg)
         return resp.success()
@@ -165,9 +159,7 @@ class LarkInk:
             )
             .build()
         )
-        resp = await asyncio.to_thread(
-            partial(self.client.im.v1.message.reply, request),  # type: ignore[union-attr]
-        )
+        resp = await self.client.im.v1.message.areply(request)  # type: ignore[union-attr]
         if not resp.success():
             logger.warning("LarkInk: reply_message failed: %s %s", resp.code, resp.msg)
         return resp.success()
@@ -180,9 +172,7 @@ class LarkInk:
                 .user_id(user_id)
                 .build()
             )
-            resp = await asyncio.to_thread(
-                partial(self.client.contact.v3.user.get, request),  # type: ignore[union-attr]
-            )
+            resp = await self.client.contact.v3.user.aget(request)  # type: ignore[union-attr]
             if resp.success() and resp.data and resp.data.user:
                 attrs = {k: v for k, v in vars(resp.data.user).items() if v is not None}
                 return LarkUserProfile.model_validate(attrs)
@@ -205,9 +195,7 @@ class LarkInk:
             .type("image")
             .build()
         )
-        resp = await asyncio.to_thread(
-            partial(self.client.im.v1.message_resource.get, request),  # type: ignore[union-attr]
-        )
+        resp = await self.client.im.v1.message_resource.aget(request)  # type: ignore[union-attr]
         if not resp.success():
             logger.warning("LarkInk: download_image failed: %s %s", resp.code, resp.msg)
             return None
