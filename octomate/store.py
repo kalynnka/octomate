@@ -12,7 +12,7 @@ class ConfirmationStore:
     pending: dict[str, tuple[ConfirmAction, asyncio.Future[bool]]]
     timeout: float
 
-    def __init__(self, timeout: float = 300.0) -> None:
+    def __init__(self, timeout: float = 60.0) -> None:
         self.pending = {}
         self.timeout = timeout
 

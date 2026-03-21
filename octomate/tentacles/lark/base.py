@@ -22,7 +22,6 @@ import anyio.to_thread
 import lark_oapi
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
-    CallBackToast,
     P2CardActionTrigger,
     P2CardActionTriggerResponse,
 )
@@ -247,7 +246,7 @@ class LarkTentacle(Tentacle):
 
             if message_event:
                 anyio.from_thread.run(self.submerge, message_event)
-                self.buffer.push(message_event)
+                anyio.from_thread.run_sync(self.buffer.push, message_event)
         except Exception:
             logger.warning(
                 "Tentacle %s: failed to convert Lark event",
@@ -343,26 +342,23 @@ class LarkTentacle(Tentacle):
 
     def on_card_action(self, data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         """Lark SDK callback: handle interactive card button clicks."""
-        resp = P2CardActionTriggerResponse()
         try:
             event = data.event
             if event is None or event.action is None:
-                return resp
+                return P2CardActionTriggerResponse({})
 
             value: dict = event.action.value or {}
             if value.get("action") != "hitl_confirm":
-                return resp
+                return P2CardActionTriggerResponse({})
 
             confirmation_id = value.get("confirmation_id", "")
-            approved = bool(value.get("approved", False))
+            approved = value.get("approved", "") == "true"
 
             entry = self.octopus.confirmations.pending.get(confirmation_id)
             if entry is None:
-                toast = CallBackToast()
-                toast.type = "warning"
-                toast.content = "Already handled"
-                resp.toast = toast
-                return resp
+                return P2CardActionTriggerResponse(
+                    {"toast": {"type": "warning", "content": "Already handled"}}
+                )
 
             action, _ = entry
             if action.approvers:
@@ -370,31 +366,34 @@ class LarkTentacle(Tentacle):
                 if event.operator:
                     clicker_id = event.operator.open_id or ""
                 if clicker_id not in action.approvers:
-                    toast = CallBackToast()
-                    toast.type = "warning"
-                    toast.content = "You are not authorized to approve this action"
-                    resp.toast = toast
-                    return resp
+                    return P2CardActionTriggerResponse(
+                        {
+                            "toast": {
+                                "type": "warning",
+                                "content": "You are not authorized to approve this action",
+                            }
+                        }
+                    )
 
             resolved = anyio.from_thread.run(
                 self.octopus.confirm, confirmation_id, approved
             )
 
-            toast = CallBackToast()
-            toast.type = "info" if resolved else "warning"
-            toast.content = (
-                ("Approved" if approved else "Denied")
-                if resolved
-                else "Already handled"
+            if resolved:
+                msg = "Approved" if approved else "Denied"
+                return P2CardActionTriggerResponse(
+                    {"toast": {"type": "info", "content": msg}}
+                )
+            return P2CardActionTriggerResponse(
+                {"toast": {"type": "warning", "content": "Already handled"}}
             )
-            resp.toast = toast
         except Exception:
             logger.warning(
                 "Tentacle %s: failed to handle card action",
                 self.tag,
                 exc_info=True,
             )
-        return resp
+            return P2CardActionTriggerResponse({})
 
     async def send_confirmation(
         self, target: SendTarget, action: ConfirmAction
@@ -411,51 +410,49 @@ class LarkTentacle(Tentacle):
             mentions = " ".join(f'<at id="{uid}"></at>' for uid in action.approvers)
             mention_line = f"\n**Approvers:** {mentions}"
 
+        approve_value = {
+            "action": "hitl_confirm",
+            "confirmation_id": action.confirmation_id,
+            "approved": "true",
+        }
+        deny_value = {
+            "action": "hitl_confirm",
+            "confirmation_id": action.confirmation_id,
+            "approved": "false",
+        }
         card = json.dumps(
             {
-                "schema": "2.0",
                 "header": {
                     "title": {"tag": "plain_text", "content": "Action Confirmation"},
                     "template": "orange",
                 },
-                "body": {
-                    "elements": [
-                        {
-                            "tag": "markdown",
-                            "content": (
-                                f"**Tool:** {action.tool_name}\n"
-                                f"**Description:** {description}\n"
-                                f"**Arguments:**\n```json\n{args_json}\n```"
-                                + mention_line
-                            ),
-                        },
-                        {
-                            "tag": "action",
-                            "actions": [
-                                {
-                                    "tag": "button",
-                                    "text": {"tag": "plain_text", "content": "Approve"},
-                                    "type": "primary",
-                                    "value": {
-                                        "action": "hitl_confirm",
-                                        "confirmation_id": action.confirmation_id,
-                                        "approved": True,
-                                    },
-                                },
-                                {
-                                    "tag": "button",
-                                    "text": {"tag": "plain_text", "content": "Deny"},
-                                    "type": "danger",
-                                    "value": {
-                                        "action": "hitl_confirm",
-                                        "confirmation_id": action.confirmation_id,
-                                        "approved": False,
-                                    },
-                                },
-                            ],
-                        },
-                    ],
-                },
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": (
+                            f"**Tool:** {action.tool_name}\n"
+                            f"**Description:** {description}\n"
+                            f"**Arguments:**\n```json\n{args_json}\n```" + mention_line
+                        ),
+                    },
+                    {
+                        "tag": "action",
+                        "actions": [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "Approve"},
+                                "type": "primary",
+                                "value": approve_value,
+                            },
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "Deny"},
+                                "type": "danger",
+                                "value": deny_value,
+                            },
+                        ],
+                    },
+                ],
             }
         )
 

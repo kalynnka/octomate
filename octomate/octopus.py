@@ -155,14 +155,15 @@ class Octopus:
         )
 
         if isinstance(result.output, DeferredToolRequests):
-            await self.handle_deferred(
+            result = await self.handle_deferred(
                 result=result,  # type: ignore[arg-type]
                 deps=deps,
                 key=key,
                 target=target,
                 tentacle=tentacle,
             )
-        else:
+
+        if isinstance(result.output, list):
             self.memory.record(key, result.new_messages())
             logger.info("Agent returned %d messages for [%s]", len(result.output), key)
 
@@ -178,7 +179,7 @@ class Octopus:
         deps: SessionContext,
         target: SendTarget,
         tentacle: Tentacle,
-    ) -> DeferredToolResults:
+    ) -> AgentRunResult[list[AgentMessage] | DeferredToolRequests]:
         approvals: dict[str, bool | DeferredToolApprovalResult] = {}
 
         for call in result.output.approvals:
