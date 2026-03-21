@@ -46,8 +46,8 @@ async def test_rapid_pushes_batched_together():
 
     assert len(batches) == 1
     assert len(batches[0][1]) == 2
-    assert batches[0][1][0].raw_message == "first"
-    assert batches[0][1][1].raw_message == "second"
+    assert batches[0][1][0].raw == "first"
+    assert batches[0][1][1].raw == "second"
 
 
 async def test_different_sessions_get_separate_batches():

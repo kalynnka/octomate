@@ -3,37 +3,21 @@ Shared schema package.
 
 Submodules
 ----------
-- ``session``: SessionKey, Sender, Anonymous.
+- ``session``: SessionKey, UserProfile.
 - ``segments``: Message segment data types and models.
-- ``actions``: Outbound action models, unions, and TypeAdapters.
-- ``events``: OneBot 11 event models and unions.
+- ``actions``: Outbound action models.
+- ``events``: Platform-agnostic event models.
 """
 
 from octomate.schemas import actions, events, segments, session
-from octomate.schemas.actions import (
-    ActionUnion,
-    action_adapter,
-)
-from octomate.schemas.events import (
-    EventUnion,
-    MessageEventUnion,
-    MetaEventUnion,
-    NoticeEventUnion,
-    NotifyEventUnion,
-    RequestEventUnion,
-)
-from octomate.schemas.segments import MessageSegment
+from octomate.schemas.events import HandoverEvent, MessageEvent
+from octomate.schemas.segments import AgentSegment, MessageSegment
 
 __all__ = [
-    "ActionUnion",
-    "action_adapter",
-    "EventUnion",
-    "MessageEventUnion",
+    "AgentSegment",
+    "HandoverEvent",
+    "MessageEvent",
     "MessageSegment",
-    "MetaEventUnion",
-    "NoticeEventUnion",
-    "NotifyEventUnion",
-    "RequestEventUnion",
     "actions",
     "events",
     "segments",

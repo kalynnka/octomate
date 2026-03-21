@@ -28,7 +28,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 from pydantic import SecretStr
 
 from octomate.schemas.actions import ConfirmAction
-from octomate.schemas.events import GroupMessageEvent, MessageEvent, PrivateMessageEvent
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
     AtData,
@@ -208,32 +208,35 @@ class LarkTentacle(Tentacle):
 
             sender_profile = anyio.from_thread.run(self.get_user_profile, sender_id)
 
-            now = int(time.time())
+            now = time.time()
             message_id: str = message.message_id or ""
             message_event: MessageEvent | None = None
 
             if chat_type == "group":
-                message_event = GroupMessageEvent(
-                    time=now,
+                message_event = MessageEvent(
+                    timestamp=float(now),
                     self_id=self.profile.user_id,
                     tentacle_id=self.tag,
                     message_id=message_id,
                     user_id=sender_id,
-                    group_id=message.chat_id or "",
+                    chat_id=message.chat_id or "",
+                    chat_type="group",
                     sender=sender_profile,
-                    message=segments,
-                    raw_message=content_json or "",
+                    segments=segments,
+                    raw=content_json or "",
                 )
             elif chat_type == "p2p":
-                message_event = PrivateMessageEvent(
-                    time=now,
+                message_event = MessageEvent(
+                    timestamp=float(now),
                     self_id=self.profile.user_id,
                     tentacle_id=self.tag,
                     message_id=message_id,
                     user_id=sender_id,
+                    chat_id=sender_id,
+                    chat_type="private",
                     sender=sender_profile,
-                    message=segments,
-                    raw_message=content_json or "",
+                    segments=segments,
+                    raw=content_json or "",
                 )
             else:
                 logger.warning(

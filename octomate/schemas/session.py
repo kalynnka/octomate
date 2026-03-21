@@ -26,10 +26,3 @@ class UserProfile(BaseModel):
     gender: str | None = None
     age: int | None = None
     title: str | None = None
-
-
-class Anonymous(BaseModel):
-    model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
-
-    id: str = "0"
-    name: str = ""

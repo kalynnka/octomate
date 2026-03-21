@@ -13,8 +13,14 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from octomate.config import MindConfig
 from octomate.memory.base import OctopusMemory
 from octomate.octopus import Octopus
-from octomate.schemas.events import GroupMessageEvent, PrivateMessageEvent
-from octomate.schemas.segments import AgentSegment, AtData, AtSegment, ImageSegment, TextSegment
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import (
+    AgentSegment,
+    AtData,
+    AtSegment,
+    ImageSegment,
+    TextSegment,
+)
 from octomate.schemas.session import UserProfile
 from octomate.tentacles.base import SendTarget, Tentacle
 
@@ -26,7 +32,9 @@ class MockInk:
     def inspect(self) -> UserProfile:
         return UserProfile(user_id=BOT_USER_ID, name=BOT_NAME)
 
-    async def send_message(self, receive_id: str, receive_id_type: str, msg_type: str, content: str) -> bool:
+    async def send_message(
+        self, receive_id: str, receive_id_type: str, msg_type: str, content: str
+    ) -> bool:
         return True
 
     async def reply_message(self, message_id: str, msg_type: str, content: str) -> bool:
@@ -35,7 +43,9 @@ class MockInk:
     async def upload_image(self, data: bytes) -> str | None:
         return None
 
-    async def download_image(self, message_id: str, file_key: str) -> tuple[bytes, str] | None:
+    async def download_image(
+        self, message_id: str, file_key: str
+    ) -> tuple[bytes, str] | None:
         return None
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
@@ -52,7 +62,7 @@ class MockTentacle(Tentacle):
         self.ink = MockInk()
         super().__init__(tag, octopus, flush_delay=flush_delay)
 
-    def inject(self, event: PrivateMessageEvent | GroupMessageEvent) -> None:
+    def inject(self, event: MessageEvent) -> None:
         event.tentacle_id = self.tag
         self.buffer.push(event)
 
@@ -76,14 +86,16 @@ class MockTentacle(Tentacle):
         return False
 
 
-def make_private_event(user_id: str = "user-1", text: str = "hello") -> PrivateMessageEvent:
-    return PrivateMessageEvent(
-        time=int(time.time()),
+def make_private_event(user_id: str = "user-1", text: str = "hello") -> MessageEvent:
+    return MessageEvent(
+        timestamp=float(int(time.time())),
         message_id=f"msg-{user_id}-prv",
         user_id=user_id,
+        chat_id=user_id,
+        chat_type="private",
         sender=UserProfile(user_id=user_id, name=f"User-{user_id}"),
-        message=[TextSegment(data={"text": text})],
-        raw_message=text,
+        segments=[TextSegment(data={"text": text})],
+        raw=text,
     )
 
 
@@ -92,19 +104,20 @@ def make_group_event(
     group_id: str = "group-1",
     text: str = "hello",
     mention_bot: bool = False,
-) -> GroupMessageEvent:
+) -> MessageEvent:
     segments: list = []
     if mention_bot:
         segments.append(AtSegment(data=AtData(user_id=BOT_USER_ID, name=BOT_NAME)))
     segments.append(TextSegment(data={"text": text}))
-    return GroupMessageEvent(
-        time=int(time.time()),
+    return MessageEvent(
+        timestamp=float(int(time.time())),
         message_id=f"msg-{user_id}-grp",
         user_id=user_id,
-        group_id=group_id,
+        chat_id=group_id,
+        chat_type="group",
         sender=UserProfile(user_id=user_id, name=f"User-{user_id}"),
-        message=segments,
-        raw_message=text,
+        segments=segments,
+        raw=text,
     )
 
 
@@ -123,8 +136,12 @@ def text_response_model(text: str) -> FunctionModel:
             info.output_tools[0] if info.output_tools else None,
         )
         if output_tool:
-            payload = json.dumps([{"segments": [{"type": "text", "data": {"text": text}}]}])
-            return ModelResponse(parts=[ToolCallPart(tool_name=output_tool.name, args=payload)])
+            payload = json.dumps(
+                [{"segments": [{"type": "text", "data": {"text": text}}]}]
+            )
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name=output_tool.name, args=payload)]
+            )
         return ModelResponse(parts=[TextPart(content=text)])
 
     return FunctionModel(fn)
@@ -139,7 +156,9 @@ def silent_model() -> FunctionModel:
             info.output_tools[0] if info.output_tools else None,
         )
         if output_tool:
-            return ModelResponse(parts=[ToolCallPart(tool_name=output_tool.name, args="[]")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name=output_tool.name, args="[]")]
+            )
         return ModelResponse(parts=[TextPart(content="")])
 
     return FunctionModel(fn)

@@ -21,13 +21,6 @@ from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
-from octomate.schemas.actions import (
-    ActionResponse,
-    SendGroupMsgAction,
-    SendGroupMsgParams,
-    SendPrivateMsgAction,
-    SendPrivateMsgParams,
-)
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -37,7 +30,17 @@ from octomate.schemas.segments import (
 )
 from octomate.tentacles.base import SendTarget, Tentacle
 from octomate.tentacles.napcat.ink import NapcatInk
-from octomate.tentacles.napcat.schema import inbound_adapter
+from octomate.tentacles.napcat.schema import (
+    ActionResponse,
+    NapcatGroupMessageEvent,
+    NapcatPrivateMessageEvent,
+    SendGroupMsgAction,
+    SendGroupMsgParams,
+    SendPrivateMsgAction,
+    SendPrivateMsgParams,
+    inbound_adapter,
+    to_message_event,
+)
 from octomate.utils import guess_image_ext, strip_markdown
 
 if TYPE_CHECKING:
@@ -103,10 +106,11 @@ class NapcatTentacle(Tentacle):
             try:
                 frame.tentacle_id = self.tag
 
-                if isinstance(frame, MessageEvent):
-                    frame.sender = await self.get_user_profile(frame.user_id)
-                    await self.submerge(frame)
-                    self.buffer.push(frame)
+                if isinstance(frame, (NapcatGroupMessageEvent, NapcatPrivateMessageEvent)):
+                    event: MessageEvent = to_message_event(frame)
+                    event.sender = await self.get_user_profile(event.user_id)
+                    await self.submerge(event)
+                    self.buffer.push(event)
             except Exception:
                 logger.exception("Tentacle %s: error processing event", self.tag)
 

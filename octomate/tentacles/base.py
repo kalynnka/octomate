@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, Protocol, runtime_checkable
 
 import anyio
 
-from octomate.schemas.events import GroupMessageEvent
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment
 from octomate.schemas.session import SessionKey, UserProfile
 
@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 
     from octomate.octopus import Octopus
     from octomate.schemas.actions import ConfirmAction
-    from octomate.schemas.events import MessageEvent
     from octomate.schemas.segments import AgentSegment
 
 logger = logging.getLogger(__name__)
@@ -135,7 +134,7 @@ class Tentacle(ABC):
 
     async def submerge(self, event: MessageEvent) -> None:
         """Resolve inbound media: download images from the event to local storage."""
-        pending = [seg for seg in event.message if isinstance(seg, ImageSegment)]
+        pending = [seg for seg in event.segments if isinstance(seg, ImageSegment)]
         if not pending:
             return
         save = self.den(event)
@@ -170,10 +169,7 @@ class Tentacle(ABC):
 
     def den(self, event: MessageEvent) -> Path:
         """Compute the local storage directory for an event's media files."""
-        if isinstance(event, GroupMessageEvent):
-            subdir = f"{event.group_id}"
-        else:
-            subdir = f"{event.user_id}"
+        subdir = event.chat_id if event.chat_type == "group" else event.user_id
         return self.FILES_ROOT / self.tag / subdir
 
 

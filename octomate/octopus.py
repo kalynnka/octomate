@@ -16,7 +16,7 @@ from octomate.agents.manager import SkillManager
 from octomate.config import MindConfig
 from octomate.memory.base import OctopusMemory
 from octomate.schemas.actions import AgentMessage
-from octomate.schemas.events import GroupMessageEvent, MessageEvent
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 from octomate.store import ConfirmationStore
 from octomate.tentacles.base import SendTarget, Tentacle
@@ -100,8 +100,7 @@ class Octopus:
         profile = tentacle.profile
 
         if key.group_id is not None and not any(
-            isinstance(msg, GroupMessageEvent) and msg.is_at(tentacle.id)
-            for msg in batch
+            msg.is_at(tentacle.id) for msg in batch
         ):
             # record and memo messages but skip thinking
             self.memory.record(
