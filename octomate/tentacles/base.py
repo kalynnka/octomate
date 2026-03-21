@@ -4,7 +4,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
@@ -13,7 +13,6 @@ import anyio
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import AgentSegment, ImageSegment, ReplySegment
 from octomate.schemas.session import SessionKey, UserProfile
-from octomate.tentacles.chromo import Chromo, PlatformMessage
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -22,6 +21,24 @@ if TYPE_CHECKING:
     from octomate.schemas.actions import ConfirmAction
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PlatformMessage:
+    msg_type: str
+    content: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class Chromo(Protocol):
+    """Two-way translation between platform-native wire format and internal schema."""
+
+    async def sip(self, raw: Any) -> MessageEvent | None: ...
+
+    async def squirt(
+        self, segments: list[AgentSegment], *, reply_to: str | None = None
+    ) -> list[PlatformMessage]: ...
 
 
 @dataclass
@@ -108,7 +125,7 @@ class Tentacle(ABC):
     async def ingest(self, raw: Any) -> None:
         """Inbound pipeline: decode → enrich sender → resolve media → buffer."""
         try:
-            event = await self.chromo.decode(raw)
+            event = await self.chromo.sip(raw)
             if event is None:
                 return
             event.tentacle_id = self.tag
@@ -128,7 +145,7 @@ class Tentacle(ABC):
                 reply_to = seg.data["id"]
                 break
         remaining: list[AgentSegment] = [s for s in segments if not isinstance(s, ReplySegment)]
-        messages: list[PlatformMessage] = await self.chromo.encode(remaining)
+        messages: list[PlatformMessage] = await self.chromo.squirt(remaining)
         await self.send_platform_message(str(target.chat_id), target.chat_type, messages, reply_to)
 
     @abstractmethod

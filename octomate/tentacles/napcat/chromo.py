@@ -5,7 +5,7 @@ import logging
 
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import AgentSegment, MarkdownSegment, TextSegment
-from octomate.tentacles.chromo import PlatformMessage
+from octomate.tentacles.base import PlatformMessage
 from octomate.tentacles.napcat.schema import (
     ActionResponse,
     NapcatGroupMessageEvent,
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class NapcatChromo:
-    async def decode(self, raw: str | bytes) -> MessageEvent | None:
+    async def sip(self, raw: str | bytes) -> MessageEvent | None:
         try:
             frame = inbound_adapter.validate_json(raw)
         except Exception:
@@ -33,7 +33,7 @@ class NapcatChromo:
 
         return to_message_event(frame)
 
-    async def encode(
+    async def squirt(
         self, segments: list[AgentSegment], *, reply_to: str | None = None
     ) -> list[PlatformMessage]:
         resolved: list[AgentSegment] = []

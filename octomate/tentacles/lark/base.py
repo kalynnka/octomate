@@ -21,8 +21,7 @@ from pydantic import SecretStr
 
 from octomate.schemas.actions import ConfirmAction
 from octomate.schemas.segments import ImageSegment
-from octomate.tentacles.base import SendTarget, Tentacle
-from octomate.tentacles.chromo import PlatformMessage
+from octomate.tentacles.base import SendTarget, Tentacle, PlatformMessage
 from octomate.tentacles.lark.chromo import LarkChromo
 from octomate.tentacles.lark.ink import LarkInk
 from octomate.utils import guess_image_ext

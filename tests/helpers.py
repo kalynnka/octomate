@@ -22,18 +22,17 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.session import UserProfile
-from octomate.tentacles.base import SendTarget, Tentacle
-from octomate.tentacles.chromo import PlatformMessage
+from octomate.tentacles.base import SendTarget, Tentacle, PlatformMessage
 
 BOT_USER_ID = "bot-001"
 BOT_NAME = "TestBot"
 
 
 class MockChromo:
-    async def decode(self, raw: Any) -> MessageEvent | None:
+    async def sip(self, raw: Any) -> MessageEvent | None:
         return None
 
-    async def encode(
+    async def squirt(
         self, segments: list[AgentSegment], *, reply_to: str | None = None
     ) -> list[PlatformMessage]:
         return []

@@ -18,13 +18,13 @@ from octomate.schemas.segments import (
     MessageSegment,
     TextSegment,
 )
-from octomate.tentacles.chromo import PlatformMessage
+from octomate.tentacles.base import PlatformMessage
 
 logger = logging.getLogger(__name__)
 
 
 class LarkChromo:
-    async def decode(self, raw: P2ImMessageReceiveV1) -> MessageEvent | None:
+    async def sip(self, raw: P2ImMessageReceiveV1) -> MessageEvent | None:
         try:
             event = raw.event
             if event is None or event.message is None or event.sender is None:
@@ -65,7 +65,7 @@ class LarkChromo:
             logger.warning("LarkChromo: failed to decode event", exc_info=True)
             return None
 
-    async def encode(
+    async def squirt(
         self, segments: list[AgentSegment], *, reply_to: str | None = None
     ) -> list[PlatformMessage]:
         result: list[PlatformMessage] = []

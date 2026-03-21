@@ -14,8 +14,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from octomate.schemas.segments import AgentSegment, ImageSegment
-from octomate.tentacles.base import SendTarget, Tentacle
-from octomate.tentacles.chromo import PlatformMessage
+from octomate.tentacles.base import PlatformMessage, SendTarget, Tentacle
 from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.napcat.ink import NapcatInk
 from octomate.tentacles.napcat.schema import (
