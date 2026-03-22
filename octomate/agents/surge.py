@@ -31,6 +31,7 @@ class SessionContext:
     active_skills: set[str] = field(default_factory=set)
     tentacle: Tentacle | None = None
     event: MessageEvent | None = None
+    handed_over: bool = False
 
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}

@@ -30,6 +30,7 @@ def _start() -> None:
 
     if config.surge.base_url:
         import os
+
         os.environ.setdefault("GOOGLE_GEMINI_BASE_URL", config.surge.base_url)
 
     agent = create_surge_agent(config.surge, skill_manager)
@@ -66,13 +67,15 @@ def _start() -> None:
                     backoff_base=tc.backoff_base,
                     backoff_max=tc.backoff_max,
                     backoff_factor=tc.backoff_factor,
-                    flick=create_flick_agent(tc.flick),
+                    flick=create_flick_agent(tc.flick, skill_manager),
                     memory=memory,
                     flush_delay=config.surge.flush_delay,
                 )
             )
         elif isinstance(tc, LarkTentacleConfig):
-            warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"lark_oapi")
+            warnings.filterwarnings(
+                "ignore", category=DeprecationWarning, module=r"lark_oapi"
+            )
             octopus.connect(
                 LarkTentacle(
                     tc.name,
@@ -80,7 +83,7 @@ def _start() -> None:
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
                     store=octopus.store,
-                    flick=create_flick_agent(tc.flick),
+                    flick=create_flick_agent(tc.flick, skill_manager),
                     memory=memory,
                     flush_delay=config.surge.flush_delay,
                 )

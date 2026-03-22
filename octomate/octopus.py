@@ -10,8 +10,8 @@ from pydantic_ai import Agent, AgentRunResult, DeferredToolResults
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.tools import DeferredToolApprovalResult, DeferredToolRequests
 
-from octomate.agents.surge import SessionContext
 from octomate.agents.manager import SkillManager
+from octomate.agents.surge import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
@@ -109,7 +109,10 @@ class Octopus:
             history = tentacle.memory.history(key)
             tentacle.memory.record(
                 key,
-                [ModelRequest(parts=[UserPromptPart(content=str(msg))]) for msg in batch],
+                [
+                    ModelRequest(parts=[UserPromptPart(content=str(msg))])
+                    for msg in batch
+                ],
             )
 
             user_prompt: list = [header]
@@ -120,7 +123,9 @@ class Octopus:
             if memories:
                 facts = "\n".join(f"- {m}" for m in memories)
                 history.append(
-                    ModelRequest(parts=[UserPromptPart(content=f"[relevant memories]\n{facts}")])
+                    ModelRequest(
+                        parts=[UserPromptPart(content=f"[relevant memories]\n{facts}")]
+                    )
                 )
 
             logger.info("Octopus flick [%s] (%d messages)", key, len(batch))
@@ -131,7 +136,12 @@ class Octopus:
                 else SendTarget("private", key.user_id)
             )
             deps = SessionContext(session_key=key, tentacle=tentacle)
-            result = await self.agent.run(user_prompt, message_history=history, deps=deps)
+            result = await tentacle.flick.run(
+                user_prompt, message_history=history, deps=deps
+            )
+
+            if deps.handed_over:
+                return
 
             if isinstance(result.output, DeferredToolRequests):
                 result = await self.handle_deferred(
@@ -144,17 +154,17 @@ class Octopus:
 
             if isinstance(result.output, list):
                 tentacle.memory.record(key, result.new_messages())
-                logger.info("Flick returned %d messages for [%s]", len(result.output), key)
+                logger.info(
+                    "Flick returned %d messages for [%s]", len(result.output), key
+                )
                 for msg in result.output:
                     await tentacle.twitch(target, msg.segments)
                 asyncio.create_task(tentacle.memory.memo(key, result.output, tentacle))
         except Exception:
             logger.exception("Error in flick [%s]", key)
 
-    async def surge(self, key: SessionKey, batch: list[MessageEvent], *, summary: str) -> None:
-        """Handover path: summary + recalled memories only. No raw message history."""
-        if not batch:
-            return
+    async def surge(self, key: SessionKey, *, summary: str) -> None:
+        """Handover path: summary only. No raw message history, no memory."""
         try:
             tentacle = self.tentacles[key.tentacle_id]
             profile = tentacle.profile
@@ -170,10 +180,8 @@ class Octopus:
             )
 
             user_prompt: list = [header, f"[summary]\n{summary}"]
-            for msg in batch:
-                user_prompt.extend(msg.to_content_parts())
 
-            logger.info("Octopus surge [%s] (%d messages)", key, len(batch))
+            logger.info("Octopus surge [%s]", key)
 
             target = (
                 SendTarget("group", key.group_id)
@@ -193,7 +201,9 @@ class Octopus:
                 )
 
             if isinstance(result.output, list):
-                logger.info("Surge returned %d messages for [%s]", len(result.output), key)
+                logger.info(
+                    "Surge returned %d messages for [%s]", len(result.output), key
+                )
                 for msg in result.output:
                     await tentacle.twitch(target, msg.segments)
         except Exception:
@@ -227,9 +237,7 @@ class Octopus:
                 continue
 
             try:
-                approved = await asyncio.wait_for(
-                    future, timeout=self.store.timeout
-                )
+                approved = await asyncio.wait_for(future, timeout=self.store.timeout)
             except TimeoutError:
                 self.store.expire_confirmation(action.confirmation_id)
                 approved = False

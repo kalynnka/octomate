@@ -139,31 +139,9 @@ class Tentacle(ABC):
             event.self_id = self.profile.user_id
             event.sender = await self.get_user_profile(event.user_id)
             await self.submerge(event)
-            await self.triage(event)
+            self.buffer.push(event)
         except Exception:
             logger.exception("Tentacle %s: error in ingest", self.tag)
-
-    async def triage(self, event: MessageEvent) -> None:
-        from octomate.agents.surge import SessionContext
-
-        key = event.session_key
-        ctx = SessionContext(session_key=key, tentacle=self, event=event)
-        header = (
-            f"[group: {event.chat_id}]"
-            if event.chat_type == "group"
-            else "[chat: private]"
-        )
-        user_prompt: list[Any] = [header] + event.to_content_parts()
-        result = await self.flick.run(user_prompt, deps=ctx)
-
-        if isinstance(result.output, list) and result.output:
-            target = (
-                SendTarget("group", key.group_id)
-                if key.group_id
-                else SendTarget("private", key.user_id)
-            )
-            for msg in result.output:
-                await self.twitch(target, msg.segments)
 
     async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         """Outbound pipeline: resolve media → encode → send."""

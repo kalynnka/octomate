@@ -10,7 +10,7 @@ from typing import Any
 from pydantic_ai import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from octomate.agents.surge import create_surge_agent, SessionContext
+from octomate.agents.surge import create_surge_agent
 from octomate.config import SurgeConfig
 from octomate.memory.base import OctopusMemory
 from octomate.octopus import Octopus
@@ -181,7 +181,9 @@ def silent_model() -> FunctionModel:
         )
         if output_tool:
             return ModelResponse(
-                parts=[ToolCallPart(tool_name=output_tool.name, args='{"response": []}')]
+                parts=[
+                    ToolCallPart(tool_name=output_tool.name, args='{"response": []}')
+                ]
             )
         return ModelResponse(parts=[TextPart(content="")])
 
