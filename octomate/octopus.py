@@ -18,7 +18,7 @@ from octomate.memory.base import OctopusMemory
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.store import ConfirmationStore
+from octomate.store import InteractionStore
 from octomate.tentacles.base import SendTarget, Tentacle
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class Octopus:
     agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]
-    confirmations: ConfirmationStore
+    store: InteractionStore
     memory: OctopusMemory
     skill_manager: SkillManager | None
     tentacles: dict[str, Tentacle]
@@ -41,7 +41,7 @@ class Octopus:
         buffer_size: int = 64,
     ) -> None:
         self.tentacles = {}
-        self.confirmations = ConfirmationStore()
+        self.store = InteractionStore()
         self.memory = memory
         self.skill_manager = skill_manager
         self._nerve_send, self._nerve_receive = object_stream(buffer_size)
@@ -74,9 +74,6 @@ class Octopus:
 
     def cut(self, name: str) -> None:
         self.tentacles.pop(name, None)
-
-    async def confirm(self, confirmation_id: str, approved: bool) -> bool:
-        return self.confirmations.resolve(confirmation_id, approved)
 
     async def kick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         await self._nerve_send.send((key, batch))
@@ -183,7 +180,7 @@ class Octopus:
 
         for call in result.output.approvals:
             tool_meta = result.output.metadata.get(call.tool_call_id, {})
-            action, future = self.confirmations.create(
+            action, future = self.store.create_confirmation(
                 session_key=key,
                 tool_name=call.tool_name,
                 tool_call_id=call.tool_call_id,
@@ -194,16 +191,16 @@ class Octopus:
 
             sent = await tentacle.send_confirmation(target, action)
             if not sent:
-                self.confirmations.expire(action.confirmation_id)
+                self.store.expire_confirmation(action.confirmation_id)
                 approvals[call.tool_call_id] = False
                 continue
 
             try:
                 approved = await asyncio.wait_for(
-                    future, timeout=self.confirmations.timeout
+                    future, timeout=self.store.timeout
                 )
             except TimeoutError:
-                self.confirmations.expire(action.confirmation_id)
+                self.store.expire_confirmation(action.confirmation_id)
                 approved = False
 
             approvals[call.tool_call_id] = approved

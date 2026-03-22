@@ -13,11 +13,11 @@ import anyio
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import AgentSegment, ImageSegment, ReplySegment
 from octomate.schemas.session import SessionKey, UserProfile
+from octomate.tentacles.feelers import Feelers
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from octomate.octopus import Octopus
     from octomate.schemas.actions import ConfirmAction
 
 logger = logging.getLogger(__name__)
@@ -90,15 +90,14 @@ class Tentacle(ABC):
     profile: UserProfile
     ink: Ink
     chromo: Chromo
-    octopus: Octopus
+    feelers: Feelers
     buffer: MessageBuffer
     user_profiles: dict[str, UserProfile]
 
-    def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.5) -> None:
+    def __init__(self, tag: str, kick: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]], flush_delay: float = 0.5) -> None:
         self.tag = tag
-        self.octopus = octopus
         self.profile = self.inspect()
-        self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
+        self.buffer = MessageBuffer(flush_delay=flush_delay, handler=kick)
         self.user_profiles = {}
 
     @property
@@ -160,7 +159,7 @@ class Tentacle(ABC):
     async def send_confirmation(
         self, target: SendTarget, action: ConfirmAction
     ) -> bool:
-        return False
+        return await self.feelers.confirm.send_confirmation(target, action)
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
         cached = self.user_profiles.get(user_id)

@@ -15,6 +15,7 @@ from websockets.exceptions import ConnectionClosed
 
 from octomate.schemas.segments import AgentSegment, ImageSegment
 from octomate.tentacles.base import PlatformMessage, SendTarget, Tentacle
+from octomate.tentacles.feelers import NULL_FEELERS
 from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.napcat.ink import NapcatInk
 from octomate.tentacles.napcat.schema import (
@@ -28,7 +29,10 @@ import base64
 import uuid
 
 if TYPE_CHECKING:
-    from octomate.octopus import Octopus
+    from collections.abc import Awaitable, Callable
+
+    from octomate.schemas.events import MessageEvent
+    from octomate.schemas.session import SessionKey
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +54,7 @@ class NapcatTentacle(Tentacle):
     def __init__(
         self,
         tag: str,
-        octopus: Octopus,
+        kick: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]],
         *,
         ws_url: str,
         http_url: str,
@@ -64,12 +68,13 @@ class NapcatTentacle(Tentacle):
         self.access_token = access_token
         self.ink = NapcatInk(http_url, access_token)
         self.chromo = NapcatChromo()
+        self.feelers = NULL_FEELERS
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
         self.backoff_factor = backoff_factor
         self.ws_client = None
         self.ws_scope = None
-        super().__init__(tag, octopus, flush_delay=flush_delay)
+        super().__init__(tag, kick, flush_delay=flush_delay)
 
     async def sense(self, ws: ClientConnection) -> None:
         async for raw in ws:

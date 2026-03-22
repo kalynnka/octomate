@@ -61,7 +61,7 @@ def _start() -> None:
             octopus.connect(
                 NapcatTentacle(
                     tc.name,
-                    octopus,
+                    octopus.kick,
                     ws_url=tc.ws_url,
                     http_url=str(tc.http_url),
                     access_token=tc.access_token,
@@ -80,9 +80,10 @@ def _start() -> None:
             octopus.connect(
                 LarkTentacle(
                     tc.name,
-                    octopus,
+                    octopus.kick,
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
+                    store=octopus.store,
                     flush_delay=flush_delay,
                 )
             )

@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from collections.abc import Awaitable, Callable
+
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
@@ -21,8 +23,9 @@ from octomate.schemas.segments import (
     ImageSegment,
     TextSegment,
 )
-from octomate.schemas.session import UserProfile
-from octomate.tentacles.base import SendTarget, Tentacle, PlatformMessage
+from octomate.schemas.session import SessionKey, UserProfile
+from octomate.tentacles.base import PlatformMessage, SendTarget, Tentacle
+from octomate.tentacles.feelers import NULL_FEELERS
 
 BOT_USER_ID = "bot-001"
 BOT_NAME = "TestBot"
@@ -30,11 +33,13 @@ BOT_NAME = "TestBot"
 
 class MockChromo:
     async def sip(self, raw: Any) -> MessageEvent | None:
+        _ = raw
         return None
 
     async def squirt(
         self, segments: list[AgentSegment], *, reply_to: str | None = None
     ) -> list[PlatformMessage]:
+        _ = segments, reply_to
         return []
 
 
@@ -45,17 +50,21 @@ class MockInk:
     async def send_message(
         self, receive_id: str, receive_id_type: str, msg_type: str, content: str
     ) -> bool:
+        _ = receive_id, receive_id_type, msg_type, content
         return True
 
     async def reply_message(self, message_id: str, msg_type: str, content: str) -> bool:
+        _ = message_id, msg_type, content
         return True
 
     async def upload_image(self, data: bytes) -> str | None:
+        _ = data
         return None
 
     async def download_image(
         self, message_id: str, file_key: str
     ) -> tuple[bytes, str] | None:
+        _ = message_id, file_key
         return None
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
@@ -66,12 +75,13 @@ class MockTentacle(Tentacle):
     sent: list[tuple[SendTarget, list[AgentSegment]]]
     confirmations_requested: int
 
-    def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.0) -> None:
+    def __init__(self, tag: str, kick: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]], flush_delay: float = 0.0) -> None:
         self.sent = []
         self.confirmations_requested = 0
         self.ink = MockInk()
         self.chromo = MockChromo()
-        super().__init__(tag, octopus, flush_delay=flush_delay)
+        self.feelers = NULL_FEELERS
+        super().__init__(tag, kick, flush_delay=flush_delay)
 
     def inject(self, event: MessageEvent) -> None:
         event.tentacle_id = self.tag
@@ -93,15 +103,17 @@ class MockTentacle(Tentacle):
         messages: list[PlatformMessage],
         reply_to: str | None = None,
     ) -> bool:
+        _ = chat_id, chat_type, messages, reply_to
         return True
 
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
-        pass
+        _ = seg, save_dir, message_id
 
     async def secrete(self, seg: ImageSegment) -> None:
-        pass
+        _ = seg
 
     async def send_confirmation(self, target: SendTarget, action: Any) -> bool:
+        _ = target, action
         self.confirmations_requested += 1
         return False
 
@@ -151,6 +163,7 @@ def text_response_model(text: str) -> FunctionModel:
     """FunctionModel that always returns a single TextSegment AgentMessage."""
 
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        _ = messages
         output_tool = next(
             (t for t in info.output_tools if "deferred" not in t.name.lower()),
             info.output_tools[0] if info.output_tools else None,
@@ -171,6 +184,7 @@ def silent_model() -> FunctionModel:
     """FunctionModel that returns an empty AgentMessage list (silent response)."""
 
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        _ = messages
         output_tool = next(
             (t for t in info.output_tools if "deferred" not in t.name.lower()),
             info.output_tools[0] if info.output_tools else None,
