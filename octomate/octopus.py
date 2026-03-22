@@ -10,8 +10,8 @@ from pydantic_ai import Agent, AgentRunResult, DeferredToolResults
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.tools import DeferredToolApprovalResult, DeferredToolRequests
 
+from octomate.agents.base import SessionContext
 from octomate.agents.manager import SkillManager
-from octomate.agents.surge import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
@@ -137,7 +137,10 @@ class Octopus:
             )
             deps = SessionContext(session_key=key, tentacle=tentacle)
             result = await tentacle.flick.run(
-                user_prompt, message_history=history, deps=deps
+                user_prompt,
+                message_history=history,
+                deps=deps,
+                toolsets=tentacle.toolsets,
             )
 
             if deps.handed_over:
@@ -145,6 +148,7 @@ class Octopus:
 
             if isinstance(result.output, DeferredToolRequests):
                 result = await self.handle_deferred(
+                    agent=tentacle.flick,
                     result=result,  # type: ignore[arg-type]
                     deps=deps,
                     key=key,
@@ -189,10 +193,15 @@ class Octopus:
                 else SendTarget("private", key.user_id)
             )
             deps = SessionContext(session_key=key, tentacle=tentacle)
-            result = await self.agent.run(user_prompt, message_history=[], deps=deps)
+            result = await self.agent.run(
+                user_prompt,
+                toolsets=tentacle.toolsets,
+                deps=deps,
+            )
 
             if isinstance(result.output, DeferredToolRequests):
                 result = await self.handle_deferred(
+                    agent=self.agent,
                     result=result,  # type: ignore[arg-type]
                     deps=deps,
                     key=key,
@@ -211,6 +220,7 @@ class Octopus:
 
     async def handle_deferred(
         self,
+        agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
         result: AgentRunResult[DeferredToolRequests],
         key: SessionKey,
         deps: SessionContext,
@@ -244,8 +254,9 @@ class Octopus:
 
             approvals[call.tool_call_id] = approved
 
-        return await self.agent.run(
+        return await agent.run(
             message_history=result.all_messages(),
             deferred_tool_results=DeferredToolResults(approvals=approvals),
             deps=deps,
-        )  # type: ignore[return-value]
+            toolsets=tentacle.toolsets,
+        )

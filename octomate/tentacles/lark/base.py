@@ -19,7 +19,7 @@ from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.agents.surge import SessionContext
+from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
 from octomate.store import InteractionStore

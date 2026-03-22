@@ -7,13 +7,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pydantic_ai import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.tools import DeferredToolRequests
 
+from octomate.agents.base import SessionContext
 from octomate.agents.surge import create_surge_agent
 from octomate.config import SurgeConfig
 from octomate.memory.base import OctopusMemory
 from octomate.octopus import Octopus
+from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -71,7 +74,12 @@ class MockTentacle(Tentacle):
         self.chromo = MockChromo()
         self.feelers = NULL_FEELERS
         memory = OctopusMemory(store_path=Path("/tmp/.octomate_test_memory"))
-        super().__init__(tag, octopus, octopus.agent, memory, flush_delay=flush_delay)
+        flick = Agent(
+            "test",
+            deps_type=SessionContext,
+            output_type=[list[AgentMessage], DeferredToolRequests],
+        )
+        super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
 
     def inject(self, event: MessageEvent) -> None:
         event.tentacle_id = self.tag

@@ -6,9 +6,9 @@ from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.tools import DeferredToolRequests
 
+from octomate.agents.base import RetryTransport, SessionContext
 from octomate.agents.manager import SkillManager
 from octomate.agents.prompts import BASE_PROMPT, FLICK_EXTRA
-from octomate.agents.surge import RetryTransport, SessionContext
 from octomate.config import FlickConfig
 from octomate.schemas.actions import AgentMessage
 

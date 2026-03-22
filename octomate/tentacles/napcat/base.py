@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,7 +17,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
-from octomate.agents.surge import SessionContext
+from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import AgentSegment, ImageSegment
 from octomate.tentacles.base import PlatformMessage, SendTarget, Tentacle
@@ -29,8 +31,6 @@ from octomate.tentacles.napcat.schema import (
     SendPrivateMsgParams,
 )
 from octomate.utils import guess_image_ext
-import base64
-import uuid
 
 if TYPE_CHECKING:
     from octomate.memory.base import OctopusMemory

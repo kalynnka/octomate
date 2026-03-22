@@ -6,13 +6,16 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import anyio
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai.toolsets import FunctionToolset
 
+from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage, ConfirmAction
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import AgentSegment, ImageSegment, ReplySegment
@@ -22,7 +25,6 @@ from octomate.tentacles.feelers import Feelers
 # agents.flick imports agents.surge which imports SendTarget from this module,
 # and octopus imports Tentacle from this module — both circular.
 if TYPE_CHECKING:
-    from octomate.agents.surge import SessionContext
     from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
 
@@ -212,6 +214,58 @@ class Tentacle(ABC):
     def den(self, event: MessageEvent) -> Path:
         subdir = event.chat_id if event.chat_type == "group" else event.user_id
         return self.FILES_ROOT / self.tag / subdir
+
+    @cached_property
+    def toolsets(self) -> list[FunctionToolset[SessionContext]]:
+        toolset = FunctionToolset[SessionContext]()
+
+        @toolset.tool
+        async def ask_user(
+            ctx: RunContext[SessionContext],
+            question: str,
+            options: list[str] | None = None,
+        ) -> str:
+            """Ask the user a question and wait for their answer before continuing.
+
+            Use this when you need clarification or a decision from the user. Do NOT
+            send a separate text message asking the same thing — this tool handles it.
+            Provide options to show choice buttons; omit for free-text input
+            (platform-dependent — may not be supported everywhere).
+            Returns the user's answer, or '(no response)' on timeout.
+            """
+            if not ctx.deps.tentacle:
+                return "(no response)"
+            key = ctx.deps.session_key
+            target = (
+                SendTarget("group", key.group_id)
+                if key.group_id
+                else SendTarget("private", key.user_id)
+            )
+            resp = await ctx.deps.tentacle.feelers.questions.ask_question(
+                target, question, options
+            )
+            return resp.answer if resp else "(no response)"
+
+        # @toolset.tool
+        # async def create_todo(ctx: RunContext[SessionContext], title: str) -> str:
+        #     """Create a TODO card for the user in the current chat.
+
+        #     Use this whenever a task has multiple stages or steps — create a todo item
+        #     for each stage so the user can track progress. Returns a todo ID on success,
+        #     or an error message if not supported on this platform.
+        #     """
+        #     if not ctx.deps.tentacle:
+        #         return "not supported"
+        #     key = ctx.deps.session_key
+        #     target = (
+        #         SendTarget("group", key.group_id)
+        #         if key.group_id
+        #         else SendTarget("private", key.user_id)
+        #     )
+        #     item = await ctx.deps.tentacle.feelers.todos.create_todo(target, title)
+        #     return f"todo:{item.todo_id}" if item else "not supported on this platform"
+
+        return [toolset]
 
 
 class MessageBuffer:
