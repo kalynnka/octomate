@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import httpx
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.tools import DeferredToolRequests
@@ -13,8 +13,6 @@ from octomate.agents.manager import SkillManager
 from octomate.agents.prompts import BASE_PROMPT
 from octomate.config import SurgeConfig
 from octomate.schemas.actions import AgentMessage
-from octomate.schemas.segments import TextSegment
-from octomate.tentacles.base import SendTarget
 
 if TYPE_CHECKING:
     pass
@@ -46,23 +44,5 @@ def create_surge_agent(
         output_type=[list[AgentMessage], DeferredToolRequests],
         toolsets=toolsets,
     )
-
-    @agent.tool
-    async def acknowledge(ctx: RunContext[SessionContext], text: str) -> str:
-        """Send a short message to the user immediately before doing heavy work.
-
-        Call this FIRST when about to invoke a skill or tool that may take a few
-        seconds (e.g. weather, search, knowledge base), so the user knows you are
-        working on it. Do NOT use for simple replies like greetings or responses
-        that don't involve tool calls. Example: acknowledge("let me look that up~")
-        """
-        if ctx.deps.tentacle:
-            key = ctx.deps.session_key
-            if key.group_id is not None:
-                target = SendTarget("group", key.group_id)
-            else:
-                target = SendTarget("private", key.user_id)
-            await ctx.deps.tentacle.twitch(target, [TextSegment(data={"text": text})])
-        return "acknowledged"
 
     return agent

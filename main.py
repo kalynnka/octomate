@@ -5,6 +5,8 @@ import logging
 import sys
 import warnings
 
+import octotools
+
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
@@ -25,7 +27,8 @@ def _start() -> None:
     config = OctomateConfig()
 
     skill_manager = SkillManager()
-    # octotools.github.register(skill_manager)
+    octotools.streamify.register(skill_manager)
+    octotools.github.register(skill_manager)
 
     if config.surge.base_url:
         import os

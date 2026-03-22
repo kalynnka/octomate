@@ -43,39 +43,44 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
         card = json.dumps(
             {
                 "header": {
-                    "title": {"tag": "plain_text", "content": "Action Confirmation"},
+                    "title": {"tag": "plain_text", "content": "✅ Action Confirmation"},
                     "template": "orange",
                 },
                 "elements": [
                     {
                         "tag": "markdown",
                         "content": (
-                            f"**Tool:** {action.tool_name}\n"
+                            f"**Tool:** `{action.tool_name}`\n"
                             f"**Description:** {description}\n"
                             f"**Arguments:**\n```json\n{args_json}\n```" + mention_line
                         ),
                     },
+                    {"tag": "hr"},
                     {
                         "tag": "action",
                         "actions": [
                             {
                                 "tag": "button",
-                                "text": {"tag": "plain_text", "content": "Approve"},
+                                "text": {"tag": "plain_text", "content": "✅ Approve"},
                                 "type": "primary",
                                 "value": {
                                     "action": "confirm",
                                     "confirmation_id": action.confirmation_id,
                                     "approved": "true",
+                                    "tool_name": action.tool_name,
+                                    "description": description,
                                 },
                             },
                             {
                                 "tag": "button",
-                                "text": {"tag": "plain_text", "content": "Deny"},
+                                "text": {"tag": "plain_text", "content": "❌ Deny"},
                                 "type": "danger",
                                 "value": {
                                     "action": "confirm",
                                     "confirmation_id": action.confirmation_id,
                                     "approved": "false",
+                                    "tool_name": action.tool_name,
+                                    "description": description,
                                 },
                             },
                         ],
@@ -106,31 +111,38 @@ class LarkTodoFeeler(TodoFeeler):
         assignee_line = f'\n**Assignee:** <at id="{assignee}"></at>' if assignee else ""
         card = json.dumps(
             {
+                "header": {
+                    "title": {"tag": "plain_text", "content": "📝 TODO"},
+                    "template": "blue",
+                },
                 "elements": [
                     {
                         "tag": "markdown",
                         "content": f"☐ {title}" + assignee_line,
                     },
+                    {"tag": "hr"},
                     {
                         "tag": "action",
                         "actions": [
                             {
                                 "tag": "button",
-                                "text": {"tag": "plain_text", "content": "Done"},
+                                "text": {"tag": "plain_text", "content": "✅ Done"},
                                 "type": "primary",
                                 "value": {
                                     "action": "todo_update",
                                     "todo_id": item.todo_id,
+                                    "title": title,
                                     "status": "done",
                                 },
                             },
                             {
                                 "tag": "button",
-                                "text": {"tag": "plain_text", "content": "Cancel"},
+                                "text": {"tag": "plain_text", "content": "❌ Cancel"},
                                 "type": "danger",
                                 "value": {
                                     "action": "todo_update",
                                     "todo_id": item.todo_id,
+                                    "title": title,
                                     "status": "cancelled",
                                 },
                             },
@@ -160,40 +172,69 @@ class LarkQuestionFeeler(QuestionFeeler):
         self,
         target: SendTarget,
         text: str,
-        options: list[str],
+        options: list[str] | None = None,
     ) -> QuestionResponse | None:
-        if not options:
-            # Free-text input via Lark form elements is not yet implemented.
-            logger.warning(
-                "LarkQuestionFeeler: ask_question without options is not supported"
-            )
-            return None
-
         question, future = self.store.create_question(text, options)
         chat_id = str(target.chat_id)
         receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
 
-        card = json.dumps(
+        elements: list[dict] = [{"tag": "markdown", "content": text}]
+        if options:
+            elements.append({"tag": "hr"})
+            elements.append(
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": opt},
+                            "type": "default",
+                            "value": {
+                                "action": "question_answer",
+                                "question_id": question.question_id,
+                                "answer": opt,
+                            },
+                        }
+                        for opt in options
+                    ],
+                }
+            )
+        elements.append({"tag": "hr"})
+        elements.append(
             {
+                "tag": "form",
+                "name": f"question_form_{question.question_id}",
                 "elements": [
-                    {"tag": "markdown", "content": text},
                     {
-                        "tag": "action",
-                        "actions": [
-                            {
-                                "tag": "button",
-                                "text": {"tag": "plain_text", "content": opt},
-                                "type": "default",
-                                "value": {
-                                    "action": "question_answer",
-                                    "question_id": question.question_id,
-                                    "answer": opt,
-                                },
-                            }
-                            for opt in options
-                        ],
+                        "tag": "input",
+                        "name": "answer",
+                        "placeholder": {
+                            "tag": "plain_text",
+                            "content": "Type your answer...",
+                        },
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Submit"},
+                        "type": "primary",
+                        "action_type": "form_submit",
+                        "name": "submit",
+                        "value": {
+                            "action": "question_answer",
+                            "question_id": question.question_id,
+                        },
                     },
                 ],
+            }
+        )
+
+        card = json.dumps(
+            {
+                "header": {
+                    "title": {"tag": "plain_text", "content": "Question"},
+                    "template": "blue",
+                },
+                "elements": elements,
             }
         )
         sent = await self.ink.send_message(

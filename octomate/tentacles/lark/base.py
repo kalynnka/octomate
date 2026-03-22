@@ -176,33 +176,119 @@ class LarkTentacle(Tentacle):
                 resolved = anyio.from_thread.run_sync(
                     self.store.resolve_confirmation, confirmation_id, approved
                 )
-                if resolved:
-                    msg = "Approved" if approved else "Denied"
+                if not resolved:
                     return P2CardActionTriggerResponse(
-                        {"toast": {"type": "info", "content": msg}}
+                        {"toast": {"type": "warning", "content": "Already handled"}}
                     )
+
+                tool_name = value.get("tool_name", "")
+                description = value.get("description", tool_name)
+                status_emoji = "✅" if approved else "❌"
+                status_text = "Approved" if approved else "Denied"
+                template = "green" if approved else "red"
                 return P2CardActionTriggerResponse(
-                    {"toast": {"type": "warning", "content": "Already handled"}}
+                    {
+                        "toast": {"type": "info", "content": status_text},
+                        "card": {
+                            "type": "raw",
+                            "data": {
+                                "header": {
+                                    "title": {
+                                        "tag": "plain_text",
+                                        "content": f"{status_emoji} {status_text}",
+                                    },
+                                    "template": template,
+                                },
+                                "elements": [
+                                    {
+                                        "tag": "markdown",
+                                        "content": (
+                                            f"**Tool:** `{tool_name}`\n"
+                                            f"**Description:** {description}\n"
+                                            f"**Result:** {status_emoji} {status_text}"
+                                        ),
+                                    },
+                                ],
+                            },
+                        },
+                    }
                 )
 
             if action_type == "question_answer":
+                form_value = event.action.form_value or {}
+                answer = form_value.get("answer") or value.get("answer", "")
+                question_id = value.get("question_id", "")
+                entry = self.store.questions.get(question_id)
+                question_text = entry[0].text if entry else ""
                 anyio.from_thread.run_sync(
                     self.store.resolve_question,
-                    value.get("question_id", ""),
-                    value.get("answer", ""),
+                    question_id,
+                    answer,
                     clicker_id,
                 )
                 return P2CardActionTriggerResponse(
-                    {"toast": {"type": "info", "content": "Answer recorded"}}
+                    {
+                        "toast": {"type": "info", "content": "Answer recorded"},
+                        "card": {
+                            "type": "raw",
+                            "data": {
+                                "header": {
+                                    "title": {
+                                        "tag": "plain_text",
+                                        "content": "✅ Answered",
+                                    },
+                                    "template": "green",
+                                },
+                                "elements": [
+                                    {
+                                        "tag": "markdown",
+                                        "content": question_text,
+                                    },
+                                    {"tag": "hr"},
+                                    {
+                                        "tag": "markdown",
+                                        "content": f"💬 **Answer:** {answer}",
+                                    },
+                                ],
+                            },
+                        },
+                    }
                 )
 
             if action_type == "todo_update":
+                todo_id = value.get("todo_id", "")
+                status = value.get("status", "done")
+                title = value.get("title", "")
                 anyio.from_thread.run_sync(
                     self.store.update_todo,
-                    value.get("todo_id", ""),
-                    value.get("status", "done"),
+                    todo_id,
+                    status,
                 )
-                return P2CardActionTriggerResponse({})
+                status_icon = "✅" if status == "done" else "❌"
+                status_label = "Done" if status == "done" else "Cancelled"
+                template = "green" if status == "done" else "grey"
+                return P2CardActionTriggerResponse(
+                    {
+                        "card": {
+                            "type": "raw",
+                            "data": {
+                                "header": {
+                                    "title": {
+                                        "tag": "plain_text",
+                                        "content": f"{status_icon} {status_label}",
+                                    },
+                                    "template": template,
+                                },
+                                "elements": [
+                                    {
+                                        "tag": "markdown",
+                                        "content": f"{status_icon} ~~{title}~~ — **{status_label}**",
+                                    },
+                                ],
+                            },
+                        },
+                    }
+                )
 
         except Exception:
             logger.warning(

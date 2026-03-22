@@ -146,24 +146,22 @@ class Octopus:
             if deps.handed_over:
                 return
 
-            if isinstance(result.output, DeferredToolRequests):
-                result = await self.handle_deferred(
-                    agent=tentacle.flick,
-                    result=result,  # type: ignore[arg-type]
-                    deps=deps,
-                    key=key,
-                    target=target,
-                    tentacle=tentacle,
-                )
+            result = await self.resolve(
+                agent=tentacle.flick,
+                result=result,
+                deps=deps,
+                key=key,
+                target=target,
+                tentacle=tentacle,
+            )
+            if result is None:
+                return
 
-            if isinstance(result.output, list):
-                tentacle.memory.record(key, result.new_messages())
-                logger.info(
-                    "Flick returned %d messages for [%s]", len(result.output), key
-                )
-                for msg in result.output:
-                    await tentacle.twitch(target, msg.segments)
-                asyncio.create_task(tentacle.memory.memo(key, result.output, tentacle))
+            tentacle.memory.record(key, result.new_messages())
+            logger.info("Flick returned %d messages for [%s]", len(result.output), key)
+            for msg in result.output:
+                await tentacle.twitch(target, msg.segments)
+            asyncio.create_task(tentacle.memory.memo(key, result.output, tentacle))
         except Exception:
             logger.exception("Error in flick [%s]", key)
 
@@ -199,74 +197,85 @@ class Octopus:
                 deps=deps,
             )
 
-            if isinstance(result.output, DeferredToolRequests):
-                result = await self.handle_deferred(
-                    agent=self.agent,
-                    result=result,  # type: ignore[arg-type]
-                    deps=deps,
-                    key=key,
-                    target=target,
-                    tentacle=tentacle,
-                )
+            result = await self.resolve(
+                agent=self.agent,
+                result=result,
+                deps=deps,
+                key=key,
+                target=target,
+                tentacle=tentacle,
+            )
+            if result is None:
+                return
 
-            if isinstance(result.output, list):
-                logger.info(
-                    "Surge returned %d messages for [%s]", len(result.output), key
-                )
-                for msg in result.output:
-                    await tentacle.twitch(target, msg.segments)
+            logger.info("Surge returned %d messages for [%s]", len(result.output), key)
+            for msg in result.output:
+                await tentacle.twitch(target, msg.segments)
         except Exception:
             logger.exception("Error in surge [%s]", key)
 
-    async def handle_deferred(
+    async def resolve(
         self,
         agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
-        result: AgentRunResult[DeferredToolRequests],
+        result: AgentRunResult[list[AgentMessage] | DeferredToolRequests],
         key: SessionKey,
         deps: SessionContext,
         target: SendTarget,
         tentacle: Tentacle,
-    ) -> AgentRunResult[list[AgentMessage] | DeferredToolRequests]:
-        deferred = DeferredToolResults()
+    ) -> AgentRunResult[list[AgentMessage]] | None:
+        """Resolve deferred tool requests until the agent produces final messages.
 
-        for call in result.output.calls:
-            if call.tool_name == "ask_user":
-                args = call.args_as_dict()
-                resp = await tentacle.feelers.questions.ask_question(
-                    target, args.get("question", ""), args.get("options")
-                )
-                deferred.calls[call.tool_call_id] = (
-                    resp.answer if resp else "(no response)"
+        Returns the final result with list[AgentMessage] output,
+        or None if the agent handed over mid-resolution.
+        """
+        while isinstance(result.output, DeferredToolRequests):
+            deferred = DeferredToolResults()
+
+            for call in result.output.calls:
+                if call.tool_name == "ask_user":
+                    args = call.args_as_dict()
+                    resp = await tentacle.feelers.questions.ask_question(
+                        target, args.get("question", ""), args.get("options")
+                    )
+                    deferred.calls[call.tool_call_id] = (
+                        resp.answer if resp else "(no response)"
+                    )
+
+            for call in result.output.approvals:
+                tool_meta = result.output.metadata.get(call.tool_call_id, {})
+                action, future = self.store.create_confirmation(
+                    session_key=key,
+                    tool_name=call.tool_name,
+                    tool_call_id=call.tool_call_id,
+                    args=call.args_as_dict(),
+                    description=tool_meta.get("description", ""),
+                    approvers=tool_meta.get("approvers"),
                 )
 
-        for call in result.output.approvals:
-            tool_meta = result.output.metadata.get(call.tool_call_id, {})
-            action, future = self.store.create_confirmation(
-                session_key=key,
-                tool_name=call.tool_name,
-                tool_call_id=call.tool_call_id,
-                args=call.args_as_dict(),
-                description=tool_meta.get("description", ""),
-                approvers=tool_meta.get("approvers"),
+                sent = await tentacle.send_confirmation(target, action)
+                if not sent:
+                    self.store.expire_confirmation(action.confirmation_id)
+                    deferred.approvals[call.tool_call_id] = False
+                    continue
+
+                try:
+                    approved = await asyncio.wait_for(
+                        future, timeout=self.store.timeout
+                    )
+                except TimeoutError:
+                    self.store.expire_confirmation(action.confirmation_id)
+                    approved = False
+
+                deferred.approvals[call.tool_call_id] = approved
+
+            result = await agent.run(
+                message_history=result.all_messages(),
+                deferred_tool_results=deferred,
+                deps=deps,
+                toolsets=tentacle.toolsets,
             )
 
-            sent = await tentacle.send_confirmation(target, action)
-            if not sent:
-                self.store.expire_confirmation(action.confirmation_id)
-                deferred.approvals[call.tool_call_id] = False
-                continue
+            if deps.handed_over:
+                return None
 
-            try:
-                approved = await asyncio.wait_for(future, timeout=self.store.timeout)
-            except TimeoutError:
-                self.store.expire_confirmation(action.confirmation_id)
-                approved = False
-
-            deferred.approvals[call.tool_call_id] = approved
-
-        return await agent.run(
-            message_history=result.all_messages(),
-            deferred_tool_results=deferred,
-            deps=deps,
-            toolsets=tentacle.toolsets,
-        )
+        return result  # type: ignore[return-value]

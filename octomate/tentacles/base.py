@@ -18,7 +18,12 @@ from pydantic_ai.toolsets import FunctionToolset
 from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage, ConfirmAction
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import AgentSegment, ImageSegment, ReplySegment
+from octomate.schemas.segments import (
+    AgentSegment,
+    ImageSegment,
+    ReplySegment,
+    TextSegment,
+)
 from octomate.schemas.session import SessionKey, UserProfile
 from octomate.tentacles.feelers import Feelers
 
@@ -220,6 +225,28 @@ class Tentacle(ABC):
         toolset = FunctionToolset[SessionContext]()
 
         @toolset.tool
+        async def acknowledge(ctx: RunContext[SessionContext], text: str) -> str:
+            """
+            Send a short message to the user immediately before doing heavy work or
+            provide extra info ahead of next steps to inform the user what is going on.
+
+            Call this FIRST when about to invoke a skill or tool that may take a few
+            seconds (e.g. weather, search, knowledge base), so the user knows you are
+            working on it. Do NOT use for simple replies like greetings or responses
+            that don't involve tool calls. Example: acknowledge("let me look that up~")
+            """
+            if ctx.deps.tentacle:
+                key = ctx.deps.session_key
+                if key.group_id is not None:
+                    target = SendTarget("group", key.group_id)
+                else:
+                    target = SendTarget("private", key.user_id)
+                await ctx.deps.tentacle.twitch(
+                    target, [TextSegment(data={"text": text})]
+                )
+            return "acknowledged"
+
+        @toolset.tool
         async def ask_user(
             ctx: RunContext[SessionContext],
             question: str,
@@ -227,8 +254,8 @@ class Tentacle(ABC):
         ) -> str:
             """Ask the user a question and wait for their answer before continuing.
 
-            Use this when you need clarification or a decision from the user. Do NOT
-            send a separate text message asking the same thing — this tool handles it.
+            ALWAYS USE this tool when you need clarification or a decision from the user.
+            DO NOT SEND a separate text message asking the same thing — this tool handles it.
             Provide options to show choice buttons; omit for free-text input
             (platform-dependent — may not be supported everywhere).
             Returns the user's answer, or '(no response)' on timeout.

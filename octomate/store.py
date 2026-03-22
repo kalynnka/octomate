@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from octomate.schemas.actions import ConfirmAction
 from octomate.schemas.session import SessionKey
@@ -100,20 +100,26 @@ class InteractionStore:
     ) -> tuple[Question, asyncio.Future[QuestionResponse]]:
         question_id = uuid.uuid4().hex
         question = Question(question_id=question_id, text=text, options=options)
-        future: asyncio.Future[QuestionResponse] = asyncio.get_running_loop().create_future()
+        future: asyncio.Future[QuestionResponse] = (
+            asyncio.get_running_loop().create_future()
+        )
         self.questions[question_id] = (question, future)
         return question, future
 
-    def resolve_question(self, question_id: str, answer: str, responder_id: str) -> bool:
+    def resolve_question(
+        self, question_id: str, answer: str, responder_id: str
+    ) -> bool:
         entry = self.questions.pop(question_id, None)
         if entry is None:
             return False
         _, future = entry
         if future.done():
             return False
-        future.set_result(QuestionResponse(
-            question_id=question_id, answer=answer, responder_id=responder_id
-        ))
+        future.set_result(
+            QuestionResponse(
+                question_id=question_id, answer=answer, responder_id=responder_id
+            )
+        )
         return True
 
     def expire_question(self, question_id: str) -> None:

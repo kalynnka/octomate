@@ -559,7 +559,7 @@ def register(manager: SkillManager) -> None:
             logger.error("Get note failed: %s", e)
             return None
 
-    @toolset.tool
+    @toolset.tool(requires_approval=True)
     async def create_note_from_url(
         ctx: RunContext[SkillDeps],
         url: str,
@@ -600,7 +600,7 @@ def register(manager: SkillManager) -> None:
             logger.error(msg)
             return CreateNoteResult(success=False, message=msg)
 
-    @toolset.tool
+    @toolset.tool(requires_approval=True)
     async def delete_note(
         ctx: RunContext[SkillDeps],
         note_id: str,
