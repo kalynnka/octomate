@@ -98,7 +98,7 @@ class LarkTentacle(Tentacle):
             return
         try:
             image_data = await apath.read_bytes()
-            image_key = await self.ink.upload_image(image_data)
+            image_key = await self.ink.upload_media(image_data)
             if image_key:
                 seg.data.url = image_key
         except Exception:
@@ -108,7 +108,7 @@ class LarkTentacle(Tentacle):
 
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         try:
-            result = await self.ink.download_image(message_id, seg.data.file)
+            result = await self.ink.download_media(message_id, file_key=seg.data.file)
             if not result:
                 return
             data, file_name = result
@@ -151,7 +151,7 @@ class LarkTentacle(Tentacle):
             action_type = value.get("action")
             clicker_id: str = (event.operator.open_id or "") if event.operator else ""
 
-            if action_type == "hitl_confirm":
+            if action_type == "confirm":
                 confirmation_id = value.get("confirmation_id", "")
                 approved = value.get("approved", "") == "true"
 

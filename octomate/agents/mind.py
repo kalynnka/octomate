@@ -66,12 +66,6 @@ Message format:
   at (mention a user by their user ID), reply (quote a previous message by its
   msg id — must be the first segment in that message).
 - If you decide not to respond (e.g. observing in group chat), return an empty list.
-
-Acknowledge messages:
-- When you are about to call a skill or tool that may take a few seconds (e.g. weather,
-  search, knowledge base), call the `acknowledge` tool FIRST with a short message
-  so the user knows you're working on it. Example: acknowledge("let me look that up~")
-- DO NOT use acknowledge tool when replying to simple questions，for example greetings，or ones don't involve tool calls.
 """
 
 
@@ -134,10 +128,13 @@ def create_companion_agent(
 
     @agent.tool
     async def acknowledge(ctx: RunContext[SessionContext], text: str) -> str:
+        """Send a short message to the user immediately before doing heavy work.
+
+        Call this FIRST when about to invoke a skill or tool that may take a few
+        seconds (e.g. weather, search, knowledge base), so the user knows you are
+        working on it. Do NOT use for simple replies like greetings or responses
+        that don't involve tool calls. Example: acknowledge("let me look that up~")
         """
-        Send a quick message to the user immediately, before doing heavy work
-        like calling skills or tools. Use this so the user knows you received
-        their message and are working on it."""
         if ctx.deps.tentacle:
             key = ctx.deps.session_key
             if key.group_id is not None:
@@ -146,5 +143,41 @@ def create_companion_agent(
                 target = SendTarget("private", key.user_id)
             await ctx.deps.tentacle.twitch(target, [TextSegment(data={"text": text})])
         return "acknowledged"
+
+    @agent.tool
+    async def ask_user(
+        ctx: RunContext[SessionContext],
+        question: str,
+        options: list[str] | None = None,
+    ) -> str:
+        """Ask the human a question and wait for their answer before continuing.
+
+        Use this when you need clarification or a decision from the user. Do NOT
+        send a separate text message asking the same thing — this tool handles it.
+        Provide options to show choice buttons; omit for free-text input
+        (platform-dependent — may not be supported everywhere).
+        Returns the user's answer, or '(no response)' on timeout.
+        """
+        if not ctx.deps.tentacle:
+            return "(no response)"
+        key = ctx.deps.session_key
+        target = SendTarget("group", key.group_id) if key.group_id else SendTarget("private", key.user_id)
+        resp = await ctx.deps.tentacle.feelers.questions.ask_question(target, question, options)
+        return resp.answer if resp else "(no response)"
+
+    @agent.tool
+    async def create_todo(ctx: RunContext[SessionContext], title: str) -> str:
+        """Create a TODO card for the user in the current chat.
+
+        Use this whenever a task has multiple stages or steps — create a todo item
+        for each stage so the user can track progress. Returns a todo ID on success,
+        or an error message if not supported on this platform.
+        """
+        if not ctx.deps.tentacle:
+            return "not supported"
+        key = ctx.deps.session_key
+        target = SendTarget("group", key.group_id) if key.group_id else SendTarget("private", key.user_id)
+        item = await ctx.deps.tentacle.feelers.todos.create_todo(target, title)
+        return f"todo:{item.todo_id}" if item else "not supported on this platform"
 
     return agent

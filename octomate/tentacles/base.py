@@ -50,32 +50,21 @@ class SendTarget:
 
 @runtime_checkable
 class Ink(Protocol):
-    """Structural protocol for platform API clients."""
+    """Structural protocol for platform API clients — identity and media only."""
 
     def inspect(self) -> UserProfile: ...
 
-    async def send_message(
-        self,
-        receive_id: str,
-        receive_id_type: str,
-        msg_type: str,
-        content: str,
-    ) -> bool: ...
-
-    async def reply_message(
-        self,
-        message_id: str,
-        msg_type: str,
-        content: str,
-    ) -> bool: ...
-
-    async def upload_image(self, data: bytes) -> str | None: ...
-
-    async def download_image(
-        self, message_id: str, file_key: str
-    ) -> tuple[bytes, str] | None: ...
-
     async def get_user_profile(self, user_id: str) -> UserProfile: ...
+
+    async def upload_media(self, data: bytes) -> str | None:
+        """Upload media bytes, return a platform key/URL or None on failure."""
+        ...
+
+    async def download_media(
+        self, resource_id: str, **kwargs: Any
+    ) -> tuple[bytes, str] | None:
+        """Download media by platform resource ID. Returns (data, filename) or None."""
+        ...
 
 
 class Tentacle(ABC):

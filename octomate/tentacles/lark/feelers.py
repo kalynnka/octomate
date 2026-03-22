@@ -61,7 +61,7 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                             "text": {"tag": "plain_text", "content": "Approve"},
                             "type": "primary",
                             "value": {
-                                "action": "hitl_confirm",
+                                "action": "confirm",
                                 "confirmation_id": action.confirmation_id,
                                 "approved": "true",
                             },
@@ -71,7 +71,7 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                             "text": {"tag": "plain_text", "content": "Deny"},
                             "type": "danger",
                             "value": {
-                                "action": "hitl_confirm",
+                                "action": "confirm",
                                 "confirmation_id": action.confirmation_id,
                                 "approved": "false",
                             },

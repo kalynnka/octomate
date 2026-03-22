@@ -101,7 +101,7 @@ class LarkInk:
             )
         raise RuntimeError("LarkInk: inspect failed, no bot info returned")
 
-    async def upload_image(self, data: bytes) -> str | None:
+    async def upload_media(self, data: bytes) -> str | None:
         request = (
             CreateImageRequest.builder()
             .request_body(
@@ -185,19 +185,20 @@ class LarkInk:
             )
         return LarkUserProfile(user_id=user_id, name=user_id)
 
-    async def download_image(
-        self, message_id: str, file_key: str
+    async def download_media(
+        self, resource_id: str, **kwargs: Any
     ) -> tuple[bytes, str] | None:
+        file_key = kwargs.get("file_key", resource_id)
         request = (
             GetMessageResourceRequest.builder()
-            .message_id(message_id)
+            .message_id(resource_id)
             .file_key(file_key)
             .type("image")
             .build()
         )
         resp = await self.client.im.v1.message_resource.aget(request)  # type: ignore[union-attr]
         if not resp.success():
-            logger.warning("LarkInk: download_image failed: %s %s", resp.code, resp.msg)
+            logger.warning("LarkInk: download_media failed: %s %s", resp.code, resp.msg)
             return None
         file_name: str = resp.file_name or file_key
         data = resp.file.read() if resp.file else b""

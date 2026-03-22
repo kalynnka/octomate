@@ -47,28 +47,18 @@ class MockInk:
     def inspect(self) -> UserProfile:
         return UserProfile(user_id=BOT_USER_ID, name=BOT_NAME)
 
-    async def send_message(
-        self, receive_id: str, receive_id_type: str, msg_type: str, content: str
-    ) -> bool:
-        _ = receive_id, receive_id_type, msg_type, content
-        return True
+    async def get_user_profile(self, user_id: str) -> UserProfile:
+        return UserProfile(user_id=user_id, name=f"User-{user_id}")
 
-    async def reply_message(self, message_id: str, msg_type: str, content: str) -> bool:
-        _ = message_id, msg_type, content
-        return True
-
-    async def upload_image(self, data: bytes) -> str | None:
+    async def upload_media(self, data: bytes) -> str | None:
         _ = data
         return None
 
-    async def download_image(
-        self, message_id: str, file_key: str
+    async def download_media(
+        self, resource_id: str, **kwargs: Any
     ) -> tuple[bytes, str] | None:
-        _ = message_id, file_key
+        _ = resource_id, kwargs
         return None
-
-    async def get_user_profile(self, user_id: str) -> UserProfile:
-        return UserProfile(user_id=user_id, name=f"User-{user_id}")
 
 
 class MockTentacle(Tentacle):
