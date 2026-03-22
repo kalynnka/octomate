@@ -149,9 +149,10 @@ class NapcatTentacle(Tentacle):
         chat_type: str,
         messages: list[PlatformMessage],
         reply_to: str | None = None,
-    ) -> bool:
+        reply_in_thread: bool = False,
+    ) -> str | None:
         if self.ws_client is None:
-            return False
+            return None
         for msg in messages:
             seg_data = json.loads(msg.content)
             if chat_type == "group":
@@ -172,8 +173,8 @@ class NapcatTentacle(Tentacle):
                 await self.ws_client.send(action.model_dump_json(exclude_none=True))
             except ConnectionClosed:
                 logger.warning("Tentacle %s: WebSocket closed while sending", self.tag)
-                return False
-        return True
+                return None
+        return None
 
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         try:

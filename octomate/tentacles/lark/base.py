@@ -136,17 +136,27 @@ class LarkTentacle(Tentacle):
         chat_type: str,
         messages: list[PlatformMessage],
         reply_to: str | None = None,
-    ) -> bool:
+        reply_in_thread: bool = False,
+    ) -> str | None:
         receive_id_type = "chat_id" if chat_type == "group" else "open_id"
+        first_msg_id: str | None = None
         for msg in messages:
             if reply_to:
-                await self.ink.reply_message(reply_to, msg.msg_type, msg.content)
-                reply_to = None
+                msg_id = await self.ink.reply_message(
+                    reply_to,
+                    msg.msg_type,
+                    msg.content,
+                    reply_in_thread=reply_in_thread,
+                )
+                if not reply_in_thread:
+                    reply_to = None
             else:
-                await self.ink.send_message(
+                msg_id = await self.ink.send_message(
                     chat_id, receive_id_type, msg.msg_type, msg.content
                 )
-        return True
+            if first_msg_id is None:
+                first_msg_id = msg_id
+        return first_msg_id
 
     def on_card_action(self, data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         try:

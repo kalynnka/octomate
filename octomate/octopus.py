@@ -73,7 +73,10 @@ class Octopus:
     async def rolling(self) -> None:
         async with asyncio.TaskGroup() as tg, self._nerve_receive:
             async for key, batch in self._nerve_receive:
-                tg.create_task(self.flick(key, batch))
+                if key.thread_id is not None:
+                    tg.create_task(self.surge(key, batch=batch))
+                else:
+                    tg.create_task(self.flick(key, batch))
 
     async def flick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         """Direct path: full message history + semantic recall. Has the silent group-message guard."""
@@ -143,9 +146,6 @@ class Octopus:
                 toolsets=tentacle.toolsets,
             )
 
-            if deps.handed_over:
-                return
-
             result = await self.resolve(
                 agent=tentacle.flick,
                 result=result,
@@ -155,6 +155,12 @@ class Octopus:
                 tentacle=tentacle,
             )
             if result is None:
+                reply_to = batch[-1].message_id or None
+                await self.surge(
+                    key,
+                    summary=deps.handover.summary,
+                    reply_to=reply_to,
+                )
                 return
 
             tentacle.memory.record(key, result.new_messages())
@@ -165,8 +171,16 @@ class Octopus:
         except Exception:
             logger.exception("Error in flick [%s]", key)
 
-    async def surge(self, key: SessionKey, *, summary: str) -> None:
-        """Handover path: summary only. No raw message history, no memory."""
+    async def surge(
+        self,
+        key: SessionKey,
+        *,
+        summary: str = "",
+        reply_to: str | None = None,
+        batch: list[MessageEvent] | None = None,
+    ) -> None:
+        """Surge path: either initial handover (summary-based) or follow-up
+        thread messages (batch-based). Both use full memory."""
         try:
             tentacle = self.tentacles[key.tentacle_id]
             profile = tentacle.profile
@@ -181,18 +195,38 @@ class Octopus:
                 )
             )
 
-            user_prompt: list = [header, f"[summary]\n{summary}"]
+            history = tentacle.memory.history(key)
+
+            if batch:
+                tentacle.memory.record(
+                    key,
+                    [
+                        ModelRequest(parts=[UserPromptPart(content=str(msg))])
+                        for msg in batch
+                    ],
+                )
+                user_prompt: list = [header]
+                for msg in batch:
+                    user_prompt.extend(msg.to_content_parts())
+                reply_to = batch[-1].thread_id or batch[-1].message_id or reply_to
+            else:
+                user_prompt = [header, f"[summary]\n{summary}"]
 
             logger.info("Octopus surge [%s]", key)
 
             target = (
-                SendTarget("group", key.group_id)
+                SendTarget(
+                    "group", key.group_id, reply_to=reply_to, reply_in_thread=True
+                )
                 if key.group_id is not None
-                else SendTarget("private", key.user_id)
+                else SendTarget(
+                    "private", key.user_id, reply_to=reply_to, reply_in_thread=True
+                )
             )
             deps = SessionContext(session_key=key, tentacle=tentacle)
             result = await self.agent.run(
                 user_prompt,
+                message_history=history,
                 toolsets=tentacle.toolsets,
                 deps=deps,
             )
@@ -208,6 +242,7 @@ class Octopus:
             if result is None:
                 return
 
+            tentacle.memory.record(key, result.new_messages())
             logger.info("Surge returned %d messages for [%s]", len(result.output), key)
             for msg in result.output:
                 await tentacle.twitch(target, msg.segments)
@@ -277,7 +312,7 @@ class Octopus:
                 toolsets=tentacle.toolsets,
             )
 
-            if deps.handed_over:
+            if deps.handover.active:
                 return None
 
         return result  # type: ignore[return-value]

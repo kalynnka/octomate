@@ -100,9 +100,10 @@ class MockTentacle(Tentacle):
         chat_type: str,
         messages: list[PlatformMessage],
         reply_to: str | None = None,
-    ) -> bool:
-        _ = chat_id, chat_type, messages, reply_to
-        return True
+        reply_in_thread: bool = False,
+    ) -> str | None:
+        _ = chat_id, chat_type, messages, reply_to, reply_in_thread
+        return None
 
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         _ = seg, save_dir, message_id

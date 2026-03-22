@@ -15,6 +15,7 @@ class MessageEvent(BaseModel):
 
     tentacle_id: str = ""
     message_id: str = ""
+    thread_id: str = ""
     timestamp: float = 0.0
     user_id: str = ""
     chat_id: str = ""
@@ -27,7 +28,8 @@ class MessageEvent(BaseModel):
     @cached_property
     def session_key(self) -> SessionKey:
         group_id = self.chat_id if self.chat_type == "group" else None
-        return SessionKey(self.tentacle_id, self.user_id, group_id)
+        thread_id = self.thread_id or None
+        return SessionKey(self.tentacle_id, self.user_id, group_id, thread_id)
 
     @property
     def display_name(self) -> str:
@@ -40,7 +42,9 @@ class MessageEvent(BaseModel):
         )
 
     def text_parts(self) -> list[str]:
-        return [seg.data["text"] for seg in self.segments if isinstance(seg, TextSegment)]
+        return [
+            seg.data["text"] for seg in self.segments if isinstance(seg, TextSegment)
+        ]
 
     def __str__(self) -> str:
         body = "\n".join(f"  {seg}" for seg in self.segments)
@@ -49,4 +53,3 @@ class MessageEvent(BaseModel):
     def to_content_parts(self) -> list[UserContent]:
         header = f"{self.display_name} ({self.user_id}) #msg:{self.message_id}:"
         return [header] + [seg.to_content() for seg in self.segments]
-

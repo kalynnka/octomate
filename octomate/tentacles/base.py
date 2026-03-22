@@ -59,6 +59,7 @@ class SendTarget:
     chat_type: Literal["group", "private"]
     chat_id: int | str
     reply_to: int | str | None = None
+    reply_in_thread: bool = False
 
 
 @runtime_checkable
@@ -163,7 +164,11 @@ class Tentacle(ABC):
         ]
         messages: list[PlatformMessage] = await self.chromo.squirt(remaining)
         await self.send_platform_message(
-            str(target.chat_id), target.chat_type, messages, reply_to
+            str(target.chat_id),
+            target.chat_type,
+            messages,
+            reply_to,
+            target.reply_in_thread,
         )
 
     @abstractmethod
@@ -173,7 +178,8 @@ class Tentacle(ABC):
         chat_type: str,
         messages: list[PlatformMessage],
         reply_to: str | None = None,
-    ) -> bool: ...
+        reply_in_thread: bool = False,
+    ) -> str | None: ...
 
     async def send_confirmation(
         self, target: SendTarget, action: ConfirmAction
@@ -241,6 +247,9 @@ class Tentacle(ABC):
                     target = SendTarget("group", key.group_id)
                 else:
                     target = SendTarget("private", key.user_id)
+                if key.thread_id is not None:
+                    target.reply_to = key.thread_id
+                    target.reply_in_thread = True
                 await ctx.deps.tentacle.twitch(
                     target, [TextSegment(data={"text": text})]
                 )

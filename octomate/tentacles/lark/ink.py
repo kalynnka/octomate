@@ -124,7 +124,7 @@ class LarkInk:
         receive_id_type: str,
         msg_type: str,
         content: str,
-    ) -> bool:
+    ) -> str | None:
         request = (
             CreateMessageRequest.builder()
             .receive_id_type(receive_id_type)
@@ -140,29 +140,35 @@ class LarkInk:
         resp = await self.client.im.v1.message.acreate(request)  # type: ignore[union-attr]
         if not resp.success():
             logger.warning("LarkInk: send_message failed: %s %s", resp.code, resp.msg)
-        return resp.success()
+            return None
+        return resp.data.message_id if resp.data else None
 
     async def reply_message(
         self,
         message_id: str,
         msg_type: str,
         content: str,
-    ) -> bool:
+        *,
+        reply_in_thread: bool = False,
+    ) -> str | None:
+        body = (
+            ReplyMessageRequestBody.builder()
+            .content(content)
+            .msg_type(msg_type)
+            .reply_in_thread(reply_in_thread)
+            .build()
+        )
         request = (
             ReplyMessageRequest.builder()
             .message_id(message_id)
-            .request_body(
-                ReplyMessageRequestBody.builder()
-                .content(content)
-                .msg_type(msg_type)
-                .build()
-            )
+            .request_body(body)
             .build()
         )
         resp = await self.client.im.v1.message.areply(request)  # type: ignore[union-attr]
         if not resp.success():
             logger.warning("LarkInk: reply_message failed: %s %s", resp.code, resp.msg)
-        return resp.success()
+            return None
+        return resp.data.message_id if resp.data else None
 
     async def get_user_profile(self, user_id: str) -> LarkUserProfile:
         try:

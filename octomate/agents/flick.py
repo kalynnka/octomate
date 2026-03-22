@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import httpx
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.tools import DeferredToolRequests
@@ -13,7 +13,6 @@ from octomate.config import FlickConfig
 from octomate.schemas.actions import AgentMessage
 
 SYSTEM_PROMPT = BASE_PROMPT + FLICK_EXTRA
-SYSTEM_PROMPT = BASE_PROMPT
 
 
 def create_flick_agent(
@@ -41,23 +40,28 @@ def create_flick_agent(
         toolsets=toolsets,
     )
 
-    # @agent.tool(requires_approval=True)
-    # async def handover(ctx: RunContext[SessionContext], summary: str) -> str:
-    #     """Escalate this conversation to surge for deep processing.
+    @agent.tool(requires_approval=True)
+    async def handover(
+        ctx: RunContext[SessionContext],
+        summary: str,
+        user_prefer: str,
+        language: str,
+    ) -> str:
+        """Escalate this conversation to surge for deep processing.
 
-    #     Use when the request want to do coding, research, or complex
-    #     reasoning tasks. Write a clear summary that
-    #     captures the user's actual request and any relevant context from the
-    #     conversation. Surge will see only this summary plus recalled memories —
-    #     not the raw chat history.
-    #     """
-    #     tentacle = ctx.deps.tentacle
-    #     event = ctx.deps.event
-    #     if not tentacle or not event:
-    #         return "handover failed: no tentacle or event"
-    #     octopus = tentacle.octopus
-    #     asyncio.create_task(octopus.surge(event.session_key, summary=summary))
-    #     ctx.deps.handed_over = True
-    #     return "handed over to surge"
+        Use when user explicitly requests, or requires coding, research, or complex reasoning.
+        Write a clear summary capturing the user's actual request and relevant context.
+        Surge only sees this summary — not the raw chat history.
+
+        Args:
+            summary: A clear summary of the user's request and relevant context for surge.
+            user_prefer: Any explicit user preferences or constraints mentioned (e.g. "use Python", "keep it short").
+            language: The language the user is communicating in (e.g. "en", "zh", "ja").
+        """
+        ctx.deps.handover.active = True
+        ctx.deps.handover.summary = summary
+        ctx.deps.handover.user_prefer = user_prefer
+        ctx.deps.handover.language = language
+        return "handed over to surge"
 
     return agent

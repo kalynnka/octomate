@@ -54,6 +54,7 @@ class LarkChromo:
 
             return MessageEvent(
                 message_id=message.message_id or "",
+                thread_id=message.root_id or "",
                 timestamp=time.time(),
                 user_id=sender_id,
                 chat_id=chat_id,

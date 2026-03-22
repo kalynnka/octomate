@@ -17,12 +17,20 @@ MAX_RETRIES = 3
 
 
 @dataclass
+class HandoverState:
+    active: bool = False
+    summary: str = ""
+    user_prefer: str = ""
+    language: str = ""
+
+
+@dataclass
 class SessionContext:
     session_key: SessionKey
     active_skills: set[str] = field(default_factory=set)
     tentacle: Tentacle | None = None
     event: MessageEvent | None = None
-    handed_over: bool = False
+    handover: HandoverState = field(default_factory=HandoverState)
 
 
 class RetryTransport(httpx.AsyncBaseTransport):
