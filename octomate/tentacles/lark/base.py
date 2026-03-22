@@ -30,10 +30,7 @@ from octomate.tentacles.lark.ink import LarkInk
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from octomate.schemas.events import MessageEvent
-    from octomate.schemas.session import SessionKey
+    from octomate.octopus import Octopus
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +45,7 @@ class LarkTentacle(Tentacle):
     def __init__(
         self,
         tag: str,
-        kick: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]],
+        octopus: Octopus,
         *,
         app_id: str,
         app_secret: SecretStr,
@@ -76,7 +73,7 @@ class LarkTentacle(Tentacle):
             log_level=lark_oapi.LogLevel.INFO,
         )
         self.ws_scope = None
-        super().__init__(tag, kick, flush_delay=flush_delay)
+        super().__init__(tag, octopus, flush_delay=flush_delay)
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: starting Lark WebSocket client", self.tag)

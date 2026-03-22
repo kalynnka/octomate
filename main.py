@@ -10,8 +10,7 @@ warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
 import octotools
 from octomate.agents.manager import SkillManager
-from octomate.config import LarkTentacleConfig, NapcatTentacleConfig, OctomateConfig
-from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
+from octomate.config import OctomateConfig
 from octomate.octopus import Octopus
 
 logging.basicConfig(level=logging.INFO)
@@ -22,71 +21,13 @@ def _start() -> None:
     config = OctomateConfig()
 
     skill_manager = SkillManager()
-
-    # octotools.qweather.register(skill_manager)
-    # octotools.pixiv.register(skill_manager)
-    # octotools.streamify.register(skill_manager)
     octotools.github.register(skill_manager)
 
-    mem_cfg = config.mind.memory
-    if mem_cfg.mem0.enabled:
-        memory: OctopusMemory = Mem0Memory(
-            max_messages=mem_cfg.max_messages,
-            history_size=mem_cfg.history_size,
-            config=mem_cfg.mem0,
-        )
-    elif mem_cfg.zep.enabled:
-        memory = ZepMemory(
-            api_key=mem_cfg.zep.api_key,
-            max_messages=mem_cfg.max_messages,
-            history_size=mem_cfg.history_size,
-        )
-    else:
-        memory = OctopusMemory(
-            max_messages=mem_cfg.max_messages,
-            history_size=mem_cfg.history_size,
-        )
-
     octopus = Octopus(
-        config.mind,
-        memory=memory,
-        skill_manager=skill_manager,
+        config.mind, memory=config.build_memory(), skill_manager=skill_manager
     )
-    flush_delay = config.mind.flush_delay
+    config.connect_tentacles(octopus)
 
-    for tc in config.tentacles:
-        if isinstance(tc, NapcatTentacleConfig):
-            from octomate.tentacles.napcat import NapcatTentacle
-
-            octopus.connect(
-                NapcatTentacle(
-                    tc.name,
-                    octopus.kick,
-                    ws_url=tc.ws_url,
-                    http_url=str(tc.http_url),
-                    access_token=tc.access_token,
-                    backoff_base=tc.backoff_base,
-                    backoff_max=tc.backoff_max,
-                    backoff_factor=tc.backoff_factor,
-                    flush_delay=flush_delay,
-                )
-            )
-        elif isinstance(tc, LarkTentacleConfig):
-            from octomate.tentacles.lark import LarkTentacle
-
-            warnings.filterwarnings(
-                "ignore", category=DeprecationWarning, module=r"lark_oapi"
-            )
-            octopus.connect(
-                LarkTentacle(
-                    tc.name,
-                    octopus.kick,
-                    app_id=tc.app_id,
-                    app_secret=tc.app_secret,
-                    store=octopus.store,
-                    flush_delay=flush_delay,
-                )
-            )
     try:
         asyncio.run(octopus.activate())
     except KeyboardInterrupt:

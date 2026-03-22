@@ -7,9 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from collections.abc import Awaitable, Callable
-
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from octomate.config import MindConfig
@@ -23,7 +21,7 @@ from octomate.schemas.segments import (
     ImageSegment,
     TextSegment,
 )
-from octomate.schemas.session import SessionKey, UserProfile
+from octomate.schemas.session import UserProfile
 from octomate.tentacles.base import PlatformMessage, SendTarget, Tentacle
 from octomate.tentacles.feelers import NULL_FEELERS
 
@@ -65,13 +63,13 @@ class MockTentacle(Tentacle):
     sent: list[tuple[SendTarget, list[AgentSegment]]]
     confirmations_requested: int
 
-    def __init__(self, tag: str, kick: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]], flush_delay: float = 0.0) -> None:
+    def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.0) -> None:
         self.sent = []
         self.confirmations_requested = 0
         self.ink = MockInk()
         self.chromo = MockChromo()
         self.feelers = NULL_FEELERS
-        super().__init__(tag, kick, flush_delay=flush_delay)
+        super().__init__(tag, octopus, flush_delay=flush_delay)
 
     def inject(self, event: MessageEvent) -> None:
         event.tentacle_id = self.tag

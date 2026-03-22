@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import warnings
 from typing import Annotated, Any, Literal, Union
 
 from mem0.configs.base import MemoryConfig as Mem0MemoryConfig
 from pydantic import BaseModel, Discriminator, Field, HttpUrl, SecretStr, Tag
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
+
+from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
+from octomate.octopus import Octopus
+from octomate.tentacles.lark import LarkTentacle
+from octomate.tentacles.napcat import NapcatTentacle
 
 
 class TentacleConfig(BaseModel):
@@ -86,3 +92,53 @@ class OctomateConfig(BaseSettings):
             YamlConfigSettingsSource(settings_cls),
             kwargs["file_secret_settings"],
         )
+
+    def build_memory(self):
+        mem = self.mind.memory
+        if mem.mem0.enabled:
+            return Mem0Memory(
+                max_messages=mem.max_messages,
+                history_size=mem.history_size,
+                config=mem.mem0,
+            )
+        if mem.zep.enabled:
+            return ZepMemory(
+                api_key=mem.zep.api_key,
+                max_messages=mem.max_messages,
+                history_size=mem.history_size,
+            )
+        return OctopusMemory(
+            max_messages=mem.max_messages,
+            history_size=mem.history_size,
+        )
+
+    def connect_tentacles(self, octopus: Octopus) -> None:
+        for tc in self.tentacles:
+            if isinstance(tc, NapcatTentacleConfig):
+                octopus.connect(
+                    NapcatTentacle(
+                        tc.name,
+                        octopus,
+                        ws_url=tc.ws_url,
+                        http_url=str(tc.http_url),
+                        access_token=tc.access_token,
+                        backoff_base=tc.backoff_base,
+                        backoff_max=tc.backoff_max,
+                        backoff_factor=tc.backoff_factor,
+                        flush_delay=self.mind.flush_delay,
+                    )
+                )
+            elif isinstance(tc, LarkTentacleConfig):
+                warnings.filterwarnings(
+                    "ignore", category=DeprecationWarning, module=r"lark_oapi"
+                )
+                octopus.connect(
+                    LarkTentacle(
+                        tc.name,
+                        octopus,
+                        app_id=tc.app_id,
+                        app_secret=tc.app_secret,
+                        store=octopus.store,
+                        flush_delay=self.mind.flush_delay,
+                    )
+                )

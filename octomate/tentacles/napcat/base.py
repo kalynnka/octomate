@@ -29,10 +29,7 @@ import base64
 import uuid
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from octomate.schemas.events import MessageEvent
-    from octomate.schemas.session import SessionKey
+    from octomate.octopus import Octopus
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +51,7 @@ class NapcatTentacle(Tentacle):
     def __init__(
         self,
         tag: str,
-        kick: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]],
+        octopus: Octopus,
         *,
         ws_url: str,
         http_url: str,
@@ -74,7 +71,7 @@ class NapcatTentacle(Tentacle):
         self.backoff_factor = backoff_factor
         self.ws_client = None
         self.ws_scope = None
-        super().__init__(tag, kick, flush_delay=flush_delay)
+        super().__init__(tag, octopus, flush_delay=flush_delay)
 
     async def sense(self, ws: ClientConnection) -> None:
         async for raw in ws:

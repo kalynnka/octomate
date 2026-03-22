@@ -18,6 +18,7 @@ from octomate.tentacles.feelers import Feelers
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from octomate.octopus import Octopus
     from octomate.schemas.actions import ConfirmAction
 
 logger = logging.getLogger(__name__)
@@ -83,10 +84,10 @@ class Tentacle(ABC):
     buffer: MessageBuffer
     user_profiles: dict[str, UserProfile]
 
-    def __init__(self, tag: str, kick: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]], flush_delay: float = 0.5) -> None:
+    def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.5) -> None:
         self.tag = tag
         self.profile = self.inspect()
-        self.buffer = MessageBuffer(flush_delay=flush_delay, handler=kick)
+        self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
         self.user_profiles = {}
 
     @property
