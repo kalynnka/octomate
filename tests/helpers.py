@@ -10,7 +10,8 @@ from typing import Any
 from pydantic_ai import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from octomate.config import MindConfig
+from octomate.agents.surge import create_surge_agent, SessionContext
+from octomate.config import SurgeConfig
 from octomate.memory.base import OctopusMemory
 from octomate.octopus import Octopus
 from octomate.schemas.events import MessageEvent
@@ -69,7 +70,8 @@ class MockTentacle(Tentacle):
         self.ink = MockInk()
         self.chromo = MockChromo()
         self.feelers = NULL_FEELERS
-        super().__init__(tag, octopus, flush_delay=flush_delay)
+        memory = OctopusMemory(store_path=Path("/tmp/.octomate_test_memory"))
+        super().__init__(tag, octopus, octopus.agent, memory, flush_delay=flush_delay)
 
     def inject(self, event: MessageEvent) -> None:
         event.tentacle_id = self.tag
@@ -142,9 +144,9 @@ def make_group_event(
 
 
 def make_octopus() -> Octopus:
-    memory = OctopusMemory(store_path=Path("/tmp/.octomate_test_memory"))
-    brain = MindConfig(model="gemini-pro", api_key="test-key")
-    return Octopus(brain, memory)
+    surge_config = SurgeConfig(model="gemini-pro", api_key="test-key")
+    agent = create_surge_agent(surge_config)
+    return Octopus(agent)
 
 
 def text_response_model(text: str) -> FunctionModel:

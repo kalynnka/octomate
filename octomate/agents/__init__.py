@@ -1,12 +1,12 @@
 from octomate.agents.manager import SkillDeps, SkillInfo, SkillManager
-from octomate.agents.mind import SessionContext, create_companion_agent
-from octomate.agents.reflex import create_reflex_agent
+from octomate.agents.surge import SessionContext, create_surge_agent
+from octomate.agents.flick import create_flick_agent
 
 __all__ = [
     "SessionContext",
     "SkillManager",
-    "create_companion_agent",
+    "create_surge_agent",
     "SkillDeps",
     "SkillInfo",
-    "create_reflex_agent",
+    "create_flick_agent",
 ]

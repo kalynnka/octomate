@@ -16,9 +16,11 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTriggerResponse,
 )
 from pydantic import SecretStr
+from pydantic_ai import Agent
+from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.agents.reflex import create_reflex_agent
-from octomate.config import ReflexConfig
+from octomate.agents.surge import SessionContext
+from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
 from octomate.store import InteractionStore
 from octomate.tentacles.base import PlatformMessage, Tentacle
@@ -35,6 +37,7 @@ from octomate.utils import guess_image_ext
 # Octopus imports tentacles (via connect_tentacles) so importing it here would
 # be circular at module load time.
 if TYPE_CHECKING:
+    from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
 
 logger = logging.getLogger(__name__)
@@ -55,7 +58,8 @@ class LarkTentacle(Tentacle):
         app_id: str,
         app_secret: SecretStr,
         store: InteractionStore,
-        reflex_config: ReflexConfig | None = None,
+        flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
+        memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
         self.ink = LarkInk(app_id, app_secret)
@@ -79,9 +83,7 @@ class LarkTentacle(Tentacle):
             log_level=lark_oapi.LogLevel.INFO,
         )
         self.ws_scope = None
-        super().__init__(tag, octopus, flush_delay=flush_delay)
-        if reflex_config is not None:
-            self.reflex = create_reflex_agent(reflex_config)
+        super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: starting Lark WebSocket client", self.tag)

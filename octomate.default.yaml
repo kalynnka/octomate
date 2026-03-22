@@ -1,6 +1,6 @@
 octomate:
   tentacles: []
-  mind:
+  surge:
     model: "gemini-3-flash-preview"
     api_key: ""
     base_url: ""

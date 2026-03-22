@@ -12,7 +12,7 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.agents.manager import SkillManager
 from octomate.agents.prompts import BASE_PROMPT
-from octomate.config import MindConfig
+from octomate.config import SurgeConfig
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -58,8 +58,8 @@ class RetryTransport(httpx.AsyncBaseTransport):
         return last_response  # type: ignore[return-value]
 
 
-def create_companion_agent(
-    config: MindConfig,
+def create_surge_agent(
+    config: SurgeConfig,
     skill_manager: SkillManager | None = None,
 ) -> Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]:
     http_client = httpx.AsyncClient(

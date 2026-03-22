@@ -73,14 +73,14 @@ async def test_rapid_messages_batched_into_one_call(octopus, tentacle):
     """Multiple messages from the same user sent within the flush window
     should be processed as a single batch (one agent call, one twitch)."""
     call_count = 0
-    original_think = octopus._think
+    original_flick = octopus.flick
 
-    async def counting_think(key, batch, **kwargs):
+    async def counting_flick(key, batch, **kwargs):
         nonlocal call_count
         call_count += 1
-        await original_think(key, batch, **kwargs)
+        await original_flick(key, batch, **kwargs)
 
-    octopus._think = counting_think
+    octopus.flick = counting_flick
 
     with octopus.agent.override(model=text_response_model("ok")):
         async with rolling_loop(octopus):
@@ -95,14 +95,14 @@ async def test_rapid_messages_batched_into_one_call(octopus, tentacle):
 async def test_messages_from_different_users_are_independent(octopus, tentacle):
     """Messages from two different users should produce two separate agent calls."""
     call_count = 0
-    original_think = octopus._think
+    original_flick = octopus.flick
 
-    async def counting_think(key, batch, **kwargs):
+    async def counting_flick(key, batch, **kwargs):
         nonlocal call_count
         call_count += 1
-        await original_think(key, batch, **kwargs)
+        await original_flick(key, batch, **kwargs)
 
-    octopus._think = counting_think
+    octopus.flick = counting_flick
 
     with octopus.agent.override(model=silent_model()):
         async with rolling_loop(octopus):
@@ -123,5 +123,5 @@ async def test_group_message_without_mention_still_recorded(octopus, tentacle):
             await asyncio.sleep(0.05)
 
     key = event.session_key
-    history = octopus.memory.history(key)
+    history = tentacle.memory.history(key)
     assert len(history) > 0

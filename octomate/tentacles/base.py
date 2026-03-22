@@ -19,10 +19,11 @@ from octomate.schemas.segments import AgentSegment, ImageSegment, ReplySegment
 from octomate.schemas.session import SessionKey, UserProfile
 from octomate.tentacles.feelers import Feelers
 
-# agents.reflex imports agents.mind which imports SendTarget from this module,
+# agents.flick imports agents.surge which imports SendTarget from this module,
 # and octopus imports Tentacle from this module — both circular.
 if TYPE_CHECKING:
-    from octomate.agents.mind import SessionContext
+    from octomate.agents.surge import SessionContext
+    from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
 
 logger = logging.getLogger(__name__)
@@ -86,14 +87,23 @@ class Tentacle(ABC):
     ink: Ink
     chromo: Chromo
     feelers: Feelers
-    reflex: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests] | None
+    flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]
+    memory: OctopusMemory
     buffer: MessageBuffer
     user_profiles: dict[str, UserProfile]
 
-    def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.5) -> None:
+    def __init__(
+        self,
+        tag: str,
+        octopus: Octopus,
+        flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
+        memory: OctopusMemory,
+        flush_delay: float = 0.5,
+    ) -> None:
         self.tag = tag
         self.octopus = octopus
-        self.reflex = None
+        self.flick = flick
+        self.memory = memory
         self.profile = self.inspect()
         self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
         self.user_profiles = {}
@@ -120,7 +130,7 @@ class Tentacle(ABC):
         return profile
 
     async def ingest(self, raw: Any) -> None:
-        """Inbound pipeline: decode → enrich sender → resolve media → triage → buffer."""
+        """Inbound pipeline: decode → enrich sender → resolve media → triage."""
         try:
             event = await self.chromo.sip(raw)
             if event is None:
@@ -129,16 +139,12 @@ class Tentacle(ABC):
             event.self_id = self.profile.user_id
             event.sender = await self.get_user_profile(event.user_id)
             await self.submerge(event)
-
-            if self.reflex is not None:
-                await self.triage(event)
-            else:
-                self.buffer.push(event)
+            await self.triage(event)
         except Exception:
             logger.exception("Tentacle %s: error in ingest", self.tag)
 
     async def triage(self, event: MessageEvent) -> None:
-        from octomate.agents.mind import SessionContext
+        from octomate.agents.surge import SessionContext
 
         key = event.session_key
         ctx = SessionContext(session_key=key, tentacle=self, event=event)
@@ -148,7 +154,7 @@ class Tentacle(ABC):
             else "[chat: private]"
         )
         user_prompt: list[Any] = [header] + event.to_content_parts()
-        result = await self.reflex.run(user_prompt, deps=ctx)  # type: ignore[union-attr]
+        result = await self.flick.run(user_prompt, deps=ctx)
 
         if isinstance(result.output, list) and result.output:
             target = (

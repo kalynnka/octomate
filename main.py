@@ -9,9 +9,14 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websocke
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
 import octotools
+from octomate.agents.flick import create_flick_agent
 from octomate.agents.manager import SkillManager
-from octomate.config import OctomateConfig
+from octomate.agents.surge import create_surge_agent
+from octomate.config import LarkTentacleConfig, NapcatTentacleConfig, OctomateConfig
+from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
 from octomate.octopus import Octopus
+from octomate.tentacles.lark import LarkTentacle
+from octomate.tentacles.napcat import NapcatTentacle
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
@@ -23,10 +28,63 @@ def _start() -> None:
     skill_manager = SkillManager()
     octotools.github.register(skill_manager)
 
-    octopus = Octopus(
-        config.mind, memory=config.build_memory(), skill_manager=skill_manager
-    )
-    config.connect_tentacles(octopus)
+    if config.surge.base_url:
+        import os
+        os.environ.setdefault("GOOGLE_GEMINI_BASE_URL", config.surge.base_url)
+
+    agent = create_surge_agent(config.surge, skill_manager)
+    octopus = Octopus(agent, skill_manager=skill_manager)
+
+    for tc in config.tentacles:
+        mem = tc.memory
+        if mem.mem0.enabled:
+            memory = Mem0Memory(
+                max_messages=mem.max_messages,
+                history_size=mem.history_size,
+                config=mem.mem0,
+            )
+        elif mem.zep.enabled:
+            memory = ZepMemory(
+                api_key=mem.zep.api_key,
+                max_messages=mem.max_messages,
+                history_size=mem.history_size,
+            )
+        else:
+            memory = OctopusMemory(
+                max_messages=mem.max_messages,
+                history_size=mem.history_size,
+            )
+
+        if isinstance(tc, NapcatTentacleConfig):
+            octopus.connect(
+                NapcatTentacle(
+                    tc.name,
+                    octopus,
+                    ws_url=tc.ws_url,
+                    http_url=str(tc.http_url),
+                    access_token=tc.access_token,
+                    backoff_base=tc.backoff_base,
+                    backoff_max=tc.backoff_max,
+                    backoff_factor=tc.backoff_factor,
+                    flick=create_flick_agent(tc.flick),
+                    memory=memory,
+                    flush_delay=config.surge.flush_delay,
+                )
+            )
+        elif isinstance(tc, LarkTentacleConfig):
+            warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"lark_oapi")
+            octopus.connect(
+                LarkTentacle(
+                    tc.name,
+                    octopus,
+                    app_id=tc.app_id,
+                    app_secret=tc.app_secret,
+                    store=octopus.store,
+                    flick=create_flick_agent(tc.flick),
+                    memory=memory,
+                    flush_delay=config.surge.flush_delay,
+                )
+            )
 
     try:
         asyncio.run(octopus.activate())

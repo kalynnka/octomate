@@ -10,9 +10,13 @@ from typing import TYPE_CHECKING
 
 import anyio
 from pydantic import SecretStr
+from pydantic_ai import Agent
+from pydantic_ai.tools import DeferredToolRequests
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
+from octomate.agents.surge import SessionContext
+from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import AgentSegment, ImageSegment
 from octomate.tentacles.base import PlatformMessage, SendTarget, Tentacle
 from octomate.tentacles.feelers import NULL_FEELERS
@@ -29,6 +33,7 @@ import base64
 import uuid
 
 if TYPE_CHECKING:
+    from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
 
 logger = logging.getLogger(__name__)
@@ -59,6 +64,8 @@ class NapcatTentacle(Tentacle):
         backoff_base: float = 1.0,
         backoff_max: float = 60.0,
         backoff_factor: float = 2.0,
+        flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
+        memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
         self.ws_url = ws_url
@@ -71,7 +78,7 @@ class NapcatTentacle(Tentacle):
         self.backoff_factor = backoff_factor
         self.ws_client = None
         self.ws_scope = None
-        super().__init__(tag, octopus, flush_delay=flush_delay)
+        super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
 
     async def sense(self, ws: ClientConnection) -> None:
         async for raw in ws:
