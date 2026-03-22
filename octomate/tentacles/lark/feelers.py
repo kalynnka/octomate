@@ -26,7 +26,9 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
         self.ink = ink
         self.store = store
 
-    async def send_confirmation(self, target: SendTarget, action: ConfirmAction) -> bool:
+    async def send_confirmation(
+        self, target: SendTarget, action: ConfirmAction
+    ) -> bool:
         chat_id = str(target.chat_id)
         receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
 
@@ -38,49 +40,52 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
             mentions = " ".join(f'<at id="{uid}"></at>' for uid in action.approvers)
             mention_line = f"\n**Approvers:** {mentions}"
 
-        card = json.dumps({
-            "header": {
-                "title": {"tag": "plain_text", "content": "Action Confirmation"},
-                "template": "orange",
-            },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": (
-                        f"**Tool:** {action.tool_name}\n"
-                        f"**Description:** {description}\n"
-                        f"**Arguments:**\n```json\n{args_json}\n```"
-                        + mention_line
-                    ),
+        card = json.dumps(
+            {
+                "header": {
+                    "title": {"tag": "plain_text", "content": "Action Confirmation"},
+                    "template": "orange",
                 },
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "Approve"},
-                            "type": "primary",
-                            "value": {
-                                "action": "confirm",
-                                "confirmation_id": action.confirmation_id,
-                                "approved": "true",
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": (
+                            f"**Tool:** {action.tool_name}\n"
+                            f"**Description:** {description}\n"
+                            f"**Arguments:**\n```json\n{args_json}\n```" + mention_line
+                        ),
+                    },
+                    {
+                        "tag": "action",
+                        "actions": [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "Approve"},
+                                "type": "primary",
+                                "value": {
+                                    "action": "confirm",
+                                    "confirmation_id": action.confirmation_id,
+                                    "approved": "true",
+                                },
                             },
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "Deny"},
-                            "type": "danger",
-                            "value": {
-                                "action": "confirm",
-                                "confirmation_id": action.confirmation_id,
-                                "approved": "false",
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "Deny"},
+                                "type": "danger",
+                                "value": {
+                                    "action": "confirm",
+                                    "confirmation_id": action.confirmation_id,
+                                    "approved": "false",
+                                },
                             },
-                        },
-                    ],
-                },
-            ],
-        })
-        return await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+                        ],
+                    },
+                ],
+            }
+        )
+        return await self.ink.send_message(
+            chat_id, receive_id_type, "interactive", card
+        )
 
 
 class LarkTodoFeeler(TodoFeeler):
@@ -99,40 +104,44 @@ class LarkTodoFeeler(TodoFeeler):
         receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
 
         assignee_line = f'\n**Assignee:** <at id="{assignee}"></at>' if assignee else ""
-        card = json.dumps({
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"☐ {title}" + assignee_line,
-                },
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "Done"},
-                            "type": "primary",
-                            "value": {
-                                "action": "todo_update",
-                                "todo_id": item.todo_id,
-                                "status": "done",
+        card = json.dumps(
+            {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"☐ {title}" + assignee_line,
+                    },
+                    {
+                        "tag": "action",
+                        "actions": [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "Done"},
+                                "type": "primary",
+                                "value": {
+                                    "action": "todo_update",
+                                    "todo_id": item.todo_id,
+                                    "status": "done",
+                                },
                             },
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "Cancel"},
-                            "type": "danger",
-                            "value": {
-                                "action": "todo_update",
-                                "todo_id": item.todo_id,
-                                "status": "cancelled",
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": "Cancel"},
+                                "type": "danger",
+                                "value": {
+                                    "action": "todo_update",
+                                    "todo_id": item.todo_id,
+                                    "status": "cancelled",
+                                },
                             },
-                        },
-                    ],
-                },
-            ],
-        })
-        sent = await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+                        ],
+                    },
+                ],
+            }
+        )
+        sent = await self.ink.send_message(
+            chat_id, receive_id_type, "interactive", card
+        )
         return item if sent else None
 
     async def update_todo(self, todo_id: str, status: str) -> bool:
@@ -151,39 +160,45 @@ class LarkQuestionFeeler(QuestionFeeler):
         self,
         target: SendTarget,
         text: str,
-        options: list[str] | None = None,
+        options: list[str],
     ) -> QuestionResponse | None:
-        if options is None:
+        if not options:
             # Free-text input via Lark form elements is not yet implemented.
-            logger.warning("LarkQuestionFeeler: ask_question without options is not supported")
+            logger.warning(
+                "LarkQuestionFeeler: ask_question without options is not supported"
+            )
             return None
 
         question, future = self.store.create_question(text, options)
         chat_id = str(target.chat_id)
         receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
 
-        card = json.dumps({
-            "elements": [
-                {"tag": "markdown", "content": text},
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": opt},
-                            "type": "default",
-                            "value": {
-                                "action": "question_answer",
-                                "question_id": question.question_id,
-                                "answer": opt,
-                            },
-                        }
-                        for opt in options
-                    ],
-                },
-            ],
-        })
-        sent = await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+        card = json.dumps(
+            {
+                "elements": [
+                    {"tag": "markdown", "content": text},
+                    {
+                        "tag": "action",
+                        "actions": [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": opt},
+                                "type": "default",
+                                "value": {
+                                    "action": "question_answer",
+                                    "question_id": question.question_id,
+                                    "answer": opt,
+                                },
+                            }
+                            for opt in options
+                        ],
+                    },
+                ],
+            }
+        )
+        sent = await self.ink.send_message(
+            chat_id, receive_id_type, "interactive", card
+        )
         if not sent:
             self.store.expire_question(question.question_id)
             return None

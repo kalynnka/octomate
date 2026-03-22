@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import anyio
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, CallDeferred, RunContext
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import FunctionToolset
 
@@ -233,18 +233,7 @@ class Tentacle(ABC):
             (platform-dependent — may not be supported everywhere).
             Returns the user's answer, or '(no response)' on timeout.
             """
-            if not ctx.deps.tentacle:
-                return "(no response)"
-            key = ctx.deps.session_key
-            target = (
-                SendTarget("group", key.group_id)
-                if key.group_id
-                else SendTarget("private", key.user_id)
-            )
-            resp = await ctx.deps.tentacle.feelers.questions.ask_question(
-                target, question, options
-            )
-            return resp.answer if resp else "(no response)"
+            raise CallDeferred()
 
         # @toolset.tool
         # async def create_todo(ctx: RunContext[SessionContext], title: str) -> str:

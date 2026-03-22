@@ -8,7 +8,6 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
-import octotools
 from octomate.agents.flick import create_flick_agent
 from octomate.agents.manager import SkillManager
 from octomate.agents.surge import create_surge_agent
@@ -26,7 +25,7 @@ def _start() -> None:
     config = OctomateConfig()
 
     skill_manager = SkillManager()
-    octotools.github.register(skill_manager)
+    # octotools.github.register(skill_manager)
 
     if config.surge.base_url:
         import os

@@ -76,14 +76,10 @@ class LarkChromo:
         return result
 
     def _encode_segment(self, seg: AgentSegment) -> PlatformMessage | None:
-        if isinstance(seg, MarkdownSegment):
+        if isinstance(seg, (MarkdownSegment, TextSegment)):
             elements = [{"tag": "markdown", "content": seg.data["text"]}]
             content = json.dumps({"schema": "2.0", "body": {"elements": elements}})
             return PlatformMessage(msg_type="interactive", content=content)
-        if isinstance(seg, TextSegment):
-            return PlatformMessage(
-                msg_type="text", content=json.dumps({"text": seg.data["text"]})
-            )
         if isinstance(seg, AtSegment):
             at_text = f'<at user_id="{seg.data.user_id}">{seg.data.name or ""}</at>'
             return PlatformMessage(
@@ -123,7 +119,9 @@ class LarkChromo:
                         segments.append(TextSegment(data={"text": before}))
                     m_id = m.id
                     user_id = (m_id.open_id if m_id else None) or placeholder
-                    segments.append(AtSegment(data=AtData(user_id=user_id, name=m.name or "")))
+                    segments.append(
+                        AtSegment(data=AtData(user_id=user_id, name=m.name or ""))
+                    )
                     text = after
                 if text:
                     segments.append(TextSegment(data={"text": text}))
@@ -132,7 +130,9 @@ class LarkChromo:
 
         elif msg_type == "image":
             image_key: str = content.get("image_key", "")
-            segments.append(ImageSegment(data=ImageData(file=image_key, name=image_key)))
+            segments.append(
+                ImageSegment(data=ImageData(file=image_key, name=image_key))
+            )
 
         elif msg_type == "post":
             title: str = content.get("title", "")

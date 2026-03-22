@@ -4,7 +4,7 @@ import mimetypes
 from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Discriminator, Field, field_validator
+from pydantic import BaseModel, Discriminator, field_validator
 from pydantic_ai import BinaryContent
 from pydantic_ai.messages import UserContent
 from typing_extensions import TypedDict
@@ -163,6 +163,14 @@ MessageSegment = Annotated[
 ]
 
 AgentSegment = Annotated[
-    Union[TextSegment, MarkdownSegment, ImageSegment, AtSegment, ReplySegment, FileSegment, CardSegment],
+    Union[
+        TextSegment,
+        MarkdownSegment,
+        ImageSegment,
+        AtSegment,
+        ReplySegment,
+        FileSegment,
+        CardSegment,
+    ],
     Discriminator("type"),
 ]

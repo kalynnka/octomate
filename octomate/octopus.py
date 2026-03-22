@@ -8,7 +8,7 @@ from anyio import create_memory_object_stream as object_stream
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic_ai import Agent, AgentRunResult, DeferredToolResults
 from pydantic_ai.messages import ModelRequest, UserPromptPart
-from pydantic_ai.tools import DeferredToolApprovalResult, DeferredToolRequests
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.agents.base import SessionContext
 from octomate.agents.manager import SkillManager
@@ -227,7 +227,17 @@ class Octopus:
         target: SendTarget,
         tentacle: Tentacle,
     ) -> AgentRunResult[list[AgentMessage] | DeferredToolRequests]:
-        approvals: dict[str, bool | DeferredToolApprovalResult] = {}
+        deferred = DeferredToolResults()
+
+        for call in result.output.calls:
+            if call.tool_name == "ask_user":
+                args = call.args_as_dict()
+                resp = await tentacle.feelers.questions.ask_question(
+                    target, args.get("question", ""), args.get("options")
+                )
+                deferred.calls[call.tool_call_id] = (
+                    resp.answer if resp else "(no response)"
+                )
 
         for call in result.output.approvals:
             tool_meta = result.output.metadata.get(call.tool_call_id, {})
@@ -243,7 +253,7 @@ class Octopus:
             sent = await tentacle.send_confirmation(target, action)
             if not sent:
                 self.store.expire_confirmation(action.confirmation_id)
-                approvals[call.tool_call_id] = False
+                deferred.approvals[call.tool_call_id] = False
                 continue
 
             try:
@@ -252,11 +262,11 @@ class Octopus:
                 self.store.expire_confirmation(action.confirmation_id)
                 approved = False
 
-            approvals[call.tool_call_id] = approved
+            deferred.approvals[call.tool_call_id] = approved
 
         return await agent.run(
             message_history=result.all_messages(),
-            deferred_tool_results=DeferredToolResults(approvals=approvals),
+            deferred_tool_results=deferred,
             deps=deps,
             toolsets=tentacle.toolsets,
         )
