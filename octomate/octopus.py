@@ -16,10 +16,10 @@ from octomate.agents.manager import SkillManager
 from octomate.config import MindConfig
 from octomate.memory.base import OctopusMemory
 from octomate.schemas.actions import AgentMessage
-from octomate.schemas.events import HandoverEvent, MessageEvent
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 from octomate.store import InteractionStore
-from octomate.tentacles.base import InboundEvent, SendTarget, Tentacle
+from octomate.tentacles.base import SendTarget, Tentacle
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +30,8 @@ class Octopus:
     memory: OctopusMemory
     skill_manager: SkillManager | None
     tentacles: dict[str, Tentacle]
-    _nerve_send: ObjectSendStream[tuple[SessionKey, list[InboundEvent]]]
-    _nerve_receive: ObjectReceiveStream[tuple[SessionKey, list[InboundEvent]]]
+    _nerve_send: ObjectSendStream[tuple[SessionKey, list[MessageEvent]]]
+    _nerve_receive: ObjectReceiveStream[tuple[SessionKey, list[MessageEvent]]]
 
     def __init__(
         self,
@@ -75,7 +75,7 @@ class Octopus:
     def cut(self, name: str) -> None:
         self.tentacles.pop(name, None)
 
-    async def kick(self, key: SessionKey, batch: list[InboundEvent]) -> None:
+    async def kick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         await self._nerve_send.send((key, batch))
 
     async def rolling(self) -> None:
@@ -83,42 +83,34 @@ class Octopus:
             async for key, batch in self._nerve_receive:
                 tg.create_task(self.think(key, batch))
 
-    async def think(self, key: SessionKey, batch: list[InboundEvent]) -> None:
+    async def think(
+        self, key: SessionKey, batch: list[MessageEvent], *, hint: str = ""
+    ) -> None:
         try:
-            await self._think(key, batch)
+            await self._think(key, batch, hint=hint)
         except Exception:
             logger.exception("Error processing batch [%s]", key)
 
-    async def _think(self, key: SessionKey, batch: list[InboundEvent]) -> None:
+    async def _think(
+        self, key: SessionKey, batch: list[MessageEvent], *, hint: str = ""
+    ) -> None:
         if not batch:
             return
 
         tentacle = self.tentacles[key.tentacle_id]
         profile = tentacle.profile
 
-        # Unwrap HandoverEvents: extract the source MessageEvent and collect hints
-        events: list[MessageEvent] = []
-        handover_hints: list[str] = []
-        for item in batch:
-            if isinstance(item, HandoverEvent):
-                events.append(item.source_event)
-                if item.reason:
-                    handover_hints.append(item.reason)
-            else:
-                events.append(item)
-
         if key.group_id is not None and not any(
-            msg.is_at(tentacle.id) for msg in events
-        ) and not handover_hints:
-            # record and memo messages but skip thinking
+            msg.is_at(tentacle.id) for msg in batch
+        ) and not hint:
             self.memory.record(
                 key,
                 [
                     ModelRequest(parts=[UserPromptPart(content=str(msg))])
-                    for msg in events
+                    for msg in batch
                 ],
             )
-            await self.memory.memo(key, events, tentacle)
+            await self.memory.memo(key, batch, tentacle)
             return
 
         header = (
@@ -130,20 +122,20 @@ class Octopus:
                 else "[chat: private]"
             )
         )
-        if handover_hints:
-            header += f" [reflex hint: {'; '.join(handover_hints)}]"
+        if hint:
+            header += f" [reflex hint: {hint}]"
 
         history = self.memory.history(key)
         self.memory.record(
             key,
-            [ModelRequest(parts=[UserPromptPart(content=str(msg))]) for msg in events],
+            [ModelRequest(parts=[UserPromptPart(content=str(msg))]) for msg in batch],
         )
 
         user_prompt: list = [header]
-        for msg in events:
+        for msg in batch:
             user_prompt.extend(msg.to_content_parts())
 
-        memories = await self.memory.recall(key, events, tentacle)
+        memories = await self.memory.recall(key, batch, tentacle)
         if memories:
             facts = "\n".join(f"- {m}" for m in memories)
             content = f"[relevant memories]\n{facts}"

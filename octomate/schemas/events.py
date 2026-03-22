@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import cached_property
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import UserContent
@@ -50,14 +50,3 @@ class MessageEvent(BaseModel):
         header = f"{self.display_name} ({self.user_id}) #msg:{self.message_id}:"
         return [header] + [seg.to_content() for seg in self.segments]
 
-
-class HandoverEvent(BaseModel):
-    """Reflex → Brain escalation: carries the source event and reflex conversation history."""
-
-    source_event: MessageEvent
-    reflex_history: list[Any] = Field(default_factory=list)
-    reason: str = ""
-
-    @cached_property
-    def session_key(self) -> SessionKey:
-        return self.source_event.session_key

@@ -75,10 +75,10 @@ async def test_rapid_messages_batched_into_one_call(octopus, tentacle):
     call_count = 0
     original_think = octopus._think
 
-    async def counting_think(key, batch):
+    async def counting_think(key, batch, **kwargs):
         nonlocal call_count
         call_count += 1
-        await original_think(key, batch)
+        await original_think(key, batch, **kwargs)
 
     octopus._think = counting_think
 
@@ -97,10 +97,10 @@ async def test_messages_from_different_users_are_independent(octopus, tentacle):
     call_count = 0
     original_think = octopus._think
 
-    async def counting_think(key, batch):
+    async def counting_think(key, batch, **kwargs):
         nonlocal call_count
         call_count += 1
-        await original_think(key, batch)
+        await original_think(key, batch, **kwargs)
 
     octopus._think = counting_think
 

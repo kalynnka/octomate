@@ -11,18 +11,18 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_chec
 
 import anyio
 from pydantic_ai import Agent
+from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.schemas.actions import ConfirmAction
-from octomate.schemas.events import HandoverEvent, MessageEvent
+from octomate.schemas.actions import AgentMessage, ConfirmAction
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import AgentSegment, ImageSegment, ReplySegment
 from octomate.schemas.session import SessionKey, UserProfile
 from octomate.tentacles.feelers import Feelers
 
 # agents.reflex imports agents.mind which imports SendTarget from this module,
-# and octopus imports Tentacle/InboundEvent from this module — both circular.
+# and octopus imports Tentacle from this module — both circular.
 if TYPE_CHECKING:
     from octomate.agents.mind import SessionContext
-    from octomate.agents.reflex import ReflexResult
     from octomate.octopus import Octopus
 
 logger = logging.getLogger(__name__)
@@ -81,16 +81,18 @@ class Tentacle(ABC):
     FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
 
     tag: str
+    octopus: Octopus
     profile: UserProfile
     ink: Ink
     chromo: Chromo
     feelers: Feelers
-    reflex: Agent[SessionContext, ReflexResult] | None
+    reflex: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests] | None
     buffer: MessageBuffer
     user_profiles: dict[str, UserProfile]
 
     def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.5) -> None:
         self.tag = tag
+        self.octopus = octopus
         self.reflex = None
         self.profile = self.inspect()
         self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
@@ -137,10 +139,9 @@ class Tentacle(ABC):
 
     async def triage(self, event: MessageEvent) -> None:
         from octomate.agents.mind import SessionContext
-        from octomate.agents.reflex import ReflexDecision
 
         key = event.session_key
-        ctx = SessionContext(session_key=key, tentacle=self)
+        ctx = SessionContext(session_key=key, tentacle=self, event=event)
         header = (
             f"[group: {event.chat_id}]"
             if event.chat_type == "group"
@@ -148,23 +149,15 @@ class Tentacle(ABC):
         )
         user_prompt: list[Any] = [header] + event.to_content_parts()
         result = await self.reflex.run(user_prompt, deps=ctx)  # type: ignore[union-attr]
-        triage = result.output
 
-        if triage.decision == ReflexDecision.SILENT:
-            return
-
-        if triage.decision == ReflexDecision.ANSWER:
+        if isinstance(result.output, list) and result.output:
             target = (
                 SendTarget("group", key.group_id)
                 if key.group_id
                 else SendTarget("private", key.user_id)
             )
-            for msg in triage.messages:
+            for msg in result.output:
                 await self.twitch(target, msg.segments)
-            return
-
-        # HANDOVER — push a HandoverEvent into the buffer
-        self.buffer.push(HandoverEvent(source_event=event, reason=triage.reason))
 
     async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         """Outbound pipeline: resolve media → encode → send."""
@@ -237,26 +230,23 @@ class Tentacle(ABC):
         return self.FILES_ROOT / self.tag / subdir
 
 
-InboundEvent = MessageEvent | HandoverEvent
-
-
 class MessageBuffer:
     _flush_delay: float
-    _handler: Callable[[SessionKey, list[InboundEvent]], Awaitable[None]]
-    _buckets: defaultdict[SessionKey, list[InboundEvent]]
+    _handler: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]]
+    _buckets: defaultdict[SessionKey, list[MessageEvent]]
     _pending: set[SessionKey]
 
     def __init__(
         self,
         flush_delay: float,
-        handler: Callable[[SessionKey, list[InboundEvent]], Awaitable[None]],
+        handler: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]],
     ) -> None:
         self._flush_delay = flush_delay
         self._handler = handler
-        self._buckets: defaultdict[SessionKey, list[InboundEvent]] = defaultdict(list)
+        self._buckets: defaultdict[SessionKey, list[MessageEvent]] = defaultdict(list)
         self._pending: set[SessionKey] = set()
 
-    def push(self, event: InboundEvent) -> None:
+    def push(self, event: MessageEvent) -> None:
         key = event.session_key
         self._buckets[key].append(event)
         if key not in self._pending:

@@ -11,8 +11,10 @@ from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.agents.manager import SkillManager
+from octomate.agents.prompts import BASE_PROMPT
 from octomate.config import MindConfig
 from octomate.schemas.actions import AgentMessage
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import SendTarget
@@ -20,53 +22,7 @@ from octomate.tentacles.base import SendTarget
 if TYPE_CHECKING:
     from octomate.tentacles.base import Tentacle
 
-SYSTEM_PROMPT = """\
-You are an intelligent, curious, and adorable octopus companion named Octomate.
-You communicate through your tentacles to chat with people across messaging platforms.
-
-Personality:
-- Warm, friendly, and slightly playful — you enjoy helping and learning.
-- You may use cute oceanic metaphors occasionally, but keep it natural and not forced.
-
-Guidelines:
-- Focus on the latest messages, especially the ones which at you with a @ mark.
-- Previous messages are context for reference only. Always respond to what was just said, not to older history.
-- Be concise and direct. Avoid filler phrases and unnecessary preamble.
-- When asked a question, answer it. Don't repeat the question back.
-- Don't keep repeatly asking similar questions if the user doesn't answer, just move on and wait for the following input.
-- Don't make summary of the previous conversation unless the user explicitly asks for it.
-- The memories recalled is for reference and provided facts to help you answer questions, not a script to follow. You can choose to use them or not, but don't feel obligated to include them in your response if they are not relevant.
-- If you don't know something, say so honestly instead of guessing.
-- Respect user privacy — never ask for personal information unprompted.
-- Refuse harmful, illegal, or unethical requests politely but firmly.
-- Match the language of the user — if they write in Chinese, reply in Chinese, etc.
-
-Group chat behavior:
-- You will be told your own user ID in the context header. When someone @mentions
-  your user ID, you MUST respond to them.
-- If nobody is @mentioning you, just observe silently — return an empty list.
-  Other members' discussions don't need your input unless you are explicitly called.
-- In group chats, people often omit subjects and rely on context. Pay close attention
-  to the conversation flow to understand what is being discussed before responding.
-- When replying in a group, use the reply segment (with the msg id) to quote the
-  message you are responding to, so it's clear who you're talking to.
-
-Private chat behavior:
-- In private chats, always respond to the user's messages.
-- No need to use the reply/quote segment — just send your response directly.
-
-Message format:
-- Your output is a list of messages, each containing segments (text, image, markdown,at, reply).
-- Keep messages short. Don't write long paragraphs — split your response into
-  multiple small messages instead. Each message should be a bite-sized thought,
-  one or two sentences at most.
-- Keep markdown formatting light and natural — use it when it genuinely
-  aids readability (code snippets, structured lists, key emphasis), not for every message.
-- Available segment types: text (avoid markdown), image (by URL), markdown (for markdown formatted text specially),
-  at (mention a user by their user ID), reply (quote a previous message by its
-  msg id — must be the first segment in that message).
-- If you decide not to respond (e.g. observing in group chat), return an empty list.
-"""
+SYSTEM_PROMPT = BASE_PROMPT
 
 
 @dataclass
@@ -74,6 +30,7 @@ class SessionContext:
     session_key: SessionKey
     active_skills: set[str] = field(default_factory=set)
     tentacle: Tentacle | None = None
+    event: MessageEvent | None = None
 
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -150,7 +107,7 @@ def create_companion_agent(
         question: str,
         options: list[str] | None = None,
     ) -> str:
-        """Ask the human a question and wait for their answer before continuing.
+        """Ask the user a question and wait for their answer before continuing.
 
         Use this when you need clarification or a decision from the user. Do NOT
         send a separate text message asking the same thing — this tool handles it.
@@ -161,8 +118,14 @@ def create_companion_agent(
         if not ctx.deps.tentacle:
             return "(no response)"
         key = ctx.deps.session_key
-        target = SendTarget("group", key.group_id) if key.group_id else SendTarget("private", key.user_id)
-        resp = await ctx.deps.tentacle.feelers.questions.ask_question(target, question, options)
+        target = (
+            SendTarget("group", key.group_id)
+            if key.group_id
+            else SendTarget("private", key.user_id)
+        )
+        resp = await ctx.deps.tentacle.feelers.questions.ask_question(
+            target, question, options
+        )
         return resp.answer if resp else "(no response)"
 
     @agent.tool
@@ -176,7 +139,11 @@ def create_companion_agent(
         if not ctx.deps.tentacle:
             return "not supported"
         key = ctx.deps.session_key
-        target = SendTarget("group", key.group_id) if key.group_id else SendTarget("private", key.user_id)
+        target = (
+            SendTarget("group", key.group_id)
+            if key.group_id
+            else SendTarget("private", key.user_id)
+        )
         item = await ctx.deps.tentacle.feelers.todos.create_todo(target, title)
         return f"todo:{item.todo_id}" if item else "not supported on this platform"
 

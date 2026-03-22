@@ -10,12 +10,11 @@ Submodules
 """
 
 from octomate.schemas import actions, events, segments, session
-from octomate.schemas.events import HandoverEvent, MessageEvent
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import AgentSegment, MessageSegment
 
 __all__ = [
     "AgentSegment",
-    "HandoverEvent",
     "MessageEvent",
     "MessageSegment",
     "actions",
