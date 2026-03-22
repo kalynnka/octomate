@@ -40,7 +40,7 @@ def create_flick_agent(
         toolsets=toolsets,
     )
 
-    @agent.tool(requires_approval=True)
+    @agent.tool(requires_approval=False)
     async def summon(
         ctx: RunContext[SessionContext],
         summary: str,
