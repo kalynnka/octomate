@@ -158,7 +158,7 @@ class Octopus:
                 reply_to = batch[-1].message_id or None
                 await self.surge(
                     key,
-                    summary=deps.handover.summary,
+                    summary=deps.summon.summary,
                     reply_to=reply_to,
                 )
                 return
@@ -179,7 +179,7 @@ class Octopus:
         reply_to: str | None = None,
         batch: list[MessageEvent] | None = None,
     ) -> None:
-        """Surge path: either initial handover (summary-based) or follow-up
+        """Surge path: either initial summon (summary-based) or follow-up
         thread messages (batch-based). Both use full memory."""
         try:
             tentacle = self.tentacles[key.tentacle_id]
@@ -312,7 +312,7 @@ class Octopus:
                 toolsets=tentacle.toolsets,
             )
 
-            if deps.handover.active:
+            if deps.summon.active:
                 return None
 
         return result  # type: ignore[return-value]

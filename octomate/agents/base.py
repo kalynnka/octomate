@@ -17,7 +17,7 @@ MAX_RETRIES = 3
 
 
 @dataclass
-class HandoverState:
+class SummonState:
     active: bool = False
     summary: str = ""
     user_prefer: str = ""
@@ -30,7 +30,7 @@ class SessionContext:
     active_skills: set[str] = field(default_factory=set)
     tentacle: Tentacle | None = None
     event: MessageEvent | None = None
-    handover: HandoverState = field(default_factory=HandoverState)
+    summon: SummonState = field(default_factory=SummonState)
 
 
 class RetryTransport(httpx.AsyncBaseTransport):

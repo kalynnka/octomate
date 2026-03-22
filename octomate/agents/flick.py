@@ -41,13 +41,13 @@ def create_flick_agent(
     )
 
     @agent.tool(requires_approval=True)
-    async def handover(
+    async def summon(
         ctx: RunContext[SessionContext],
         summary: str,
         user_prefer: str,
         language: str,
     ) -> str:
-        """Escalate this conversation to surge for deep processing.
+        """Summon surge for deep processing.
 
         Use when user explicitly requests, or requires coding, research, or complex reasoning.
         Write a clear summary capturing the user's actual request and relevant context.
@@ -58,10 +58,10 @@ def create_flick_agent(
             user_prefer: Any explicit user preferences or constraints mentioned (e.g. "use Python", "keep it short").
             language: The language the user is communicating in (e.g. "en", "zh", "ja").
         """
-        ctx.deps.handover.active = True
-        ctx.deps.handover.summary = summary
-        ctx.deps.handover.user_prefer = user_prefer
-        ctx.deps.handover.language = language
-        return "handed over to surge"
+        ctx.deps.summon.active = True
+        ctx.deps.summon.summary = summary
+        ctx.deps.summon.user_prefer = user_prefer
+        ctx.deps.summon.language = language
+        return "summoned surge"
 
     return agent
