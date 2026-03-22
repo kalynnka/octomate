@@ -6,6 +6,7 @@ import logging
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
+
 import anyio.from_thread
 import anyio.to_thread
 import lark_oapi
@@ -16,6 +17,8 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 )
 from pydantic import SecretStr
 
+from octomate.agents.reflex import create_reflex_agent
+from octomate.config import ReflexConfig
 from octomate.schemas.segments import ImageSegment
 from octomate.store import InteractionStore
 from octomate.tentacles.base import PlatformMessage, Tentacle
@@ -29,6 +32,8 @@ from octomate.tentacles.lark.feelers import (
 from octomate.tentacles.lark.ink import LarkInk
 from octomate.utils import guess_image_ext
 
+# Octopus imports tentacles (via connect_tentacles) so importing it here would
+# be circular at module load time.
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
 
@@ -50,6 +55,7 @@ class LarkTentacle(Tentacle):
         app_id: str,
         app_secret: SecretStr,
         store: InteractionStore,
+        reflex_config: ReflexConfig | None = None,
         flush_delay: float = 0.5,
     ) -> None:
         self.ink = LarkInk(app_id, app_secret)
@@ -74,6 +80,8 @@ class LarkTentacle(Tentacle):
         )
         self.ws_scope = None
         super().__init__(tag, octopus, flush_delay=flush_delay)
+        if reflex_config is not None:
+            self.reflex = create_reflex_agent(reflex_config)
 
     async def activate(self) -> None:
         logger.info("Tentacle %s: starting Lark WebSocket client", self.tag)

@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import warnings
-from typing import Annotated, Any, Literal, Union
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
 
 from mem0.configs.base import MemoryConfig as Mem0MemoryConfig
 from pydantic import BaseModel, Discriminator, Field, HttpUrl, SecretStr, Tag
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
-from octomate.octopus import Octopus
-from octomate.tentacles.lark import LarkTentacle
-from octomate.tentacles.napcat import NapcatTentacle
+if TYPE_CHECKING:
+    from octomate.memory.base import OctopusMemory
+    from octomate.octopus import Octopus
 
 
 class TentacleConfig(BaseModel):
@@ -20,6 +19,13 @@ class TentacleConfig(BaseModel):
     def model_post_init(self, _context: Any) -> None:
         if not self.tentacle_id:
             self.tentacle_id = self.name
+
+
+class ReflexConfig(BaseModel):
+    enabled: bool = False
+    model: str = "gemini-3-flash-preview"
+    api_key: str = ""
+    base_url: str = ""
 
 
 class NapcatTentacleConfig(TentacleConfig):
@@ -38,6 +44,7 @@ class LarkTentacleConfig(TentacleConfig):
     name: str = "lark"
     app_id: str
     app_secret: SecretStr
+    reflex: ReflexConfig = Field(default_factory=ReflexConfig)
 
 
 TentacleConfigUnion = Annotated[
@@ -66,7 +73,7 @@ class MemoryConfig(BaseModel):
 
 
 class MindConfig(BaseModel):
-    model: str = "gemini-3-flash-preview"
+    model: str = "gemini-3-pro"
     api_key: str = ""
     base_url: str = ""
     flush_delay: float = 0.5
@@ -93,7 +100,9 @@ class OctomateConfig(BaseSettings):
             kwargs["file_secret_settings"],
         )
 
-    def build_memory(self):
+    def build_memory(self) -> OctopusMemory:
+        from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
+
         mem = self.mind.memory
         if mem.mem0.enabled:
             return Mem0Memory(
@@ -113,6 +122,9 @@ class OctomateConfig(BaseSettings):
         )
 
     def connect_tentacles(self, octopus: Octopus) -> None:
+        from octomate.tentacles.lark import LarkTentacle
+        from octomate.tentacles.napcat import NapcatTentacle
+
         for tc in self.tentacles:
             if isinstance(tc, NapcatTentacleConfig):
                 octopus.connect(
@@ -139,6 +151,7 @@ class OctomateConfig(BaseSettings):
                         app_id=tc.app_id,
                         app_secret=tc.app_secret,
                         store=octopus.store,
+                        reflex_config=tc.reflex if tc.reflex.enabled else None,
                         flush_delay=self.mind.flush_delay,
                     )
                 )

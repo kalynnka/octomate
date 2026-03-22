@@ -158,7 +158,7 @@ def text_response_model(text: str) -> FunctionModel:
         )
         if output_tool:
             payload = json.dumps(
-                [{"segments": [{"type": "text", "data": {"text": text}}]}]
+                {"response": [{"segments": [{"type": "text", "data": {"text": text}}]}]}
             )
             return ModelResponse(
                 parts=[ToolCallPart(tool_name=output_tool.name, args=payload)]
@@ -179,7 +179,7 @@ def silent_model() -> FunctionModel:
         )
         if output_tool:
             return ModelResponse(
-                parts=[ToolCallPart(tool_name=output_tool.name, args="[]")]
+                parts=[ToolCallPart(tool_name=output_tool.name, args='{"response": []}')]
             )
         return ModelResponse(parts=[TextPart(content="")])
 

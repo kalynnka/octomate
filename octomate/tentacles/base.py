@@ -4,22 +4,26 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import anyio
+from pydantic_ai import Agent
 
-from octomate.schemas.events import MessageEvent
+from octomate.schemas.actions import ConfirmAction
+from octomate.schemas.events import HandoverEvent, MessageEvent
 from octomate.schemas.segments import AgentSegment, ImageSegment, ReplySegment
 from octomate.schemas.session import SessionKey, UserProfile
 from octomate.tentacles.feelers import Feelers
 
+# agents.reflex imports agents.mind which imports SendTarget from this module,
+# and octopus imports Tentacle/InboundEvent from this module — both circular.
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
+    from octomate.agents.mind import SessionContext
+    from octomate.agents.reflex import ReflexResult
     from octomate.octopus import Octopus
-    from octomate.schemas.actions import ConfirmAction
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +85,13 @@ class Tentacle(ABC):
     ink: Ink
     chromo: Chromo
     feelers: Feelers
+    reflex: Agent[SessionContext, ReflexResult] | None
     buffer: MessageBuffer
     user_profiles: dict[str, UserProfile]
 
     def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.5) -> None:
         self.tag = tag
+        self.reflex = None
         self.profile = self.inspect()
         self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
         self.user_profiles = {}
@@ -112,7 +118,7 @@ class Tentacle(ABC):
         return profile
 
     async def ingest(self, raw: Any) -> None:
-        """Inbound pipeline: decode → enrich sender → resolve media → buffer."""
+        """Inbound pipeline: decode → enrich sender → resolve media → triage → buffer."""
         try:
             event = await self.chromo.sip(raw)
             if event is None:
@@ -121,9 +127,44 @@ class Tentacle(ABC):
             event.self_id = self.profile.user_id
             event.sender = await self.get_user_profile(event.user_id)
             await self.submerge(event)
-            self.buffer.push(event)
+
+            if self.reflex is not None:
+                await self.triage(event)
+            else:
+                self.buffer.push(event)
         except Exception:
             logger.exception("Tentacle %s: error in ingest", self.tag)
+
+    async def triage(self, event: MessageEvent) -> None:
+        from octomate.agents.mind import SessionContext
+        from octomate.agents.reflex import ReflexDecision
+
+        key = event.session_key
+        ctx = SessionContext(session_key=key, tentacle=self)
+        header = (
+            f"[group: {event.chat_id}]"
+            if event.chat_type == "group"
+            else "[chat: private]"
+        )
+        user_prompt: list[Any] = [header] + event.to_content_parts()
+        result = await self.reflex.run(user_prompt, deps=ctx)  # type: ignore[union-attr]
+        triage = result.output
+
+        if triage.decision == ReflexDecision.SILENT:
+            return
+
+        if triage.decision == ReflexDecision.ANSWER:
+            target = (
+                SendTarget("group", key.group_id)
+                if key.group_id
+                else SendTarget("private", key.user_id)
+            )
+            for msg in triage.messages:
+                await self.twitch(target, msg.segments)
+            return
+
+        # HANDOVER — push a HandoverEvent into the buffer
+        self.buffer.push(HandoverEvent(source_event=event, reason=triage.reason))
 
     async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         """Outbound pipeline: resolve media → encode → send."""
@@ -133,9 +174,13 @@ class Tentacle(ABC):
             if isinstance(seg, ReplySegment):
                 reply_to = seg.data["id"]
                 break
-        remaining: list[AgentSegment] = [s for s in segments if not isinstance(s, ReplySegment)]
+        remaining: list[AgentSegment] = [
+            s for s in segments if not isinstance(s, ReplySegment)
+        ]
         messages: list[PlatformMessage] = await self.chromo.squirt(remaining)
-        await self.send_platform_message(str(target.chat_id), target.chat_type, messages, reply_to)
+        await self.send_platform_message(
+            str(target.chat_id), target.chat_type, messages, reply_to
+        )
 
     @abstractmethod
     async def send_platform_message(
@@ -192,23 +237,26 @@ class Tentacle(ABC):
         return self.FILES_ROOT / self.tag / subdir
 
 
+InboundEvent = MessageEvent | HandoverEvent
+
+
 class MessageBuffer:
     _flush_delay: float
-    _handler: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]]
-    _buckets: defaultdict[SessionKey, list[MessageEvent]]
+    _handler: Callable[[SessionKey, list[InboundEvent]], Awaitable[None]]
+    _buckets: defaultdict[SessionKey, list[InboundEvent]]
     _pending: set[SessionKey]
 
     def __init__(
         self,
         flush_delay: float,
-        handler: Callable[[SessionKey, list[MessageEvent]], Awaitable[None]],
+        handler: Callable[[SessionKey, list[InboundEvent]], Awaitable[None]],
     ) -> None:
         self._flush_delay = flush_delay
         self._handler = handler
-        self._buckets: defaultdict[SessionKey, list[MessageEvent]] = defaultdict(list)
+        self._buckets: defaultdict[SessionKey, list[InboundEvent]] = defaultdict(list)
         self._pending: set[SessionKey] = set()
 
-    def push(self, event: MessageEvent) -> None:
+    def push(self, event: InboundEvent) -> None:
         key = event.session_key
         self._buckets[key].append(event)
         if key not in self._pending:
