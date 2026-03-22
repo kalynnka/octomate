@@ -182,7 +182,7 @@ class LarkTentacle(Tentacle):
                     )
 
                 tool_name = value.get("tool_name", "")
-                description = value.get("description", tool_name)
+                title = value.get("title") or tool_name
                 status_emoji = "✅" if approved else "❌"
                 status_text = "Approved" if approved else "Denied"
                 template = "green" if approved else "red"
@@ -202,11 +202,7 @@ class LarkTentacle(Tentacle):
                                 "elements": [
                                     {
                                         "tag": "markdown",
-                                        "content": (
-                                            f"**Tool:** `{tool_name}`\n"
-                                            f"**Description:** {description}\n"
-                                            f"**Result:** {status_emoji} {status_text}"
-                                        ),
+                                        "content": f"**{title}**\n\n{status_emoji} {status_text}",
                                     },
                                 ],
                             },

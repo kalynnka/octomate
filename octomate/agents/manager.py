@@ -65,6 +65,8 @@ def make_metadata_injector(
         for td in tool_defs:
             meta = dict(td.metadata) if td.metadata else {}
             meta[SKILL_METADATA_KEY] = skill_name
+            if td.description:
+                meta["description"] = td.description
             if allowed is not None:
                 meta["approvers"] = allowed
                 result.append(replace(td, metadata=meta, kind="unapproved"))

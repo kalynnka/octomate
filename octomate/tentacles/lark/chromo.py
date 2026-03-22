@@ -76,10 +76,14 @@ class LarkChromo:
         return result
 
     def _encode_segment(self, seg: AgentSegment) -> PlatformMessage | None:
-        if isinstance(seg, (MarkdownSegment, TextSegment)):
+        if isinstance(seg, MarkdownSegment):
             elements = [{"tag": "markdown", "content": seg.data["text"]}]
             content = json.dumps({"schema": "2.0", "body": {"elements": elements}})
             return PlatformMessage(msg_type="interactive", content=content)
+        if isinstance(seg, TextSegment):
+            return PlatformMessage(
+                msg_type="text", content=json.dumps({"text": seg.data["text"]})
+            )
         if isinstance(seg, AtSegment):
             at_text = f'<at user_id="{seg.data.user_id}">{seg.data.name or ""}</at>'
             return PlatformMessage(

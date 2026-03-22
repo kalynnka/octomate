@@ -23,7 +23,9 @@ class ConfirmAction(BaseModel):
     tool_name: str
     tool_call_id: str
     args: dict[str, Any]
+    title: str = ""
     description: str = ""
+    skill: str = ""
     approvers: list[str] = Field(default_factory=list)
     created_at: float
     expires_at: float

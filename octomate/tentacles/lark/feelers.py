@@ -32,27 +32,29 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
         chat_id = str(target.chat_id)
         receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
 
+        title = action.title or action.tool_name
         args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
         description = action.description or action.tool_name
 
         mention_line = ""
         if action.approvers:
             mentions = " ".join(f'<at id="{uid}"></at>' for uid in action.approvers)
-            mention_line = f"\n**Approvers:** {mentions}"
+            mention_line = f"\n{mentions}"
 
         card = json.dumps(
             {
                 "header": {
-                    "title": {"tag": "plain_text", "content": "✅ Action Confirmation"},
+                    "title": {"tag": "plain_text", "content": "Permission Required"},
                     "template": "orange",
                 },
                 "elements": [
                     {
                         "tag": "markdown",
                         "content": (
-                            f"**Tool:** `{action.tool_name}`\n"
-                            f"**Description:** {description}\n"
-                            f"**Arguments:**\n```json\n{args_json}\n```" + mention_line
+                            f"**Tool:** {title}\n"
+                            + mention_line
+                            + f"**Description:** {description}\n"
+                            f"**Arguments:**\n```json\n{args_json}\n```"
                         ),
                     },
                     {"tag": "hr"},
@@ -67,8 +69,7 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                                     "action": "confirm",
                                     "confirmation_id": action.confirmation_id,
                                     "approved": "true",
-                                    "tool_name": action.tool_name,
-                                    "description": description,
+                                    "title": title,
                                 },
                             },
                             {
@@ -79,8 +80,7 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                                     "action": "confirm",
                                     "confirmation_id": action.confirmation_id,
                                     "approved": "false",
-                                    "tool_name": action.tool_name,
-                                    "description": description,
+                                    "title": title,
                                 },
                             },
                         ],

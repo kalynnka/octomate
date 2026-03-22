@@ -53,7 +53,9 @@ class InteractionStore:
         tool_name: str,
         tool_call_id: str,
         args: dict,
+        title: str = "",
         description: str = "",
+        skill: str = "",
         approvers: list[str] | None = None,
     ) -> tuple[ConfirmAction, asyncio.Future[bool]]:
         confirmation_id = uuid.uuid4().hex
@@ -64,7 +66,9 @@ class InteractionStore:
             tool_name=tool_name,
             tool_call_id=tool_call_id,
             args=args,
+            title=title,
             description=description,
+            skill=skill,
             approvers=approvers or [],
             created_at=now,
             expires_at=now + self.timeout,

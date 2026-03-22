@@ -11,7 +11,7 @@ from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.agents.base import SessionContext
-from octomate.agents.manager import SkillManager
+from octomate.agents.manager import SKILL_METADATA_KEY, SkillManager
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
@@ -248,7 +248,9 @@ class Octopus:
                     tool_name=call.tool_name,
                     tool_call_id=call.tool_call_id,
                     args=call.args_as_dict(),
+                    title=tool_meta.get("description", call.tool_name),
                     description=tool_meta.get("description", ""),
+                    skill=tool_meta.get(SKILL_METADATA_KEY, ""),
                     approvers=tool_meta.get("approvers"),
                 )
 
