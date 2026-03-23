@@ -6,7 +6,7 @@ from pydantic import SecretStr
 from pydantic_ai.mcp import MCPServerStreamableHTTP
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-from octomate.agents.manager import SkillManager
+from octomate.agents.manager import SkillManager, ToolPermission
 
 REMOTE_MCP_URL = "https://api.githubcopilot.com/mcp/"
 
@@ -44,8 +44,51 @@ class GitHubConfig(BaseSettings):
         yaml_config_section="github",
     )
 
-    token: SecretStr = SecretStr("")
-    toolsets: list[GitHubToolset] = ["default"]
+    api_key: SecretStr = SecretStr("")
+    toolsets: list[GitHubToolset] = [
+        "repos",
+        "issues",
+        "pull_requests",
+        "copilot",
+        "projects",
+        "context",
+    ]
+    tools: dict[str, dict[str, ToolPermission]] = {
+        "repos": {
+            "get_repository": "bypass",
+            "get_file_contents": "bypass",
+            "list_branches": "bypass",
+        },
+        "issues": {
+            "create_issue": "default",
+            "get_issue": "bypass",
+            "list_issues": "bypass",
+            "update_issue": "default",
+            "search_issues": "bypass",
+            "add_issue_comment": "default",
+        },
+        "pull_requests": {
+            "create_pull_request": "default",
+            "get_pull_request": "bypass",
+            "list_pull_requests": "bypass",
+            "update_pull_request": "default",
+            "request_copilot_review": "default",
+            "merge_pull_request": "default",
+        },
+        "copilot": {
+            "create_copilot_task": "default",
+        },
+        "projects": {
+            "get_project": "bypass",
+            "add_project_item": "default",
+            "list_project_items": "bypass",
+            "update_project_item": "default",
+        },
+        "search": {
+            "search_code": "bypass",
+            "search_repositories": "bypass",
+        },
+    }
     approvers: dict[str, list[str]] = {}
 
     @classmethod
@@ -58,9 +101,19 @@ class GitHubConfig(BaseSettings):
         )
 
 
+CATEGORY_DESCRIPTIONS: dict[str, str] = {
+    "repos": "Read GitHub repository info, file contents, and branches.",
+    "issues": "Create, search, read, and update GitHub issues.",
+    "pull_requests": "Create, read, update, and manage GitHub pull requests and reviews.",
+    "copilot": "Trigger GitHub Copilot coding agent to work on issues.",
+    "projects": "Manage GitHub Projects boards and items.",
+    "search": "Search code and repositories on GitHub.",
+}
+
+
 def register(manager: SkillManager) -> None:
     config = GitHubConfig()
-    token = config.token.get_secret_value()
+    token = config.api_key.get_secret_value()
     if not token:
         return
 
@@ -74,16 +127,16 @@ def register(manager: SkillManager) -> None:
         headers=headers,
     )
 
-    manager.register_mcp(
-        name="github",
-        description=(
-            "Operates on GitHub or Copilot on behalf of the owner. "
-            "Only load and use this skill when it is confirmed to be necessary, "
-            "such as when the user explicitly requests GitHub-related information, "
-            "or using GitHub actions, creating/managing issues, pull requests, "
-            "reading repository files, checking CI/CD workflows, or browsing "
-            "code on GitHub. Do NOT load for general unrelated questions or tasks unrelated to GitHub."
-        ),
+    categories: dict[str, tuple[str, dict[str, ToolPermission]]] = {}
+    for category, perms in config.tools.items():
+        description = CATEGORY_DESCRIPTIONS.get(
+            category, f"GitHub {category} operations."
+        )
+        categories[category] = (description, perms)
+
+    manager.register_mcp_group(
+        prefix="github",
         toolset=mcp_server,
+        categories=categories,
         approvers=config.approvers or None,
     )

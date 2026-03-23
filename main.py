@@ -29,6 +29,7 @@ def _start() -> None:
     skill_manager = SkillManager()
     octotools.streamify.register(skill_manager)
     octotools.github.register(skill_manager)
+    octotools.linear.register(skill_manager)
 
     if config.surge.base_url:
         import os

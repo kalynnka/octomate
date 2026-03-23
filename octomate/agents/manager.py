@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
-from typing import Any, runtime_checkable
+from typing import Any, Literal, runtime_checkable
 
 from pydantic_ai import RunContext, ToolDefinition
 from pydantic_ai.toolsets import (
@@ -16,6 +17,8 @@ from pydantic_ai.toolsets import (
 from typing_extensions import Protocol
 
 from octomate.schemas.session import SessionKey
+
+logger = logging.getLogger(__name__)
 
 SKILL_METADATA_KEY = "skill"
 
@@ -41,34 +44,76 @@ def skill_filter(ctx: RunContext[Any], tool_def: ToolDefinition) -> bool:
     return skill_name in deps.active_skills
 
 
+ToolPermission = Literal[
+    "bypass",  # visible, never requires approval
+    "default",  # visible, requires approval when approvers match the tentacle
+    "masked",  # hidden from the agent entirely
+]
+
+
 def make_metadata_injector(
     skill_name: str,
     approvers: dict[str, list[str]] | None = None,
+    tool_permissions: dict[str, ToolPermission] | None = None,
 ) -> ToolsPrepareFunc:
     """Create a prepare function that injects skill metadata into MCP tool definitions.
 
-    When *approvers* is provided, tool definitions for tentacles with a matching
-    entry are upgraded to ``kind='unapproved'`` so pydantic-ai triggers the
-    human-in-the-loop approval flow.
+    *tool_permissions* maps tool names to access levels:
+
+    - ``bypass``  – visible, never requires approval
+    - ``default`` – visible, requires approval when *approvers* match the tentacle
+    - ``masked``  – hidden from the agent entirely
+
+    Tools not listed in *tool_permissions* are treated as ``masked``.
+    When *tool_permissions* is ``None``, all tools pass through with ``default``
+    behaviour.
     """
 
     async def inject(
         ctx: RunContext[Any], tool_defs: list[ToolDefinition]
     ) -> list[ToolDefinition]:
-        tentacle_id: str | None = None
-        allowed: list[str] | None = None
+        bypassed: list[ToolDefinition] = []
+        defaulted: list[ToolDefinition] = []
+        masked: list[str] = []
+        for td in tool_defs:
+            perm = (
+                tool_permissions.get(td.name, "masked")
+                if tool_permissions is not None
+                else "default"
+            )
+            if perm == "masked":
+                masked.append(td.name)
+            elif perm == "bypass":
+                bypassed.append(td)
+            else:
+                defaulted.append(td)
+
+        if masked:
+            logger.debug(
+                "[%s] masked %d MCP tools: %s",
+                skill_name,
+                len(masked),
+                ", ".join(sorted(masked)),
+            )
+
+        tentacle_approvers: list[str] | None = None
         if approvers and isinstance(ctx.deps, SkillDeps):
-            tentacle_id = ctx.deps.session_key.tentacle_id
-            allowed = approvers.get(tentacle_id)
+            tentacle_approvers = approvers.get(ctx.deps.session_key.tentacle_id)
 
         result: list[ToolDefinition] = []
-        for td in tool_defs:
+        for td in bypassed:
             meta = dict(td.metadata) if td.metadata else {}
             meta[SKILL_METADATA_KEY] = skill_name
             if td.description:
                 meta["description"] = td.description
-            if allowed is not None:
-                meta["approvers"] = allowed
+            result.append(replace(td, metadata=meta))
+        for td in defaulted:
+            meta = dict(td.metadata) if td.metadata else {}
+            meta[SKILL_METADATA_KEY] = skill_name
+            if td.description:
+                meta["description"] = td.description
+            if tentacle_approvers is not None:
+                meta["approvers"] = tentacle_approvers
                 result.append(replace(td, metadata=meta, kind="unapproved"))
             else:
                 result.append(replace(td, metadata=meta))
@@ -87,11 +132,13 @@ class SkillManager:
     skills: dict[str, SkillInfo]
     toolsets: dict[str, FunctionToolset]
     mcp_toolsets: dict[str, AbstractToolset[Any]]
+    mcp_servers: list[AbstractToolset[Any]]
 
     def __init__(self) -> None:
         self.skills = {}
         self.toolsets = {}
         self.mcp_toolsets = {}
+        self.mcp_servers = []
 
     def register(self, name: str, description: str) -> FunctionToolset:
         """Register a skill and return its FunctionToolset for adding tools."""
@@ -108,27 +155,61 @@ class SkillManager:
         description: str,
         toolset: AbstractToolset[Any],
         approvers: dict[str, list[str]] | None = None,
+        tool_permissions: dict[str, ToolPermission] | None = None,
     ) -> None:
         """Register an MCP-based skill.
 
         The toolset is wrapped to inject skill metadata so it participates
-        in the load/unload gating via skill_filter.
+        in the load/unload gating via skill_filter.  *tool_permissions* controls
+        per-tool visibility and approval behaviour.
         """
+        self._track_server(toolset)
         self.skills[name] = SkillInfo(name=name, description=description)
         prepared = PreparedToolset(
             wrapped=toolset,
-            prepare_func=make_metadata_injector(name, approvers),
+            prepare_func=make_metadata_injector(name, approvers, tool_permissions),
         )
         self.mcp_toolsets[name] = prepared
+
+    def register_mcp_group(
+        self,
+        prefix: str,
+        toolset: AbstractToolset[Any],
+        categories: dict[str, tuple[str, dict[str, ToolPermission]]],
+        approvers: dict[str, list[str]] | None = None,
+    ) -> None:
+        """Register multiple sub-skills from one MCP server.
+
+        Each entry in *categories* maps a category name to
+        ``(description, tool_permissions)``.  Sub-skills are named
+        ``{prefix}.{category}`` and can be loaded independently.
+        """
+        self._track_server(toolset)
+        for category, (description, perms) in categories.items():
+            skill_name = f"{prefix}.{category}"
+            self.skills[skill_name] = SkillInfo(
+                name=skill_name, description=description
+            )
+            prepared = PreparedToolset(
+                wrapped=toolset,
+                prepare_func=make_metadata_injector(skill_name, approvers, perms),
+            )
+            self.mcp_toolsets[skill_name] = prepared
+
+    def _track_server(self, toolset: AbstractToolset[Any]) -> None:
+        if toolset not in self.mcp_servers:
+            self.mcp_servers.append(toolset)
 
     async def __aenter__(self):
         """Pre-enter MCP servers to pin the anyio cancel scope to this task.
 
-        This prevents a RuntimeError when concurrent agent.run() calls race
-        to close the MCP connection from different asyncio tasks.
+        Each unique MCP server is entered exactly once (ref-counted internally
+        by pydantic-ai).  The PreparedToolset wrappers in mcp_toolsets will
+        re-enter the same server during agent.run(), safely incrementing the
+        ref count.
         """
         self._exit_stack = AsyncExitStack()
-        for server in self.mcp_toolsets.values():
+        for server in self.mcp_servers:
             await self._exit_stack.enter_async_context(server)
         return self
 
@@ -168,22 +249,34 @@ class SkillManager:
             return "\n".join(lines) or "No skills registered."
 
         @discovery.tool
-        async def load_skill(ctx: RunContext[SkillDeps], skill_name: str) -> str:
-            """Load a skill to make its tools available for use."""
-            if skill_name not in manager.skills:
-                available = ", ".join(manager.skills)
-                return f"Unknown skill: {skill_name}. Available: {available}"
-            if skill_name in ctx.deps.active_skills:
-                return f"Skill '{skill_name}' is already loaded."
-            ctx.deps.active_skills.add(skill_name)
-            return f"Skill '{skill_name}' loaded. Its tools are now available."
+        async def load_skills(
+            ctx: RunContext[SkillDeps], skill_names: list[str]
+        ) -> str:
+            """Load one or more skills to make their tools available for use."""
+            results: list[str] = []
+            for name in skill_names:
+                if name not in manager.skills:
+                    available = ", ".join(manager.skills)
+                    results.append(f"Unknown skill: {name}. Available: {available}")
+                elif name in ctx.deps.active_skills:
+                    results.append(f"Skill '{name}' is already loaded.")
+                else:
+                    ctx.deps.active_skills.add(name)
+                    results.append(f"Skill '{name}' loaded.")
+            return "\n".join(results)
 
         @discovery.tool
-        async def unload_skill(ctx: RunContext[SkillDeps], skill_name: str) -> str:
-            """Unload a skill to remove its tools from the active set."""
-            if skill_name not in ctx.deps.active_skills:
-                return f"Skill '{skill_name}' is not loaded."
-            ctx.deps.active_skills.discard(skill_name)
-            return f"Skill '{skill_name}' unloaded."
+        async def unload_skills(
+            ctx: RunContext[SkillDeps], skill_names: list[str]
+        ) -> str:
+            """Unload one or more skills to remove their tools from the active set."""
+            results: list[str] = []
+            for name in skill_names:
+                if name not in ctx.deps.active_skills:
+                    results.append(f"Skill '{name}' is not loaded.")
+                else:
+                    ctx.deps.active_skills.discard(name)
+                    results.append(f"Skill '{name}' unloaded.")
+            return "\n".join(results)
 
         return discovery

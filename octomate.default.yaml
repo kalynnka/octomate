@@ -50,3 +50,6 @@ streamify:
 
 github:
   approvers: {}
+
+linear:
+  api_key: ""
