@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal, Union
 from pydantic import BaseModel, Discriminator, field_validator
 from pydantic_ai import BinaryContent
 from pydantic_ai.messages import UserContent
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 
 class TextData(TypedDict):
@@ -50,6 +50,7 @@ class MarkdownData(TypedDict):
 
 class ReplyData(TypedDict):
     id: str
+    content: NotRequired[str]
 
 
 class FileData(BaseModel):
@@ -130,6 +131,9 @@ class ReplySegment(Segment):
     data: ReplyData
 
     def __str__(self) -> str:
+        content = self.data.get("content")
+        if content:
+            return f"[reply: {self.data['id']}] {content}"
         return f"[reply: {self.data['id']}]"
 
 

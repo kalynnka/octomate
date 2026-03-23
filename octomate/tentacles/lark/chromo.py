@@ -16,6 +16,7 @@ from octomate.schemas.segments import (
     ImageSegment,
     MarkdownSegment,
     MessageSegment,
+    ReplySegment,
     TextSegment,
 )
 from octomate.tentacles.base import PlatformMessage
@@ -38,6 +39,10 @@ class LarkChromo:
 
             segments = self._parse_segments(msg_type, message.content, message.mentions)
 
+            reply_id = message.parent_id or ""
+            if reply_id:
+                segments.insert(0, ReplySegment(data={"id": reply_id}))
+
             sender_id_obj = event.sender.sender_id
             sender_id: str = (sender_id_obj.open_id or "") if sender_id_obj else ""
 
@@ -54,7 +59,8 @@ class LarkChromo:
 
             return MessageEvent(
                 message_id=message.message_id or "",
-                thread_id=message.root_id or "",
+                thread_id=message.thread_id or "",
+                reply_id=reply_id,
                 timestamp=time.time(),
                 user_id=sender_id,
                 chat_id=chat_id,

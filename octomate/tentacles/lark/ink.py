@@ -181,10 +181,23 @@ class LarkInk:
             resp = await self.client.contact.v3.user.aget(request)  # type: ignore[union-attr]
             if resp.success() and resp.data and resp.data.user:
                 attrs = {k: v for k, v in vars(resp.data.user).items() if v is not None}
-                return LarkUserProfile.model_validate(attrs)
-            logger.warning(
-                "LarkInk: get_user_profile failed: %s %s", resp.code, resp.msg
-            )
+                profile = LarkUserProfile.model_validate(attrs)
+                if profile.name:
+                    return profile
+                logger.warning(
+                    "LarkInk: get_user_profile returned no name for %s "
+                    "(fields: %s). Grant 'name' field permission in the "
+                    "Feishu developer portal → Permissions → Contact fields.",
+                    user_id,
+                    list(attrs.keys()),
+                )
+            else:
+                logger.warning(
+                    "LarkInk: get_user_profile failed (code=%s, msg=%s). "
+                    "Ensure the app has 'contact:user.base:readonly' scope.",
+                    resp.code,
+                    resp.msg,
+                )
         except Exception:
             logger.warning(
                 "LarkInk: get_user_profile failed for %s", user_id, exc_info=True

@@ -659,6 +659,12 @@ def to_message_event(
         s for s in ev.message if isinstance(s, COMPATIBLE)
     ]
 
+    reply_id = ""
+    for s in segments:
+        if isinstance(s, ReplySegment):
+            reply_id = s.data["id"]
+            break
+
     if isinstance(ev, NapcatGroupMessageEvent):
         chat_type: Literal["private", "group"] = "group"
         chat_id = ev.group_id
@@ -668,6 +674,7 @@ def to_message_event(
 
     return MessageEvent(
         message_id=ev.message_id,
+        reply_id=reply_id,
         timestamp=float(ev.time),
         user_id=ev.user_id,
         chat_id=chat_id,

@@ -16,6 +16,7 @@ class MessageEvent(BaseModel):
     tentacle_id: str = ""
     message_id: str = ""
     thread_id: str = ""
+    reply_id: str = ""
     timestamp: float = 0.0
     user_id: str = ""
     chat_id: str = ""

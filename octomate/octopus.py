@@ -7,7 +7,6 @@ import logging
 from anyio import create_memory_object_stream as object_stream
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic_ai import Agent, AgentRunResult, DeferredToolResults
-from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.agents.base import SessionContext
@@ -87,16 +86,11 @@ class Octopus:
             tentacle = self.tentacles[key.tentacle_id]
             profile = tentacle.profile
 
+            await tentacle.memory.record(key, batch)
+
             if key.group_id is not None and not any(
                 msg.is_at(tentacle.id) for msg in batch
             ):
-                await tentacle.memory.record(
-                    key,
-                    [
-                        ModelRequest(parts=[UserPromptPart(content=str(msg))])
-                        for msg in batch
-                    ],
-                )
                 await tentacle.memory.memo(key, batch, tentacle)
                 return
 
@@ -108,14 +102,6 @@ class Octopus:
                     if key.group_id is not None
                     else "[chat: private]"
                 )
-            )
-
-            await tentacle.memory.record(
-                key,
-                [
-                    ModelRequest(parts=[UserPromptPart(content=str(msg))])
-                    for msg in batch
-                ],
             )
 
             user_prompt: list = [header]
@@ -162,7 +148,6 @@ class Octopus:
                 )
                 return
 
-            await tentacle.memory.record(key, result.new_messages())
             logger.info("Flick returned %d messages for [%s]", len(result.output), key)
             for msg in result.output:
                 await tentacle.twitch(target, msg.segments)
@@ -197,13 +182,7 @@ class Octopus:
             history = await tentacle.memory.history(key)
 
             if batch:
-                await tentacle.memory.record(
-                    key,
-                    [
-                        ModelRequest(parts=[UserPromptPart(content=str(msg))])
-                        for msg in batch
-                    ],
-                )
+                await tentacle.memory.record(key, batch)
                 user_prompt: list = [header]
                 for msg in batch:
                     user_prompt.extend(msg.to_content_parts())
@@ -241,10 +220,10 @@ class Octopus:
             if result is None:
                 return
 
-            await tentacle.memory.record(key, result.new_messages())
             logger.info("Surge returned %d messages for [%s]", len(result.output), key)
             for msg in result.output:
                 await tentacle.twitch(target, msg.segments)
+            asyncio.create_task(tentacle.memory.memo(key, result.output, tentacle))
         except Exception:
             logger.exception("Error in surge [%s]", key)
 

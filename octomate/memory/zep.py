@@ -95,6 +95,7 @@ class ZepMemory(OctopusMemory):
         messages: list[AgentMessage] | list[MessageEvent],
         tentacle: Tentacle,
     ) -> None:
+        await super().memo(key, messages, tentacle)
         if not messages:
             return
 
