@@ -16,6 +16,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import FunctionToolset
 
 from octomate.agents.base import SessionContext
+from octomate.agents.tools import history_toolset
 from octomate.schemas.actions import AgentMessage, ConfirmAction
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
@@ -290,7 +291,7 @@ class Tentacle(ABC):
         #     item = await ctx.deps.tentacle.feelers.todos.create_todo(target, title)
         #     return f"todo:{item.todo_id}" if item else "not supported on this platform"
 
-        return [toolset]
+        return [toolset, history_toolset()]
 
 
 class MessageBuffer:

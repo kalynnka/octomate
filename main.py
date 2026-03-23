@@ -41,22 +41,11 @@ def _start() -> None:
     for tc in config.tentacles:
         mem = tc.memory
         if mem.mem0.enabled:
-            memory = Mem0Memory(
-                max_messages=mem.max_messages,
-                history_size=mem.history_size,
-                config=mem.mem0,
-            )
+            memory = Mem0Memory(config=mem.mem0)
         elif mem.zep.enabled:
-            memory = ZepMemory(
-                api_key=mem.zep.api_key,
-                max_messages=mem.max_messages,
-                history_size=mem.history_size,
-            )
+            memory = ZepMemory(api_key=mem.zep.api_key)
         else:
-            memory = OctopusMemory(
-                max_messages=mem.max_messages,
-                history_size=mem.history_size,
-            )
+            memory = OctopusMemory()
 
         if isinstance(tc, NapcatTentacleConfig):
             octopus.connect(

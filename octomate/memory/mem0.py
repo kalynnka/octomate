@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mem0 import Memory as Mem0
@@ -24,14 +23,8 @@ class Mem0Memory(OctopusMemory):
 
     def __init__(
         self,
-        max_messages: int = 32,
-        history_size: int = 16,
-        store_path: Path = Path(".octomate/message_store"),
         **mem0_kwargs: Any,
     ) -> None:
-        super().__init__(
-            max_messages=max_messages, history_size=history_size, store_path=store_path
-        )
         self.mem0 = Mem0(**mem0_kwargs)
 
     @staticmethod

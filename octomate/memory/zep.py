@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from zep_cloud.client import AsyncZep
@@ -31,13 +30,7 @@ class ZepMemory(OctopusMemory):
         self,
         api_key: str,
         bot_name: str = "Octomate",
-        max_messages: int = 32,
-        history_size: int = 16,
-        store_path: Path = Path(".octomate/message_store"),
     ) -> None:
-        super().__init__(
-            max_messages=max_messages, history_size=history_size, store_path=store_path
-        )
         self.client = AsyncZep(api_key=api_key)
         self.bot_name = bot_name
         self.known_users = set()

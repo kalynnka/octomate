@@ -17,6 +17,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 from octomate.store import InteractionStore
 from octomate.tentacles.base import SendTarget, Tentacle
+from octomate.transmuters import sqlalchemy_materia
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class Octopus:
     async def activate(self) -> None:
         try:
             async with contextlib.AsyncExitStack() as stack:
+                stack.enter_context(sqlalchemy_materia)
                 if self.skill_manager:
                     await stack.enter_async_context(self.skill_manager)
                 async with asyncio.TaskGroup() as tg:
@@ -56,7 +58,6 @@ class Octopus:
         finally:
             for tentacle in self.tentacles.values():
                 await tentacle.deactivate()
-                tentacle.memory.save()
 
     def connect(self, tentacle: Tentacle) -> None:
         if tentacle.tag in self.tentacles:
@@ -89,7 +90,7 @@ class Octopus:
             if key.group_id is not None and not any(
                 msg.is_at(tentacle.id) for msg in batch
             ):
-                tentacle.memory.record(
+                await tentacle.memory.record(
                     key,
                     [
                         ModelRequest(parts=[UserPromptPart(content=str(msg))])
@@ -109,8 +110,7 @@ class Octopus:
                 )
             )
 
-            history = tentacle.memory.history(key)
-            tentacle.memory.record(
+            await tentacle.memory.record(
                 key,
                 [
                     ModelRequest(parts=[UserPromptPart(content=str(msg))])
@@ -123,13 +123,12 @@ class Octopus:
                 user_prompt.extend(msg.to_content_parts())
 
             memories = await tentacle.memory.recall(key, batch, tentacle)
+
             if memories:
                 facts = "\n".join(f"- {m}" for m in memories)
-                history.append(
-                    ModelRequest(
-                        parts=[UserPromptPart(content=f"[relevant memories]\n{facts}")]
-                    )
-                )
+                instructions = f"[relevant memories]\n{facts}"
+            else:
+                instructions = None
 
             logger.info("Octopus flick [%s] (%d messages)", key, len(batch))
 
@@ -141,9 +140,9 @@ class Octopus:
             deps = SessionContext(session_key=key, tentacle=tentacle)
             result = await tentacle.flick.run(
                 user_prompt,
-                message_history=history,
                 deps=deps,
                 toolsets=tentacle.toolsets,
+                instructions=instructions,
             )
 
             result = await self.resolve(
@@ -163,7 +162,7 @@ class Octopus:
                 )
                 return
 
-            tentacle.memory.record(key, result.new_messages())
+            await tentacle.memory.record(key, result.new_messages())
             logger.info("Flick returned %d messages for [%s]", len(result.output), key)
             for msg in result.output:
                 await tentacle.twitch(target, msg.segments)
@@ -195,10 +194,10 @@ class Octopus:
                 )
             )
 
-            history = tentacle.memory.history(key)
+            history = await tentacle.memory.history(key)
 
             if batch:
-                tentacle.memory.record(
+                await tentacle.memory.record(
                     key,
                     [
                         ModelRequest(parts=[UserPromptPart(content=str(msg))])
@@ -242,7 +241,7 @@ class Octopus:
             if result is None:
                 return
 
-            tentacle.memory.record(key, result.new_messages())
+            await tentacle.memory.record(key, result.new_messages())
             logger.info("Surge returned %d messages for [%s]", len(result.output), key)
             for msg in result.output:
                 await tentacle.twitch(target, msg.segments)

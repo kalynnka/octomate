@@ -123,5 +123,5 @@ async def test_group_message_without_mention_still_recorded(octopus, tentacle):
             await asyncio.sleep(0.05)
 
     key = event.session_key
-    history = tentacle.memory.history(key)
+    history = await tentacle.memory.history(key)
     assert len(history) > 0

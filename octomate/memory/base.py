@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import dataclasses
 import logging
-import pickle
-from collections import defaultdict, deque
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+from arcanus.materia.sqlalchemy import AsyncSession
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -14,9 +11,12 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
+from uuid_utils import uuid7
 
+from octomate.database import engine
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.session import SessionKey
+from octomate.transmuters.messages import Message
 
 if TYPE_CHECKING:
     from octomate.schemas.events import MessageEvent
@@ -26,62 +26,84 @@ logger = logging.getLogger(__name__)
 
 
 class OctopusMemory:
-    message_store: dict[SessionKey, deque[list[ModelMessage]]]
     max_messages: int
     history_size: int
-    store_path: Path
 
-    def __init__(
-        self,
-        max_messages: int = 32,
-        history_size: int = 16,
-        store_path: Path = Path(".octomate/message_store"),
-    ) -> None:
-        self.max_messages = max_messages
-        self.history_size = min(history_size, max_messages)
-        self.store_path = store_path
-        self.message_store = self.load()
+    async def record(self, key: SessionKey, messages: list[ModelMessage]) -> None:
+        records: list[Message] = []
 
-    def load(self) -> dict[SessionKey, deque[list[ModelMessage]]]:
-        store: dict[SessionKey, deque[list[ModelMessage]]] = defaultdict(
-            lambda: deque(maxlen=self.max_messages)
-        )
-        if self.store_path.exists():
-            try:
-                store.update(pickle.loads(self.store_path.read_bytes()))
-            except Exception:
-                logger.warning(
-                    "Failed to load message store, starting fresh", exc_info=True
-                )
-        logger.info("Loaded message store from %s", self.store_path)
-        return store
-
-    def save(self) -> None:
-        self.store_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.store_path.with_suffix(".tmp")
-        tmp.write_bytes(pickle.dumps(dict(self.message_store)))
-        tmp.replace(self.store_path)
-        logger.info("Saved message store to %s", self.store_path)
-
-    def record(self, key: SessionKey, messages: list[ModelMessage]) -> None:
-        filtered: list[ModelMessage] = []
         for msg in messages:
             if isinstance(msg, ModelRequest):
                 parts = [p for p in msg.parts if isinstance(p, UserPromptPart)]
-                if parts:
-                    filtered.append(dataclasses.replace(msg, parts=parts))
+                for part in parts:
+                    content = (
+                        part.content
+                        if isinstance(part.content, str)
+                        else str(part.content)
+                    )
+                    records.append(
+                        Message(
+                            id=str(uuid7()),
+                            tentacle_id=key.tentacle_id,
+                            thread_id=key.thread_id,
+                            user=key.user_id,
+                            chat=key.group_id or key.user_id,
+                            timestamp=part.timestamp,
+                            role="user",
+                            content=content,
+                        )
+                    )
             elif isinstance(msg, ModelResponse):
                 parts = [p for p in msg.parts if isinstance(p, TextPart)]
-                if parts:
-                    filtered.append(dataclasses.replace(msg, parts=parts))
-        if filtered:
-            self.message_store[key].append(filtered)
+                for part in parts:
+                    records.append(
+                        Message(
+                            id=str(uuid7()),
+                            tentacle_id=key.tentacle_id,
+                            thread_id=key.thread_id,
+                            user=key.user_id,
+                            chat=key.group_id or key.user_id,
+                            timestamp=msg.timestamp,
+                            role="assistant",
+                            content=part.content,
+                        )
+                    )
 
-    def history(self, key: SessionKey, size: int | None = None) -> list[ModelMessage]:
-        batches = self.message_store[key]
-        n = min(size or self.history_size, self.max_messages)
-        recent = list(batches)[-n:]
-        return [msg for batch in recent for msg in batch]
+        if records:
+            async with AsyncSession(engine()) as session:
+                session.add_all(records)
+                await session.commit()
+
+    async def history(
+        self, key: SessionKey, size: int | None = None
+    ) -> list[ModelMessage]:
+        expressions = [
+            Message["tentacle_id"] == key.tentacle_id,
+            Message["chat"] == key.group_id or key.user_id,
+        ]
+        if key.thread_id is not None:
+            expressions.append(Message["thread_id"] == key.thread_id)
+        else:
+            expressions.append(Message["thread_id"].is_(None))
+
+        async with AsyncSession(engine()) as session:
+            messages = await session.list(
+                Message,
+                order_bys=[Message["id"].desc()],
+                limit=size,
+            )
+
+        model_messages: list[ModelMessage] = []
+        for row in list(messages)[::-1]:
+            if row.role == "user":
+                model_messages.append(
+                    ModelRequest(parts=[UserPromptPart(content=row.content)])
+                )
+            elif row.role == "assistant":
+                model_messages.append(
+                    ModelResponse(parts=[TextPart(content=row.content)])
+                )
+        return model_messages
 
     async def recall(
         self,
@@ -90,11 +112,6 @@ class OctopusMemory:
         tentacle: Tentacle,
         limit: int = 5,
     ) -> list[str]:
-        """Persist user messages via memo, then retrieve relevant memories.
-
-        Calls ``memo`` with the incoming *events* first so that user messages
-        are recorded before the retrieval step.
-        """
         await self.memo(key, events, tentacle)
         return []
 

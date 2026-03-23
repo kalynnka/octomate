@@ -18,6 +18,11 @@ dependencies = [
     "pydantic-ai>=1.68.0",
     "zep-cloud>=3.0",
     "watchfiles>=1.1.1",
+    "arcanus",
+    "sqlalchemy[aiosqlite]>=2.0",
+    "uuid-utils>=0.9",
+    "alembic>=1.15",
+    "aiosqlite>=0.22.1",
 ]
 
 [tool.ruff.lint.per-file-ignores]

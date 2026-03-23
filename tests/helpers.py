@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import json
 import time
-from pathlib import Path
 from typing import Any
 
 from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
@@ -73,7 +72,7 @@ class MockTentacle(Tentacle):
         self.ink = MockInk()
         self.chromo = MockChromo()
         self.feelers = NULL_FEELERS
-        memory = OctopusMemory(store_path=Path("/tmp/.octomate_test_memory"))
+        memory = OctopusMemory()
         flick = Agent(
             "test",
             deps_type=SessionContext,
