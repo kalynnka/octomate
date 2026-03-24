@@ -103,6 +103,13 @@ def _start() -> None:
                 )
             )
 
+    if config.claude_code.enabled:
+        from octomate.tentacles.claude import ClaudeCodeTentacle
+
+        octopus.claude_tentacle = ClaudeCodeTentacle(
+            "claude", octopus, config.claude_code
+        )
+
     try:
         asyncio.run(octopus.activate())
     except KeyboardInterrupt:

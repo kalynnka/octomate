@@ -14,7 +14,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey, UserProfile
 
 if TYPE_CHECKING:
-    from octomate.tentacles.base import Tentacle
+    from octomate.tentacles.base import ChannelTentacle
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class ZepMemory(OctopusMemory):
         self,
         key: SessionKey,
         events: list[MessageEvent],
-        tentacle: Tentacle,
+        tentacle: ChannelTentacle,
         limit: int = 5,
     ) -> list[str]:
         if not events:
@@ -93,7 +93,7 @@ class ZepMemory(OctopusMemory):
         self,
         key: SessionKey,
         messages: list[AgentMessage] | list[MessageEvent],
-        tentacle: Tentacle,
+        tentacle: ChannelTentacle,
     ) -> None:
         await super().memo(key, messages, tentacle)
         if not messages:

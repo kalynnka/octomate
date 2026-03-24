@@ -10,7 +10,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 
 if TYPE_CHECKING:
-    from octomate.tentacles.base import Tentacle
+    from octomate.tentacles.base import ChannelTentacle
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 3
@@ -28,7 +28,7 @@ class SummonState:
 class SessionContext:
     session_key: SessionKey
     active_skills: set[str] = field(default_factory=set)
-    tentacle: Tentacle | None = None
+    tentacle: ChannelTentacle | None = None
     event: MessageEvent | None = None
     summon: SummonState = field(default_factory=SummonState)
 

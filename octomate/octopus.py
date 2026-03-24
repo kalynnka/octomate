@@ -15,7 +15,7 @@ from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 from octomate.store import InteractionStore
-from octomate.tentacles.base import SendTarget, Tentacle
+from octomate.tentacles.base import AgentTentacle, ChannelTentacle, SendTarget
 from octomate.transmuters import sqlalchemy_materia
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,8 @@ class Octopus:
     agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]
     store: InteractionStore
     skill_manager: SkillManager | None
-    tentacles: dict[str, Tentacle]
+    tentacles: dict[str, ChannelTentacle]
+    claude_tentacle: AgentTentacle | None
     _nerve_send: ObjectSendStream[tuple[SessionKey, list[MessageEvent]]]
     _nerve_receive: ObjectReceiveStream[tuple[SessionKey, list[MessageEvent]]]
 
@@ -37,6 +38,7 @@ class Octopus:
     ) -> None:
         self.agent = agent
         self.tentacles = {}
+        self.claude_tentacle = None
         self.store = InteractionStore()
         self.skill_manager = skill_manager
         self._nerve_send, self._nerve_receive = object_stream(buffer_size)
@@ -58,7 +60,7 @@ class Octopus:
             for tentacle in self.tentacles.values():
                 await tentacle.deactivate()
 
-    def connect(self, tentacle: Tentacle) -> None:
+    def connect(self, tentacle: ChannelTentacle) -> None:
         if tentacle.tag in self.tentacles:
             raise ValueError(f"Tentacle {tentacle.tag!r} already connected")
         self.tentacles[tentacle.tag] = tentacle
@@ -234,7 +236,7 @@ class Octopus:
         key: SessionKey,
         deps: SessionContext,
         target: SendTarget,
-        tentacle: Tentacle,
+        tentacle: ChannelTentacle,
     ) -> AgentRunResult[list[AgentMessage]] | None:
         """Resolve deferred tool requests until the agent produces final messages.
 

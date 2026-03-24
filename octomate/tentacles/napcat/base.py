@@ -20,7 +20,7 @@ from websockets.exceptions import ConnectionClosed
 from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import AgentSegment, ImageSegment
-from octomate.tentacles.base import PlatformMessage, SendTarget, Tentacle
+from octomate.tentacles.base import ChannelTentacle, PlatformMessage, SendTarget
 from octomate.tentacles.feelers import NULL_FEELERS
 from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.napcat.ink import NapcatInk
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class NapcatTentacle(Tentacle):
+class NapcatTentacle(ChannelTentacle):
     """Forward-WebSocket tentacle that connects *to* a napcat instance."""
 
     ws_url: str

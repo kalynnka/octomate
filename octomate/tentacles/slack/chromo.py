@@ -89,7 +89,7 @@ class SlackChromo:
     def _encode_segment(self, seg: AgentSegment) -> PlatformMessage | None:
         if isinstance(seg, MarkdownSegment):
             text = _md_to_mrkdwn(seg.data["text"])
-            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+            blocks = [{"type": "markdown", "text": text}]
             return PlatformMessage(
                 msg_type="blocks",
                 content=text,
@@ -97,7 +97,7 @@ class SlackChromo:
             )
         if isinstance(seg, TextSegment):
             text = seg.data["text"]
-            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+            blocks = [{"type": "markdown", "text": text}]
             return PlatformMessage(
                 msg_type="blocks",
                 content=text,
@@ -105,7 +105,7 @@ class SlackChromo:
             )
         if isinstance(seg, AtSegment):
             text = f"<@{seg.data.user_id}>"
-            blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+            blocks = [{"type": "markdown", "text": text}]
             return PlatformMessage(
                 msg_type="blocks",
                 content=text,

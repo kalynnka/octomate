@@ -87,6 +87,13 @@ class SurgeConfig(BaseModel):
     flush_delay: float = 0.5
 
 
+class ClaudeCodeConfig(BaseModel):
+    enabled: bool = False
+    cwd: str = "."
+    model: str | None = None
+    max_turns: int | None = None
+
+
 class OctomateConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OCTOMATE__",
@@ -97,6 +104,7 @@ class OctomateConfig(BaseSettings):
 
     tentacles: list[TentacleConfigUnion] = []
     surge: SurgeConfig = SurgeConfig()
+    claude_code: ClaudeCodeConfig = ClaudeCodeConfig()
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):

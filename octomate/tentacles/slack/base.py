@@ -18,7 +18,7 @@ from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
 from octomate.store import InteractionStore
-from octomate.tentacles.base import PlatformMessage, Tentacle
+from octomate.tentacles.base import ChannelTentacle, PlatformMessage
 from octomate.tentacles.feelers import Feelers
 from octomate.tentacles.slack.chromo import SlackChromo
 from octomate.tentacles.slack.feelers import (
@@ -48,7 +48,7 @@ _IGNORED_SUBTYPES = frozenset(
 )
 
 
-class SlackTentacle(Tentacle):
+class SlackTentacle(ChannelTentacle):
     app: AsyncApp
     handler: AsyncSocketModeHandler | None
     ink: SlackInk

@@ -83,15 +83,33 @@ class Ink(Protocol):
 
 
 class Tentacle(ABC):
-    """A tentacle wraps a single IM platform connection and exposes it
-    through a unified interface. It receives events from the IM, resolves
-    media, pushes events into the Nerve, and listens for outbound actions
-    to send back."""
-
-    FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
+    """Base for all tentacles — any bidirectional message channel."""
 
     tag: str
     octopus: Octopus
+
+    def __init__(self, tag: str, octopus: Octopus) -> None:
+        self.tag = tag
+        self.octopus = octopus
+
+
+class AgentTentacle(Tentacle):
+    """A tentacle wrapping a code agent. On-demand, not long-running.
+    Borrows the calling ChannelTentacle's feelers and ink for user interaction."""
+
+    @abstractmethod
+    async def dispatch(
+        self, task: str, channel: ChannelTentacle, target: SendTarget
+    ) -> str: ...
+
+
+class ChannelTentacle(Tentacle):
+    """A tentacle wrapping a single IM platform connection. It receives events
+    from the IM, resolves media, pushes events into the Nerve, and listens
+    for outbound actions to send back."""
+
+    FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
+
     profile: UserProfile
     ink: Ink
     chromo: Chromo
@@ -109,8 +127,7 @@ class Tentacle(ABC):
         memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
-        self.tag = tag
-        self.octopus = octopus
+        super().__init__(tag, octopus)
         self.flick = flick
         self.memory = memory
         self.profile = self.inspect()

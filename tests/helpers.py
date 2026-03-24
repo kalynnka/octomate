@@ -25,7 +25,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.session import UserProfile
-from octomate.tentacles.base import PlatformMessage, SendTarget, Tentacle
+from octomate.tentacles.base import ChannelTentacle, PlatformMessage, SendTarget
 from octomate.tentacles.feelers import NULL_FEELERS
 
 BOT_USER_ID = "bot-001"
@@ -62,7 +62,7 @@ class MockInk:
         return None
 
 
-class MockTentacle(Tentacle):
+class MockTentacle(ChannelTentacle):
     sent: list[tuple[SendTarget, list[AgentSegment]]]
     confirmations_requested: int
 
