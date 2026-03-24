@@ -101,7 +101,7 @@ class ZepMemory(OctopusMemory):
 
         tid = self.thread_id(key)
         thread_owner_id = (
-            tentacle.profile.user_id if key.group_id is None else key.user_id
+            key.user_id if key.group_id is None else tentacle.profile.user_id
         )
 
         try:

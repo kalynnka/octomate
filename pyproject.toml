@@ -23,6 +23,7 @@ dependencies = [
     "uuid-utils>=0.9",
     "alembic>=1.15",
     "aiosqlite>=0.22.1",
+    "slack-bolt>=1.18",
 ]
 
 [tool.ruff.lint.per-file-ignores]

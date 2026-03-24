@@ -13,11 +13,14 @@ warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 from octomate.agents.flick import create_flick_agent
 from octomate.agents.manager import SkillManager
 from octomate.agents.surge import create_surge_agent
-from octomate.config import LarkTentacleConfig, NapcatTentacleConfig, OctomateConfig
+from octomate.config import (
+    LarkTentacleConfig,
+    NapcatTentacleConfig,
+    OctomateConfig,
+    SlackTentacleConfig,
+)
 from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
 from octomate.octopus import Octopus
-from octomate.tentacles.lark import LarkTentacle
-from octomate.tentacles.napcat import NapcatTentacle
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
@@ -49,6 +52,8 @@ def _start() -> None:
             memory = OctopusMemory()
 
         if isinstance(tc, NapcatTentacleConfig):
+            from octomate.tentacles.napcat import NapcatTentacle
+
             octopus.connect(
                 NapcatTentacle(
                     tc.name,
@@ -65,6 +70,8 @@ def _start() -> None:
                 )
             )
         elif isinstance(tc, LarkTentacleConfig):
+            from octomate.tentacles.lark import LarkTentacle
+
             warnings.filterwarnings(
                 "ignore", category=DeprecationWarning, module=r"lark_oapi"
             )
@@ -74,6 +81,21 @@ def _start() -> None:
                     octopus,
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
+                    store=octopus.store,
+                    flick=create_flick_agent(tc.flick, skill_manager),
+                    memory=memory,
+                    flush_delay=config.surge.flush_delay,
+                )
+            )
+        elif isinstance(tc, SlackTentacleConfig):
+            from octomate.tentacles.slack import SlackTentacle
+
+            octopus.connect(
+                SlackTentacle(
+                    tc.name,
+                    octopus,
+                    bot_token=tc.bot_token,
+                    app_token=tc.app_token,
                     store=octopus.store,
                     flick=create_flick_agent(tc.flick, skill_manager),
                     memory=memory,

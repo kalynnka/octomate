@@ -61,10 +61,20 @@ class LarkTentacleConfig(TentacleConfig):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
+class SlackTentacleConfig(TentacleConfig):
+    type: Literal["slack"] = "slack"
+    name: str = "slack"
+    bot_token: SecretStr
+    app_token: SecretStr
+    flick: FlickConfig = Field(default_factory=FlickConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
+
+
 TentacleConfigUnion = Annotated[
     Union[
         Annotated[NapcatTentacleConfig, Tag("napcat")],
         Annotated[LarkTentacleConfig, Tag("lark")],
+        Annotated[SlackTentacleConfig, Tag("slack")],
     ],
     Discriminator("type"),
 ]
