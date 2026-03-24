@@ -109,9 +109,13 @@ class SlackTodoFeeler(TodoFeeler):
         self.store = store
 
     async def create_todo(
-        self, target: SendTarget, title: str, assignee: str | None = None
+        self,
+        target: SendTarget,
+        title: str,
+        active_form: str | None = None,
+        assignee: str | None = None,
     ) -> TodoItem | None:
-        item = self.store.create_todo(title, assignee)
+        item = self.store.create_todo(title, active_form, assignee)
         channel = str(target.chat_id)
 
         assignee_line = f"\n*Assignee:* <@{assignee}>" if assignee else ""
@@ -141,7 +145,7 @@ class SlackTodoFeeler(TodoFeeler):
                                 "action": "todo_update",
                                 "todo_id": item.todo_id,
                                 "title": title,
-                                "status": "done",
+                                "status": "completed",
                             }
                         ),
                     },

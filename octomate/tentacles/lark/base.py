@@ -263,16 +263,16 @@ class LarkTentacle(ChannelTentacle):
 
             if action_type == "todo_update":
                 todo_id = value.get("todo_id", "")
-                status = value.get("status", "done")
+                status = value.get("status", "completed")
                 title = value.get("title", "")
                 anyio.from_thread.run_sync(
                     self.store.update_todo,
                     todo_id,
                     status,
                 )
-                status_icon = "✅" if status == "done" else "❌"
-                status_label = "Done" if status == "done" else "Cancelled"
-                template = "green" if status == "done" else "grey"
+                status_icon = "✅" if status == "completed" else "❌"
+                status_label = "Done" if status == "completed" else "Cancelled"
+                template = "green" if status == "completed" else "grey"
                 return P2CardActionTriggerResponse(
                     {
                         "card": {

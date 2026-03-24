@@ -88,9 +88,8 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                 ],
             }
         )
-        return await self.ink.send_message(
-            chat_id, receive_id_type, "interactive", card
-        )
+        await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+        return True
 
 
 class LarkTodoFeeler(TodoFeeler):
@@ -102,9 +101,13 @@ class LarkTodoFeeler(TodoFeeler):
         self.store = store
 
     async def create_todo(
-        self, target: SendTarget, title: str, assignee: str | None = None
+        self,
+        target: SendTarget,
+        title: str,
+        active_form: str | None = None,
+        assignee: str | None = None,
     ) -> TodoItem | None:
-        item = self.store.create_todo(title, assignee)
+        item = self.store.create_todo(title, active_form, assignee)
         chat_id = str(target.chat_id)
         receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
 
@@ -132,7 +135,7 @@ class LarkTodoFeeler(TodoFeeler):
                                     "action": "todo_update",
                                     "todo_id": item.todo_id,
                                     "title": title,
-                                    "status": "done",
+                                    "status": "completed",
                                 },
                             },
                             {

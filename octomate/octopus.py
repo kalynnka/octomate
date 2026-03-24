@@ -76,7 +76,8 @@ class Octopus:
         async with asyncio.TaskGroup() as tg, self._nerve_receive:
             async for key, batch in self._nerve_receive:
                 if key.thread_id is not None:
-                    tg.create_task(self.surge(key, batch=batch))
+                    # tg.create_task(self.surge(key))
+                    tg.create_task(self.flick(key, batch))
                 else:
                     tg.create_task(self.flick(key, batch))
 
@@ -141,19 +142,43 @@ class Octopus:
                 target=target,
                 tentacle=tentacle,
             )
-            if result is None:
-                reply_to = batch[-1].message_id or None
-                await self.surge(
-                    key,
-                    summary=deps.summon.summary,
-                    reply_to=reply_to,
+            if result:
+                logger.info(
+                    "Flick returned %d messages for [%s]", len(result.output), key
                 )
-                return
-
-            logger.info("Flick returned %d messages for [%s]", len(result.output), key)
-            for msg in result.output:
-                await tentacle.twitch(target, msg.segments)
-            asyncio.create_task(tentacle.memory.memo(key, result.output, tentacle))
+                for msg in result.output:
+                    await tentacle.twitch(target, msg.segments)
+                asyncio.create_task(tentacle.memory.memo(key, result.output, tentacle))
+            if deps.summon.active:
+                reply_to = batch[-1].message_id or None
+                if self.claude_tentacle:
+                    if key.group_id is not None:
+                        summon_target = SendTarget(
+                            "group",
+                            key.group_id,
+                            reply_to=reply_to,
+                            reply_in_thread=True,
+                        )
+                    else:
+                        summon_target = SendTarget(
+                            "private",
+                            key.user_id,
+                            reply_to=reply_to,
+                            reply_in_thread=True,
+                        )
+                    asyncio.create_task(
+                        self.claude_tentacle.dispatch(
+                            deps.summon.summary, tentacle, summon_target
+                        )
+                    )
+                else:
+                    asyncio.create_task(
+                        self.surge(
+                            key,
+                            summary=deps.summon.summary,
+                            reply_to=reply_to,
+                        )
+                    )
         except Exception:
             logger.exception("Error in flick [%s]", key)
 

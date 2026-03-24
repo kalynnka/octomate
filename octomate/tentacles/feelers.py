@@ -30,7 +30,11 @@ class TodoFeeler(ABC):
 
     @abstractmethod
     async def create_todo(
-        self, target: SendTarget, title: str, assignee: str | None = None
+        self,
+        target: SendTarget,
+        title: str,
+        active_form: str | None = None,
+        assignee: str | None = None,
     ) -> TodoItem | None:
         """Create and send a TODO card. Returns the item, or None on failure."""
         ...
@@ -48,6 +52,7 @@ class QuestionFeeler(ABC):
         target: SendTarget,
         text: str,
         options: list[str] | None = None,
+        multi_select: bool = False,
     ) -> QuestionResponse | None:
         """Send a question card and wait for a response.
 
@@ -82,9 +87,13 @@ class NullConfirmationFeeler(ConfirmationFeeler):
 
 class NullTodoFeeler(TodoFeeler):
     async def create_todo(
-        self, target: SendTarget, title: str, assignee: str | None = None
+        self,
+        target: SendTarget,
+        title: str,
+        active_form: str | None = None,
+        assignee: str | None = None,
     ) -> None:
-        _ = target, title, assignee
+        _ = target, title, active_form, assignee
         return None
 
     async def update_todo(self, todo_id: str, status: str) -> bool:
@@ -98,8 +107,9 @@ class NullQuestionFeeler(QuestionFeeler):
         target: SendTarget,
         text: str,
         options: list[str] | None = None,
+        multi_select: bool = False,
     ) -> None:
-        _ = target, text, options
+        _ = target, text, options, multi_select
         return None
 
 

@@ -13,7 +13,8 @@ from octomate.schemas.session import SessionKey
 class TodoItem:
     todo_id: str
     title: str
-    status: str = "pending"  # pending | done | cancelled
+    status: str = "pending"  # pending | in_progress | completed | cancelled
+    active_form: str | None = None
     assignee: str | None = None
 
 
@@ -136,9 +137,13 @@ class InteractionStore:
 
     # --- TODOs ---
 
-    def create_todo(self, title: str, assignee: str | None = None) -> TodoItem:
+    def create_todo(
+        self, title: str, active_form: str | None = None, assignee: str | None = None
+    ) -> TodoItem:
         todo_id = uuid.uuid4().hex
-        item = TodoItem(todo_id=todo_id, title=title, assignee=assignee)
+        item = TodoItem(
+            todo_id=todo_id, title=title, active_form=active_form, assignee=assignee
+        )
         self.todos[todo_id] = item
         return item
 

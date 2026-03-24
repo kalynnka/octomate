@@ -188,12 +188,12 @@ class SlackTentacle(ChannelTentacle):
 
             elif action_type == "todo_update":
                 todo_id = value.get("todo_id", "")
-                status = value.get("status", "done")
+                status = value.get("status", "completed")
                 title = value.get("title", "")
                 self.store.update_todo(todo_id, status)
 
-                status_icon = ":white_check_mark:" if status == "done" else ":x:"
-                status_label = "Done" if status == "done" else "Cancelled"
+                status_icon = ":white_check_mark:" if status == "completed" else ":x:"
+                status_label = "Done" if status == "completed" else "Cancelled"
                 blocks = [
                     {
                         "type": "section",
