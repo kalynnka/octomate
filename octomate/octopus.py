@@ -9,7 +9,7 @@ from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic_ai import Agent, AgentRunResult, DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.agents.base import SessionContext
+from octomate.agents.base import SessionContext, SummonRequest
 from octomate.agents.manager import SKILL_METADATA_KEY, SkillManager
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
@@ -22,23 +22,20 @@ logger = logging.getLogger(__name__)
 
 
 class Octopus:
-    agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]
     store: InteractionStore
     skill_manager: SkillManager | None
     tentacles: dict[str, ChannelTentacle]
-    claude_tentacle: AgentTentacle | None
+    agent_tentacles: dict[str, AgentTentacle]
     _nerve_send: ObjectSendStream[tuple[SessionKey, list[MessageEvent]]]
     _nerve_receive: ObjectReceiveStream[tuple[SessionKey, list[MessageEvent]]]
 
     def __init__(
         self,
-        agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
         skill_manager: SkillManager | None = None,
         buffer_size: int = 64,
     ) -> None:
-        self.agent = agent
         self.tentacles = {}
-        self.claude_tentacle = None
+        self.agent_tentacles = {}
         self.store = InteractionStore()
         self.skill_manager = skill_manager
         self._nerve_send, self._nerve_receive = object_stream(buffer_size)
@@ -66,6 +63,12 @@ class Octopus:
         self.tentacles[tentacle.tag] = tentacle
         logger.info("Connected tentacle: %s", tentacle.tag)
 
+    def graft(self, tentacle: AgentTentacle) -> None:
+        if tentacle.tag in self.agent_tentacles:
+            raise ValueError(f"Agent tentacle {tentacle.tag!r} already grafted")
+        self.agent_tentacles[tentacle.tag] = tentacle
+        logger.info("Grafted agent tentacle: %s", tentacle.tag)
+
     def cut(self, name: str) -> None:
         self.tentacles.pop(name, None)
 
@@ -75,184 +78,8 @@ class Octopus:
     async def rolling(self) -> None:
         async with asyncio.TaskGroup() as tg, self._nerve_receive:
             async for key, batch in self._nerve_receive:
-                if key.thread_id is not None:
-                    # tg.create_task(self.surge(key))
-                    tg.create_task(self.flick(key, batch))
-                else:
-                    tg.create_task(self.flick(key, batch))
-
-    async def flick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
-        """Direct path: full message history + semantic recall. Has the silent group-message guard."""
-        if not batch:
-            return
-        try:
-            tentacle = self.tentacles[key.tentacle_id]
-            profile = tentacle.profile
-
-            await tentacle.memory.record(key, batch)
-
-            if key.group_id is not None and not any(
-                msg.is_at(tentacle.id) for msg in batch
-            ):
-                await tentacle.memory.memo(key, batch, tentacle)
-                return
-
-            header = (
-                f"[me: {profile.name} ({profile.user_id})]"
-                + " "
-                + (
-                    f"[group: {key.group_id}]"
-                    if key.group_id is not None
-                    else "[chat: private]"
-                )
-            )
-
-            user_prompt: list = [header]
-            for msg in batch:
-                user_prompt.extend(msg.to_content_parts())
-
-            memories = await tentacle.memory.recall(key, batch, tentacle)
-
-            if memories:
-                facts = "\n".join(f"- {m}" for m in memories)
-                instructions = f"[relevant memories]\n{facts}"
-            else:
-                instructions = None
-
-            logger.info("Octopus flick [%s] (%d messages)", key, len(batch))
-
-            target = (
-                SendTarget("group", key.group_id)
-                if key.group_id is not None
-                else SendTarget("private", key.user_id)
-            )
-            deps = SessionContext(session_key=key, tentacle=tentacle)
-            result = await tentacle.flick.run(
-                user_prompt,
-                deps=deps,
-                toolsets=tentacle.toolsets,
-                instructions=instructions,
-            )
-
-            result = await self.resolve(
-                agent=tentacle.flick,
-                result=result,
-                deps=deps,
-                key=key,
-                target=target,
-                tentacle=tentacle,
-            )
-            if result:
-                logger.info(
-                    "Flick returned %d messages for [%s]", len(result.output), key
-                )
-                for msg in result.output:
-                    await tentacle.twitch(target, msg.segments)
-                asyncio.create_task(tentacle.memory.memo(key, result.output, tentacle))
-            if deps.summon.active:
-                reply_to = batch[-1].message_id or None
-                if self.claude_tentacle:
-                    if key.group_id is not None:
-                        summon_target = SendTarget(
-                            "group",
-                            key.group_id,
-                            reply_to=reply_to,
-                            reply_in_thread=True,
-                        )
-                    else:
-                        summon_target = SendTarget(
-                            "private",
-                            key.user_id,
-                            reply_to=reply_to,
-                            reply_in_thread=True,
-                        )
-                    asyncio.create_task(
-                        self.claude_tentacle.dispatch(
-                            deps.summon.summary, tentacle, summon_target
-                        )
-                    )
-                else:
-                    asyncio.create_task(
-                        self.surge(
-                            key,
-                            summary=deps.summon.summary,
-                            reply_to=reply_to,
-                        )
-                    )
-        except Exception:
-            logger.exception("Error in flick [%s]", key)
-
-    async def surge(
-        self,
-        key: SessionKey,
-        *,
-        summary: str = "",
-        reply_to: str | None = None,
-        batch: list[MessageEvent] | None = None,
-    ) -> None:
-        """Surge path: either initial summon (summary-based) or follow-up
-        thread messages (batch-based). Both use full memory."""
-        try:
-            tentacle = self.tentacles[key.tentacle_id]
-            profile = tentacle.profile
-
-            header = (
-                f"[me: {profile.name} ({profile.user_id})]"
-                + " "
-                + (
-                    f"[group: {key.group_id}]"
-                    if key.group_id is not None
-                    else "[chat: private]"
-                )
-            )
-
-            history = await tentacle.memory.history(key)
-
-            if batch:
-                await tentacle.memory.record(key, batch)
-                user_prompt: list = [header]
-                for msg in batch:
-                    user_prompt.extend(msg.to_content_parts())
-                reply_to = batch[-1].thread_id or batch[-1].message_id or reply_to
-            else:
-                user_prompt = [header, f"[summary]\n{summary}"]
-
-            logger.info("Octopus surge [%s]", key)
-
-            target = (
-                SendTarget(
-                    "group", key.group_id, reply_to=reply_to, reply_in_thread=True
-                )
-                if key.group_id is not None
-                else SendTarget(
-                    "private", key.user_id, reply_to=reply_to, reply_in_thread=True
-                )
-            )
-            deps = SessionContext(session_key=key, tentacle=tentacle)
-            result = await self.agent.run(
-                user_prompt,
-                message_history=history,
-                toolsets=tentacle.toolsets,
-                deps=deps,
-            )
-
-            result = await self.resolve(
-                agent=self.agent,
-                result=result,
-                deps=deps,
-                key=key,
-                target=target,
-                tentacle=tentacle,
-            )
-            if result is None:
-                return
-
-            logger.info("Surge returned %d messages for [%s]", len(result.output), key)
-            for msg in result.output:
-                await tentacle.twitch(target, msg.segments)
-            asyncio.create_task(tentacle.memory.memo(key, result.output, tentacle))
-        except Exception:
-            logger.exception("Error in surge [%s]", key)
+                tentacle = self.tentacles[key.tentacle_id]
+                tg.create_task(tentacle(key, batch))
 
     async def resolve(
         self,
@@ -262,13 +89,27 @@ class Octopus:
         deps: SessionContext,
         target: SendTarget,
         tentacle: ChannelTentacle,
-    ) -> AgentRunResult[list[AgentMessage]] | None:
+    ) -> AgentRunResult[list[AgentMessage]] | SummonRequest | None:
         """Resolve deferred tool requests until the agent produces final messages.
 
         Returns the final result with list[AgentMessage] output,
-        or None if the agent handed over mid-resolution.
+        a SummonRequest if the agent summoned an agent tentacle,
+        or None if resolution failed.
         """
         while isinstance(result.output, DeferredToolRequests):
+            # Check for summon — abort immediately, extract args from the deferred call
+            summon_call = next(
+                (c for c in result.output.calls if c.tool_name == "summon"), None
+            )
+            if summon_call:
+                args = summon_call.args_as_dict()
+                return SummonRequest(
+                    tentacle_tag=args.get("tentacle_tag", ""),
+                    summary=args.get("summary", ""),
+                    user_prefer=args.get("user_prefer", ""),
+                    language=args.get("language", ""),
+                )
+
             deferred = DeferredToolResults()
 
             for call in result.output.calls:
@@ -316,8 +157,5 @@ class Octopus:
                 deps=deps,
                 toolsets=tentacle.toolsets,
             )
-
-            if deps.summon.active:
-                return None
 
         return result  # type: ignore[return-value]

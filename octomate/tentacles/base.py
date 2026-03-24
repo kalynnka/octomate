@@ -15,7 +15,7 @@ from pydantic_ai import Agent, CallDeferred, RunContext
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import FunctionToolset
 
-from octomate.agents.base import SessionContext
+from octomate.agents.base import SessionContext, SummonRequest
 from octomate.agents.tools import history_toolset
 from octomate.schemas.actions import AgentMessage, ConfirmAction
 from octomate.schemas.events import MessageEvent
@@ -97,8 +97,14 @@ class AgentTentacle(Tentacle):
     """A tentacle wrapping a code agent. On-demand, not long-running.
     Borrows the calling ChannelTentacle's feelers and ink for user interaction."""
 
+    description: str = ""
+
+    def __init__(self, tag: str, octopus: Octopus, description: str = "") -> None:
+        super().__init__(tag, octopus)
+        self.description = description
+
     @abstractmethod
-    async def dispatch(
+    async def __call__(
         self, task: str, channel: ChannelTentacle, target: SendTarget
     ) -> str: ...
 
@@ -147,6 +153,85 @@ class ChannelTentacle(Tentacle):
 
     @abstractmethod
     async def deactivate(self) -> None: ...
+
+    async def __call__(self, key: SessionKey, batch: list[MessageEvent]) -> None:
+        """Process an inbound message batch: run flick, handle summon or send response."""
+        if not batch:
+            return
+        try:
+            await self.memory.record(key, batch)
+
+            if key.group_id is not None and not any(
+                msg.is_at(self.id) for msg in batch
+            ):
+                await self.memory.memo(key, batch, self)
+                return
+
+            header = (
+                f"[me: {self.name} ({self.id})]"
+                + " "
+                + (
+                    f"[group: {key.group_id}]"
+                    if key.group_id is not None
+                    else "[chat: private]"
+                )
+            )
+            user_prompt: list = [header]
+            for msg in batch:
+                user_prompt.extend(msg.to_content_parts())
+
+            memories = await self.memory.recall(key, batch, self)
+            if memories:
+                facts = "\n".join(f"- {m}" for m in memories)
+                instructions = f"[relevant memories]\n{facts}"
+            else:
+                instructions = None
+
+            logger.info(
+                "Tentacle %s flick [%s] (%d messages)", self.tag, key, len(batch)
+            )
+
+            target = (
+                SendTarget("group", key.group_id)
+                if key.group_id is not None
+                else SendTarget("private", key.user_id)
+            )
+            deps = SessionContext(session_key=key, tentacle=self)
+            result = await self.flick.run(
+                user_prompt,
+                deps=deps,
+                toolsets=self.toolsets,
+                instructions=instructions,
+            )
+
+            resolved = await self.octopus.resolve(
+                agent=self.flick,
+                result=result,
+                deps=deps,
+                key=key,
+                target=target,
+                tentacle=self,
+            )
+
+            if isinstance(resolved, SummonRequest):
+                agent_tentacle = self.octopus.agent_tentacles.get(resolved.tentacle_tag)
+                if agent_tentacle:
+                    reply_to = batch[-1].message_id or None
+                    summon_target = SendTarget(
+                        target.chat_type,
+                        target.chat_id,
+                        reply_to=reply_to,
+                        reply_in_thread=True,
+                    )
+                    asyncio.create_task(
+                        agent_tentacle(resolved.summary, self, summon_target)
+                    )
+            elif resolved:
+                for msg_out in resolved.output:
+                    await self.twitch(target, msg_out.segments)
+                asyncio.create_task(self.memory.memo(key, resolved.output, self))
+        except Exception:
+            logger.exception("Error in tentacle %s [%s]", self.tag, key)
 
     def inspect(self) -> UserProfile:
         profile = self.ink.inspect()

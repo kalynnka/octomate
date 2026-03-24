@@ -10,10 +10,10 @@ import octotools
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
-from octomate.agents.flick import create_flick_agent
+from octomate.agents.flick import build_summon_toolset, create_flick_agent
 from octomate.agents.manager import SkillManager
-from octomate.agents.surge import create_surge_agent
 from octomate.config import (
+    ClaudeCodeConfig,
     LarkTentacleConfig,
     NapcatTentacleConfig,
     OctomateConfig,
@@ -34,13 +34,15 @@ def _start() -> None:
     octotools.github.register(skill_manager)
     octotools.linear.register(skill_manager)
 
-    if config.surge.base_url:
-        import os
+    octopus = Octopus(skill_manager=skill_manager)
 
-        os.environ.setdefault("GOOGLE_GEMINI_BASE_URL", config.surge.base_url)
+    for ac in config.agents:
+        if isinstance(ac, ClaudeCodeConfig):
+            from octomate.tentacles.claude import ClaudeCodeTentacle
 
-    agent = create_surge_agent(config.surge, skill_manager)
-    octopus = Octopus(agent, skill_manager=skill_manager)
+            octopus.graft(ClaudeCodeTentacle(ac.tag, octopus, ac))
+
+    summon_toolset = build_summon_toolset(octopus.agent_tentacles)
 
     for tc in config.tentacles:
         mem = tc.memory
@@ -50,6 +52,10 @@ def _start() -> None:
             memory = ZepMemory(api_key=mem.zep.api_key)
         else:
             memory = OctopusMemory()
+
+        flick = create_flick_agent(
+            tc.flick, skill_manager, summon_toolset=summon_toolset
+        )
 
         if isinstance(tc, NapcatTentacleConfig):
             from octomate.tentacles.napcat import NapcatTentacle
@@ -64,9 +70,9 @@ def _start() -> None:
                     backoff_base=tc.backoff_base,
                     backoff_max=tc.backoff_max,
                     backoff_factor=tc.backoff_factor,
-                    flick=create_flick_agent(tc.flick, skill_manager),
+                    flick=flick,
                     memory=memory,
-                    flush_delay=config.surge.flush_delay,
+                    flush_delay=tc.flush_delay,
                 )
             )
         elif isinstance(tc, LarkTentacleConfig):
@@ -82,9 +88,9 @@ def _start() -> None:
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
                     store=octopus.store,
-                    flick=create_flick_agent(tc.flick, skill_manager),
+                    flick=flick,
                     memory=memory,
-                    flush_delay=config.surge.flush_delay,
+                    flush_delay=tc.flush_delay,
                 )
             )
         elif isinstance(tc, SlackTentacleConfig):
@@ -97,18 +103,11 @@ def _start() -> None:
                     bot_token=tc.bot_token,
                     app_token=tc.app_token,
                     store=octopus.store,
-                    flick=create_flick_agent(tc.flick, skill_manager),
+                    flick=flick,
                     memory=memory,
-                    flush_delay=config.surge.flush_delay,
+                    flush_delay=tc.flush_delay,
                 )
             )
-
-    if config.claude_code.enabled:
-        from octomate.tentacles.claude import ClaudeCodeTentacle
-
-        octopus.claude_tentacle = ClaudeCodeTentacle(
-            "claude", octopus, config.claude_code
-        )
 
     try:
         asyncio.run(octopus.activate())

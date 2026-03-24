@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import httpx
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, CallDeferred, RunContext
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai.toolsets import FunctionToolset
 
 from octomate.agents.base import RetryTransport, SessionContext
 from octomate.agents.manager import SkillManager
@@ -12,12 +15,48 @@ from octomate.agents.prompts import BASE_PROMPT, FLICK_EXTRA
 from octomate.config import FlickConfig
 from octomate.schemas.actions import AgentMessage
 
+if TYPE_CHECKING:
+    from octomate.tentacles.base import AgentTentacle
+
 SYSTEM_PROMPT = BASE_PROMPT + FLICK_EXTRA
+
+
+def build_summon_toolset(
+    agent_tentacles: dict[str, AgentTentacle],
+) -> FunctionToolset[SessionContext] | None:
+    if not agent_tentacles:
+        return None
+
+    descriptions = "\n".join(
+        f'- "{t.tag}": {t.description}' for t in agent_tentacles.values()
+    )
+    tool_description = (
+        "Summon an agent tentacle for deep processing.\n\n"
+        "Use when user explicitly requests, or requires coding, research, or complex reasoning.\n"
+        "Write a clear summary capturing the user's actual request and context.\n"
+        "The agent only sees this summary — not the raw chat history.\n\n"
+        f"Available agent tentacles:\n{descriptions}"
+    )
+
+    toolset = FunctionToolset[SessionContext]()
+
+    @toolset.tool(requires_approval=False, description=tool_description)
+    async def summon(
+        ctx: RunContext[SessionContext],
+        tentacle_tag: str,
+        summary: str,
+        user_prefer: str,
+        language: str,
+    ) -> str:
+        raise CallDeferred()
+
+    return toolset
 
 
 def create_flick_agent(
     config: FlickConfig,
     skill_manager: SkillManager | None = None,
+    summon_toolset: FunctionToolset[SessionContext] | None = None,
 ) -> Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]:
     http_client = httpx.AsyncClient(
         transport=RetryTransport(httpx.AsyncHTTPTransport()),
@@ -30,38 +69,14 @@ def create_flick_agent(
     )
     model = GoogleModel(config.model, provider=provider)
 
-    toolsets = skill_manager.build_skillsets() if skill_manager else None
+    toolsets = skill_manager.build_skillsets() if skill_manager else []
+    if summon_toolset:
+        toolsets.append(summon_toolset)
 
-    agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests] = Agent(
+    return Agent(
         model,
         system_prompt=SYSTEM_PROMPT,
         deps_type=SessionContext,
         output_type=[list[AgentMessage], DeferredToolRequests],
-        toolsets=toolsets,
+        toolsets=toolsets or None,
     )
-
-    @agent.tool(requires_approval=False)
-    async def summon(
-        ctx: RunContext[SessionContext],
-        summary: str,
-        user_prefer: str,
-        language: str,
-    ) -> str:
-        """Summon surge for deep processing.
-
-        Use when user explicitly requests, or requires coding, research, or complex reasoning.
-        Write a clear summary capturing the user's actual request and relevant context.
-        Surge only sees this summary — not the raw chat history.
-
-        Args:
-            summary: A clear summary of the user's request and relevant context for surge.
-            user_prefer: Any explicit user preferences or constraints mentioned (e.g. "use Python", "keep it short").
-            language: The language the user is communicating in (e.g. "en", "zh", "ja").
-        """
-        ctx.deps.summon.active = True
-        ctx.deps.summon.summary = summary
-        ctx.deps.summon.user_prefer = user_prefer
-        ctx.deps.summon.language = language
-        return "summoned surge"
-
-    return agent

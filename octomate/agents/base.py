@@ -17,9 +17,9 @@ MAX_RETRIES = 3
 
 
 @dataclass
-class SummonState:
-    active: bool = False
-    summary: str = ""
+class SummonRequest:
+    tentacle_tag: str
+    summary: str
     user_prefer: str = ""
     language: str = ""
 
@@ -30,7 +30,6 @@ class SessionContext:
     active_skills: set[str] = field(default_factory=set)
     tentacle: ChannelTentacle | None = None
     event: MessageEvent | None = None
-    summon: SummonState = field(default_factory=SummonState)
 
 
 class RetryTransport(httpx.AsyncBaseTransport):

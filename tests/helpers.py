@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
@@ -11,8 +12,6 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.agents.base import SessionContext
-from octomate.agents.surge import create_surge_agent
-from octomate.config import SurgeConfig
 from octomate.memory.base import OctopusMemory
 from octomate.octopus import Octopus
 from octomate.schemas.actions import AgentMessage
@@ -152,9 +151,7 @@ def make_group_event(
 
 
 def make_octopus() -> Octopus:
-    surge_config = SurgeConfig(model="gemini-pro", api_key="test-key")
-    agent = create_surge_agent(surge_config)
-    return Octopus(agent)
+    return Octopus()
 
 
 def text_response_model(text: str) -> FunctionModel:
@@ -201,10 +198,13 @@ def silent_model() -> FunctionModel:
 @contextlib.asynccontextmanager
 async def rolling_loop(octopus: Octopus):
     """Run octopus.rolling() as a background task, cancel on exit."""
-    task = asyncio.create_task(octopus.rolling())
-    try:
-        yield
-    finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    from octomate.transmuters import sqlalchemy_materia
+
+    with sqlalchemy_materia:
+        task = asyncio.create_task(octopus.rolling())
+        try:
+            yield
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task

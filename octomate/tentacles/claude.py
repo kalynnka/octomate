@@ -43,10 +43,10 @@ class ClaudeCodeTentacle(AgentTentacle):
     config: ClaudeCodeConfig
 
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
-        super().__init__(tag, octopus)
+        super().__init__(tag, octopus, description=config.description)
         self.config = config
 
-    async def dispatch(
+    async def __call__(
         self, task: str, channel: ChannelTentacle, target: SendTarget
     ) -> str:
         session_key = SessionKey(
@@ -171,11 +171,11 @@ class ClaudeCodeTentacle(AgentTentacle):
         async with ClaudeSDKClient(options=options) as client:
             await client.query(task)
             async for msg in client.receive_response():
+                if isinstance(msg, ResultMessage):
+                    result_text += msg.result or ""
                 segments = _segments_from(msg)
                 if segments:
                     await channel.twitch(target, segments)
-                if isinstance(msg, ResultMessage):
-                    result_text = msg.result or ""
 
         return result_text
 
@@ -186,8 +186,6 @@ def _segments_from(msg: Message) -> list[AgentSegment]:
             return [TextSegment(data={"text": f"⚠ Error: {err}"})]
         case AssistantMessage(content=blocks):
             return [seg for b in blocks if (seg := _segment_from_block(b))]
-        case ResultMessage(result=text) if text:
-            return [MarkdownSegment(data={"text": text})]
         case SystemMessage(subtype="task_started"):
             return [TextSegment(data={"text": "🚀 Task started"})]
         case SystemMessage(subtype="task_progress", data=data) if data.get(

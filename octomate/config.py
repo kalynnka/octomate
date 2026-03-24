@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettin
 class TentacleConfig(BaseModel):
     name: str
     tentacle_id: str = ""
+    flush_delay: float = 0.5
 
     def model_post_init(self, _context: Any) -> None:
         if not self.tentacle_id:
@@ -80,18 +81,16 @@ TentacleConfigUnion = Annotated[
 ]
 
 
-class SurgeConfig(BaseModel):
-    model: str = "gemini-3-pro"
-    api_key: str = ""
-    base_url: str = ""
-    flush_delay: float = 0.5
-
-
 class ClaudeCodeConfig(BaseModel):
-    enabled: bool = False
+    type: Literal["claude_code"] = "claude_code"
+    tag: str = "claude"
+    description: str = "Claude Code - coding, file editing, shell commands, research"
     cwd: str = "."
     model: str | None = None
     max_turns: int | None = None
+
+
+AgentTentacleConfigUnion = ClaudeCodeConfig
 
 
 class OctomateConfig(BaseSettings):
@@ -103,8 +102,7 @@ class OctomateConfig(BaseSettings):
     )
 
     tentacles: list[TentacleConfigUnion] = []
-    surge: SurgeConfig = SurgeConfig()
-    claude_code: ClaudeCodeConfig = ClaudeCodeConfig()
+    agents: list[AgentTentacleConfigUnion] = []
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):
