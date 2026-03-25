@@ -148,6 +148,22 @@ class SlackInk:
         except Exception:
             logger.debug("SlackInk: set_suggested_prompts failed", exc_info=True)
 
+    async def pin_message(self, channel: str, ts: str) -> bool:
+        try:
+            await self.client.pins_add(channel=channel, timestamp=ts)
+            return True
+        except Exception:
+            logger.warning("SlackInk: pin_message failed", exc_info=True)
+            return False
+
+    async def unpin_message(self, channel: str, ts: str) -> bool:
+        try:
+            await self.client.pins_remove(channel=channel, timestamp=ts)
+            return True
+        except Exception:
+            logger.warning("SlackInk: unpin_message failed", exc_info=True)
+            return False
+
     async def set_title(self, channel: str, thread_ts: str, title: str) -> None:
         try:
             await self.client.api_call(

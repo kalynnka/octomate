@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import (
@@ -35,6 +36,7 @@ except ImportError:
 
 from octomate.config import ClaudeCodeConfig
 from octomate.schemas.session import SessionKey
+from octomate.store import TodoItem
 from octomate.tentacles.base import (
     AgentTentacle,
     ChannelTentacle,
@@ -50,19 +52,30 @@ logger = logging.getLogger(__name__)
 
 class ClaudeCodeTentacle(AgentTentacle):
     config: ClaudeCodeConfig
+    _todo_ts: dict[str, str]  # thread_key -> pinned message ts
+    _todo_id_maps: dict[str, dict[str, str]]  # thread_key -> title -> stable uuid
 
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
         super().__init__(tag, octopus, description=config.description)
         self.config = config
+        self._todo_ts = {}
+        self._todo_id_maps = {}
 
     async def __call__(
-        self, task: str, channel: ChannelTentacle, target: SendTarget
+        self,
+        task: str,
+        channel: ChannelTentacle,
+        target: SendTarget,
+        session_id: str | None = None,
     ) -> str:
         session_key = SessionKey(
             tentacle_id=channel.tag,
             user_id=str(target.chat_id),
         )
-        todo_map: dict[str, str] = {}
+        thread_key = f"{target.chat_id}:{target.reply_to or ''}"
+        todo_id_map: dict[str, str] = self._todo_id_maps.setdefault(thread_key, {})
+        todo_ts: str | None = self._todo_ts.get(thread_key)
+        _todo_pinned_this_run = False
 
         async def hook_ask_user(
             input_data: HookInput, tool_use_id: str | None, context: HookContext
@@ -92,39 +105,40 @@ class ClaudeCodeTentacle(AgentTentacle):
         async def hook_todo_write(
             input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> SyncHookJSONOutput:
+            nonlocal todo_ts, _todo_pinned_this_run
             tool_input = input_data.get("tool_input", {})
             todos = tool_input.get("todos", [])
+            items: list[TodoItem] = []
             for item in todos:
                 title = item.get("content", "")
                 status = item.get("status", "pending")
                 active_form = item.get("activeForm")
-                existing_id = todo_map.get(title)
-                if existing_id is None:
-                    todo = await channel.feelers.todos.create_todo(
-                        target, title, active_form=active_form
+                if title not in todo_id_map:
+                    todo_id_map[title] = uuid.uuid4().hex
+                mapped = {
+                    "completed": "completed",
+                    "in_progress": "in_progress",
+                    "cancelled": "cancelled",
+                }.get(status, "pending")
+                items.append(
+                    TodoItem(
+                        todo_id=todo_id_map[title],
+                        title=title,
+                        status=mapped,
+                        active_form=active_form,
                     )
-                    if todo:
-                        todo_map[title] = todo.todo_id
-                        if status != "pending":
-                            mapped = (
-                                "completed"
-                                if status == "completed"
-                                else "in_progress"
-                                if status == "in_progress"
-                                else "pending"
-                            )
-                            await channel.feelers.todos.update_todo(
-                                todo.todo_id, mapped
-                            )
-                else:
-                    mapped = (
-                        "completed"
-                        if status == "completed"
-                        else "in_progress"
-                        if status == "in_progress"
-                        else "pending"
-                    )
-                    await channel.feelers.todos.update_todo(existing_id, mapped)
+                )
+            new_ts = await channel.feelers.todos.upsert_todo_list(
+                target, items, existing_ts=todo_ts
+            )
+            if new_ts:
+                # Pin on first call of each run (re-establishes pin after restart)
+                # or whenever the message ts changes (new card was created).
+                if new_ts != todo_ts or not _todo_pinned_this_run:
+                    await channel.feelers.todos.pin_todo(target, new_ts)
+                    _todo_pinned_this_run = True
+                todo_ts = new_ts
+                self._todo_ts[thread_key] = new_ts
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -172,6 +186,7 @@ class ClaudeCodeTentacle(AgentTentacle):
             model=self.config.model or None,
             max_turns=self.config.max_turns,
             can_use_tool=can_use_tool,
+            resume=session_id,
             hooks={
                 "PreToolUse": [
                     HookMatcher(matcher="AskUserQuestion", hooks=[hook_ask_user]),
@@ -181,9 +196,10 @@ class ClaudeCodeTentacle(AgentTentacle):
         )
 
         result_text: str = ""
+        result_session_id: str = ""
         has_text = False
         async with channel.open_stream(target) as stream:
-            await stream.set_status("🚀 Starting…")
+            await stream.set_status("🔄 Resuming…" if session_id else "🚀 Starting…")
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(task)
                 async for msg in client.receive_response():
@@ -194,6 +210,8 @@ class ClaudeCodeTentacle(AgentTentacle):
                     )
                     if isinstance(msg, ResultMessage):
                         result_text += msg.result or ""
+                        # Capture the session_id for future resumption.
+                        result_session_id = result_session_id or msg.session_id
                         continue
                     has_text = await _handle_stream_msg(msg, stream, has_text)
             # Send the final result text (ResultMessage) to the channel.
@@ -205,7 +223,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                     await stream.append("\n\n")
                 await stream.append(result_text)
 
-        return result_text
+        return result_session_id
 
 
 async def _handle_stream_msg(msg: Message, stream: StreamSink, has_text: bool) -> bool:
@@ -258,8 +276,10 @@ async def _handle_stream_block(
         text = getattr(block, "thinking", "") or ""
         await stream.set_status("🧠 Thinking…")  # always surface the indicator
         if text:
-            await stream.append(text)  # send full thinking content to the channel
-            return True
+            await stream.post_thinking_block(text)
+            # post_thinking_block() calls flush() internally, so the text stream
+            # is reset; the next TextBlock must open a fresh Slack message.
+            return False
     return has_text
 
 

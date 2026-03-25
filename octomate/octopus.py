@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from dataclasses import dataclass
 
 from anyio import create_memory_object_stream as object_stream
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
@@ -21,6 +22,20 @@ from octomate.transmuters import sqlalchemy_materia
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ThreadSession:
+    """Tracks an agent-tentacle session bound to a platform sub-thread.
+
+    Registered when a summon is issued; updated with the Claude Code
+    ``session_id`` once the first run completes so subsequent messages
+    in the same thread resume the same context.
+    """
+
+    tentacle_tag: str
+    session_id: str | None
+    target: SendTarget
+
+
 class Octopus:
     store: InteractionStore
     skill_manager: SkillManager | None
@@ -28,6 +43,7 @@ class Octopus:
     agent_tentacles: dict[str, AgentTentacle]
     _nerve_send: ObjectSendStream[tuple[SessionKey, list[MessageEvent]]]
     _nerve_receive: ObjectReceiveStream[tuple[SessionKey, list[MessageEvent]]]
+    thread_sessions: dict[tuple[str, str], ThreadSession]
 
     def __init__(
         self,
@@ -39,6 +55,7 @@ class Octopus:
         self.store = InteractionStore()
         self.skill_manager = skill_manager
         self._nerve_send, self._nerve_receive = object_stream(buffer_size)
+        self.thread_sessions: dict[tuple[str, str], ThreadSession] = {}
 
     async def activate(self) -> None:
         try:
@@ -71,6 +88,58 @@ class Octopus:
 
     def cut(self, name: str) -> None:
         self.tentacles.pop(name, None)
+
+    # ------------------------------------------------------------------
+    # Thread-session registry
+    # ------------------------------------------------------------------
+
+    def register_thread_session(
+        self,
+        tentacle_id: str,
+        thread_id: str,
+        tentacle_tag: str,
+        target: SendTarget,
+    ) -> None:
+        """Register a sub-thread as owned by the given agent tentacle.
+
+        Called at summon time so that follow-up messages in the thread can
+        be routed back without going through Flick again.
+        """
+        self.thread_sessions[(tentacle_id, thread_id)] = ThreadSession(
+            tentacle_tag=tentacle_tag,
+            session_id=None,
+            target=target,
+        )
+        logger.debug(
+            "Thread session registered: %s / %s → %s",
+            tentacle_id,
+            thread_id,
+            tentacle_tag,
+        )
+
+    def update_thread_session_id(
+        self, tentacle_id: str, thread_id: str, session_id: str
+    ) -> None:
+        """Persist the Claude Code session_id once a run completes.
+
+        Subsequent turns in the same sub-thread will pass this id to
+        ClaudeAgentOptions.resume so the session carries forward.
+        """
+        entry = self.thread_sessions.get((tentacle_id, thread_id))
+        if entry is not None:
+            entry.session_id = session_id
+            logger.debug(
+                "Thread session updated: %s / %s  session=%s",
+                tentacle_id,
+                thread_id,
+                session_id,
+            )
+
+    def get_thread_session(
+        self, tentacle_id: str, thread_id: str
+    ) -> ThreadSession | None:
+        """Return the ThreadSession registered for a sub-thread, or None."""
+        return self.thread_sessions.get((tentacle_id, thread_id))
 
     async def kick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
         await self._nerve_send.send((key, batch))

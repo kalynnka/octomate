@@ -108,6 +108,15 @@ class StreamSink:
     async def flush(self) -> None:
         pass
 
+    async def post_thinking_block(self, text: str) -> None:
+        """Post a collapsible thinking block.
+
+        Default: appends the raw text so platforms without folding support
+        still surface the content inline.
+        """
+        if text:
+            await self.append(text)
+
 
 class Tentacle(ABC):
     """Base for all tentacles — any bidirectional message channel."""
@@ -121,7 +130,7 @@ class Tentacle(ABC):
 
 
 class AgentTentacle(Tentacle):
-    """A tentacle wrapping a code agent. On-demand, not long-running.
+    """A tentacle wrapping an agent. On-demand, not long-running.
     Borrows the calling ChannelTentacle's feelers and ink for user interaction."""
 
     description: str = ""
@@ -132,7 +141,11 @@ class AgentTentacle(Tentacle):
 
     @abstractmethod
     async def __call__(
-        self, task: str, channel: ChannelTentacle, target: SendTarget
+        self,
+        task: str,
+        channel: ChannelTentacle,
+        target: SendTarget,
+        session_id: str | None = None,
     ) -> str: ...
 
 
@@ -187,6 +200,51 @@ class ChannelTentacle(Tentacle):
             return
         try:
             await self.memory.record(key, batch)
+
+            # ------------------------------------------------------------------
+            # Sub-thread continuations: route back to the owning agent tentacle
+            # and resume its previous Claude Code session instead of re-running
+            # Flick.  This fires before the group @-mention gate so the user
+            # doesn't need to @-mention the bot inside the thread.
+            # ------------------------------------------------------------------
+            if key.thread_id:
+                thread_session = self.octopus.get_thread_session(self.tag, key.thread_id)
+                if thread_session is not None:
+                    agent_tentacle = self.octopus.agent_tentacles.get(
+                        thread_session.tentacle_tag
+                    )
+                    if agent_tentacle is not None:
+                        task_parts = [
+                            " ".join(msg.text_parts())
+                            for msg in batch
+                            if msg.text_parts()
+                        ]
+                        follow_up = "\n".join(task_parts) or "(follow-up)"
+                        logger.info(
+                            "Tentacle %s resuming %s in thread %s",
+                            self.tag,
+                            thread_session.tentacle_tag,
+                            key.thread_id,
+                        )
+                        captured_sid = thread_session.session_id
+                        captured_tid = key.thread_id
+                        captured_tgt = thread_session.target
+
+                        async def _resume(
+                            _at: AgentTentacle = agent_tentacle,
+                            _task: str = follow_up,
+                            _sid: str | None = captured_sid,
+                            _tid: str = captured_tid,
+                            _tgt: SendTarget = captured_tgt,
+                        ) -> None:
+                            new_sid = await _at(_task, self, _tgt, _sid)
+                            if new_sid:
+                                self.octopus.update_thread_session_id(
+                                    self.tag, _tid, new_sid
+                                )
+
+                        asyncio.create_task(_resume())
+                        return
 
             if key.group_id is not None and not any(
                 msg.is_at(self.id) for msg in batch
@@ -253,16 +311,38 @@ class ChannelTentacle(Tentacle):
                         reply_to=reply_to,
                         reply_in_thread=True,
                     )
-                    desc = agent_tentacle.description or resolved.tentacle_tag
-                    await self.twitch(
-                        target, [TextSegment(data={"text": f"Summoning {desc}..."})]
-                    )
                     task = resolved.summary
                     if resolved.user_prefer:
                         task += f"\n\n[user preference: {resolved.user_prefer}]"
                     if resolved.language:
                         task += f"\n\n[language: {resolved.language}]"
-                    asyncio.create_task(agent_tentacle(task, self, summon_target))
+
+                    # Register the sub-thread before spawning so any follow-up
+                    # message that arrives while the agent is running is already
+                    # mapped to the right tentacle (session_id filled in later).
+                    thread_id_key = reply_to
+                    if thread_id_key:
+                        self.octopus.register_thread_session(
+                            self.tag,
+                            thread_id_key,
+                            resolved.tentacle_tag,
+                            summon_target,
+                        )
+                    captured_tid = thread_id_key
+
+                    async def _run_summon(
+                        _at: AgentTentacle = agent_tentacle,
+                        _task: str = task,
+                        _tgt: SendTarget = summon_target,
+                        _tid: str | None = captured_tid,
+                    ) -> None:
+                        new_sid = await _at(_task, self, _tgt)
+                        if _tid and new_sid:
+                            self.octopus.update_thread_session_id(
+                                self.tag, _tid, new_sid
+                            )
+
+                    asyncio.create_task(_run_summon())
             elif resolved:
                 for msg_out in resolved.output:
                     await self.twitch(target, msg_out.segments)
@@ -400,9 +480,8 @@ class ChannelTentacle(Tentacle):
                     target = SendTarget("group", key.group_id)
                 else:
                     target = SendTarget("private", key.user_id)
-                if key.thread_id is not None:
-                    target.reply_to = key.thread_id
-                    target.reply_in_thread = True
+                # Flick always replies in the main thread — sub-thread messages
+                # are routed directly to agent tentacles and never reach here.
                 await ctx.deps.tentacle.twitch(
                     target, [TextSegment(data={"text": text})]
                 )

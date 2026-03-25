@@ -26,21 +26,32 @@ class ConfirmationFeeler(ABC):
 
 
 class TodoFeeler(ABC):
-    """Handles TODO list cards."""
+    """Handles TODO list cards (single consolidated card, reference-only)."""
 
     @abstractmethod
-    async def create_todo(
+    async def upsert_todo_list(
         self,
         target: SendTarget,
-        title: str,
-        active_form: str | None = None,
-        assignee: str | None = None,
-    ) -> TodoItem | None:
-        """Create and send a TODO card. Returns the item, or None on failure."""
+        items: list[TodoItem],
+        existing_ts: str | None = None,
+    ) -> str | None:
+        """Create or update a single consolidated TODO list card.
+
+        Pass existing_ts=None to post a new card; pass the previously returned
+        ts/message-id to update it in-place.  Returns the ts/message-id on
+        success, or None on failure.
+        """
         ...
 
     @abstractmethod
-    async def update_todo(self, todo_id: str, status: str) -> bool: ...
+    async def pin_todo(self, target: SendTarget, ts: str) -> bool:
+        """Pin the todo list message. Unpins any previously pinned list first."""
+        ...
+
+    @abstractmethod
+    async def unpin_todo(self, target: SendTarget, ts: str) -> bool:
+        """Unpin the todo list message."""
+        ...
 
 
 class QuestionFeeler(ABC):
@@ -86,18 +97,21 @@ class NullConfirmationFeeler(ConfirmationFeeler):
 
 
 class NullTodoFeeler(TodoFeeler):
-    async def create_todo(
+    async def upsert_todo_list(
         self,
         target: SendTarget,
-        title: str,
-        active_form: str | None = None,
-        assignee: str | None = None,
+        items: list[TodoItem],
+        existing_ts: str | None = None,
     ) -> None:
-        _ = target, title, active_form, assignee
+        _ = target, items, existing_ts
         return None
 
-    async def update_todo(self, todo_id: str, status: str) -> bool:
-        _ = todo_id, status
+    async def pin_todo(self, target: SendTarget, ts: str) -> bool:
+        _ = target, ts
+        return False
+
+    async def unpin_todo(self, target: SendTarget, ts: str) -> bool:
+        _ = target, ts
         return False
 
 

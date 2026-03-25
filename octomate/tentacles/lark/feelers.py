@@ -7,7 +7,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from octomate.store import InteractionStore, QuestionResponse, TodoItem
+from octomate.store import InteractionStore, QuestionResponse
 from octomate.tentacles.feelers import ConfirmationFeeler, QuestionFeeler, TodoFeeler
 
 if TYPE_CHECKING:
@@ -95,72 +95,87 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
 class LarkTodoFeeler(TodoFeeler):
     ink: LarkInk
     store: InteractionStore
+    pinned: dict[str, str]  # chat_id -> pinned message_id
 
     def __init__(self, ink: LarkInk, store: InteractionStore) -> None:
         self.ink = ink
         self.store = store
+        self.pinned = {}
 
-    async def create_todo(
+    async def upsert_todo_list(
         self,
         target: SendTarget,
-        title: str,
-        active_form: str | None = None,
-        assignee: str | None = None,
-    ) -> TodoItem | None:
-        item = self.store.create_todo(title, active_form, assignee)
+        items: list,
+        existing_ts: str | None = None,
+    ) -> str | None:
         chat_id = str(target.chat_id)
         receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
 
-        assignee_line = f'\n**Assignee:** <at id="{assignee}"></at>' if assignee else ""
+        lines: list[str] = []
+        for item in items:
+            if item.status == "completed":
+                icon = "✅"
+                text = f"~~{item.title}~~"
+            elif item.status == "cancelled":
+                icon = "❌"
+                text = f"~~{item.title}~~"
+            elif item.status == "in_progress":
+                icon = "⏳"
+                label = item.active_form or item.title
+                text = f"**{label}**"
+            else:
+                icon = "⬜"
+                text = item.title
+            lines.append(f"{icon}  {text}")
+
+        body = "\n".join(lines) if lines else "_No tasks_"
+
+        done_count = sum(1 for i in items if i.status in ("completed", "cancelled"))
+        in_progress_count = sum(1 for i in items if i.status == "in_progress")
+        total = len(items)
+
+        elements: list[dict] = [{"tag": "markdown", "content": body}]
+        if total:
+            parts = [f"**{done_count}/{total}** completed"]
+            if in_progress_count:
+                parts.append(f"**{in_progress_count}** in progress")
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "markdown", "content": "  ·  ".join(parts)})
+
+        template = "green" if total > 0 and done_count == total else "blue"
         card = json.dumps(
             {
                 "header": {
-                    "title": {"tag": "plain_text", "content": "📝 TODO"},
-                    "template": "blue",
+                    "title": {"tag": "plain_text", "content": "📋 Task List"},
+                    "template": template,
                 },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": f"☐ {title}" + assignee_line,
-                    },
-                    {"tag": "hr"},
-                    {
-                        "tag": "action",
-                        "actions": [
-                            {
-                                "tag": "button",
-                                "text": {"tag": "plain_text", "content": "✅ Done"},
-                                "type": "primary",
-                                "value": {
-                                    "action": "todo_update",
-                                    "todo_id": item.todo_id,
-                                    "title": title,
-                                    "status": "completed",
-                                },
-                            },
-                            {
-                                "tag": "button",
-                                "text": {"tag": "plain_text", "content": "❌ Cancel"},
-                                "type": "danger",
-                                "value": {
-                                    "action": "todo_update",
-                                    "todo_id": item.todo_id,
-                                    "title": title,
-                                    "status": "cancelled",
-                                },
-                            },
-                        ],
-                    },
-                ],
+                "elements": elements,
             }
         )
-        sent = await self.ink.send_message(
-            chat_id, receive_id_type, "interactive", card
-        )
-        return item if sent else None
 
-    async def update_todo(self, todo_id: str, status: str) -> bool:
-        return self.store.update_todo(todo_id, status)
+        if existing_ts is None:
+            return await self.ink.send_message(
+                chat_id, receive_id_type, "interactive", card
+            )
+        ok = await self.ink.update_message(existing_ts, "interactive", card)
+        return existing_ts if ok else None
+
+    async def pin_todo(self, target: SendTarget, ts: str) -> bool:
+        key = str(target.chat_id)
+        old = self.pinned.get(key)
+        if old and old != ts:
+            await self.ink.unpin_message(old)
+        ok = await self.ink.pin_message(ts)
+        if ok:
+            self.pinned[key] = ts
+        return ok
+
+    async def unpin_todo(self, target: SendTarget, ts: str) -> bool:
+        key = str(target.chat_id)
+        ok = await self.ink.unpin_message(ts)
+        if ok:
+            self.pinned.pop(key, None)
+        return ok
 
 
 class LarkQuestionFeeler(QuestionFeeler):

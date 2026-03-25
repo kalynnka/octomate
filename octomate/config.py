@@ -84,7 +84,7 @@ TentacleConfigUnion = Annotated[
 class ClaudeCodeConfig(BaseModel):
     type: Literal["claude_code"] = "claude_code"
     tag: str = "claude"
-    description: str = "Claude Code - coding, file editing, shell commands, research"
+    description: str = "Claude Code - coding, file editing, shell commands, planning"
     cwd: str = "."
     model: str | None = None
     max_turns: int | None = None

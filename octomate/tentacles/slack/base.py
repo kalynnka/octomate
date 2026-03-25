@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_THINKING_PREVIEW_LEN = 120  # chars of collapsed thinking preview shown inline
+_SLACK_SECTION_LIMIT = 3000  # max mrkdwn chars per Slack section block
+
 _IGNORED_SUBTYPES = frozenset(
     {
         "bot_message",
@@ -60,48 +63,32 @@ class SlackStreamSink(StreamSink):
     ink: SlackInk
     channel: str
     thread_ts: str | None
-    is_assistant_thread: bool
     buffer: str
     message_ts: str | None
-    status_ts: str | None
     last_update: float
     update_interval: float
+    thinking_store: dict[str, str]
 
     def __init__(
         self,
         ink: SlackInk,
         channel: str,
         thread_ts: str | None = None,
-        is_assistant_thread: bool = False,
         update_interval: float = 0.3,
+        thinking_store: dict[str, str] | None = None,
     ) -> None:
         self.ink = ink
         self.channel = channel
         self.thread_ts = thread_ts
-        self.is_assistant_thread = is_assistant_thread
         self.buffer = ""
         self.message_ts = None
-        self.status_ts = None
         self.last_update = 0.0
         self.update_interval = update_interval
+        self.thinking_store = thinking_store if thinking_store is not None else {}
 
     async def set_status(self, status: str) -> None:
-        if self.is_assistant_thread and self.thread_ts:
+        if self.thread_ts:
             await self.ink.set_assistant_status(self.channel, self.thread_ts, status)
-        else:
-            # Outside assistant threads, surface status updates as a real message so
-            # tool-use blocks (and other progress indicators) are visible to the user.
-            # We update the same message in-place until flush() resets status_ts —
-            # that way each tool use (which always calls flush() first) gets its own
-            # dedicated status message instead of silently clobbering the previous one.
-            if self.status_ts is None:
-                self.status_ts = await self.ink.send_message(
-                    self.channel, text=status, thread_ts=self.thread_ts
-                )
-            else:
-                await self.ink.update_message(
-                    self.channel, self.status_ts, text=status
-                )
 
     async def append(self, text: str) -> None:
         self.buffer += text
@@ -114,7 +101,6 @@ class SlackStreamSink(StreamSink):
             await self._push()
         self.buffer = ""
         self.message_ts = None
-        self.status_ts = None  # reset so the next status opens a fresh message
 
     async def _push(self) -> None:
         if not self.buffer:
@@ -130,6 +116,67 @@ class SlackStreamSink(StreamSink):
             )
         self.last_update = time.monotonic()
 
+    async def post_thinking_block(self, text: str) -> None:
+        """Post a collapsed 🧠 thinking message with a 'Show thinking' button.
+
+        The full thinking text is stored in *thinking_store* (shared with the
+        parent SlackTentacle).  When the user clicks the button the block action
+        handler expands the message in-place, then removes the entry from the
+        store to avoid unbounded growth.
+        """
+        if not text:
+            return
+        # Flush any buffered text first so this thinking message appears
+        # chronologically *after* whatever was already streaming.
+        await self.flush()
+
+        thinking_id = uuid.uuid4().hex
+        self.thinking_store[thinking_id] = text
+
+        # Build a one-line preview: collapse whitespace, trim to limit.
+        flat = " ".join(text.split())
+        preview = flat[:_THINKING_PREVIEW_LEN]
+        if len(flat) > _THINKING_PREVIEW_LEN:
+            preview += "…"
+
+        blocks: list[dict] = [
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"🧠 *Thinking*  ·  _{preview}_",
+                    }
+                ],
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "▶  Show thinking",
+                            "emoji": True,
+                        },
+                        "action_id": f"thinking_show_{thinking_id}",
+                        "value": json.dumps(
+                            {
+                                "action": "show_thinking",
+                                "thinking_id": thinking_id,
+                            }
+                        ),
+                    }
+                ],
+            },
+        ]
+        await self.ink.send_message(
+            self.channel,
+            text="🧠 Thinking…  (click ▶ to expand)",
+            blocks=blocks,
+            thread_ts=self.thread_ts,
+        )
+
 
 class SlackTentacle(ChannelTentacle):
     app: AsyncApp
@@ -139,6 +186,7 @@ class SlackTentacle(ChannelTentacle):
     app_token: str
     assistant_threads: set[str]
     dm_channels: dict[str, str]
+    thinking_store: dict[str, str]
 
     def __init__(
         self,
@@ -157,6 +205,7 @@ class SlackTentacle(ChannelTentacle):
         self.store = store
         self.assistant_threads = set()
         self.dm_channels = {}
+        self.thinking_store = {}
 
         self.feelers = Feelers(
             confirm=SlackConfirmationFeeler(self.ink, self.store),
@@ -298,29 +347,51 @@ class SlackTentacle(ChannelTentacle):
                         channel, message_ts, text=f"Answered: {answer}", blocks=blocks
                     )
 
-            elif action_type == "todo_update":
-                todo_id = value.get("todo_id", "")
-                status = value.get("status", "completed")
-                title = value.get("title", "")
-                self.store.update_todo(todo_id, status)
+            elif action_type == "show_thinking":
+                thinking_id = value.get("thinking_id", "")
+                raw = self.thinking_store.pop(thinking_id, None)
+                if not raw:
+                    return  # already expanded or entry expired
 
-                status_icon = ":white_check_mark:" if status == "completed" else ":x:"
-                status_label = "Done" if status == "completed" else "Cancelled"
-                blocks = [
+                display = _md_to_mrkdwn(raw)
+
+                # Split the (potentially very long) thinking text into section
+                # blocks that each respect Slack's 3 000-char mrkdwn limit.
+                # Cap at 49 content blocks to stay under Slack's 50-block ceiling
+                # (one slot is reserved for the context header).
+                _MAX_SECTIONS = 49
+                chunks: list[str] = []
+                remaining = display
+                while remaining:
+                    chunks.append(remaining[:_SLACK_SECTION_LIMIT])
+                    remaining = remaining[_SLACK_SECTION_LIMIT:]
+                    if len(chunks) == _MAX_SECTIONS:
+                        if remaining:
+                            chunks[-1] = (
+                                chunks[-1][: _SLACK_SECTION_LIMIT - 20]
+                                + "\n…_(truncated)_"
+                            )
+                        break
+
+                expanded_blocks: list[dict] = [
                     {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"{status_icon} ~{title}~ — *{status_label}*",
-                        },
-                    }
+                        "type": "context",
+                        "elements": [{"type": "mrkdwn", "text": "🧠 *Thinking*"}],
+                    },
+                    *[
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": chunk},
+                        }
+                        for chunk in chunks
+                    ],
                 ]
                 if channel and message_ts:
                     await self.ink.update_message(
                         channel,
                         message_ts,
-                        text=f"{title} — {status_label}",
-                        blocks=blocks,
+                        text="🧠 Thinking",
+                        blocks=expanded_blocks,
                     )
 
         except Exception:
@@ -334,14 +405,11 @@ class SlackTentacle(ChannelTentacle):
         if target.chat_type == "private":
             channel = self.dm_channels.get(channel, channel)
         thread_ts = str(target.reply_to) if target.reply_to else None
-        is_assistant = bool(
-            thread_ts and f"{channel}:{thread_ts}" in self.assistant_threads
-        )
         sink = SlackStreamSink(
             ink=self.ink,
             channel=channel,
             thread_ts=thread_ts,
-            is_assistant_thread=is_assistant,
+            thinking_store=self.thinking_store,
         )
         try:
             yield sink

@@ -12,7 +12,12 @@ from lark_oapi.api.im.v1 import (
     CreateImageRequestBody,
     CreateMessageRequest,
     CreateMessageRequestBody,
+    CreatePinRequest,
+    CreatePinRequestBody,
+    DeletePinRequest,
     GetMessageResourceRequest,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
@@ -203,6 +208,63 @@ class LarkInk:
                 "LarkInk: get_user_profile failed for %s", user_id, exc_info=True
             )
         return LarkUserProfile(user_id=user_id, name=user_id)
+
+    async def update_message(
+        self, message_id: str, msg_type: str, content: str
+    ) -> bool:
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                PatchMessageRequestBody.builder().content(content).build()
+            )
+            .build()
+        )
+        try:
+            resp = await self.client.im.v1.message.apatch(request)  # type: ignore[union-attr]
+            if not resp.success():
+                logger.warning(
+                    "LarkInk: update_message failed: %s %s", resp.code, resp.msg
+                )
+                return False
+            return True
+        except Exception:
+            logger.warning("LarkInk: update_message failed", exc_info=True)
+            return False
+
+    async def pin_message(self, message_id: str) -> bool:
+        request = (
+            CreatePinRequest.builder()
+            .request_body(
+                CreatePinRequestBody.builder().message_id(message_id).build()
+            )
+            .build()
+        )
+        try:
+            resp = await self.client.im.v1.pin.acreate(request)  # type: ignore[union-attr]
+            if not resp.success():
+                logger.warning(
+                    "LarkInk: pin_message failed: %s %s", resp.code, resp.msg
+                )
+                return False
+            return True
+        except Exception:
+            logger.warning("LarkInk: pin_message failed", exc_info=True)
+            return False
+
+    async def unpin_message(self, message_id: str) -> bool:
+        request = DeletePinRequest.builder().message_id(message_id).build()
+        try:
+            resp = await self.client.im.v1.pin.adelete(request)  # type: ignore[union-attr]
+            if not resp.success():
+                logger.warning(
+                    "LarkInk: unpin_message failed: %s %s", resp.code, resp.msg
+                )
+                return False
+            return True
+        except Exception:
+            logger.warning("LarkInk: unpin_message failed", exc_info=True)
+            return False
 
     async def download_media(
         self, resource_id: str, **kwargs: Any

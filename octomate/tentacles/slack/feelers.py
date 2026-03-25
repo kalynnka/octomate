@@ -5,7 +5,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from octomate.store import InteractionStore, QuestionResponse, TodoItem
+from octomate.store import InteractionStore, QuestionResponse
 from octomate.tentacles.feelers import ConfirmationFeeler, QuestionFeeler, TodoFeeler
 
 if TYPE_CHECKING:
@@ -105,78 +105,93 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
 class SlackTodoFeeler(TodoFeeler):
     ink: SlackInk
     store: InteractionStore
+    pinned: dict[str, str]  # channel_key -> pinned message ts
 
     def __init__(self, ink: SlackInk, store: InteractionStore) -> None:
         self.ink = ink
         self.store = store
+        self.pinned = {}
 
-    async def create_todo(
+    def channel_key(self, target: SendTarget) -> str:
+        thread = str(target.reply_to) if target.reply_to else ""
+        return f"{target.chat_id}:{thread}"
+
+    async def upsert_todo_list(
         self,
         target: SendTarget,
-        title: str,
-        active_form: str | None = None,
-        assignee: str | None = None,
-    ) -> TodoItem | None:
-        item = self.store.create_todo(title, active_form, assignee)
+        items: list,
+        existing_ts: str | None = None,
+    ) -> str | None:
         channel = str(target.chat_id)
-
-        assignee_line = f"\n*Assignee:* <@{assignee}>" if assignee else ""
-        blocks = [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": "TODO"},
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f":white_square: {title}" + assignee_line,
-                },
-            },
-            {"type": "divider"},
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Done"},
-                        "style": "primary",
-                        "action_id": f"todo_done_{item.todo_id}",
-                        "value": json.dumps(
-                            {
-                                "action": "todo_update",
-                                "todo_id": item.todo_id,
-                                "title": title,
-                                "status": "completed",
-                            }
-                        ),
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Cancel"},
-                        "style": "danger",
-                        "action_id": f"todo_cancel_{item.todo_id}",
-                        "value": json.dumps(
-                            {
-                                "action": "todo_update",
-                                "todo_id": item.todo_id,
-                                "title": title,
-                                "status": "cancelled",
-                            }
-                        ),
-                    },
-                ],
-            },
-        ]
-
         thread_ts = str(target.reply_to) if target.reply_to else None
-        ts = await self.ink.send_message(
-            channel, text=f"TODO: {title}", blocks=blocks, thread_ts=thread_ts
-        )
-        return item if ts else None
 
-    async def update_todo(self, todo_id: str, status: str) -> bool:
-        return self.store.update_todo(todo_id, status)
+        lines: list[str] = []
+        for item in items:
+            if item.status == "completed":
+                icon = ":white_check_mark:"
+                text = f"~{item.title}~"
+            elif item.status == "cancelled":
+                icon = ":x:"
+                text = f"~{item.title}~"
+            elif item.status == "in_progress":
+                icon = ":hourglass_flowing_sand:"
+                label = item.active_form or item.title
+                text = f"*{label}*"
+            else:
+                icon = ":radio_button:"
+                text = item.title
+            lines.append(f"{icon}  {text}")
+
+        body = "\n".join(lines) if lines else "_No tasks_"
+
+        done_count = sum(1 for i in items if i.status in ("completed", "cancelled"))
+        in_progress_count = sum(1 for i in items if i.status == "in_progress")
+        total = len(items)
+
+        blocks: list[dict] = [
+            {"type": "header", "text": {"type": "plain_text", "text": "📋 Task List"}},
+            {"type": "divider"},
+            {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+        ]
+        if total:
+            parts = [f"*{done_count}/{total}* completed"]
+            if in_progress_count:
+                parts.append(f"*{in_progress_count}* in progress")
+            blocks.append({"type": "divider"})
+            blocks.append(
+                {
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": "  ·  ".join(parts)}],
+                }
+            )
+
+        if existing_ts is None:
+            return await self.ink.send_message(
+                channel, text="📋 Task List", blocks=blocks, thread_ts=thread_ts
+            )
+        await self.ink.update_message(
+            channel, existing_ts, text="📋 Task List", blocks=blocks
+        )
+        return existing_ts
+
+    async def pin_todo(self, target: SendTarget, ts: str) -> bool:
+        channel = str(target.chat_id)
+        key = self.channel_key(target)
+        old = self.pinned.get(key)
+        if old and old != ts:
+            await self.ink.unpin_message(channel, old)
+        ok = await self.ink.pin_message(channel, ts)
+        if ok:
+            self.pinned[key] = ts
+        return ok
+
+    async def unpin_todo(self, target: SendTarget, ts: str) -> bool:
+        channel = str(target.chat_id)
+        key = self.channel_key(target)
+        ok = await self.ink.unpin_message(channel, ts)
+        if ok:
+            self.pinned.pop(key, None)
+        return ok
 
 
 class SlackQuestionFeeler(QuestionFeeler):
