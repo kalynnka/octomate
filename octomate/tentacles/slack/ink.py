@@ -124,3 +124,35 @@ class SlackInk:
         except Exception:
             logger.warning("SlackInk: update_message failed", exc_info=True)
             return False
+
+    async def set_assistant_status(
+        self, channel: str, thread_ts: str, status: str
+    ) -> None:
+        try:
+            await self.client.api_call(
+                "assistant.threads.setStatus",
+                params={"channel_id": channel, "thread_ts": thread_ts, "status": status},
+            )
+        except Exception:
+            logger.debug("SlackInk: set_assistant_status failed", exc_info=True)
+
+    async def set_suggested_prompts(
+        self, channel: str, thread_ts: str, prompts: list[dict]
+    ) -> None:
+        try:
+            await self.client.api_call(
+                "assistant.threads.setSuggestedPrompts",
+                params={"channel_id": channel, "thread_ts": thread_ts},
+                json={"prompts": prompts},
+            )
+        except Exception:
+            logger.debug("SlackInk: set_suggested_prompts failed", exc_info=True)
+
+    async def set_title(self, channel: str, thread_ts: str, title: str) -> None:
+        try:
+            await self.client.api_call(
+                "assistant.threads.setTitle",
+                params={"channel_id": channel, "thread_ts": thread_ts, "title": title},
+            )
+        except Exception:
+            logger.debug("SlackInk: set_title failed", exc_info=True)

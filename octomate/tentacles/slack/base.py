@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,9 +21,9 @@ from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
 from octomate.store import InteractionStore
-from octomate.tentacles.base import ChannelTentacle, PlatformMessage
+from octomate.tentacles.base import ChannelTentacle, PlatformMessage, SendTarget, StreamSink
 from octomate.tentacles.feelers import Feelers
-from octomate.tentacles.slack.chromo import SlackChromo
+from octomate.tentacles.slack.chromo import SlackChromo, _md_to_mrkdwn
 from octomate.tentacles.slack.feelers import (
     SlackConfirmationFeeler,
     SlackQuestionFeeler,
@@ -48,12 +51,94 @@ _IGNORED_SUBTYPES = frozenset(
 )
 
 
+class SlackStreamSink(StreamSink):
+    """Streams text into a single Slack message via post + update.
+
+    For assistant threads, also drives the typing-status indicator.
+    """
+
+    ink: SlackInk
+    channel: str
+    thread_ts: str | None
+    is_assistant_thread: bool
+    buffer: str
+    message_ts: str | None
+    status_ts: str | None
+    last_update: float
+    update_interval: float
+
+    def __init__(
+        self,
+        ink: SlackInk,
+        channel: str,
+        thread_ts: str | None = None,
+        is_assistant_thread: bool = False,
+        update_interval: float = 0.3,
+    ) -> None:
+        self.ink = ink
+        self.channel = channel
+        self.thread_ts = thread_ts
+        self.is_assistant_thread = is_assistant_thread
+        self.buffer = ""
+        self.message_ts = None
+        self.status_ts = None
+        self.last_update = 0.0
+        self.update_interval = update_interval
+
+    async def set_status(self, status: str) -> None:
+        if self.is_assistant_thread and self.thread_ts:
+            await self.ink.set_assistant_status(self.channel, self.thread_ts, status)
+        else:
+            # Outside assistant threads, surface status updates as a real message so
+            # tool-use blocks (and other progress indicators) are visible to the user.
+            # We update the same message in-place until flush() resets status_ts —
+            # that way each tool use (which always calls flush() first) gets its own
+            # dedicated status message instead of silently clobbering the previous one.
+            if self.status_ts is None:
+                self.status_ts = await self.ink.send_message(
+                    self.channel, text=status, thread_ts=self.thread_ts
+                )
+            else:
+                await self.ink.update_message(
+                    self.channel, self.status_ts, text=status
+                )
+
+    async def append(self, text: str) -> None:
+        self.buffer += text
+        now = time.monotonic()
+        if now - self.last_update >= self.update_interval:
+            await self._push()
+
+    async def flush(self) -> None:
+        if self.buffer:
+            await self._push()
+        self.buffer = ""
+        self.message_ts = None
+        self.status_ts = None  # reset so the next status opens a fresh message
+
+    async def _push(self) -> None:
+        if not self.buffer:
+            return
+        content = _md_to_mrkdwn(self.buffer)
+        if self.message_ts is None:
+            self.message_ts = await self.ink.send_message(
+                self.channel, text=content, thread_ts=self.thread_ts
+            )
+        else:
+            await self.ink.update_message(
+                self.channel, self.message_ts, text=content
+            )
+        self.last_update = time.monotonic()
+
+
 class SlackTentacle(ChannelTentacle):
     app: AsyncApp
     handler: AsyncSocketModeHandler | None
     ink: SlackInk
     store: InteractionStore
     app_token: str
+    assistant_threads: set[str]
+    dm_channels: dict[str, str]
 
     def __init__(
         self,
@@ -70,6 +155,8 @@ class SlackTentacle(ChannelTentacle):
         self.ink = SlackInk(bot_token)
         self.chromo = SlackChromo()
         self.store = store
+        self.assistant_threads = set()
+        self.dm_channels = {}
 
         self.feelers = Feelers(
             confirm=SlackConfirmationFeeler(self.ink, self.store),
@@ -103,10 +190,35 @@ class SlackTentacle(ChannelTentacle):
             return
         if event.get("bot_id") or event.get("user") == self.id:
             return
+
+        channel = event.get("channel", "")
+        user_id = event.get("user", "")
+        thread_ts = event.get("thread_ts", "")
+
+        if event.get("channel_type") == "im" and user_id:
+            self.dm_channels[user_id] = channel
+
+        if thread_ts and f"{channel}:{thread_ts}" in self.assistant_threads:
+            await self.ink.set_assistant_status(channel, thread_ts, "Thinking…")
+
         await self.ingest(event)
 
     async def on_assistant_thread_started(self, event: dict, say) -> None:
-        pass
+        thread_info = event.get("assistant_thread", {})
+        channel_id = thread_info.get("channel_id", "")
+        thread_ts = thread_info.get("thread_ts", "")
+        if not channel_id or not thread_ts:
+            return
+        self.assistant_threads.add(f"{channel_id}:{thread_ts}")
+        await self.ink.set_suggested_prompts(
+            channel_id,
+            thread_ts,
+            [
+                {"title": "Help with code", "message": "Help me with a coding task"},
+                {"title": "Research codebase", "message": "Research and explain something in the codebase"},
+                {"title": "Review changes", "message": "Review my recent code changes"},
+            ],
+        )
 
     async def _ack_noop(self, event: dict) -> None:
         pass
@@ -215,6 +327,26 @@ class SlackTentacle(ChannelTentacle):
             logger.warning(
                 "Tentacle %s: failed to handle block action", self.tag, exc_info=True
             )
+
+    @asynccontextmanager
+    async def open_stream(self, target: SendTarget) -> AsyncIterator[StreamSink]:  # type: ignore[override]
+        channel = str(target.chat_id)
+        if target.chat_type == "private":
+            channel = self.dm_channels.get(channel, channel)
+        thread_ts = str(target.reply_to) if target.reply_to else None
+        is_assistant = bool(
+            thread_ts and f"{channel}:{thread_ts}" in self.assistant_threads
+        )
+        sink = SlackStreamSink(
+            ink=self.ink,
+            channel=channel,
+            thread_ts=thread_ts,
+            is_assistant_thread=is_assistant,
+        )
+        try:
+            yield sink
+        finally:
+            await sink.flush()
 
     async def secrete(self, seg: ImageSegment) -> None:
         apath = anyio.Path(seg.data.path)

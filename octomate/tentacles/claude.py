@@ -28,10 +28,19 @@ from claude_agent_sdk.types import (
     ToolPermissionContext,
 )
 
+try:
+    from claude_agent_sdk import ThinkingBlock as _ThinkingBlock
+except ImportError:
+    _ThinkingBlock = None
+
 from octomate.config import ClaudeCodeConfig
-from octomate.schemas.segments import AgentSegment, MarkdownSegment, TextSegment
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import AgentTentacle, ChannelTentacle, SendTarget
+from octomate.tentacles.base import (
+    AgentTentacle,
+    ChannelTentacle,
+    SendTarget,
+    StreamSink,
+)
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
@@ -123,11 +132,15 @@ class ClaudeCodeTentacle(AgentTentacle):
                 }
             }
 
+        _AUTO_APPROVE = {"AskUserQuestion", "TodoWrite"}
+
         async def can_use_tool(
             tool_name: str,
             input_data: dict[str, Any],
             ctx: ToolPermissionContext,
         ) -> PermissionResult:
+            if tool_name in _AUTO_APPROVE:
+                return PermissionResultAllow()
             action, future = self.octopus.store.create_confirmation(
                 session_key=session_key,
                 tool_name=tool_name,
@@ -168,61 +181,86 @@ class ClaudeCodeTentacle(AgentTentacle):
         )
 
         result_text: str = ""
-        async with ClaudeSDKClient(options=options) as client:
-            await client.query(task)
-            async for msg in client.receive_response():
-                if isinstance(msg, ResultMessage):
-                    result_text += msg.result or ""
-                segments = _segments_from(msg)
-                if segments:
-                    await channel.twitch(target, segments)
+        has_text = False
+        async with channel.open_stream(target) as stream:
+            await stream.set_status("🚀 Starting…")
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(task)
+                async for msg in client.receive_response():
+                    logger.debug(
+                        "ClaudeCodeTentacle recv %s: %s",
+                        type(msg).__name__,
+                        _msg_sample(msg),
+                    )
+                    if isinstance(msg, ResultMessage):
+                        result_text += msg.result or ""
+                        continue
+                    has_text = await _handle_stream_msg(msg, stream, has_text)
+            # Send the final result text (ResultMessage) to the channel.
+            # This is the authoritative summary produced by Claude Code at the
+            # end of a run and must be forwarded regardless of what streaming
+            # text blocks were already sent above.
+            if result_text:
+                if has_text:
+                    await stream.append("\n\n")
+                await stream.append(result_text)
 
         return result_text
 
 
-def _segments_from(msg: Message) -> list[AgentSegment]:
-    match msg:
-        case AssistantMessage(error=err) if err:
-            return [TextSegment(data={"text": f"⚠ Error: {err}"})]
-        case AssistantMessage(content=blocks):
-            return [seg for b in blocks if (seg := _segment_from_block(b))]
-        case SystemMessage(subtype="task_started"):
-            return [TextSegment(data={"text": "🚀 Task started"})]
-        case SystemMessage(subtype="task_progress", data=data) if data.get(
-            "last_tool_name"
-        ):
-            return [
-                TextSegment(data={"text": f"⏳ Working… ({data['last_tool_name']})"})
-            ]
-        case SystemMessage(subtype="task_notification", data=data) if data.get(
-            "summary"
-        ):
-            return [
-                MarkdownSegment(
-                    data={"text": f"📋 {data.get('status', '')}: {data['summary']}"}
-                )
-            ]
-        case RateLimitEvent() if msg.rate_limit_info.status != "allowed":
-            return [TextSegment(data={"text": "⏳ Rate limited, waiting…"})]
-    return []
+async def _handle_stream_msg(msg: Message, stream: StreamSink, has_text: bool) -> bool:
+    if isinstance(msg, AssistantMessage):
+        if msg.error:
+            if has_text:
+                await stream.append("\n\n")
+            await stream.append(f"⚠ Error: {msg.error}")
+            return True
+        for block in msg.content:
+            has_text = await _handle_stream_block(block, stream, has_text)
+    elif isinstance(msg, SystemMessage):
+        if msg.subtype == "task_started":
+            await stream.set_status("🚀 Task started")
+        elif msg.subtype == "task_progress" and msg.data.get("last_tool_name"):
+            await stream.set_status(f"⏳ Working… ({msg.data['last_tool_name']})")
+        elif msg.subtype == "task_notification" and msg.data.get("summary"):
+            await stream.set_status(
+                f"📋 {msg.data.get('status', '')}: {msg.data['summary']}"
+            )
+    elif isinstance(msg, RateLimitEvent) and msg.rate_limit_info.status != "allowed":
+        await stream.set_status("⏳ Rate limited, waiting…")
+    return has_text
 
 
-def _segment_from_block(block: ContentBlock) -> AgentSegment | None:
-    match block:
-        case TextBlock(text=text):
-            return MarkdownSegment(data={"text": text})
-        case ToolUseBlock(name=name, input=inp):
-            return MarkdownSegment(data={"text": f"`{name}` {_summarize(name, inp)}"})
-        case ToolResultBlock(is_error=True, content=content):
-            return MarkdownSegment(
-                data={"text": f"❌ Error: {str(content or 'unknown error')[:200]}"}
-            )
-        case ToolResultBlock(content=content) if content:
-            text = str(content)
-            return MarkdownSegment(
-                data={"text": text[:300] + "…" if len(text) > 300 else text}
-            )
-    return None
+async def _handle_stream_block(
+    block: ContentBlock, stream: StreamSink, has_text: bool
+) -> bool:
+    if isinstance(block, TextBlock):
+        if has_text:
+            await stream.append("\n\n")
+        await stream.append(block.text)
+        return True
+    if isinstance(block, ToolUseBlock):
+        # Flush any buffered pre-tool text so it lands in its own message block
+        # *before* the confirmation card.  After the flush, message_ts is reset
+        # to None, so the next TextBlock will open a fresh message that appears
+        # chronologically after the card in the thread.
+        await stream.flush()
+        await stream.set_status(
+            f"🔧 {block.name} {_summarize(block.name, block.input)}"
+        )
+        return False  # new block — no prior text in this segment yet
+    elif isinstance(block, ToolResultBlock) and block.is_error:
+        if has_text:
+            await stream.append("\n\n")
+        await stream.append(f"❌ Error: {str(block.content or 'unknown error')[:200]}")
+        return True
+    elif _ThinkingBlock and isinstance(block, _ThinkingBlock):
+        text = getattr(block, "thinking", "") or ""
+        await stream.set_status("🧠 Thinking…")  # always surface the indicator
+        if text:
+            await stream.append(text)  # send full thinking content to the channel
+            return True
+    return has_text
 
 
 def _summarize(tool_name: str, tool_input: Any) -> str:
@@ -232,3 +270,27 @@ def _summarize(tool_name: str, tool_input: Any) -> str:
         if "file_path" in tool_input:
             return f"File: {tool_input['file_path']}"
     return tool_name
+
+
+def _msg_sample(msg: Message) -> str:
+    if isinstance(msg, ResultMessage):
+        return (msg.result or "")[:120]
+    if isinstance(msg, AssistantMessage):
+        if msg.error:
+            return f"error={msg.error[:120]}"
+        parts = []
+        for b in msg.content[:3]:
+            if isinstance(b, TextBlock):
+                parts.append(f"Text({b.text[:80]})")
+            elif isinstance(b, ToolUseBlock):
+                parts.append(f"ToolUse({b.name})")
+            elif isinstance(b, ToolResultBlock):
+                parts.append(f"ToolResult(err={b.is_error})")
+            else:
+                parts.append(type(b).__name__)
+        return ", ".join(parts)
+    if isinstance(msg, SystemMessage):
+        return f"subtype={msg.subtype} data={str(msg.data)[:100]}"
+    if isinstance(msg, RateLimitEvent):
+        return f"status={msg.rate_limit_info.status}"
+    return str(msg)[:120]

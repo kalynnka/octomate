@@ -176,6 +176,7 @@ class LarkQuestionFeeler(QuestionFeeler):
         target: SendTarget,
         text: str,
         options: list[str] | None = None,
+        multi_select: bool = False,
     ) -> QuestionResponse | None:
         question, future = self.store.create_question(text, options)
         chat_id = str(target.chat_id)

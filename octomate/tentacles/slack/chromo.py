@@ -23,6 +23,25 @@ logger = logging.getLogger(__name__)
 
 _AT_RE = re.compile(r"<@(U[A-Z0-9]+)>")
 
+# Matches one or more consecutive lines that start with | (GFM table rows and
+# separator lines like |---|---|).  Used to convert tables to code fences since
+# Slack's mrkdwn format has no native table support.
+_TABLE_RE = re.compile(r"((?:^\|[^\n]+\n?)+)", re.MULTILINE)
+
+
+def _tables_to_code(text: str) -> str:
+    """Wrap markdown table blocks in triple-backtick code fences.
+
+    Slack cannot render GFM tables; monospace code blocks are the closest
+    approximation that preserves column alignment.
+    """
+
+    def _wrap(m: re.Match) -> str:
+        table = m.group(1).rstrip("\n")
+        return f"```\n{table}\n```\n"
+
+    return _TABLE_RE.sub(_wrap, text)
+
 
 def _md_to_mrkdwn(text: str) -> str:
     # Code fences: keep as-is (Slack supports ```)
@@ -37,6 +56,8 @@ def _md_to_mrkdwn(text: str) -> str:
     # Headers: strip # prefix (Slack has no header markdown)
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
     # Blockquotes: > stays the same in Slack mrkdwn
+    # Tables: wrap in code fence for monospace rendering (Slack has no table support)
+    text = _tables_to_code(text)
     return text
 
 

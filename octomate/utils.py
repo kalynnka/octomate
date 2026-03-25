@@ -24,6 +24,7 @@ _MD_PATTERNS = [
     r"^\#{1,6}\s",  # # headers
     r"\[.+?\]\(.+?\)",  # [links](url)
     r"^>\s",  # > blockquote
+    r"^\|.+\|",  # | table |
 ]
 _MD_RE = re.compile("|".join(_MD_PATTERNS), re.MULTILINE)
 

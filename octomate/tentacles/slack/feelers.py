@@ -30,6 +30,8 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
         channel = str(target.chat_id)
         title = action.title or action.tool_name
         args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
+        if len(args_json) > 2000:  # Slack block text limit is 3000 chars
+            args_json = args_json[:2000] + "\n… (truncated)"
         description = action.description or action.tool_name
 
         mention_line = ""
@@ -190,6 +192,7 @@ class SlackQuestionFeeler(QuestionFeeler):
         target: SendTarget,
         text: str,
         options: list[str] | None = None,
+        multi_select: bool = False,
     ) -> QuestionResponse | None:
         question, future = self.store.create_question(text, options)
         channel = str(target.chat_id)

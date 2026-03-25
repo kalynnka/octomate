@@ -4,7 +4,8 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -22,6 +23,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
     ImageSegment,
+    MarkdownSegment,
     ReplySegment,
     TextSegment,
 )
@@ -80,6 +82,31 @@ class Ink(Protocol):
     ) -> tuple[bytes, str] | None:
         """Download media by platform resource ID. Returns (data, filename) or None."""
         ...
+
+
+class StreamSink:
+    """Streaming output sink for agent tentacles.
+
+    Channels provide platform-specific implementations via open_stream().
+    """
+
+    """Default StreamSink that sends each append/status as a separate message."""
+
+    tentacle: ChannelTentacle
+    target: SendTarget
+
+    def __init__(self, tentacle: ChannelTentacle, target: SendTarget) -> None:
+        self.tentacle = tentacle
+        self.target = target
+
+    async def set_status(self, status: str) -> None:
+        await self.tentacle.twitch(self.target, [TextSegment(data={"text": status})])
+
+    async def append(self, text: str) -> None:
+        await self.tentacle.twitch(self.target, [MarkdownSegment(data={"text": text})])
+
+    async def flush(self) -> None:
+        pass
 
 
 class Tentacle(ABC):
@@ -167,15 +194,12 @@ class ChannelTentacle(Tentacle):
                 await self.memory.memo(key, batch, self)
                 return
 
-            header = (
-                f"[me: {self.name} ({self.id})]"
-                + " "
-                + (
-                    f"[group: {key.group_id}]"
-                    if key.group_id is not None
-                    else "[chat: private]"
-                )
+            context = (
+                f"[group: {key.group_id}]"
+                if key.group_id is not None
+                else "[chat: private]"
             )
+            header = f"[me: {self.name} ({self.id})] {context}"
             user_prompt: list = [header]
             for msg in batch:
                 user_prompt.extend(msg.to_content_parts())
@@ -215,17 +239,30 @@ class ChannelTentacle(Tentacle):
 
             if isinstance(resolved, SummonRequest):
                 agent_tentacle = self.octopus.agent_tentacles.get(resolved.tentacle_tag)
-                if agent_tentacle:
-                    reply_to = batch[-1].message_id or None
+                if agent_tentacle is None:
+                    logger.warning(
+                        "Tentacle %s: unknown agent tentacle tag %r",
+                        self.tag,
+                        resolved.tentacle_tag,
+                    )
+                else:
+                    reply_to = key.thread_id or batch[-1].message_id or None
                     summon_target = SendTarget(
                         target.chat_type,
                         target.chat_id,
                         reply_to=reply_to,
                         reply_in_thread=True,
                     )
-                    asyncio.create_task(
-                        agent_tentacle(resolved.summary, self, summon_target)
+                    desc = agent_tentacle.description or resolved.tentacle_tag
+                    await self.twitch(
+                        target, [TextSegment(data={"text": f"Summoning {desc}..."})]
                     )
+                    task = resolved.summary
+                    if resolved.user_prefer:
+                        task += f"\n\n[user preference: {resolved.user_prefer}]"
+                    if resolved.language:
+                        task += f"\n\n[language: {resolved.language}]"
+                    asyncio.create_task(agent_tentacle(task, self, summon_target))
             elif resolved:
                 for msg_out in resolved.output:
                     await self.twitch(target, msg_out.segments)
@@ -288,6 +325,19 @@ class ChannelTentacle(Tentacle):
         self, target: SendTarget, action: ConfirmAction
     ) -> bool:
         return await self.feelers.confirm.send_confirmation(target, action)
+
+    @asynccontextmanager
+    async def open_stream(self, target: SendTarget) -> AsyncIterator[StreamSink]:
+        """Open a streaming sink for progressive output.
+
+        Subclasses override to provide platform-specific streaming (e.g. Slack
+        message updates). The default sends each append/status as a separate message.
+        """
+        sink = StreamSink(tentacle=self, target=target)
+        try:
+            yield sink
+        finally:
+            await sink.flush()
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
         cached = self.user_profiles.get(user_id)

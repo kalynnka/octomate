@@ -22,7 +22,7 @@ from octomate.config import (
 from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
 from octomate.octopus import Octopus
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 
