@@ -20,8 +20,14 @@ from slack_bolt.async_app import AsyncApp
 from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
+from octomate.schemas.session import SessionKey
 from octomate.store import InteractionStore
-from octomate.tentacles.base import ChannelTentacle, PlatformMessage, SendTarget, StreamSink
+from octomate.tentacles.base import (
+    ChannelTentacle,
+    PlatformMessage,
+    SendTarget,
+    StreamSink,
+)
 from octomate.tentacles.feelers import Feelers
 from octomate.tentacles.slack.chromo import SlackChromo, _md_to_mrkdwn
 from octomate.tentacles.slack.feelers import (
@@ -38,10 +44,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_THINKING_PREVIEW_LEN = 120  # chars of collapsed thinking preview shown inline
-_SLACK_SECTION_LIMIT = 3000  # max mrkdwn chars per Slack section block
+THINKING_PREVIEW_LEN = 120  # chars of collapsed thinking preview shown inline
+SLACK_SECTION_LIMIT = 3000  # max mrkdwn chars per Slack section block
 
-_IGNORED_SUBTYPES = frozenset(
+IGNORED_SUBTYPES = frozenset(
     {
         "bot_message",
         "message_changed",
@@ -111,9 +117,7 @@ class SlackStreamSink(StreamSink):
                 self.channel, text=content, thread_ts=self.thread_ts
             )
         else:
-            await self.ink.update_message(
-                self.channel, self.message_ts, text=content
-            )
+            await self.ink.update_message(self.channel, self.message_ts, text=content)
         self.last_update = time.monotonic()
 
     async def post_thinking_block(self, text: str) -> None:
@@ -135,8 +139,8 @@ class SlackStreamSink(StreamSink):
 
         # Build a one-line preview: collapse whitespace, trim to limit.
         flat = " ".join(text.split())
-        preview = flat[:_THINKING_PREVIEW_LEN]
-        if len(flat) > _THINKING_PREVIEW_LEN:
+        preview = flat[:THINKING_PREVIEW_LEN]
+        if len(flat) > THINKING_PREVIEW_LEN:
             preview += "…"
 
         blocks: list[dict] = [
@@ -235,39 +239,23 @@ class SlackTentacle(ChannelTentacle):
 
     async def on_message(self, event: dict, say) -> None:
         subtype = event.get("subtype")
-        if subtype in _IGNORED_SUBTYPES:
+        if subtype in IGNORED_SUBTYPES:
             return
         if event.get("bot_id") or event.get("user") == self.id:
             return
-
-        channel = event.get("channel", "")
-        user_id = event.get("user", "")
-        thread_ts = event.get("thread_ts", "")
-
-        if event.get("channel_type") == "im" and user_id:
-            self.dm_channels[user_id] = channel
-
-        if thread_ts and f"{channel}:{thread_ts}" in self.assistant_threads:
-            await self.ink.set_assistant_status(channel, thread_ts, "Thinking…")
-
         await self.ingest(event)
 
     async def on_assistant_thread_started(self, event: dict, say) -> None:
         thread_info = event.get("assistant_thread", {})
-        channel_id = thread_info.get("channel_id", "")
-        thread_ts = thread_info.get("thread_ts", "")
-        if not channel_id or not thread_ts:
-            return
-        self.assistant_threads.add(f"{channel_id}:{thread_ts}")
-        await self.ink.set_suggested_prompts(
-            channel_id,
-            thread_ts,
-            [
-                {"title": "Help with code", "message": "Help me with a coding task"},
-                {"title": "Research codebase", "message": "Research and explain something in the codebase"},
-                {"title": "Review changes", "message": "Review my recent code changes"},
-            ],
-        )
+        self.threads_ownership[
+            SessionKey(
+                tentacle_id=self.id,
+                user_id=thread_info.get("user_id", ""),
+                group_id=None,
+                thread_id=thread_info.get("thread_ts", ""),
+                chat_id=thread_info.get("channel_id", ""),
+            )
+        ] = self
 
     async def _ack_noop(self, event: dict) -> None:
         pass
@@ -363,12 +351,12 @@ class SlackTentacle(ChannelTentacle):
                 chunks: list[str] = []
                 remaining = display
                 while remaining:
-                    chunks.append(remaining[:_SLACK_SECTION_LIMIT])
-                    remaining = remaining[_SLACK_SECTION_LIMIT:]
+                    chunks.append(remaining[:SLACK_SECTION_LIMIT])
+                    remaining = remaining[SLACK_SECTION_LIMIT:]
                     if len(chunks) == _MAX_SECTIONS:
                         if remaining:
                             chunks[-1] = (
-                                chunks[-1][: _SLACK_SECTION_LIMIT - 20]
+                                chunks[-1][: SLACK_SECTION_LIMIT - 20]
                                 + "\n…_(truncated)_"
                             )
                         break
@@ -460,15 +448,15 @@ class SlackTentacle(ChannelTentacle):
         reply_in_thread: bool = False,
     ) -> str | None:
         first_ts: str | None = None
-        thread_ts = reply_to if reply_in_thread else None
-
+        # slack should always reply in thread,
+        # the only difference is keep in the main thread or create a new sub-thread
         for msg in messages:
             blocks = msg.metadata.get("blocks") if msg.metadata else None
             ts = await self.ink.send_message(
                 chat_id,
                 text=msg.content,
                 blocks=blocks,
-                thread_ts=thread_ts,
+                thread_ts=reply_to,
             )
             if first_ts is None:
                 first_ts = ts

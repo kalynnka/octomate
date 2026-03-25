@@ -10,6 +10,7 @@ class SessionKey(NamedTuple):
     user_id: str
     group_id: str | None = None
     thread_id: str | None = None
+    chat_id: str | None = None
 
 
 class UserProfile(BaseModel):

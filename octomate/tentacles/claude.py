@@ -29,6 +29,8 @@ from claude_agent_sdk.types import (
     ToolPermissionContext,
 )
 
+from octomate.schemas.events import MessageEvent
+
 try:
     from claude_agent_sdk import ThinkingBlock as _ThinkingBlock
 except ImportError:
@@ -39,7 +41,6 @@ from octomate.schemas.session import SessionKey
 from octomate.store import TodoItem
 from octomate.tentacles.base import (
     AgentTentacle,
-    ChannelTentacle,
     SendTarget,
     StreamSink,
 )
@@ -49,32 +50,39 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+AUTO_APPROVE = {"AskUserQuestion", "TodoWrite"}
+
 
 class ClaudeCodeTentacle(AgentTentacle):
     config: ClaudeCodeConfig
-    _todo_ts: dict[str, str]  # thread_key -> pinned message ts
-    _todo_id_maps: dict[str, dict[str, str]]  # thread_key -> title -> stable uuid
+    _todo_ts: dict[SessionKey, str]  # thread_key -> pinned message ts
+    _todo_id_maps: dict[
+        SessionKey, dict[str, str]
+    ]  # thread_key -> title -> stable uuid
+    _session_id_map: dict[SessionKey, str]  # session_key -> Claude SDK session_id
 
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
         super().__init__(tag, octopus, description=config.description)
         self.config = config
         self._todo_ts = {}
         self._todo_id_maps = {}
+        self._session_id_map = {}
 
     async def __call__(
         self,
-        task: str,
-        channel: ChannelTentacle,
-        target: SendTarget,
-        session_id: str | None = None,
-    ) -> str:
-        session_key = SessionKey(
-            tentacle_id=channel.tag,
-            user_id=str(target.chat_id),
+        key: SessionKey,
+        contents: list[MessageEvent],  # should always length 1 for agent tentacles
+    ):
+        task = "".join([str(part) for part in contents[0].to_content_parts()])
+        channel = self.octopus.tentacles["slack"]
+        target = SendTarget(
+            chat_id=contents[0].chat_id,
+            chat_type="group" if key.group_id else "private",
+            reply_to=key.thread_id or None,
         )
-        thread_key = f"{target.chat_id}:{target.reply_to or ''}"
-        todo_id_map: dict[str, str] = self._todo_id_maps.setdefault(thread_key, {})
-        todo_ts: str | None = self._todo_ts.get(thread_key)
+
+        todo_id_map: dict[str, str] = self._todo_id_maps.setdefault(key, {})
+        todo_ts: str | None = self._todo_ts.get(key)
         _todo_pinned_this_run = False
 
         async def hook_ask_user(
@@ -138,7 +146,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                     await channel.feelers.todos.pin_todo(target, new_ts)
                     _todo_pinned_this_run = True
                 todo_ts = new_ts
-                self._todo_ts[thread_key] = new_ts
+                self._todo_ts[key] = new_ts
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -146,17 +154,15 @@ class ClaudeCodeTentacle(AgentTentacle):
                 }
             }
 
-        _AUTO_APPROVE = {"AskUserQuestion", "TodoWrite"}
-
         async def can_use_tool(
             tool_name: str,
             input_data: dict[str, Any],
             ctx: ToolPermissionContext,
         ) -> PermissionResult:
-            if tool_name in _AUTO_APPROVE:
+            if tool_name in AUTO_APPROVE:
                 return PermissionResultAllow()
             action, future = self.octopus.store.create_confirmation(
-                session_key=session_key,
+                session_key=key,
                 tool_name=tool_name,
                 tool_call_id="",
                 args=input_data,
@@ -181,9 +187,11 @@ class ClaudeCodeTentacle(AgentTentacle):
                 return PermissionResultAllow()
             return PermissionResultDeny(message="Denied by user")
 
+        session_id = self._session_id_map.get(key)
         options = ClaudeAgentOptions(
             cwd=self.config.cwd,
             model=self.config.model or None,
+            permission_mode="acceptEdits",
             max_turns=self.config.max_turns,
             can_use_tool=can_use_tool,
             resume=session_id,
@@ -196,10 +204,8 @@ class ClaudeCodeTentacle(AgentTentacle):
         )
 
         result_text: str = ""
-        result_session_id: str = ""
         has_text = False
         async with channel.open_stream(target) as stream:
-            await stream.set_status("🔄 Resuming…" if session_id else "🚀 Starting…")
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(task)
                 async for msg in client.receive_response():
@@ -210,20 +216,25 @@ class ClaudeCodeTentacle(AgentTentacle):
                     )
                     if isinstance(msg, ResultMessage):
                         result_text += msg.result or ""
-                        # Capture the session_id for future resumption.
-                        result_session_id = result_session_id or msg.session_id
+                        if msg.session_id:
+                            self._session_id_map[key] = msg.session_id
                         continue
                     has_text = await _handle_stream_msg(msg, stream, has_text)
-            # Send the final result text (ResultMessage) to the channel.
-            # This is the authoritative summary produced by Claude Code at the
-            # end of a run and must be forwarded regardless of what streaming
-            # text blocks were already sent above.
-            if result_text:
-                if has_text:
-                    await stream.append("\n\n")
-                await stream.append(result_text)
 
-        return result_session_id
+        # When this was a root (non-threaded) message, the session state was
+        # stored under a key with thread_id=None.  Follow-up messages in the
+        # Slack thread that Claude just replied into will arrive with
+        # thread_id == contents[0].message_id (the root message ts).  Pre-
+        # register all per-session state under that thread-continuation key so
+        # subsequent calls can look it up and resume the same Claude session.
+        if key.thread_id is None and contents and contents[0].message_id:
+            thread_key = key._replace(thread_id=contents[0].message_id)
+            if sid := self._session_id_map.get(key):
+                self._session_id_map[thread_key] = sid
+            if ts := self._todo_ts.get(key):
+                self._todo_ts[thread_key] = ts
+            if key in self._todo_id_maps:
+                self._todo_id_maps[thread_key] = self._todo_id_maps[key]
 
 
 async def _handle_stream_msg(msg: Message, stream: StreamSink, has_text: bool) -> bool:

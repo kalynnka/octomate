@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import textwrap
 from typing import Any
 
 import httpx
@@ -11,6 +12,37 @@ from slack_sdk.web.client import WebClient
 from octomate.schemas.session import UserProfile
 
 logger = logging.getLogger(__name__)
+
+BLOCK_TEXT_LIMIT = 3000
+MAX_BLOCKS = 50
+
+
+def _split_oversized_blocks(blocks: list[dict]) -> list[dict]:
+    """Split blocks whose text exceeds Slack's 3000-char limit."""
+    result: list[dict] = []
+    for block in blocks:
+        btype = block.get("type")
+        if btype == "section":
+            text_obj = block.get("text")
+            if text_obj and isinstance(text_obj, dict):
+                content = text_obj.get("text", "")
+                if len(content) > BLOCK_TEXT_LIMIT:
+                    text_type = text_obj.get("type", "mrkdwn")
+                    result.extend(
+                        {"type": "section", "text": {"type": text_type, "text": c}}
+                        for c in textwrap.wrap(content, BLOCK_TEXT_LIMIT)
+                    )
+                    continue
+        elif btype == "markdown":
+            content = block.get("text", "")
+            if len(content) > BLOCK_TEXT_LIMIT:
+                result.extend(
+                    {"type": "markdown", "text": c}
+                    for c in textwrap.wrap(content, BLOCK_TEXT_LIMIT)
+                )
+                continue
+        result.append(block)
+    return result
 
 
 class SlackUserProfile(UserProfile):
@@ -97,13 +129,25 @@ class SlackInk:
         thread_ts: str | None = None,
     ) -> str | None:
         try:
-            kwargs: dict[str, Any] = {"channel": channel, "text": text}
-            if blocks:
-                kwargs["blocks"] = blocks
-            if thread_ts:
-                kwargs["thread_ts"] = thread_ts
-            resp = await self.client.chat_postMessage(**kwargs)
-            return resp.get("ts")
+            all_blocks = _split_oversized_blocks(blocks) if blocks else None
+            first_ts: str | None = None
+            batches = (
+                [
+                    all_blocks[i : i + MAX_BLOCKS]
+                    for i in range(0, len(all_blocks), MAX_BLOCKS)
+                ]
+                if all_blocks
+                else [None]
+            )
+            for batch in batches:
+                kwargs: dict[str, Any] = {"channel": channel, "text": text}
+                if batch:
+                    kwargs["blocks"] = batch
+                if thread_ts:
+                    kwargs["thread_ts"] = thread_ts
+                resp = await self.client.chat_postMessage(**kwargs)
+                first_ts = first_ts or resp.get("ts")
+            return first_ts
         except Exception:
             logger.warning("SlackInk: send_message failed", exc_info=True)
             return None
@@ -116,10 +160,18 @@ class SlackInk:
         blocks: list[dict] | None = None,
     ) -> bool:
         try:
+            all_blocks = _split_oversized_blocks(blocks) if blocks else None
+            first_batch = all_blocks[:MAX_BLOCKS] if all_blocks else None
             kwargs: dict[str, Any] = {"channel": channel, "ts": ts, "text": text}
-            if blocks:
-                kwargs["blocks"] = blocks
+            if first_batch:
+                kwargs["blocks"] = first_batch
             await self.client.chat_update(**kwargs)
+            if all_blocks and len(all_blocks) > MAX_BLOCKS:
+                for i in range(MAX_BLOCKS, len(all_blocks), MAX_BLOCKS):
+                    batch = all_blocks[i : i + MAX_BLOCKS]
+                    await self.client.chat_postMessage(
+                        channel=channel, text=text, blocks=batch, thread_ts=ts
+                    )
             return True
         except Exception:
             logger.warning("SlackInk: update_message failed", exc_info=True)
@@ -131,7 +183,11 @@ class SlackInk:
         try:
             await self.client.api_call(
                 "assistant.threads.setStatus",
-                params={"channel_id": channel, "thread_ts": thread_ts, "status": status},
+                params={
+                    "channel_id": channel,
+                    "thread_ts": thread_ts,
+                    "status": status,
+                },
             )
         except Exception:
             logger.debug("SlackInk: set_assistant_status failed", exc_info=True)

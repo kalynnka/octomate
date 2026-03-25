@@ -30,7 +30,7 @@ class MessageEvent(BaseModel):
     def session_key(self) -> SessionKey:
         group_id = self.chat_id if self.chat_type == "group" else None
         thread_id = self.thread_id or None
-        return SessionKey(self.tentacle_id, self.user_id, group_id, thread_id)
+        return SessionKey(self.tentacle_id, self.user_id, group_id, thread_id, self.chat_id)
 
     @property
     def display_name(self) -> str:
