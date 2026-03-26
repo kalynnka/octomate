@@ -29,7 +29,7 @@ class Mem0Memory(OctopusMemory):
 
     @staticmethod
     def run_id(key: SessionKey) -> str:
-        if key.group_id is not None:
+        if key.group_id:
             return f"{key.tentacle_id}:group:{key.group_id}"
         return f"{key.tentacle_id}:private:{key.user_id}"
 

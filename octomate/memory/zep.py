@@ -64,7 +64,7 @@ class ZepMemory(OctopusMemory):
 
     @staticmethod
     def thread_id(key: SessionKey) -> str:
-        if key.group_id is not None:
+        if key.group_id:
             return f"{key.tentacle_id}:group:{key.group_id}"
         return f"{key.tentacle_id}:private:{key.user_id}"
 
@@ -100,9 +100,7 @@ class ZepMemory(OctopusMemory):
             return
 
         tid = self.thread_id(key)
-        thread_owner_id = (
-            key.user_id if key.group_id is None else tentacle.profile.user_id
-        )
+        thread_owner_id = key.user_id if not key.group_id else tentacle.profile.user_id
 
         try:
             current_users: dict[str, UserProfile] = {}

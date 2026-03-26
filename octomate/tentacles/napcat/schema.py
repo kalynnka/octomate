@@ -303,7 +303,9 @@ class OneBotMessageEvent(OneBotEvent, ABC):
 
     @cached_property
     def session_key(self) -> SessionKey:
-        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id)
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id
+        )
 
     @property
     def display_name(self) -> str:
@@ -358,7 +360,10 @@ class GroupNoticeEvent(NoticeEvent):
     @cached_property
     def session_key(self) -> SessionKey:
         return SessionKey(
-            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id, chat_id=self.group_id
+            tentacle_id=self.tentacle_id,
+            user_id=self.user_id,
+            group_id=self.group_id,
+            chat_id=self.group_id,
         )
 
 
@@ -416,7 +421,9 @@ class FriendAddNotice(NoticeEvent):
 
     @cached_property
     def session_key(self) -> SessionKey:
-        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id)
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id
+        )
 
 
 class FriendRecallNotice(NoticeEvent):
@@ -426,7 +433,9 @@ class FriendRecallNotice(NoticeEvent):
 
     @cached_property
     def session_key(self) -> SessionKey:
-        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id)
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id
+        )
 
 
 class GroupPokeNotice(NoticeEvent):
@@ -438,14 +447,16 @@ class GroupPokeNotice(NoticeEvent):
 
     @cached_property
     def session_key(self) -> SessionKey:
-        if self.group_id is not None:
+        if self.group_id:
             return SessionKey(
                 tentacle_id=self.tentacle_id,
                 user_id=self.user_id,
                 group_id=self.group_id,
                 chat_id=self.group_id,
             )
-        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id)
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id
+        )
 
 
 class GroupLuckyKingNotice(NoticeEvent):
@@ -458,7 +469,10 @@ class GroupLuckyKingNotice(NoticeEvent):
     @cached_property
     def session_key(self) -> SessionKey:
         return SessionKey(
-            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id, chat_id=self.group_id
+            tentacle_id=self.tentacle_id,
+            user_id=self.user_id,
+            group_id=self.group_id,
+            chat_id=self.group_id,
         )
 
 
@@ -472,7 +486,10 @@ class GroupHonorNotice(NoticeEvent):
     @cached_property
     def session_key(self) -> SessionKey:
         return SessionKey(
-            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id, chat_id=self.group_id
+            tentacle_id=self.tentacle_id,
+            user_id=self.user_id,
+            group_id=self.group_id,
+            chat_id=self.group_id,
         )
 
 
@@ -494,7 +511,9 @@ class FriendRequest(RequestEvent):
 
     @cached_property
     def session_key(self) -> SessionKey:
-        return SessionKey(tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id)
+        return SessionKey(
+            tentacle_id=self.tentacle_id, user_id=self.user_id, chat_id=self.user_id
+        )
 
 
 class GroupRequest(RequestEvent):
@@ -508,7 +527,10 @@ class GroupRequest(RequestEvent):
     @cached_property
     def session_key(self) -> SessionKey:
         return SessionKey(
-            tentacle_id=self.tentacle_id, user_id=self.user_id, group_id=self.group_id, chat_id=self.group_id
+            tentacle_id=self.tentacle_id,
+            user_id=self.user_id,
+            group_id=self.group_id,
+            chat_id=self.group_id,
         )
 
 

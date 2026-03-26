@@ -25,8 +25,12 @@ class Thread(Base, TransmuterProxiedMixin):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     tentacle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    group_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    thread_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    chat_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    group_id: Mapped[str] = mapped_column(
+        String, nullable=False, index=True, default=""
+    )
+    thread_id: Mapped[str] = mapped_column(
+        String, nullable=False, index=True, default=""
+    )
+    chat_id: Mapped[str] = mapped_column(String, nullable=False, index=True, default="")
     owner_tentacle: Mapped[str] = mapped_column(String, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

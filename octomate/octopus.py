@@ -129,6 +129,13 @@ class Octopus:
 
             for call in result.output.approvals:
                 tool_meta = result.output.metadata.get(call.tool_call_id, {})
+
+                # Check session allowlist — skip confirmation if already allowed
+                thread = await tentacle.interactions.threads.get(key)
+                if tentacle.interactions.is_session_allowed(str(thread.id), call.tool_name):
+                    deferred.approvals[call.tool_call_id] = True
+                    continue
+
                 action, future = await tentacle.interactions.create_confirmation(
                     key=key,
                     tool_name=call.tool_name,
@@ -156,7 +163,14 @@ class Octopus:
                     await tentacle.interactions.expire_confirmation(
                         action.confirmation_id
                     )
+                    await tentacle.feelers.confirm.send_timeout_notification(target, action)
                     approved = False
+                except asyncio.CancelledError:
+                    await tentacle.interactions.expire_confirmation(
+                        action.confirmation_id
+                    )
+                    await tentacle.feelers.confirm.send_timeout_notification(target, action)
+                    raise
 
                 deferred.approvals[call.tool_call_id] = approved
 

@@ -34,9 +34,9 @@ async def test_private_message_gets_response(octopus, tentacle):
             tentacle.inject(make_private_event(text="ping"))
             await asyncio.sleep(0.05)
 
-    assert len(tentacle.sent) == 1
-    _, segments = tentacle.sent[0]
-    assert any(getattr(s, "data", {}).get("text") == "pong" for s in segments)
+            assert len(tentacle.sent) == 1
+            _, segments = tentacle.sent[0]
+            assert any(getattr(s, "data", {}).get("text") == "pong" for s in segments)
 
 
 async def test_group_message_without_mention_is_silent(octopus, tentacle):
@@ -79,7 +79,7 @@ async def test_rapid_messages_batched_into_one_call(octopus, tentacle):
             tentacle.inject(make_private_event(text="msg3"))
             await asyncio.sleep(0.05)
 
-    assert len(tentacle.sent) == 1
+            assert len(tentacle.sent) == 1
 
 
 async def test_messages_from_different_users_are_independent(octopus, tentacle):
@@ -90,7 +90,7 @@ async def test_messages_from_different_users_are_independent(octopus, tentacle):
             tentacle.inject(make_private_event(user_id="bob"))
             await asyncio.sleep(0.05)
 
-    assert len(tentacle.sent) == 2
+            assert len(tentacle.sent) == 2
 
 
 async def test_group_message_without_mention_still_recorded(octopus, tentacle):

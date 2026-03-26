@@ -52,20 +52,10 @@ class ThreadStore:
             expressions = [
                 Thread["tentacle_id"] == key.tentacle_id,
                 Thread["user_id"] == key.user_id,
+                Thread["group_id"] == key.group_id,
+                Thread["thread_id"] == key.thread_id,
+                Thread["chat_id"] == key.chat_id,
             ]
-            if key.group_id is None:
-                expressions.append(Thread["group_id"].is_(None))
-            else:
-                expressions.append(Thread["group_id"] == key.group_id)
-
-            if key.thread_id is None:
-                expressions.append(Thread["thread_id"].is_(None))
-            else:
-                expressions.append(Thread["thread_id"] == key.thread_id)
-            if key.chat_id is None:
-                expressions.append(Thread["chat_id"].is_(None))
-            else:
-                expressions.append(Thread["chat_id"] == key.chat_id)
             existing = await session.one_or_none(Thread, expressions=expressions)
             if existing:
                 self._set_cached_thread(key, existing)

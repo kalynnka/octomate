@@ -39,6 +39,7 @@ from octomate.utils import guess_image_ext
 if TYPE_CHECKING:
     from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
+    from octomate.transmuters.interactions import Confirmation
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,28 @@ IGNORED_SUBTYPES = frozenset(
         "channel_purpose",
     }
 )
+
+
+def _resolution_blocks(
+    action: Confirmation,
+    status_emoji: str,
+    status_text: str,
+    clicker_id: str,
+    extra_note: str = "",
+) -> list[dict]:
+    """Build rich post-resolution blocks retaining tool call info."""
+    title = action.title or action.tool_name
+    args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
+    if len(args_json) > 2000:
+        args_json = args_json[:2000] + "\n… (truncated)"
+    text = (
+        f"{status_emoji} *{title}* — {status_text}\n"
+        f"*Arguments:*\n```{args_json}```\n"
+        f"*By:* <@{clicker_id}>"
+    )
+    if extra_note:
+        text += f"\n{extra_note}"
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
 
 
 class SlackStreamSink(StreamSink):
@@ -282,23 +305,47 @@ class SlackTentacle(ChannelTentacle):
                 if not resolved:
                     return
 
-                title = value.get("title") or value.get("tool_name", "")
                 status_emoji = ":white_check_mark:" if approved else ":x:"
                 status_text = "Approved" if approved else "Denied"
-                blocks = [
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": f"{status_emoji} *{title}* — {status_text}",
-                        },
-                    }
-                ]
+                title = action.title or action.tool_name
+                blocks = _resolution_blocks(action, status_emoji, status_text, clicker_id)
                 if channel and message_ts:
                     await self.ink.update_message(
                         channel,
                         message_ts,
                         text=f"{title} — {status_text}",
+                        blocks=blocks,
+                    )
+
+            elif action_type == "confirm_allow_session":
+                confirmation_id = value.get("confirmation_id", "")
+
+                entry = self.interactions.confirmations.get(confirmation_id)
+                if entry is None:
+                    return
+                action, _ = entry
+                if action.approvers and clicker_id not in action.approvers:
+                    return
+
+                resolved = await self.interactions.resolve_confirmation_allow_session(
+                    confirmation_id
+                )
+                if not resolved:
+                    return
+
+                title = action.title or action.tool_name
+                blocks = _resolution_blocks(
+                    action,
+                    ":white_check_mark:",
+                    "Approved (allowed in session)",
+                    clicker_id,
+                    extra_note=":repeat: Future calls to this tool will be auto-approved in this session.",
+                )
+                if channel and message_ts:
+                    await self.ink.update_message(
+                        channel,
+                        message_ts,
+                        text=f"{title} — Allowed in session",
                         blocks=blocks,
                     )
 

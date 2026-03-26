@@ -25,6 +25,11 @@ class ConfirmationFeeler(ABC):
         """Send an approval card. Returns True if delivered."""
         ...
 
+    @abstractmethod
+    async def send_timeout_notification(self, target: SendTarget, action: Confirmation) -> None:
+        """Notify the channel that a tool call was auto-refused due to timeout/kill."""
+        ...
+
 
 class TodoFeeler(ABC):
     """Handles TODO list cards (single consolidated card, reference-only)."""
@@ -98,6 +103,9 @@ class NullConfirmationFeeler(ConfirmationFeeler):
     async def send_confirmation(self, target: SendTarget, action: Confirmation) -> bool:
         _ = target, action
         return False
+
+    async def send_timeout_notification(self, target: SendTarget, action: Confirmation) -> None:
+        _ = target, action
 
 
 class NullTodoFeeler(TodoFeeler):

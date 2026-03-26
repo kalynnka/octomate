@@ -227,6 +227,52 @@ class SlackInk:
             logger.warning("SlackInk: unpin_message failed", exc_info=True)
             return False
 
+    async def get_permalink(self, channel: str, ts: str) -> str | None:
+        try:
+            resp = await self.client.chat_getPermalink(channel=channel, message_ts=ts)
+            return resp.get("permalink")
+        except Exception:
+            logger.warning("SlackInk: get_permalink failed", exc_info=True)
+            return None
+
+    async def bookmark_upsert(
+        self,
+        channel: str,
+        title: str,
+        link: str,
+        existing_id: str | None = None,
+    ) -> str | None:
+        try:
+            if existing_id:
+                resp = await self.client.bookmarks_edit(
+                    channel_id=channel,
+                    bookmark_id=existing_id,
+                    title=title,
+                    link=link,
+                )
+                return resp.get("bookmark", {}).get("id") or existing_id
+            else:
+                resp = await self.client.bookmarks_add(
+                    channel_id=channel,
+                    title=title,
+                    link=link,
+                    type="link",
+                )
+                return resp.get("bookmark", {}).get("id")
+        except Exception:
+            logger.warning("SlackInk: bookmark_upsert failed", exc_info=True)
+            return None
+
+    async def bookmark_remove(self, channel: str, bookmark_id: str) -> bool:
+        try:
+            await self.client.bookmarks_remove(
+                channel_id=channel, bookmark_id=bookmark_id
+            )
+            return True
+        except Exception:
+            logger.warning("SlackInk: bookmark_remove failed", exc_info=True)
+            return False
+
     async def set_title(self, channel: str, thread_ts: str, title: str) -> None:
         try:
             await self.client.api_call(

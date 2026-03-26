@@ -21,8 +21,8 @@ class Thread(BaseTransmuter):
     )
     tentacle_id: str
     user_id: str
-    group_id: str | None = None
-    thread_id: str | None = None
-    chat_id: str | None = None
+    group_id: str = ""
+    thread_id: str = ""
+    chat_id: str = ""
     owner_tentacle: str
     created_at: datetime = Field(default_factory=datetime.now)

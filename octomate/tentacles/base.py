@@ -203,17 +203,13 @@ class ChannelTentacle(Tentacle):
         try:
             await self.memory.record(key, contents)
 
-            if key.group_id is not None and not any(
+            if key.group_id and not any(
                 msg.is_at(self.profile.user_id) for msg in contents
             ):
                 await self.memory.memo(key, contents, self)
                 return
 
-            context = (
-                f"[group: {key.group_id}]"
-                if key.group_id is not None
-                else "[chat: private]"
-            )
+            context = f"[group: {key.group_id}]" if key.group_id else "[chat: private]"
             header = f"[me: {self.name} ({self.profile.user_id})] {context}"
             user_prompt: list = [header]
             for msg in contents:
@@ -232,7 +228,7 @@ class ChannelTentacle(Tentacle):
 
             target = (
                 SendTarget("group", key.group_id)
-                if key.group_id is not None
+                if key.group_id
                 else SendTarget("private", key.user_id)
             )
             target.reply_to = key.thread_id
@@ -409,7 +405,7 @@ class ChannelTentacle(Tentacle):
             """
             if ctx.deps.tentacle:
                 key = ctx.deps.session_key
-                if key.group_id is not None:
+                if key.group_id:
                     target = SendTarget("group", key.group_id, reply_to=key.thread_id)
                 else:
                     target = SendTarget("private", key.user_id, reply_to=key.thread_id)

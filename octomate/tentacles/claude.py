@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import uuid
 from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import (
@@ -58,10 +57,7 @@ AUTO_APPROVE = {"AskUserQuestion", "TodoWrite"}
 class ClaudeCodeTentacle(AgentTentacle):
     config: ClaudeCodeConfig
     _vscode_uri: str  # precomputed vscode://file<cwd> launch link
-    _todo_ts: dict[SessionKey, str]  # thread_key -> pinned message ts
-    _todo_id_maps: dict[
-        SessionKey, dict[str, str]
-    ]  # thread_key -> title -> stable uuid
+    _todo_ts: dict[SessionKey, str]  # thread_key -> todo card message ts
     _session_id_map: dict[SessionKey, str]  # session_key -> Claude SDK session_id
 
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
@@ -69,7 +65,6 @@ class ClaudeCodeTentacle(AgentTentacle):
         self.config = config
         self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
         self._todo_ts = {}
-        self._todo_id_maps = {}
         self._session_id_map = {}
 
     async def __call__(
@@ -85,9 +80,7 @@ class ClaudeCodeTentacle(AgentTentacle):
             reply_to=key.thread_id or None,
         )
 
-        todo_id_map: dict[str, str] = self._todo_id_maps.setdefault(key, {})
         todo_ts: str | None = self._todo_ts.get(key)
-        _todo_pinned_this_run = False
 
         async def hook_ask_user(
             input_data: HookInput, tool_use_id: str | None, context: HookContext
@@ -117,7 +110,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         async def hook_todo_write(
             input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> SyncHookJSONOutput:
-            nonlocal todo_ts, _todo_pinned_this_run
+            nonlocal todo_ts
             tool_input = input_data.get("tool_input", {})
             todos = tool_input.get("todos", [])
             items: list[Todo] = []
@@ -125,8 +118,6 @@ class ClaudeCodeTentacle(AgentTentacle):
                 title = item.get("content", "")
                 status = item.get("status", "pending")
                 active_form = item.get("activeForm")
-                if title not in todo_id_map:
-                    todo_id_map[title] = uuid.uuid4().hex
                 mapped = {
                     "completed": "completed",
                     "in_progress": "in_progress",
@@ -134,7 +125,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                 }.get(status, "pending")
                 items.append(
                     Todo(
-                        todo_id=todo_id_map[title],
+                        todo_id="",
                         title=title,
                         status=mapped,
                         active_form=active_form,
@@ -144,11 +135,10 @@ class ClaudeCodeTentacle(AgentTentacle):
                 target, items, existing_ts=todo_ts
             )
             if new_ts:
-                # Pin on first call of each run (re-establishes pin after restart)
-                # or whenever the message ts changes (new card was created).
-                if new_ts != todo_ts or not _todo_pinned_this_run:
+                # Only (re-)pin when a new card was posted (ts changed).
+                # bookmark_upsert is idempotent so no run-level guard is needed.
+                if new_ts != todo_ts:
                     await channel.feelers.todos.pin_todo(target, new_ts)
-                    _todo_pinned_this_run = True
                 todo_ts = new_ts
                 self._todo_ts[key] = new_ts
             return {
@@ -164,6 +154,10 @@ class ClaudeCodeTentacle(AgentTentacle):
             ctx: ToolPermissionContext,
         ) -> PermissionResult:
             if tool_name in AUTO_APPROVE:
+                return PermissionResultAllow()
+            # Check session allowlist — skip confirmation if already allowed
+            thread = await channel.interactions.threads.get(key)
+            if channel.interactions.is_session_allowed(str(thread.id), tool_name):
                 return PermissionResultAllow()
             action, future = await channel.interactions.create_confirmation(
                 key=key,
@@ -186,7 +180,12 @@ class ClaudeCodeTentacle(AgentTentacle):
                 )
             except TimeoutError:
                 await channel.interactions.expire_confirmation(action.confirmation_id)
+                await channel.feelers.confirm.send_timeout_notification(target, action)
                 return PermissionResultDeny(message="Timed out")
+            except asyncio.CancelledError:
+                await channel.interactions.expire_confirmation(action.confirmation_id)
+                await channel.feelers.confirm.send_timeout_notification(target, action)
+                raise
             if approved:
                 return PermissionResultAllow()
             return PermissionResultDeny(message="Denied by user")
@@ -210,6 +209,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         result_text: str = ""
         has_text = False
         async with channel.open_stream(target) as stream:
+            await stream.set_status("🐙 Summoned, starting…")
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(task)
                 async for msg in client.receive_response():
@@ -225,6 +225,15 @@ class ClaudeCodeTentacle(AgentTentacle):
                         continue
                     has_text = await _handle_stream_msg(msg, stream, has_text)
 
+        session_id_after = self._session_id_map.get(key)
+        resume_uri = (
+            f"vscode://anthropic.claude-code/open?session={session_id_after}"
+            if session_id_after
+            else None
+        )
+        footer_text = f"🖥️  <{self._vscode_uri}|Open project in VSCode>"
+        if resume_uri:
+            footer_text += f"  ·  🔄 <{resume_uri}|Resume in VS Code Claude>"
         await channel.send_platform_message(
             chat_id=str(target.chat_id),
             chat_type=target.chat_type,
@@ -239,7 +248,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                                 "type": "section",
                                 "text": {
                                     "type": "mrkdwn",
-                                    "text": f"🖥️  <{self._vscode_uri}|Open project in VSCode>",
+                                    "text": footer_text,
                                 },
                             }
                         ]
@@ -254,14 +263,12 @@ class ClaudeCodeTentacle(AgentTentacle):
         # thread_id == contents[0].message_id (the root message ts).  Pre-
         # register all per-session state under that thread-continuation key so
         # subsequent calls can look it up and resume the same Claude session.
-        if key.thread_id is None and contents and contents[0].message_id:
+        if not key.thread_id and contents and contents[0].message_id:
             thread_key = key._replace(thread_id=contents[0].message_id)
             if sid := self._session_id_map.get(key):
                 self._session_id_map[thread_key] = sid
             if ts := self._todo_ts.get(key):
                 self._todo_ts[thread_key] = ts
-            if key in self._todo_id_maps:
-                self._todo_id_maps[thread_key] = self._todo_id_maps[key]
 
 
 async def _handle_stream_msg(msg: Message, stream: StreamSink, has_text: bool) -> bool:

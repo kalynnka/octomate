@@ -87,6 +87,18 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
                             }
                         ),
                     },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Allow in session"},
+                        "action_id": f"confirm_allow_session_{action.confirmation_id}",
+                        "value": json.dumps(
+                            {
+                                "action": "confirm_allow_session",
+                                "confirmation_id": action.confirmation_id,
+                                "title": title,
+                            }
+                        ),
+                    },
                 ],
             },
         ]
@@ -100,11 +112,37 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
         )
         return ts is not None
 
+    async def send_timeout_notification(self, target: SendTarget, action: Confirmation) -> None:
+        channel = str(target.chat_id)
+        thread_ts = str(target.reply_to) if target.reply_to else None
+        title = action.title or action.tool_name
+        args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
+        if len(args_json) > 2000:
+            args_json = args_json[:2000] + "\n… (truncated)"
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f":hourglass_flowing_sand: *{title}* — Auto-refused (timed out)\n"
+                        f"*Arguments:*\n```{args_json}```"
+                    ),
+                },
+            }
+        ]
+        await self.ink.send_message(
+            channel,
+            text=f"{title} — Auto-refused (timed out)",
+            blocks=blocks,
+            thread_ts=thread_ts,
+        )
+
 
 class SlackTodoFeeler(TodoFeeler):
     ink: SlackInk
     store: InteractionStore
-    pinned: dict[str, str]  # channel_key -> pinned message ts
+    pinned: dict[str, str]  # channel_key -> bookmark_id
 
     def __init__(self, ink: SlackInk, store: InteractionStore) -> None:
         self.ink = ink
@@ -176,18 +214,25 @@ class SlackTodoFeeler(TodoFeeler):
     async def pin_todo(self, target: SendTarget, ts: str) -> bool:
         channel = str(target.chat_id)
         key = self.channel_key(target)
-        old = self.pinned.get(key)
-        if old and old != ts:
-            await self.ink.unpin_message(channel, old)
-        ok = await self.ink.pin_message(channel, ts)
-        if ok:
-            self.pinned[key] = ts
-        return ok
+        link = await self.ink.get_permalink(channel, ts)
+        if not link:
+            return False
+        existing_id = self.pinned.get(key)
+        bookmark_id = await self.ink.bookmark_upsert(
+            channel, "📋 Task List", link, existing_id
+        )
+        if bookmark_id:
+            self.pinned[key] = bookmark_id
+            return True
+        return False
 
     async def unpin_todo(self, target: SendTarget, ts: str) -> bool:
         channel = str(target.chat_id)
         key = self.channel_key(target)
-        ok = await self.ink.unpin_message(channel, ts)
+        bookmark_id = self.pinned.get(key)
+        if not bookmark_id:
+            return False
+        ok = await self.ink.bookmark_remove(channel, bookmark_id)
         if ok:
             self.pinned.pop(key, None)
         return ok

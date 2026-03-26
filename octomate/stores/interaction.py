@@ -39,12 +39,19 @@ class InteractionStore:
     timeout: float
     threads: ThreadStore
 
-    def __init__(self, threads: ThreadStore, timeout: float = 60.0) -> None:
+    def __init__(self, threads: ThreadStore, timeout: float = 3600.0) -> None:
         self.confirmations = {}
         self.questions = {}
         self.todos = {}
         self.timeout = timeout
         self.threads = threads
+        self.session_allowlist: dict[str, set[str]] = {}  # thread_id -> set[tool_name]
+
+    def is_session_allowed(self, thread_id: str, tool_name: str) -> bool:
+        return tool_name in self.session_allowlist.get(thread_id, set())
+
+    def allow_in_session(self, thread_id: str, tool_name: str) -> None:
+        self.session_allowlist.setdefault(thread_id, set()).add(tool_name)
 
     # --- Confirmations ---
 
@@ -119,6 +126,26 @@ class InteractionStore:
                 .values(status="expired")
             )
             await session.commit()
+
+    async def resolve_confirmation_allow_session(self, confirmation_id: str) -> bool:
+        entry = self.confirmations.pop(confirmation_id, None)
+        if entry is None:
+            return False
+        confirmation, future = entry
+        if future.done():
+            return False
+        self.allow_in_session(confirmation.thread_id, confirmation.tool_name)
+        future.set_result(True)
+
+        async with AsyncSession(engine()) as session:
+            await session.execute(
+                update(ConfirmationModel)
+                .where(ConfirmationModel.confirmation_id == confirmation_id)
+                .values(status="approved")
+            )
+            await session.commit()
+
+        return True
 
     # --- Questions ---
 

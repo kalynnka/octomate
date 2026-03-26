@@ -39,7 +39,7 @@ def history_toolset() -> FunctionToolset[SessionContext]:
             Message["chat"] == chat,
         ]
 
-        if key.thread_id is not None:
+        if key.thread_id:
             expressions.append(Message["thread_id"] == key.thread_id)
         else:
             expressions.append(Message["thread_id"].is_(None))
