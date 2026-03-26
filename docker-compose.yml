@@ -2,6 +2,7 @@ services:
   octomate:
     build: .
     container_name: octomate
+    restart: always
     profiles:
       - app
     environment:
@@ -9,6 +10,7 @@ services:
     volumes:
       - .:/app
       - /app/.venv
+    command: ["uv", "run", "uvicorn", "main:app", "--reload", "--reload-dir", "octomate", "--reload-dir", "octotools", "--host", "0.0.0.0"]
     networks:
       - octomate_network
 
