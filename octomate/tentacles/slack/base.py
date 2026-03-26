@@ -20,8 +20,6 @@ from slack_bolt.async_app import AsyncApp
 from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
-from octomate.schemas.session import SessionKey
-from octomate.store import InteractionStore
 from octomate.tentacles.base import (
     ChannelTentacle,
     PlatformMessage,
@@ -186,7 +184,6 @@ class SlackTentacle(ChannelTentacle):
     app: AsyncApp
     handler: AsyncSocketModeHandler | None
     ink: SlackInk
-    store: InteractionStore
     app_token: str
     assistant_threads: set[str]
     dm_channels: dict[str, str]
@@ -199,23 +196,15 @@ class SlackTentacle(ChannelTentacle):
         *,
         bot_token: SecretStr,
         app_token: SecretStr,
-        store: InteractionStore,
         flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
         memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
         self.ink = SlackInk(bot_token)
         self.chromo = SlackChromo()
-        self.store = store
         self.assistant_threads = set()
         self.dm_channels = {}
         self.thinking_store = {}
-
-        self.feelers = Feelers(
-            confirm=SlackConfirmationFeeler(self.ink, self.store),
-            todos=SlackTodoFeeler(self.ink, self.store),
-            questions=SlackQuestionFeeler(self.ink, self.store),
-        )
 
         self.app = AsyncApp(token=bot_token.get_secret_value())
         self.app.event("message")(self.on_message)
@@ -228,8 +217,14 @@ class SlackTentacle(ChannelTentacle):
 
         super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
 
+        self.feelers = Feelers(
+            confirm=SlackConfirmationFeeler(self.ink, self.interactions),
+            todos=SlackTodoFeeler(self.ink, self.interactions),
+            questions=SlackQuestionFeeler(self.ink, self.interactions),
+        )
+
     async def activate(self) -> None:
-        logger.info("Tentacle %s: starting Slack Socket Mode client", self.tag)
+        logger.info("Tentacle %s: starting Slack Socket Mode client", self.id)
         self.handler = AsyncSocketModeHandler(self.app, self.app_token)
         await self.handler.start_async()
 
@@ -241,21 +236,12 @@ class SlackTentacle(ChannelTentacle):
         subtype = event.get("subtype")
         if subtype in IGNORED_SUBTYPES:
             return
-        if event.get("bot_id") or event.get("user") == self.id:
+        if event.get("bot_id") or event.get("user") == self.profile.user_id:
             return
         await self.ingest(event)
 
     async def on_assistant_thread_started(self, event: dict, say) -> None:
-        thread_info = event.get("assistant_thread", {})
-        self.threads_ownership[
-            SessionKey(
-                tentacle_id=self.id,
-                user_id=thread_info.get("user_id", ""),
-                group_id=None,
-                thread_id=thread_info.get("thread_ts", ""),
-                chat_id=thread_info.get("channel_id", ""),
-            )
-        ] = self
+        pass
 
     async def _ack_noop(self, event: dict) -> None:
         pass
@@ -283,14 +269,16 @@ class SlackTentacle(ChannelTentacle):
                 confirmation_id = value.get("confirmation_id", "")
                 approved = value.get("approved", "") == "true"
 
-                entry = self.store.confirmations.get(confirmation_id)
+                entry = self.interactions.confirmations.get(confirmation_id)
                 if entry is None:
                     return
                 action, _ = entry
                 if action.approvers and clicker_id not in action.approvers:
                     return
 
-                resolved = self.store.resolve_confirmation(confirmation_id, approved)
+                resolved = await self.interactions.resolve_confirmation(
+                    confirmation_id, approved
+                )
                 if not resolved:
                     return
 
@@ -317,9 +305,11 @@ class SlackTentacle(ChannelTentacle):
             elif action_type == "question_answer":
                 answer = value.get("answer", "")
                 question_id = value.get("question_id", "")
-                self.store.resolve_question(question_id, answer, clicker_id)
+                await self.interactions.resolve_question(
+                    question_id, answer, clicker_id
+                )
 
-                entry = self.store.questions.get(question_id)
+                entry = self.interactions.questions.get(question_id)
                 question_text = entry[0].text if entry else ""
                 blocks = [
                     {
@@ -384,7 +374,7 @@ class SlackTentacle(ChannelTentacle):
 
         except Exception:
             logger.warning(
-                "Tentacle %s: failed to handle block action", self.tag, exc_info=True
+                "Tentacle %s: failed to handle block action", self.id, exc_info=True
             )
 
     @asynccontextmanager
@@ -407,7 +397,7 @@ class SlackTentacle(ChannelTentacle):
     async def secrete(self, seg: ImageSegment) -> None:
         apath = anyio.Path(seg.data.path)
         if not await apath.exists():
-            logger.warning("Tentacle %s: image file not found: %s", self.tag, apath)
+            logger.warning("Tentacle %s: image file not found: %s", self.id, apath)
             return
         try:
             image_data = await apath.read_bytes()
@@ -416,7 +406,7 @@ class SlackTentacle(ChannelTentacle):
                 seg.data.url = url
         except Exception:
             logger.warning(
-                "Tentacle %s: failed to upload image", self.tag, exc_info=True
+                "Tentacle %s: failed to upload image", self.id, exc_info=True
             )
 
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
@@ -436,7 +426,7 @@ class SlackTentacle(ChannelTentacle):
             seg.data.file = str(file_path.resolve())
         except Exception:
             logger.warning(
-                "Tentacle %s: failed to download image", self.tag, exc_info=True
+                "Tentacle %s: failed to download image", self.id, exc_info=True
             )
 
     async def send_platform_message(

@@ -28,7 +28,7 @@ def build_summon_toolset(
         return None
 
     descriptions = "\n".join(
-        f'- "{t.tag}": {t.description}' for t in agent_tentacles.values()
+        f'- "{t.id}": {t.description}' for t in agent_tentacles.values()
     )
     tool_description = (
         "Summon an agent tentacle for deep processing.\n\n"

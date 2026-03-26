@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 from pydantic import Field, SecretStr
+from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.client import WebClient
 
@@ -208,6 +209,12 @@ class SlackInk:
         try:
             await self.client.pins_add(channel=channel, timestamp=ts)
             return True
+        except SlackApiError as e:
+            if e.response.get("error") == "already_pinned":
+                logger.debug("SlackInk: pin_message skipped — message already pinned")
+                return True
+            logger.warning("SlackInk: pin_message failed", exc_info=True)
+            return False
         except Exception:
             logger.warning("SlackInk: pin_message failed", exc_info=True)
             return False

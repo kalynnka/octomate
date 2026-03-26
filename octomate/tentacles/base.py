@@ -18,7 +18,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from octomate.agents.base import SessionContext, SummonRequest
 from octomate.agents.tools import history_toolset
-from octomate.schemas.actions import AgentMessage, ConfirmAction
+from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -28,13 +28,16 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.session import SessionKey, UserProfile
-from octomate.tentacles.feelers import Feelers
+from octomate.stores import InteractionStore
+from octomate.stores.thread import ThreadStore
+from octomate.tentacles.feelers import NULL_FEELERS, Feelers
 
 # agents.flick imports agents.surge which imports SendTarget from this module,
 # and octopus imports Tentacle from this module — both circular.
 if TYPE_CHECKING:
     from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
+    from octomate.transmuters.interactions import Confirmation
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +124,11 @@ class StreamSink:
 class Tentacle(ABC):
     """Base for all tentacles — any bidirectional message channel."""
 
-    tag: str
+    id: str
     octopus: Octopus
 
-    def __init__(self, tag: str, octopus: Octopus) -> None:
-        self.tag = tag
+    def __init__(self, id: str, octopus: Octopus) -> None:
+        self.id = id
         self.octopus = octopus
 
     @abstractmethod
@@ -142,8 +145,8 @@ class AgentTentacle(Tentacle):
 
     description: str = ""
 
-    def __init__(self, tag: str, octopus: Octopus, description: str = "") -> None:
-        super().__init__(tag, octopus)
+    def __init__(self, id: str, octopus: Octopus, description: str = "") -> None:
+        super().__init__(id, octopus)
         self.description = description
 
 
@@ -162,27 +165,26 @@ class ChannelTentacle(Tentacle):
     memory: OctopusMemory
     buffer: MessageBuffer
     user_profiles: dict[str, UserProfile]
-    threads_ownership: dict[SessionKey, Tentacle]
+    threads: ThreadStore
+    interactions: InteractionStore
 
     def __init__(
         self,
-        tag: str,
+        id: str,
         octopus: Octopus,
         flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
         memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
-        super().__init__(tag, octopus)
+        super().__init__(id, octopus)
         self.flick = flick
         self.memory = memory
         self.profile = self.inspect()
         self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
         self.user_profiles = {}
-        self.threads_ownership = defaultdict(lambda: self)
-
-    @property
-    def id(self) -> str:
-        return self.profile.user_id
+        self.threads = ThreadStore(default_owner=id)
+        self.interactions = InteractionStore(threads=self.threads)
+        self.feelers = NULL_FEELERS
 
     @property
     def name(self) -> str:
@@ -202,7 +204,7 @@ class ChannelTentacle(Tentacle):
             await self.memory.record(key, contents)
 
             if key.group_id is not None and not any(
-                msg.is_at(self.id) for msg in contents
+                msg.is_at(self.profile.user_id) for msg in contents
             ):
                 await self.memory.memo(key, contents, self)
                 return
@@ -212,7 +214,7 @@ class ChannelTentacle(Tentacle):
                 if key.group_id is not None
                 else "[chat: private]"
             )
-            header = f"[me: {self.name} ({self.id})] {context}"
+            header = f"[me: {self.name} ({self.profile.user_id})] {context}"
             user_prompt: list = [header]
             for msg in contents:
                 user_prompt.extend(msg.to_content_parts())
@@ -225,7 +227,7 @@ class ChannelTentacle(Tentacle):
                 instructions = None
 
             logger.info(
-                "Tentacle %s flick [%s] (%d messages)", self.tag, key, len(contents)
+                "Tentacle %s flick [%s] (%d messages)", self.id, key, len(contents)
             )
 
             target = (
@@ -255,14 +257,14 @@ class ChannelTentacle(Tentacle):
                 agent_tentacle = self.octopus.agent_tentacles.get(resolved.tentacle_tag)
                 if agent_tentacle is None:
                     logger.warning(
-                        "Tentacle %s: unknown agent tentacle tag %r",
-                        self.tag,
+                        "Tentacle %s: unknown agent tentacle id %r",
+                        self.id,
                         resolved.tentacle_tag,
                     )
                 else:
                     # handover the ownership of this session's thread to the summoned agent tentacle,
                     # so subsequent messages in the same thread are routed to the agent tentacle instead of this channel tentacle.
-                    self.threads_ownership[key] = agent_tentacle
+                    await self.threads.set_owner(key, agent_tentacle)
                     content = contents[-1].model_copy()
                     content.segments = [TextSegment(data={"text": resolved.summary})]
                     await self.twitch(
@@ -270,7 +272,7 @@ class ChannelTentacle(Tentacle):
                         [
                             TextSegment(
                                 data={
-                                    "text": f"Tentacle *{agent_tentacle.tag}* has grabbed this thread 🐙!"
+                                    "text": f"Tentacle *{agent_tentacle.id}* has grabbed this thread 🐙!"
                                 }
                             )
                         ],
@@ -281,12 +283,12 @@ class ChannelTentacle(Tentacle):
                     await self.twitch(target, msg_out.segments)
                 asyncio.create_task(self.memory.memo(key, resolved.output, self))
         except Exception:
-            logger.exception("Error in tentacle %s [%s]", self.tag, key)
+            logger.exception("Error in tentacle %s [%s]", self.id, key)
 
     def inspect(self) -> UserProfile:
         profile = self.ink.inspect()
         logger.info(
-            "Tentacle %s: probed as %s (%s)", self.tag, profile.user_id, profile.name
+            "Tentacle %s: probed as %s (%s)", self.id, profile.user_id, profile.name
         )
         return profile
 
@@ -296,13 +298,13 @@ class ChannelTentacle(Tentacle):
             event = await self.chromo.sip(raw)
             if event is None:
                 return
-            event.tentacle_id = self.tag
+            event.tentacle_id = self.id
             event.self_id = self.profile.user_id
             event.sender = await self.get_user_profile(event.user_id)
             await self.submerge(event)
             self.buffer.push(event)
         except Exception:
-            logger.exception("Tentacle %s: error in ingest", self.tag)
+            logger.exception("Tentacle %s: error in ingest", self.id)
 
     async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         """Outbound pipeline: resolve media → encode → send."""
@@ -334,9 +336,7 @@ class ChannelTentacle(Tentacle):
         reply_in_thread: bool = False,
     ) -> str | None: ...
 
-    async def send_confirmation(
-        self, target: SendTarget, action: ConfirmAction
-    ) -> bool:
+    async def send_confirmation(self, target: SendTarget, action: Confirmation) -> bool:
         return await self.feelers.confirm.send_confirmation(target, action)
 
     @asynccontextmanager
@@ -390,7 +390,7 @@ class ChannelTentacle(Tentacle):
 
     def den(self, event: MessageEvent) -> Path:
         subdir = event.chat_id if event.chat_type == "group" else event.user_id
-        return self.FILES_ROOT / self.tag / subdir
+        return self.FILES_ROOT / self.id / subdir
 
     @cached_property
     def toolsets(self) -> list[FunctionToolset[SessionContext]]:

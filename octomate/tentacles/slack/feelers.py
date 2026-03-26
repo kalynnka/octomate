@@ -5,13 +5,14 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from octomate.store import InteractionStore, QuestionResponse
+from octomate.stores import InteractionStore, QuestionResponse
 from octomate.tentacles.feelers import ConfirmationFeeler, QuestionFeeler, TodoFeeler
 
 if TYPE_CHECKING:
-    from octomate.schemas.actions import ConfirmAction
+    from octomate.schemas.session import SessionKey
     from octomate.tentacles.base import SendTarget
     from octomate.tentacles.slack.ink import SlackInk
+    from octomate.transmuters.interactions import Confirmation
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,7 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
         self.ink = ink
         self.store = store
 
-    async def send_confirmation(
-        self, target: SendTarget, action: ConfirmAction
-    ) -> bool:
+    async def send_confirmation(self, target: SendTarget, action: Confirmation) -> bool:
         channel = str(target.chat_id)
         title = action.title or action.tool_name
         args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
@@ -206,10 +205,11 @@ class SlackQuestionFeeler(QuestionFeeler):
         self,
         target: SendTarget,
         text: str,
+        session_key: SessionKey,
         options: list[str] | None = None,
         multi_select: bool = False,
     ) -> QuestionResponse | None:
-        question, future = self.store.create_question(text, options)
+        question, future = await self.store.create_question(session_key, text, options)
         channel = str(target.chat_id)
 
         blocks: list[dict] = [
@@ -261,11 +261,11 @@ class SlackQuestionFeeler(QuestionFeeler):
             channel, text=f"Question: {text}", blocks=blocks, thread_ts=thread_ts
         )
         if not ts:
-            self.store.expire_question(question.question_id)
+            await self.store.expire_question(question.question_id)
             return None
 
         try:
             return await asyncio.wait_for(future, timeout=self.store.timeout)
         except TimeoutError:
-            self.store.expire_question(question.question_id)
+            await self.store.expire_question(question.question_id)
             return None

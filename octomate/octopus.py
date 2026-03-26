@@ -14,7 +14,6 @@ from octomate.agents.manager import SKILL_METADATA_KEY, SkillManager
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.store import InteractionStore
 from octomate.tentacles.base import AgentTentacle, ChannelTentacle, SendTarget
 from octomate.transmuters import sqlalchemy_materia
 
@@ -22,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 
 class Octopus:
-    store: InteractionStore
     skill_manager: SkillManager | None
     tentacles: dict[str, ChannelTentacle]
     agent_tentacles: dict[str, AgentTentacle]
@@ -36,7 +34,6 @@ class Octopus:
     ) -> None:
         self.tentacles = {}
         self.agent_tentacles = {}
-        self.store = InteractionStore()
         self.skill_manager = skill_manager
         self._nerve_send, self._nerve_receive = object_stream(buffer_size)
 
@@ -58,16 +55,16 @@ class Octopus:
                 await tentacle.deactivate()
 
     def connect(self, tentacle: ChannelTentacle) -> None:
-        if tentacle.tag in self.tentacles:
-            raise ValueError(f"Tentacle {tentacle.tag!r} already connected")
-        self.tentacles[tentacle.tag] = tentacle
-        logger.info("Connected tentacle: %s", tentacle.tag)
+        if tentacle.id in self.tentacles:
+            raise ValueError(f"Tentacle {tentacle.id!r} already connected")
+        self.tentacles[tentacle.id] = tentacle
+        logger.info("Connected tentacle: %s", tentacle.id)
 
     def graft(self, tentacle: AgentTentacle) -> None:
-        if tentacle.tag in self.agent_tentacles:
-            raise ValueError(f"Agent tentacle {tentacle.tag!r} already grafted")
-        self.agent_tentacles[tentacle.tag] = tentacle
-        logger.info("Grafted agent tentacle: %s", tentacle.tag)
+        if tentacle.id in self.agent_tentacles:
+            raise ValueError(f"Agent tentacle {tentacle.id!r} already grafted")
+        self.agent_tentacles[tentacle.id] = tentacle
+        logger.info("Grafted agent tentacle: %s", tentacle.id)
 
     def cut(self, name: str) -> None:
         self.tentacles.pop(name, None)
@@ -78,8 +75,13 @@ class Octopus:
     async def rolling(self) -> None:
         async with asyncio.TaskGroup() as tg, self._nerve_receive:
             async for key, batch in self._nerve_receive:
-                thread_owner = self.tentacles[key.tentacle_id].threads_ownership[key]
-                tg.create_task(thread_owner(key, batch))
+                channel = self.tentacles[key.tentacle_id]
+                owner_id = await channel.threads.get_owner(key)
+                owner = self.agent_tentacles.get(owner_id)
+                if owner:
+                    tg.create_task(owner(key, batch))
+                else:
+                    tg.create_task(channel(key, batch))
 
     async def resolve(
         self,
@@ -116,7 +118,10 @@ class Octopus:
                 if call.tool_name == "ask_user":
                     args = call.args_as_dict()
                     resp = await tentacle.feelers.questions.ask_question(
-                        target, args.get("question", ""), args.get("options")
+                        target,
+                        args.get("question", ""),
+                        session_key=key,
+                        options=args.get("options"),
                     )
                     deferred.calls[call.tool_call_id] = (
                         resp.answer if resp else "(no response)"
@@ -124,8 +129,8 @@ class Octopus:
 
             for call in result.output.approvals:
                 tool_meta = result.output.metadata.get(call.tool_call_id, {})
-                action, future = self.store.create_confirmation(
-                    session_key=key,
+                action, future = await tentacle.interactions.create_confirmation(
+                    key=key,
                     tool_name=call.tool_name,
                     tool_call_id=call.tool_call_id,
                     args=call.args_as_dict(),
@@ -137,16 +142,20 @@ class Octopus:
 
                 sent = await tentacle.send_confirmation(target, action)
                 if not sent:
-                    self.store.expire_confirmation(action.confirmation_id)
+                    await tentacle.interactions.expire_confirmation(
+                        action.confirmation_id
+                    )
                     deferred.approvals[call.tool_call_id] = False
                     continue
 
                 try:
                     approved = await asyncio.wait_for(
-                        future, timeout=self.store.timeout
+                        future, timeout=tentacle.interactions.timeout
                     )
                 except TimeoutError:
-                    self.store.expire_confirmation(action.confirmation_id)
+                    await tentacle.interactions.expire_confirmation(
+                        action.confirmation_id
+                    )
                     approved = False
 
                 deferred.approvals[call.tool_call_id] = approved

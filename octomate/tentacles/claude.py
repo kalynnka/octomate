@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -38,12 +39,13 @@ except ImportError:
 
 from octomate.config import ClaudeCodeConfig
 from octomate.schemas.session import SessionKey
-from octomate.store import TodoItem
 from octomate.tentacles.base import (
     AgentTentacle,
+    PlatformMessage,
     SendTarget,
     StreamSink,
 )
+from octomate.transmuters.interactions import Todo
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
@@ -55,6 +57,7 @@ AUTO_APPROVE = {"AskUserQuestion", "TodoWrite"}
 
 class ClaudeCodeTentacle(AgentTentacle):
     config: ClaudeCodeConfig
+    _vscode_uri: str  # precomputed vscode://file<cwd> launch link
     _todo_ts: dict[SessionKey, str]  # thread_key -> pinned message ts
     _todo_id_maps: dict[
         SessionKey, dict[str, str]
@@ -64,6 +67,7 @@ class ClaudeCodeTentacle(AgentTentacle):
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
         super().__init__(tag, octopus, description=config.description)
         self.config = config
+        self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
         self._todo_ts = {}
         self._todo_id_maps = {}
         self._session_id_map = {}
@@ -74,7 +78,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         contents: list[MessageEvent],  # should always length 1 for agent tentacles
     ):
         task = "".join([str(part) for part in contents[0].to_content_parts()])
-        channel = self.octopus.tentacles["slack"]
+        channel = self.octopus.tentacles[key.tentacle_id]
         target = SendTarget(
             chat_id=contents[0].chat_id,
             chat_type="group" if key.group_id else "private",
@@ -98,7 +102,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                 if multi:
                     text += "\n(select multiple, comma-separated)"
                 resp = await channel.feelers.questions.ask_question(
-                    target, text, options, multi_select=multi
+                    target, text, session_key=key, options=options, multi_select=multi
                 )
                 if resp:
                     answers[q["question"]] = resp.answer
@@ -116,7 +120,7 @@ class ClaudeCodeTentacle(AgentTentacle):
             nonlocal todo_ts, _todo_pinned_this_run
             tool_input = input_data.get("tool_input", {})
             todos = tool_input.get("todos", [])
-            items: list[TodoItem] = []
+            items: list[Todo] = []
             for item in todos:
                 title = item.get("content", "")
                 status = item.get("status", "pending")
@@ -129,7 +133,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                     "cancelled": "cancelled",
                 }.get(status, "pending")
                 items.append(
-                    TodoItem(
+                    Todo(
                         todo_id=todo_id_map[title],
                         title=title,
                         status=mapped,
@@ -161,8 +165,8 @@ class ClaudeCodeTentacle(AgentTentacle):
         ) -> PermissionResult:
             if tool_name in AUTO_APPROVE:
                 return PermissionResultAllow()
-            action, future = self.octopus.store.create_confirmation(
-                session_key=key,
+            action, future = await channel.interactions.create_confirmation(
+                key=key,
                 tool_name=tool_name,
                 tool_call_id="",
                 args=input_data,
@@ -172,16 +176,16 @@ class ClaudeCodeTentacle(AgentTentacle):
             )
             sent = await channel.send_confirmation(target, action)
             if not sent:
-                self.octopus.store.expire_confirmation(action.confirmation_id)
+                await channel.interactions.expire_confirmation(action.confirmation_id)
                 return PermissionResultDeny(
                     message="Could not deliver approval request"
                 )
             try:
                 approved = await asyncio.wait_for(
-                    future, timeout=self.octopus.store.timeout
+                    future, timeout=channel.interactions.timeout
                 )
             except TimeoutError:
-                self.octopus.store.expire_confirmation(action.confirmation_id)
+                await channel.interactions.expire_confirmation(action.confirmation_id)
                 return PermissionResultDeny(message="Timed out")
             if approved:
                 return PermissionResultAllow()
@@ -220,6 +224,29 @@ class ClaudeCodeTentacle(AgentTentacle):
                             self._session_id_map[key] = msg.session_id
                         continue
                     has_text = await _handle_stream_msg(msg, stream, has_text)
+
+        await channel.send_platform_message(
+            chat_id=str(target.chat_id),
+            chat_type=target.chat_type,
+            reply_to=str(target.reply_to),
+            messages=[
+                PlatformMessage(
+                    msg_type="text",
+                    content=f"Open project in VSCode: {self._vscode_uri}",
+                    metadata={
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {
+                                    "type": "mrkdwn",
+                                    "text": f"🖥️  <{self._vscode_uri}|Open project in VSCode>",
+                                },
+                            }
+                        ]
+                    },
+                )
+            ],
+        )
 
         # When this was a root (non-threaded) message, the session state was
         # stored under a key with thread_id=None.  Follow-up messages in the
@@ -274,9 +301,9 @@ async def _handle_stream_block(
         # to None, so the next TextBlock will open a fresh message that appears
         # chronologically after the card in the thread.
         await stream.flush()
-        await stream.set_status(
-            f"🔧 {block.name} {_summarize(block.name, block.input)}"
-        )
+        summary = _summarize(block.name, block.input)
+        status = f"🔧 {block.name}" + (f" {summary}" if summary else "")
+        await stream.set_status(status)
         return False  # new block — no prior text in this segment yet
     elif isinstance(block, ToolResultBlock) and block.is_error:
         if has_text:
@@ -299,8 +326,15 @@ def _summarize(tool_name: str, tool_input: Any) -> str:
         if "command" in tool_input:
             return f"`{tool_input['command']}`"
         if "file_path" in tool_input:
-            return f"File: {tool_input['file_path']}"
-    return tool_name
+            return f"`{tool_input['file_path']}`"
+        if "pattern" in tool_input:
+            detail = f"`{tool_input['pattern']}`"
+            if "path" in tool_input:
+                detail += f" in `{tool_input['path']}`"
+            elif "glob" in tool_input:
+                detail += f" ({tool_input['glob']})"
+            return detail
+    return ""
 
 
 def _msg_sample(msg: Message) -> str:

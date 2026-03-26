@@ -22,7 +22,6 @@ from pydantic_ai.tools import DeferredToolRequests
 from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
-from octomate.store import InteractionStore
 from octomate.tentacles.base import ChannelTentacle, PlatformMessage
 from octomate.tentacles.feelers import Feelers
 from octomate.tentacles.lark.chromo import LarkChromo
@@ -48,7 +47,6 @@ class LarkTentacle(ChannelTentacle):
     ws_scope: anyio.CancelScope | None
 
     ink: LarkInk
-    store: InteractionStore
 
     def __init__(
         self,
@@ -57,19 +55,12 @@ class LarkTentacle(ChannelTentacle):
         *,
         app_id: str,
         app_secret: SecretStr,
-        store: InteractionStore,
         flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
         memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
         self.ink = LarkInk(app_id, app_secret)
         self.chromo = LarkChromo()
-        self.store = store
-        self.feelers = Feelers(
-            confirm=LarkConfirmationFeeler(self.ink, self.store),
-            todos=LarkTodoFeeler(self.ink, self.store),
-            questions=LarkQuestionFeeler(self.ink, self.store),
-        )
         event_handler = (
             lark_oapi.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self.sense)
@@ -85,8 +76,14 @@ class LarkTentacle(ChannelTentacle):
         self.ws_scope = None
         super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
 
+        self.feelers = Feelers(
+            confirm=LarkConfirmationFeeler(self.ink, self.interactions),
+            todos=LarkTodoFeeler(self.ink, self.interactions),
+            questions=LarkQuestionFeeler(self.ink, self.interactions),
+        )
+
     async def activate(self) -> None:
-        logger.info("Tentacle %s: starting Lark WebSocket client", self.tag)
+        logger.info("Tentacle %s: starting Lark WebSocket client", self.id)
         with anyio.CancelScope() as scope:
             self.ws_scope = scope
             await anyio.to_thread.run_sync(self.ws_client.start)
@@ -101,7 +98,7 @@ class LarkTentacle(ChannelTentacle):
     async def secrete(self, seg: ImageSegment) -> None:
         apath = anyio.Path(seg.data.path)
         if not await apath.exists():
-            logger.warning("Tentacle %s: image file not found: %s", self.tag, apath)
+            logger.warning("Tentacle %s: image file not found: %s", self.id, apath)
             return
         try:
             image_data = await apath.read_bytes()
@@ -110,7 +107,7 @@ class LarkTentacle(ChannelTentacle):
                 seg.data.url = image_key
         except Exception:
             logger.warning(
-                "Tentacle %s: failed to upload image", self.tag, exc_info=True
+                "Tentacle %s: failed to upload image", self.id, exc_info=True
             )
 
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
@@ -127,7 +124,7 @@ class LarkTentacle(ChannelTentacle):
             seg.data.file = str(file_path.resolve())
         except Exception:
             logger.warning(
-                "Tentacle %s: failed to download image", self.tag, exc_info=True
+                "Tentacle %s: failed to download image", self.id, exc_info=True
             )
 
     async def send_platform_message(
@@ -172,7 +169,7 @@ class LarkTentacle(ChannelTentacle):
                 confirmation_id = value.get("confirmation_id", "")
                 approved = value.get("approved", "") == "true"
 
-                entry = self.store.confirmations.get(confirmation_id)
+                entry = self.interactions.confirmations.get(confirmation_id)
                 if entry is None:
                     return P2CardActionTriggerResponse(
                         {"toast": {"type": "warning", "content": "Already handled"}}
@@ -183,8 +180,8 @@ class LarkTentacle(ChannelTentacle):
                         {"toast": {"type": "warning", "content": "Not authorized"}}
                     )
 
-                resolved = anyio.from_thread.run_sync(
-                    self.store.resolve_confirmation, confirmation_id, approved
+                resolved = anyio.from_thread.run(
+                    self.interactions.resolve_confirmation, confirmation_id, approved
                 )
                 if not resolved:
                     return P2CardActionTriggerResponse(
@@ -224,10 +221,10 @@ class LarkTentacle(ChannelTentacle):
                 form_value = event.action.form_value or {}
                 answer = form_value.get("answer") or value.get("answer", "")
                 question_id = value.get("question_id", "")
-                entry = self.store.questions.get(question_id)
+                entry = self.interactions.questions.get(question_id)
                 question_text = entry[0].text if entry else ""
-                anyio.from_thread.run_sync(
-                    self.store.resolve_question,
+                anyio.from_thread.run(
+                    self.interactions.resolve_question,
                     question_id,
                     answer,
                     clicker_id,
@@ -265,8 +262,8 @@ class LarkTentacle(ChannelTentacle):
                 todo_id = value.get("todo_id", "")
                 status = value.get("status", "completed")
                 title = value.get("title", "")
-                anyio.from_thread.run_sync(
-                    self.store.update_todo,
+                anyio.from_thread.run(
+                    self.interactions.update_todo,
                     todo_id,
                     status,
                 )
@@ -298,6 +295,6 @@ class LarkTentacle(ChannelTentacle):
 
         except Exception:
             logger.warning(
-                "Tentacle %s: failed to handle card action", self.tag, exc_info=True
+                "Tentacle %s: failed to handle card action", self.id, exc_info=True
             )
         return P2CardActionTriggerResponse({})

@@ -4,10 +4,9 @@ from datetime import datetime
 
 from arcanus.base import TransmuterProxiedMixin
 from sqlalchemy import DateTime, ForeignKey, String
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-
-class Base(DeclarativeBase): ...
+from octomate.models.base import Base
 
 
 class Message(Base, TransmuterProxiedMixin):

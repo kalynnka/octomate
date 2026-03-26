@@ -7,13 +7,14 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from octomate.store import InteractionStore, QuestionResponse
+from octomate.stores import InteractionStore, QuestionResponse
 from octomate.tentacles.feelers import ConfirmationFeeler, QuestionFeeler, TodoFeeler
 
 if TYPE_CHECKING:
-    from octomate.schemas.actions import ConfirmAction
+    from octomate.schemas.session import SessionKey
     from octomate.tentacles.base import SendTarget
     from octomate.tentacles.lark.ink import LarkInk
+    from octomate.transmuters.interactions import Confirmation
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +27,7 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
         self.ink = ink
         self.store = store
 
-    async def send_confirmation(
-        self, target: SendTarget, action: ConfirmAction
-    ) -> bool:
+    async def send_confirmation(self, target: SendTarget, action: Confirmation) -> bool:
         chat_id = str(target.chat_id)
         receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
 
@@ -190,10 +189,11 @@ class LarkQuestionFeeler(QuestionFeeler):
         self,
         target: SendTarget,
         text: str,
+        session_key: SessionKey,
         options: list[str] | None = None,
         multi_select: bool = False,
     ) -> QuestionResponse | None:
-        question, future = self.store.create_question(text, options)
+        question, future = await self.store.create_question(session_key, text, options)
         chat_id = str(target.chat_id)
         receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
 
@@ -260,11 +260,11 @@ class LarkQuestionFeeler(QuestionFeeler):
             chat_id, receive_id_type, "interactive", card
         )
         if not sent:
-            self.store.expire_question(question.question_id)
+            await self.store.expire_question(question.question_id)
             return None
 
         try:
             return await asyncio.wait_for(future, timeout=self.store.timeout)
         except TimeoutError:
-            self.store.expire_question(question.question_id)
+            await self.store.expire_question(question.question_id)
             return None

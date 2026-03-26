@@ -21,7 +21,6 @@ from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import AgentSegment, ImageSegment
 from octomate.tentacles.base import ChannelTentacle, PlatformMessage, SendTarget
-from octomate.tentacles.feelers import NULL_FEELERS
 from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.napcat.ink import NapcatInk
 from octomate.tentacles.napcat.schema import (
@@ -72,7 +71,6 @@ class NapcatTentacle(ChannelTentacle):
         self.access_token = access_token
         self.ink = NapcatInk(http_url, access_token)
         self.chromo = NapcatChromo()
-        self.feelers = NULL_FEELERS
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
         self.backoff_factor = backoff_factor
@@ -85,7 +83,7 @@ class NapcatTentacle(ChannelTentacle):
             await self.ingest(raw)
 
     async def activate(self) -> None:
-        logger.info("Tentacle %s: connecting to %s", self.tag, self.ws_url)
+        logger.info("Tentacle %s: connecting to %s", self.id, self.ws_url)
         self.ws_scope = anyio.CancelScope()
         with self.ws_scope:
             delay = self.backoff_base
@@ -103,19 +101,19 @@ class NapcatTentacle(ChannelTentacle):
                     ) as ws:
                         self.ws_client = ws
                         delay = self.backoff_base
-                        logger.info("Tentacle %s: wired with Napcat", self.tag)
+                        logger.info("Tentacle %s: wired with Napcat", self.id)
                         await self.sense(ws)
 
                 except ConnectionClosed:
                     logger.warning(
                         "Tentacle %s: connection lost, reconnecting in %.1fs",
-                        self.tag,
+                        self.id,
                         delay,
                     )
                 except Exception as exc:
                     logger.error(
                         "Tentacle %s: connection failed (%s), retrying in %.1fs",
-                        self.tag,
+                        self.id,
                         exc,
                         delay,
                     )
@@ -138,7 +136,7 @@ class NapcatTentacle(ChannelTentacle):
     async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
         if self.ws_client is None:
             logger.warning(
-                "Tentacle %s: action cancelled, WebSocket not connected", self.tag
+                "Tentacle %s: action cancelled, WebSocket not connected", self.id
             )
             return
         await super().twitch(target, segments)
@@ -157,14 +155,14 @@ class NapcatTentacle(ChannelTentacle):
             seg_data = json.loads(msg.content)
             if chat_type == "group":
                 action = SendGroupMsgAction(
-                    tentacle_id=self.tag,
+                    tentacle_id=self.id,
                     params=SendGroupMsgParams(
                         group_id=chat_id, message=seg_data, reply=reply_to
                     ),
                 )
             else:
                 action = SendPrivateMsgAction(
-                    tentacle_id=self.tag,
+                    tentacle_id=self.id,
                     params=SendPrivateMsgParams(
                         user_id=chat_id, message=seg_data, reply=reply_to
                     ),
@@ -172,7 +170,7 @@ class NapcatTentacle(ChannelTentacle):
             try:
                 await self.ws_client.send(action.model_dump_json(exclude_none=True))
             except ConnectionClosed:
-                logger.warning("Tentacle %s: WebSocket closed while sending", self.tag)
+                logger.warning("Tentacle %s: WebSocket closed while sending", self.id)
                 return None
         return None
 
@@ -194,7 +192,7 @@ class NapcatTentacle(ChannelTentacle):
             seg.data.url = url
         except Exception:
             logger.warning(
-                "Tentacle %s: failed to download image", self.tag, exc_info=True
+                "Tentacle %s: failed to download image", self.id, exc_info=True
             )
 
     async def secrete(self, seg: ImageSegment) -> None:
@@ -204,4 +202,4 @@ class NapcatTentacle(ChannelTentacle):
                 data = await apath.read_bytes()
                 seg.data.file = f"base64://{base64.b64encode(data).decode()}"
         except Exception:
-            logger.warning("Tentacle %s: failed to prepare outbound image", self.tag)
+            logger.warning("Tentacle %s: failed to prepare outbound image", self.id)

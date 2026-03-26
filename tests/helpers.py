@@ -80,7 +80,7 @@ class MockTentacle(ChannelTentacle):
         super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
 
     def inject(self, event: MessageEvent) -> None:
-        event.tentacle_id = self.tag
+        event.tentacle_id = self.id
         self.buffer.push(event)
 
     async def activate(self) -> None:

@@ -12,7 +12,6 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
-from uuid_utils import uuid7
 
 from octomate.database import engine
 from octomate.schemas.actions import AgentMessage
@@ -54,7 +53,6 @@ class OctopusMemory:
                             break
             records.append(
                 Message(
-                    id=str(uuid7()),
                     message_id=event.message_id,
                     reply_id=event.reply_id or None,
                     tentacle_id=key.tentacle_id,
@@ -125,7 +123,6 @@ class OctopusMemory:
                 content = "\n".join(str(seg) for seg in msg.segments)
                 records.append(
                     Message(
-                        id=str(uuid7()),
                         message_id="",
                         tentacle_id=key.tentacle_id,
                         thread_id=key.thread_id,
