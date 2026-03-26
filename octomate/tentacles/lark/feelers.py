@@ -200,25 +200,35 @@ class LarkQuestionFeeler(QuestionFeeler):
         elements: list[dict] = [{"tag": "markdown", "content": text}]
         if options:
             elements.append({"tag": "hr"})
-            elements.append(
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": opt},
-                            "type": "default",
-                            "value": {
-                                "action": "question_answer",
-                                "question_id": question.question_id,
-                                "answer": opt,
-                            },
-                        }
-                        for opt in options
-                    ],
-                }
-            )
+            if multi_select:
+                options_md = "\n".join(f"- {opt}" for opt in options)
+                elements.append({"tag": "markdown", "content": options_md})
+            else:
+                elements.append(
+                    {
+                        "tag": "action",
+                        "actions": [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": opt},
+                                "type": "default",
+                                "value": {
+                                    "action": "question_answer",
+                                    "question_id": question.question_id,
+                                    "answer": opt,
+                                },
+                            }
+                            for opt in options
+                        ],
+                    }
+                )
         elements.append({"tag": "hr"})
+        if multi_select:
+            input_placeholder = "Type selected options (comma-separated) or your own answer..."
+        elif options:
+            input_placeholder = "Or type your own answer..."
+        else:
+            input_placeholder = "Type your answer..."
         elements.append(
             {
                 "tag": "form",
@@ -229,7 +239,7 @@ class LarkQuestionFeeler(QuestionFeeler):
                         "name": "answer",
                         "placeholder": {
                             "tag": "plain_text",
-                            "content": "Type your answer...",
+                            "content": input_placeholder,
                         },
                     },
                     {

@@ -223,6 +223,16 @@ class SlackInk:
         try:
             await self.client.pins_remove(channel=channel, timestamp=ts)
             return True
+        except SlackApiError as e:
+            if e.response.get("error") == "not_pinned":
+                logger.debug("SlackInk: unpin_message skipped — message not pinned")
+                return True
+            logger.warning(
+                "SlackInk: unpin_message failed: %s",
+                e.response.get("error", "unknown"),
+                exc_info=True,
+            )
+            return False
         except Exception:
             logger.warning("SlackInk: unpin_message failed", exc_info=True)
             return False
@@ -259,6 +269,13 @@ class SlackInk:
                     type="link",
                 )
                 return resp.get("bookmark", {}).get("id")
+        except SlackApiError as e:
+            logger.warning(
+                "SlackInk: bookmark_upsert failed: %s",
+                e.response.get("error", "unknown"),
+                exc_info=True,
+            )
+            return None
         except Exception:
             logger.warning("SlackInk: bookmark_upsert failed", exc_info=True)
             return None

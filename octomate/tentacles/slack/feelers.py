@@ -142,7 +142,7 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
 class SlackTodoFeeler(TodoFeeler):
     ink: SlackInk
     store: InteractionStore
-    pinned: dict[str, str]  # channel_key -> bookmark_id
+    pinned: dict[str, str]  # channel_key -> pinned message ts
 
     def __init__(self, ink: SlackInk, store: InteractionStore) -> None:
         self.ink = ink
@@ -214,25 +214,18 @@ class SlackTodoFeeler(TodoFeeler):
     async def pin_todo(self, target: SendTarget, ts: str) -> bool:
         channel = str(target.chat_id)
         key = self.channel_key(target)
-        link = await self.ink.get_permalink(channel, ts)
-        if not link:
-            return False
-        existing_id = self.pinned.get(key)
-        bookmark_id = await self.ink.bookmark_upsert(
-            channel, "📋 Task List", link, existing_id
-        )
-        if bookmark_id:
-            self.pinned[key] = bookmark_id
-            return True
-        return False
+        # Unpin any previously pinned todo for this channel/thread first
+        if prev_ts := self.pinned.get(key):
+            await self.ink.unpin_message(channel, prev_ts)
+        ok = await self.ink.pin_message(channel, ts)
+        if ok:
+            self.pinned[key] = ts
+        return ok
 
     async def unpin_todo(self, target: SendTarget, ts: str) -> bool:
         channel = str(target.chat_id)
         key = self.channel_key(target)
-        bookmark_id = self.pinned.get(key)
-        if not bookmark_id:
-            return False
-        ok = await self.ink.bookmark_remove(channel, bookmark_id)
+        ok = await self.ink.unpin_message(channel, ts)
         if ok:
             self.pinned.pop(key, None)
         return ok
@@ -270,24 +263,73 @@ class SlackQuestionFeeler(QuestionFeeler):
 
         if options:
             blocks.append({"type": "divider"})
+            if multi_select:
+                blocks.append(
+                    {
+                        "type": "actions",
+                        "block_id": f"question_cb_block_{question.question_id}",
+                        "elements": [
+                            {
+                                "type": "checkboxes",
+                                "action_id": f"question_checkboxes_{question.question_id}",
+                                "options": [
+                                    {
+                                        "text": {"type": "plain_text", "text": opt},
+                                        "value": opt,
+                                    }
+                                    for opt in options
+                                ],
+                            }
+                        ],
+                    }
+                )
+                blocks.append(
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "Submit"},
+                                "style": "primary",
+                                "action_id": f"question_submit_{question.question_id}",
+                                "value": json.dumps(
+                                    {
+                                        "action": "question_submit",
+                                        "question_id": question.question_id,
+                                    }
+                                ),
+                            }
+                        ],
+                    }
+                )
+            else:
+                blocks.append(
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": opt},
+                                "action_id": f"question_{question.question_id}_{i}",
+                                "value": json.dumps(
+                                    {
+                                        "action": "question_answer",
+                                        "question_id": question.question_id,
+                                        "answer": opt,
+                                    }
+                                ),
+                            }
+                            for i, opt in enumerate(options)
+                        ],
+                    }
+                )
             blocks.append(
                 {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": opt},
-                            "action_id": f"question_{question.question_id}_{i}",
-                            "value": json.dumps(
-                                {
-                                    "action": "question_answer",
-                                    "question_id": question.question_id,
-                                    "answer": opt,
-                                }
-                            ),
-                        }
-                        for i, opt in enumerate(options)
-                    ],
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "_Or reply in this thread for a different answer._",
+                    },
                 }
             )
         else:

@@ -352,12 +352,12 @@ class SlackTentacle(ChannelTentacle):
             elif action_type == "question_answer":
                 answer = value.get("answer", "")
                 question_id = value.get("question_id", "")
+                entry = self.interactions.questions.get(question_id)
+                question_text = entry[0].text if entry else ""
                 await self.interactions.resolve_question(
                     question_id, answer, clicker_id
                 )
 
-                entry = self.interactions.questions.get(question_id)
-                question_text = entry[0].text if entry else ""
                 blocks = [
                     {
                         "type": "section",
@@ -370,6 +370,42 @@ class SlackTentacle(ChannelTentacle):
                 if channel and message_ts:
                     await self.ink.update_message(
                         channel, message_ts, text=f"Answered: {answer}", blocks=blocks
+                    )
+
+            elif action_type == "question_submit":
+                question_id = value.get("question_id", "")
+                state = body.get("state", {}).get("values", {})
+                selected: list[str] = []
+                for block_vals in state.values():
+                    for action_data in block_vals.values():
+                        if action_data.get("type") == "checkboxes":
+                            for opt in action_data.get("selected_options", []):
+                                val = opt.get("value", "")
+                                if val:
+                                    selected.append(val)
+                answer = ", ".join(selected)
+                entry = self.interactions.questions.get(question_id)
+                question_text = entry[0].text if entry else ""
+                await self.interactions.resolve_question(
+                    question_id, answer, clicker_id
+                )
+
+                answer_display = answer if answer else "_(nothing selected)_"
+                blocks = [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f":white_check_mark: *Answered*\n{question_text}\n\n:speech_balloon: *Answer:* {answer_display}",
+                        },
+                    }
+                ]
+                if channel and message_ts:
+                    await self.ink.update_message(
+                        channel,
+                        message_ts,
+                        text=f"Answered: {answer_display}",
+                        blocks=blocks,
                     )
 
             elif action_type == "show_thinking":

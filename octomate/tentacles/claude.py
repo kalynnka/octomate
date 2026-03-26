@@ -92,8 +92,6 @@ class ClaudeCodeTentacle(AgentTentacle):
                 text = q.get("question", "")
                 options = [opt["label"] for opt in q.get("options", [])] or None
                 multi = q.get("multiSelect", False)
-                if multi:
-                    text += "\n(select multiple, comma-separated)"
                 resp = await channel.feelers.questions.ask_question(
                     target, text, session_key=key, options=options, multi_select=multi
                 )
@@ -138,7 +136,9 @@ class ClaudeCodeTentacle(AgentTentacle):
                 # Only (re-)pin when a new card was posted (ts changed).
                 # bookmark_upsert is idempotent so no run-level guard is needed.
                 if new_ts != todo_ts:
-                    await channel.feelers.todos.pin_todo(target, new_ts)
+                    pinned = await channel.feelers.todos.pin_todo(target, new_ts)
+                    if not pinned:
+                        logger.warning("hook_todo_write: failed to pin todo card ts=%s", new_ts)
                 todo_ts = new_ts
                 self._todo_ts[key] = new_ts
             return {
@@ -224,6 +224,11 @@ class ClaudeCodeTentacle(AgentTentacle):
                             self._session_id_map[key] = msg.session_id
                         continue
                     has_text = await _handle_stream_msg(msg, stream, has_text)
+
+        # Unpin the todo list now that the task is complete
+        if todo_ts:
+            await channel.feelers.todos.unpin_todo(target, todo_ts)
+            self._todo_ts.pop(key, None)
 
         session_id_after = self._session_id_map.get(key)
         resume_uri = (
