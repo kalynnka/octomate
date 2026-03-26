@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 import warnings
 
 import octotools
@@ -26,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 
-def _start() -> None:
+def _build_octopus() -> Octopus:
     config = OctomateConfig()
 
     skill_manager = SkillManager()
@@ -107,24 +106,18 @@ def _start() -> None:
                 )
             )
 
-    try:
-        asyncio.run(octopus.activate())
-    except KeyboardInterrupt:
-        pass
+    return octopus
 
 
-def run() -> None:
-    if "--reload" in sys.argv:
-        from watchfiles import run_process
-
-        run_process(
-            "octomate",
-            target="main._start",
-            target_type="function",
-        )
-    else:
-        _start()
-
-
-if __name__ == "__main__":
-    run()
+async def app(scope, receive, send):
+    if scope["type"] != "lifespan":
+        return
+    while True:
+        message = await receive()
+        if message["type"] == "lifespan.startup":
+            octopus = _build_octopus()
+            asyncio.create_task(octopus.activate())
+            await send({"type": "lifespan.startup.complete"})
+        elif message["type"] == "lifespan.shutdown":
+            await send({"type": "lifespan.shutdown.complete"})
+            return

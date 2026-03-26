@@ -5,7 +5,8 @@
       "name": "Octomate",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/main.py",
+      "module": "uvicorn",
+      "args": ["main:app"],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
@@ -15,9 +16,12 @@
       "name": "Octomate (reload)",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/main.py",
+      "module": "uvicorn",
       "args": [
-        "--reload"
+        "main:app",
+        "--reload",
+        "--reload-dir", "octomate",
+        "--reload-dir", "octotools"
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
