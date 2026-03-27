@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from pathlib import Path
@@ -82,11 +83,22 @@ class LarkTentacle(ChannelTentacle):
             questions=LarkQuestionFeeler(self.ink, self.interactions),
         )
 
+    def _start_ws_blocking(self) -> None:
+        import lark_oapi.ws.client as ws_mod
+
+        fresh_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(fresh_loop)
+        ws_mod.loop = fresh_loop
+        try:
+            self.ws_client.start()
+        finally:
+            fresh_loop.close()
+
     async def activate(self) -> None:
         logger.info("Tentacle %s: starting Lark WebSocket client", self.id)
         with anyio.CancelScope() as scope:
             self.ws_scope = scope
-            await anyio.to_thread.run_sync(self.ws_client.start)
+            await anyio.to_thread.run_sync(self._start_ws_blocking)
 
     async def deactivate(self) -> None:
         if self.ws_scope is not None:
