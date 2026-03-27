@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +17,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils import uuid7
 
 from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
@@ -118,7 +118,7 @@ class LarkTentacle(ChannelTentacle):
             data, file_name = result
             await anyio.Path(save_dir).mkdir(parents=True, exist_ok=True)
             ext = guess_image_ext("", file_name)
-            file_path = save_dir / f"{uuid.uuid4().hex}{ext}"
+            file_path = save_dir / f"{uuid7().hex}{ext}"
             if data:
                 await anyio.Path(file_path).write_bytes(data)
             seg.data.file = str(file_path.resolve())

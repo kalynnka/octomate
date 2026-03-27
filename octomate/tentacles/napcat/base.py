@@ -6,7 +6,6 @@ import asyncio
 import base64
 import json
 import logging
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,6 +13,7 @@ import anyio
 from pydantic import SecretStr
 from pydantic_ai import Agent
 from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils import uuid7
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
@@ -185,7 +185,7 @@ class NapcatTentacle(ChannelTentacle):
             resp = await self.ink.download(url)
 
             ext = guess_image_ext(resp.headers.get("content-type", ""), url)
-            path = save_dir / f"{uuid.uuid4().hex}{ext}"
+            path = save_dir / f"{uuid7().hex}{ext}"
             await anyio.Path(path).write_bytes(resp.content)
 
             seg.data.file = str(path.resolve())

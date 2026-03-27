@@ -44,7 +44,6 @@ from octomate.tentacles.feelers import NULL_FEELERS, Feelers
 if TYPE_CHECKING:
     from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
-    from octomate.transmuters.interactions import Confirmation
 
 logger = logging.getLogger(__name__)
 
@@ -357,7 +356,7 @@ class ChannelTentacle(Tentacle):
                     approvers=tool_meta.get("approvers"),
                 )
 
-                sent = await self.send_confirmation(target, action)
+                sent = await self.feelers.confirm.send_confirmation(target, action)
                 if not sent:
                     await self.interactions.expire_confirmation(action.confirmation_id)
                     deferred.approvals[call.tool_call_id] = False
@@ -430,9 +429,6 @@ class ChannelTentacle(Tentacle):
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None: ...
-
-    async def send_confirmation(self, target: SendTarget, action: Confirmation) -> bool:
-        return await self.feelers.confirm.send_confirmation(target, action)
 
     @asynccontextmanager
     async def open_stream(self, target: SendTarget) -> AsyncIterator[StreamSink]:

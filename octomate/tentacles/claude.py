@@ -138,7 +138,9 @@ class ClaudeCodeTentacle(AgentTentacle):
                 if new_ts != todo_ts:
                     pinned = await channel.feelers.todos.pin_todo(target, new_ts)
                     if not pinned:
-                        logger.warning("hook_todo_write: failed to pin todo card ts=%s", new_ts)
+                        logger.warning(
+                            "hook_todo_write: failed to pin todo card ts=%s", new_ts
+                        )
                 todo_ts = new_ts
                 self._todo_ts[key] = new_ts
             return {
@@ -168,7 +170,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                 description=_summarize(tool_name, input_data),
                 skill="claude_code",
             )
-            sent = await channel.send_confirmation(target, action)
+            sent = await channel.feelers.confirm.send_confirmation(target, action)
             if not sent:
                 await channel.interactions.expire_confirmation(action.confirmation_id)
                 return PermissionResultDeny(

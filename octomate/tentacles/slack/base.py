@@ -4,7 +4,6 @@ import json
 import logging
 import re
 import time
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +15,7 @@ from pydantic_ai import Agent
 from pydantic_ai.tools import DeferredToolRequests
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
+from uuid_utils import uuid7
 
 from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
@@ -155,7 +155,7 @@ class SlackStreamSink(StreamSink):
         # chronologically *after* whatever was already streaming.
         await self.flush()
 
-        thinking_id = uuid.uuid4().hex
+        thinking_id = uuid7().hex
         self.thinking_store[thinking_id] = text
 
         # Build a one-line preview: collapse whitespace, trim to limit.
@@ -503,7 +503,7 @@ class SlackTentacle(ChannelTentacle):
             data, filename = result
             await anyio.Path(save_dir).mkdir(parents=True, exist_ok=True)
             ext = guess_image_ext("", filename)
-            file_path = save_dir / f"{uuid.uuid4().hex}{ext}"
+            file_path = save_dir / f"{uuid7().hex}{ext}"
             if data:
                 await anyio.Path(file_path).write_bytes(data)
             seg.data.file = str(file_path.resolve())

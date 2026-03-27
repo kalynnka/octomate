@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
 from arcanus.materia.sqlalchemy import AsyncSession
 from sqlalchemy import update
+from uuid_utils import uuid7
 
 from octomate.database import engine
 from octomate.models.interactions import (
@@ -66,7 +66,7 @@ class InteractionStore:
         skill: str = "",
         approvers: list[str] | None = None,
     ) -> tuple[Confirmation, asyncio.Future[bool]]:
-        confirmation_id = uuid.uuid4().hex
+        confirmation_id = uuid7().hex
         now = datetime.now()
         thread = await self.threads.get(key)
 
@@ -155,7 +155,7 @@ class InteractionStore:
         text: str,
         options: list[str] | None = None,
     ) -> tuple[Question, asyncio.Future[QuestionResponse]]:
-        question_id = uuid.uuid4().hex
+        question_id = uuid7().hex
         thread = await self.threads.get(key)
 
         async with AsyncSession(engine()) as session:
@@ -224,7 +224,7 @@ class InteractionStore:
         active_form: str | None = None,
         assignee: str | None = None,
     ) -> Todo:
-        todo_id = uuid.uuid4().hex
+        todo_id = uuid7().hex
 
         async with AsyncSession(engine()) as session:
             thread = await self.threads.get(key)
