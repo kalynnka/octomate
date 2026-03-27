@@ -3,14 +3,27 @@ services:
     build: .
     container_name: octomate
     restart: always
-    profiles:
-      - app
     environment:
       UV_LINK_MODE: copy
     volumes:
       - .:/app
       - /app/.venv
-    command: ["uv", "run", "uvicorn", "main:app", "--reload", "--reload-dir", "octomate", "--reload-dir", "octotools", "--host", "0.0.0.0"]
+    command:
+      [
+        "uv",
+        "run",
+        "uvicorn",
+        "main:app",
+        "--reload",
+        "--reload-dir",
+        "octomate",
+        "--reload-dir",
+        "octotools",
+        "--host",
+        "0.0.0.0",
+        "--log-level",
+        "info",
+      ]
     networks:
       - octomate_network
 

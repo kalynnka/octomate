@@ -90,6 +90,38 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
         await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
         return True
 
+    async def send_timeout_notification(
+        self, target: SendTarget, action: Confirmation
+    ) -> None:
+        chat_id = str(target.chat_id)
+        receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
+        title = action.title or action.tool_name
+        args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
+        if len(args_json) > 2000:
+            args_json = args_json[:2000] + "\n… (truncated)"
+
+        card = json.dumps(
+            {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": f"{title} — Auto-refused (timed out)",
+                    },
+                    "template": "grey",
+                },
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": (
+                            f"⏳ **{title}** — Auto-refused (timed out)\n"
+                            f"**Arguments:**\n```json\n{args_json}\n```"
+                        ),
+                    },
+                ],
+            }
+        )
+        await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+
 
 class LarkTodoFeeler(TodoFeeler):
     ink: LarkInk
@@ -224,7 +256,9 @@ class LarkQuestionFeeler(QuestionFeeler):
                 )
         elements.append({"tag": "hr"})
         if multi_select:
-            input_placeholder = "Type selected options (comma-separated) or your own answer..."
+            input_placeholder = (
+                "Type selected options (comma-separated) or your own answer..."
+            )
         elif options:
             input_placeholder = "Or type your own answer..."
         else:
