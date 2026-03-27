@@ -39,13 +39,19 @@ class InteractionStore:
     timeout: float
     threads: ThreadStore
 
+    card_message_ids: dict[str, str]  # interaction_id -> platform message id
+
     def __init__(self, threads: ThreadStore, timeout: float = 3600.0) -> None:
         self.confirmations = {}
         self.questions = {}
         self.todos = {}
+        self.card_message_ids = {}
         self.timeout = timeout
         self.threads = threads
         self.session_allowlist: dict[str, set[str]] = {}  # thread_id -> set[tool_name]
+
+    def set_card_message_id(self, interaction_id: str, message_id: str) -> None:
+        self.card_message_ids[interaction_id] = message_id
 
     def is_session_allowed(self, thread_id: str, tool_name: str) -> bool:
         return tool_name in self.session_allowlist.get(thread_id, set())
@@ -214,6 +220,61 @@ class InteractionStore:
                 .values(status="expired")
             )
             await session.commit()
+
+    async def expire_thread_interactions(
+        self, thread_id: str
+    ) -> tuple[list[Confirmation], list[Question]]:
+        """Expire all pending confirmations and questions for a thread.
+
+        Returns the expired (Confirmation, Question) lists so callers can
+        dismiss the platform cards.
+        """
+        conf_ids = [
+            cid
+            for cid, (c, _) in list(self.confirmations.items())
+            if c.thread_id == thread_id
+        ]
+        q_ids = [
+            qid
+            for qid, (q, _) in list(self.questions.items())
+            if q.thread_id == thread_id
+        ]
+        expired_confirmations: list[Confirmation] = []
+        expired_questions: list[Question] = []
+        for cid in conf_ids:
+            entry = self.confirmations.pop(cid, None)
+            if entry is None:
+                continue
+            confirmation, future = entry
+            expired_confirmations.append(confirmation)
+            if not future.done():
+                future.set_result(False)
+        for qid in q_ids:
+            entry = self.questions.pop(qid, None)
+            if entry is None:
+                continue
+            question, future = entry
+            expired_questions.append(question)
+            if not future.done():
+                future.cancel()
+
+        async with AsyncSession(engine()) as session:
+            if conf_ids:
+                await session.execute(
+                    update(ConfirmationModel)
+                    .where(ConfirmationModel.confirmation_id.in_(conf_ids))
+                    .values(status="expired")
+                )
+            if q_ids:
+                await session.execute(
+                    update(QuestionModel)
+                    .where(QuestionModel.question_id.in_(q_ids))
+                    .values(status="expired")
+                )
+            if conf_ids or q_ids:
+                await session.commit()
+
+        return expired_confirmations, expired_questions
 
     # --- TODOs ---
 

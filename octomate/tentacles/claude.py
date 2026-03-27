@@ -59,6 +59,7 @@ class ClaudeCodeTentacle(AgentTentacle):
     _vscode_uri: str  # precomputed vscode://file<cwd> launch link
     _todo_ts: dict[SessionKey, str]  # thread_key -> todo card message ts
     _session_id_map: dict[SessionKey, str]  # session_key -> Claude SDK session_id
+    _active_clients: dict[SessionKey, ClaudeSDKClient]
 
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
         super().__init__(tag, octopus, description=config.description)
@@ -66,11 +67,20 @@ class ClaudeCodeTentacle(AgentTentacle):
         self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
         self._todo_ts = {}
         self._session_id_map = {}
+        self._active_clients = {}
 
-    async def __call__(
+    async def interrupt(self, key: SessionKey) -> None:
+        client = self._active_clients.get(key)
+        if client is not None:
+            try:
+                await client.interrupt()
+            except Exception:
+                logger.debug("ClaudeCodeTentacle: interrupt failed for [%s]", key)
+
+    async def run(
         self,
         key: SessionKey,
-        contents: list[MessageEvent],  # should always length 1 for agent tentacles
+        contents: list[MessageEvent],
     ):
         task = "".join([str(part) for part in contents[0].to_content_parts()])
         channel = self.octopus.tentacles[key.tentacle_id]
@@ -216,27 +226,29 @@ class ClaudeCodeTentacle(AgentTentacle):
 
         result_text: str = ""
         has_text = False
-        async with channel.open_stream(target) as stream:
-            await stream.set_status("🐙 Summoned, starting…")
-            async with ClaudeSDKClient(options=options) as client:
-                await client.query(task)
-                async for msg in client.receive_response():
-                    logger.debug(
-                        "ClaudeCodeTentacle recv %s: %s",
-                        type(msg).__name__,
-                        _msg_sample(msg),
-                    )
-                    if isinstance(msg, ResultMessage):
-                        result_text += msg.result or ""
-                        if msg.session_id:
-                            self._session_id_map[key] = msg.session_id
-                        continue
-                    has_text = await _handle_stream_msg(msg, stream, has_text)
-
-        # Unpin the todo list now that the task is complete
-        if todo_ts:
-            await channel.feelers.todos.unpin_todo(target, todo_ts)
-            self._todo_ts.pop(key, None)
+        try:
+            async with channel.open_stream(target) as stream:
+                await stream.set_status("🐙 Summoned, starting…")
+                async with ClaudeSDKClient(options=options) as client:
+                    self._active_clients[key] = client
+                    await client.query(task)
+                    async for msg in client.receive_response():
+                        logger.debug(
+                            "ClaudeCodeTentacle recv %s: %s",
+                            type(msg).__name__,
+                            _msg_sample(msg),
+                        )
+                        if isinstance(msg, ResultMessage):
+                            result_text += msg.result or ""
+                            if msg.session_id:
+                                self._session_id_map[key] = msg.session_id
+                            continue
+                        has_text = await _handle_stream_msg(msg, stream, has_text)
+        finally:
+            self._active_clients.pop(key, None)
+            if todo_ts:
+                await channel.feelers.todos.unpin_todo(target, todo_ts)
+                self._todo_ts.pop(key, None)
 
         session_id_after = self._session_id_map.get(key)
         resume_uri = (

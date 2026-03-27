@@ -86,6 +86,13 @@ class ConfirmationFeeler(ABC):
         """Notify the channel that a tool call was auto-refused due to timeout/kill."""
         ...
 
+    @abstractmethod
+    async def dismiss_confirmation(
+        self, target: SendTarget, action: Confirmation
+    ) -> None:
+        """Update the platform card to show a cancelled/dismissed state."""
+        ...
+
 
 class TodoFeeler(ABC):
     """Handles TODO list cards. Delegates persistence to store."""
@@ -175,6 +182,11 @@ class QuestionFeeler(ABC):
         """Send a question card and wait for a response."""
         ...
 
+    @abstractmethod
+    async def dismiss_question(self, target: SendTarget, question: Question) -> None:
+        """Update the platform card to show a cancelled/dismissed state."""
+        ...
+
     async def collect_input(
         self, target: SendTarget, prompt: str, session_key: SessionKey
     ) -> str | None:
@@ -232,6 +244,11 @@ class NullConfirmationFeeler(ConfirmationFeeler):
         return False
 
     async def send_timeout_notification(
+        self, target: SendTarget, action: Confirmation
+    ) -> None:
+        _ = target, action
+
+    async def dismiss_confirmation(
         self, target: SendTarget, action: Confirmation
     ) -> None:
         _ = target, action
@@ -301,6 +318,9 @@ class NullQuestionFeeler(QuestionFeeler):
     ) -> None:
         _ = target, text, session_key, options, multi_select
         return None
+
+    async def dismiss_question(self, target: SendTarget, question: Question) -> None:
+        _ = target, question
 
 
 NULL_FEELERS = Feelers(

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from octomate.schemas.session import SessionKey
     from octomate.tentacles.base import SendTarget
     from octomate.tentacles.slack.ink import SlackInk
-    from octomate.transmuters.interactions import Confirmation
+    from octomate.transmuters.interactions import Confirmation, Question
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,8 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
             blocks=blocks,
             thread_ts=thread_ts,
         )
+        if ts:
+            self.store.set_card_message_id(action.confirmation_id, ts)
         return ts is not None
 
     async def send_timeout_notification(
@@ -142,6 +144,27 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
             text=f"{title} — Auto-refused (timed out)",
             blocks=blocks,
             thread_ts=thread_ts,
+        )
+
+    async def dismiss_confirmation(
+        self, target: SendTarget, action: Confirmation
+    ) -> None:
+        ts = self.store.card_message_ids.pop(action.confirmation_id, None)
+        if not ts:
+            return
+        channel = str(target.chat_id)
+        title = action.title or action.tool_name
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"⚠️ *{title}* — Cancelled",
+                },
+            }
+        ]
+        await self.ink.update_message(
+            channel, ts, text=f"{title} — Cancelled", blocks=blocks
         )
 
 
@@ -355,8 +378,28 @@ class SlackQuestionFeeler(QuestionFeeler):
             await self.expire_question(question.question_id)
             return None
 
+        self.store.set_card_message_id(question.question_id, ts)
+
         try:
             return await asyncio.wait_for(future, timeout=self.timeout)
         except TimeoutError:
             await self.expire_question(question.question_id)
             return None
+
+    async def dismiss_question(self, target: SendTarget, question: Question) -> None:
+        ts = self.store.card_message_ids.pop(question.question_id, None)
+        if not ts:
+            return
+        channel = str(target.chat_id)
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "⚠️ *Question* — Cancelled",
+                },
+            }
+        ]
+        await self.ink.update_message(
+            channel, ts, text="Question — Cancelled", blocks=blocks
+        )

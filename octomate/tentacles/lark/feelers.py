@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from octomate.schemas.session import SessionKey
     from octomate.tentacles.base import SendTarget
     from octomate.tentacles.lark.ink import LarkInk
-    from octomate.transmuters.interactions import Confirmation
+    from octomate.transmuters.interactions import Confirmation, Question
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,9 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                 ],
             }
         )
-        await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+        ts = await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+        if ts:
+            self.store.set_card_message_id(action.confirmation_id, ts)
         return True
 
     async def send_timeout_notification(
@@ -125,6 +127,32 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
             }
         )
         await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+
+    async def dismiss_confirmation(
+        self, target: SendTarget, action: Confirmation
+    ) -> None:
+        ts = self.store.card_message_ids.pop(action.confirmation_id, None)
+        if not ts:
+            return
+        title = action.title or action.tool_name
+        card = json.dumps(
+            {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": f"{title} \u2014 Cancelled",
+                    },
+                    "template": "grey",
+                },
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": f"\u26a0\ufe0f **{title}** \u2014 Cancelled",
+                    },
+                ],
+            }
+        )
+        await self.ink.update_message(ts, "interactive", card)
 
 
 class LarkTodoFeeler(TodoFeeler):
@@ -309,8 +337,33 @@ class LarkQuestionFeeler(QuestionFeeler):
             await self.expire_question(question.question_id)
             return None
 
+        self.store.set_card_message_id(question.question_id, sent)
+
         try:
             return await asyncio.wait_for(future, timeout=self.timeout)
         except TimeoutError:
             await self.expire_question(question.question_id)
             return None
+
+    async def dismiss_question(self, target: SendTarget, question: Question) -> None:
+        ts = self.store.card_message_ids.pop(question.question_id, None)
+        if not ts:
+            return
+        card = json.dumps(
+            {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": "Question \u2014 Cancelled",
+                    },
+                    "template": "grey",
+                },
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": "\u26a0\ufe0f **Question** \u2014 Cancelled",
+                    },
+                ],
+            }
+        )
+        await self.ink.update_message(ts, "interactive", card)

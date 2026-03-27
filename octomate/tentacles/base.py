@@ -147,13 +147,88 @@ class Tentacle(ABC):
 
 class AgentTentacle(Tentacle):
     """A tentacle wrapping an agent. On-demand, not long-running.
-    Borrows the calling ChannelTentacle's feelers and ink for user interaction."""
+    Borrows the calling ChannelTentacle's feelers and ink for user interaction.
+
+    Only one run per session key at a time. If a new message arrives while the
+    agent is running, the current run is cancelled and re-started with the new
+    message. Pending tool calls, questions, and todos from the previous run are
+    dismissed in parallel.
+    """
 
     description: str = ""
+    _running_tasks: dict[SessionKey, asyncio.Task]
 
     def __init__(self, id: str, octopus: Octopus, description: str = "") -> None:
         super().__init__(id, octopus)
         self.description = description
+        self._running_tasks = {}
+
+    async def __call__(
+        self,
+        key: SessionKey,
+        contents: list[MessageEvent],
+    ) -> None:
+        existing = self._running_tasks.get(key)
+        if existing is not None and not existing.done():
+            await self.interrupt(key)
+            existing.cancel()
+            asyncio.create_task(self._dismiss_pending(key))
+
+        self._running_tasks[key] = asyncio.current_task()  # type: ignore[assignment]
+        try:
+            await self.run(key, contents)
+        except asyncio.CancelledError:
+            logger.info("AgentTentacle %s: run cancelled for [%s]", self.id, key)
+            raise
+        except Exception:
+            logger.exception("Error in agent tentacle %s [%s]", self.id, key)
+        finally:
+            if self._running_tasks.get(key) is asyncio.current_task():
+                self._running_tasks.pop(key, None)
+
+    async def interrupt(self, key: SessionKey) -> None:
+        """Send a graceful stop signal before hard-cancelling.
+
+        Override in subclasses to e.g. send ClaudeSDKClient.interrupt().
+        """
+
+    @abstractmethod
+    async def run(
+        self,
+        key: SessionKey,
+        contents: list[MessageEvent],
+    ) -> None: ...
+
+    async def _dismiss_pending(self, key: SessionKey) -> None:
+        """Background task: expire all pending interactions and dismiss their cards."""
+        try:
+            channel = self.octopus.tentacles.get(key.tentacle_id)
+            if channel is None:
+                return
+            thread = await channel.threads.get(key)
+            thread_id = str(thread.id)
+            target = (
+                SendTarget("group", key.group_id, reply_to=key.thread_id)
+                if key.group_id
+                else SendTarget("private", key.user_id, reply_to=key.thread_id)
+            )
+            (
+                expired_confs,
+                expired_qs,
+            ) = await channel.interactions.expire_thread_interactions(thread_id)
+            dismiss_coros = [
+                channel.feelers.confirm.dismiss_confirmation(target, c)
+                for c in expired_confs
+            ] + [
+                channel.feelers.questions.dismiss_question(target, q)
+                for q in expired_qs
+            ]
+            if dismiss_coros:
+                await asyncio.gather(*dismiss_coros, return_exceptions=True)
+        except Exception:
+            logger.exception(
+                "AgentTentacle %s: error dismissing pending for [%s]", self.id, key
+            )
 
 
 class ChannelTentacle(Tentacle):
