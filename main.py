@@ -32,6 +32,11 @@ def _build_octopus() -> Octopus:
     octotools.streamify.register(skill_manager)
     octotools.github.register(skill_manager)
     octotools.linear.register(skill_manager)
+    octotools.tarot.register(skill_manager)
+
+    napcat_skill_manager = SkillManager()
+    octotools.streamify.register(napcat_skill_manager)
+    octotools.tarot.register(napcat_skill_manager)
 
     octopus = Octopus(skill_manager=skill_manager)
 
@@ -52,10 +57,6 @@ def _build_octopus() -> Octopus:
         else:
             memory = OctopusMemory()
 
-        flick = create_flick_agent(
-            tc.flick, skill_manager, summon_toolset=summon_toolset
-        )
-
         if isinstance(tc, NapcatTentacleConfig):
             from octomate.tentacles.napcat import NapcatTentacle
 
@@ -69,7 +70,10 @@ def _build_octopus() -> Octopus:
                     backoff_base=tc.backoff_base,
                     backoff_max=tc.backoff_max,
                     backoff_factor=tc.backoff_factor,
-                    flick=flick,
+                    flick=create_flick_agent(
+                        tc.flick,
+                        napcat_skill_manager,
+                    ),
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
@@ -86,7 +90,11 @@ def _build_octopus() -> Octopus:
                     octopus,
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
-                    flick=flick,
+                    flick=create_flick_agent(
+                        tc.flick,
+                        skill_manager,
+                        summon_toolset=summon_toolset,
+                    ),
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
@@ -100,7 +108,11 @@ def _build_octopus() -> Octopus:
                     octopus,
                     bot_token=tc.bot_token,
                     app_token=tc.app_token,
-                    flick=flick,
+                    flick=create_flick_agent(
+                        tc.flick,
+                        skill_manager,
+                        summon_toolset=summon_toolset,
+                    ),
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )

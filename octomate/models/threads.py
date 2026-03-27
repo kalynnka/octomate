@@ -34,4 +34,6 @@ class Thread(Base, TransmuterProxiedMixin):
     chat_id: Mapped[str] = mapped_column(String, nullable=False, index=True, default="")
     owner_tentacle: Mapped[str] = mapped_column(String, nullable=False, index=True)
     agent_session_id: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    worktree_path: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
+    branch_name: Mapped[str | None] = mapped_column(String, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

@@ -88,6 +88,7 @@ class ClaudeCodeConfig(BaseModel):
     cwd: str = "."
     model: str | None = None
     max_turns: int | None = None
+    worktrees_dir: str | None = None  # if set, enables per-session git worktree isolation
 
 
 AgentTentacleConfigUnion = ClaudeCodeConfig

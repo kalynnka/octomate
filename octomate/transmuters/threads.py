@@ -26,3 +26,5 @@ class Thread(BaseTransmuter):
     chat_id: str = ""
     owner_tentacle: str
     created_at: datetime = Field(default_factory=datetime.now)
+    worktree_path: str | None = None
+    branch_name: str | None = None

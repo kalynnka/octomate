@@ -1,4 +1,5 @@
 from octotools import github, linear, pixiv, qweather, streamify
+from octotools.tarot import tarot
 
 __all__ = [
     "github",
@@ -6,4 +7,5 @@ __all__ = [
     "qweather",
     "pixiv",
     "streamify",
+    "tarot",
 ]

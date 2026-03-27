@@ -11,6 +11,9 @@ octomate.yaml
 # Octomate runtime data
 .octomate/
 
+# Tarot card images (download manually, see octotools/tarot/resources/README.md)
+octotools/tarot/resources/*/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

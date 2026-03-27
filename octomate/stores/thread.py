@@ -85,9 +85,6 @@ class ThreadStore:
 
     async def set_agent_session_id(self, key: SessionKey, session_id: str) -> None:
         """Persist the agent session_id for this key so it survives restarts."""
-        cached = self.thread_cache.get(key)
-        if cached is not None:
-            cached.agent_session_id = session_id
         async with AsyncSession(engine()) as session:
             stmt = (
                 pg_insert(Thread)
@@ -105,6 +102,45 @@ class ThreadStore:
                 .on_conflict_do_update(
                     constraint="uq_threads_session_key",
                     set_={"agent_session_id": session_id},
+                )
+                .returning(Thread)
+            )
+            thread = (await session.execute(stmt)).scalar_one()
+            await session.commit()
+        self._set_cached_thread(key, thread)
+
+    async def get_worktree_info(self, key: SessionKey) -> tuple[str, str] | None:
+        """Return (worktree_path, branch_name) for this key, or None if not set."""
+        thread = await self.get(key)
+        if thread.worktree_path and thread.branch_name:
+            return (thread.worktree_path, thread.branch_name)
+        return None
+
+    async def set_worktree_info(
+        self, key: SessionKey, worktree_path: str, branch_name: str
+    ) -> None:
+        """Persist worktree_path and branch_name for this key so they survive restarts."""
+        async with AsyncSession(engine()) as session:
+            stmt = (
+                pg_insert(Thread)
+                .values(
+                    id=str(uuid7()),
+                    tentacle_id=key.tentacle_id,
+                    user_id=key.user_id,
+                    group_id=key.group_id,
+                    thread_id=key.thread_id,
+                    chat_id=key.chat_id,
+                    owner_tentacle=self.default_owner,
+                    worktree_path=worktree_path,
+                    branch_name=branch_name,
+                    created_at=datetime.now(),
+                )
+                .on_conflict_do_update(
+                    constraint="uq_threads_session_key",
+                    set_={
+                        "worktree_path": worktree_path,
+                        "branch_name": branch_name,
+                    },
                 )
                 .returning(Thread)
             )

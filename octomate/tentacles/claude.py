@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 from typing import TYPE_CHECKING, Any, cast
@@ -61,6 +62,7 @@ AUTO_APPROVE = {"AskUserQuestion", "TodoWrite", "ExitPlanMode"}
 class ClaudeCodeTentacle(AgentTentacle):
     config: ClaudeCodeConfig
     _vscode_uri: str  # precomputed vscode://file<cwd> launch link
+    _worktrees_dir: str  # absolute path where per-session worktrees are created
     _todo_ts: dict[SessionKey, str]  # thread_key -> todo card message ts
     _session_id_map: dict[SessionKey, str]  # session_key -> Claude SDK session_id
     _session_names: dict[SessionKey, str]  # session_key -> human-readable task name
@@ -70,6 +72,11 @@ class ClaudeCodeTentacle(AgentTentacle):
         super().__init__(tag, octopus, description=config.description)
         self.config = config
         self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
+        self._worktrees_dir = (
+            os.path.abspath(config.worktrees_dir)
+            if config.worktrees_dir
+            else os.path.join(os.path.abspath(config.cwd), ".octomate/worktrees")
+        )
         self._todo_ts = {}
         self._session_id_map = {}
         self._session_names = {}
@@ -263,9 +270,35 @@ class ClaudeCodeTentacle(AgentTentacle):
             session_id = await channel.threads.get_agent_session_id(key)
             if session_id:
                 self._session_id_map[key] = session_id
-                logger.debug("ClaudeCodeTentacle: recovered session_id %s for %s", session_id, key)
+                logger.debug(
+                    "ClaudeCodeTentacle: recovered session_id %s for %s",
+                    session_id,
+                    key,
+                )
+
+        # Worktree setup — always create an isolated worktree per session.
+        # ThreadStore.get_worktree_info already handles the LRU cache, so no
+        # separate in-memory map is needed here.
+        worktree_path: str | None = None
+        branch_name: str | None = None
+
+        info = await channel.threads.get_worktree_info(key)
+        if info:
+            worktree_path, branch_name = info
+        else:
+            thread_identifier = key.thread_id or (
+                contents[0].message_id if contents else ""
+            )
+            branch_name = hashlib.sha1(thread_identifier.encode()).hexdigest()[:8]
+            worktree_path = await _create_worktree(
+                base_dir=os.path.abspath(self.config.cwd),
+                worktrees_dir=self._worktrees_dir,
+                branch_name=branch_name,
+            )
+            await channel.threads.set_worktree_info(key, worktree_path, branch_name)
+
         options = ClaudeAgentOptions(
-            cwd=self.config.cwd,
+            cwd=worktree_path if worktree_path else self.config.cwd,
             model=self.config.model or None,
             permission_mode="acceptEdits",
             max_turns=self.config.max_turns,
@@ -310,10 +343,7 @@ class ClaudeCodeTentacle(AgentTentacle):
 
         # Persist the session_id so it survives process restarts.
         if session_id_after:
-            try:
-                await channel.threads.set_agent_session_id(key, session_id_after)
-            except Exception:
-                logger.warning("ClaudeCodeTentacle: failed to persist session_id", exc_info=True)
+            await channel.threads.set_agent_session_id(key, session_id_after)
 
         # Resolve the background naming task: use the AI result if it finished
         # in time, otherwise cancel it and keep the fallback name.
@@ -340,9 +370,20 @@ class ClaudeCodeTentacle(AgentTentacle):
             if session_id_after
             else None
         )
-        footer_text = (
-            f"🖥️ *{session_name}* · <{self._vscode_uri}|Open project in VSCode>"
-        )
+        if worktree_path and branch_name:
+            # Worktree mode: link points to the isolated branch folder
+            vscode_link_uri = f"vscode://file{worktree_path}"
+            footer_text = (
+                f"🌿 *{branch_name}* · <{vscode_link_uri}|Open branch in VSCode>"
+            )
+            plain_content = f"Open branch in VSCode: {worktree_path}"
+        else:
+            # Legacy mode (no worktrees_dir configured): keep original behavior
+            vscode_link_uri = self._vscode_uri
+            footer_text = (
+                f"🖥️ *{session_name}* · <{vscode_link_uri}|Open project in VSCode>"
+            )
+            plain_content = f"Open project in VSCode: {vscode_link_uri}"
         if resume_uri:
             footer_text += f"  ·  🔄 <{resume_uri}|Resume in VS Code Claude>"
         await channel.send_platform_message(
@@ -352,7 +393,7 @@ class ClaudeCodeTentacle(AgentTentacle):
             messages=[
                 PlatformMessage(
                     msg_type="text",
-                    content=f"Open project in VSCode: {self._vscode_uri}",
+                    content=plain_content,
                     metadata={
                         "blocks": [
                             {
@@ -391,6 +432,8 @@ class ClaudeCodeTentacle(AgentTentacle):
                 self._todo_ts[thread_key] = ts
             if name := self._session_names.get(key):
                 self._session_names[thread_key] = name
+            if wt := await channel.threads.get_worktree_info(key):
+                await channel.threads.set_worktree_info(thread_key, wt[0], wt[1])
 
 
 async def _handle_stream_msg(msg: Message, stream: StreamSink, has_text: bool) -> bool:
@@ -507,6 +550,34 @@ def _summarize(tool_name: str, tool_input: Any) -> str:
                 detail += f" ({tool_input['glob']})"
             return detail
     return ""
+
+
+async def _create_worktree(base_dir: str, worktrees_dir: str, branch_name: str) -> str:
+    """Create a git worktree for branch_name under worktrees_dir.
+
+    Returns the absolute path of the newly created worktree directory.
+    Raises RuntimeError if git exits non-zero.
+    """
+    # Worktree directory name: replace "/" in branch_name with "-"
+    worktree_path = os.path.join(worktrees_dir, branch_name.replace("/", "-"))
+    os.makedirs(worktrees_dir, exist_ok=True)
+    proc = await asyncio.create_subprocess_exec(
+        "git",
+        "worktree",
+        "add",
+        worktree_path,
+        "-b",
+        branch_name,
+        cwd=base_dir,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"git worktree add failed (branch={branch_name}): {stderr.decode().strip()}"
+        )
+    return os.path.abspath(worktree_path)
 
 
 def _msg_sample(msg: Message) -> str:
