@@ -115,9 +115,12 @@ async def app(scope, receive, send):
     while True:
         message = await receive()
         if message["type"] == "lifespan.startup":
-            octopus = _build_octopus()
-            asyncio.create_task(octopus.activate())
-            await send({"type": "lifespan.startup.complete"})
+            try:
+                octopus = _build_octopus()
+                asyncio.create_task(octopus.activate())
+                await send({"type": "lifespan.startup.complete"})
+            except Exception as e:
+                logging.error(f"Error during startup: {e}")
         elif message["type"] == "lifespan.shutdown":
             await send({"type": "lifespan.shutdown.complete"})
             return
