@@ -6,15 +6,11 @@ import logging
 
 from anyio import create_memory_object_stream as object_stream
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
-from pydantic_ai import Agent, AgentRunResult, DeferredToolResults
-from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.agents.base import SessionContext, SummonRequest
-from octomate.agents.manager import SKILL_METADATA_KEY, SkillManager
-from octomate.schemas.actions import AgentMessage
+from octomate.agents.manager import SkillManager
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import AgentTentacle, ChannelTentacle, SendTarget
+from octomate.tentacles.base import AgentTentacle, ChannelTentacle
 from octomate.transmuters import sqlalchemy_materia
 
 logger = logging.getLogger(__name__)
@@ -82,103 +78,3 @@ class Octopus:
                     tg.create_task(owner(key, batch))
                 else:
                     tg.create_task(channel(key, batch))
-
-    async def resolve(
-        self,
-        agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
-        result: AgentRunResult[list[AgentMessage] | DeferredToolRequests],
-        key: SessionKey,
-        deps: SessionContext,
-        target: SendTarget,
-        tentacle: ChannelTentacle,
-    ) -> AgentRunResult[list[AgentMessage]] | SummonRequest | None:
-        """Resolve deferred tool requests until the agent produces final messages.
-
-        Returns the final result with list[AgentMessage] output,
-        a SummonRequest if the agent summoned an agent tentacle,
-        or None if resolution failed.
-        """
-        while isinstance(result.output, DeferredToolRequests):
-            # Check for summon — abort immediately, extract args from the deferred call
-            summon_call = next(
-                (c for c in result.output.calls if c.tool_name == "summon"), None
-            )
-            if summon_call:
-                args = summon_call.args_as_dict()
-                return SummonRequest(
-                    tentacle_tag=args.get("tentacle_tag", ""),
-                    summary=args.get("summary", ""),
-                    user_prefer=args.get("user_prefer", ""),
-                    language=args.get("language", ""),
-                )
-
-            deferred = DeferredToolResults()
-
-            for call in result.output.calls:
-                if call.tool_name == "ask_user":
-                    args = call.args_as_dict()
-                    resp = await tentacle.feelers.questions.ask_question(
-                        target,
-                        args.get("question", ""),
-                        session_key=key,
-                        options=args.get("options"),
-                    )
-                    deferred.calls[call.tool_call_id] = (
-                        resp.answer if resp else "(no response)"
-                    )
-
-            for call in result.output.approvals:
-                tool_meta = result.output.metadata.get(call.tool_call_id, {})
-
-                # Check session allowlist — skip confirmation if already allowed
-                thread = await tentacle.interactions.threads.get(key)
-                if tentacle.interactions.is_session_allowed(str(thread.id), call.tool_name):
-                    deferred.approvals[call.tool_call_id] = True
-                    continue
-
-                action, future = await tentacle.interactions.create_confirmation(
-                    key=key,
-                    tool_name=call.tool_name,
-                    tool_call_id=call.tool_call_id,
-                    args=call.args_as_dict(),
-                    title=tool_meta.get("description", call.tool_name),
-                    description=tool_meta.get("description", ""),
-                    skill=tool_meta.get(SKILL_METADATA_KEY, ""),
-                    approvers=tool_meta.get("approvers"),
-                )
-
-                sent = await tentacle.send_confirmation(target, action)
-                if not sent:
-                    await tentacle.interactions.expire_confirmation(
-                        action.confirmation_id
-                    )
-                    deferred.approvals[call.tool_call_id] = False
-                    continue
-
-                try:
-                    approved = await asyncio.wait_for(
-                        future, timeout=tentacle.interactions.timeout
-                    )
-                except TimeoutError:
-                    await tentacle.interactions.expire_confirmation(
-                        action.confirmation_id
-                    )
-                    await tentacle.feelers.confirm.send_timeout_notification(target, action)
-                    approved = False
-                except asyncio.CancelledError:
-                    await tentacle.interactions.expire_confirmation(
-                        action.confirmation_id
-                    )
-                    await tentacle.feelers.confirm.send_timeout_notification(target, action)
-                    raise
-
-                deferred.approvals[call.tool_call_id] = approved
-
-            result = await agent.run(
-                message_history=result.all_messages(),
-                deferred_tool_results=deferred,
-                deps=deps,
-                toolsets=tentacle.toolsets,
-            )
-
-        return result  # type: ignore[return-value]

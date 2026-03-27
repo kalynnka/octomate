@@ -208,7 +208,6 @@ class SlackTentacle(ChannelTentacle):
     handler: AsyncSocketModeHandler | None
     ink: SlackInk
     app_token: str
-    assistant_threads: set[str]
     dm_channels: dict[str, str]
     thinking_store: dict[str, str]
 
@@ -225,7 +224,6 @@ class SlackTentacle(ChannelTentacle):
     ) -> None:
         self.ink = SlackInk(bot_token)
         self.chromo = SlackChromo()
-        self.assistant_threads = set()
         self.dm_channels = {}
         self.thinking_store = {}
 
@@ -308,7 +306,9 @@ class SlackTentacle(ChannelTentacle):
                 status_emoji = ":white_check_mark:" if approved else ":x:"
                 status_text = "Approved" if approved else "Denied"
                 title = action.title or action.tool_name
-                blocks = _resolution_blocks(action, status_emoji, status_text, clicker_id)
+                blocks = _resolution_blocks(
+                    action, status_emoji, status_text, clicker_id
+                )
                 if channel and message_ts:
                     await self.ink.update_message(
                         channel,
@@ -410,7 +410,7 @@ class SlackTentacle(ChannelTentacle):
 
             elif action_type == "show_thinking":
                 thinking_id = value.get("thinking_id", "")
-                raw = self.thinking_store.pop(thinking_id, None)
+                raw = self.thinking_store.pop(thinking_id, "expired...")
                 if not raw:
                     return  # already expanded or entry expired
 

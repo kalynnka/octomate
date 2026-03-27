@@ -12,11 +12,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import anyio
-from pydantic_ai import Agent, CallDeferred, RunContext
+from pydantic_ai import (
+    Agent,
+    AgentRunResult,
+    CallDeferred,
+    DeferredToolResults,
+    RunContext,
+)
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import FunctionToolset
 
 from octomate.agents.base import SessionContext, SummonRequest
+from octomate.agents.manager import SKILL_METADATA_KEY
 from octomate.agents.tools import history_toolset
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
@@ -179,12 +186,19 @@ class ChannelTentacle(Tentacle):
         super().__init__(id, octopus)
         self.flick = flick
         self.memory = memory
-        self.profile = self.inspect()
         self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
         self.user_profiles = {}
         self.threads = ThreadStore(default_owner=id)
         self.interactions = InteractionStore(threads=self.threads)
         self.feelers = NULL_FEELERS
+
+        self.profile = self.ink.inspect()
+        logger.info(
+            "Tentacle %s: probed as %s (%s)",
+            self.id,
+            self.profile.user_id,
+            self.profile.name,
+        )
 
     @property
     def name(self) -> str:
@@ -240,13 +254,12 @@ class ChannelTentacle(Tentacle):
                 instructions=instructions,
             )
 
-            resolved = await self.octopus.resolve(
+            resolved = await self.resolve_deferred(
                 agent=self.flick,
                 result=result,
                 deps=deps,
                 key=key,
                 target=target,
-                tentacle=self,
             )
 
             if isinstance(resolved, SummonRequest):
@@ -281,12 +294,98 @@ class ChannelTentacle(Tentacle):
         except Exception:
             logger.exception("Error in tentacle %s [%s]", self.id, key)
 
-    def inspect(self) -> UserProfile:
-        profile = self.ink.inspect()
-        logger.info(
-            "Tentacle %s: probed as %s (%s)", self.id, profile.user_id, profile.name
-        )
-        return profile
+    async def resolve_deferred(
+        self,
+        agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
+        result: AgentRunResult[list[AgentMessage] | DeferredToolRequests],
+        key: SessionKey,
+        deps: SessionContext,
+        target: SendTarget,
+    ) -> AgentRunResult[list[AgentMessage]] | SummonRequest | None:
+        """Resolve deferred tool requests until the agent produces final messages.
+
+        Returns the final result with list[AgentMessage] output,
+        a SummonRequest if the agent summoned an agent tentacle,
+        or None if resolution failed.
+        """
+        while isinstance(result.output, DeferredToolRequests):
+            # Check for summon — abort immediately, extract args from the deferred call
+            summon_call = next(
+                (c for c in result.output.calls if c.tool_name == "summon"), None
+            )
+            if summon_call:
+                args = summon_call.args_as_dict()
+                return SummonRequest(
+                    tentacle_tag=args.get("tentacle_tag", ""),
+                    summary=args.get("summary", ""),
+                    user_prefer=args.get("user_prefer", ""),
+                    language=args.get("language", ""),
+                )
+
+            deferred = DeferredToolResults()
+
+            for call in result.output.calls:
+                if call.tool_name == "ask_user":
+                    args = call.args_as_dict()
+                    resp = await self.feelers.questions.ask_question(
+                        target,
+                        args.get("question", ""),
+                        session_key=key,
+                        options=args.get("options"),
+                    )
+                    deferred.calls[call.tool_call_id] = (
+                        resp.answer if resp else "(no response)"
+                    )
+
+            for call in result.output.approvals:
+                tool_meta = result.output.metadata.get(call.tool_call_id, {})
+
+                # Check session allowlist — skip confirmation if already allowed
+                thread = await self.interactions.threads.get(key)
+                if self.interactions.is_session_allowed(str(thread.id), call.tool_name):
+                    deferred.approvals[call.tool_call_id] = True
+                    continue
+
+                action, future = await self.interactions.create_confirmation(
+                    key=key,
+                    tool_name=call.tool_name,
+                    tool_call_id=call.tool_call_id,
+                    args=call.args_as_dict(),
+                    title=tool_meta.get("description", call.tool_name),
+                    description=tool_meta.get("description", ""),
+                    skill=tool_meta.get(SKILL_METADATA_KEY, ""),
+                    approvers=tool_meta.get("approvers"),
+                )
+
+                sent = await self.send_confirmation(target, action)
+                if not sent:
+                    await self.interactions.expire_confirmation(action.confirmation_id)
+                    deferred.approvals[call.tool_call_id] = False
+                    continue
+
+                try:
+                    approved = await asyncio.wait_for(
+                        future, timeout=self.interactions.timeout
+                    )
+                except TimeoutError:
+                    await self.interactions.expire_confirmation(action.confirmation_id)
+                    await self.feelers.confirm.send_timeout_notification(target, action)
+                    approved = False
+                except asyncio.CancelledError:
+                    await self.interactions.expire_confirmation(action.confirmation_id)
+                    await self.feelers.confirm.send_timeout_notification(target, action)
+                    raise
+
+                deferred.approvals[call.tool_call_id] = approved
+
+            result = await agent.run(
+                message_history=result.all_messages(),
+                deferred_tool_results=deferred,
+                deps=deps,
+                toolsets=self.toolsets,
+            )
+
+        return result  # type: ignore[return-value]
 
     async def ingest(self, raw: Any) -> None:
         """Inbound pipeline: decode → enrich sender → resolve media → triage."""
