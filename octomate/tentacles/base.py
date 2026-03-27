@@ -35,7 +35,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.session import SessionKey, UserProfile
-from octomate.stores import InteractionStore
+from octomate.stores.interaction import InteractionStore
 from octomate.stores.thread import ThreadStore
 from octomate.tentacles.feelers import NULL_FEELERS, Feelers
 
@@ -340,12 +340,14 @@ class ChannelTentacle(Tentacle):
                 tool_meta = result.output.metadata.get(call.tool_call_id, {})
 
                 # Check session allowlist — skip confirmation if already allowed
-                thread = await self.interactions.threads.get(key)
-                if self.interactions.is_session_allowed(str(thread.id), call.tool_name):
+                thread = await self.threads.get(key)
+                if self.feelers.confirm.is_session_allowed(
+                    str(thread.id), call.tool_name
+                ):
                     deferred.approvals[call.tool_call_id] = True
                     continue
 
-                action, future = await self.interactions.create_confirmation(
+                action, future = await self.feelers.confirm.create_confirmation(
                     key=key,
                     tool_name=call.tool_name,
                     tool_call_id=call.tool_call_id,
@@ -358,20 +360,26 @@ class ChannelTentacle(Tentacle):
 
                 sent = await self.feelers.confirm.send_confirmation(target, action)
                 if not sent:
-                    await self.interactions.expire_confirmation(action.confirmation_id)
+                    await self.feelers.confirm.expire_confirmation(
+                        action.confirmation_id
+                    )
                     deferred.approvals[call.tool_call_id] = False
                     continue
 
                 try:
                     approved = await asyncio.wait_for(
-                        future, timeout=self.interactions.timeout
+                        future, timeout=self.feelers.confirm.timeout
                     )
                 except TimeoutError:
-                    await self.interactions.expire_confirmation(action.confirmation_id)
+                    await self.feelers.confirm.expire_confirmation(
+                        action.confirmation_id
+                    )
                     await self.feelers.confirm.send_timeout_notification(target, action)
                     approved = False
                 except asyncio.CancelledError:
-                    await self.interactions.expire_confirmation(action.confirmation_id)
+                    await self.feelers.confirm.expire_confirmation(
+                        action.confirmation_id
+                    )
                     await self.feelers.confirm.send_timeout_notification(target, action)
                     raise
 
@@ -527,24 +535,19 @@ class ChannelTentacle(Tentacle):
             """
             raise CallDeferred()
 
-        # @toolset.tool
-        # async def create_todo(ctx: RunContext[SessionContext], title: str) -> str:
-        #     """Create a TODO card for the user in the current chat.
+        @toolset.tool
+        async def create_todo(ctx: RunContext[SessionContext], title: str) -> str:
+            """Create a TODO card for the user in the current chat.
 
-        #     Use this whenever a task has multiple stages or steps — create a todo item
-        #     for each stage so the user can track progress. Returns a todo ID on success,
-        #     or an error message if not supported on this platform.
-        #     """
-        #     if not ctx.deps.tentacle:
-        #         return "not supported"
-        #     key = ctx.deps.session_key
-        #     target = (
-        #         SendTarget("group", key.group_id)
-        #         if key.group_id
-        #         else SendTarget("private", key.user_id)
-        #     )
-        #     item = await ctx.deps.tentacle.feelers.todos.create_todo(target, title)
-        #     return f"todo:{item.todo_id}" if item else "not supported on this platform"
+            Use this whenever a task has multiple stages or steps — create a todo item
+            for each stage so the user can track progress. Returns a todo ID on success,
+            or an error message if not supported on this platform.
+            """
+            if not ctx.deps.tentacle:
+                return "not supported"
+            key = ctx.deps.session_key
+            item = await ctx.deps.tentacle.feelers.todos.create_todo(key, title)
+            return f"todo:{item.todo_id}" if item else "not supported on this platform"
 
         return [toolset, history_toolset()]
 

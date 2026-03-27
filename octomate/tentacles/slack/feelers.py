@@ -5,8 +5,13 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
-from octomate.stores import InteractionStore, QuestionResponse
-from octomate.tentacles.feelers import ConfirmationFeeler, QuestionFeeler, TodoFeeler
+from octomate.stores.interaction import InteractionStore
+from octomate.tentacles.feelers import (
+    ConfirmationFeeler,
+    QuestionFeeler,
+    QuestionResponse,
+    TodoFeeler,
+)
 
 if TYPE_CHECKING:
     from octomate.schemas.session import SessionKey
@@ -19,11 +24,10 @@ logger = logging.getLogger(__name__)
 
 class SlackConfirmationFeeler(ConfirmationFeeler):
     ink: SlackInk
-    store: InteractionStore
 
     def __init__(self, ink: SlackInk, store: InteractionStore) -> None:
+        super().__init__(store)
         self.ink = ink
-        self.store = store
 
     async def send_confirmation(self, target: SendTarget, action: Confirmation) -> bool:
         channel = str(target.chat_id)
@@ -112,7 +116,9 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
         )
         return ts is not None
 
-    async def send_timeout_notification(self, target: SendTarget, action: Confirmation) -> None:
+    async def send_timeout_notification(
+        self, target: SendTarget, action: Confirmation
+    ) -> None:
         channel = str(target.chat_id)
         thread_ts = str(target.reply_to) if target.reply_to else None
         title = action.title or action.tool_name
@@ -141,12 +147,11 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
 
 class SlackTodoFeeler(TodoFeeler):
     ink: SlackInk
-    store: InteractionStore
     pinned: dict[str, str]  # channel_key -> pinned message ts
 
     def __init__(self, ink: SlackInk, store: InteractionStore) -> None:
+        super().__init__(store)
         self.ink = ink
-        self.store = store
         self.pinned = {}
 
     def channel_key(self, target: SendTarget) -> str:
@@ -233,11 +238,10 @@ class SlackTodoFeeler(TodoFeeler):
 
 class SlackQuestionFeeler(QuestionFeeler):
     ink: SlackInk
-    store: InteractionStore
 
     def __init__(self, ink: SlackInk, store: InteractionStore) -> None:
+        super().__init__(store)
         self.ink = ink
-        self.store = store
 
     async def ask_question(
         self,
@@ -247,7 +251,7 @@ class SlackQuestionFeeler(QuestionFeeler):
         options: list[str] | None = None,
         multi_select: bool = False,
     ) -> QuestionResponse | None:
-        question, future = await self.store.create_question(session_key, text, options)
+        question, future = await self.create_question(session_key, text, options)
         channel = str(target.chat_id)
 
         blocks: list[dict] = [
@@ -348,11 +352,11 @@ class SlackQuestionFeeler(QuestionFeeler):
             channel, text=f"Question: {text}", blocks=blocks, thread_ts=thread_ts
         )
         if not ts:
-            await self.store.expire_question(question.question_id)
+            await self.expire_question(question.question_id)
             return None
 
         try:
-            return await asyncio.wait_for(future, timeout=self.store.timeout)
+            return await asyncio.wait_for(future, timeout=self.timeout)
         except TimeoutError:
-            await self.store.expire_question(question.question_id)
+            await self.expire_question(question.question_id)
             return None

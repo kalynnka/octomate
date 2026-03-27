@@ -181,7 +181,7 @@ class LarkTentacle(ChannelTentacle):
                 confirmation_id = value.get("confirmation_id", "")
                 approved = value.get("approved", "") == "true"
 
-                entry = self.interactions.confirmations.get(confirmation_id)
+                entry = self.feelers.confirm.get_confirmation(confirmation_id)
                 if entry is None:
                     return P2CardActionTriggerResponse(
                         {"toast": {"type": "warning", "content": "Already handled"}}
@@ -193,7 +193,7 @@ class LarkTentacle(ChannelTentacle):
                     )
 
                 resolved = anyio.from_thread.run(
-                    self.interactions.resolve_confirmation, confirmation_id, approved
+                    self.feelers.confirm.resolve_confirmation, confirmation_id, approved
                 )
                 if not resolved:
                     return P2CardActionTriggerResponse(
@@ -233,10 +233,10 @@ class LarkTentacle(ChannelTentacle):
                 form_value = event.action.form_value or {}
                 answer = form_value.get("answer") or value.get("answer", "")
                 question_id = value.get("question_id", "")
-                entry = self.interactions.questions.get(question_id)
+                entry = self.feelers.questions.get_question(question_id)
                 question_text = entry[0].text if entry else ""
                 anyio.from_thread.run(
-                    self.interactions.resolve_question,
+                    self.feelers.questions.resolve_question,
                     question_id,
                     answer,
                     clicker_id,
@@ -275,7 +275,7 @@ class LarkTentacle(ChannelTentacle):
                 status = value.get("status", "completed")
                 title = value.get("title", "")
                 anyio.from_thread.run(
-                    self.interactions.update_todo,
+                    self.feelers.todos.update_todo,
                     todo_id,
                     status,
                 )

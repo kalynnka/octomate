@@ -290,14 +290,14 @@ class SlackTentacle(ChannelTentacle):
                 confirmation_id = value.get("confirmation_id", "")
                 approved = value.get("approved", "") == "true"
 
-                entry = self.interactions.confirmations.get(confirmation_id)
+                entry = self.feelers.confirm.get_confirmation(confirmation_id)
                 if entry is None:
                     return
                 action, _ = entry
                 if action.approvers and clicker_id not in action.approvers:
                     return
 
-                resolved = await self.interactions.resolve_confirmation(
+                resolved = await self.feelers.confirm.resolve_confirmation(
                     confirmation_id, approved
                 )
                 if not resolved:
@@ -320,15 +320,17 @@ class SlackTentacle(ChannelTentacle):
             elif action_type == "confirm_allow_session":
                 confirmation_id = value.get("confirmation_id", "")
 
-                entry = self.interactions.confirmations.get(confirmation_id)
+                entry = self.feelers.confirm.get_confirmation(confirmation_id)
                 if entry is None:
                     return
                 action, _ = entry
                 if action.approvers and clicker_id not in action.approvers:
                     return
 
-                resolved = await self.interactions.resolve_confirmation_allow_session(
-                    confirmation_id
+                resolved = (
+                    await self.feelers.confirm.resolve_confirmation_allow_session(
+                        confirmation_id
+                    )
                 )
                 if not resolved:
                     return
@@ -352,9 +354,9 @@ class SlackTentacle(ChannelTentacle):
             elif action_type == "question_answer":
                 answer = value.get("answer", "")
                 question_id = value.get("question_id", "")
-                entry = self.interactions.questions.get(question_id)
+                entry = self.feelers.questions.get_question(question_id)
                 question_text = entry[0].text if entry else ""
-                await self.interactions.resolve_question(
+                await self.feelers.questions.resolve_question(
                     question_id, answer, clicker_id
                 )
 
@@ -384,9 +386,9 @@ class SlackTentacle(ChannelTentacle):
                                 if val:
                                     selected.append(val)
                 answer = ", ".join(selected)
-                entry = self.interactions.questions.get(question_id)
+                entry = self.feelers.questions.get_question(question_id)
                 question_text = entry[0].text if entry else ""
-                await self.interactions.resolve_question(
+                await self.feelers.questions.resolve_question(
                     question_id, answer, clicker_id
                 )
 

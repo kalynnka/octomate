@@ -158,10 +158,10 @@ class ClaudeCodeTentacle(AgentTentacle):
             if tool_name in AUTO_APPROVE:
                 return PermissionResultAllow()
             # Check session allowlist — skip confirmation if already allowed
-            thread = await channel.interactions.threads.get(key)
-            if channel.interactions.is_session_allowed(str(thread.id), tool_name):
+            thread = await channel.threads.get(key)
+            if channel.feelers.confirm.is_session_allowed(str(thread.id), tool_name):
                 return PermissionResultAllow()
-            action, future = await channel.interactions.create_confirmation(
+            action, future = await channel.feelers.confirm.create_confirmation(
                 key=key,
                 tool_name=tool_name,
                 tool_call_id="",
@@ -172,20 +172,26 @@ class ClaudeCodeTentacle(AgentTentacle):
             )
             sent = await channel.feelers.confirm.send_confirmation(target, action)
             if not sent:
-                await channel.interactions.expire_confirmation(action.confirmation_id)
+                await channel.feelers.confirm.expire_confirmation(
+                    action.confirmation_id
+                )
                 return PermissionResultDeny(
                     message="Could not deliver approval request"
                 )
             try:
                 approved = await asyncio.wait_for(
-                    future, timeout=channel.interactions.timeout
+                    future, timeout=channel.feelers.confirm.timeout
                 )
             except TimeoutError:
-                await channel.interactions.expire_confirmation(action.confirmation_id)
+                await channel.feelers.confirm.expire_confirmation(
+                    action.confirmation_id
+                )
                 await channel.feelers.confirm.send_timeout_notification(target, action)
                 return PermissionResultDeny(message="Timed out")
             except asyncio.CancelledError:
-                await channel.interactions.expire_confirmation(action.confirmation_id)
+                await channel.feelers.confirm.expire_confirmation(
+                    action.confirmation_id
+                )
                 await channel.feelers.confirm.send_timeout_notification(target, action)
                 raise
             if approved:
