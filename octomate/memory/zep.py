@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 BOT_USER_ID = "octomate"
+MAX_ZEP_CONTENT_LENGTH = 10000
+ZEP_BATCH_SIZE = 20
 
 
 class ZepMemory(OctopusMemory):
@@ -116,10 +118,13 @@ class ZepMemory(OctopusMemory):
 
             zep_messages = []
             for msg in messages:
+                content = str(msg)
+                if len(content) > MAX_ZEP_CONTENT_LENGTH:
+                    content = content[:MAX_ZEP_CONTENT_LENGTH] + "…[truncated]"
                 if isinstance(msg, MessageEvent):
                     zep_messages.append(
                         ZepMessage(
-                            content=str(msg),
+                            content=content,
                             role="user",
                             name=msg.display_name,
                         )
@@ -127,13 +132,14 @@ class ZepMemory(OctopusMemory):
                 else:
                     zep_messages.append(
                         ZepMessage(
-                            content=str(msg),
+                            content=content,
                             role="assistant",
                             name=tentacle.profile.name,
                         )
                     )
 
-            if zep_messages:
-                await self.client.thread.add_messages(tid, messages=zep_messages)
+            for i in range(0, len(zep_messages), ZEP_BATCH_SIZE):
+                batch = zep_messages[i : i + ZEP_BATCH_SIZE]
+                await self.client.thread.add_messages(tid, messages=batch)
         except Exception:
             logger.warning("Zep memo failed", exc_info=True)
