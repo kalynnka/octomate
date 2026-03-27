@@ -78,6 +78,40 @@ class ThreadStore:
         thread = await self.get(key)
         return thread.owner_tentacle
 
+    async def get_agent_session_id(self, key: SessionKey) -> str | None:
+        """Return the persisted agent session_id for this key, or None."""
+        thread = await self.get(key)
+        return thread.agent_session_id
+
+    async def set_agent_session_id(self, key: SessionKey, session_id: str) -> None:
+        """Persist the agent session_id for this key so it survives restarts."""
+        cached = self.thread_cache.get(key)
+        if cached is not None:
+            cached.agent_session_id = session_id
+        async with AsyncSession(engine()) as session:
+            stmt = (
+                pg_insert(Thread)
+                .values(
+                    id=str(uuid7()),
+                    tentacle_id=key.tentacle_id,
+                    user_id=key.user_id,
+                    group_id=key.group_id,
+                    thread_id=key.thread_id,
+                    chat_id=key.chat_id,
+                    owner_tentacle=self.default_owner,
+                    agent_session_id=session_id,
+                    created_at=datetime.now(),
+                )
+                .on_conflict_do_update(
+                    constraint="uq_threads_session_key",
+                    set_={"agent_session_id": session_id},
+                )
+                .returning(Thread)
+            )
+            thread = (await session.execute(stmt)).scalar_one()
+            await session.commit()
+        self._set_cached_thread(key, thread)
+
     async def set_owner(self, key: SessionKey, owner: Tentacle) -> None:
         old = self.thread_cache.pop(key, None)
         async with AsyncSession(engine()) as session:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -19,12 +19,14 @@ from claude_agent_sdk import (
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    rename_session,
 )
 from claude_agent_sdk.types import (
     HookContext,
     HookInput,
     Message,
     PermissionResult,
+    PreToolUseHookInput,
     SyncHookJSONOutput,
     ToolPermissionContext,
 )
@@ -35,6 +37,8 @@ try:
     from claude_agent_sdk import ThinkingBlock as _ThinkingBlock
 except ImportError:
     _ThinkingBlock = None
+
+from anthropic import AsyncAnthropic
 
 from octomate.config import ClaudeCodeConfig
 from octomate.schemas.session import SessionKey
@@ -51,7 +55,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-AUTO_APPROVE = {"AskUserQuestion", "TodoWrite"}
+AUTO_APPROVE = {"AskUserQuestion", "TodoWrite", "ExitPlanMode"}
 
 
 class ClaudeCodeTentacle(AgentTentacle):
@@ -59,6 +63,7 @@ class ClaudeCodeTentacle(AgentTentacle):
     _vscode_uri: str  # precomputed vscode://file<cwd> launch link
     _todo_ts: dict[SessionKey, str]  # thread_key -> todo card message ts
     _session_id_map: dict[SessionKey, str]  # session_key -> Claude SDK session_id
+    _session_names: dict[SessionKey, str]  # session_key -> human-readable task name
     _active_clients: dict[SessionKey, ClaudeSDKClient]
 
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
@@ -67,6 +72,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
         self._todo_ts = {}
         self._session_id_map = {}
+        self._session_names = {}
         self._active_clients = {}
 
     async def interrupt(self, key: SessionKey) -> None:
@@ -90,12 +96,24 @@ class ClaudeCodeTentacle(AgentTentacle):
             reply_to=key.thread_id or None,
         )
 
+        # Generate a human-readable name for this session from the task text,
+        # or reuse the existing one for follow-up messages in the same thread.
+        # The AI-powered naming call runs in parallel (non-blocking): we start
+        # with an instant fallback so the main agent isn't delayed, and resolve
+        # the better name once the run is done (or cancel if it's still pending).
+        session_name = self._session_names.get(key)
+        _name_task: asyncio.Task[str] | None = None
+        if not session_name:
+            session_name = _make_session_name(task)
+            self._session_names[key] = session_name  # store fallback immediately
+            _name_task = asyncio.create_task(_generate_session_name(task))
+
         todo_ts: str | None = self._todo_ts.get(key)
 
         async def hook_ask_user(
             input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> SyncHookJSONOutput:
-            tool_input = input_data.get("tool_input", {})
+            tool_input = cast(PreToolUseHookInput, input_data)["tool_input"]
             questions = tool_input.get("questions", [])
             answers: dict[str, str] = {}
             for q in questions:
@@ -119,7 +137,7 @@ class ClaudeCodeTentacle(AgentTentacle):
             input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> SyncHookJSONOutput:
             nonlocal todo_ts
-            tool_input = input_data.get("tool_input", {})
+            tool_input = cast(PreToolUseHookInput, input_data)["tool_input"]
             todos = tool_input.get("todos", [])
             items: list[Todo] = []
             for item in todos:
@@ -208,7 +226,44 @@ class ClaudeCodeTentacle(AgentTentacle):
                 return PermissionResultAllow()
             return PermissionResultDeny(message="Denied by user")
 
+        async def hook_exit_plan_mode(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> SyncHookJSONOutput:
+            tool_input = cast(PreToolUseHookInput, input_data)["tool_input"]
+            plan_notes = tool_input.get("plan") or tool_input.get("notes") or ""
+            prompt = "📋 Claude has finished planning and is ready to implement."
+            if plan_notes:
+                prompt += f"\n\n_{plan_notes}_"
+            prompt += "\n\nProceed, or type instructions to refine the plan:"
+            resp = await channel.feelers.questions.ask_question(
+                target,
+                prompt,
+                session_key=key,
+                options=["✅ Proceed with implementation"],
+            )
+            if resp is None or resp.answer == "✅ Proceed with implementation":
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "allow",
+                    }
+                }
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": f"User wants to refine the plan. Instructions: {resp.answer}",
+                }
+            }
+
         session_id = self._session_id_map.get(key)
+        if session_id is None:
+            # Cold start or restart: try to recover the session from the DB so
+            # we can resume the Claude Code session instead of starting fresh.
+            session_id = await channel.threads.get_agent_session_id(key)
+            if session_id:
+                self._session_id_map[key] = session_id
+                logger.debug("ClaudeCodeTentacle: recovered session_id %s for %s", session_id, key)
         options = ClaudeAgentOptions(
             cwd=self.config.cwd,
             model=self.config.model or None,
@@ -220,6 +275,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                 "PreToolUse": [
                     HookMatcher(matcher="AskUserQuestion", hooks=[hook_ask_user]),
                     HookMatcher(matcher="TodoWrite", hooks=[hook_todo_write]),
+                    HookMatcher(matcher="ExitPlanMode", hooks=[hook_exit_plan_mode]),
                 ],
             },
         )
@@ -228,7 +284,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         has_text = False
         try:
             async with channel.open_stream(target) as stream:
-                await stream.set_status("🐙 Summoned, starting…")
+                await stream.set_status(f"🐙 *{session_name}* — starting…")
                 async with ClaudeSDKClient(options=options) as client:
                     self._active_clients[key] = client
                     await client.query(task)
@@ -251,12 +307,42 @@ class ClaudeCodeTentacle(AgentTentacle):
                 self._todo_ts.pop(key, None)
 
         session_id_after = self._session_id_map.get(key)
+
+        # Persist the session_id so it survives process restarts.
+        if session_id_after:
+            try:
+                await channel.threads.set_agent_session_id(key, session_id_after)
+            except Exception:
+                logger.warning("ClaudeCodeTentacle: failed to persist session_id", exc_info=True)
+
+        # Resolve the background naming task: use the AI result if it finished
+        # in time, otherwise cancel it and keep the fallback name.
+        if _name_task is not None:
+            if _name_task.done():
+                try:
+                    session_name = _name_task.result()
+                except Exception:
+                    pass  # keep fallback
+            else:
+                _name_task.cancel()
+            self._session_names[key] = session_name
+
+        # Apply the resolved name to the Claude Code session so it shows up
+        # in the Claude Code UI / session list.
+        if session_id_after:
+            try:
+                rename_session(session_id_after, session_name)
+            except Exception:
+                logger.debug("Failed to rename Claude Code session", exc_info=True)
+
         resume_uri = (
             f"vscode://anthropic.claude-code/open?session={session_id_after}"
             if session_id_after
             else None
         )
-        footer_text = f"🖥️  <{self._vscode_uri}|Open project in VSCode>"
+        footer_text = (
+            f"🖥️ *{session_name}* · <{self._vscode_uri}|Open project in VSCode>"
+        )
         if resume_uri:
             footer_text += f"  ·  🔄 <{resume_uri}|Resume in VS Code Claude>"
         await channel.send_platform_message(
@@ -292,8 +378,19 @@ class ClaudeCodeTentacle(AgentTentacle):
             thread_key = key._replace(thread_id=contents[0].message_id)
             if sid := self._session_id_map.get(key):
                 self._session_id_map[thread_key] = sid
+                # Persist under the thread-continuation key too so follow-ups
+                # can resume the session even after a restart.
+                try:
+                    await channel.threads.set_agent_session_id(thread_key, sid)
+                except Exception:
+                    logger.warning(
+                        "ClaudeCodeTentacle: failed to persist session_id for thread_key",
+                        exc_info=True,
+                    )
             if ts := self._todo_ts.get(key):
                 self._todo_ts[thread_key] = ts
+            if name := self._session_names.get(key):
+                self._session_names[thread_key] = name
 
 
 async def _handle_stream_msg(msg: Message, stream: StreamSink, has_text: bool) -> bool:
@@ -351,6 +448,49 @@ async def _handle_stream_block(
             # is reset; the next TextBlock must open a fresh Slack message.
             return False
     return has_text
+
+
+async def _generate_session_name(task: str) -> str:
+    """Generate a concise 3-5 word session name using Claude Haiku.
+
+    Falls back to first-line extraction on timeout or any API error so the
+    session always gets a name even if the naming call fails.
+    """
+    try:
+        async with AsyncAnthropic() as client:
+            msg = await asyncio.wait_for(
+                client.messages.create(
+                    model="claude-haiku-4-5",
+                    max_tokens=20,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": (
+                                "Write a concise 3-5 word title for this task. "
+                                "Reply with ONLY the title, no quotes or punctuation:\n\n"
+                                f"{task[:500]}"
+                            ),
+                        }
+                    ],
+                ),
+                timeout=3.0,
+            )
+        text = getattr(msg.content[0], "text", None) if msg.content else None
+        if text:
+            text = text.strip()
+            return (text[:47] + "…") if len(text) > 50 else text
+    except Exception:
+        logger.debug("Session name generation failed, using fallback", exc_info=True)
+    return _make_session_name(task)
+
+
+def _make_session_name(task: str) -> str:
+    """Derive a short human-readable session name from the task description."""
+    for line in task.splitlines():
+        line = line.strip().lstrip("#").strip()
+        if line:
+            return (line[:47] + "…") if len(line) > 50 else line
+    return "Session"
 
 
 def _summarize(tool_name: str, tool_input: Any) -> str:
