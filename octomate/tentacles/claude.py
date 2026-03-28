@@ -106,15 +106,17 @@ class ClaudeCodeTentacle(AgentTentacle):
 
         # Generate a human-readable name for this session from the task text,
         # or reuse the existing one for follow-up messages in the same thread.
-        # The AI-powered naming call runs in parallel (non-blocking): we start
-        # with an instant fallback so the main agent isn't delayed, and resolve
-        # the better name once the run is done (or cancel if it's still pending).
         session_name = self._session_names.get(key)
-        _name_task: asyncio.Task[str] | None = None
         if not session_name:
-            session_name = _make_session_name(task)
-            self._session_names[key] = session_name  # store fallback immediately
-            _name_task = asyncio.create_task(_generate_session_name(task))
+            async with channel.open_stream(target) as stream:
+                await stream.set_status("🤔 Generating session name…")
+                try:
+                    session_name = await asyncio.wait_for(
+                        _generate_session_name(task), timeout=10.0
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    session_name = _make_session_name(task)
+            self._session_names[key] = session_name
 
         todo_ts: str | None = self._todo_ts.get(key)
 
@@ -239,10 +241,12 @@ class ClaudeCodeTentacle(AgentTentacle):
         ) -> SyncHookJSONOutput:
             tool_input = cast(PreToolUseHookInput, input_data)["tool_input"]
             plan_notes = tool_input.get("plan") or tool_input.get("notes") or ""
-            prompt = "📋 Claude has finished planning and is ready to implement."
+            prompt = "📋 *Claude has finished planning and is ready to implement.*"
             if plan_notes:
-                prompt += f"\n\n_{plan_notes}_"
-            prompt += "\n\nProceed, or type instructions to refine the plan:"
+                # Format plan with proper line breaks and code blocks for readability
+                formatted_plan = plan_notes.replace("\\n", "\n")
+                prompt += f"\n\n```\n{formatted_plan}\n```"
+            prompt += "\n\n_Proceed, or type instructions to refine the plan:_"
             resp = await channel.feelers.questions.ask_question(
                 target,
                 prompt,
@@ -344,19 +348,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         if session_id_after:
             await channel.threads.set_agent_session_id(key, session_id_after)
 
-        # Resolve the background naming task: use the AI result if it finished
-        # in time, otherwise cancel it and keep the fallback name.
-        if _name_task is not None:
-            if _name_task.done():
-                try:
-                    session_name = _name_task.result()
-                except Exception:
-                    pass  # keep fallback
-            else:
-                _name_task.cancel()
-            self._session_names[key] = session_name
-
-        # Apply the resolved name to the Claude Code session so it shows up
+        # Apply the session name to the Claude Code session so it shows up
         # in the Claude Code UI / session list.
         if session_id_after:
             try:
