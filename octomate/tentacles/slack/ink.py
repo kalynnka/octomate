@@ -34,14 +34,6 @@ def _split_oversized_blocks(blocks: list[dict]) -> list[dict]:
                         for c in textwrap.wrap(content, BLOCK_TEXT_LIMIT)
                     )
                     continue
-        elif btype == "markdown":
-            content = block.get("text", "")
-            if len(content) > BLOCK_TEXT_LIMIT:
-                result.extend(
-                    {"type": "markdown", "text": c}
-                    for c in textwrap.wrap(content, BLOCK_TEXT_LIMIT)
-                )
-                continue
         result.append(block)
     return result
 

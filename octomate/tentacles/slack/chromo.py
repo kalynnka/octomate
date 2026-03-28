@@ -110,28 +110,11 @@ class SlackChromo:
     def _encode_segment(self, seg: AgentSegment) -> PlatformMessage | None:
         if isinstance(seg, MarkdownSegment):
             text = _md_to_mrkdwn(seg.data["text"])
-            blocks = [{"type": "markdown", "text": text}]
-            return PlatformMessage(
-                msg_type="blocks",
-                content=text,
-                metadata={"blocks": blocks},
-            )
+            return self._make_text_message(text)
         if isinstance(seg, TextSegment):
-            text = seg.data["text"]
-            blocks = [{"type": "markdown", "text": text}]
-            return PlatformMessage(
-                msg_type="blocks",
-                content=text,
-                metadata={"blocks": blocks},
-            )
+            return self._make_text_message(seg.data["text"])
         if isinstance(seg, AtSegment):
-            text = f"<@{seg.data.user_id}>"
-            blocks = [{"type": "markdown", "text": text}]
-            return PlatformMessage(
-                msg_type="blocks",
-                content=text,
-                metadata={"blocks": blocks},
-            )
+            return self._make_text_message(f"<@{seg.data.user_id}>")
         if isinstance(seg, ImageSegment) and seg.data.url:
             blocks = [
                 {
@@ -146,6 +129,14 @@ class SlackChromo:
                 metadata={"blocks": blocks},
             )
         return None
+
+    def _make_text_message(self, text: str) -> PlatformMessage:
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]
+        return PlatformMessage(
+            msg_type="blocks",
+            content=text,
+            metadata={"blocks": blocks},
+        )
 
     def _parse_segments(self, text: str, files: list[dict[str, Any]] | None) -> list:
         segments: list = []
