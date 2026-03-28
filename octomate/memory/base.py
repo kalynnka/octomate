@@ -4,7 +4,6 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from arcanus.materia.sqlalchemy import AsyncSession
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -13,10 +12,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.database import engine
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ReplySegment
 from octomate.schemas.session import SessionKey
+from octomate.stores.message import MessageStore
 from octomate.transmuters.messages import Message
 
 if TYPE_CHECKING:
@@ -29,18 +28,14 @@ logger = logging.getLogger(__name__)
 class OctopusMemory:
     max_messages: int
     history_size: int
+    messages: MessageStore
+
+    def __init__(self) -> None:
+        self.messages = MessageStore()
 
     async def record(self, key: SessionKey, events: list[MessageEvent]) -> None:
         reply_ids = [ev.reply_id for ev in events if ev.reply_id]
-
-        replied_map: dict[str, Message] = {}
-        if reply_ids:
-            async with AsyncSession(engine()) as session:
-                results = await session.list(
-                    Message,
-                    expressions=[Message["message_id"].in_(reply_ids)],
-                )
-                replied_map = {m.message_id: m for m in results}
+        replied_map = await self.messages.find_by_ids(reply_ids)
 
         records: list[Message] = []
         for event in events:
@@ -65,32 +60,15 @@ class OctopusMemory:
                 )
             )
 
-        if records:
-            async with AsyncSession(engine()) as session:
-                session.add_all(records)
-                await session.commit()
+        await self.messages.save_all(records)
 
     async def history(
         self, key: SessionKey, size: int | None = None
     ) -> list[ModelMessage]:
-        expressions = [
-            Message["tentacle_id"] == key.tentacle_id,
-            Message["chat"] == (key.group_id or key.user_id),
-        ]
-        if key.thread_id:
-            expressions.append(Message["thread_id"] == key.thread_id)
-        else:
-            expressions.append(Message["thread_id"].is_(None))
-
-        async with AsyncSession(engine()) as session:
-            messages = await session.list(
-                Message,
-                order_bys=[Message["id"].desc()],
-                limit=size,
-            )
+        recent = await self.messages.list_recent(key, size)
 
         model_messages: list[ModelMessage] = []
-        for row in list(messages)[::-1]:
+        for row in list(recent)[::-1]:
             if row.role == "user":
                 model_messages.append(
                     ModelRequest(parts=[UserPromptPart(content=row.content)])
@@ -134,7 +112,4 @@ class OctopusMemory:
                     )
                 )
 
-        if records:
-            async with AsyncSession(engine()) as session:
-                session.add_all(records)
-                await session.commit()
+        await self.messages.save_all(records)

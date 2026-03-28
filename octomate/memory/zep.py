@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 BOT_USER_ID = "octomate"
-MAX_ZEP_CONTENT_LENGTH = 10000
+MAX_ZEP_CONTENT_LENGTH = 4000
 ZEP_BATCH_SIZE = 20
 
 
@@ -33,6 +33,7 @@ class ZepMemory(OctopusMemory):
         api_key: str,
         bot_name: str = "Octomate",
     ) -> None:
+        super().__init__()
         self.client = AsyncZep(api_key=api_key)
         self.bot_name = bot_name
         self.known_users = set()

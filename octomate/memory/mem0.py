@@ -25,6 +25,7 @@ class Mem0Memory(OctopusMemory):
         self,
         **mem0_kwargs: Any,
     ) -> None:
+        super().__init__()
         self.mem0 = Mem0(**mem0_kwargs)
 
     @staticmethod

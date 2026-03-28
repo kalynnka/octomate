@@ -4,11 +4,10 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 
-from arcanus.materia.sqlalchemy import AsyncSession
 from sqlalchemy import update
 from uuid_utils import uuid7
 
-from octomate.database import engine
+from octomate.database import async_session
 from octomate.models.interactions import (
     Confirmation as ConfirmationModel,
 )
@@ -76,7 +75,7 @@ class InteractionStore:
         now = datetime.now()
         thread = await self.threads.get(key)
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             confirmation = Confirmation(
                 confirmation_id=confirmation_id,
                 thread_id=str(thread.id),
@@ -107,7 +106,7 @@ class InteractionStore:
         status = "approved" if approved else "denied"
         future.set_result(approved)
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             await session.execute(
                 update(ConfirmationModel)
                 .where(ConfirmationModel.confirmation_id == confirmation_id)
@@ -125,7 +124,7 @@ class InteractionStore:
         if not future.done():
             future.set_result(False)
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             await session.execute(
                 update(ConfirmationModel)
                 .where(ConfirmationModel.confirmation_id == confirmation_id)
@@ -143,7 +142,7 @@ class InteractionStore:
         self.allow_in_session(confirmation.thread_id, confirmation.tool_name)
         future.set_result(True)
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             await session.execute(
                 update(ConfirmationModel)
                 .where(ConfirmationModel.confirmation_id == confirmation_id)
@@ -164,7 +163,7 @@ class InteractionStore:
         question_id = uuid7().hex
         thread = await self.threads.get(key)
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             question = Question(
                 question_id=question_id,
                 thread_id=str(thread.id),
@@ -195,7 +194,7 @@ class InteractionStore:
             )
         )
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             await session.execute(
                 update(QuestionModel)
                 .where(QuestionModel.question_id == question_id)
@@ -213,7 +212,7 @@ class InteractionStore:
         if not future.done():
             future.cancel()
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             await session.execute(
                 update(QuestionModel)
                 .where(QuestionModel.question_id == question_id)
@@ -258,7 +257,7 @@ class InteractionStore:
             if not future.done():
                 future.cancel()
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             if conf_ids:
                 await session.execute(
                     update(ConfirmationModel)
@@ -287,7 +286,7 @@ class InteractionStore:
     ) -> Todo:
         todo_id = uuid7().hex
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             thread = await self.threads.get(key)
             todo = Todo(
                 todo_id=todo_id,
@@ -310,7 +309,7 @@ class InteractionStore:
             update={"status": status, "updated_at": datetime.now()}
         )
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             await session.execute(
                 update(TodoModel)
                 .where(TodoModel.todo_id == todo_id)

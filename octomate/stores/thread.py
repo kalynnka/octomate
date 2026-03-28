@@ -4,11 +4,10 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar
 
-from arcanus.materia.sqlalchemy import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from uuid_utils import uuid7
 
-from octomate.database import engine
+from octomate.database import async_session
 from octomate.schemas.session import SessionKey
 from octomate.transmuters.threads import Thread
 
@@ -48,7 +47,7 @@ class ThreadStore:
         if cached is not None:
             return cached
 
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             expressions = [
                 Thread["tentacle_id"] == key.tentacle_id,
                 Thread["user_id"] == key.user_id,
@@ -85,7 +84,7 @@ class ThreadStore:
 
     async def set_agent_session_id(self, key: SessionKey, session_id: str) -> None:
         """Persist the agent session_id for this key so it survives restarts."""
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             stmt = (
                 pg_insert(Thread)
                 .values(
@@ -120,7 +119,7 @@ class ThreadStore:
         self, key: SessionKey, worktree_path: str, branch_name: str
     ) -> None:
         """Persist worktree_path and branch_name for this key so they survive restarts."""
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             stmt = (
                 pg_insert(Thread)
                 .values(
@@ -150,7 +149,7 @@ class ThreadStore:
 
     async def set_owner(self, key: SessionKey, owner: Tentacle) -> None:
         old = self.thread_cache.pop(key, None)
-        async with AsyncSession(engine()) as session:
+        async with async_session() as session:
             stmt = (
                 pg_insert(Thread)
                 .values(
