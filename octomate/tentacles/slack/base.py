@@ -232,6 +232,7 @@ class SlackTentacle(ChannelTentacle):
         self.app.event("assistant_thread_started")(self.on_assistant_thread_started)
         self.app.event("assistant_thread_context_changed")(self._ack_noop)
         self.app.action(re.compile(".*"))(self.on_block_action)
+        self.app.view(re.compile(".*"))(self.on_view_submission)
 
         self.app_token = app_token.get_secret_value()
         self.handler = None
@@ -410,6 +411,50 @@ class SlackTentacle(ChannelTentacle):
                         blocks=blocks,
                     )
 
+            elif action_type == "question_custom_answer":
+                question_id = value.get("question_id", "")
+                entry = self.feelers.questions.get_question(question_id)
+                if entry is None:
+                    return
+                question_text = entry[0].text
+                trigger_id = body.get("trigger_id", "")
+                if not trigger_id:
+                    return
+                view = {
+                    "type": "modal",
+                    "private_metadata": json.dumps(
+                        {
+                            "question_id": question_id,
+                            "channel": channel,
+                            "message_ts": message_ts,
+                        }
+                    ),
+                    "title": {"type": "plain_text", "text": "Answer"},
+                    "submit": {"type": "plain_text", "text": "Submit"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": question_text},
+                        },
+                        {
+                            "type": "input",
+                            "block_id": "answer_block",
+                            "element": {
+                                "type": "plain_text_input",
+                                "action_id": "answer_input",
+                                "multiline": True,
+                                "placeholder": {
+                                    "type": "plain_text",
+                                    "text": "Type your answer...",
+                                },
+                            },
+                            "label": {"type": "plain_text", "text": "Your answer"},
+                        },
+                    ],
+                }
+                await self.ink.open_modal(trigger_id, view)
+
             elif action_type == "show_thinking":
                 thinking_id = value.get("thinking_id", "")
                 raw = self.thinking_store.pop(thinking_id, "expired...")
@@ -460,6 +505,52 @@ class SlackTentacle(ChannelTentacle):
         except Exception:
             logger.warning(
                 "Tentacle %s: failed to handle block action", self.id, exc_info=True
+            )
+
+    async def on_view_submission(self, ack, body: dict) -> None:
+        await ack()
+        try:
+            view = body.get("view", {})
+            meta_str = view.get("private_metadata", "{}")
+            try:
+                meta = json.loads(meta_str)
+            except (json.JSONDecodeError, TypeError):
+                return
+            question_id = meta.get("question_id", "")
+            channel = meta.get("channel", "")
+            message_ts = meta.get("message_ts", "")
+            if not question_id:
+                return
+
+            state = view.get("state", {}).get("values", {})
+            answer = (
+                state.get("answer_block", {}).get("answer_input", {}).get("value", "")
+                or ""
+            )
+            user_id = body.get("user", {}).get("id", "")
+
+            entry = self.feelers.questions.get_question(question_id)
+            question_text = entry[0].text if entry else ""
+            await self.feelers.questions.resolve_question(question_id, answer, user_id)
+
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f":white_check_mark: *Answered*\n{question_text}\n\n:speech_balloon: *Answer:* {answer}",
+                    },
+                }
+            ]
+            if channel and message_ts:
+                await self.ink.update_message(
+                    channel, message_ts, text=f"Answered: {answer}", blocks=blocks
+                )
+        except Exception:
+            logger.warning(
+                "Tentacle %s: failed to handle view submission",
+                self.id,
+                exc_info=True,
             )
 
     @asynccontextmanager

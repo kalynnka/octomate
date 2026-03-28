@@ -350,25 +350,28 @@ class SlackQuestionFeeler(QuestionFeeler):
                         ],
                     }
                 )
-            blocks.append(
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": "_Or reply in this thread for a different answer._",
-                    },
-                }
-            )
-        else:
-            blocks.append(
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": "_Reply in this thread to answer._",
-                    },
-                }
-            )
+        blocks.append(
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {
+                            "type": "plain_text",
+                            "text": "✏️ Custom Answer",
+                            "emoji": True,
+                        },
+                        "action_id": f"question_custom_{question.question_id}",
+                        "value": json.dumps(
+                            {
+                                "action": "question_custom_answer",
+                                "question_id": question.question_id,
+                            }
+                        ),
+                    }
+                ],
+            }
+        )
 
         thread_ts = str(target.reply_to) if target.reply_to else None
         ts = await self.ink.send_message(

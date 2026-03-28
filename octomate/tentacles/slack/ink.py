@@ -197,6 +197,14 @@ class SlackInk:
         except Exception:
             logger.debug("SlackInk: set_suggested_prompts failed", exc_info=True)
 
+    async def open_modal(self, trigger_id: str, view: dict) -> bool:
+        try:
+            await self.client.views_open(trigger_id=trigger_id, view=view)
+            return True
+        except Exception:
+            logger.warning("SlackInk: open_modal failed", exc_info=True)
+            return False
+
     async def pin_message(self, channel: str, ts: str) -> bool:
         try:
             await self.client.pins_add(channel=channel, timestamp=ts)

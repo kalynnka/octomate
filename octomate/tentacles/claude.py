@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
-import re
 from typing import TYPE_CHECKING, Any, cast
 
 from claude_agent_sdk import (
@@ -21,7 +19,6 @@ from claude_agent_sdk import (
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
-    rename_session,
 )
 from claude_agent_sdk.types import (
     HookContext,
@@ -39,8 +36,6 @@ try:
     from claude_agent_sdk import ThinkingBlock as _ThinkingBlock
 except ImportError:
     _ThinkingBlock = None
-
-from anthropic import AsyncAnthropic
 
 from octomate.config import ClaudeCodeConfig
 from octomate.schemas.session import SessionKey
@@ -63,24 +58,16 @@ AUTO_APPROVE = {"AskUserQuestion", "TodoWrite", "ExitPlanMode"}
 class ClaudeCodeTentacle(AgentTentacle):
     config: ClaudeCodeConfig
     _vscode_uri: str  # precomputed vscode://file<cwd> launch link
-    _worktrees_dir: str  # absolute path where per-session worktrees are created
     _todo_ts: dict[SessionKey, str]  # thread_key -> todo card message ts
     _session_id_map: dict[SessionKey, str]  # session_key -> Claude SDK session_id
-    _session_names: dict[SessionKey, str]  # session_key -> human-readable task name
     _active_clients: dict[SessionKey, ClaudeSDKClient]
 
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
         super().__init__(tag, octopus, description=config.description)
         self.config = config
         self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
-        self._worktrees_dir = (
-            os.path.abspath(config.worktrees_dir)
-            if config.worktrees_dir
-            else os.path.join(os.path.abspath(config.cwd), ".octomate/worktrees")
-        )
         self._todo_ts = {}
         self._session_id_map = {}
-        self._session_names = {}
         self._active_clients = {}
 
     async def interrupt(self, key: SessionKey) -> None:
@@ -103,20 +90,6 @@ class ClaudeCodeTentacle(AgentTentacle):
             chat_type="group" if key.group_id else "private",
             reply_to=key.thread_id or None,
         )
-
-        # Generate a human-readable name for this session from the task text,
-        # or reuse the existing one for follow-up messages in the same thread.
-        session_name = self._session_names.get(key)
-        if not session_name:
-            async with channel.open_stream(target) as stream:
-                await stream.set_status("🤔 Generating session name…")
-                try:
-                    session_name = await asyncio.wait_for(
-                        _generate_session_name(task), timeout=10.0
-                    )
-                except (asyncio.TimeoutError, Exception):
-                    session_name = _make_session_name(task)
-            self._session_names[key] = session_name
 
         todo_ts: str | None = self._todo_ts.get(key)
 
@@ -281,27 +254,8 @@ class ClaudeCodeTentacle(AgentTentacle):
                     key,
                 )
 
-        # Worktree setup — always create an isolated worktree per session.
-        # ThreadStore.get_worktree_info already handles the LRU cache, so no
-        # separate in-memory map is needed here.
-        worktree_path: str | None = None
-        branch_name: str | None = None
-
-        info = await channel.threads.get_worktree_info(key)
-        if info:
-            worktree_path, branch_name = info
-        else:
-            # Use session_name for branch naming (fallback to hash if not available)
-            branch_name = _sanitize_branch_name(session_name)
-            worktree_path = await _create_worktree(
-                base_dir=os.path.abspath(self.config.cwd),
-                worktrees_dir=self._worktrees_dir,
-                branch_name=branch_name,
-            )
-            await channel.threads.set_worktree_info(key, worktree_path, branch_name)
-
         options = ClaudeAgentOptions(
-            cwd=worktree_path if worktree_path else self.config.cwd,
+            cwd=self.config.cwd,
             model=self.config.model or None,
             permission_mode="acceptEdits",
             max_turns=self.config.max_turns,
@@ -320,7 +274,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         has_text = False
         try:
             async with channel.open_stream(target) as stream:
-                await stream.set_status(f"🐙 *{session_name}* — starting…")
+                await stream.set_status("🐙 Channeling")
                 async with ClaudeSDKClient(options=options) as client:
                     self._active_clients[key] = client
                     await client.query(task)
@@ -348,39 +302,14 @@ class ClaudeCodeTentacle(AgentTentacle):
         if session_id_after:
             await channel.threads.set_agent_session_id(key, session_id_after)
 
-        # Apply the session name to the Claude Code session so it shows up
-        # in the Claude Code UI / session list.
-        if session_id_after:
-            try:
-                rename_session(session_id_after, session_name)
-            except Exception:
-                logger.debug("Failed to rename Claude Code session", exc_info=True)
-
-        # Always link to main directory for VS Code git plugin compatibility
         vscode_link_uri = self._vscode_uri
-
-        if worktree_path and branch_name:
-            # Worktree mode: show branch info and provide resume link with worktree context
-            resume_uri = (
-                f"vscode://anthropic.claude-code/open?session={session_id_after}&path={worktree_path}"
-                if session_id_after
-                else None
-            )
-            footer_text = (
-                f"🌿 *{branch_name}* · <{vscode_link_uri}|Open in VSCode>"
-            )
-            plain_content = f"Branch: {branch_name} | Open in VSCode: {self.config.cwd}"
-        else:
-            # Legacy mode (no worktrees_dir configured): keep original behavior
-            resume_uri = (
-                f"vscode://anthropic.claude-code/open?session={session_id_after}"
-                if session_id_after
-                else None
-            )
-            footer_text = (
-                f"🖥️ *{session_name}* · <{vscode_link_uri}|Open project in VSCode>"
-            )
-            plain_content = f"Open project in VSCode: {vscode_link_uri}"
+        resume_uri = (
+            f"vscode://anthropic.claude-code/open?session={session_id_after}"
+            if session_id_after
+            else None
+        )
+        footer_text = f"🖥️ <{vscode_link_uri}|Open project in VSCode>"
+        plain_content = f"Open project in VSCode: {vscode_link_uri}"
         if resume_uri:
             footer_text += f"  ·  🔄 <{resume_uri}|Resume in Claude Code>"
         await channel.send_platform_message(
@@ -427,10 +356,6 @@ class ClaudeCodeTentacle(AgentTentacle):
                     )
             if ts := self._todo_ts.get(key):
                 self._todo_ts[thread_key] = ts
-            if name := self._session_names.get(key):
-                self._session_names[thread_key] = name
-            if wt := await channel.threads.get_worktree_info(key):
-                await channel.threads.set_worktree_info(thread_key, wt[0], wt[1])
 
 
 async def _handle_stream_msg(msg: Message, stream: StreamSink, has_text: bool) -> bool:
@@ -490,61 +415,6 @@ async def _handle_stream_block(
     return has_text
 
 
-async def _generate_session_name(task: str) -> str:
-    """Generate a concise 3-5 word session name using Claude Haiku.
-
-    Falls back to first-line extraction on timeout or any API error so the
-    session always gets a name even if the naming call fails.
-    """
-    try:
-        async with AsyncAnthropic() as client:
-            msg = await asyncio.wait_for(
-                client.messages.create(
-                    model="claude-haiku-4-5",
-                    max_tokens=20,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": (
-                                "Write a concise 3-5 word title for this task. "
-                                "Reply with ONLY the title, no quotes or punctuation:\n\n"
-                                f"{task[:500]}"
-                            ),
-                        }
-                    ],
-                ),
-                timeout=3.0,
-            )
-        text = getattr(msg.content[0], "text", None) if msg.content else None
-        if text:
-            text = text.strip()
-            return (text[:47] + "…") if len(text) > 50 else text
-    except Exception:
-        logger.debug("Session name generation failed, using fallback", exc_info=True)
-    return _make_session_name(task)
-
-
-def _make_session_name(task: str) -> str:
-    """Derive a short human-readable session name from the task description."""
-    for line in task.splitlines():
-        line = line.strip().lstrip("#").strip()
-        if line:
-            return (line[:47] + "…") if len(line) > 50 else line
-    return "Session"
-
-
-def _sanitize_branch_name(name: str) -> str:
-    """Convert a session name into a valid git branch name."""
-    # Replace invalid characters with hyphens
-    sanitized = re.sub(r'[^a-zA-Z0-9/_-]', '-', name)
-    # Remove leading/trailing hyphens and collapse multiple hyphens
-    sanitized = re.sub(r'-+', '-', sanitized).strip('-')
-    # Ensure it's not empty and not too long
-    if not sanitized:
-        sanitized = f"session-{hashlib.sha1(name.encode()).hexdigest()[:8]}"
-    return sanitized[:50]  # git branch name length limit
-
-
 def _summarize(tool_name: str, tool_input: Any) -> str:
     if isinstance(tool_input, dict):
         if "command" in tool_input:
@@ -559,34 +429,6 @@ def _summarize(tool_name: str, tool_input: Any) -> str:
                 detail += f" ({tool_input['glob']})"
             return detail
     return ""
-
-
-async def _create_worktree(base_dir: str, worktrees_dir: str, branch_name: str) -> str:
-    """Create a git worktree for branch_name under worktrees_dir.
-
-    Returns the absolute path of the newly created worktree directory.
-    Raises RuntimeError if git exits non-zero.
-    """
-    # Worktree directory name: replace "/" in branch_name with "-"
-    worktree_path = os.path.join(worktrees_dir, branch_name.replace("/", "-"))
-    os.makedirs(worktrees_dir, exist_ok=True)
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "worktree",
-        "add",
-        worktree_path,
-        "-b",
-        branch_name,
-        cwd=base_dir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"git worktree add failed (branch={branch_name}): {stderr.decode().strip()}"
-        )
-    return os.path.abspath(worktree_path)
 
 
 def _msg_sample(msg: Message) -> str:
