@@ -100,11 +100,54 @@ class SlackChromo:
     async def squirt(
         self, segments: list[AgentSegment], *, reply_to: str | None = None
     ) -> list[PlatformMessage]:
+        if not segments:
+            return []
+
+        # Combine consecutive text/markdown/at segments with following images into single messages
         result: list[PlatformMessage] = []
+        blocks: list[dict] = []
+        content_parts: list[str] = []
+
         for seg in segments:
-            msg = self._encode_segment(seg)
-            if msg is not None:
-                result.append(msg)
+            if isinstance(seg, (MarkdownSegment, TextSegment, AtSegment)):
+                # Flush accumulated blocks if we have any
+                if blocks:
+                    result.append(PlatformMessage(
+                        msg_type="blocks",
+                        content=" ".join(content_parts),
+                        metadata={"blocks": blocks},
+                    ))
+                    blocks = []
+                    content_parts = []
+
+                # Add text block
+                if isinstance(seg, MarkdownSegment):
+                    text = _md_to_mrkdwn(seg.data["text"])
+                elif isinstance(seg, AtSegment):
+                    text = f"<@{seg.data.user_id}>"
+                else:
+                    text = seg.data["text"]
+
+                blocks.append({"type": "markdown", "text": text})
+                content_parts.append(text)
+
+            elif isinstance(seg, ImageSegment) and seg.data.url:
+                # Add image block to current message
+                blocks.append({
+                    "type": "image",
+                    "image_url": seg.data.url,
+                    "alt_text": seg.data.summary or seg.data.name or "image",
+                })
+                content_parts.append("[image]")
+
+        # Flush remaining blocks
+        if blocks:
+            result.append(PlatformMessage(
+                msg_type="blocks",
+                content=" ".join(content_parts),
+                metadata={"blocks": blocks},
+            ))
+
         return result
 
     def _encode_segment(self, seg: AgentSegment) -> PlatformMessage | None:
@@ -149,6 +192,8 @@ class SlackChromo:
 
     def _parse_segments(self, text: str, files: list[dict[str, Any]] | None) -> list:
         segments: list = []
+
+        # Parse text with @ mentions first
         if text:
             remaining = text
             for match in _AT_RE.finditer(text):
@@ -163,6 +208,7 @@ class SlackChromo:
             elif remaining:
                 segments.append(TextSegment(data={"text": remaining}))
 
+        # Append images after text (Slack API doesn't provide position info)
         if files:
             for f in files:
                 mimetype = f.get("mimetype", "")

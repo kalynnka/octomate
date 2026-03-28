@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Any, cast
 
 from claude_agent_sdk import (
@@ -286,10 +287,8 @@ class ClaudeCodeTentacle(AgentTentacle):
         if info:
             worktree_path, branch_name = info
         else:
-            thread_identifier = key.thread_id or (
-                contents[0].message_id if contents else ""
-            )
-            branch_name = hashlib.sha1(thread_identifier.encode()).hexdigest()[:8]
+            # Use session_name for branch naming (fallback to hash if not available)
+            branch_name = _sanitize_branch_name(session_name)
             worktree_path = await _create_worktree(
                 base_dir=os.path.abspath(self.config.cwd),
                 worktrees_dir=self._worktrees_dir,
@@ -365,27 +364,33 @@ class ClaudeCodeTentacle(AgentTentacle):
             except Exception:
                 logger.debug("Failed to rename Claude Code session", exc_info=True)
 
-        resume_uri = (
-            f"vscode://anthropic.claude-code/open?session={session_id_after}"
-            if session_id_after
-            else None
-        )
+        # Always link to main directory for VS Code git plugin compatibility
+        vscode_link_uri = self._vscode_uri
+
         if worktree_path and branch_name:
-            # Worktree mode: link points to the isolated branch folder
-            vscode_link_uri = f"vscode://file{worktree_path}"
-            footer_text = (
-                f"🌿 *{branch_name}* · <{vscode_link_uri}|Open branch in VSCode>"
+            # Worktree mode: show branch info and provide resume link with worktree context
+            resume_uri = (
+                f"vscode://anthropic.claude-code/open?session={session_id_after}&path={worktree_path}"
+                if session_id_after
+                else None
             )
-            plain_content = f"Open branch in VSCode: {worktree_path}"
+            footer_text = (
+                f"🌿 *{branch_name}* · <{vscode_link_uri}|Open in VSCode>"
+            )
+            plain_content = f"Branch: {branch_name} | Open in VSCode: {self.config.cwd}"
         else:
             # Legacy mode (no worktrees_dir configured): keep original behavior
-            vscode_link_uri = self._vscode_uri
+            resume_uri = (
+                f"vscode://anthropic.claude-code/open?session={session_id_after}"
+                if session_id_after
+                else None
+            )
             footer_text = (
                 f"🖥️ *{session_name}* · <{vscode_link_uri}|Open project in VSCode>"
             )
             plain_content = f"Open project in VSCode: {vscode_link_uri}"
         if resume_uri:
-            footer_text += f"  ·  🔄 <{resume_uri}|Resume in VS Code Claude>"
+            footer_text += f"  ·  🔄 <{resume_uri}|Resume in Claude Code>"
         await channel.send_platform_message(
             chat_id=str(target.chat_id),
             chat_type=target.chat_type,
@@ -534,6 +539,18 @@ def _make_session_name(task: str) -> str:
         if line:
             return (line[:47] + "…") if len(line) > 50 else line
     return "Session"
+
+
+def _sanitize_branch_name(name: str) -> str:
+    """Convert a session name into a valid git branch name."""
+    # Replace invalid characters with hyphens
+    sanitized = re.sub(r'[^a-zA-Z0-9/_-]', '-', name)
+    # Remove leading/trailing hyphens and collapse multiple hyphens
+    sanitized = re.sub(r'-+', '-', sanitized).strip('-')
+    # Ensure it's not empty and not too long
+    if not sanitized:
+        sanitized = f"session-{hashlib.sha1(name.encode()).hexdigest()[:8]}"
+    return sanitized[:50]  # git branch name length limit
 
 
 def _summarize(tool_name: str, tool_input: Any) -> str:
