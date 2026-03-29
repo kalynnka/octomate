@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from claude_agent_sdk import (
@@ -61,6 +62,8 @@ class ClaudeCodeTentacle(AgentTentacle):
     _todo_ts: dict[SessionKey, str]  # thread_key -> todo card message ts
     _session_id_map: dict[SessionKey, str]  # session_key -> Claude SDK session_id
     _active_clients: dict[SessionKey, ClaudeSDKClient]
+    _session_names: dict[SessionKey, str]  # session_key -> AI-generated session name
+    _worktree_paths: dict[SessionKey, str]  # session_key -> current worktree path
 
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
         super().__init__(tag, octopus, description=config.description)
@@ -69,6 +72,8 @@ class ClaudeCodeTentacle(AgentTentacle):
         self._todo_ts = {}
         self._session_id_map = {}
         self._active_clients = {}
+        self._session_names = {}
+        self._worktree_paths = {}
 
     async def interrupt(self, key: SessionKey) -> None:
         client = self._active_clients.get(key)
@@ -272,6 +277,7 @@ class ClaudeCodeTentacle(AgentTentacle):
 
         result_text: str = ""
         has_text = False
+        is_first_response = session_id is None
         try:
             async with channel.open_stream(target) as stream:
                 await stream.set_status("🐙 Channeling")
@@ -289,6 +295,15 @@ class ClaudeCodeTentacle(AgentTentacle):
                             if msg.session_id:
                                 self._session_id_map[key] = msg.session_id
                             continue
+
+                        # Detect worktree creation
+                        worktree_path = _extract_worktree_path(msg)
+                        if worktree_path:
+                            self._worktree_paths[key] = worktree_path
+                            await channel.threads.set_worktree_info(
+                                key, worktree_path, ""
+                            )
+
                         has_text = await _handle_stream_msg(msg, stream, has_text)
         finally:
             self._active_clients.pop(key, None)
@@ -302,16 +317,45 @@ class ClaudeCodeTentacle(AgentTentacle):
         if session_id_after:
             await channel.threads.set_agent_session_id(key, session_id_after)
 
-        vscode_link_uri = self._vscode_uri
+        # Generate session name for new sessions
+        if is_first_response and session_id_after and result_text:
+            session_name = await _generate_session_name(task, result_text)
+            self._session_names[key] = session_name
+            await channel.threads.set_session_name(key, session_name)
+
+        # Use worktree path if available, otherwise use default cwd
+        current_worktree = self._worktree_paths.get(key)
+        if not current_worktree:
+            worktree_info = await channel.threads.get_worktree_info(key)
+            if worktree_info:
+                current_worktree = worktree_info[0]
+                self._worktree_paths[key] = current_worktree
+
+        vscode_link_uri = (
+            f"vscode://file{os.path.abspath(current_worktree)}"
+            if current_worktree
+            else self._vscode_uri
+        )
         resume_uri = (
             f"vscode://anthropic.claude-code/open?session={session_id_after}"
             if session_id_after
             else None
         )
+
+        # Get session name for display
+        session_name = self._session_names.get(key)
+        if not session_name:
+            session_name = await channel.threads.get_session_name(key)
+            if session_name:
+                self._session_names[key] = session_name
+
         footer_text = f"🖥️ <{vscode_link_uri}|Open project in VSCode>"
         plain_content = f"Open project in VSCode: {vscode_link_uri}"
         if resume_uri:
-            footer_text += f"  ·  🔄 <{resume_uri}|Resume in Claude Code>"
+            resume_text = "Resume in Claude Code"
+            if session_name:
+                resume_text = f"Resume: {session_name}"
+            footer_text += f"  ·  🔄 <{resume_uri}|{resume_text}>"
         await channel.send_platform_message(
             chat_id=str(target.chat_id),
             chat_type=target.chat_type,
@@ -453,3 +497,57 @@ def _msg_sample(msg: Message) -> str:
     if isinstance(msg, RateLimitEvent):
         return f"status={msg.rate_limit_info.status}"
     return str(msg)[:120]
+
+
+async def _generate_session_name(task: str, response: str) -> str:
+    """Generate a short descriptive session name using Claude API."""
+    try:
+        from anthropic import AsyncAnthropic
+
+        client = AsyncAnthropic()
+        prompt = f"""Based on this conversation, generate a short descriptive name (3-5 words max).
+User: {task[:500]}
+Assistant: {response[:500]}
+
+Return only the name, no explanation."""
+
+        message = await asyncio.wait_for(
+            client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=50,
+                messages=[{"role": "user", "content": prompt}],
+            ),
+            timeout=5.0,
+        )
+        content_block = message.content[0]
+        if hasattr(content_block, "text"):
+            name = content_block.text.strip().strip('"').strip("'")  # type: ignore
+            return name[:100]
+        return f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    except Exception as e:
+        logger.debug("Failed to generate session name: %s", e)
+
+        return f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+
+def _extract_worktree_path(msg: Message) -> str | None:
+    """Extract worktree path from tool results if present."""
+    if not isinstance(msg, AssistantMessage):
+        return None
+
+    for block in msg.content:
+        if isinstance(block, ToolResultBlock) and not block.is_error:
+            content = str(block.content or "")
+            # Look for worktree path patterns
+            if "worktree" in content.lower() and (
+                "path" in content.lower() or "/" in content
+            ):
+                # Extract path-like strings
+                import re
+
+                matches = re.findall(
+                    r"(?:path|worktree)[:\s]+([/\w\-\.]+)", content, re.IGNORECASE
+                )
+                if matches:
+                    return matches[0]
+    return None
