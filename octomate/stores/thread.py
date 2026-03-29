@@ -82,6 +82,11 @@ class ThreadStore:
         thread = await self.get(key)
         return thread.agent_session_id
 
+    async def get_session_name(self, key: SessionKey) -> str | None:
+        """Return the persisted session_name for this key, or None."""
+        thread = await self.get(key)
+        return thread.session_name
+
     async def set_agent_session_id(self, key: SessionKey, session_id: str) -> None:
         """Persist the agent session_id for this key so it survives restarts."""
         async with async_session() as session:
@@ -101,6 +106,32 @@ class ThreadStore:
                 .on_conflict_do_update(
                     constraint="uq_threads_session_key",
                     set_={"agent_session_id": session_id},
+                )
+                .returning(Thread)
+            )
+            thread = (await session.execute(stmt)).scalar_one()
+            await session.commit()
+        self._set_cached_thread(key, thread)
+
+    async def set_session_name(self, key: SessionKey, session_name: str) -> None:
+        """Persist the session_name for this key so it survives restarts."""
+        async with async_session() as session:
+            stmt = (
+                pg_insert(Thread)
+                .values(
+                    id=str(uuid7()),
+                    tentacle_id=key.tentacle_id,
+                    user_id=key.user_id,
+                    group_id=key.group_id,
+                    thread_id=key.thread_id,
+                    chat_id=key.chat_id,
+                    owner_tentacle=self.default_owner,
+                    session_name=session_name,
+                    created_at=datetime.now(),
+                )
+                .on_conflict_do_update(
+                    constraint="uq_threads_session_key",
+                    set_={"session_name": session_name},
                 )
                 .returning(Thread)
             )
