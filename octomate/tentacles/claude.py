@@ -259,6 +259,16 @@ class ClaudeCodeTentacle(AgentTentacle):
                     key,
                 )
 
+        # Generate session name upfront for new sessions
+        session_name = self._session_names.get(key)
+        if not session_id and not session_name:
+            session_name = await _generate_session_name(task, "")
+            self._session_names[key] = session_name
+
+        extra_args = {}
+        if session_name:
+            extra_args["name"] = session_name
+
         options = ClaudeAgentOptions(
             cwd=self.config.cwd,
             model=self.config.model or None,
@@ -266,6 +276,7 @@ class ClaudeCodeTentacle(AgentTentacle):
             max_turns=self.config.max_turns,
             can_use_tool=can_use_tool,
             resume=session_id,
+            extra_args=extra_args,
             hooks={
                 "PreToolUse": [
                     HookMatcher(matcher="AskUserQuestion", hooks=[hook_ask_user]),
@@ -317,11 +328,11 @@ class ClaudeCodeTentacle(AgentTentacle):
         if session_id_after:
             await channel.threads.set_agent_session_id(key, session_id_after)
 
-        # Generate session name for new sessions
-        if is_first_response and session_id_after and result_text:
-            session_name = await _generate_session_name(task, result_text)
-            self._session_names[key] = session_name
-            await channel.threads.set_session_name(key, session_name)
+        # Persist session name for new sessions
+        if is_first_response and session_id_after:
+            session_name = self._session_names.get(key)
+            if session_name:
+                await channel.threads.set_session_name(key, session_name)
 
         # Use worktree path if available, otherwise use default cwd
         current_worktree = self._worktree_paths.get(key)

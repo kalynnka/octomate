@@ -54,5 +54,5 @@ class MessageEvent(BaseModel):
         return f"{self.display_name} ({self.user_id}) #msg:{self.message_id}:\n{body}"
 
     def to_content_parts(self) -> list[UserContent]:
-        header = f"{self.display_name} ({self.user_id}) #msg:{self.message_id}:"
+        header = f"{self.display_name} ({self.user_id}) #msg:{self.message_id}: "
         return [header] + [seg.to_content() for seg in self.segments]
