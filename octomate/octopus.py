@@ -5,7 +5,7 @@ import contextlib
 import logging
 
 from octomate.agents.manager import SkillManager
-from octomate.nerve import AnyioNerve, Nerve
+from octomate.nerve import AnyioNerve, MessageBatch, Nerve, NerveDispatcher
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import AgentTentacle, ChannelTentacle
@@ -18,7 +18,7 @@ class Octopus:
     skill_manager: SkillManager | None
     tentacles: dict[str, ChannelTentacle]
     agent_tentacles: dict[str, AgentTentacle]
-    nerve: Nerve[tuple[SessionKey, list[MessageEvent]]]
+    nerve: Nerve[MessageBatch]
 
     def __init__(
         self,
@@ -63,16 +63,20 @@ class Octopus:
         self.tentacles.pop(name, None)
 
     async def kick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
-        await self.nerve.send((key, batch))
+        await self.nerve.send(MessageBatch(key=key, events=batch))
 
     async def rolling(self) -> None:
-        async with asyncio.TaskGroup() as tg:
-            async for key, batch in self.nerve:
-                channel = self.tentacles[key.tentacle_id]
-                owner_id = await channel.threads.get_owner(key)
-                owner = self.agent_tentacles.get(owner_id)
-                if owner:
-                    tg.create_task(owner(key, batch))
-                else:
-                    await channel.threads.set_owner(key, channel)
-                    tg.create_task(channel(key, batch))
+        dispatcher = NerveDispatcher(self.nerve)
+
+        @dispatcher.on(MessageBatch)
+        async def handle_message_batch(signal: MessageBatch) -> None:
+            channel = self.tentacles[signal.key.tentacle_id]
+            owner_id = await channel.threads.get_owner(signal.key)
+            owner = self.agent_tentacles.get(owner_id)
+            if owner:
+                await owner(signal.key, signal.events)
+            else:
+                await channel.threads.set_owner(signal.key, channel)
+                await channel(signal.key, signal.events)
+
+        await dispatcher.run()
