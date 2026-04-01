@@ -321,11 +321,13 @@ class ChannelTentacle(Tentacle):
             )
             target.reply_to = key.thread_id
             deps = SessionContext(session_key=key, tentacle=self)
+            message_history = await self.memory.history(key, size=32)
             result = await self.flick.run(
                 user_prompt,
                 deps=deps,
                 toolsets=self.toolsets,
                 instructions=instructions,
+                message_history=message_history,
             )
 
             resolved = await self.resolve_deferred(
