@@ -30,6 +30,7 @@ from claude_agent_sdk.types import (
     SyncHookJSONOutput,
     ToolPermissionContext,
 )
+from uuid_utils import uuid7
 
 from octomate.schemas.events import MessageEvent
 
@@ -39,13 +40,22 @@ except ImportError:
     _ThinkingBlock = None
 
 from octomate.config import ClaudeCodeConfig
-from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import (
-    AgentTentacle,
-    PlatformMessage,
-    SendTarget,
-    StreamSink,
+from octomate.nerve import (
+    AskUser,
+    ConfirmResult,
+    ConfirmTool,
+    DismissPending,
+    NerveStream,
+    SendSegments,
+    StreamFrame,
+    TodoResult,
+    TodoUpdate,
+    UserAnswer,
 )
+from octomate.schemas.segments import MarkdownSegment
+from octomate.schemas.session import SessionKey
+from octomate.stores.thread import ThreadStore
+from octomate.tentacles.base import AgentTentacle
 from octomate.transmuters.interactions import Todo
 
 if TYPE_CHECKING:
@@ -54,12 +64,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AUTO_APPROVE = {"AskUserQuestion", "TodoWrite", "ExitPlanMode"}
+TODO_UPDATE_TIMEOUT = 30.0  # seconds to wait for TodoResult from octopus handler
 
 
 class ClaudeCodeTentacle(AgentTentacle):
     config: ClaudeCodeConfig
+    threads: ThreadStore
     _vscode_uri: str  # precomputed vscode://file<cwd> launch link
-    _todo_ts: dict[SessionKey, str]  # thread_key -> todo card message ts
+    _todo_card_refs: dict[SessionKey, str]  # session_key -> active todo card reference
     _session_id_map: dict[SessionKey, str]  # session_key -> Claude SDK session_id
     _active_clients: dict[SessionKey, ClaudeSDKClient]
     _session_names: dict[SessionKey, str]  # session_key -> AI-generated session name
@@ -68,8 +80,9 @@ class ClaudeCodeTentacle(AgentTentacle):
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
         super().__init__(tag, octopus, description=config.description)
         self.config = config
+        self.threads = ThreadStore(default_owner=tag)
         self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
-        self._todo_ts = {}
+        self._todo_card_refs = {}
         self._session_id_map = {}
         self._active_clients = {}
         self._session_names = {}
@@ -89,14 +102,8 @@ class ClaudeCodeTentacle(AgentTentacle):
         contents: list[MessageEvent],
     ):
         task = "".join([str(part) for part in contents[0].to_content_parts()])
-        channel = self.octopus.tentacles[key.tentacle_id]
-        target = SendTarget(
-            chat_id=contents[0].chat_id,
-            chat_type="group" if key.group_id else "private",
-            reply_to=key.thread_id or None,
-        )
 
-        todo_ts: str | None = self._todo_ts.get(key)
+        nerve = self.octopus.agent_nerve
 
         async def hook_ask_user(
             input_data: HookInput, tool_use_id: str | None, context: HookContext
@@ -106,13 +113,21 @@ class ClaudeCodeTentacle(AgentTentacle):
             answers: dict[str, str] = {}
             for q in questions:
                 text = q.get("question", "")
-                options = [opt["label"] for opt in q.get("options", [])] or None
+                options = [opt["label"] for opt in q.get("options", [])]
                 multi = q.get("multiSelect", False)
-                resp = await channel.feelers.questions.ask_question(
-                    target, text, session_key=key, options=options, multi_select=multi
+                request_id = str(uuid7())
+                future = self.octopus.pending.answers.create(request_id)
+                await nerve.send(
+                    AskUser(
+                        key=key,
+                        request_id=request_id,
+                        question=text,
+                        options=options,
+                        multi_select=multi,
+                    )
                 )
-                if resp:
-                    answers[q["question"]] = resp.answer
+                resp: UserAnswer = await future
+                answers[q["question"]] = resp.answer
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -124,7 +139,6 @@ class ClaudeCodeTentacle(AgentTentacle):
         async def hook_todo_write(
             input_data: HookInput, tool_use_id: str | None, context: HookContext
         ) -> SyncHookJSONOutput:
-            nonlocal todo_ts
             tool_input = cast(PreToolUseHookInput, input_data)["tool_input"]
             todos = tool_input.get("todos", [])
             items: list[Todo] = []
@@ -145,20 +159,20 @@ class ClaudeCodeTentacle(AgentTentacle):
                         active_form=active_form,
                     )
                 )
-            new_ts = await channel.feelers.todos.upsert_todo_list(
-                target, items, existing_ts=todo_ts
+            future = self.octopus.pending.todos.create(str(key))
+            await nerve.send(
+                TodoUpdate(
+                    key=key,
+                    items=items,
+                    existing_card_ref=self._todo_card_refs.get(key),
+                )
             )
-            if new_ts:
-                # Only (re-)pin when a new card was posted (ts changed).
-                # bookmark_upsert is idempotent so no run-level guard is needed.
-                if new_ts != todo_ts:
-                    pinned = await channel.feelers.todos.pin_todo(target, new_ts)
-                    if not pinned:
-                        logger.warning(
-                            "hook_todo_write: failed to pin todo card ts=%s", new_ts
-                        )
-                todo_ts = new_ts
-                self._todo_ts[key] = new_ts
+            try:
+                result: TodoResult = await asyncio.wait_for(future, timeout=TODO_UPDATE_TIMEOUT)
+                if result.card_ref:
+                    self._todo_card_refs[key] = result.card_ref
+            except TimeoutError:
+                logger.warning("hook_todo_write: timed out waiting for TodoResult")
             return {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -173,44 +187,24 @@ class ClaudeCodeTentacle(AgentTentacle):
         ) -> PermissionResult:
             if tool_name in AUTO_APPROVE:
                 return PermissionResultAllow()
-            # Check session allowlist — skip confirmation if already allowed
-            thread = await channel.threads.get(key)
-            if channel.feelers.confirm.is_session_allowed(str(thread.id), tool_name):
-                return PermissionResultAllow()
-            action, future = await channel.feelers.confirm.create_confirmation(
-                key=key,
-                tool_name=tool_name,
-                tool_call_id="",
-                args=input_data,
-                title=f"Claude Code: {tool_name}",
-                description=_summarize(tool_name, input_data),
-                skill="claude_code",
+            request_id = str(uuid7())
+            future = self.octopus.pending.confirmations.create(request_id)
+            await nerve.send(
+                ConfirmTool(
+                    key=key,
+                    request_id=request_id,
+                    tool_name=tool_name,
+                    args=input_data,
+                    title=f"Claude Code: {tool_name}",
+                    description=_summarize(tool_name, input_data),
+                    skill="claude_code",
+                )
             )
-            sent = await channel.feelers.confirm.send_confirmation(target, action)
-            if not sent:
-                await channel.feelers.confirm.expire_confirmation(
-                    action.confirmation_id
-                )
-                return PermissionResultDeny(
-                    message="Could not deliver approval request"
-                )
             try:
-                approved = await asyncio.wait_for(
-                    future, timeout=channel.feelers.confirm.timeout
-                )
-            except TimeoutError:
-                await channel.feelers.confirm.expire_confirmation(
-                    action.confirmation_id
-                )
-                await channel.feelers.confirm.send_timeout_notification(target, action)
-                return PermissionResultDeny(message="Timed out")
+                result: ConfirmResult = await future
             except asyncio.CancelledError:
-                await channel.feelers.confirm.expire_confirmation(
-                    action.confirmation_id
-                )
-                await channel.feelers.confirm.send_timeout_notification(target, action)
                 raise
-            if approved:
+            if result.approved:
                 return PermissionResultAllow()
             return PermissionResultDeny(message="Denied by user")
 
@@ -221,17 +215,22 @@ class ClaudeCodeTentacle(AgentTentacle):
             plan_notes = tool_input.get("plan") or tool_input.get("notes") or ""
             prompt = "📋 *Claude has finished planning and is ready to implement.*"
             if plan_notes:
-                # Format plan with proper line breaks and code blocks for readability
                 formatted_plan = plan_notes.replace("\\n", "\n")
                 prompt += f"\n\n```\n{formatted_plan}\n```"
             prompt += "\n\n_Proceed, or type instructions to refine the plan:_"
-            resp = await channel.feelers.questions.ask_question(
-                target,
-                prompt,
-                session_key=key,
-                options=["✅ Proceed with implementation"],
+            request_id = str(uuid7())
+            future = self.octopus.pending.answers.create(request_id)
+            await nerve.send(
+                AskUser(
+                    key=key,
+                    request_id=request_id,
+                    question=prompt,
+                    options=["✅ Proceed with implementation"],
+                )
             )
-            if resp is None or resp.answer == "✅ Proceed with implementation":
+            resp: UserAnswer = await future
+            answer = resp.answer
+            if answer in ("(no response)", "✅ Proceed with implementation"):
                 return {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
@@ -242,7 +241,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
-                    "permissionDecisionReason": f"User wants to refine the plan. Instructions: {resp.answer}",
+                    "permissionDecisionReason": f"User wants to refine the plan. Instructions: {answer}",
                 }
             }
 
@@ -250,7 +249,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         if session_id is None:
             # Cold start or restart: try to recover the session from the DB so
             # we can resume the Claude Code session instead of starting fresh.
-            session_id = await channel.threads.get_agent_session_id(key)
+            session_id = await self.threads.get_agent_session_id(key)
             if session_id:
                 self._session_id_map[key] = session_id
                 logger.debug(
@@ -290,7 +289,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         has_text = False
         is_first_response = session_id is None
         try:
-            async with channel.open_stream(target) as stream:
+            async with NerveStream(nerve, key) as stream:
                 await stream.set_status("🐙 Channeling")
                 async with ClaudeSDKClient(options=options) as client:
                     self._active_clients[key] = client
@@ -311,33 +310,30 @@ class ClaudeCodeTentacle(AgentTentacle):
                         worktree_path = _extract_worktree_path(msg)
                         if worktree_path:
                             self._worktree_paths[key] = worktree_path
-                            await channel.threads.set_worktree_info(
+                            await self.threads.set_worktree_info(
                                 key, worktree_path, ""
                             )
 
                         has_text = await _handle_stream_msg(msg, stream, has_text)
         finally:
             self._active_clients.pop(key, None)
-            if todo_ts:
-                await channel.feelers.todos.unpin_todo(target, todo_ts)
-                self._todo_ts.pop(key, None)
 
         session_id_after = self._session_id_map.get(key)
 
         # Persist the session_id so it survives process restarts.
         if session_id_after:
-            await channel.threads.set_agent_session_id(key, session_id_after)
+            await self.threads.set_agent_session_id(key, session_id_after)
 
         # Persist session name for new sessions
         if is_first_response and session_id_after:
             session_name = self._session_names.get(key)
             if session_name:
-                await channel.threads.set_session_name(key, session_name)
+                await self.threads.set_session_name(key, session_name)
 
         # Use worktree path if available, otherwise use default cwd
         current_worktree = self._worktree_paths.get(key)
         if not current_worktree:
-            worktree_info = await channel.threads.get_worktree_info(key)
+            worktree_info = await self.threads.get_worktree_info(key)
             if worktree_info:
                 current_worktree = worktree_info[0]
                 self._worktree_paths[key] = current_worktree
@@ -356,38 +352,21 @@ class ClaudeCodeTentacle(AgentTentacle):
         # Get session name for display
         session_name = self._session_names.get(key)
         if not session_name:
-            session_name = await channel.threads.get_session_name(key)
+            session_name = await self.threads.get_session_name(key)
             if session_name:
                 self._session_names[key] = session_name
 
         footer_text = f"🖥️ <{vscode_link_uri}|Open project in VSCode>"
-        plain_content = f"Open project in VSCode: {vscode_link_uri}"
         if resume_uri:
             resume_text = "Resume in Claude Code"
             if session_name:
                 resume_text = f"Resume: {session_name}"
             footer_text += f"  ·  🔄 <{resume_uri}|{resume_text}>"
-        await channel.send_platform_message(
-            chat_id=str(target.chat_id),
-            chat_type=target.chat_type,
-            reply_to=str(target.reply_to),
-            messages=[
-                PlatformMessage(
-                    msg_type="text",
-                    content=plain_content,
-                    metadata={
-                        "blocks": [
-                            {
-                                "type": "section",
-                                "text": {
-                                    "type": "mrkdwn",
-                                    "text": footer_text,
-                                },
-                            }
-                        ]
-                    },
-                )
-            ],
+        await nerve.send(
+            SendSegments(
+                key=key,
+                segments=[MarkdownSegment(data={"text": footer_text})],
+            )
         )
 
         # When this was a root (non-threaded) message, the session state was
@@ -403,17 +382,31 @@ class ClaudeCodeTentacle(AgentTentacle):
                 # Persist under the thread-continuation key too so follow-ups
                 # can resume the session even after a restart.
                 try:
-                    await channel.threads.set_agent_session_id(thread_key, sid)
+                    await self.threads.set_agent_session_id(thread_key, sid)
                 except Exception:
                     logger.warning(
                         "ClaudeCodeTentacle: failed to persist session_id for thread_key",
                         exc_info=True,
                     )
-            if ts := self._todo_ts.get(key):
-                self._todo_ts[thread_key] = ts
+            if card_ref := self._todo_card_refs.get(key):
+                self._todo_card_refs[thread_key] = card_ref
+
+    async def _dismiss_pending(self, key: SessionKey) -> None:
+        """Background task: send DismissPending with the current todo card ref."""
+        try:
+            card_ref = self._todo_card_refs.pop(key, None)
+            await self.octopus.agent_nerve.send(
+                DismissPending(key=key, card_ref=card_ref)
+            )
+        except Exception:
+            logger.exception(
+                "ClaudeCodeTentacle %s: error sending DismissPending for [%s]",
+                self.id,
+                key,
+            )
 
 
-async def _handle_stream_msg(msg: Message, stream: StreamSink, has_text: bool) -> bool:
+async def _handle_stream_msg(msg: Message, stream: NerveStream, has_text: bool) -> bool:
     if isinstance(msg, AssistantMessage):
         if msg.error:
             if has_text:
@@ -437,7 +430,7 @@ async def _handle_stream_msg(msg: Message, stream: StreamSink, has_text: bool) -
 
 
 async def _handle_stream_block(
-    block: ContentBlock, stream: StreamSink, has_text: bool
+    block: ContentBlock, stream: NerveStream, has_text: bool
 ) -> bool:
     if isinstance(block, TextBlock):
         if has_text:

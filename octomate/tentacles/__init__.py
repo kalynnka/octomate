@@ -3,7 +3,6 @@ from octomate.tentacles.base import (
     ChannelTentacle,
     Ink,
     MessageBuffer,
-    SendTarget,
     Tentacle,
 )
 
@@ -12,6 +11,5 @@ __all__ = [
     "ChannelTentacle",
     "Ink",
     "MessageBuffer",
-    "SendTarget",
     "Tentacle",
 ]

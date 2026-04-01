@@ -17,7 +17,6 @@ from octomate.tentacles.feelers import (
 
 if TYPE_CHECKING:
     from octomate.schemas.session import SessionKey
-    from octomate.tentacles.base import SendTarget
     from octomate.tentacles.lark.ink import LarkInk
     from octomate.transmuters.interactions import Confirmation, Question
 
@@ -31,9 +30,9 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
         super().__init__(store)
         self.ink = ink
 
-    async def send_confirmation(self, target: SendTarget, action: Confirmation) -> bool:
-        chat_id = str(target.chat_id)
-        receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
+    async def send_confirmation(self, key: SessionKey, action: Confirmation) -> bool:
+        chat_id = str(key.chat_id or key.group_id or key.user_id)
+        receive_id_type = "chat_id" if key.group_id else "open_id"
 
         title = action.title or action.tool_name
         args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
@@ -91,16 +90,16 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                 ],
             }
         )
-        ts = await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
-        if ts:
-            self.store.set_card_message_id(action.confirmation_id, ts)
+        card_ref = await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+        if card_ref:
+            self.store.set_card_message_id(action.confirmation_id, card_ref)
         return True
 
     async def send_timeout_notification(
-        self, target: SendTarget, action: Confirmation
+        self, key: SessionKey, action: Confirmation
     ) -> None:
-        chat_id = str(target.chat_id)
-        receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
+        chat_id = str(key.chat_id or key.group_id or key.user_id)
+        receive_id_type = "chat_id" if key.group_id else "open_id"
         title = action.title or action.tool_name
         args_json = json.dumps(action.args, ensure_ascii=False, indent=2)
         if len(args_json) > 2000:
@@ -129,10 +128,10 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
         await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
 
     async def dismiss_confirmation(
-        self, target: SendTarget, action: Confirmation
+        self, key: SessionKey, action: Confirmation
     ) -> None:
-        ts = self.store.card_message_ids.pop(action.confirmation_id, None)
-        if not ts:
+        card_ref = self.store.card_message_ids.pop(action.confirmation_id, None)
+        if not card_ref:
             return
         title = action.title or action.tool_name
         card = json.dumps(
@@ -152,7 +151,7 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                 ],
             }
         )
-        await self.ink.update_message(ts, "interactive", card)
+        await self.ink.update_message(card_ref, "interactive", card)
 
 
 class LarkTodoFeeler(TodoFeeler):
@@ -166,12 +165,12 @@ class LarkTodoFeeler(TodoFeeler):
 
     async def upsert_todo_list(
         self,
-        target: SendTarget,
+        key: SessionKey,
         items: list,
         existing_ts: str | None = None,
     ) -> str | None:
-        chat_id = str(target.chat_id)
-        receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
+        chat_id = str(key.chat_id or key.group_id or key.user_id)
+        receive_id_type = "chat_id" if key.group_id else "open_id"
 
         lines: list[str] = []
         for item in items:
@@ -222,21 +221,21 @@ class LarkTodoFeeler(TodoFeeler):
         ok = await self.ink.update_message(existing_ts, "interactive", card)
         return existing_ts if ok else None
 
-    async def pin_todo(self, target: SendTarget, ts: str) -> bool:
-        key = str(target.chat_id)
-        old = self.pinned.get(key)
-        if old and old != ts:
+    async def pin_todo(self, key: SessionKey, card_ref: str) -> bool:
+        cache_key = str(key.chat_id or key.group_id or key.user_id)
+        old = self.pinned.get(cache_key)
+        if old and old != card_ref:
             await self.ink.unpin_message(old)
-        ok = await self.ink.pin_message(ts)
+        ok = await self.ink.pin_message(card_ref)
         if ok:
-            self.pinned[key] = ts
+            self.pinned[cache_key] = card_ref
         return ok
 
-    async def unpin_todo(self, target: SendTarget, ts: str) -> bool:
-        key = str(target.chat_id)
-        ok = await self.ink.unpin_message(ts)
+    async def unpin_todo(self, key: SessionKey, card_ref: str) -> bool:
+        cache_key = str(key.chat_id or key.group_id or key.user_id)
+        ok = await self.ink.unpin_message(card_ref)
         if ok:
-            self.pinned.pop(key, None)
+            self.pinned.pop(cache_key, None)
         return ok
 
 
@@ -249,15 +248,15 @@ class LarkQuestionFeeler(QuestionFeeler):
 
     async def ask_question(
         self,
-        target: SendTarget,
+        key: SessionKey,
         text: str,
         session_key: SessionKey,
         options: list[str] | None = None,
         multi_select: bool = False,
     ) -> QuestionResponse | None:
         question, future = await self.create_question(session_key, text, options)
-        chat_id = str(target.chat_id)
-        receive_id_type = "chat_id" if target.chat_type == "group" else "open_id"
+        chat_id = str(key.chat_id or key.group_id or key.user_id)
+        receive_id_type = "chat_id" if key.group_id else "open_id"
 
         elements: list[dict] = [{"tag": "markdown", "content": text}]
         if options:
@@ -345,9 +344,9 @@ class LarkQuestionFeeler(QuestionFeeler):
             await self.expire_question(question.question_id)
             return None
 
-    async def dismiss_question(self, target: SendTarget, question: Question) -> None:
-        ts = self.store.card_message_ids.pop(question.question_id, None)
-        if not ts:
+    async def dismiss_question(self, key: SessionKey, question: Question) -> None:
+        card_ref = self.store.card_message_ids.pop(question.question_id, None)
+        if not card_ref:
             return
         card = json.dumps(
             {
@@ -366,4 +365,4 @@ class LarkQuestionFeeler(QuestionFeeler):
                 ],
             }
         )
-        await self.ink.update_message(ts, "interactive", card)
+        await self.ink.update_message(card_ref, "interactive", card)
