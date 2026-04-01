@@ -25,7 +25,7 @@ from pydantic_ai.toolsets import FunctionToolset
 from octomate.agents.base import SessionContext, SummonRequest
 from octomate.agents.manager import SKILL_METADATA_KEY
 from octomate.agents.tools import history_toolset
-from octomate.nerve import SummonAgent
+from octomate.nerve import DismissPending, SummonAgent
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
@@ -203,7 +203,6 @@ class AgentTentacle(Tentacle):
     async def _dismiss_pending(self, key: SessionKey) -> None:
         """Background task: expire all pending interactions and dismiss their cards."""
         try:
-            from octomate.nerve import DismissPending
             await self.octopus.agent_nerve.send(DismissPending(key=key))
         except Exception:
             logger.exception(

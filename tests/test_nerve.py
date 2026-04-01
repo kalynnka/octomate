@@ -5,14 +5,18 @@ import asyncio
 import pytest
 
 from octomate.nerve import (
+    AgentPending,
     AnyioNerve,
     AskUser,
     ConfirmResult,
     ConfirmTool,
     DismissPending,
     NerveDispatcher,
+    NerveStream,
     PendingRequests,
+    ReleaseThread,
     SendSegments,
+    SinkRegistry,
     StreamFrame,
     SummonAgent,
     TodoResult,
@@ -96,12 +100,13 @@ async def test_agent_signals_round_trip():
         StreamFrame(key=key, frame_type="close", content=""),
         AskUser(key=key, request_id="r1", question="q?", options=["a", "b"], multi_select=True),
         ConfirmTool(key=key, request_id="r2", tool_name="t", args={}, title="", description="", skill=""),
-        TodoUpdate(key=key, items=[]),
-        DismissPending(key=key),
+        TodoUpdate(key=key, items=[], existing_card_ref="old-ref"),
+        DismissPending(key=key, card_ref="ref-123"),
+        ReleaseThread(key=key),
         UserAnswer(request_id="r1", answer="yes"),
         ConfirmResult(request_id="r2", approved=True),
-        TodoResult(key=key, ts="ts1"),
-        SendSegments(key=key, target=None, segments=[]),
+        TodoResult(key=key, card_ref="card-abc"),
+        SendSegments(key=key, segments=[]),
     ]
     for s in signals:
         await nerve.send(s)
@@ -113,11 +118,42 @@ async def test_agent_signals_round_trip():
     assert ask_user.multi_select is True
     assert ask_user.options == ["a", "b"]
     assert ask_user.request_id == "r1"
+    assert ask_user.kind == "ask_user"
 
     stream_close: StreamFrame = received[2]
     assert stream_close.frame_type == "close"
+    assert stream_close.kind == "stream_frame"
+
+    todo_result: TodoResult = received[10]
+    assert todo_result.card_ref == "card-abc"
+
+    dismiss: DismissPending = received[6]
+    assert dismiss.card_ref == "ref-123"
+
+    todo_update: TodoUpdate = received[5]
+    assert todo_update.existing_card_ref == "old-ref"
 
     await nerve.close()
+
+
+async def test_signal_discriminators():
+    """Each signal has a unique kind discriminator field."""
+    key = _key()
+    kinds = {
+        SummonAgent(key=key, agent_tag="a", contents=[], summary="s").kind,
+        StreamFrame(key=key, frame_type="status", content="").kind,
+        SendSegments(key=key, segments=[]).kind,
+        AskUser(key=key, request_id="r", question="q").kind,
+        UserAnswer(request_id="r", answer="a").kind,
+        ConfirmTool(key=key, request_id="r", tool_name="t", args={}, title="", description="", skill="").kind,
+        ConfirmResult(request_id="r", approved=True).kind,
+        TodoUpdate(key=key, items=[]).kind,
+        TodoResult(key=key, card_ref="ref").kind,
+        DismissPending(key=key).kind,
+        ReleaseThread(key=key).kind,
+    }
+    # All discriminators must be unique
+    assert len(kinds) == 11
 
 
 async def test_pending_requests_create_and_resolve():
@@ -142,6 +178,57 @@ async def test_pending_requests_cancel():
     future = pending.create("req-cancel")
     pending.cancel("req-cancel")
     assert future.cancelled()
+
+
+async def test_agent_pending_container():
+    """AgentPending groups answers, confirmations, and todos."""
+    ap = AgentPending()
+    assert isinstance(ap.answers, PendingRequests)
+    assert isinstance(ap.confirmations, PendingRequests)
+    assert isinstance(ap.todos, PendingRequests)
+    # Each is a separate instance
+    assert ap.answers is not ap.confirmations
+    assert ap.confirmations is not ap.todos
+
+
+async def test_nerve_stream_sends_frames():
+    """NerveStream methods send the correct StreamFrame signals."""
+    key = _key()
+    nerve = AnyioNerve(buffer_size=16)
+
+    async with NerveStream(nerve, key) as stream:
+        await stream.set_status("working")
+        await stream.append("hello")
+        await stream.flush()
+        await stream.post_thinking_block("thinking...")
+
+    frames = [await nerve.receive() for _ in range(5)]
+    assert frames[0].frame_type == "status"
+    assert frames[0].content == "working"
+    assert frames[1].frame_type == "append"
+    assert frames[1].content == "hello"
+    assert frames[2].frame_type == "flush"
+    assert frames[3].frame_type == "thinking"
+    assert frames[3].content == "thinking..."
+    assert frames[4].frame_type == "close"  # from __aexit__
+
+    await nerve.close()
+
+
+async def test_nerve_stream_attrs_are_public():
+    """NerveStream exposes nerve and key as public attributes."""
+    key = _key()
+    nerve = AnyioNerve(buffer_size=4)
+    stream = NerveStream(nerve, key)
+    assert stream.nerve is nerve
+    assert stream.key is key
+    await nerve.close()
+
+
+async def test_sink_registry_is_empty_initially():
+    """SinkRegistry starts with no open sinks."""
+    registry = SinkRegistry()
+    assert len(registry._sinks) == 0
 
 
 async def test_nerve_dispatcher_routes_by_type():
@@ -176,12 +263,11 @@ async def test_nerve_dispatcher_routes_by_type():
 
 
 async def test_octopus_has_agent_nerve():
-    """Octopus exposes agent_nerve, agent_dispatcher, and PendingRequests attributes."""
+    """Octopus exposes agent_nerve, agent_dispatcher, AgentPending and SinkRegistry."""
     from octomate.octopus import Octopus
 
     octopus = Octopus()
     assert octopus.agent_nerve is not None
     assert octopus.agent_dispatcher is not None
-    assert octopus.answer_pending is not None
-    assert octopus.confirm_pending is not None
-    assert octopus.todo_pending is not None
+    assert isinstance(octopus.pending, AgentPending)
+    assert isinstance(octopus.sinks, SinkRegistry)

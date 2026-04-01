@@ -44,6 +44,8 @@ from octomate.nerve import (
     AskUser,
     ConfirmResult,
     ConfirmTool,
+    DismissPending,
+    NerveStream,
     SendSegments,
     StreamFrame,
     TodoResult,
@@ -53,10 +55,7 @@ from octomate.nerve import (
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.session import SessionKey
 from octomate.stores.thread import ThreadStore
-from octomate.tentacles.base import (
-    AgentTentacle,
-    SendTarget,
-)
+from octomate.tentacles.base import AgentTentacle
 from octomate.transmuters.interactions import Todo
 
 if TYPE_CHECKING:
@@ -68,48 +67,11 @@ AUTO_APPROVE = {"AskUserQuestion", "TodoWrite", "ExitPlanMode"}
 TODO_UPDATE_TIMEOUT = 30.0  # seconds to wait for TodoResult from octopus handler
 
 
-class _NerveStream:
-    """StreamSink-compatible object that forwards all calls as StreamFrame signals."""
-
-    def __init__(self, nerve: Any, key: SessionKey) -> None:
-        self._nerve = nerve
-        self._key = key
-
-    async def set_status(self, status: str) -> None:
-        await self._nerve.send(
-            StreamFrame(key=self._key, frame_type="status", content=status)
-        )
-
-    async def append(self, text: str) -> None:
-        await self._nerve.send(
-            StreamFrame(key=self._key, frame_type="append", content=text)
-        )
-
-    async def post_thinking_block(self, text: str) -> None:
-        if text:
-            await self._nerve.send(
-                StreamFrame(key=self._key, frame_type="thinking", content=text)
-            )
-
-    async def flush(self) -> None:
-        await self._nerve.send(
-            StreamFrame(key=self._key, frame_type="flush", content="")
-        )
-
-    async def __aenter__(self) -> _NerveStream:
-        return self
-
-    async def __aexit__(self, *_: Any) -> None:
-        await self._nerve.send(
-            StreamFrame(key=self._key, frame_type="close", content="")
-        )
-
-
 class ClaudeCodeTentacle(AgentTentacle):
     config: ClaudeCodeConfig
     threads: ThreadStore
     _vscode_uri: str  # precomputed vscode://file<cwd> launch link
-    _todo_ts: dict[SessionKey, str]  # thread_key -> todo card message ts
+    _todo_card_refs: dict[SessionKey, str]  # session_key -> active todo card reference
     _session_id_map: dict[SessionKey, str]  # session_key -> Claude SDK session_id
     _active_clients: dict[SessionKey, ClaudeSDKClient]
     _session_names: dict[SessionKey, str]  # session_key -> AI-generated session name
@@ -120,7 +82,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         self.config = config
         self.threads = ThreadStore(default_owner=tag)
         self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
-        self._todo_ts = {}
+        self._todo_card_refs = {}
         self._session_id_map = {}
         self._active_clients = {}
         self._session_names = {}
@@ -140,11 +102,6 @@ class ClaudeCodeTentacle(AgentTentacle):
         contents: list[MessageEvent],
     ):
         task = "".join([str(part) for part in contents[0].to_content_parts()])
-        target = SendTarget(
-            chat_id=key.chat_id or key.group_id or key.user_id,
-            chat_type="group" if key.group_id else "private",
-            reply_to=key.thread_id or None,
-        )
 
         nerve = self.octopus.agent_nerve
 
@@ -159,7 +116,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                 options = [opt["label"] for opt in q.get("options", [])]
                 multi = q.get("multiSelect", False)
                 request_id = str(uuid7())
-                future = self.octopus.answer_pending.create(request_id)
+                future = self.octopus.pending.answers.create(request_id)
                 await nerve.send(
                     AskUser(
                         key=key,
@@ -202,12 +159,18 @@ class ClaudeCodeTentacle(AgentTentacle):
                         active_form=active_form,
                     )
                 )
-            future = self.octopus.todo_pending.create(str(key))
-            await nerve.send(TodoUpdate(key=key, items=items))
+            future = self.octopus.pending.todos.create(str(key))
+            await nerve.send(
+                TodoUpdate(
+                    key=key,
+                    items=items,
+                    existing_card_ref=self._todo_card_refs.get(key),
+                )
+            )
             try:
                 result: TodoResult = await asyncio.wait_for(future, timeout=TODO_UPDATE_TIMEOUT)
-                if result.ts:
-                    self._todo_ts[key] = result.ts
+                if result.card_ref:
+                    self._todo_card_refs[key] = result.card_ref
             except TimeoutError:
                 logger.warning("hook_todo_write: timed out waiting for TodoResult")
             return {
@@ -225,7 +188,7 @@ class ClaudeCodeTentacle(AgentTentacle):
             if tool_name in AUTO_APPROVE:
                 return PermissionResultAllow()
             request_id = str(uuid7())
-            future = self.octopus.confirm_pending.create(request_id)
+            future = self.octopus.pending.confirmations.create(request_id)
             await nerve.send(
                 ConfirmTool(
                     key=key,
@@ -256,7 +219,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                 prompt += f"\n\n```\n{formatted_plan}\n```"
             prompt += "\n\n_Proceed, or type instructions to refine the plan:_"
             request_id = str(uuid7())
-            future = self.octopus.answer_pending.create(request_id)
+            future = self.octopus.pending.answers.create(request_id)
             await nerve.send(
                 AskUser(
                     key=key,
@@ -326,7 +289,7 @@ class ClaudeCodeTentacle(AgentTentacle):
         has_text = False
         is_first_response = session_id is None
         try:
-            async with _NerveStream(nerve, key) as stream:
+            async with NerveStream(nerve, key) as stream:
                 await stream.set_status("🐙 Channeling")
                 async with ClaudeSDKClient(options=options) as client:
                     self._active_clients[key] = client
@@ -354,7 +317,6 @@ class ClaudeCodeTentacle(AgentTentacle):
                         has_text = await _handle_stream_msg(msg, stream, has_text)
         finally:
             self._active_clients.pop(key, None)
-            self._todo_ts.pop(key, None)
 
         session_id_after = self._session_id_map.get(key)
 
@@ -403,7 +365,6 @@ class ClaudeCodeTentacle(AgentTentacle):
         await nerve.send(
             SendSegments(
                 key=key,
-                target=target,
                 segments=[MarkdownSegment(data={"text": footer_text})],
             )
         )
@@ -427,11 +388,25 @@ class ClaudeCodeTentacle(AgentTentacle):
                         "ClaudeCodeTentacle: failed to persist session_id for thread_key",
                         exc_info=True,
                     )
-            if ts := self._todo_ts.get(key):
-                self._todo_ts[thread_key] = ts
+            if card_ref := self._todo_card_refs.get(key):
+                self._todo_card_refs[thread_key] = card_ref
+
+    async def _dismiss_pending(self, key: SessionKey) -> None:
+        """Background task: send DismissPending with the current todo card ref."""
+        try:
+            card_ref = self._todo_card_refs.pop(key, None)
+            await self.octopus.agent_nerve.send(
+                DismissPending(key=key, card_ref=card_ref)
+            )
+        except Exception:
+            logger.exception(
+                "ClaudeCodeTentacle %s: error sending DismissPending for [%s]",
+                self.id,
+                key,
+            )
 
 
-async def _handle_stream_msg(msg: Message, stream: _NerveStream, has_text: bool) -> bool:
+async def _handle_stream_msg(msg: Message, stream: NerveStream, has_text: bool) -> bool:
     if isinstance(msg, AssistantMessage):
         if msg.error:
             if has_text:
@@ -455,7 +430,7 @@ async def _handle_stream_msg(msg: Message, stream: _NerveStream, has_text: bool)
 
 
 async def _handle_stream_block(
-    block: ContentBlock, stream: _NerveStream, has_text: bool
+    block: ContentBlock, stream: NerveStream, has_text: bool
 ) -> bool:
     if isinstance(block, TextBlock):
         if has_text:
