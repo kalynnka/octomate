@@ -4,10 +4,8 @@ import asyncio
 import contextlib
 import logging
 
-from anyio import create_memory_object_stream as object_stream
-from anyio.abc import ObjectReceiveStream, ObjectSendStream
-
 from octomate.agents.manager import SkillManager
+from octomate.nerve import AnyioNerve, Nerve
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import AgentTentacle, ChannelTentacle
@@ -20,8 +18,7 @@ class Octopus:
     skill_manager: SkillManager | None
     tentacles: dict[str, ChannelTentacle]
     agent_tentacles: dict[str, AgentTentacle]
-    _nerve_send: ObjectSendStream[tuple[SessionKey, list[MessageEvent]]]
-    _nerve_receive: ObjectReceiveStream[tuple[SessionKey, list[MessageEvent]]]
+    nerve: Nerve[tuple[SessionKey, list[MessageEvent]]]
 
     def __init__(
         self,
@@ -31,7 +28,7 @@ class Octopus:
         self.tentacles = {}
         self.agent_tentacles = {}
         self.skill_manager = skill_manager
-        self._nerve_send, self._nerve_receive = object_stream(buffer_size)
+        self.nerve = AnyioNerve(buffer_size)
 
     async def activate(self) -> None:
         try:
@@ -66,11 +63,11 @@ class Octopus:
         self.tentacles.pop(name, None)
 
     async def kick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
-        await self._nerve_send.send((key, batch))
+        await self.nerve.send((key, batch))
 
     async def rolling(self) -> None:
-        async with asyncio.TaskGroup() as tg, self._nerve_receive:
-            async for key, batch in self._nerve_receive:
+        async with asyncio.TaskGroup() as tg:
+            async for key, batch in self.nerve:
                 channel = self.tentacles[key.tentacle_id]
                 owner_id = await channel.threads.get_owner(key)
                 owner = self.agent_tentacles.get(owner_id)
