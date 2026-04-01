@@ -197,11 +197,11 @@ def silent_model() -> FunctionModel:
 
 @contextlib.asynccontextmanager
 async def rolling_loop(octopus: Octopus):
-    """Run octopus.rolling() as a background task, cancel on exit."""
+    """Run the channel dispatcher as a background task, cancel on exit."""
     from octomate.transmuters import sqlalchemy_materia
 
     with sqlalchemy_materia:
-        task = asyncio.create_task(octopus.rolling())
+        task = asyncio.create_task(octopus.channel_dispatcher.run())
         try:
             yield
         finally:
