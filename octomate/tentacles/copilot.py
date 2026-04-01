@@ -11,7 +11,7 @@ from octomate.nerve import ReleaseThread, SendSegments
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import AgentTentacle, SendTarget
+from octomate.tentacles.base import AgentTentacle
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
@@ -47,11 +47,6 @@ class CopilotTentacle(AgentTentacle):
         contents: list[MessageEvent],
     ) -> None:
         task = "".join(str(part) for part in contents[0].to_content_parts())
-        target = SendTarget(
-            chat_id=key.chat_id or key.group_id or key.user_id,
-            chat_type="group" if key.group_id else "private",
-            reply_to=key.thread_id or None,
-        )
 
         owner, repo, issue_number = _parse_issue_ref(task, self.config)
         agent_assignment = _build_agent_assignment(self.config, owner, repo)
@@ -102,7 +97,7 @@ class CopilotTentacle(AgentTentacle):
 
         nerve = self.octopus.agent_nerve
         await nerve.send(
-            SendSegments(key=key, target=target, segments=[TextSegment(data={"text": text})])
+            SendSegments(key=key, segments=[TextSegment(data={"text": text})])
         )
         await nerve.send(ReleaseThread(key=key))
 

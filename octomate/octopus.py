@@ -28,7 +28,7 @@ from octomate.nerve import (
 )
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import AgentTentacle, ChannelTentacle, SendTarget
+from octomate.tentacles.base import AgentTentacle, ChannelTentacle
 from octomate.transmuters import sqlalchemy_materia
 
 logger = logging.getLogger(__name__)
@@ -114,11 +114,7 @@ class Octopus:
             channel = self.tentacles.get(signal.key.tentacle_id)
             if channel is None:
                 return
-            key = signal.key
-            chat_id = key.chat_id or key.group_id or key.user_id
-            chat_type = "group" if key.group_id else "private"
-            target = SendTarget(chat_id=chat_id, chat_type=chat_type, reply_to=key.thread_id or None)
-            await channel.twitch(target, signal.segments)
+            await channel.twitch(signal.key, signal.segments)
 
         @self.agent_dispatcher.on(AskUser)
         async def handle_ask_user(signal: AskUser) -> None:
@@ -131,11 +127,8 @@ class Octopus:
                 )
                 return
             key = signal.key
-            chat_id = key.chat_id or key.group_id or key.user_id
-            chat_type = "group" if key.group_id else "private"
-            target = SendTarget(chat_id=chat_id, chat_type=chat_type, reply_to=key.thread_id or None)
             resp = await channel.feelers.questions.ask_question(
-                target,
+                key,
                 signal.question,
                 session_key=key,
                 options=signal.options or None,
@@ -159,9 +152,6 @@ class Octopus:
                 )
                 return
             key = signal.key
-            chat_id = key.chat_id or key.group_id or key.user_id
-            chat_type = "group" if key.group_id else "private"
-            target = SendTarget(chat_id=chat_id, chat_type=chat_type, reply_to=key.thread_id or None)
             thread = await channel.threads.get(key)
             if channel.feelers.confirm.is_session_allowed(str(thread.id), signal.tool_name):
                 await self.agent_nerve.send(
@@ -178,7 +168,7 @@ class Octopus:
                 skill=signal.skill,
                 approvers=signal.approvers or None,
             )
-            sent = await channel.feelers.confirm.send_confirmation(target, action)
+            sent = await channel.feelers.confirm.send_confirmation(key, action)
             if not sent:
                 await channel.feelers.confirm.expire_confirmation(action.confirmation_id)
                 await self.agent_nerve.send(
@@ -191,11 +181,11 @@ class Octopus:
                 )
             except TimeoutError:
                 await channel.feelers.confirm.expire_confirmation(action.confirmation_id)
-                await channel.feelers.confirm.send_timeout_notification(target, action)
+                await channel.feelers.confirm.send_timeout_notification(key, action)
                 approved = False
             except asyncio.CancelledError:
                 await channel.feelers.confirm.expire_confirmation(action.confirmation_id)
-                await channel.feelers.confirm.send_timeout_notification(target, action)
+                await channel.feelers.confirm.send_timeout_notification(key, action)
                 raise
             await self.agent_nerve.send(
                 ConfirmResult(request_id=signal.request_id, approved=approved)
@@ -212,15 +202,12 @@ class Octopus:
                 await self.agent_nerve.send(TodoResult(key=signal.key, card_ref=""))
                 return
             key = signal.key
-            chat_id = key.chat_id or key.group_id or key.user_id
-            chat_type = "group" if key.group_id else "private"
-            target = SendTarget(chat_id=chat_id, chat_type=chat_type, reply_to=key.thread_id or None)
             new_card_ref = await channel.feelers.todos.upsert_todo_list(
-                target, signal.items, existing_ts=signal.existing_card_ref
+                key, signal.items, existing_ts=signal.existing_card_ref
             )
             if new_card_ref:
                 if new_card_ref != signal.existing_card_ref:
-                    pinned = await channel.feelers.todos.pin_todo(target, new_card_ref)
+                    pinned = await channel.feelers.todos.pin_todo(key, new_card_ref)
                     if not pinned:
                         logger.warning(
                             "handle_todo_update: failed to pin todo card card_ref=%s",
@@ -238,11 +225,8 @@ class Octopus:
             channel = self.tentacles.get(key.tentacle_id)
             if channel is None:
                 return
-            chat_id = key.chat_id or key.group_id or key.user_id
-            chat_type = "group" if key.group_id else "private"
-            target = SendTarget(chat_id=chat_id, chat_type=chat_type, reply_to=key.thread_id or None)
             if signal.card_ref:
-                await channel.feelers.todos.unpin_todo(target, signal.card_ref)
+                await channel.feelers.todos.unpin_todo(key, signal.card_ref)
             await self.sinks.close(key)
             thread = await channel.threads.get(key)
             thread_id = str(thread.id)
@@ -250,10 +234,10 @@ class Octopus:
                 thread_id
             )
             dismiss_coros = [
-                channel.feelers.confirm.dismiss_confirmation(target, c)
+                channel.feelers.confirm.dismiss_confirmation(key, c)
                 for c in expired_confs
             ] + [
-                channel.feelers.questions.dismiss_question(target, q)
+                channel.feelers.questions.dismiss_question(key, q)
                 for q in expired_qs
             ]
             if dismiss_coros:

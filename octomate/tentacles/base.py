@@ -40,7 +40,7 @@ from octomate.stores.interaction import InteractionStore
 from octomate.stores.thread import ThreadStore
 from octomate.tentacles.feelers import NULL_FEELERS, Feelers
 
-# agents.flick imports agents.surge which imports SendTarget from this module,
+# agents.flick imports agents.surge which imports from this module,
 # and octopus imports Tentacle from this module — both circular.
 if TYPE_CHECKING:
     from octomate.memory.base import OctopusMemory
@@ -65,14 +65,6 @@ class Chromo(Protocol):
     async def squirt(
         self, segments: list[AgentSegment], *, reply_to: str | None = None
     ) -> list[PlatformMessage]: ...
-
-
-@dataclass
-class SendTarget:
-    chat_type: Literal["group", "private"]
-    chat_id: int | str
-    reply_to: int | str | None = None
-    reply_in_thread: bool = False
 
 
 @runtime_checkable
@@ -103,17 +95,17 @@ class StreamSink:
     """Default StreamSink that sends each append/status as a separate message."""
 
     tentacle: ChannelTentacle
-    target: SendTarget
+    key: SessionKey
 
-    def __init__(self, tentacle: ChannelTentacle, target: SendTarget) -> None:
+    def __init__(self, tentacle: ChannelTentacle, key: SessionKey) -> None:
         self.tentacle = tentacle
-        self.target = target
+        self.key = key
 
     async def set_status(self, status: str) -> None:
-        await self.tentacle.twitch(self.target, [TextSegment(data={"text": status})])
+        await self.tentacle.twitch(self.key, [TextSegment(data={"text": status})])
 
     async def append(self, text: str) -> None:
-        await self.tentacle.twitch(self.target, [MarkdownSegment(data={"text": text})])
+        await self.tentacle.twitch(self.key, [MarkdownSegment(data={"text": text})])
 
     async def flush(self) -> None:
         pass
@@ -293,12 +285,6 @@ class ChannelTentacle(Tentacle):
                 "Tentacle %s flick [%s] (%d messages)", self.id, key, len(contents)
             )
 
-            target = (
-                SendTarget("group", key.group_id)
-                if key.group_id
-                else SendTarget("private", key.user_id)
-            )
-            target.reply_to = key.thread_id
             deps = SessionContext(session_key=key, tentacle=self)
             message_history = await self.memory.history(key, size=32)
             result = await self.flick.run(
@@ -314,7 +300,6 @@ class ChannelTentacle(Tentacle):
                 result=result,
                 deps=deps,
                 key=key,
-                target=target,
             )
 
             if isinstance(resolved, SummonRequest):
@@ -329,7 +314,7 @@ class ChannelTentacle(Tentacle):
                     content = contents[-1].model_copy()
                     content.segments = [TextSegment(data={"text": resolved.summary})]
                     await self.twitch(
-                        target,
+                        key,
                         [
                             TextSegment(
                                 data={
@@ -348,7 +333,7 @@ class ChannelTentacle(Tentacle):
                     )
             elif resolved:
                 for msg_out in resolved.output:
-                    await self.twitch(target, msg_out.segments)
+                    await self.twitch(key, msg_out.segments)
                 asyncio.create_task(self.memory.memo(key, resolved.output, self))
         except Exception:
             logger.exception("Error in tentacle %s [%s]", self.id, key)
@@ -359,7 +344,6 @@ class ChannelTentacle(Tentacle):
         result: AgentRunResult[list[AgentMessage] | DeferredToolRequests],
         key: SessionKey,
         deps: SessionContext,
-        target: SendTarget,
     ) -> AgentRunResult[list[AgentMessage]] | SummonRequest | None:
         """Resolve deferred tool requests until the agent produces final messages.
 
@@ -387,7 +371,7 @@ class ChannelTentacle(Tentacle):
                 if call.tool_name == "ask_user":
                     args = call.args_as_dict()
                     resp = await self.feelers.questions.ask_question(
-                        target,
+                        key,
                         args.get("question", ""),
                         session_key=key,
                         options=args.get("options"),
@@ -418,7 +402,7 @@ class ChannelTentacle(Tentacle):
                     approvers=tool_meta.get("approvers"),
                 )
 
-                sent = await self.feelers.confirm.send_confirmation(target, action)
+                sent = await self.feelers.confirm.send_confirmation(key, action)
                 if not sent:
                     await self.feelers.confirm.expire_confirmation(
                         action.confirmation_id
@@ -434,13 +418,13 @@ class ChannelTentacle(Tentacle):
                     await self.feelers.confirm.expire_confirmation(
                         action.confirmation_id
                     )
-                    await self.feelers.confirm.send_timeout_notification(target, action)
+                    await self.feelers.confirm.send_timeout_notification(key, action)
                     approved = False
                 except asyncio.CancelledError:
                     await self.feelers.confirm.expire_confirmation(
                         action.confirmation_id
                     )
-                    await self.feelers.confirm.send_timeout_notification(target, action)
+                    await self.feelers.confirm.send_timeout_notification(key, action)
                     raise
 
                 deferred.approvals[call.tool_call_id] = approved
@@ -468,10 +452,10 @@ class ChannelTentacle(Tentacle):
         except Exception:
             logger.exception("Tentacle %s: error in ingest", self.id)
 
-    async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
+    async def twitch(self, key: SessionKey, segments: list[AgentSegment]) -> None:
         """Outbound pipeline: resolve media → encode → send."""
         await self.emerge(segments)
-        reply_to: str | None = str(target.reply_to) if target.reply_to else None
+        reply_to: str | None = str(key.thread_id) if key.thread_id else None
         for seg in segments:
             if isinstance(seg, ReplySegment):
                 reply_to = seg.data["id"]
@@ -480,12 +464,13 @@ class ChannelTentacle(Tentacle):
             s for s in segments if not isinstance(s, ReplySegment)
         ]
         messages: list[PlatformMessage] = await self.chromo.squirt(remaining)
+        chat_id = key.chat_id or key.group_id or key.user_id
+        chat_type = "group" if key.group_id else "private"
         await self.send_platform_message(
-            str(target.chat_id),
-            target.chat_type,
+            str(chat_id),
+            chat_type,
             messages,
             reply_to,
-            target.reply_in_thread,
         )
 
     @abstractmethod
@@ -499,13 +484,13 @@ class ChannelTentacle(Tentacle):
     ) -> str | None: ...
 
     @asynccontextmanager
-    async def open_stream(self, target: SendTarget) -> AsyncIterator[StreamSink]:
+    async def open_stream(self, key: SessionKey) -> AsyncIterator[StreamSink]:
         """Open a streaming sink for progressive output.
 
         Subclasses override to provide platform-specific streaming (e.g. Slack
         message updates). The default sends each append/status as a separate message.
         """
-        sink = StreamSink(tentacle=self, target=target)
+        sink = StreamSink(tentacle=self, key=key)
         try:
             yield sink
         finally:
@@ -567,15 +552,10 @@ class ChannelTentacle(Tentacle):
             that don't involve tool calls. Example: acknowledge("let me look that up~")
             """
             if ctx.deps.tentacle:
-                key = ctx.deps.session_key
-                if key.group_id:
-                    target = SendTarget("group", key.group_id, reply_to=key.thread_id)
-                else:
-                    target = SendTarget("private", key.user_id, reply_to=key.thread_id)
                 # Flick always replies in the main thread — sub-thread messages
                 # are routed directly to agent tentacles and never reach here.
                 await ctx.deps.tentacle.twitch(
-                    target, [TextSegment(data={"text": text})]
+                    ctx.deps.session_key, [TextSegment(data={"text": text})]
                 )
             return "acknowledged"
 

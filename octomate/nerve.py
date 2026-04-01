@@ -307,14 +307,9 @@ class SinkRegistry:
 
     async def get_or_open(self, key: SessionKey, channel: Any) -> Any:
         if key not in self._sinks:
-            chat_id = key.chat_id or key.group_id or key.user_id
-            chat_type = "group" if key.group_id else "private"
-            reply_to = key.thread_id or None
-            from octomate.tentacles.base import SendTarget  # avoid circular import at module level
-            target = SendTarget(chat_id=chat_id, chat_type=chat_type, reply_to=reply_to)
             stack = contextlib.AsyncExitStack()
             try:
-                sink = await stack.enter_async_context(channel.open_stream(target))
+                sink = await stack.enter_async_context(channel.open_stream(key))
             except Exception:
                 await stack.aclose()
                 raise
