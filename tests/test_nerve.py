@@ -34,3 +34,25 @@ async def test_multiple_items_ordered():
     received = [await nerve.receive() for _ in items]
     assert received == items
     await nerve.close()
+
+
+async def test_open_is_noop():
+    nerve = AnyioNerve[str](buffer_size=4)
+    await nerve.open()
+    await nerve.send("x")
+    assert await nerve.receive() == "x"
+    await nerve.close()
+
+
+async def test_clone_shares_buffer():
+    nerve = AnyioNerve[int](buffer_size=8)
+    cloned = nerve.clone()
+
+    await nerve.send(1)
+    await nerve.send(2)
+
+    assert await cloned.receive() == 1
+    assert await nerve.receive() == 2
+
+    await nerve.close()
+    await cloned.close()

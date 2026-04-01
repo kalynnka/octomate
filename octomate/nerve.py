@@ -20,7 +20,13 @@ class Nerve(ABC, Generic[T]):
     def __aiter__(self) -> AsyncIterator[T]: ...
 
     @abstractmethod
+    async def open(self) -> None: ...
+
+    @abstractmethod
     async def close(self) -> None: ...
+
+    @abstractmethod
+    def clone(self) -> Nerve[T]: ...
 
 
 class AnyioNerve(Nerve[T]):
@@ -39,6 +45,15 @@ class AnyioNerve(Nerve[T]):
     def __aiter__(self) -> AsyncIterator[T]:
         return self.receive_stream.__aiter__()
 
+    async def open(self) -> None:
+        pass
+
     async def close(self) -> None:
         await self.send_stream.aclose()
         await self.receive_stream.aclose()
+
+    def clone(self) -> AnyioNerve[T]:
+        cloned: AnyioNerve[T] = object.__new__(AnyioNerve)
+        cloned.send_stream = self.send_stream.clone()
+        cloned.receive_stream = self.receive_stream.clone()
+        return cloned
