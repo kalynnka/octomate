@@ -14,6 +14,7 @@ from octomate.schemas.segments import AgentSegment
 from octomate.schemas.session import SessionKey
 
 T = TypeVar("T")
+R = TypeVar("R")
 
 
 @dataclass
@@ -96,18 +97,18 @@ class DismissPending(AgentSignal):
     pass
 
 
-class PendingRequests:
-    futures: dict[str, asyncio.Future[Any]]
+class PendingRequests(Generic[R]):
+    futures: dict[str, asyncio.Future[R]]
 
     def __init__(self) -> None:
         self.futures = {}
 
-    def create(self, request_id: str) -> asyncio.Future[Any]:
-        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+    def create(self, request_id: str) -> asyncio.Future[R]:
+        future: asyncio.Future[R] = asyncio.get_running_loop().create_future()
         self.futures[request_id] = future
         return future
 
-    def resolve(self, request_id: str, value: Any) -> None:
+    def resolve(self, request_id: str, value: R) -> None:
         future = self.futures.pop(request_id, None)
         if future and not future.done():
             future.set_result(value)
