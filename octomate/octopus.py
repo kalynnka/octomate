@@ -126,7 +126,11 @@ class Octopus:
                 # Channel not found — send a fallback answer so the waiting future
                 # is resolved and the agent can continue rather than hanging.
                 await self.agent_nerve.send(
-                    UserAnswer(request_id=signal.request_id, answer="(no response)")
+                    UserAnswer(
+                        key=signal.key,
+                        request_id=signal.request_id,
+                        answer="(no response)",
+                    )
                 )
                 return
             key = signal.key
@@ -139,7 +143,7 @@ class Octopus:
             )
             answer = resp.answer if resp else "(no response)"
             await self.agent_nerve.send(
-                UserAnswer(request_id=signal.request_id, answer=answer)
+                UserAnswer(key=key, request_id=signal.request_id, answer=answer)
             )
 
         @self.agent_dispatcher.on(UserAnswer)
@@ -151,7 +155,9 @@ class Octopus:
             channel = self.tentacles.get(signal.key.tentacle_id)
             if channel is None:
                 await self.agent_nerve.send(
-                    ConfirmResult(request_id=signal.request_id, approved=False)
+                    ConfirmResult(
+                        key=signal.key, request_id=signal.request_id, approved=False
+                    )
                 )
                 return
             key = signal.key
@@ -160,7 +166,7 @@ class Octopus:
                 str(thread.id), signal.tool_name
             ):
                 await self.agent_nerve.send(
-                    ConfirmResult(request_id=signal.request_id, approved=True)
+                    ConfirmResult(key=key, request_id=signal.request_id, approved=True)
                 )
                 return
             action, future = await channel.feelers.confirm.create_confirmation(
@@ -179,7 +185,7 @@ class Octopus:
                     action.confirmation_id
                 )
                 await self.agent_nerve.send(
-                    ConfirmResult(request_id=signal.request_id, approved=False)
+                    ConfirmResult(key=key, request_id=signal.request_id, approved=False)
                 )
                 return
             try:
@@ -199,7 +205,7 @@ class Octopus:
                 await channel.feelers.confirm.send_timeout_notification(key, action)
                 raise
             await self.agent_nerve.send(
-                ConfirmResult(request_id=signal.request_id, approved=approved)
+                ConfirmResult(key=key, request_id=signal.request_id, approved=approved)
             )
 
         @self.agent_dispatcher.on(ConfirmResult)

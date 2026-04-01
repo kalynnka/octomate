@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Generic, Literal, TypeVar
 
 from anyio import create_memory_object_stream
-from anyio.abc import ObjectReceiveStream, ObjectSendStream
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import AgentSegment
@@ -65,7 +65,7 @@ class AskUser(AgentSignal):
 
 
 @dataclass
-class UserAnswer:
+class UserAnswer(AgentSignal):
     request_id: str
     answer: str
     kind: Literal["user_answer"] = field(default="user_answer", init=False)
@@ -84,7 +84,7 @@ class ConfirmTool(AgentSignal):
 
 
 @dataclass
-class ConfirmResult:
+class ConfirmResult(AgentSignal):
     request_id: str
     approved: bool
     kind: Literal["confirm_result"] = field(default="confirm_result", init=False)
@@ -195,8 +195,8 @@ class Nerve(ABC, Generic[T]):
 
 
 class AnyioNerve(Nerve[T]):
-    send_stream: ObjectSendStream[T]
-    receive_stream: ObjectReceiveStream[T]
+    send_stream: MemoryObjectSendStream[T]
+    receive_stream: MemoryObjectReceiveStream[T]
 
     def __init__(self, buffer_size: int = 64) -> None:
         self.send_stream, self.receive_stream = create_memory_object_stream(buffer_size)
@@ -280,17 +280,13 @@ class NerveStream:
             )
 
     async def flush(self) -> None:
-        await self.nerve.send(
-            StreamFrame(key=self.key, frame_type="flush", content="")
-        )
+        await self.nerve.send(StreamFrame(key=self.key, frame_type="flush", content=""))
 
     async def __aenter__(self) -> NerveStream:
         return self
 
     async def __aexit__(self, *_: Any) -> None:
-        await self.nerve.send(
-            StreamFrame(key=self.key, frame_type="close", content="")
-        )
+        await self.nerve.send(StreamFrame(key=self.key, frame_type="close", content=""))
 
 
 class SinkRegistry:
@@ -326,4 +322,3 @@ class SinkRegistry:
     async def close_all(self) -> None:
         for key in list(self._stacks):
             await self.close(key)
-

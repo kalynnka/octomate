@@ -1,9 +1,5 @@
 """Tests for the Nerve abstraction and AnyioNerve implementation."""
 
-import asyncio
-
-import pytest
-
 from octomate.nerve import (
     AgentPending,
     AnyioNerve,
@@ -98,13 +94,27 @@ async def test_agent_signals_round_trip():
         SummonAgent(key=key, agent_tag="claude", contents=[], summary="s"),
         StreamFrame(key=key, frame_type="status", content="ok"),
         StreamFrame(key=key, frame_type="close", content=""),
-        AskUser(key=key, request_id="r1", question="q?", options=["a", "b"], multi_select=True),
-        ConfirmTool(key=key, request_id="r2", tool_name="t", args={}, title="", description="", skill=""),
+        AskUser(
+            key=key,
+            request_id="r1",
+            question="q?",
+            options=["a", "b"],
+            multi_select=True,
+        ),
+        ConfirmTool(
+            key=key,
+            request_id="r2",
+            tool_name="t",
+            args={},
+            title="",
+            description="",
+            skill="",
+        ),
         TodoUpdate(key=key, items=[], existing_card_ref="old-ref"),
         DismissPending(key=key, card_ref="ref-123"),
         ReleaseThread(key=key),
-        UserAnswer(request_id="r1", answer="yes"),
-        ConfirmResult(request_id="r2", approved=True),
+        UserAnswer(key=key, request_id="r1", answer="yes"),
+        ConfirmResult(key=key, request_id="r2", approved=True),
         TodoResult(key=key, card_ref="card-abc"),
         SendSegments(key=key, segments=[]),
     ]
@@ -144,9 +154,17 @@ async def test_signal_discriminators():
         StreamFrame(key=key, frame_type="status", content="").kind,
         SendSegments(key=key, segments=[]).kind,
         AskUser(key=key, request_id="r", question="q").kind,
-        UserAnswer(request_id="r", answer="a").kind,
-        ConfirmTool(key=key, request_id="r", tool_name="t", args={}, title="", description="", skill="").kind,
-        ConfirmResult(request_id="r", approved=True).kind,
+        UserAnswer(key=key, request_id="r", answer="a").kind,
+        ConfirmTool(
+            key=key,
+            request_id="r",
+            tool_name="t",
+            args={},
+            title="",
+            description="",
+            skill="",
+        ).kind,
+        ConfirmResult(key=key, request_id="r", approved=True).kind,
         TodoUpdate(key=key, items=[]).kind,
         TodoResult(key=key, card_ref="ref").kind,
         DismissPending(key=key).kind,
