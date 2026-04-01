@@ -41,7 +41,7 @@ class SummonAgent(AgentSignal):
 
 @dataclass
 class StreamFrame(AgentSignal):
-    frame_type: Literal["status", "append", "thinking", "flush"]
+    frame_type: Literal["status", "append", "thinking", "flush", "close"]
     content: str
 
 
@@ -56,6 +56,7 @@ class AskUser(AgentSignal):
     request_id: str
     question: str
     options: list[str] = field(default_factory=list)
+    multi_select: bool = False
 
 
 @dataclass
@@ -94,6 +95,13 @@ class TodoResult(AgentSignal):
 
 @dataclass
 class DismissPending(AgentSignal):
+    pass
+
+
+@dataclass
+class ReleaseThread(AgentSignal):
+    """Return thread ownership to the channel tentacle."""
+
     pass
 
 

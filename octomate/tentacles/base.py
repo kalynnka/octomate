@@ -25,6 +25,7 @@ from pydantic_ai.toolsets import FunctionToolset
 from octomate.agents.base import SessionContext, SummonRequest
 from octomate.agents.manager import SKILL_METADATA_KEY
 from octomate.agents.tools import history_toolset
+from octomate.nerve import SummonAgent
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
@@ -202,32 +203,11 @@ class AgentTentacle(Tentacle):
     async def _dismiss_pending(self, key: SessionKey) -> None:
         """Background task: expire all pending interactions and dismiss their cards."""
         try:
-            channel = self.octopus.tentacles.get(key.tentacle_id)
-            if channel is None:
-                return
-            thread = await channel.threads.get(key)
-            thread_id = str(thread.id)
-            target = (
-                SendTarget("group", key.group_id, reply_to=key.thread_id)
-                if key.group_id
-                else SendTarget("private", key.user_id, reply_to=key.thread_id)
-            )
-            (
-                expired_confs,
-                expired_qs,
-            ) = await channel.interactions.expire_thread_interactions(thread_id)
-            dismiss_coros = [
-                channel.feelers.confirm.dismiss_confirmation(target, c)
-                for c in expired_confs
-            ] + [
-                channel.feelers.questions.dismiss_question(target, q)
-                for q in expired_qs
-            ]
-            if dismiss_coros:
-                await asyncio.gather(*dismiss_coros, return_exceptions=True)
+            from octomate.nerve import DismissPending
+            await self.octopus.agent_nerve.send(DismissPending(key=key))
         except Exception:
             logger.exception(
-                "AgentTentacle %s: error dismissing pending for [%s]", self.id, key
+                "AgentTentacle %s: error sending DismissPending for [%s]", self.id, key
             )
 
 
@@ -347,9 +327,6 @@ class ChannelTentacle(Tentacle):
                         resolved.tentacle_tag,
                     )
                 else:
-                    # handover the ownership of this session's thread to the summoned agent tentacle,
-                    # so subsequent messages in the same thread are routed to the agent tentacle instead of this channel tentacle.
-                    await self.threads.set_owner(key, agent_tentacle)
                     content = contents[-1].model_copy()
                     content.segments = [TextSegment(data={"text": resolved.summary})]
                     await self.twitch(
@@ -362,7 +339,14 @@ class ChannelTentacle(Tentacle):
                             )
                         ],
                     )
-                    asyncio.create_task(agent_tentacle(key, [content]))
+                    await self.octopus.agent_nerve.send(
+                        SummonAgent(
+                            key=key,
+                            agent_tag=resolved.tentacle_tag,
+                            contents=[content],
+                            summary=resolved.summary,
+                        )
+                    )
             elif resolved:
                 for msg_out in resolved.output:
                     await self.twitch(target, msg_out.segments)

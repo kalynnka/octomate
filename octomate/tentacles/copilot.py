@@ -7,9 +7,11 @@ from typing import TYPE_CHECKING
 import httpx
 
 from octomate.config import CopilotConfig
+from octomate.nerve import ReleaseThread, SendSegments
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import AgentTentacle, PlatformMessage, SendTarget
+from octomate.tentacles.base import AgentTentacle, SendTarget
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
@@ -45,9 +47,8 @@ class CopilotTentacle(AgentTentacle):
         contents: list[MessageEvent],
     ) -> None:
         task = "".join(str(part) for part in contents[0].to_content_parts())
-        channel = self.octopus.tentacles[key.tentacle_id]
         target = SendTarget(
-            chat_id=contents[0].chat_id,
+            chat_id=key.chat_id or key.group_id or key.user_id,
             chat_type="group" if key.group_id else "private",
             reply_to=key.thread_id or None,
         )
@@ -99,14 +100,11 @@ class CopilotTentacle(AgentTentacle):
             logger.error("CopilotTentacle: HTTP error: %s", exc)
             text = f"⚠️ Failed to reach GitHub API: {exc}"
 
-        await channel.send_platform_message(
-            chat_id=str(target.chat_id),
-            chat_type=target.chat_type,
-            reply_to=str(target.reply_to),
-            messages=[PlatformMessage(msg_type="text", content=text)],
+        nerve = self.octopus.agent_nerve
+        await nerve.send(
+            SendSegments(key=key, target=target, segments=[TextSegment(data={"text": text})])
         )
-
-        await channel.threads.set_owner(key, channel)
+        await nerve.send(ReleaseThread(key=key))
 
     # TODO: poll for PR completion and notify user
     # GitHub doesn't support webhooks without a public endpoint.
