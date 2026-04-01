@@ -66,7 +66,7 @@ class ClaudeCodeTentacle(AgentTentacle):
     _worktree_paths: dict[SessionKey, str]  # session_key -> current worktree path
 
     def __init__(self, tag: str, octopus: Octopus, config: ClaudeCodeConfig) -> None:
-        super().__init__(tag, octopus, description=config.description)
+        super().__init__(tag, octopus, description=config.description, handover=True)
         self.config = config
         self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
         self._todo_ts = {}

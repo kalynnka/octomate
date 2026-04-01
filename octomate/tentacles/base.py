@@ -156,11 +156,20 @@ class AgentTentacle(Tentacle):
     """
 
     description: str = ""
+    handover: bool = False
     _running_tasks: dict[SessionKey, asyncio.Task]
 
-    def __init__(self, id: str, octopus: Octopus, description: str = "") -> None:
+    def __init__(
+        self,
+        id: str,
+        octopus: Octopus,
+        description: str = "",
+        *,
+        handover: bool = False,
+    ) -> None:
         super().__init__(id, octopus)
         self.description = description
+        self.handover = handover
         self._running_tasks = {}
 
     async def __call__(
@@ -347,21 +356,20 @@ class ChannelTentacle(Tentacle):
                         resolved.tentacle_tag,
                     )
                 else:
-                    # handover the ownership of this session's thread to the summoned agent tentacle,
-                    # so subsequent messages in the same thread are routed to the agent tentacle instead of this channel tentacle.
-                    await self.threads.set_owner(key, agent_tentacle)
                     content = contents[-1].model_copy()
                     content.segments = [TextSegment(data={"text": resolved.summary})]
-                    await self.twitch(
-                        target,
-                        [
-                            TextSegment(
-                                data={
-                                    "text": f"Tentacle *{agent_tentacle.id}* has grabbed this thread 🐙!"
-                                }
-                            )
-                        ],
-                    )
+                    if agent_tentacle.handover:
+                        await self.threads.set_owner(key, agent_tentacle)
+                        await self.twitch(
+                            target,
+                            [
+                                TextSegment(
+                                    data={
+                                        "text": f"Tentacle *{agent_tentacle.id}* has grabbed this thread 🐙!"
+                                    }
+                                )
+                            ],
+                        )
                     asyncio.create_task(agent_tentacle(key, [content]))
             elif resolved:
                 for msg_out in resolved.output:

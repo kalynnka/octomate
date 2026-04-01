@@ -27,14 +27,23 @@ def build_summon_toolset(
     if not agent_tentacles:
         return None
 
-    descriptions = "\n".join(
-        f'- "{t.id}": {t.description}' for t in agent_tentacles.values()
-    )
+    lines = []
+    for t in agent_tentacles.values():
+        mode = (
+            "handover (takes over the thread for continuous interaction)"
+            if t.handover
+            else "fire-and-forget (dispatches and returns)"
+        )
+        lines.append(f'- "{t.id}" [{mode}]: {t.description}')
+    descriptions = "\n".join(lines)
     tool_description = (
         "Summon an agent tentacle for deep processing.\n\n"
         "Use when user explicitly requests, or requires coding, research, or complex reasoning.\n"
         "Write a clear summary capturing the user's actual request and context.\n"
         "The agent only sees this summary — not the raw chat history.\n\n"
+        "Modes:\n"
+        "- handover: The agent takes over the thread. All follow-up messages go to it until it finishes.\n"
+        "- fire-and-forget: The agent runs the task in the background. You keep the conversation.\n\n"
         f"Available agent tentacles:\n{descriptions}"
     )
 

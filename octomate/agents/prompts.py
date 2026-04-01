@@ -72,6 +72,9 @@ SUMMON — summon an agent tentacle and dispatch the task to it:
     - Write a clear summary capturing the user's actual request and context. The agent only sees this. Use the tone on behalf of the user, 
       not yourself. Don't say "summoning X to help you with Y" — just write the summary as if you are directly telling the agent what to do.
     - Always check if there's any other tools could be used to help with the task, and use them if possible, before deciding to summon an agent.
+  MODES:
+    - Handover agents take over the thread — follow-up messages go directly to the agent. Use for interactive, multi-turn work.
+    - Fire-and-forget agents dispatch a task and return immediately — the conversation stays with you. Use as a tool.
   NOT:
     - Simple questions, small talk
     - The tasks that you can handle yourself with your toolsets.

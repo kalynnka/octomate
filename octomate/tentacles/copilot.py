@@ -106,8 +106,6 @@ class CopilotTentacle(AgentTentacle):
             messages=[PlatformMessage(msg_type="text", content=text)],
         )
 
-        await channel.threads.set_owner(key, channel)
-
     # TODO: poll for PR completion and notify user
     # GitHub doesn't support webhooks without a public endpoint.
     # Future: periodically check /repos/{owner}/{repo}/issues/{number}/timeline
