@@ -23,8 +23,8 @@ from octomate.schemas.segments import (
     ImageSegment,
     TextSegment,
 )
-from octomate.schemas.session import UserProfile
-from octomate.tentacles.base import ChannelTentacle, PlatformMessage, SendTarget
+from octomate.schemas.session import SessionKey, UserProfile
+from octomate.tentacles.base import ChannelTentacle, PlatformMessage
 from octomate.tentacles.feelers import NULL_FEELERS
 
 BOT_USER_ID = "bot-001"
@@ -62,7 +62,7 @@ class MockInk:
 
 
 class MockTentacle(ChannelTentacle):
-    sent: list[tuple[SendTarget, list[AgentSegment]]]
+    sent: list[tuple[SessionKey, list[AgentSegment]]]
     confirmations_requested: int
 
     def __init__(self, tag: str, octopus: Octopus, flush_delay: float = 0.0) -> None:
@@ -89,8 +89,8 @@ class MockTentacle(ChannelTentacle):
     async def deactivate(self) -> None:
         pass
 
-    async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
-        self.sent.append((target, list(segments)))
+    async def twitch(self, key: SessionKey, segments: list[AgentSegment]) -> None:
+        self.sent.append((key, list(segments)))
 
     async def send_platform_message(
         self,
@@ -109,8 +109,8 @@ class MockTentacle(ChannelTentacle):
     async def secrete(self, seg: ImageSegment) -> None:
         _ = seg
 
-    async def send_confirmation(self, target: SendTarget, action: Any) -> bool:
-        _ = target, action
+    async def send_confirmation(self, key: SessionKey, action: Any) -> bool:
+        _ = key, action
         self.confirmations_requested += 1
         return False
 

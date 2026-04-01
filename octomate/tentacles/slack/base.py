@@ -20,10 +20,10 @@ from uuid_utils import uuid7
 from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
+from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import (
     ChannelTentacle,
     PlatformMessage,
-    SendTarget,
     StreamSink,
 )
 from octomate.tentacles.feelers import Feelers
@@ -554,11 +554,12 @@ class SlackTentacle(ChannelTentacle):
             )
 
     @asynccontextmanager
-    async def open_stream(self, target: SendTarget) -> AsyncIterator[StreamSink]:  # type: ignore[override]
-        channel = str(target.chat_id)
-        if target.chat_type == "private":
+    async def open_stream(self, key: SessionKey) -> AsyncIterator[StreamSink]:  # type: ignore[override]
+        channel = key.chat_id or key.group_id or key.user_id
+        channel = str(channel)
+        if not key.group_id:
             channel = self.dm_channels.get(channel, channel)
-        thread_ts = str(target.reply_to) if target.reply_to else None
+        thread_ts = str(key.thread_id) if key.thread_id else None
         sink = SlackStreamSink(
             ink=self.ink,
             channel=channel,
@@ -618,12 +619,12 @@ class SlackTentacle(ChannelTentacle):
         # the only difference is keep in the main thread or create a new sub-thread
         for msg in messages:
             blocks = msg.metadata.get("blocks") if msg.metadata else None
-            ts = await self.ink.send_message(
+            msg_id = await self.ink.send_message(
                 chat_id,
                 text=msg.content,
                 blocks=blocks,
                 thread_ts=reply_to,
             )
             if first_ts is None:
-                first_ts = ts
+                first_ts = msg_id
         return first_ts

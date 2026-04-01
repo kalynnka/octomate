@@ -148,14 +148,14 @@ class SlackInk:
     async def update_message(
         self,
         channel: str,
-        ts: str,
+        message_id: str,
         text: str = "",
         blocks: list[dict] | None = None,
     ) -> bool:
         try:
             all_blocks = _split_oversized_blocks(blocks) if blocks else None
             first_batch = all_blocks[:MAX_BLOCKS] if all_blocks else None
-            kwargs: dict[str, Any] = {"channel": channel, "ts": ts, "text": text}
+            kwargs: dict[str, Any] = {"channel": channel, "ts": message_id, "text": text}
             if first_batch:
                 kwargs["blocks"] = first_batch
             await self.client.chat_update(**kwargs)
@@ -163,7 +163,7 @@ class SlackInk:
                 for i in range(MAX_BLOCKS, len(all_blocks), MAX_BLOCKS):
                     batch = all_blocks[i : i + MAX_BLOCKS]
                     await self.client.chat_postMessage(
-                        channel=channel, text=text, blocks=batch, thread_ts=ts
+                        channel=channel, text=text, blocks=batch, thread_ts=message_id
                     )
             return True
         except Exception:
@@ -205,9 +205,9 @@ class SlackInk:
             logger.warning("SlackInk: open_modal failed", exc_info=True)
             return False
 
-    async def pin_message(self, channel: str, ts: str) -> bool:
+    async def pin_message(self, channel: str, message_id: str) -> bool:
         try:
-            await self.client.pins_add(channel=channel, timestamp=ts)
+            await self.client.pins_add(channel=channel, timestamp=message_id)
             return True
         except SlackApiError as e:
             if e.response.get("error") == "already_pinned":
@@ -219,9 +219,9 @@ class SlackInk:
             logger.warning("SlackInk: pin_message failed", exc_info=True)
             return False
 
-    async def unpin_message(self, channel: str, ts: str) -> bool:
+    async def unpin_message(self, channel: str, message_id: str) -> bool:
         try:
-            await self.client.pins_remove(channel=channel, timestamp=ts)
+            await self.client.pins_remove(channel=channel, timestamp=message_id)
             return True
         except SlackApiError as e:
             if e.response.get("error") == "not_pinned":
@@ -237,9 +237,9 @@ class SlackInk:
             logger.warning("SlackInk: unpin_message failed", exc_info=True)
             return False
 
-    async def get_permalink(self, channel: str, ts: str) -> str | None:
+    async def get_permalink(self, channel: str, message_id: str) -> str | None:
         try:
-            resp = await self.client.chat_getPermalink(channel=channel, message_ts=ts)
+            resp = await self.client.chat_getPermalink(channel=channel, message_ts=message_id)
             return resp.get("permalink")
         except Exception:
             logger.warning("SlackInk: get_permalink failed", exc_info=True)

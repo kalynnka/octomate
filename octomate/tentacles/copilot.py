@@ -7,9 +7,11 @@ from typing import TYPE_CHECKING
 import httpx
 
 from octomate.config import CopilotConfig
+from octomate.nerve import SendSegments
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import AgentTentacle, PlatformMessage, SendTarget
+from octomate.tentacles.base import AgentTentacle
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
@@ -45,12 +47,6 @@ class CopilotTentacle(AgentTentacle):
         contents: list[MessageEvent],
     ) -> None:
         task = "".join(str(part) for part in contents[0].to_content_parts())
-        channel = self.octopus.tentacles[key.tentacle_id]
-        target = SendTarget(
-            chat_id=contents[0].chat_id,
-            chat_type="group" if key.group_id else "private",
-            reply_to=key.thread_id or None,
-        )
 
         owner, repo, issue_number = _parse_issue_ref(task, self.config)
         agent_assignment = _build_agent_assignment(self.config, owner, repo)
@@ -99,11 +95,9 @@ class CopilotTentacle(AgentTentacle):
             logger.error("CopilotTentacle: HTTP error: %s", exc)
             text = f"⚠️ Failed to reach GitHub API: {exc}"
 
-        await channel.send_platform_message(
-            chat_id=str(target.chat_id),
-            chat_type=target.chat_type,
-            reply_to=str(target.reply_to),
-            messages=[PlatformMessage(msg_type="text", content=text)],
+        nerve = self.octopus.agent_nerve
+        await nerve.send(
+            SendSegments(key=key, segments=[TextSegment(data={"text": text})])
         )
 
     # TODO: poll for PR completion and notify user

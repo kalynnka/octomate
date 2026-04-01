@@ -20,7 +20,8 @@ from websockets.exceptions import ConnectionClosed
 from octomate.agents.base import SessionContext
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import AgentSegment, ImageSegment
-from octomate.tentacles.base import ChannelTentacle, PlatformMessage, SendTarget
+from octomate.schemas.session import SessionKey
+from octomate.tentacles.base import ChannelTentacle, PlatformMessage
 from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.napcat.ink import NapcatInk
 from octomate.tentacles.napcat.schema import (
@@ -133,13 +134,13 @@ class NapcatTentacle(ChannelTentacle):
                 pass
             self.ws_client = None
 
-    async def twitch(self, target: SendTarget, segments: list[AgentSegment]) -> None:
+    async def twitch(self, key: SessionKey, segments: list[AgentSegment]) -> None:
         if self.ws_client is None:
             logger.warning(
                 "Tentacle %s: action cancelled, WebSocket not connected", self.id
             )
             return
-        await super().twitch(target, segments)
+        await super().twitch(key, segments)
 
     async def send_platform_message(
         self,
