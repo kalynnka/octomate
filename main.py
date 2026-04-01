@@ -13,6 +13,7 @@ from octomate.agents.flick import build_summon_toolset, create_flick_agent
 from octomate.agents.manager import SkillManager
 from octomate.config import (
     ClaudeCodeConfig,
+    CopilotConfig,
     LarkTentacleConfig,
     NapcatTentacleConfig,
     OctomateConfig,
@@ -45,6 +46,10 @@ def _build_octopus() -> Octopus:
             from octomate.tentacles.claude import ClaudeCodeTentacle
 
             octopus.graft(ClaudeCodeTentacle(ac.tag, octopus, ac))
+        elif isinstance(ac, CopilotConfig):
+            from octomate.tentacles.copilot import CopilotTentacle
+
+            octopus.graft(CopilotTentacle(ac.tag, octopus, ac))
 
     summon_toolset = build_summon_toolset(octopus.agent_tentacles)
 

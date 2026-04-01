@@ -88,10 +88,33 @@ class ClaudeCodeConfig(BaseModel):
     cwd: str = "."
     model: str | None = None
     max_turns: int | None = None
-    worktrees_dir: str | None = None  # if set, enables per-session git worktree isolation
+    worktrees_dir: str | None = (
+        None  # if set, enables per-session git worktree isolation
+    )
 
 
-AgentTentacleConfigUnion = ClaudeCodeConfig
+class CopilotConfig(BaseModel):
+    type: Literal["copilot"] = "copilot"
+    tag: str = "copilot"
+    description: str = (
+        "GitHub Copilot - remote coding agent that creates PRs from issues"
+    )
+    owner: str
+    repo: str
+    github_token: SecretStr
+    base_branch: str = "main"
+    model: str = ""
+    custom_agent: str = ""
+    custom_instructions: str = ""
+
+
+AgentTentacleConfigUnion = Annotated[
+    Union[
+        Annotated[ClaudeCodeConfig, Tag("claude_code")],
+        Annotated[CopilotConfig, Tag("copilot")],
+    ],
+    Discriminator("type"),
+]
 
 
 class OctomateConfig(BaseSettings):

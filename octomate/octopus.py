@@ -77,4 +77,5 @@ class Octopus:
                 if owner:
                     tg.create_task(owner(key, batch))
                 else:
+                    await channel.threads.set_owner(key, channel)
                     tg.create_task(channel(key, batch))
