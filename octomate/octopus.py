@@ -5,7 +5,7 @@ import contextlib
 import logging
 
 from octomate.agents.manager import SkillManager
-from octomate.nerve import AnyioNerve, MessageBatch, Nerve, NerveDispatcher
+from octomate.nerve import AnyioNerve, ChannelSignal, MessageBatch, Nerve, NerveDispatcher
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import AgentTentacle, ChannelTentacle
@@ -18,7 +18,8 @@ class Octopus:
     skill_manager: SkillManager | None
     tentacles: dict[str, ChannelTentacle]
     agent_tentacles: dict[str, AgentTentacle]
-    nerve: Nerve[MessageBatch]
+    channel_nerve: Nerve[ChannelSignal]
+    channel_dispatcher: NerveDispatcher[ChannelSignal]
 
     def __init__(
         self,
@@ -28,7 +29,19 @@ class Octopus:
         self.tentacles = {}
         self.agent_tentacles = {}
         self.skill_manager = skill_manager
-        self.nerve = AnyioNerve(buffer_size)
+        self.channel_nerve = AnyioNerve(buffer_size)
+        self.channel_dispatcher = NerveDispatcher(self.channel_nerve)
+
+        @self.channel_dispatcher.on(MessageBatch)
+        async def handle_message_batch(signal: MessageBatch) -> None:
+            channel = self.tentacles[signal.key.tentacle_id]
+            owner_id = await channel.threads.get_owner(signal.key)
+            owner = self.agent_tentacles.get(owner_id)
+            if owner:
+                await owner(signal.key, signal.events)
+            else:
+                await channel.threads.set_owner(signal.key, channel)
+                await channel(signal.key, signal.events)
 
     async def activate(self) -> None:
         try:
@@ -39,7 +52,7 @@ class Octopus:
                 async with asyncio.TaskGroup() as tg:
                     for name, tentacle in self.tentacles.items():
                         tg.create_task(tentacle.activate(), name=f"tentacle:{name}")
-                    tg.create_task(self.rolling())
+                    tg.create_task(self.channel_dispatcher.run())
         except* Exception as eg:
             for exc in eg.exceptions:
                 logger.exception("Fatal error in task group", exc_info=exc)
@@ -63,20 +76,4 @@ class Octopus:
         self.tentacles.pop(name, None)
 
     async def kick(self, key: SessionKey, batch: list[MessageEvent]) -> None:
-        await self.nerve.send(MessageBatch(key=key, events=batch))
-
-    async def rolling(self) -> None:
-        dispatcher = NerveDispatcher(self.nerve)
-
-        @dispatcher.on(MessageBatch)
-        async def handle_message_batch(signal: MessageBatch) -> None:
-            channel = self.tentacles[signal.key.tentacle_id]
-            owner_id = await channel.threads.get_owner(signal.key)
-            owner = self.agent_tentacles.get(owner_id)
-            if owner:
-                await owner(signal.key, signal.events)
-            else:
-                await channel.threads.set_owner(signal.key, channel)
-                await channel(signal.key, signal.events)
-
-        await dispatcher.run()
+        await self.channel_nerve.send(MessageBatch(key=key, events=batch))
