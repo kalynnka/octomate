@@ -107,15 +107,15 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
         ]
 
         thread_ts = str(key.thread_id) if key.thread_id else None
-        ts = await self.ink.send_message(
+        card_ref = await self.ink.send_message(
             channel,
             text="Permission Required",
             blocks=blocks,
             thread_ts=thread_ts,
         )
-        if ts:
-            self.store.set_card_message_id(action.confirmation_id, ts)
-        return ts is not None
+        if card_ref:
+            self.store.set_card_message_id(action.confirmation_id, card_ref)
+        return card_ref is not None
 
     async def send_timeout_notification(
         self, key: SessionKey, action: Confirmation
@@ -148,8 +148,8 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
     async def dismiss_confirmation(
         self, key: SessionKey, action: Confirmation
     ) -> None:
-        ts = self.store.card_message_ids.pop(action.confirmation_id, None)
-        if not ts:
+        card_ref = self.store.card_message_ids.pop(action.confirmation_id, None)
+        if not card_ref:
             return
         channel = str(key.chat_id or key.group_id or key.user_id)
         title = action.title or action.tool_name
@@ -163,13 +163,13 @@ class SlackConfirmationFeeler(ConfirmationFeeler):
             }
         ]
         await self.ink.update_message(
-            channel, ts, text=f"{title} — Cancelled", blocks=blocks
+            channel, card_ref, text=f"{title} — Cancelled", blocks=blocks
         )
 
 
 class SlackTodoFeeler(TodoFeeler):
     ink: SlackInk
-    pinned: dict[str, str]  # channel_key -> pinned message ts
+    pinned: dict[str, str]  # channel_key -> pinned card ref
 
     def __init__(self, ink: SlackInk, store: InteractionStore) -> None:
         super().__init__(store)
@@ -238,21 +238,21 @@ class SlackTodoFeeler(TodoFeeler):
         )
         return existing_ts
 
-    async def pin_todo(self, key: SessionKey, ts: str) -> bool:
+    async def pin_todo(self, key: SessionKey, card_ref: str) -> bool:
         channel = str(key.chat_id or key.group_id or key.user_id)
         cache_key = self.channel_key(key)
         # Unpin any previously pinned todo for this channel/thread first
-        if prev_ts := self.pinned.get(cache_key):
-            await self.ink.unpin_message(channel, prev_ts)
-        ok = await self.ink.pin_message(channel, ts)
+        if prev_card_ref := self.pinned.get(cache_key):
+            await self.ink.unpin_message(channel, prev_card_ref)
+        ok = await self.ink.pin_message(channel, card_ref)
         if ok:
-            self.pinned[cache_key] = ts
+            self.pinned[cache_key] = card_ref
         return ok
 
-    async def unpin_todo(self, key: SessionKey, ts: str) -> bool:
+    async def unpin_todo(self, key: SessionKey, card_ref: str) -> bool:
         channel = str(key.chat_id or key.group_id or key.user_id)
         cache_key = self.channel_key(key)
-        ok = await self.ink.unpin_message(channel, ts)
+        ok = await self.ink.unpin_message(channel, card_ref)
         if ok:
             self.pinned.pop(cache_key, None)
         return ok
@@ -373,14 +373,14 @@ class SlackQuestionFeeler(QuestionFeeler):
         )
 
         thread_ts = str(key.thread_id) if key.thread_id else None
-        ts = await self.ink.send_message(
+        card_ref = await self.ink.send_message(
             channel, text=f"Question: {text}", blocks=blocks, thread_ts=thread_ts
         )
-        if not ts:
+        if not card_ref:
             await self.expire_question(question.question_id)
             return None
 
-        self.store.set_card_message_id(question.question_id, ts)
+        self.store.set_card_message_id(question.question_id, card_ref)
 
         try:
             return await asyncio.wait_for(future, timeout=self.timeout)
@@ -389,8 +389,8 @@ class SlackQuestionFeeler(QuestionFeeler):
             return None
 
     async def dismiss_question(self, key: SessionKey, question: Question) -> None:
-        ts = self.store.card_message_ids.pop(question.question_id, None)
-        if not ts:
+        card_ref = self.store.card_message_ids.pop(question.question_id, None)
+        if not card_ref:
             return
         channel = str(key.chat_id or key.group_id or key.user_id)
         blocks = [
@@ -403,5 +403,5 @@ class SlackQuestionFeeler(QuestionFeeler):
             }
         ]
         await self.ink.update_message(
-            channel, ts, text="Question — Cancelled", blocks=blocks
+            channel, card_ref, text="Question — Cancelled", blocks=blocks
         )

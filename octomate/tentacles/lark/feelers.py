@@ -90,9 +90,9 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                 ],
             }
         )
-        ts = await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
-        if ts:
-            self.store.set_card_message_id(action.confirmation_id, ts)
+        card_ref = await self.ink.send_message(chat_id, receive_id_type, "interactive", card)
+        if card_ref:
+            self.store.set_card_message_id(action.confirmation_id, card_ref)
         return True
 
     async def send_timeout_notification(
@@ -130,8 +130,8 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
     async def dismiss_confirmation(
         self, key: SessionKey, action: Confirmation
     ) -> None:
-        ts = self.store.card_message_ids.pop(action.confirmation_id, None)
-        if not ts:
+        card_ref = self.store.card_message_ids.pop(action.confirmation_id, None)
+        if not card_ref:
             return
         title = action.title or action.tool_name
         card = json.dumps(
@@ -151,7 +151,7 @@ class LarkConfirmationFeeler(ConfirmationFeeler):
                 ],
             }
         )
-        await self.ink.update_message(ts, "interactive", card)
+        await self.ink.update_message(card_ref, "interactive", card)
 
 
 class LarkTodoFeeler(TodoFeeler):
@@ -221,19 +221,19 @@ class LarkTodoFeeler(TodoFeeler):
         ok = await self.ink.update_message(existing_ts, "interactive", card)
         return existing_ts if ok else None
 
-    async def pin_todo(self, key: SessionKey, ts: str) -> bool:
+    async def pin_todo(self, key: SessionKey, card_ref: str) -> bool:
         cache_key = str(key.chat_id or key.group_id or key.user_id)
         old = self.pinned.get(cache_key)
-        if old and old != ts:
+        if old and old != card_ref:
             await self.ink.unpin_message(old)
-        ok = await self.ink.pin_message(ts)
+        ok = await self.ink.pin_message(card_ref)
         if ok:
-            self.pinned[cache_key] = ts
+            self.pinned[cache_key] = card_ref
         return ok
 
-    async def unpin_todo(self, key: SessionKey, ts: str) -> bool:
+    async def unpin_todo(self, key: SessionKey, card_ref: str) -> bool:
         cache_key = str(key.chat_id or key.group_id or key.user_id)
-        ok = await self.ink.unpin_message(ts)
+        ok = await self.ink.unpin_message(card_ref)
         if ok:
             self.pinned.pop(cache_key, None)
         return ok
@@ -345,8 +345,8 @@ class LarkQuestionFeeler(QuestionFeeler):
             return None
 
     async def dismiss_question(self, key: SessionKey, question: Question) -> None:
-        ts = self.store.card_message_ids.pop(question.question_id, None)
-        if not ts:
+        card_ref = self.store.card_message_ids.pop(question.question_id, None)
+        if not card_ref:
             return
         card = json.dumps(
             {
@@ -365,4 +365,4 @@ class LarkQuestionFeeler(QuestionFeeler):
                 ],
             }
         )
-        await self.ink.update_message(ts, "interactive", card)
+        await self.ink.update_message(card_ref, "interactive", card)

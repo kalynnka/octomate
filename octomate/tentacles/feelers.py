@@ -126,12 +126,12 @@ class TodoFeeler(ABC):
         ...
 
     @abstractmethod
-    async def pin_todo(self, key: SessionKey, ts: str) -> bool:
+    async def pin_todo(self, key: SessionKey, card_ref: str) -> bool:
         """Pin the todo list message. Unpins any previously pinned list first."""
         ...
 
     @abstractmethod
-    async def unpin_todo(self, key: SessionKey, ts: str) -> bool:
+    async def unpin_todo(self, key: SessionKey, card_ref: str) -> bool:
         """Unpin the todo list message."""
         ...
 
@@ -272,12 +272,12 @@ class NullTodoFeeler(TodoFeeler):
         _ = key, items, existing_ts
         return None
 
-    async def pin_todo(self, key: SessionKey, ts: str) -> bool:
-        _ = key, ts
+    async def pin_todo(self, key: SessionKey, card_ref: str) -> bool:
+        _ = key, card_ref
         return False
 
-    async def unpin_todo(self, key: SessionKey, ts: str) -> bool:
-        _ = key, ts
+    async def unpin_todo(self, key: SessionKey, card_ref: str) -> bool:
+        _ = key, card_ref
         return False
 
 

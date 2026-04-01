@@ -619,12 +619,12 @@ class SlackTentacle(ChannelTentacle):
         # the only difference is keep in the main thread or create a new sub-thread
         for msg in messages:
             blocks = msg.metadata.get("blocks") if msg.metadata else None
-            ts = await self.ink.send_message(
+            msg_id = await self.ink.send_message(
                 chat_id,
                 text=msg.content,
                 blocks=blocks,
                 thread_ts=reply_to,
             )
             if first_ts is None:
-                first_ts = ts
+                first_ts = msg_id
         return first_ts

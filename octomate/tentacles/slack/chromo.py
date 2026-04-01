@@ -67,15 +67,15 @@ class SlackChromo:
             channel_type = raw.get("channel_type", "")
             chat_type = "private" if channel_type == "im" else "group"
 
-            ts = raw.get("ts", "")
+            message_id = raw.get("ts", "")
             thread_ts = raw.get("thread_ts", "")
-            thread_id = thread_ts if thread_ts and thread_ts != ts else ""
+            thread_id = thread_ts if thread_ts and thread_ts != message_id else ""
 
             text: str = raw.get("text", "")
             segments = self._parse_segments(text, raw.get("files"))
 
             reply_id = ""
-            if thread_ts and thread_ts != ts:
+            if thread_ts and thread_ts != message_id:
                 reply_id = thread_ts
                 segments.insert(0, ReplySegment(data={"id": thread_ts}))
 
@@ -83,10 +83,10 @@ class SlackChromo:
             channel = raw.get("channel", "")
 
             return MessageEvent(
-                message_id=ts,
+                message_id=message_id,
                 thread_id=thread_id,
                 reply_id=reply_id,
-                timestamp=float(ts) if ts else time.time(),
+                timestamp=float(message_id) if message_id else time.time(),
                 user_id=user_id,
                 chat_id=channel,
                 chat_type=chat_type,
