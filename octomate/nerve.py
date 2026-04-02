@@ -236,20 +236,20 @@ class NerveDispatcher(Generic[T]):
         self.handlers = {}
 
     def register(self, signal_type: type, handler: Callable) -> None:
-        async def safe_call(signal: T) -> None:
-            try:
-                await handler(signal)
-            except Exception:
-                logger.exception(
-                    "NerveDispatcher: error in handler for %s",
-                    type(signal).__name__,
-                )
-
-        self.handlers.setdefault(signal_type, []).append(safe_call)
+        self.handlers.setdefault(signal_type, []).append(handler)
 
     def on(self, signal_type: type) -> Callable:
         def decorator(handler: Callable) -> Callable:
-            self.register(signal_type, handler)
+            async def safe_call(signal: T) -> None:
+                try:
+                    await handler(signal)
+                except Exception:
+                    logger.exception(
+                        "NerveDispatcher: error in handler for %s",
+                        type(signal).__name__,
+                    )
+
+            self.register(signal_type, safe_call)
             return handler
 
         return decorator
