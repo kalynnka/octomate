@@ -236,7 +236,16 @@ class NerveDispatcher(Generic[T]):
         self.handlers = {}
 
     def register(self, signal_type: type, handler: Callable) -> None:
-        self.handlers.setdefault(signal_type, []).append(handler)
+        async def safe_call(signal: T) -> None:
+            try:
+                await handler(signal)
+            except Exception:
+                logger.exception(
+                    "NerveDispatcher: error in handler for %s",
+                    type(signal).__name__,
+                )
+
+        self.handlers.setdefault(signal_type, []).append(safe_call)
 
     def on(self, signal_type: type) -> Callable:
         def decorator(handler: Callable) -> Callable:
@@ -246,19 +255,10 @@ class NerveDispatcher(Generic[T]):
         return decorator
 
     async def run(self) -> None:
-        async def safe_call(handler: Callable, signal: T) -> None:
-            try:
-                await handler(signal)
-            except Exception:
-                logger.exception(
-                    "NerveDispatcher: error in handler for %s",
-                    type(signal).__name__,
-                )
-
         async with asyncio.TaskGroup() as tg:
             async for signal in self.nerve:
                 for handler in self.handlers.get(type(signal), []):
-                    tg.create_task(safe_call(handler, signal))
+                    tg.create_task(handler(signal))
 
 
 class NerveStream:
