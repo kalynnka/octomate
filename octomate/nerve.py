@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -13,6 +14,8 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import AgentSegment
 from octomate.schemas.session import SessionKey
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -237,7 +240,16 @@ class NerveDispatcher(Generic[T]):
 
     def on(self, signal_type: type) -> Callable:
         def decorator(handler: Callable) -> Callable:
-            self.register(signal_type, handler)
+            async def safe_call(signal: T) -> None:
+                try:
+                    await handler(signal)
+                except Exception:
+                    logger.exception(
+                        "NerveDispatcher: error in handler for %s",
+                        type(signal).__name__,
+                    )
+
+            self.register(signal_type, safe_call)
             return handler
 
         return decorator
