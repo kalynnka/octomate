@@ -24,8 +24,13 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.session import SessionKey, UserProfile
+from octomate.stores.interaction import InteractionStore
+from octomate.stores.message import MessageStore
+from octomate.stores.thread import ThreadStore
 from octomate.tentacles.base import ChannelTentacle, PlatformMessage
 from octomate.tentacles.feelers import NULL_FEELERS
+from octomate.transmuters.messages import Message
+from octomate.transmuters.threads import Thread
 
 BOT_USER_ID = "bot-001"
 BOT_NAME = "TestBot"
@@ -61,6 +66,66 @@ class MockInk:
         return None
 
 
+class MockThreadStore(ThreadStore):
+    """In-memory thread store for tests — no database required."""
+
+    async def get(self, key: SessionKey) -> Thread:
+        cached = self._get_cached_thread(key)
+        if cached is not None:
+            return cached
+        thread = Thread(
+            tentacle_id=key.tentacle_id,
+            user_id=key.user_id,
+            group_id=key.group_id,
+            thread_id=key.thread_id,
+            chat_id=key.chat_id,
+            owner_tentacle=self.default_owner,
+        )
+        self._set_cached_thread(key, thread)
+        return thread
+
+    async def set_owner(self, key: SessionKey, owner: Any) -> None:
+        thread = await self.get(key)
+        updated = thread.model_copy(update={"owner_tentacle": owner.id})
+        self.thread_cache.pop(key, None)
+        self._set_cached_thread(key, updated)
+
+
+class MockMessageStore(MessageStore):
+    """In-memory message store for tests — no database required."""
+
+    _messages: list[Message]
+
+    def __init__(self) -> None:
+        self._messages = []
+
+    async def save_all(self, records: list[Message]) -> None:
+        self._messages.extend(records)
+
+    async def find_by_ids(self, message_ids: list[str]) -> dict[str, Message]:
+        return {m.message_id: m for m in self._messages if m.message_id in message_ids}
+
+    async def list_recent(
+        self, key: SessionKey, size: int | None = None
+    ) -> list[Message]:
+        chat = key.group_id or key.user_id
+        matches = [
+            m
+            for m in self._messages
+            if m.tentacle_id == key.tentacle_id and m.chat == chat
+        ]
+        if size is not None:
+            return matches[-size:]
+        return matches
+
+
+class MockOctopusMemory(OctopusMemory):
+    """OctopusMemory backed by MockMessageStore — no database required."""
+
+    def __init__(self) -> None:
+        self.messages = MockMessageStore()
+
+
 class MockTentacle(ChannelTentacle):
     sent: list[tuple[SessionKey, list[AgentSegment]]]
     confirmations_requested: int
@@ -71,13 +136,15 @@ class MockTentacle(ChannelTentacle):
         self.ink = MockInk()
         self.chromo = MockChromo()
         self.feelers = NULL_FEELERS
-        memory = OctopusMemory()
+        memory = MockOctopusMemory()
         flick = Agent(
             "test",
             deps_type=SessionContext,
             output_type=[list[AgentMessage], DeferredToolRequests],
         )
         super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
+        self.threads = MockThreadStore(default_owner=tag)
+        self.interactions = InteractionStore(threads=self.threads)
 
     def inject(self, event: MessageEvent) -> None:
         event.tentacle_id = self.id
@@ -197,14 +264,18 @@ def silent_model() -> FunctionModel:
 
 @contextlib.asynccontextmanager
 async def rolling_loop(octopus: Octopus):
-    """Run the channel dispatcher as a background task, cancel on exit."""
+    """Run both dispatchers as background tasks, cancel on exit."""
     from octomate.transmuters import sqlalchemy_materia
 
     with sqlalchemy_materia:
-        task = asyncio.create_task(octopus.channel_dispatcher.run())
+        channel_task = asyncio.create_task(octopus.channel_dispatcher.run())
+        agent_task = asyncio.create_task(octopus.agent_dispatcher.run())
         try:
             yield
         finally:
-            task.cancel()
+            channel_task.cancel()
+            agent_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await task
+                await channel_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await agent_task

@@ -283,6 +283,10 @@ class Octopus:
         finally:
             for tentacle in self.tentacles.values():
                 await tentacle.deactivate()
+            with contextlib.suppress(Exception):
+                await self.channel_nerve.close()
+            with contextlib.suppress(Exception):
+                await self.agent_nerve.close()
 
     def connect(self, tentacle: ChannelTentacle) -> None:
         if tentacle.id in self.tentacles:
