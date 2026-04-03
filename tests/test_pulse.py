@@ -230,15 +230,15 @@ async def test_loop_with_pulse_tool_chain():
 
     with tentacle.flick.override(model=model):
         tentacle.pulse = PulseRunner(tentacle.flick)
-        # attach the extra toolset so the model's tool call resolves
         original_toolsets = tentacle.toolsets
-        tentacle.__dict__["toolsets"] = original_toolsets + [echo_ts]
+        # cached_property stores in instance __dict__; override with extra toolset
+        tentacle.toolsets = original_toolsets + [echo_ts]  # type: ignore[misc]
         try:
             async with rolling_loop(octopus):
                 tentacle.inject(make_private_event(text="do something"))
                 await asyncio.sleep(0.1)
         finally:
-            tentacle.__dict__.pop("toolsets", None)
+            delattr(tentacle, "toolsets")
 
     assert len(tentacle.sent) == 1
     _, segments = tentacle.sent[0]

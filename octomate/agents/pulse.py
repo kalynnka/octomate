@@ -94,7 +94,6 @@ class PulseRunner:
                             "PulseRunner: reached max steps (%d), stopping",
                             self.max_steps,
                         )
-                        hit_limit = True
                         break
 
         result = agent_run.result
