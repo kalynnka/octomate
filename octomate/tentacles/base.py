@@ -24,6 +24,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from octomate.agents.base import SessionContext, SummonRequest
 from octomate.agents.manager import SKILL_METADATA_KEY
+from octomate.agents.pulse import PulseRunner
 from octomate.agents.tools import history_toolset
 from octomate.nerve import DismissPending, SummonAgent
 from octomate.schemas.actions import AgentMessage
@@ -223,6 +224,7 @@ class ChannelTentacle(Tentacle):
     chromo: Chromo
     feelers: Feelers
     flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]
+    pulse: PulseRunner
     memory: OctopusMemory
     buffer: MessageBuffer
     user_profiles: dict[str, UserProfile]
@@ -239,6 +241,7 @@ class ChannelTentacle(Tentacle):
     ) -> None:
         super().__init__(id, octopus)
         self.flick = flick
+        self.pulse = PulseRunner(flick)
         self.memory = memory
         self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
         self.user_profiles = {}
@@ -296,7 +299,7 @@ class ChannelTentacle(Tentacle):
 
             deps = SessionContext(session_key=key, tentacle=self)
             message_history = await self.memory.history(key, size=32)
-            result = await self.flick.run(
+            result = await self.pulse.run(
                 user_prompt,
                 deps=deps,
                 toolsets=self.toolsets,
