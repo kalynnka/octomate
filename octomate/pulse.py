@@ -109,7 +109,7 @@ async def execute_plan(
 ) -> str:
     """Execute every step of *plan* in order, then synthesize a final answer.
 
-    Returns the clean, user-facing answer string.  All intermediate artefacts
+    Returns the clean, user-facing answer string.  All intermediate artifacts
     remain internal.
     """
     context_parts: list[str] = []
