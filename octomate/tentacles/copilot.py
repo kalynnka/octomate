@@ -45,6 +45,8 @@ class CopilotTentacle(AgentTentacle):
         self,
         key: SessionKey,
         contents: list[MessageEvent],
+        *,
+        session_name: str = "",
     ) -> None:
         task = "".join(str(part) for part in contents[0].to_content_parts())
 

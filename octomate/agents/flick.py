@@ -56,7 +56,11 @@ def build_summon_toolset(
         summary: str,
         user_prefer: str,
         language: str,
+        name: str = "",
     ) -> str:
+        """Args:
+        name: A short descriptive session name (3-5 words) for the task.
+        """
         raise CallDeferred()
 
     return toolset
