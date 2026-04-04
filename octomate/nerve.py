@@ -42,6 +42,7 @@ class SummonAgent(AgentSignal):
     agent_tag: str
     contents: list[MessageEvent]
     summary: str
+    session_name: str = ""
     kind: Literal["summon_agent"] = field(default="summon_agent", init=False)
 
 
