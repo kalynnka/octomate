@@ -1,269 +1,243 @@
-"""Tests for the Pulse planning and execution pipeline."""
+"""Tests for the Pulse graph-based planning and execution pipeline."""
 
 from __future__ import annotations
 
-import json
-
-import pytest
-from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai import Agent, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from octomate.pulse import (
-    DECOMPOSE_INSTRUCTION,
-    STEP_INSTRUCTION,
-    SYNTHESIZE_INSTRUCTION,
-    _flatten_prompt,
-    _parse_steps,
-    decompose,
-    execute_plan,
+from octomate.agents.pulse import (
+    Classify,
+    PulseDeps,
+    PulseState,
+    extract_text,
+    parse_steps,
+    pulse_graph,
+    run_pulse,
 )
-from octomate.schemas.plan import Plan, PlanStep, StepStatus
+from octomate.transmuters.interactions import Todo
 
 
 # ---------------------------------------------------------------------------
-# Plan / PlanStep schema tests
-# ---------------------------------------------------------------------------
-
-
-class TestPlanStep:
-    def test_defaults(self):
-        step = PlanStep(index=0, instruction="do stuff")
-        assert step.status == StepStatus.PENDING
-        assert step.output == ""
-
-    def test_round_trip_json(self):
-        step = PlanStep(index=1, instruction="compare", output="result", status=StepStatus.DONE)
-        restored = PlanStep.model_validate_json(step.model_dump_json())
-        assert restored == step
-
-
-class TestPlan:
-    def test_current_step_returns_first_pending(self):
-        plan = Plan(
-            goal="test",
-            steps=[
-                PlanStep(index=0, instruction="a", status=StepStatus.DONE),
-                PlanStep(index=1, instruction="b", status=StepStatus.PENDING),
-                PlanStep(index=2, instruction="c", status=StepStatus.PENDING),
-            ],
-        )
-        assert plan.current_step is not None
-        assert plan.current_step.index == 1
-
-    def test_current_step_none_when_complete(self):
-        plan = Plan(
-            goal="test",
-            steps=[PlanStep(index=0, instruction="a", status=StepStatus.DONE)],
-        )
-        assert plan.current_step is None
-
-    def test_is_complete(self):
-        plan = Plan(
-            goal="test",
-            steps=[
-                PlanStep(index=0, instruction="a", status=StepStatus.DONE),
-                PlanStep(index=1, instruction="b", status=StepStatus.DONE),
-            ],
-        )
-        assert plan.is_complete
-
-    def test_not_complete_while_pending(self):
-        plan = Plan(
-            goal="test",
-            steps=[
-                PlanStep(index=0, instruction="a", status=StepStatus.DONE),
-                PlanStep(index=1, instruction="b", status=StepStatus.PENDING),
-            ],
-        )
-        assert not plan.is_complete
-
-    def test_failed_property(self):
-        plan = Plan(
-            goal="test",
-            steps=[
-                PlanStep(index=0, instruction="a", status=StepStatus.DONE),
-                PlanStep(index=1, instruction="b", status=StepStatus.FAILED),
-            ],
-        )
-        assert plan.failed
-
-    def test_empty_plan_is_complete(self):
-        plan = Plan(goal="test")
-        assert plan.is_complete
-        assert plan.current_step is None
-
-
-# ---------------------------------------------------------------------------
-# _parse_steps unit tests
+# parse_steps unit tests
 # ---------------------------------------------------------------------------
 
 
 class TestParseSteps:
     def test_numbered_list(self):
-        raw = "1. Summarize X\n2. Compare Y\n3. Synthesize"
-        plan = _parse_steps(raw, "goal")
-        assert len(plan.steps) == 3
-        assert plan.steps[0].instruction == "Summarize X"
-        assert plan.steps[2].instruction == "Synthesize"
+        steps = parse_steps("1. Summarize X\n2. Compare Y\n3. Synthesize")
+        assert len(steps) == 3
+        assert steps[0] == "Summarize X"
+        assert steps[2] == "Synthesize"
 
     def test_blank_lines_skipped(self):
-        raw = "1. A\n\n2. B\n"
-        plan = _parse_steps(raw, "g")
-        assert len(plan.steps) == 2
+        assert len(parse_steps("1. A\n\n2. B\n")) == 2
 
     def test_paren_numbering(self):
-        raw = "1) Alpha\n2) Beta"
-        plan = _parse_steps(raw, "g")
-        assert plan.steps[0].instruction == "Alpha"
+        assert parse_steps("1) Alpha\n2) Beta")[0] == "Alpha"
 
-    def test_returns_empty_for_gibberish(self):
-        plan = _parse_steps("", "g")
-        assert plan.steps == []
+    def test_returns_empty_for_prose(self):
+        assert parse_steps("I'm not sure what to do.") == []
 
-    def test_goal_is_set(self):
-        plan = _parse_steps("1. A", "my goal")
-        assert plan.goal == "my goal"
+    def test_returns_empty_for_empty(self):
+        assert parse_steps("") == []
 
 
 # ---------------------------------------------------------------------------
-# _flatten_prompt tests
+# extract_text
 # ---------------------------------------------------------------------------
 
 
-class TestFlattenPrompt:
+class TestExtractText:
     def test_string_passthrough(self):
-        assert _flatten_prompt("hello world") == "hello world"
+        assert extract_text("hello") == "hello"
 
-    def test_list_joined(self):
-        assert _flatten_prompt(["hello", "world"]) == "hello world"
+    def test_result_with_output_attr(self):
+        class FakeResult:
+            output = "value"
+
+        assert extract_text(FakeResult()) == "value"
 
 
 # ---------------------------------------------------------------------------
-# decompose() integration test (FunctionModel)
+# FunctionModel helpers
 # ---------------------------------------------------------------------------
 
 
-def _plan_model(steps_text: str) -> FunctionModel:
-    """FunctionModel that returns a fixed numbered list as plain text."""
-
+def _text_model(text: str) -> FunctionModel:
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
-        _ = messages, info
-        return ModelResponse(parts=[TextPart(content=steps_text)])
+        return ModelResponse(parts=[TextPart(content=text)])
 
     return FunctionModel(fn)
 
 
-async def test_decompose_produces_plan():
-    agent: Agent[None, str] = Agent("test", output_type=str)
-    plan_text = "1. Summarize the article\n2. Compare with previous findings\n3. Synthesize a recommendation"
-    with agent.override(model=_plan_model(plan_text)):
-        plan = await decompose(agent, deps=None, user_prompt="Analyze the report")
-
-    assert plan.goal == "Analyze the report"
-    assert len(plan.steps) == 3
-    assert all(s.status == StepStatus.PENDING for s in plan.steps)
-
-
-async def test_decompose_fallback_on_unparseable_response():
-    """When the model returns text that doesn't parse into numbered steps,
-    decompose falls back to a single-step plan echoing the original prompt."""
-    agent: Agent[None, str] = Agent("test", output_type=str)
-    with agent.override(model=_plan_model("I'm not sure what to do here.")):
-        plan = await decompose(agent, deps=None, user_prompt="just do it")
-
-    assert len(plan.steps) == 1
-    assert plan.steps[0].instruction == "just do it"
-
-
 # ---------------------------------------------------------------------------
-# execute_plan() integration test (FunctionModel)
+# Classify: simple question → direct answer (no planning)
 # ---------------------------------------------------------------------------
 
 
-def _echo_model() -> FunctionModel:
-    """FunctionModel that echoes the user prompt back as plain text."""
-
-    def fn(messages: list, info: AgentInfo) -> ModelResponse:
-        _ = info
-        # Extract last user message text
-        for m in reversed(messages):
-            for part in getattr(m, "parts", []):
-                if hasattr(part, "content") and isinstance(part.content, str):
-                    return ModelResponse(parts=[TextPart(content=f"[done] {part.content}")])
-        return ModelResponse(parts=[TextPart(content="[done]")])
-
-    return FunctionModel(fn)
-
-
-async def test_execute_plan_runs_all_steps_and_synthesizes():
-    agent: Agent[None, str] = Agent("test", output_type=str)
-    plan = Plan(
-        goal="Summarize, compare, synthesize",
-        steps=[
-            PlanStep(index=0, instruction="Summarize X"),
-            PlanStep(index=1, instruction="Compare Y"),
-            PlanStep(index=2, instruction="Synthesize"),
-        ],
-    )
-    with agent.override(model=_echo_model()):
-        answer = await execute_plan(agent, deps=None, plan=plan)
-
-    # All steps should be marked done
-    assert all(s.status == StepStatus.DONE for s in plan.steps)
-    assert plan.is_complete
-    # The answer is a string (the synthesis output)
-    assert isinstance(answer, str)
-    assert len(answer) > 0
-
-
-async def test_execute_plan_step_outputs_populated():
-    agent: Agent[None, str] = Agent("test", output_type=str)
-    plan = Plan(
-        goal="test",
-        steps=[
-            PlanStep(index=0, instruction="step-one"),
-            PlanStep(index=1, instruction="step-two"),
-        ],
-    )
-    with agent.override(model=_echo_model()):
-        await execute_plan(agent, deps=None, plan=plan)
-
-    for step in plan.steps:
-        assert step.output != ""
-        assert step.status == StepStatus.DONE
-
-
-async def test_full_pipeline_prompt_to_clean_answer():
-    """End-to-end: user prompt → decompose → execute → clean string answer."""
+async def test_classify_direct_skips_planning():
+    """Simple questions classified as 'direct' return an answer immediately."""
     call_count = 0
 
-    def counting_model_fn(messages: list, info: AgentInfo) -> ModelResponse:
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            # decompose call → return plan
-            return ModelResponse(
-                parts=[TextPart(content="1. Summarize\n2. Compare\n3. Synthesize")]
-            )
-        # step + synthesis calls → echo
-        for m in reversed(messages):
-            for part in getattr(m, "parts", []):
-                if hasattr(part, "content") and isinstance(part.content, str):
-                    return ModelResponse(
-                        parts=[TextPart(content=f"Result of: {part.content}")]
-                    )
-        return ModelResponse(parts=[TextPart(content="ok")])
+            return ModelResponse(parts=[TextPart(content="direct")])
+        return ModelResponse(parts=[TextPart(content="42")])
 
     agent: Agent[None, str] = Agent("test", output_type=str)
-    with agent.override(model=FunctionModel(counting_model_fn)):
-        plan = await decompose(agent, deps=None, user_prompt="Analyze the report")
-        answer = await execute_plan(agent, deps=None, plan=plan)
+    with agent.override(model=FunctionModel(fn)):
+        result = await run_pulse(agent, deps=None, prompt="What is 6*7?")
 
-    # 1 decompose + 3 steps + 1 synthesis = 5 calls
+    assert result == "42"
+    assert call_count == 2  # classify + direct answer
+
+
+# ---------------------------------------------------------------------------
+# Classify → Decompose → ExecuteStep → Synthesize (full plan)
+# ---------------------------------------------------------------------------
+
+
+async def test_plan_path_runs_all_steps():
+    """Complex tasks go through classify → decompose → execute → synthesize."""
+    call_count = 0
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ModelResponse(parts=[TextPart(content="plan")])
+        if call_count == 2:
+            return ModelResponse(
+                parts=[TextPart(content="1. Step A\n2. Step B")]
+            )
+        return ModelResponse(parts=[TextPart(content=f"result-{call_count}")])
+
+    agent: Agent[None, str] = Agent("test", output_type=str)
+    with agent.override(model=FunctionModel(fn)):
+        result = await run_pulse(agent, deps=None, prompt="Summarize then compare")
+
+    # 1 classify + 1 decompose + 2 steps + 1 synthesize = 5
     assert call_count == 5
-    assert isinstance(answer, str)
-    assert len(answer) > 0
-    # No internal plan artifacts leaked into the answer
-    assert "step" not in answer.lower() or "Result of" in answer
-    assert plan.is_complete
-    assert not plan.failed
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Steps are tracked as Todo objects
+# ---------------------------------------------------------------------------
+
+
+async def test_steps_tracked_as_todos():
+    """Plan steps in the graph state are Todo objects from the existing transmuter."""
+    call_count = 0
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ModelResponse(parts=[TextPart(content="plan")])
+        if call_count == 2:
+            return ModelResponse(
+                parts=[TextPart(content="1. Summarize\n2. Compare")]
+            )
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    agent: Agent[None, str] = Agent("test", output_type=str)
+    state = PulseState(goal="test task")
+    pulse_deps = PulseDeps(agent=agent, agent_deps=None)
+
+    with agent.override(model=FunctionModel(fn)):
+        await pulse_graph.run(Classify(), state=state, deps=pulse_deps)
+
+    assert len(state.todos) == 2
+    assert all(isinstance(t, Todo) for t in state.todos)
+    assert all(t.status == "done" for t in state.todos)
+    assert state.todos[0].title == "Summarize"
+    assert state.todos[1].title == "Compare"
+
+
+# ---------------------------------------------------------------------------
+# Decompose fallback on unparseable response
+# ---------------------------------------------------------------------------
+
+
+async def test_decompose_fallback_on_unparseable():
+    """When decomposition returns non-numbered text, falls back to direct answer."""
+    call_count = 0
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ModelResponse(parts=[TextPart(content="plan")])
+        if call_count == 2:
+            return ModelResponse(
+                parts=[TextPart(content="I can just answer this directly.")]
+            )
+        return ModelResponse(parts=[TextPart(content="direct answer")])
+
+    agent: Agent[None, str] = Agent("test", output_type=str)
+    with agent.override(model=FunctionModel(fn)):
+        result = await run_pulse(agent, deps=None, prompt="simple question")
+
+    # 1 classify + 1 decompose (unparseable) + 1 direct answer = 3
+    assert call_count == 3
+    assert result == "direct answer"
+
+
+# ---------------------------------------------------------------------------
+# Full end-to-end pipeline: no internal leakage
+# ---------------------------------------------------------------------------
+
+
+async def test_full_pipeline_no_internal_leakage():
+    """Internal plan details must not leak into the final answer."""
+    call_count = 0
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ModelResponse(parts=[TextPart(content="plan")])
+        if call_count == 2:
+            return ModelResponse(
+                parts=[
+                    TextPart(content="1. Summarize\n2. Compare\n3. Synthesize")
+                ]
+            )
+        if call_count <= 5:
+            return ModelResponse(
+                parts=[TextPart(content=f"Step output {call_count}")]
+            )
+        return ModelResponse(parts=[TextPart(content="Final clean answer")])
+
+    agent: Agent[None, str] = Agent("test", output_type=str)
+    with agent.override(model=FunctionModel(fn)):
+        answer = await run_pulse(agent, deps=None, prompt="Analyze the report")
+
+    assert answer == "Final clean answer"
+    # 1 classify + 1 decompose + 3 steps + 1 synthesize = 6
+    assert call_count == 6
+
+
+async def test_run_pulse_with_list_prompt():
+    """run_pulse accepts a list prompt and flattens it."""
+    agent: Agent[None, str] = Agent("test", output_type=str)
+    with agent.override(model=_text_model("direct")):
+        # Classify returns "direct", then we need a second call for the answer
+        call_count = 0
+
+        def fn(messages: list, info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return ModelResponse(parts=[TextPart(content="direct")])
+            return ModelResponse(parts=[TextPart(content="ok")])
+
+        with agent.override(model=FunctionModel(fn)):
+            result = await run_pulse(
+                agent, deps=None, prompt=["hello", "world"]
+            )
+            assert result == "ok"
