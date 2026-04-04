@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from claude_agent_sdk._internal.transport import Transport
+from claude_agent_sdk._version import __version__ as SDK_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +27,10 @@ class SshTransport(Transport):
     cwd: str
     identity_file: str | None
     ssh_options: list[str]
+    env: dict[str, str]
     _process: asyncio.subprocess.Process | None
     _ready: bool
+    _stderr_lines: list[str]
 
     def __init__(
         self,
@@ -35,13 +38,16 @@ class SshTransport(Transport):
         cwd: str = ".",
         identity_file: str | None = None,
         ssh_options: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> None:
         self.host = host
         self.cwd = cwd
         self.identity_file = identity_file
         self.ssh_options = ssh_options or []
+        self.env = env or {}
         self._process = None
         self._ready = False
+        self._stderr_lines = []
 
     def _build_ssh_command(self) -> list[str]:
         cmd = [
@@ -54,9 +60,21 @@ class SshTransport(Transport):
             cmd += ["-i", self.identity_file]
         cmd += self.ssh_options
         cmd.append(self.host)
-        # The remote command: claude code in streaming JSON mode.
+
+        # Build env exports for the remote shell.  The default SDK transport
+        # sets these locally; we must pass them over SSH.
+        env_vars = {
+            "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+            "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
+        }
+        env_vars.update(self.env)
+        exports = " ".join(
+            f"{k}={shlex.quote(v)}" for k, v in env_vars.items()
+        )
+
         remote = (
             f"cd {shlex.quote(self.cwd)} && "
+            f"export {exports} && "
             "claude code --output-format stream-json --verbose --input-format stream-json"
         )
         cmd.append(remote)
@@ -64,7 +82,8 @@ class SshTransport(Transport):
 
     async def connect(self) -> None:
         cmd = self._build_ssh_command()
-        logger.info("SshTransport: connecting via %s", " ".join(cmd))
+        logger.info("SshTransport: connecting via %s", " ".join(cmd[:6]))
+        self._stderr_lines = []
         self._process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -82,6 +101,7 @@ class SshTransport(Transport):
                 break
             text = line.decode("utf-8", errors="replace").rstrip()
             if text:
+                self._stderr_lines.append(text)
                 logger.debug("SshTransport stderr: %s", text)
 
     async def write(self, data: str) -> None:
@@ -132,8 +152,10 @@ class SshTransport(Transport):
         # Process has exited.
         returncode = await self._process.wait()
         if returncode and returncode != 0:
+            stderr_tail = "\n".join(self._stderr_lines[-20:])
             raise ConnectionError(
-                f"SshTransport: remote process exited with code {returncode}"
+                f"SshTransport: remote process exited with code {returncode}\n"
+                f"stderr:\n{stderr_tail}"
             )
 
     async def close(self) -> None:
