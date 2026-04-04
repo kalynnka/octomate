@@ -300,6 +300,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                 cwd=self.config.cwd,
                 identity_file=self.config.ssh.identity_file,
                 ssh_options=self.config.ssh.ssh_options,
+                claude_bin=self.config.ssh.claude_bin,
             )
 
         result_text: str = ""

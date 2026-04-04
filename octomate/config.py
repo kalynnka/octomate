@@ -85,6 +85,7 @@ class SshConfig(BaseModel):
     host: str  # user@remote-host
     identity_file: str | None = None
     ssh_options: list[str] = []
+    claude_bin: str = "claude"  # path to claude CLI on remote, e.g. ~/.claude/local/claude
 
 
 class ClaudeCodeConfig(BaseModel):
