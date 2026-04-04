@@ -22,6 +22,9 @@ class FlickConfig(BaseModel):
     model: str = "gemini-3-flash-preview"
     api_key: str = ""
     base_url: str = ""
+    vertexai: bool = False
+    project: str = ""
+    location: str = ""
 
 
 class Mem0Config(Mem0MemoryConfig):

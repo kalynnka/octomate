@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from pydantic_ai import Agent, CallDeferred, RunContext
@@ -75,11 +75,19 @@ def create_flick_agent(
         transport=RetryTransport(httpx.AsyncHTTPTransport()),
         timeout=httpx.Timeout(10.0),
     )
-    provider = GoogleProvider(
-        base_url=config.base_url or None,
-        api_key=config.api_key or None,
-        http_client=http_client,
-    )
+    kwargs: dict[str, Any] = {"http_client": http_client}
+    if config.base_url:
+        kwargs["base_url"] = config.base_url
+    if config.vertexai:
+        kwargs["vertexai"] = True
+        if config.project:
+            kwargs["project"] = config.project
+        if config.location:
+            kwargs["location"] = config.location
+    else:
+        if config.api_key:
+            kwargs["api_key"] = config.api_key
+    provider = GoogleProvider(**kwargs)
     model = GoogleModel(config.model, provider=provider)
 
     toolsets = skill_manager.build_skillsets() if skill_manager else []
