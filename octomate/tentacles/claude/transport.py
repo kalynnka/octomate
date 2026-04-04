@@ -72,8 +72,16 @@ class SshTransport(Transport):
             f"{k}={shlex.quote(v)}" for k, v in env_vars.items()
         )
 
+        # Expand leading ~ so the remote shell resolves it correctly.
+        # shlex.quote would wrap it in single quotes and prevent expansion.
+        cwd = self.cwd
+        if cwd.startswith("~"):
+            cwd_expr = '"$HOME"' + shlex.quote(cwd[1:])
+        else:
+            cwd_expr = shlex.quote(cwd)
+
         remote = (
-            f"cd {shlex.quote(self.cwd)} && "
+            f"cd {cwd_expr} && "
             f"export {exports} && "
             "claude code --output-format stream-json --verbose --input-format stream-json"
         )
