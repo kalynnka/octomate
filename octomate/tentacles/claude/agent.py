@@ -285,13 +285,26 @@ class ClaudeCodeTentacle(AgentTentacle):
             },
         )
 
+        transport = None
+        if self.config.ssh:
+            from octomate.tentacles.claude.transport import SshTransport
+
+            transport = SshTransport(
+                host=self.config.ssh.host,
+                cwd=self.config.cwd,
+                identity_file=self.config.ssh.identity_file,
+                ssh_options=self.config.ssh.ssh_options,
+            )
+
         result_text: str = ""
         has_text = False
         is_first_response = session_id is None
         try:
             async with NerveStream(nerve, key) as stream:
                 await stream.set_status("🐙 Channeling")
-                async with ClaudeSDKClient(options=options) as client:
+                async with ClaudeSDKClient(
+                    options=options, transport=transport
+                ) as client:
                     self._active_clients[key] = client
                     await client.query(task)
                     async for msg in client.receive_response():

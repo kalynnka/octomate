@@ -81,6 +81,12 @@ TentacleConfigUnion = Annotated[
 ]
 
 
+class SshConfig(BaseModel):
+    host: str  # user@remote-host
+    identity_file: str | None = None
+    ssh_options: list[str] = []
+
+
 class ClaudeCodeConfig(BaseModel):
     type: Literal["claude_code"] = "claude_code"
     tag: str = "claude"
@@ -91,6 +97,7 @@ class ClaudeCodeConfig(BaseModel):
     worktrees_dir: str | None = (
         None  # if set, enables per-session git worktree isolation
     )
+    ssh: SshConfig | None = None  # if set, runs Claude Code on the remote host via SSH
 
 
 class CopilotConfig(BaseModel):
