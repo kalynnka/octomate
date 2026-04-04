@@ -11,6 +11,8 @@ from claude_agent_sdk._internal.transport import Transport
 
 logger = logging.getLogger(__name__)
 
+MAX_BUFFER_SIZE = 1024 * 1024  # 1 MB, same as the default transport
+
 
 class SshTransport(Transport):
     """Transport that runs Claude Code CLI on a remote host via SSH.
@@ -25,8 +27,7 @@ class SshTransport(Transport):
     identity_file: str | None
     ssh_options: list[str]
     _process: asyncio.subprocess.Process | None
-    _read_task: asyncio.Task | None
-    _messages: asyncio.Queue[dict[str, Any]]
+    _ready: bool
 
     def __init__(
         self,
@@ -40,13 +41,15 @@ class SshTransport(Transport):
         self.identity_file = identity_file
         self.ssh_options = ssh_options or []
         self._process = None
-        self._read_task = None
-        self._messages = asyncio.Queue()
+        self._ready = False
 
     def _build_ssh_command(self) -> list[str]:
-        cmd = ["ssh"]
-        # Keep the connection alive and fail fast on forward failures.
-        cmd += ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"]
+        cmd = [
+            "ssh",
+            "-T",  # disable TTY allocation — essential for piped JSON
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=3",
+        ]
         if self.identity_file:
             cmd += ["-i", self.identity_file]
         cmd += self.ssh_options
@@ -61,31 +64,15 @@ class SshTransport(Transport):
 
     async def connect(self) -> None:
         cmd = self._build_ssh_command()
-        logger.info("SshTransport: connecting via %s", " ".join(cmd[:4]))
+        logger.info("SshTransport: connecting via %s", " ".join(cmd))
         self._process = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        self._read_task = asyncio.create_task(self._read_loop())
-        # Drain stderr to logger in the background.
         asyncio.create_task(self._stderr_loop())
-
-    async def _read_loop(self) -> None:
-        assert self._process and self._process.stdout
-        while True:
-            line = await self._process.stdout.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").strip()
-            if not text:
-                continue
-            try:
-                msg = json.loads(text)
-                await self._messages.put(msg)
-            except json.JSONDecodeError:
-                logger.debug("SshTransport: non-JSON line: %s", text[:200])
+        self._ready = True
 
     async def _stderr_loop(self) -> None:
         assert self._process and self._process.stderr
@@ -98,23 +85,59 @@ class SshTransport(Transport):
                 logger.debug("SshTransport stderr: %s", text)
 
     async def write(self, data: str) -> None:
-        if not self._process or not self._process.stdin:
+        if not self._ready or not self._process or not self._process.stdin:
             raise ConnectionError("SshTransport: not connected")
         self._process.stdin.write(data.encode("utf-8"))
         await self._process.stdin.drain()
 
-    async def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+    def read_messages(self) -> AsyncIterator[dict[str, Any]]:
+        """Return an async iterator that yields parsed JSON messages.
+
+        Must be a *sync* method (not ``async def``) because the SDK calls it
+        without ``await``.  The returned async generator handles the actual
+        async I/O internally.
+        """
+        return self._read_messages_impl()
+
+    async def _read_messages_impl(self) -> AsyncIterator[dict[str, Any]]:
+        if not self._process or not self._process.stdout:
+            raise ConnectionError("SshTransport: not connected")
+
+        json_buffer = ""
         while True:
-            try:
-                msg = await self._messages.get()
-                yield msg
-            except asyncio.CancelledError:
+            line = await self._process.stdout.readline()
+            if not line:
                 break
+            text = line.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+
+            # Accumulate partial JSON, same strategy as the default transport.
+            # SSH or long messages may split a single JSON object across lines.
+            json_buffer += text
+
+            if len(json_buffer) > MAX_BUFFER_SIZE:
+                logger.error("SshTransport: JSON buffer exceeded %d bytes, resetting", MAX_BUFFER_SIZE)
+                json_buffer = ""
+                continue
+
+            try:
+                data = json.loads(json_buffer)
+                json_buffer = ""
+                yield data
+            except json.JSONDecodeError:
+                # Not yet a complete JSON object — keep accumulating.
+                continue
+
+        # Process has exited.
+        returncode = await self._process.wait()
+        if returncode and returncode != 0:
+            raise ConnectionError(
+                f"SshTransport: remote process exited with code {returncode}"
+            )
 
     async def close(self) -> None:
-        if self._read_task:
-            self._read_task.cancel()
-            self._read_task = None
+        self._ready = False
         if self._process:
             try:
                 self._process.terminate()
@@ -125,9 +148,9 @@ class SshTransport(Transport):
 
     def is_ready(self) -> bool:
         return (
-            self._process is not None
+            self._ready
+            and self._process is not None
             and self._process.returncode is None
-            and self._process.stdin is not None
         )
 
     async def end_input(self) -> None:
