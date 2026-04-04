@@ -39,11 +39,13 @@ class SshTransport(Transport):
         identity_file: str | None = None,
         ssh_options: list[str] | None = None,
         env: dict[str, str] | None = None,
+        claude_bin: str = "claude",
     ) -> None:
         self.host = host
         self.cwd = cwd
         self.identity_file = identity_file
         self.ssh_options = ssh_options or []
+        self.claude_bin = claude_bin
         self.env = env or {}
         self._process = None
         self._ready = False
@@ -83,7 +85,7 @@ class SshTransport(Transport):
         remote = (
             f"cd {cwd_expr} && "
             f"export {exports} && "
-            "claude code --output-format stream-json --verbose --input-format stream-json"
+            f"{self.claude_bin} code --output-format stream-json --verbose --input-format stream-json"
         )
         cmd.append(remote)
         return cmd
