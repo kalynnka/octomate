@@ -30,7 +30,10 @@ class TestParseSteps:
         assert steps[2] == "Synthesize"
 
     def test_blank_lines_skipped(self):
-        assert len(parse_steps("1. A\n\n2. B\n")) == 2
+        steps = parse_steps("1. A\n\n2. B\n")
+        assert len(steps) == 2
+        assert steps[0] == "A"
+        assert steps[1] == "B"
 
     def test_paren_numbering(self):
         assert parse_steps("1) Alpha\n2) Beta")[0] == "Alpha"

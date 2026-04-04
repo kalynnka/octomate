@@ -8,7 +8,7 @@ without planning.
 Usage::
 
     answer = await run_pulse(agent, deps, "Summarize, compare, recommend")
-    # *answer* is a clean, user-facing string — no plan artefacts exposed.
+    # *answer* is a clean, user-facing string — no plan artifacts exposed.
 """
 
 from __future__ import annotations
