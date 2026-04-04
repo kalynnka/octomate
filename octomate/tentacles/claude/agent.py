@@ -80,7 +80,12 @@ class ClaudeCodeTentacle(AgentTentacle):
         super().__init__(tag, octopus, description=config.description, handover=True)
         self.config = config
         self.threads = ThreadStore(default_owner=tag)
-        self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
+        if config.ssh:
+            self._vscode_uri = (
+                f"vscode://vscode-remote/ssh-remote+{config.ssh.host}{config.cwd}"
+            )
+        else:
+            self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
         self._todo_card_refs = {}
         self._session_id_map = {}
         self._active_clients = {}
@@ -356,16 +361,25 @@ class ClaudeCodeTentacle(AgentTentacle):
                 current_worktree = worktree_info[0]
                 self._worktree_paths[key] = current_worktree
 
-        vscode_link_uri = (
-            f"vscode://file{os.path.abspath(current_worktree)}"
-            if current_worktree
-            else self._vscode_uri
-        )
-        resume_uri = (
-            f"vscode://anthropic.claude-code/open?session={session_id_after}"
-            if session_id_after
-            else None
-        )
+        if current_worktree:
+            if self.config.ssh:
+                vscode_link_uri = (
+                    f"vscode://vscode-remote/ssh-remote+{self.config.ssh.host}"
+                    f"{current_worktree}"
+                )
+            else:
+                vscode_link_uri = f"vscode://file{os.path.abspath(current_worktree)}"
+        else:
+            vscode_link_uri = self._vscode_uri
+
+        if session_id_after:
+            resume_uri = (
+                f"vscode://anthropic.claude-code/open?session={session_id_after}"
+            )
+            if self.config.ssh:
+                resume_uri += f"&remote=ssh-remote+{self.config.ssh.host}"
+        else:
+            resume_uri = None
 
         # Get session name for display
         display_name = self._session_names.get(key)
