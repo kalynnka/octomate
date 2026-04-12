@@ -20,6 +20,7 @@ class Todo(Base, TransmuterProxiedMixin):
         String, ForeignKey("threads.id"), nullable=False, index=True
     )
     title: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str] = mapped_column(String, nullable=False, server_default="")
     status: Mapped[str] = mapped_column(String, nullable=False, index=True)
     active_form: Mapped[str | None] = mapped_column(String, nullable=True)
     assignee: Mapped[str | None] = mapped_column(String, nullable=True)

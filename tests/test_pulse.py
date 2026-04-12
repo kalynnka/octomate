@@ -2,41 +2,21 @@
 
 from __future__ import annotations
 
-from pydantic_ai import Agent, ModelResponse, TextPart
+import json
+
+from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from octomate.agents.pulse import (
     PulseDeps,
+    PulsePlan,
     PulseState,
+    PulseStep,
     Triage,
-    parse_steps,
     pulse_graph,
     run_pulse,
 )
 from octomate.transmuters.interactions import Todo
-
-
-class TestParseSteps:
-    def test_numbered_list(self):
-        steps = parse_steps("1. Summarize X\n2. Compare Y\n3. Synthesize")
-        assert len(steps) == 3
-        assert steps[0] == "Summarize X"
-        assert steps[2] == "Synthesize"
-
-    def test_blank_lines_skipped(self):
-        steps = parse_steps("1. A\n\n2. B\n")
-        assert len(steps) == 2
-        assert steps[0] == "A"
-        assert steps[1] == "B"
-
-    def test_paren_numbering(self):
-        assert parse_steps("1) Alpha\n2) Beta")[0] == "Alpha"
-
-    def test_returns_empty_for_prose(self):
-        assert parse_steps("I'm not sure what to do.") == []
-
-    def test_returns_empty_for_empty(self):
-        assert parse_steps("") == []
 
 
 def _text_model(text: str) -> FunctionModel:
@@ -44,6 +24,51 @@ def _text_model(text: str) -> FunctionModel:
         return ModelResponse(parts=[TextPart(content=text)])
 
     return FunctionModel(fn)
+
+
+def _plan_tool_call(steps: list[dict]) -> ModelResponse:
+    """Build a ModelResponse that invokes the PulsePlan structured output tool."""
+    plan = PulsePlan(steps=[PulseStep(**s) for s in steps])
+    return ModelResponse(
+        parts=[
+            ToolCallPart(
+                tool_name="final_result",
+                args=plan.model_dump(),
+                tool_call_id="plan-call",
+            )
+        ]
+    )
+
+
+def _plan_then_text_model(steps: list[dict]) -> FunctionModel:
+    """First call returns a PulsePlan tool call; subsequent calls return text."""
+    call_count = 0
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _plan_tool_call(steps)
+        return ModelResponse(parts=[TextPart(content=f"result-{call_count}")])
+
+    return FunctionModel(fn)
+
+
+class TestPulsePlan:
+    def test_plan_roundtrip(self):
+        plan = PulsePlan(
+            steps=[
+                PulseStep(title="Summarize", description="Summarize the key points"),
+                PulseStep(title="Compare", description="Compare against benchmarks"),
+            ]
+        )
+        assert len(plan.steps) == 2
+        assert plan.steps[0].title == "Summarize"
+        assert plan.steps[1].description == "Compare against benchmarks"
+
+    def test_plan_json_schema(self):
+        schema = PulsePlan.model_json_schema()
+        assert "steps" in schema["properties"]
 
 
 async def test_direct_answer_single_call():
@@ -66,14 +91,16 @@ async def test_direct_answer_single_call():
 async def test_plan_path_runs_all_steps():
     """Complex tasks go through triage → execute steps → synthesize."""
     call_count = 0
+    steps = [
+        {"title": "Step A", "description": "Do step A in detail"},
+        {"title": "Step B", "description": "Do step B in detail"},
+    ]
 
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return ModelResponse(
-                parts=[TextPart(content="1. Step A\n2. Step B")]
-            )
+            return _plan_tool_call(steps)
         return ModelResponse(parts=[TextPart(content=f"result-{call_count}")])
 
     agent: Agent[None, str] = Agent("test", output_type=str)
@@ -87,16 +114,19 @@ async def test_plan_path_runs_all_steps():
 
 
 async def test_steps_tracked_as_todos():
-    """Plan steps in the graph state are Todo objects from the existing transmuter."""
+    """Plan steps in the graph state are Todo objects with title and description."""
+    steps = [
+        {"title": "Summarize", "description": "Summarize the document"},
+        {"title": "Compare", "description": "Compare against last quarter"},
+    ]
+
     call_count = 0
 
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return ModelResponse(
-                parts=[TextPart(content="1. Summarize\n2. Compare")]
-            )
+            return _plan_tool_call(steps)
         return ModelResponse(parts=[TextPart(content="done")])
 
     agent: Agent[None, str] = Agent("test", output_type=str)
@@ -110,11 +140,13 @@ async def test_steps_tracked_as_todos():
     assert all(isinstance(t, Todo) for t in state.todos)
     assert all(t.status == "done" for t in state.todos)
     assert state.todos[0].title == "Summarize"
+    assert state.todos[0].description == "Summarize the document"
     assert state.todos[1].title == "Compare"
+    assert state.todos[1].description == "Compare against last quarter"
 
 
 async def test_triage_fallback_to_direct():
-    """When triage returns non-numbered text, it becomes the direct answer."""
+    """When triage returns plain text, it becomes the direct answer."""
     agent: Agent[None, str] = Agent("test", output_type=str)
     with agent.override(model=_text_model("Just a simple answer.")):
         result = await run_pulse(agent, deps=None, prompt="simple question")
@@ -125,16 +157,17 @@ async def test_triage_fallback_to_direct():
 async def test_full_pipeline_no_internal_leakage():
     """Internal plan details must not leak into the final answer."""
     call_count = 0
+    steps = [
+        {"title": "Summarize", "description": "Summarize key findings"},
+        {"title": "Compare", "description": "Compare with baseline"},
+        {"title": "Synthesize", "description": "Produce final recommendation"},
+    ]
 
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return ModelResponse(
-                parts=[
-                    TextPart(content="1. Summarize\n2. Compare\n3. Synthesize")
-                ]
-            )
+            return _plan_tool_call(steps)
         if call_count <= 4:
             return ModelResponse(
                 parts=[TextPart(content=f"Step output {call_count}")]
@@ -156,3 +189,30 @@ async def test_run_pulse_with_list_prompt():
     with agent.override(model=_text_model("ok")):
         result = await run_pulse(agent, deps=None, prompt=["hello", "world"])
         assert result == "ok"
+
+
+async def test_todo_description_propagated_to_step():
+    """The description from the plan is stored in Todo and used by ExecuteStep."""
+    steps = [
+        {"title": "Research", "description": "Research the topic in depth using all sources"},
+        {"title": "Summarize", "description": "Write a brief summary"},
+    ]
+
+    call_count = 0
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _plan_tool_call(steps)
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    agent: Agent[None, str] = Agent("test", output_type=str)
+    state = PulseState(goal="Do research")
+    pulse_deps = PulseDeps(agent=agent, agent_deps=None)
+
+    with agent.override(model=FunctionModel(fn)):
+        await pulse_graph.run(Triage(), state=state, deps=pulse_deps)
+
+    assert state.todos[0].description == "Research the topic in depth using all sources"
+    assert state.todos[1].description == "Write a brief summary"

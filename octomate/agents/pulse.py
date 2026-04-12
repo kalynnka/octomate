@@ -13,10 +13,10 @@ Usage::
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
@@ -26,14 +26,28 @@ if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
 
 
+class PulseStep(BaseModel):
+    """A single step in a pulse plan, output by the LLM via structured output."""
+
+    title: str = Field(description="Short name for this step")
+    description: str = Field(description="Detailed instructions for executing this step")
+
+
+class PulsePlan(BaseModel):
+    """Structured plan output by the triage LLM call for multi-step tasks."""
+
+    steps: list[PulseStep] = Field(
+        description="Ordered list of concrete steps (2-5) to complete the task",
+        min_length=2,
+        max_length=5,
+    )
+
+
 TRIAGE_INSTRUCTION = (
-    "If the request below is a simple question, answer it directly.\n"
-    "If it requires multiple steps, break it into a numbered list of "
-    "concrete steps (2-5). Output ONLY the numbered list — no commentary.\n"
-    "Example of a numbered list:\n"
-    "1. Summarize the key points of X\n"
-    "2. Compare them against Y\n"
-    "3. Synthesize a final recommendation"
+    "If the request below is a simple question, answer it directly as text.\n"
+    "If it requires multiple steps, use the PulsePlan tool to produce a "
+    "structured plan of 2-5 concrete steps with a short title and detailed "
+    "description for each."
 )
 
 STEP_INSTRUCTION = (
@@ -41,7 +55,8 @@ STEP_INSTRUCTION = (
     "Do not mention the plan, other steps, or any meta-commentary.\n\n"
     "Overall goal: {goal}\n"
     "Previous context:\n{context}\n\n"
-    "Current step: {instruction}"
+    "Current step: {title}\n"
+    "Instructions: {description}"
 )
 
 SYNTHESIZE_INSTRUCTION = (
@@ -66,31 +81,13 @@ class PulseDeps:
     message_history: list[ModelMessage] | None = None
 
 
-def parse_steps(raw: str) -> list[str]:
-    """Parse a numbered-list response into step instructions.
-
-    Only lines starting with a digit followed by ``.`` or ``)`` are treated
-    as steps.  Free-form prose is silently ignored.
-    """
-    steps: list[str] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        match = re.match(r"^\d+[.)]\s*(.+)", line)
-        if match:
-            body = match.group(1).strip()
-            if body:
-                steps.append(body)
-    return steps
-
-
 @dataclass
 class Triage(BaseNode[PulseState, PulseDeps, str]):
     """Classify the request and either answer directly or decompose into steps.
 
-    The agent is asked to either answer a simple question directly or produce
-    a numbered step list.  Parsing determines the path: numbered steps lead
-    to ExecuteStep; plain prose is returned as the direct answer.  This keeps
-    simple questions to a single LLM call.
+    Uses pydantic-ai's union output_type ``[str, PulsePlan]`` so the LLM can
+    either respond with plain text (direct answer) or call the PulsePlan tool
+    (structured decomposition).  This keeps simple questions to 1 LLM call.
     """
 
     async def run(
@@ -100,16 +97,21 @@ class Triage(BaseNode[PulseState, PulseDeps, str]):
             ctx.state.goal,
             deps=ctx.deps.agent_deps,
             message_history=ctx.deps.message_history,
-            output_type=str,
+            output_type=[str, PulsePlan],
             instructions=TRIAGE_INSTRUCTION,
         )
-        instructions = parse_steps(result.output)
-        if not instructions:
+        if isinstance(result.output, str):
             return End(result.output)
 
-        for i, instruction in enumerate(instructions):
+        plan: PulsePlan = result.output
+        for i, step in enumerate(plan.steps):
             ctx.state.todos.append(
-                Todo(todo_id=f"pulse-{i}", title=instruction, status="pending")
+                Todo(
+                    todo_id=f"pulse-{i}",
+                    title=step.title,
+                    description=step.description,
+                    status="pending",
+                )
             )
         return ExecuteStep()
 
@@ -131,7 +133,8 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps, str]):
         step_instructions = STEP_INSTRUCTION.format(
             goal=ctx.state.goal,
             context=context,
-            instruction=current.title,
+            title=current.title,
+            description=current.description,
         )
         result = await ctx.deps.agent.run(
             current.title,
