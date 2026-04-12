@@ -5,18 +5,22 @@ a sequence of steps backed by Todo items, execute each step via Agent.run(),
 and return only the final synthesis.  Simple questions are answered directly
 without planning.
 
+The agent's configured output type and system prompt are respected throughout:
+Triage and Synthesize return in the agent's native format (e.g. ``list[AgentMessage]``),
+preserving personality and toolsets.  Only intermediate ExecuteStep calls use
+``output_type=str`` since their outputs are internal.
+
 Usage::
 
     answer = await run_pulse(agent, deps, "Summarize, compare, recommend")
-    # *answer* is a clean, user-facing string — no plan artifacts exposed.
+    # *answer* matches the agent's native output type — no plan artifacts exposed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
 from pydantic_ai import Agent
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
@@ -26,28 +30,11 @@ if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
 
 
-class PulseStep(BaseModel):
-    """A single step in a pulse plan, output by the LLM via structured output."""
-
-    title: str = Field(description="Short name for this step")
-    description: str = Field(description="Detailed instructions for executing this step")
-
-
-class PulsePlan(BaseModel):
-    """Structured plan output by the triage LLM call for multi-step tasks."""
-
-    steps: list[PulseStep] = Field(
-        description="Ordered list of concrete steps (2-5) to complete the task",
-        min_length=2,
-        max_length=5,
-    )
-
-
 TRIAGE_INSTRUCTION = (
-    "If the request below is a simple question, answer it directly as text.\n"
-    "If it requires multiple steps, use the PulsePlan tool to produce a "
-    "structured plan of 2-5 concrete steps with a short title and detailed "
-    "description for each."
+    "If the request below is a simple question, answer it directly.\n"
+    "If it requires multiple steps, produce a structured plan of 2-5 Todo "
+    "items, each with a todo_id (like 'pulse-0'), a short title, and a "
+    "detailed description with instructions for that step."
 )
 
 STEP_INSTRUCTION = (
@@ -76,48 +63,53 @@ class PulseState:
 
 @dataclass
 class PulseDeps:
-    agent: Agent
-    agent_deps: object
+    agent: Agent[Any, Any]
+    agent_deps: Any
     message_history: list[ModelMessage] | None = None
 
 
+def _build_triage_output_type(agent: Agent[Any, Any]) -> list[type]:
+    """Combine the agent's native output types with ``list[Todo]`` for triage."""
+    native = agent._output_type  # noqa: SLF001
+    types: list[type] = list(native) if isinstance(native, list) else [native]
+    types.append(list[Todo])  # type: ignore[arg-type]
+    return types
+
+
+def _is_todo_plan(output: Any) -> bool:
+    return isinstance(output, list) and bool(output) and isinstance(output[0], Todo)
+
+
 @dataclass
-class Triage(BaseNode[PulseState, PulseDeps, str]):
+class Triage(BaseNode[PulseState, PulseDeps, Any]):
     """Classify the request and either answer directly or decompose into steps.
 
-    Uses pydantic-ai's union output_type ``[str, PulsePlan]`` so the LLM can
-    either respond with plain text (direct answer) or call the PulsePlan tool
-    (structured decomposition).  This keeps simple questions to 1 LLM call.
+    Uses the agent's native output types combined with ``list[Todo]`` so the
+    LLM can either respond in its configured format (direct answer, preserving
+    personality) or produce a structured Todo plan.  Simple questions stay at
+    1 LLM call.
     """
 
     async def run(
         self, ctx: GraphRunContext[PulseState, PulseDeps]
-    ) -> ExecuteStep | End[str]:
+    ) -> ExecuteStep | End[Any]:
+        triage_output_type = _build_triage_output_type(ctx.deps.agent)
         result = await ctx.deps.agent.run(
             ctx.state.goal,
             deps=ctx.deps.agent_deps,
             message_history=ctx.deps.message_history,
-            output_type=[str, PulsePlan],
+            output_type=triage_output_type,
             instructions=TRIAGE_INSTRUCTION,
         )
-        if isinstance(result.output, str):
+        if not _is_todo_plan(result.output):
             return End(result.output)
 
-        plan: PulsePlan = result.output
-        for i, step in enumerate(plan.steps):
-            ctx.state.todos.append(
-                Todo(
-                    todo_id=f"pulse-{i}",
-                    title=step.title,
-                    description=step.description,
-                    status="pending",
-                )
-            )
+        ctx.state.todos = result.output
         return ExecuteStep()
 
 
 @dataclass
-class ExecuteStep(BaseNode[PulseState, PulseDeps, str]):
+class ExecuteStep(BaseNode[PulseState, PulseDeps, Any]):
     """Execute the next pending Todo step."""
 
     async def run(
@@ -155,19 +147,22 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps, str]):
 
 
 @dataclass
-class Synthesize(BaseNode[PulseState, PulseDeps, str]):
-    """Produce the final user-facing answer from all step outputs."""
+class Synthesize(BaseNode[PulseState, PulseDeps, Any]):
+    """Produce the final user-facing answer from all step outputs.
+
+    Does NOT override ``output_type`` so the agent's configured format
+    (e.g. ``list[AgentMessage]``) and personality are preserved.
+    """
 
     async def run(
         self, ctx: GraphRunContext[PulseState, PulseDeps]
-    ) -> End[str]:
+    ) -> End[Any]:
         results_block = "\n".join(ctx.state.step_outputs)
         synth_instructions = SYNTHESIZE_INSTRUCTION.format(results=results_block)
         result = await ctx.deps.agent.run(
             ctx.state.goal,
             deps=ctx.deps.agent_deps,
             message_history=ctx.deps.message_history,
-            output_type=str,
             instructions=synth_instructions,
         )
         return End(result.output)
@@ -177,17 +172,19 @@ pulse_graph = Graph(nodes=[Triage, ExecuteStep, Synthesize])
 
 
 async def run_pulse(
-    agent: Agent,
-    deps: object,
-    prompt: str | list,
+    agent: Agent[Any, Any],
+    deps: Any,
+    prompt: str | list[str],
     *,
     message_history: list[ModelMessage] | None = None,
-) -> str:
+) -> Any:
     """Run the pulse pipeline: triage → optionally execute steps → synthesize.
 
     Simple questions are answered directly in a single call.  Complex multi-step
     requests are decomposed into Todo-backed steps and executed sequentially.
-    Returns only the final user-facing answer.
+
+    Returns the agent's native output type — the same format the agent would
+    produce without pulse (e.g. ``list[AgentMessage]``).
     """
     goal = prompt if isinstance(prompt, str) else " ".join(str(p) for p in prompt)
     state = PulseState(goal=goal)
