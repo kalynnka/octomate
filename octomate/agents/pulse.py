@@ -1,6 +1,6 @@
 """Pulse — lightweight internal planning for medium-complexity tasks.
 
-Uses pydantic-ai's graph to classify requests, decompose eligible ones into
+Uses pydantic-ai's graph to triage requests, decompose eligible ones into
 a sequence of steps backed by Todo items, execute each step via Agent.run(),
 and return only the final synthesis.  Simple questions are answered directly
 without planning.
@@ -26,25 +26,17 @@ if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
 
 
-CLASSIFY_INSTRUCTION = (
-    "Decide whether the following request is a simple question that can be "
-    "answered directly in one response, or a complex multi-step task that "
-    "should be broken into smaller steps. Respond with ONLY one word: "
-    "'direct' or 'plan'."
-)
-
-DECOMPOSE_INSTRUCTION = (
-    "You are a silent planner. Given the user request below, break it into "
-    "a short sequence of concrete steps (2-5). Each step should be a single, "
-    "actionable instruction. Respond ONLY with the steps as a numbered list — "
-    "no commentary, no headers. Example:\n"
+TRIAGE_INSTRUCTION = (
+    "If the request below is a simple question, answer it directly.\n"
+    "If it requires multiple steps, break it into a numbered list of "
+    "concrete steps (2-5). Output ONLY the numbered list — no commentary.\n"
+    "Example of a numbered list:\n"
     "1. Summarize the key points of X\n"
     "2. Compare them against Y\n"
-    "3. Synthesize a final recommendation\n"
+    "3. Synthesize a final recommendation"
 )
 
 STEP_INSTRUCTION = (
-    "You are executing one step of an internal plan. "
     "Complete ONLY the step described below and return ONLY the result. "
     "Do not mention the plan, other steps, or any meta-commentary.\n\n"
     "Overall goal: {goal}\n"
@@ -53,11 +45,9 @@ STEP_INSTRUCTION = (
 )
 
 SYNTHESIZE_INSTRUCTION = (
-    "You are producing the final answer for the user. "
-    "Using the step results below, write a single coherent response that directly "
-    "answers the original request. Do NOT mention steps, plans, or any internal "
-    "process.\n\n"
-    "Original request: {goal}\n\n"
+    "Using the collected results below, write a single coherent response that "
+    "directly answers the original request. Do not mention steps, plans, or "
+    "any internal process.\n\n"
     "Step results:\n{results}"
 )
 
@@ -93,46 +83,15 @@ def parse_steps(raw: str) -> list[str]:
     return steps
 
 
-def extract_text(result: object) -> str:
-    """Pull a plain-text string out of an agent run result."""
-    output = getattr(result, "output", result)
-    if isinstance(output, str):
-        return output
-    return str(output)
-
-
-# ---------------------------------------------------------------------------
-# Graph nodes
-# ---------------------------------------------------------------------------
-
-
 @dataclass
-class Classify(BaseNode[PulseState, PulseDeps, str]):
-    """Decide whether the request needs multi-step planning or a direct answer."""
+class Triage(BaseNode[PulseState, PulseDeps, str]):
+    """Classify the request and either answer directly or decompose into steps.
 
-    async def run(
-        self, ctx: GraphRunContext[PulseState, PulseDeps]
-    ) -> Decompose | End[str]:
-        result = await ctx.deps.agent.run(
-            ctx.state.goal,
-            deps=ctx.deps.agent_deps,
-            message_history=ctx.deps.message_history,
-            instructions=CLASSIFY_INSTRUCTION,
-        )
-        answer = extract_text(result).strip().lower()
-        if answer.startswith("direct"):
-            direct = await ctx.deps.agent.run(
-                ctx.state.goal,
-                deps=ctx.deps.agent_deps,
-                message_history=ctx.deps.message_history,
-            )
-            return End(extract_text(direct))
-        return Decompose()
-
-
-@dataclass
-class Decompose(BaseNode[PulseState, PulseDeps, str]):
-    """Break the request into numbered steps backed by Todo items."""
+    The agent is asked to either answer a simple question directly or produce
+    a numbered step list.  Parsing determines the path: numbered steps lead
+    to ExecuteStep; plain prose is returned as the direct answer.  This keeps
+    simple questions to a single LLM call.
+    """
 
     async def run(
         self, ctx: GraphRunContext[PulseState, PulseDeps]
@@ -141,16 +100,12 @@ class Decompose(BaseNode[PulseState, PulseDeps, str]):
             ctx.state.goal,
             deps=ctx.deps.agent_deps,
             message_history=ctx.deps.message_history,
-            instructions=DECOMPOSE_INSTRUCTION,
+            output_type=str,
+            instructions=TRIAGE_INSTRUCTION,
         )
-        instructions = parse_steps(extract_text(result))
+        instructions = parse_steps(result.output)
         if not instructions:
-            direct = await ctx.deps.agent.run(
-                ctx.state.goal,
-                deps=ctx.deps.agent_deps,
-                message_history=ctx.deps.message_history,
-            )
-            return End(extract_text(direct))
+            return End(result.output)
 
         for i, instruction in enumerate(instructions):
             ctx.state.todos.append(
@@ -173,7 +128,7 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps, str]):
             return Synthesize()
 
         context = "\n".join(ctx.state.step_outputs) if ctx.state.step_outputs else "(none)"
-        instructions = STEP_INSTRUCTION.format(
+        step_instructions = STEP_INSTRUCTION.format(
             goal=ctx.state.goal,
             context=context,
             instruction=current.title,
@@ -182,10 +137,10 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps, str]):
             current.title,
             deps=ctx.deps.agent_deps,
             message_history=ctx.deps.message_history,
-            instructions=instructions,
+            output_type=str,
+            instructions=step_instructions,
         )
-        output = extract_text(result)
-        ctx.state.step_outputs.append(f"- {current.title}: {output}")
+        ctx.state.step_outputs.append(f"- {current.title}: {result.output}")
 
         ctx.state.todos = [
             t.model_copy(update={"status": "done"})
@@ -204,19 +159,18 @@ class Synthesize(BaseNode[PulseState, PulseDeps, str]):
         self, ctx: GraphRunContext[PulseState, PulseDeps]
     ) -> End[str]:
         results_block = "\n".join(ctx.state.step_outputs)
-        instructions = SYNTHESIZE_INSTRUCTION.format(
-            goal=ctx.state.goal, results=results_block
-        )
+        synth_instructions = SYNTHESIZE_INSTRUCTION.format(results=results_block)
         result = await ctx.deps.agent.run(
-            "Synthesize the final answer.",
+            ctx.state.goal,
             deps=ctx.deps.agent_deps,
             message_history=ctx.deps.message_history,
-            instructions=instructions,
+            output_type=str,
+            instructions=synth_instructions,
         )
-        return End(extract_text(result))
+        return End(result.output)
 
 
-pulse_graph = Graph(nodes=[Classify, Decompose, ExecuteStep, Synthesize])
+pulse_graph = Graph(nodes=[Triage, ExecuteStep, Synthesize])
 
 
 async def run_pulse(
@@ -226,10 +180,10 @@ async def run_pulse(
     *,
     message_history: list[ModelMessage] | None = None,
 ) -> str:
-    """Run the pulse pipeline: classify → optionally decompose → execute → synthesize.
+    """Run the pulse pipeline: triage → optionally execute steps → synthesize.
 
-    Simple questions are answered directly.  Complex multi-step requests are
-    decomposed into Todo-backed steps and executed sequentially.
+    Simple questions are answered directly in a single call.  Complex multi-step
+    requests are decomposed into Todo-backed steps and executed sequentially.
     Returns only the final user-facing answer.
     """
     goal = prompt if isinstance(prompt, str) else " ".join(str(p) for p in prompt)
@@ -237,5 +191,5 @@ async def run_pulse(
     pulse_deps = PulseDeps(
         agent=agent, agent_deps=deps, message_history=message_history
     )
-    result = await pulse_graph.run(Classify(), state=state, deps=pulse_deps)
+    result = await pulse_graph.run(Triage(), state=state, deps=pulse_deps)
     return result.output

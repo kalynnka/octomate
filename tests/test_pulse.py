@@ -6,20 +6,14 @@ from pydantic_ai import Agent, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from octomate.agents.pulse import (
-    Classify,
     PulseDeps,
     PulseState,
-    extract_text,
+    Triage,
     parse_steps,
     pulse_graph,
     run_pulse,
 )
 from octomate.transmuters.interactions import Todo
-
-
-# ---------------------------------------------------------------------------
-# parse_steps unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestParseSteps:
@@ -45,27 +39,6 @@ class TestParseSteps:
         assert parse_steps("") == []
 
 
-# ---------------------------------------------------------------------------
-# extract_text
-# ---------------------------------------------------------------------------
-
-
-class TestExtractText:
-    def test_string_passthrough(self):
-        assert extract_text("hello") == "hello"
-
-    def test_result_with_output_attr(self):
-        class FakeResult:
-            output = "value"
-
-        assert extract_text(FakeResult()) == "value"
-
-
-# ---------------------------------------------------------------------------
-# FunctionModel helpers
-# ---------------------------------------------------------------------------
-
-
 def _text_model(text: str) -> FunctionModel:
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
         return ModelResponse(parts=[TextPart(content=text)])
@@ -73,20 +46,13 @@ def _text_model(text: str) -> FunctionModel:
     return FunctionModel(fn)
 
 
-# ---------------------------------------------------------------------------
-# Classify: simple question → direct answer (no planning)
-# ---------------------------------------------------------------------------
-
-
-async def test_classify_direct_skips_planning():
-    """Simple questions classified as 'direct' return an answer immediately."""
+async def test_direct_answer_single_call():
+    """Simple questions answered directly require only 1 LLM call."""
     call_count = 0
 
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal call_count
         call_count += 1
-        if call_count == 1:
-            return ModelResponse(parts=[TextPart(content="direct")])
         return ModelResponse(parts=[TextPart(content="42")])
 
     agent: Agent[None, str] = Agent("test", output_type=str)
@@ -94,24 +60,17 @@ async def test_classify_direct_skips_planning():
         result = await run_pulse(agent, deps=None, prompt="What is 6*7?")
 
     assert result == "42"
-    assert call_count == 2  # classify + direct answer
-
-
-# ---------------------------------------------------------------------------
-# Classify → Decompose → ExecuteStep → Synthesize (full plan)
-# ---------------------------------------------------------------------------
+    assert call_count == 1
 
 
 async def test_plan_path_runs_all_steps():
-    """Complex tasks go through classify → decompose → execute → synthesize."""
+    """Complex tasks go through triage → execute steps → synthesize."""
     call_count = 0
 
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return ModelResponse(parts=[TextPart(content="plan")])
-        if call_count == 2:
             return ModelResponse(
                 parts=[TextPart(content="1. Step A\n2. Step B")]
             )
@@ -121,15 +80,10 @@ async def test_plan_path_runs_all_steps():
     with agent.override(model=FunctionModel(fn)):
         result = await run_pulse(agent, deps=None, prompt="Summarize then compare")
 
-    # 1 classify + 1 decompose + 2 steps + 1 synthesize = 5
-    assert call_count == 5
+    # 1 triage + 2 steps + 1 synthesize = 4
+    assert call_count == 4
     assert isinstance(result, str)
     assert len(result) > 0
-
-
-# ---------------------------------------------------------------------------
-# Steps are tracked as Todo objects
-# ---------------------------------------------------------------------------
 
 
 async def test_steps_tracked_as_todos():
@@ -140,8 +94,6 @@ async def test_steps_tracked_as_todos():
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return ModelResponse(parts=[TextPart(content="plan")])
-        if call_count == 2:
             return ModelResponse(
                 parts=[TextPart(content="1. Summarize\n2. Compare")]
             )
@@ -152,7 +104,7 @@ async def test_steps_tracked_as_todos():
     pulse_deps = PulseDeps(agent=agent, agent_deps=None)
 
     with agent.override(model=FunctionModel(fn)):
-        await pulse_graph.run(Classify(), state=state, deps=pulse_deps)
+        await pulse_graph.run(Triage(), state=state, deps=pulse_deps)
 
     assert len(state.todos) == 2
     assert all(isinstance(t, Todo) for t in state.todos)
@@ -161,38 +113,13 @@ async def test_steps_tracked_as_todos():
     assert state.todos[1].title == "Compare"
 
 
-# ---------------------------------------------------------------------------
-# Decompose fallback on unparseable response
-# ---------------------------------------------------------------------------
-
-
-async def test_decompose_fallback_on_unparseable():
-    """When decomposition returns non-numbered text, falls back to direct answer."""
-    call_count = 0
-
-    def fn(messages: list, info: AgentInfo) -> ModelResponse:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return ModelResponse(parts=[TextPart(content="plan")])
-        if call_count == 2:
-            return ModelResponse(
-                parts=[TextPart(content="I can just answer this directly.")]
-            )
-        return ModelResponse(parts=[TextPart(content="direct answer")])
-
+async def test_triage_fallback_to_direct():
+    """When triage returns non-numbered text, it becomes the direct answer."""
     agent: Agent[None, str] = Agent("test", output_type=str)
-    with agent.override(model=FunctionModel(fn)):
+    with agent.override(model=_text_model("Just a simple answer.")):
         result = await run_pulse(agent, deps=None, prompt="simple question")
 
-    # 1 classify + 1 decompose (unparseable) + 1 direct answer = 3
-    assert call_count == 3
-    assert result == "direct answer"
-
-
-# ---------------------------------------------------------------------------
-# Full end-to-end pipeline: no internal leakage
-# ---------------------------------------------------------------------------
+    assert result == "Just a simple answer."
 
 
 async def test_full_pipeline_no_internal_leakage():
@@ -203,14 +130,12 @@ async def test_full_pipeline_no_internal_leakage():
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return ModelResponse(parts=[TextPart(content="plan")])
-        if call_count == 2:
             return ModelResponse(
                 parts=[
                     TextPart(content="1. Summarize\n2. Compare\n3. Synthesize")
                 ]
             )
-        if call_count <= 5:
+        if call_count <= 4:
             return ModelResponse(
                 parts=[TextPart(content=f"Step output {call_count}")]
             )
@@ -221,26 +146,13 @@ async def test_full_pipeline_no_internal_leakage():
         answer = await run_pulse(agent, deps=None, prompt="Analyze the report")
 
     assert answer == "Final clean answer"
-    # 1 classify + 1 decompose + 3 steps + 1 synthesize = 6
-    assert call_count == 6
+    # 1 triage + 3 steps + 1 synthesize = 5
+    assert call_count == 5
 
 
 async def test_run_pulse_with_list_prompt():
     """run_pulse accepts a list prompt and flattens it."""
     agent: Agent[None, str] = Agent("test", output_type=str)
-    with agent.override(model=_text_model("direct")):
-        # Classify returns "direct", then we need a second call for the answer
-        call_count = 0
-
-        def fn(messages: list, info: AgentInfo) -> ModelResponse:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return ModelResponse(parts=[TextPart(content="direct")])
-            return ModelResponse(parts=[TextPart(content="ok")])
-
-        with agent.override(model=FunctionModel(fn)):
-            result = await run_pulse(
-                agent, deps=None, prompt=["hello", "world"]
-            )
-            assert result == "ok"
+    with agent.override(model=_text_model("ok")):
+        result = await run_pulse(agent, deps=None, prompt=["hello", "world"])
+        assert result == "ok"
