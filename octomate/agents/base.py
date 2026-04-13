@@ -27,8 +27,8 @@ class SummonRequest:
 @dataclass
 class SessionContext:
     session_key: SessionKey
+    tentacle: ChannelTentacle
     active_skills: set[str] = field(default_factory=set)
-    tentacle: ChannelTentacle | None = None
     event: MessageEvent | None = None
 
 

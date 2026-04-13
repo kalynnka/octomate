@@ -424,7 +424,7 @@ class ChannelTentacle(Tentacle):
             that don't involve tool calls. Example: acknowledge("let me look that up~")
             """
             if ctx.deps.tentacle:
-                # Flick always replies in the main thread — sub-thread messages
+                # Pulse always replies in the main thread — sub-thread messages
                 # are routed directly to agent tentacles and never reach here.
                 await ctx.deps.tentacle.twitch(
                     ctx.deps.session_key, [TextSegment(data={"text": text})]

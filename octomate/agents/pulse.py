@@ -144,10 +144,6 @@ def create_pulse_agents(
     return PulseAgents(triage=triage, step=step, synthesize=synthesize)
 
 
-# ---------------------------------------------------------------------------
-# Graph
-# ---------------------------------------------------------------------------
-
 TRIAGE_INSTRUCTION = (
     "If the request below is a simple question, answer it directly.\n"
     "If it requires multiple steps, produce a structured plan of 2-5 Todo "
@@ -245,7 +241,13 @@ async def resolve_deferred(
                 if agent_tentacle.handover:
                     await tentacle.twitch(
                         key,
-                        [TextSegment(data={"text": f"Tentacle *{tag}* has grabbed this thread 🐙!"})],
+                        [
+                            TextSegment(
+                                data={
+                                    "text": f"Tentacle *{tag}* has grabbed this thread 🐙!"
+                                }
+                            )
+                        ],
                     )
                     deferred.calls[call.tool_call_id] = (
                         f"Thread handed over to agent '{tag}'. "
