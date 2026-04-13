@@ -15,6 +15,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeVar
 
@@ -43,11 +44,40 @@ from octomate.transmuters.interactions import Todo
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
 
-    from octomate.tentacles.base import AgentTentacle, ChannelTentacle
+    from octomate.tentacles.base import AgentTentacle, ChannelTentacle, StreamSink
 
+from pydantic_ai.messages import PartEndEvent, ThinkingPart
+from pydantic_ai.run import AgentRunResultEvent
+from pydantic_ai.settings import ModelSettings
+
+logger = logging.getLogger(__name__)
 AgentOutputT = TypeVar("AgentOutputT")
 
 SYSTEM_PROMPT = BASE_PROMPT + FLICK_EXTRA
+
+
+async def run_streaming(
+    agent: Agent[SessionContext, AgentOutputT],
+    stream: StreamSink | None,
+    **kwargs: Any,
+) -> AgentRunResult[AgentOutputT]:
+    if not stream:
+        return await agent.run(**kwargs)
+    try:
+        result: AgentRunResult[AgentOutputT] | None = None
+        async for event in agent.run_stream_events(**kwargs):
+            if isinstance(event, AgentRunResultEvent):
+                result = event.result
+            elif isinstance(event, PartEndEvent) and isinstance(
+                event.part, ThinkingPart
+            ):
+                if event.part.content:
+                    await stream.post_thinking_block(event.part.content)
+        assert result is not None, "The stream run did not produce a result"
+        return result
+    except (AssertionError, NotImplementedError):
+        return await agent.run(**kwargs)
+
 
 TriageOutput = list[AgentMessage] | list[Todo] | DeferredToolRequests
 
@@ -106,7 +136,7 @@ def create_pulse_agents(
 ) -> PulseAgents:
     http_client = httpx.AsyncClient(
         transport=RetryTransport(httpx.AsyncHTTPTransport()),
-        timeout=httpx.Timeout(10.0),
+        timeout=httpx.Timeout(180.0),
     )
     kwargs: dict[str, Any] = {"http_client": http_client}
     if config.base_url:
@@ -122,6 +152,9 @@ def create_pulse_agents(
             kwargs["api_key"] = config.api_key
     provider = GoogleProvider(**kwargs)
     model = GoogleModel(config.model, provider=provider)
+    model_settings = (
+        ModelSettings(thinking=config.thinking) if config.thinking else None
+    )
 
     skill_toolsets = skill_manager.build_skillsets() if skill_manager else []
     triage_toolsets = [*skill_toolsets]
@@ -134,6 +167,7 @@ def create_pulse_agents(
         deps_type=SessionContext,
         output_type=[list[AgentMessage], list[Todo], DeferredToolRequests],
         toolsets=triage_toolsets or None,
+        model_settings=model_settings,
     )
     step = Agent(
         model,
@@ -141,12 +175,14 @@ def create_pulse_agents(
         deps_type=SessionContext,
         output_type=str,
         toolsets=skill_toolsets or None,
+        model_settings=model_settings,
     )
     synthesize = Agent(
         model,
         system_prompt=BASE_PROMPT,
         deps_type=SessionContext,
         output_type=list[AgentMessage],
+        model_settings=model_settings,
     )
 
     return PulseAgents(triage=triage, step=step, synthesize=synthesize)
@@ -181,6 +217,7 @@ class PulseState:
     prompt: str | list
     todos: list[Todo] = field(default_factory=list)
     step_outputs: list[str] = field(default_factory=list)
+    card_ref: str | None = None
 
     @property
     def goal(self) -> str:
@@ -199,6 +236,7 @@ class PulseDeps:
     toolsets: list[FunctionToolset[SessionContext]] | None = None
     instructions: str | None = None
     message_history: list[ModelMessage] | None = None
+    stream: StreamSink | None = None
 
 
 async def resolve_deferred(
@@ -207,6 +245,7 @@ async def resolve_deferred(
     tentacle: ChannelTentacle,
     deps: SessionContext,
     toolsets: list[FunctionToolset[SessionContext]] | None = None,
+    stream: StreamSink | None = None,
 ) -> AgentRunResult[AgentOutputT]:
     """Resolve deferred tool calls (HITL interactions) until the agent produces output.
 
@@ -326,7 +365,9 @@ async def resolve_deferred(
 
             deferred.approvals[call.tool_call_id] = approved
 
-        result = await agent.run(
+        result = await run_streaming(
+            agent,
+            stream,
             message_history=result.all_messages(),
             deferred_tool_results=deferred,
             deps=deps,
@@ -343,30 +384,68 @@ class Triage(BaseNode[PulseState, PulseDeps, list[AgentMessage]]):
     async def run(
         self, ctx: GraphRunContext[PulseState, PulseDeps]
     ) -> ExecuteStep | End[list[AgentMessage]]:
+        key = ctx.deps.agent_deps.session_key if ctx.deps.agent_deps else None
+        logger.info("[%s] Triage started", key)
+
+        if ctx.deps.stream:
+            await ctx.deps.stream.set_status("Thinking…")
+
         triage_instructions = TRIAGE_INSTRUCTION
         if ctx.deps.instructions:
             triage_instructions = f"{ctx.deps.instructions}\n\n{TRIAGE_INSTRUCTION}"
 
-        result = await ctx.deps.triage.run(
-            ctx.state.prompt,
+        result = await run_streaming(
+            ctx.deps.triage,
+            ctx.deps.stream,
+            user_prompt=ctx.state.prompt,
             deps=ctx.deps.agent_deps,
             toolsets=ctx.deps.toolsets,
             instructions=triage_instructions,
             message_history=ctx.deps.message_history,
         )
         if isinstance(result.output, DeferredToolRequests):
+            logger.debug("[%s] Triage returned deferred tools, resolving", key)
             result = await resolve_deferred(
                 ctx.deps.triage,
                 result,
                 ctx.deps.tentacle,
                 ctx.deps.agent_deps,
                 ctx.deps.toolsets,
+                ctx.deps.stream,
             )
 
         output = result.output
         if isinstance(output, list) and output and isinstance(output[0], Todo):
             ctx.state.todos = [t for t in output if isinstance(t, Todo)]
+            logger.info("[%s] Triage produced %d plan steps", key, len(ctx.state.todos))
+
+            if ctx.deps.stream:
+                await ctx.deps.stream.set_status("Planning…")
+
+            if ctx.deps.tentacle and key:
+                persisted = []
+                for t in ctx.state.todos:
+                    db_todo = await ctx.deps.tentacle.feelers.todos.create_todo(
+                        key, title=t.title
+                    )
+                    persisted.append(
+                        t.model_copy(update={"todo_id": db_todo.todo_id})
+                        if db_todo.todo_id
+                        else t
+                    )
+                ctx.state.todos = persisted
+                ctx.state.card_ref = (
+                    await ctx.deps.tentacle.feelers.todos.upsert_todo_list(
+                        key, ctx.state.todos
+                    )
+                )
+                if ctx.state.card_ref:
+                    await ctx.deps.tentacle.feelers.todos.pin_todo(
+                        key, ctx.state.card_ref
+                    )
+
             return ExecuteStep()
+        logger.info("[%s] Triage answered directly", key)
         return End(output)  # type: ignore[arg-type]
 
 
@@ -377,9 +456,23 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
     async def run(
         self, ctx: GraphRunContext[PulseState, PulseDeps]
     ) -> ExecuteStep | Synthesize:
-        current = next((t for t in ctx.state.todos if t.status == "pending"), None)
+        key = ctx.deps.agent_deps.session_key if ctx.deps.agent_deps else None
+        pending = [t for t in ctx.state.todos if t.status == "pending"]
+        current = pending[0] if pending else None
         if current is None:
+            logger.info("[%s] All steps done, moving to synthesize", key)
             return Synthesize()
+
+        step_index = len(ctx.state.todos) - len(pending) + 1
+        total = len(ctx.state.todos)
+        logger.info(
+            "[%s] Executing step '%s' (%d/%d)", key, current.title, step_index, total
+        )
+
+        if ctx.deps.stream:
+            await ctx.deps.stream.set_status(
+                f"Working on: {current.title} ({step_index}/{total})"
+            )
 
         context = (
             "\n".join(ctx.state.step_outputs) if ctx.state.step_outputs else "(none)"
@@ -390,8 +483,10 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
             title=current.title,
             description=current.description,
         )
-        result = await ctx.deps.step.run(
-            current.title,
+        result = await run_streaming(
+            ctx.deps.step,
+            ctx.deps.stream,
+            user_prompt=current.title,
             deps=ctx.deps.agent_deps,
             message_history=ctx.deps.message_history,
             instructions=step_instructions,
@@ -402,15 +497,23 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
                 result,
                 ctx.deps.tentacle,
                 ctx.deps.agent_deps,
+                stream=ctx.deps.stream,
             )
         ctx.state.step_outputs.append(f"- {current.title}: {result.output}")
 
         ctx.state.todos = [
-            t.model_copy(update={"status": "done"})
+            t.model_copy(update={"status": "completed"})
             if t.todo_id == current.todo_id
             else t
             for t in ctx.state.todos
         ]
+
+        if ctx.deps.tentacle and key and current.todo_id:
+            await ctx.deps.tentacle.feelers.todos.update_todo(current.todo_id, "completed")
+            ctx.state.card_ref = await ctx.deps.tentacle.feelers.todos.upsert_todo_list(
+                key, ctx.state.todos, existing_ts=ctx.state.card_ref
+            )
+
         return ExecuteStep()
 
 
@@ -421,14 +524,33 @@ class Synthesize(BaseNode[PulseState, PulseDeps, list[AgentMessage]]):
     async def run(
         self, ctx: GraphRunContext[PulseState, PulseDeps]
     ) -> End[list[AgentMessage]]:
+        key = ctx.deps.agent_deps.session_key if ctx.deps.agent_deps else None
+        logger.info(
+            "[%s] Synthesize started (%d step outputs)",
+            key,
+            len(ctx.state.step_outputs),
+        )
+
+        if ctx.deps.stream:
+            await ctx.deps.stream.set_status("Wrapping up…")
+
         results_block = "\n".join(ctx.state.step_outputs)
         synth_instructions = SYNTHESIZE_INSTRUCTION.format(results=results_block)
-        result = await ctx.deps.synthesize.run(
-            ctx.state.goal,
+        result = await run_streaming(
+            ctx.deps.synthesize,
+            ctx.deps.stream,
+            user_prompt=ctx.state.goal,
             deps=ctx.deps.agent_deps,
             message_history=ctx.deps.message_history,
             instructions=synth_instructions,
         )
+        logger.info("[%s] Synthesize complete", key)
+
+        if ctx.deps.tentacle and key and ctx.state.card_ref:
+            await ctx.deps.tentacle.feelers.todos.unpin_todo(
+                key, ctx.state.card_ref
+            )
+
         return End(result.output)
 
 

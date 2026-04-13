@@ -5,8 +5,8 @@ from __future__ import annotations
 from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
-from octomate.agents.pulse import PulseAgents
 from octomate.agents.pulse import (
+    PulseAgents,
     PulseDeps,
     PulseState,
     Triage,
@@ -37,10 +37,10 @@ def _todo_tool_call(todos: list[dict[str, str]]) -> ModelResponse:
 
 def _make_agents() -> PulseAgents:
     """Create test agents with simple output types."""
-    triage: Agent[None, str] = Agent("test", output_type=[str, list[Todo]])
-    step: Agent[None, str] = Agent("test", output_type=str)
-    synth: Agent[None, str] = Agent("test", output_type=str)
-    return PulseAgents(triage=triage, step=step, synthesize=synth)
+    triage = Agent("test", output_type=[str, list[Todo]])
+    step = Agent("test", output_type=str)
+    synth = Agent("test", output_type=str)
+    return PulseAgents(triage=triage, step=step, synthesize=synth)  # type: ignore[arg-type]
 
 
 def _make_deps(agents: PulseAgents) -> PulseDeps:
@@ -111,8 +111,16 @@ async def test_plan_path_runs_all_steps():
 async def test_steps_tracked_as_todos():
     """Plan steps in the graph state are Todo objects marked done after execution."""
     todos = [
-        {"todo_id": "pulse-0", "title": "Summarize", "description": "Summarize the document"},
-        {"todo_id": "pulse-1", "title": "Compare", "description": "Compare against last quarter"},
+        {
+            "todo_id": "pulse-0",
+            "title": "Summarize",
+            "description": "Summarize the document",
+        },
+        {
+            "todo_id": "pulse-1",
+            "title": "Compare",
+            "description": "Compare against last quarter",
+        },
     ]
 
     call_count = 0
@@ -134,7 +142,7 @@ async def test_steps_tracked_as_todos():
 
     assert len(state.todos) == 2
     assert all(isinstance(t, Todo) for t in state.todos)
-    assert all(t.status == "done" for t in state.todos)
+    assert all(t.status == "completed" for t in state.todos)
     assert state.todos[0].title == "Summarize"
     assert state.todos[0].description == "Summarize the document"
     assert state.todos[1].title == "Compare"
@@ -154,9 +162,21 @@ async def test_full_pipeline_no_internal_leakage():
     """Internal plan details must not leak into the final answer."""
     call_count = 0
     todos = [
-        {"todo_id": "pulse-0", "title": "Summarize", "description": "Summarize key findings"},
-        {"todo_id": "pulse-1", "title": "Compare", "description": "Compare with baseline"},
-        {"todo_id": "pulse-2", "title": "Recommend", "description": "Produce final recommendation"},
+        {
+            "todo_id": "pulse-0",
+            "title": "Summarize",
+            "description": "Summarize key findings",
+        },
+        {
+            "todo_id": "pulse-1",
+            "title": "Compare",
+            "description": "Compare with baseline",
+        },
+        {
+            "todo_id": "pulse-2",
+            "title": "Recommend",
+            "description": "Produce final recommendation",
+        },
     ]
 
     def triage_fn(messages: list, info: AgentInfo) -> ModelResponse:
@@ -196,7 +216,11 @@ async def test_synthesize_uses_native_output_type():
     """Synthesize returns in the synth agent's configured output type."""
     call_count = 0
     todos = [
-        {"todo_id": "pulse-0", "title": "Research", "description": "Research the topic"},
+        {
+            "todo_id": "pulse-0",
+            "title": "Research",
+            "description": "Research the topic",
+        },
         {"todo_id": "pulse-1", "title": "Write", "description": "Write the summary"},
     ]
 
