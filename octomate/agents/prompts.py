@@ -61,6 +61,18 @@ ANSWER — respond yourself:
   - Normal reasoning, analysis, summarization of documents
   - Anything a knowledgeable person could answer off the top of their head
 
+PLAN — break into steps and execute yourself:
+  WHEN:
+    - Tasks requiring 2-5 distinct steps you can handle with your own tools
+    - Requests that combine summarization, comparison, and recommendation
+    - Multi-part questions where each part builds on the previous
+  HOW:
+    - Produce 2-5 Todo items, each with a todo_id (like 'pulse-0'), a short
+      title, and a detailed description with instructions for that step.
+  NOT:
+    - Simple questions you can answer directly (use ANSWER instead)
+    - Tasks requiring coding, file editing, or external agents (use SUMMON)
+
 SUMMON — summon an agent tentacle and dispatch the task to it:
   WHEN:
     - Coding, file editing, shell commands

@@ -11,14 +11,10 @@ from typing import TYPE_CHECKING
 
 import anyio
 from pydantic import SecretStr
-from pydantic_ai import Agent
-from pydantic_ai.tools import DeferredToolRequests
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 from uuid_utils import uuid7
 
-from octomate.agents.base import SessionContext
-from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
 from octomate.schemas.session import SessionKey
 from octomate.tentacles.base import (
@@ -37,6 +33,7 @@ from octomate.tentacles.slack.ink import SlackInk
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
+    from octomate.agents.pulse import PulseAgents
     from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
     from octomate.transmuters.interactions import Confirmation
@@ -218,7 +215,7 @@ class SlackTentacle(ChannelTentacle):
         *,
         bot_token: SecretStr,
         app_token: SecretStr,
-        flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
+        agents: PulseAgents,
         memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
@@ -237,7 +234,7 @@ class SlackTentacle(ChannelTentacle):
         self.app_token = app_token.get_secret_value()
         self.handler = None
 
-        super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
+        super().__init__(tag, octopus, agents, memory, flush_delay=flush_delay)
 
         self.feelers = Feelers(
             confirm=SlackConfirmationFeeler(self.ink, self.interactions),

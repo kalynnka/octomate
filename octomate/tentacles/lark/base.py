@@ -16,12 +16,8 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTriggerResponse,
 )
 from pydantic import SecretStr
-from pydantic_ai import Agent
-from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils import uuid7
 
-from octomate.agents.base import SessionContext
-from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.base import ChannelTentacle, PlatformMessage
 from octomate.tentacles.feelers import Feelers
@@ -37,6 +33,7 @@ from octomate.utils import guess_image_ext
 # Octopus imports tentacles (via connect_tentacles) so importing it here would
 # be circular at module load time.
 if TYPE_CHECKING:
+    from octomate.agents.pulse import PulseAgents
     from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
 
@@ -56,7 +53,7 @@ class LarkTentacle(ChannelTentacle):
         *,
         app_id: str,
         app_secret: SecretStr,
-        flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
+        agents: PulseAgents,
         memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
@@ -75,7 +72,7 @@ class LarkTentacle(ChannelTentacle):
             log_level=lark_oapi.LogLevel.INFO,
         )
         self.ws_scope = None
-        super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
+        super().__init__(tag, octopus, agents, memory, flush_delay=flush_delay)
 
         self.feelers = Feelers(
             confirm=LarkConfirmationFeeler(self.ink, self.interactions),

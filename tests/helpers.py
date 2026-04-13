@@ -12,6 +12,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.agents.base import SessionContext
+from octomate.agents.pulse import PulseAgents
 from octomate.memory.base import OctopusMemory
 from octomate.octopus import Octopus
 from octomate.schemas.actions import AgentMessage
@@ -137,12 +138,19 @@ class MockTentacle(ChannelTentacle):
         self.chromo = MockChromo()
         self.feelers = NULL_FEELERS
         memory = MockOctopusMemory()
-        flick = Agent(
+        from octomate.transmuters.interactions import Todo
+
+        triage = Agent(
             "test",
             deps_type=SessionContext,
-            output_type=[list[AgentMessage], DeferredToolRequests],
+            output_type=[list[AgentMessage], list[Todo], DeferredToolRequests],
         )
-        super().__init__(tag, octopus, flick, memory, flush_delay=flush_delay)
+        step = Agent("test", deps_type=SessionContext, output_type=str)
+        synth = Agent(
+            "test", deps_type=SessionContext, output_type=list[AgentMessage]
+        )
+        agents = PulseAgents(triage=triage, step=step, synthesize=synth)
+        super().__init__(tag, octopus, agents, memory, flush_delay=flush_delay)
         self.threads = MockThreadStore(default_owner=tag)
         self.interactions = InteractionStore(threads=self.threads)
 
