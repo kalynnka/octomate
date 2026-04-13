@@ -90,7 +90,9 @@ class Octopus:
                         "Octopus: SummonAgent channel %r not found, ownership not set",
                         signal.key.tentacle_id,
                     )
-            asyncio.create_task(agent(signal.key, signal.contents))
+            asyncio.create_task(
+                agent(signal.key, signal.contents, session_name=signal.session_name)
+            )
 
         @self.agent_dispatcher.on(StreamFrame)
         async def handle_stream_frame(signal: StreamFrame) -> None:

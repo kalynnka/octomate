@@ -164,6 +164,8 @@ class AgentTentacle(Tentacle):
         self,
         key: SessionKey,
         contents: list[MessageEvent],
+        *,
+        session_name: str = "",
     ) -> None:
         existing = self._running_tasks.get(key)
         if existing is not None and not existing.done():
@@ -173,7 +175,7 @@ class AgentTentacle(Tentacle):
 
         self._running_tasks[key] = asyncio.current_task()  # type: ignore[assignment]
         try:
-            await self.run(key, contents)
+            await self.run(key, contents, session_name=session_name)
         except asyncio.CancelledError:
             logger.info("AgentTentacle %s: run cancelled for [%s]", self.id, key)
             raise
@@ -194,6 +196,8 @@ class AgentTentacle(Tentacle):
         self,
         key: SessionKey,
         contents: list[MessageEvent],
+        *,
+        session_name: str = "",
     ) -> None: ...
 
     async def _dismiss_pending(self, key: SessionKey) -> None:

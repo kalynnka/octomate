@@ -47,7 +47,6 @@ from octomate.nerve import (
     DismissPending,
     NerveStream,
     SendSegments,
-    StreamFrame,
     TodoResult,
     TodoUpdate,
     UserAnswer,
@@ -81,7 +80,12 @@ class ClaudeCodeTentacle(AgentTentacle):
         super().__init__(tag, octopus, description=config.description, handover=True)
         self.config = config
         self.threads = ThreadStore(default_owner=tag)
-        self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
+        if config.ssh:
+            self._vscode_uri = (
+                f"vscode://vscode-remote/ssh-remote+{config.ssh.host}{config.cwd}"
+            )
+        else:
+            self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
         self._todo_card_refs = {}
         self._session_id_map = {}
         self._active_clients = {}
@@ -100,6 +104,8 @@ class ClaudeCodeTentacle(AgentTentacle):
         self,
         key: SessionKey,
         contents: list[MessageEvent],
+        *,
+        session_name: str = "",
     ):
         task = "".join([str(part) for part in contents[0].to_content_parts()])
 
@@ -168,7 +174,9 @@ class ClaudeCodeTentacle(AgentTentacle):
                 )
             )
             try:
-                result: TodoResult = await asyncio.wait_for(future, timeout=TODO_UPDATE_TIMEOUT)
+                result: TodoResult = await asyncio.wait_for(
+                    future, timeout=TODO_UPDATE_TIMEOUT
+                )
                 if result.card_ref:
                     self._todo_card_refs[key] = result.card_ref
             except TimeoutError:
@@ -259,14 +267,17 @@ class ClaudeCodeTentacle(AgentTentacle):
                 )
 
         # Generate session name upfront for new sessions
-        session_name = self._session_names.get(key)
-        if not session_id and not session_name:
-            session_name = await _generate_session_name(task, "")
-            self._session_names[key] = session_name
+        if not session_id and not self._session_names.get(key):
+            if session_name:
+                self._session_names[key] = session_name
+            else:
+                self._session_names[key] = (
+                    f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                )
 
         extra_args = {}
-        if session_name:
-            extra_args["name"] = session_name
+        if name := self._session_names.get(key):
+            extra_args["name"] = name
 
         options = ClaudeAgentOptions(
             cwd=self.config.cwd,
@@ -285,13 +296,27 @@ class ClaudeCodeTentacle(AgentTentacle):
             },
         )
 
+        transport = None
+        if self.config.ssh:
+            from octomate.tentacles.claude.transport import SshTransport
+
+            transport = SshTransport(
+                host=self.config.ssh.host,
+                cwd=self.config.cwd,
+                identity_file=self.config.ssh.identity_file,
+                ssh_options=self.config.ssh.ssh_options,
+                claude_bin=self.config.ssh.claude_bin,
+            )
+
         result_text: str = ""
         has_text = False
         is_first_response = session_id is None
         try:
             async with NerveStream(nerve, key) as stream:
                 await stream.set_status("🐙 Channeling")
-                async with ClaudeSDKClient(options=options) as client:
+                async with ClaudeSDKClient(
+                    options=options, transport=transport
+                ) as client:
                     self._active_clients[key] = client
                     await client.query(task)
                     async for msg in client.receive_response():
@@ -310,9 +335,7 @@ class ClaudeCodeTentacle(AgentTentacle):
                         worktree_path = _extract_worktree_path(msg)
                         if worktree_path:
                             self._worktree_paths[key] = worktree_path
-                            await self.threads.set_worktree_info(
-                                key, worktree_path, ""
-                            )
+                            await self.threads.set_worktree_info(key, worktree_path, "")
 
                         has_text = await _handle_stream_msg(msg, stream, has_text)
         finally:
@@ -326,9 +349,9 @@ class ClaudeCodeTentacle(AgentTentacle):
 
         # Persist session name for new sessions
         if is_first_response and session_id_after:
-            session_name = self._session_names.get(key)
-            if session_name:
-                await self.threads.set_session_name(key, session_name)
+            stored_name = self._session_names.get(key)
+            if stored_name:
+                await self.threads.set_session_name(key, stored_name)
 
         # Use worktree path if available, otherwise use default cwd
         current_worktree = self._worktree_paths.get(key)
@@ -338,29 +361,38 @@ class ClaudeCodeTentacle(AgentTentacle):
                 current_worktree = worktree_info[0]
                 self._worktree_paths[key] = current_worktree
 
-        vscode_link_uri = (
-            f"vscode://file{os.path.abspath(current_worktree)}"
-            if current_worktree
-            else self._vscode_uri
-        )
-        resume_uri = (
-            f"vscode://anthropic.claude-code/open?session={session_id_after}"
-            if session_id_after
-            else None
-        )
+        if current_worktree:
+            if self.config.ssh:
+                vscode_link_uri = (
+                    f"vscode://vscode-remote/ssh-remote+{self.config.ssh.host}"
+                    f"{current_worktree}"
+                )
+            else:
+                vscode_link_uri = f"vscode://file{os.path.abspath(current_worktree)}"
+        else:
+            vscode_link_uri = self._vscode_uri
+
+        if session_id_after:
+            resume_uri = (
+                f"vscode://anthropic.claude-code/open?session={session_id_after}"
+            )
+            if self.config.ssh:
+                resume_uri += f"&remote=ssh-remote+{self.config.ssh.host}"
+        else:
+            resume_uri = None
 
         # Get session name for display
-        session_name = self._session_names.get(key)
-        if not session_name:
-            session_name = await self.threads.get_session_name(key)
-            if session_name:
-                self._session_names[key] = session_name
+        display_name = self._session_names.get(key)
+        if not display_name:
+            display_name = await self.threads.get_session_name(key)
+            if display_name:
+                self._session_names[key] = display_name
 
         footer_text = f"🖥️ <{vscode_link_uri}|Open project in VSCode>"
         if resume_uri:
             resume_text = "Resume in Claude Code"
-            if session_name:
-                resume_text = f"Resume: {session_name}"
+            if display_name:
+                resume_text = f"Resume: {display_name}"
             footer_text += f"  ·  🔄 <{resume_uri}|{resume_text}>"
         await nerve.send(
             SendSegments(
@@ -501,37 +533,6 @@ def _msg_sample(msg: Message) -> str:
     if isinstance(msg, RateLimitEvent):
         return f"status={msg.rate_limit_info.status}"
     return str(msg)[:120]
-
-
-async def _generate_session_name(task: str, response: str) -> str:
-    """Generate a short descriptive session name using Claude API."""
-    try:
-        from anthropic import AsyncAnthropic
-
-        client = AsyncAnthropic()
-        prompt = f"""Based on this conversation, generate a short descriptive name (3-5 words max).
-User: {task[:500]}
-Assistant: {response[:500]}
-
-Return only the name, no explanation."""
-
-        message = await asyncio.wait_for(
-            client.messages.create(
-                model="claude-3-haiku-20240307",
-                max_tokens=50,
-                messages=[{"role": "user", "content": prompt}],
-            ),
-            timeout=5.0,
-        )
-        content_block = message.content[0]
-        if hasattr(content_block, "text"):
-            name = content_block.text.strip().strip('"').strip("'")  # type: ignore
-            return name[:100]
-        return f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    except Exception as e:
-        logger.debug("Failed to generate session name: %s", e)
-
-        return f"Session {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
 
 def _extract_worktree_path(msg: Message) -> str | None:

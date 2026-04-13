@@ -22,6 +22,7 @@ class SummonRequest:
     summary: str
     user_prefer: str = ""
     language: str = ""
+    name: str = ""
 
 
 @dataclass
