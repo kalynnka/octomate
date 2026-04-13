@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import httpx
@@ -28,8 +28,7 @@ class SummonRequest:
 @dataclass
 class SessionContext:
     session_key: SessionKey
-    active_skills: set[str] = field(default_factory=set)
-    tentacle: ChannelTentacle | None = None
+    tentacle: ChannelTentacle
     event: MessageEvent | None = None
 
 

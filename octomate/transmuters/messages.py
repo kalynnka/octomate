@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from arcanus import BaseTransmuter, Relation
+from arcanus import BaseTransmuter, Relation, Relationship
 from arcanus.base import Identity
 from pydantic import ConfigDict, Field
 from uuid_utils.compat import uuid7
@@ -29,4 +29,4 @@ class Message(BaseTransmuter):
     timestamp: datetime = Field(default_factory=datetime.now)
     role: str
     content: str
-    replied: Relation[Message] = Relation()
+    replied: Relation[Message] = Relationship(exclude=True)

@@ -4,19 +4,17 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
-from typing import Any, Literal, runtime_checkable
+from typing import Any, Literal
 
 from pydantic_ai import RunContext, ToolDefinition
 from pydantic_ai.toolsets import (
     AbstractToolset,
     CombinedToolset,
-    FilteredToolset,
     FunctionToolset,
     PreparedToolset,
 )
-from typing_extensions import Protocol
 
-from octomate.schemas.session import SessionKey
+from octomate.agents.base import SessionContext
 
 logger = logging.getLogger(__name__)
 
@@ -26,22 +24,6 @@ ToolsPrepareFunc = Callable[
     [RunContext[Any], list[ToolDefinition]],
     Awaitable[list[ToolDefinition] | None],
 ]
-
-
-@runtime_checkable
-class SkillDeps(Protocol):
-    active_skills: set[str]
-    session_key: SessionKey
-
-
-def skill_filter(ctx: RunContext[Any], tool_def: ToolDefinition) -> bool:
-    skill_name = (tool_def.metadata or {}).get(SKILL_METADATA_KEY)
-    if skill_name is None:
-        return True
-    deps = ctx.deps
-    if not isinstance(deps, SkillDeps):
-        return True
-    return skill_name in deps.active_skills
 
 
 ToolPermission = Literal[
@@ -97,7 +79,7 @@ def make_metadata_injector(
             )
 
         tentacle_approvers: list[str] | None = None
-        if approvers and isinstance(ctx.deps, SkillDeps):
+        if approvers and isinstance(ctx.deps, SessionContext):
             tentacle_approvers = approvers.get(ctx.deps.session_key.tentacle_id)
 
         result: list[ToolDefinition] = []
@@ -159,9 +141,8 @@ class SkillManager:
     ) -> None:
         """Register an MCP-based skill.
 
-        The toolset is wrapped to inject skill metadata so it participates
-        in the load/unload gating via skill_filter.  *tool_permissions* controls
-        per-tool visibility and approval behaviour.
+        The toolset is wrapped to inject skill metadata.
+        *tool_permissions* controls per-tool visibility and approval behaviour.
         """
         self._track_server(toolset)
         self.skills[name] = SkillInfo(name=name, description=description)
@@ -219,64 +200,13 @@ class SkillManager:
     def build_skillsets(self) -> list[AbstractToolset[Any]]:
         """Build the list of skills' toolsets to pass to Agent(toolsets=[...]).
 
-        Returns a discovery toolset (always visible) and a filtered toolset
-        that only exposes tools whose skill is currently active.
+        All skill tools are marked with defer_loading so they are hidden from
+        the model's initial context.  Pydantic-ai auto-injects a
+        ``search_tools`` tool that lets the model discover them by keyword.
         """
-        discovery = self._build_discovery_toolset()
         all_toolsets: list[AbstractToolset[Any]] = list(self.toolsets.values())
         all_toolsets.extend(self.mcp_toolsets.values())
         if not all_toolsets:
-            return [discovery]
+            return []
         combined = CombinedToolset(all_toolsets)
-        filtered = FilteredToolset(combined, skill_filter)
-        return [discovery, filtered]
-
-    def _build_discovery_toolset(self) -> FunctionToolset[SkillDeps]:
-        manager = self
-
-        discovery: FunctionToolset[SkillDeps] = FunctionToolset()
-
-        @discovery.tool
-        async def list_available_skills(ctx: RunContext[SkillDeps]) -> str:
-            """List all skills that can be loaded. Shows name, status, and description."""
-            lines: list[str] = []
-            for info in manager.skills.values():
-                if info.name in ctx.deps.active_skills:
-                    status = "loaded"
-                else:
-                    status = "available"
-                lines.append(f"- {info.name} [{status}]: {info.description}")
-            return "\n".join(lines) or "No skills registered."
-
-        @discovery.tool
-        async def load_skills(
-            ctx: RunContext[SkillDeps], skill_names: list[str]
-        ) -> str:
-            """Load one or more skills to make their tools available for use."""
-            results: list[str] = []
-            for name in skill_names:
-                if name not in manager.skills:
-                    available = ", ".join(manager.skills)
-                    results.append(f"Unknown skill: {name}. Available: {available}")
-                elif name in ctx.deps.active_skills:
-                    results.append(f"Skill '{name}' is already loaded.")
-                else:
-                    ctx.deps.active_skills.add(name)
-                    results.append(f"Skill '{name}' loaded.")
-            return "\n".join(results)
-
-        @discovery.tool
-        async def unload_skills(
-            ctx: RunContext[SkillDeps], skill_names: list[str]
-        ) -> str:
-            """Unload one or more skills to remove their tools from the active set."""
-            results: list[str] = []
-            for name in skill_names:
-                if name not in ctx.deps.active_skills:
-                    results.append(f"Skill '{name}' is not loaded.")
-                else:
-                    ctx.deps.active_skills.discard(name)
-                    results.append(f"Skill '{name}' unloaded.")
-            return "\n".join(results)
-
-        return discovery
+        return [combined.defer_loading()]

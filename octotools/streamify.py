@@ -14,7 +14,7 @@ from pydantic import BaseModel, BeforeValidator, Field, SecretStr, TypeAdapter
 from pydantic_ai import RunContext
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-from octomate.agents.manager import SkillDeps, SkillManager
+from octomate.agents.manager import SkillManager
 
 logger = logging.getLogger(__name__)
 
@@ -420,7 +420,7 @@ def register(manager: SkillManager) -> None:
 
     @toolset.tool
     async def list_notes(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         status: str | None = None,
         source: str | None = None,
     ) -> NoteListPage:
@@ -456,7 +456,7 @@ def register(manager: SkillManager) -> None:
 
     @toolset.tool
     async def search_notes(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         query: str,
         limit: int = 5,
     ) -> SearchNotesResult:
@@ -492,7 +492,7 @@ def register(manager: SkillManager) -> None:
 
     @toolset.tool
     async def retrieve_chunks(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         query: str,
         limit: int = 10,
     ) -> SearchChunksResult:
@@ -529,7 +529,7 @@ def register(manager: SkillManager) -> None:
 
     @toolset.tool
     async def get_note(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         note_id: str,
     ) -> NoteInfo | None:
         """Retrieve a specific note by its ID.
@@ -561,7 +561,7 @@ def register(manager: SkillManager) -> None:
 
     @toolset.tool(requires_approval=True)
     async def create_note_from_url(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         url: str,
         comment: str | None = None,
     ) -> CreateNoteResult:
@@ -602,7 +602,7 @@ def register(manager: SkillManager) -> None:
 
     @toolset.tool(requires_approval=True)
     async def delete_note(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         note_id: str,
     ) -> DeleteNoteResult:
         """Permanently delete a note from the knowledge base. Cannot be undone.
@@ -636,7 +636,7 @@ def register(manager: SkillManager) -> None:
 
     @toolset.tool
     async def download_files(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         note_id: str,
         file_ids: list[str],
     ) -> BulkDownloadResult:

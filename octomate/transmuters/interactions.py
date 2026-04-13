@@ -24,6 +24,7 @@ class Todo(BaseTransmuter):
     todo_id: str
     thread_id: str = ""
     title: str
+    description: str = ""
     status: str = "pending"
     active_form: str | None = None
     assignee: str | None = None

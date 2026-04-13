@@ -13,20 +13,14 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 import anyio
 from pydantic_ai import (
-    Agent,
-    AgentRunResult,
     CallDeferred,
-    DeferredToolResults,
     RunContext,
 )
-from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import FunctionToolset
 
-from octomate.agents.base import SessionContext, SummonRequest
-from octomate.agents.manager import SKILL_METADATA_KEY
+from octomate.agents.base import SessionContext
 from octomate.agents.tools import history_toolset
-from octomate.nerve import DismissPending, SummonAgent
-from octomate.schemas.actions import AgentMessage
+from octomate.nerve import DismissPending
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -40,9 +34,10 @@ from octomate.stores.interaction import InteractionStore
 from octomate.stores.thread import ThreadStore
 from octomate.tentacles.feelers import NULL_FEELERS, Feelers
 
-# agents.flick imports agents.surge which imports from this module,
+# agents.pulse imports from this module (via SessionContext),
 # and octopus imports Tentacle from this module — both circular.
 if TYPE_CHECKING:
+    from octomate.agents.pulse import PulseAgents
     from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
 
@@ -226,7 +221,7 @@ class ChannelTentacle(Tentacle):
     ink: Ink
     chromo: Chromo
     feelers: Feelers
-    flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests]
+    agents: PulseAgents
     memory: OctopusMemory
     buffer: MessageBuffer
     user_profiles: dict[str, UserProfile]
@@ -237,12 +232,12 @@ class ChannelTentacle(Tentacle):
         self,
         id: str,
         octopus: Octopus,
-        flick: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
+        agents: PulseAgents,
         memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
         super().__init__(id, octopus)
-        self.flick = flick
+        self.agents = agents
         self.memory = memory
         self.buffer = MessageBuffer(flush_delay=flush_delay, handler=octopus.kick)
         self.user_profiles = {}
@@ -269,10 +264,12 @@ class ChannelTentacle(Tentacle):
     async def deactivate(self) -> None: ...
 
     async def __call__(self, key: SessionKey, contents: list[MessageEvent]) -> None:
-        """Process an inbound message batch: run flick, handle summon or send response."""
+        """Process an inbound message batch via the pulse graph."""
         if not contents:
             return
         try:
+            from octomate.agents.pulse import PulseDeps, PulseState, Triage, pulse_graph
+
             await self.memory.record(key, contents)
 
             if key.group_id and not any(
@@ -288,171 +285,34 @@ class ChannelTentacle(Tentacle):
                 user_prompt.extend(msg.to_content_parts())
 
             memories = await self.memory.recall(key, contents, self)
+            instructions: str | None = None
             if memories:
                 facts = "\n".join(f"- {m}" for m in memories)
                 instructions = f"[relevant memories]\n{facts}"
-            else:
-                instructions = None
 
             logger.info(
-                "Tentacle %s flick [%s] (%d messages)", self.id, key, len(contents)
+                "Tentacle %s pulse [%s] (%d messages)", self.id, key, len(contents)
             )
 
             deps = SessionContext(session_key=key, tentacle=self)
-            message_history = await self.memory.history(key, size=32)
-            result = await self.flick.run(
-                user_prompt,
-                deps=deps,
+            state = PulseState(prompt=user_prompt)
+            pulse_deps = PulseDeps(
+                triage=self.agents.triage,
+                step=self.agents.step,
+                synthesize=self.agents.synthesize,
+                agent_deps=deps,
+                tentacle=self,
                 toolsets=self.toolsets,
                 instructions=instructions,
-                message_history=message_history,
+                message_history=await self.memory.history(key, size=32),
             )
+            graph_result = await pulse_graph.run(Triage(), state=state, deps=pulse_deps)
 
-            resolved = await self.resolve_deferred(
-                agent=self.flick,
-                result=result,
-                deps=deps,
-                key=key,
-            )
-
-            if isinstance(resolved, SummonRequest):
-                agent_tentacle = self.octopus.agent_tentacles.get(resolved.tentacle_tag)
-                if agent_tentacle is None:
-                    logger.warning(
-                        "Tentacle %s: unknown agent tentacle id %r",
-                        self.id,
-                        resolved.tentacle_tag,
-                    )
-                else:
-                    content = contents[-1].model_copy()
-                    content.segments = [TextSegment(data={"text": resolved.summary})]
-                    if agent_tentacle.handover:
-                        await self.twitch(
-                            key,
-                            [
-                                TextSegment(
-                                    data={
-                                        "text": f"Tentacle *{agent_tentacle.id}* has grabbed this thread 🐙!"
-                                    }
-                                )
-                            ],
-                        )
-                    await self.octopus.agent_nerve.send(
-                        SummonAgent(
-                            key=key,
-                            agent_tag=resolved.tentacle_tag,
-                            contents=[content],
-                            summary=resolved.summary,
-                            session_name=resolved.name,
-                        )
-                    )
-            elif resolved:
-                for msg_out in resolved.output:
-                    await self.twitch(key, msg_out.segments)
-                asyncio.create_task(self.memory.memo(key, resolved.output, self))
+            for msg_out in graph_result.output:
+                await self.twitch(key, msg_out.segments)
+            asyncio.create_task(self.memory.memo(key, graph_result.output, self))
         except Exception:
             logger.exception("Error in tentacle %s [%s]", self.id, key)
-
-    async def resolve_deferred(
-        self,
-        agent: Agent[SessionContext, list[AgentMessage] | DeferredToolRequests],
-        result: AgentRunResult[list[AgentMessage] | DeferredToolRequests],
-        key: SessionKey,
-        deps: SessionContext,
-    ) -> AgentRunResult[list[AgentMessage]] | SummonRequest | None:
-        """Resolve deferred tool requests until the agent produces final messages.
-
-        Returns the final result with list[AgentMessage] output,
-        a SummonRequest if the agent summoned an agent tentacle,
-        or None if resolution failed.
-        """
-        while isinstance(result.output, DeferredToolRequests):
-            # Check for summon — abort immediately, extract args from the deferred call
-            summon_call = next(
-                (c for c in result.output.calls if c.tool_name == "summon"), None
-            )
-            if summon_call:
-                args = summon_call.args_as_dict()
-                return SummonRequest(
-                    tentacle_tag=args.get("tentacle_tag", ""),
-                    summary=args.get("summary", ""),
-                    user_prefer=args.get("user_prefer", ""),
-                    language=args.get("language", ""),
-                    name=args.get("name", ""),
-                )
-
-            deferred = DeferredToolResults()
-
-            for call in result.output.calls:
-                if call.tool_name == "ask_user":
-                    args = call.args_as_dict()
-                    resp = await self.feelers.questions.ask_question(
-                        key,
-                        args.get("question", ""),
-                        session_key=key,
-                        options=args.get("options"),
-                    )
-                    deferred.calls[call.tool_call_id] = (
-                        resp.answer if resp else "(no response)"
-                    )
-
-            for call in result.output.approvals:
-                tool_meta = result.output.metadata.get(call.tool_call_id, {})
-
-                # Check session allowlist — skip confirmation if already allowed
-                thread = await self.threads.get(key)
-                if self.feelers.confirm.is_session_allowed(
-                    str(thread.id), call.tool_name
-                ):
-                    deferred.approvals[call.tool_call_id] = True
-                    continue
-
-                action, future = await self.feelers.confirm.create_confirmation(
-                    key=key,
-                    tool_name=call.tool_name,
-                    tool_call_id=call.tool_call_id,
-                    args=call.args_as_dict(),
-                    title=tool_meta.get("description", call.tool_name),
-                    description=tool_meta.get("description", ""),
-                    skill=tool_meta.get(SKILL_METADATA_KEY, ""),
-                    approvers=tool_meta.get("approvers"),
-                )
-
-                sent = await self.feelers.confirm.send_confirmation(key, action)
-                if not sent:
-                    await self.feelers.confirm.expire_confirmation(
-                        action.confirmation_id
-                    )
-                    deferred.approvals[call.tool_call_id] = False
-                    continue
-
-                try:
-                    approved = await asyncio.wait_for(
-                        future, timeout=self.feelers.confirm.timeout
-                    )
-                except TimeoutError:
-                    await self.feelers.confirm.expire_confirmation(
-                        action.confirmation_id
-                    )
-                    await self.feelers.confirm.send_timeout_notification(key, action)
-                    approved = False
-                except asyncio.CancelledError:
-                    await self.feelers.confirm.expire_confirmation(
-                        action.confirmation_id
-                    )
-                    await self.feelers.confirm.send_timeout_notification(key, action)
-                    raise
-
-                deferred.approvals[call.tool_call_id] = approved
-
-            result = await agent.run(
-                message_history=result.all_messages(),
-                deferred_tool_results=deferred,
-                deps=deps,
-                toolsets=self.toolsets,
-            )
-
-        return result  # type: ignore[return-value]
 
     async def ingest(self, raw: Any) -> None:
         """Inbound pipeline: decode → enrich sender → resolve media → triage."""
@@ -568,7 +428,7 @@ class ChannelTentacle(Tentacle):
             that don't involve tool calls. Example: acknowledge("let me look that up~")
             """
             if ctx.deps.tentacle:
-                # Flick always replies in the main thread — sub-thread messages
+                # Pulse always replies in the main thread — sub-thread messages
                 # are routed directly to agent tentacles and never reach here.
                 await ctx.deps.tentacle.twitch(
                     ctx.deps.session_key, [TextSegment(data={"text": text})]
