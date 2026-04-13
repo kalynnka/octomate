@@ -6,14 +6,14 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Literal, ParamSpec, TypeVar
+from typing import Any, Literal, ParamSpec, TypeVar
 
 from pixivpy_async import AppPixivAPI, PixivClient
 from pydantic import BaseModel, SecretStr
 from pydantic_ai import RunContext
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-from octomate.agents.manager import SkillDeps, SkillManager
+from octomate.agents.manager import SkillManager
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -179,7 +179,7 @@ def register(manager: SkillManager) -> None:
     @ts.tool
     @with_auto_refresh
     async def search_illustrations(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         keyword: str,
         limit: int = 3,
     ) -> PixivSearchResult:
@@ -218,7 +218,7 @@ def register(manager: SkillManager) -> None:
     @ts.tool
     @with_auto_refresh
     async def daily_ranking(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         mode: Literal[
             "day", "week", "month", "day_male", "day_female", "day_r18"
         ] = "day",

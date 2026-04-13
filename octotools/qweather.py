@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 from cryptography.hazmat.primitives import serialization
@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from pydantic_ai import RunContext
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-from octomate.agents.manager import SkillDeps, SkillManager
+from octomate.agents.manager import SkillManager
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ def register(manager: SkillManager) -> None:
 
     @ts.tool
     async def get_weather(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         location: str | None = None,
         days: Literal["3d", "7d"] = "3d",
     ) -> str:

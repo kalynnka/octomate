@@ -9,13 +9,13 @@ import json
 import logging
 import random
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 from pydantic_ai import RunContext
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-from octomate.agents.manager import SkillDeps, SkillManager
+from octomate.agents.manager import SkillManager
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ def register(manager: SkillManager) -> None:
 
     @ts.tool
     async def draw_tarot_spread(
-        ctx: RunContext[SkillDeps],
+        ctx: RunContext[Any],
         question: str,
         formation: str | None = None,
     ) -> TarotSpreadResult:
