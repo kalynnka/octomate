@@ -25,6 +25,7 @@ class FlickConfig(BaseModel):
     vertexai: bool = False
     project: str = ""
     location: str = ""
+    thinking: bool | Literal["minimal", "low", "medium", "high", "xhigh"] = "medium"
 
 
 class Mem0Config(Mem0MemoryConfig):
@@ -84,11 +85,13 @@ TentacleConfigUnion = Annotated[
 ]
 
 
-class SshConfig(BaseModel):
+class SSHConfig(BaseModel):
     host: str  # user@remote-host
     identity_file: str | None = None
     ssh_options: list[str] = []
-    claude_bin: str = "claude"  # path to claude CLI on remote, e.g. ~/.claude/local/claude
+    claude_bin: str = (
+        "claude"  # path to claude CLI on remote, e.g. ~/.claude/local/claude
+    )
 
 
 class ClaudeCodeConfig(BaseModel):
@@ -101,7 +104,7 @@ class ClaudeCodeConfig(BaseModel):
     worktrees_dir: str | None = (
         None  # if set, enables per-session git worktree isolation
     )
-    ssh: SshConfig | None = None  # if set, runs Claude Code on the remote host via SSH
+    ssh: SSHConfig | None = None  # if set, runs Claude Code on the remote host via SSH
 
 
 class CopilotConfig(BaseModel):

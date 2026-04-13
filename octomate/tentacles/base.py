@@ -296,20 +296,24 @@ class ChannelTentacle(Tentacle):
 
             deps = SessionContext(session_key=key, tentacle=self)
             state = PulseState(prompt=user_prompt)
-            pulse_deps = PulseDeps(
-                triage=self.agents.triage,
-                step=self.agents.step,
-                synthesize=self.agents.synthesize,
-                agent_deps=deps,
-                tentacle=self,
-                toolsets=self.toolsets,
-                instructions=instructions,
-                message_history=await self.memory.history(key, size=32),
-            )
-            graph_result = await pulse_graph.run(Triage(), state=state, deps=pulse_deps)
+            async with self.open_stream(key) as stream:
+                pulse_deps = PulseDeps(
+                    triage=self.agents.triage,
+                    step=self.agents.step,
+                    synthesize=self.agents.synthesize,
+                    agent_deps=deps,
+                    tentacle=self,
+                    toolsets=self.toolsets,
+                    instructions=instructions,
+                    message_history=await self.memory.history(key, size=32),
+                    stream=stream,
+                )
+                graph_result = await pulse_graph.run(
+                    Triage(), state=state, deps=pulse_deps
+                )
 
-            for msg_out in graph_result.output:
-                await self.twitch(key, msg_out.segments)
+                for msg_out in graph_result.output:
+                    await self.twitch(key, msg_out.segments)
             asyncio.create_task(self.memory.memo(key, graph_result.output, self))
         except Exception:
             logger.exception("Error in tentacle %s [%s]", self.id, key)

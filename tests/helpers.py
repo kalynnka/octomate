@@ -4,6 +4,8 @@ import asyncio
 import contextlib
 import json
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +30,7 @@ from octomate.schemas.session import SessionKey, UserProfile
 from octomate.stores.interaction import InteractionStore
 from octomate.stores.message import MessageStore
 from octomate.stores.thread import ThreadStore
-from octomate.tentacles.base import ChannelTentacle, PlatformMessage
+from octomate.tentacles.base import ChannelTentacle, PlatformMessage, StreamSink
 from octomate.tentacles.feelers import NULL_FEELERS
 from octomate.transmuters.messages import Message
 from octomate.transmuters.threads import Thread
@@ -127,6 +129,23 @@ class MockOctopusMemory(OctopusMemory):
         self.messages = MockMessageStore()
 
 
+class NullStreamSink(StreamSink):
+    def __init__(self) -> None:
+        pass
+
+    async def set_status(self, status: str) -> None:
+        pass
+
+    async def append(self, text: str) -> None:
+        pass
+
+    async def flush(self) -> None:
+        pass
+
+    async def post_thinking_block(self, text: str) -> None:
+        pass
+
+
 class MockTentacle(ChannelTentacle):
     sent: list[tuple[SessionKey, list[AgentSegment]]]
     confirmations_requested: int
@@ -146,9 +165,7 @@ class MockTentacle(ChannelTentacle):
             output_type=[list[AgentMessage], list[Todo], DeferredToolRequests],
         )
         step = Agent("test", deps_type=SessionContext, output_type=str)
-        synth = Agent(
-            "test", deps_type=SessionContext, output_type=list[AgentMessage]
-        )
+        synth = Agent("test", deps_type=SessionContext, output_type=list[AgentMessage])
         agents = PulseAgents(triage=triage, step=step, synthesize=synth)
         super().__init__(tag, octopus, agents, memory, flush_delay=flush_delay)
         self.threads = MockThreadStore(default_owner=tag)
@@ -163,6 +180,10 @@ class MockTentacle(ChannelTentacle):
 
     async def deactivate(self) -> None:
         pass
+
+    @asynccontextmanager
+    async def open_stream(self, key: SessionKey) -> AsyncIterator[StreamSink]:
+        yield NullStreamSink()
 
     async def twitch(self, key: SessionKey, segments: list[AgentSegment]) -> None:
         self.sent.append((key, list(segments)))
