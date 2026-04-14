@@ -6,12 +6,15 @@ from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from octomate.agents.pulse import (
+    CLEAN_ERROR_MESSAGE,
+    STEP_FAILED_PREFIX,
     PulseAgents,
     PulseDeps,
     PulseState,
     Triage,
     pulse_graph,
 )
+from octomate.agents.resilience import ToolCallTracker
 from octomate.transmuters.interactions import Todo
 
 
@@ -245,3 +248,185 @@ async def test_synthesize_uses_native_output_type():
     assert isinstance(result, str)
     # 1 triage + 2 steps + 1 synthesize = 4
     assert call_count == 4
+
+
+# ---------------------------------------------------------------------------
+# Resilience: ToolCallTracker unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_tracker_no_loop_under_threshold():
+    tracker = ToolCallTracker(threshold=3)
+    assert not tracker.record("tool_a", {"x": 1})
+    assert not tracker.record("tool_a", {"x": 1})
+
+
+def test_tracker_detects_loop_at_threshold():
+    tracker = ToolCallTracker(threshold=3)
+    tracker.record("tool_a", {"x": 1})
+    tracker.record("tool_a", {"x": 1})
+    assert tracker.record("tool_a", {"x": 1})
+
+
+def test_tracker_different_args_no_loop():
+    tracker = ToolCallTracker(threshold=2)
+    assert not tracker.record("tool_a", {"x": 1})
+    assert not tracker.record("tool_a", {"x": 2})
+
+
+def test_tracker_reset():
+    tracker = ToolCallTracker(threshold=2)
+    tracker.record("t", {"a": 1})
+    tracker.reset()
+    assert not tracker.record("t", {"a": 1})
+
+
+def test_tracker_signature_deterministic():
+    sig1 = ToolCallTracker.signature("tool", {"b": 2, "a": 1})
+    sig2 = ToolCallTracker.signature("tool", {"a": 1, "b": 2})
+    assert sig1 == sig2
+
+
+# ---------------------------------------------------------------------------
+# Resilience: retry on step failure
+# ---------------------------------------------------------------------------
+
+
+def _failing_model(fail_count: int, success_text: str = "recovered") -> FunctionModel:
+    state = {"remaining": fail_count}
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        if state["remaining"] > 0:
+            state["remaining"] -= 1
+            raise RuntimeError("transient error")
+        return ModelResponse(parts=[TextPart(content=success_text)])
+
+    return FunctionModel(fn)
+
+
+async def test_step_retries_on_transient_failure():
+    """A step that fails once should be retried and still succeed."""
+    todos = [
+        {"todo_id": "pulse-0", "title": "Flaky step", "description": "May fail once"},
+    ]
+
+    def triage_fn(messages: list, info: AgentInfo) -> ModelResponse:
+        return _todo_tool_call(todos)
+
+    agents = _make_agents()
+    state = PulseState(prompt="test retry")
+    with (
+        agents.triage.override(model=FunctionModel(triage_fn)),
+        agents.step.override(model=_failing_model(1, "recovered")),
+        agents.synthesize.override(model=_text_model("final")),
+    ):
+        await pulse_graph.run(Triage(), state=state, deps=_make_deps(agents))
+
+    assert all(t.status == "completed" for t in state.todos)
+    assert any("recovered" in o for o in state.step_outputs)
+    assert not any(STEP_FAILED_PREFIX in o for o in state.step_outputs)
+
+
+async def test_step_exhausts_retries():
+    """When all retries fail the step is recorded as an error and pipeline continues."""
+    todos = [
+        {"todo_id": "pulse-0", "title": "Bad step", "description": "Always fails"},
+        {"todo_id": "pulse-1", "title": "Good step", "description": "Works fine"},
+    ]
+
+    def triage_fn(messages: list, info: AgentInfo) -> ModelResponse:
+        return _todo_tool_call(todos)
+
+    agents = _make_agents()
+    state = PulseState(prompt="test exhaust")
+    with (
+        agents.triage.override(model=FunctionModel(triage_fn)),
+        agents.step.override(model=_failing_model(999, "never")),
+        agents.synthesize.override(model=_text_model("synthesized")),
+    ):
+        await pulse_graph.run(Triage(), state=state, deps=_make_deps(agents))
+
+    assert all(t.status == "completed" for t in state.todos)
+    assert any(STEP_FAILED_PREFIX in o for o in state.step_outputs)
+
+
+async def test_triage_retries_on_failure():
+    """Triage should retry on transient failures."""
+    state = {"fail": True}
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        if state["fail"]:
+            state["fail"] = False
+            raise RuntimeError("transient")
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    agents = _make_agents()
+    with agents.triage.override(model=FunctionModel(fn)):
+        result = await _run(agents, "retry triage")
+
+    assert result == "ok"
+
+
+async def test_triage_all_retries_fail():
+    """When all triage retries fail, return a clean error message."""
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        raise RuntimeError("always fails")
+
+    agents = _make_agents()
+    result = None
+    with agents.triage.override(model=FunctionModel(fn)):
+        result = await _run(agents, "doomed")
+
+    assert isinstance(result, list)
+    assert len(result) == 1
+    text = result[0].segments[0].data.get("text", "")
+    assert text == CLEAN_ERROR_MESSAGE
+
+
+# ---------------------------------------------------------------------------
+# Resilience: loop detection in ExecuteStep
+# ---------------------------------------------------------------------------
+
+
+async def test_loop_detection_escalates():
+    """When a step is executed repeatedly (loop), it should be flagged and skipped."""
+    tracker = ToolCallTracker(threshold=1)
+    todos = [
+        {"todo_id": "pulse-0", "title": "Loop step", "description": "Will loop"},
+    ]
+
+    def triage_fn(messages: list, info: AgentInfo) -> ModelResponse:
+        return _todo_tool_call(todos)
+
+    agents = _make_agents()
+    state = PulseState(prompt="test loop", tool_call_tracker=tracker)
+    with (
+        agents.triage.override(model=FunctionModel(triage_fn)),
+        agents.step.override(model=_text_model("should not run")),
+        agents.synthesize.override(model=_text_model("done")),
+    ):
+        await pulse_graph.run(Triage(), state=state, deps=_make_deps(agents))
+
+    assert all(t.status == "completed" for t in state.todos)
+    assert any("loop detected" in o for o in state.step_outputs)
+
+
+async def test_no_error_leakage_to_user():
+    """Failed steps produce an internal error note but the synthesized output is clean."""
+    todos = [
+        {"todo_id": "pulse-0", "title": "Broken", "description": "Fails"},
+    ]
+
+    def triage_fn(messages: list, info: AgentInfo) -> ModelResponse:
+        return _todo_tool_call(todos)
+
+    agents = _make_agents()
+    with (
+        agents.triage.override(model=FunctionModel(triage_fn)),
+        agents.step.override(model=_failing_model(999)),
+        agents.synthesize.override(model=_text_model("Clean user answer")),
+    ):
+        result = await _run(agents, "broken chain")
+
+    assert result == "Clean user answer"

@@ -36,6 +36,10 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 from octomate.agents.base import RetryTransport, SessionContext
 from octomate.agents.manager import SKILL_METADATA_KEY, SkillManager
 from octomate.agents.prompts import BASE_PROMPT, FLICK_EXTRA
+from octomate.agents.resilience import (
+    MAX_STEP_RETRIES,
+    ToolCallTracker,
+)
 from octomate.config import FlickConfig
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import TextSegment
@@ -212,12 +216,21 @@ SYNTHESIZE_INSTRUCTION = (
 )
 
 
+STEP_FAILED_PREFIX = "[Error: "
+
+CLEAN_ERROR_MESSAGE = (
+    "I'm sorry, I wasn't able to complete that request. "
+    "Please try again or rephrase your question."
+)
+
+
 @dataclass
 class PulseState:
     prompt: str | list
     todos: list[Todo] = field(default_factory=list)
     step_outputs: list[str] = field(default_factory=list)
     card_ref: str | None = None
+    tool_call_tracker: ToolCallTracker = field(default_factory=ToolCallTracker)
 
     @property
     def goal(self) -> str:
@@ -394,15 +407,41 @@ class Triage(BaseNode[PulseState, PulseDeps, list[AgentMessage]]):
         if ctx.deps.instructions:
             triage_instructions = f"{ctx.deps.instructions}\n\n{TRIAGE_INSTRUCTION}"
 
-        result = await run_streaming(
-            ctx.deps.triage,
-            ctx.deps.stream,
-            user_prompt=ctx.state.prompt,
-            deps=ctx.deps.agent_deps,
-            toolsets=ctx.deps.toolsets,
-            instructions=triage_instructions,
-            message_history=ctx.deps.message_history,
-        )
+        last_error: BaseException | None = None
+        result = None
+        for attempt in range(MAX_STEP_RETRIES):
+            try:
+                result = await run_streaming(
+                    ctx.deps.triage,
+                    ctx.deps.stream,
+                    user_prompt=ctx.state.prompt,
+                    deps=ctx.deps.agent_deps,
+                    toolsets=ctx.deps.toolsets,
+                    instructions=triage_instructions,
+                    message_history=ctx.deps.message_history,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "[%s] Triage attempt %d/%d failed: %s",
+                    key,
+                    attempt + 1,
+                    MAX_STEP_RETRIES,
+                    exc,
+                )
+                if attempt < MAX_STEP_RETRIES - 1:
+                    await asyncio.sleep(2**attempt)
+
+        if result is None:
+            logger.error(
+                "[%s] Triage failed after %d attempts: %s",
+                key,
+                MAX_STEP_RETRIES,
+                last_error,
+            )
+            return End([AgentMessage(segments=[TextSegment(data={"text": CLEAN_ERROR_MESSAGE})])])
+
         if isinstance(result.output, DeferredToolRequests):
             logger.debug("[%s] Triage returned deferred tools, resolving", key)
             result = await resolve_deferred(
@@ -469,6 +508,25 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
             "[%s] Executing step '%s' (%d/%d)", key, current.title, step_index, total
         )
 
+        tracker = ctx.state.tool_call_tracker
+        if tracker.record(
+            "execute_step",
+            {"title": current.title, "description": current.description},
+        ):
+            logger.error(
+                "[%s] Loop detected for step '%s', escalating", key, current.title
+            )
+            ctx.state.step_outputs.append(
+                f"- {current.title}: {STEP_FAILED_PREFIX}loop detected, step skipped]"
+            )
+            ctx.state.todos = [
+                t.model_copy(update={"status": "completed"})
+                if t.todo_id == current.todo_id
+                else t
+                for t in ctx.state.todos
+            ]
+            return ExecuteStep()
+
         if ctx.deps.stream:
             await ctx.deps.stream.set_status(
                 f"Working on: {current.title} ({step_index}/{total})"
@@ -483,23 +541,54 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
             title=current.title,
             description=current.description,
         )
-        result = await run_streaming(
-            ctx.deps.step,
-            ctx.deps.stream,
-            user_prompt=current.title,
-            deps=ctx.deps.agent_deps,
-            message_history=ctx.deps.message_history,
-            instructions=step_instructions,
-        )
-        if isinstance(result.output, DeferredToolRequests):
-            result = await resolve_deferred(
-                ctx.deps.step,
-                result,
-                ctx.deps.tentacle,
-                ctx.deps.agent_deps,
-                stream=ctx.deps.stream,
+
+        last_error: BaseException | None = None
+        result = None
+        for attempt in range(MAX_STEP_RETRIES):
+            try:
+                result = await run_streaming(
+                    ctx.deps.step,
+                    ctx.deps.stream,
+                    user_prompt=current.title,
+                    deps=ctx.deps.agent_deps,
+                    message_history=ctx.deps.message_history,
+                    instructions=step_instructions,
+                )
+                if isinstance(result.output, DeferredToolRequests):
+                    result = await resolve_deferred(
+                        ctx.deps.step,
+                        result,
+                        ctx.deps.tentacle,
+                        ctx.deps.agent_deps,
+                        stream=ctx.deps.stream,
+                    )
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "[%s] Step '%s' attempt %d/%d failed: %s",
+                    key,
+                    current.title,
+                    attempt + 1,
+                    MAX_STEP_RETRIES,
+                    exc,
+                )
+                if attempt < MAX_STEP_RETRIES - 1:
+                    await asyncio.sleep(2**attempt)
+
+        if result is None:
+            logger.error(
+                "[%s] Step '%s' failed after %d attempts: %s",
+                key,
+                current.title,
+                MAX_STEP_RETRIES,
+                last_error,
             )
-        ctx.state.step_outputs.append(f"- {current.title}: {result.output}")
+            ctx.state.step_outputs.append(
+                f"- {current.title}: {STEP_FAILED_PREFIX}step failed after retries]"
+            )
+        else:
+            ctx.state.step_outputs.append(f"- {current.title}: {result.output}")
 
         ctx.state.todos = [
             t.model_copy(update={"status": "completed"})
