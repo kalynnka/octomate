@@ -9,8 +9,8 @@ import octotools
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
-from octomate.agents.pulse import build_summon_toolset, create_pulse_agents
 from octomate.agents.manager import SkillManager
+from octomate.agents.pulse import build_summon_toolset, create_pulse_agents
 from octomate.config import (
     ClaudeCodeConfig,
     CopilotConfig,
@@ -76,7 +76,7 @@ def _build_octopus() -> Octopus:
                     backoff_max=tc.backoff_max,
                     backoff_factor=tc.backoff_factor,
                     agents=create_pulse_agents(
-                        tc.flick,
+                        tc.pulse,
                         napcat_skill_manager,
                     ),
                     memory=memory,
@@ -96,7 +96,7 @@ def _build_octopus() -> Octopus:
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
                     agents=create_pulse_agents(
-                        tc.flick,
+                        tc.pulse,
                         skill_manager,
                         summon_toolset=summon_toolset,
                     ),
@@ -114,7 +114,7 @@ def _build_octopus() -> Octopus:
                     bot_token=tc.bot_token,
                     app_token=tc.app_token,
                     agents=create_pulse_agents(
-                        tc.flick,
+                        tc.pulse,
                         skill_manager,
                         summon_toolset=summon_toolset,
                     ),

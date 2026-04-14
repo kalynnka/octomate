@@ -17,7 +17,7 @@ class TentacleConfig(BaseModel):
             self.tentacle_id = self.name
 
 
-class FlickConfig(BaseModel):
+class PulseConfig(BaseModel):
     enabled: bool = False
     model: str = "gemini-3-flash-preview"
     api_key: str = ""
@@ -53,7 +53,7 @@ class NapcatTentacleConfig(TentacleConfig):
     backoff_base: float = 1.0
     backoff_max: float = 60.0
     backoff_factor: float = 2.0
-    flick: FlickConfig = Field(default_factory=FlickConfig)
+    pulse: PulseConfig = Field(default_factory=PulseConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
@@ -62,7 +62,7 @@ class LarkTentacleConfig(TentacleConfig):
     name: str = "lark"
     app_id: str
     app_secret: SecretStr
-    flick: FlickConfig = Field(default_factory=FlickConfig)
+    pulse: PulseConfig = Field(default_factory=PulseConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
@@ -71,7 +71,7 @@ class SlackTentacleConfig(TentacleConfig):
     name: str = "slack"
     bot_token: SecretStr
     app_token: SecretStr
-    flick: FlickConfig = Field(default_factory=FlickConfig)
+    pulse: PulseConfig = Field(default_factory=PulseConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 

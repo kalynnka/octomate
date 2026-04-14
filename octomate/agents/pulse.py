@@ -35,8 +35,8 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.agents.base import RetryTransport, SessionContext
 from octomate.agents.manager import SKILL_METADATA_KEY, SkillManager
-from octomate.agents.prompts import BASE_PROMPT, FLICK_EXTRA
-from octomate.config import FlickConfig
+from octomate.agents.prompts import BASE_PROMPT, PULSE_EXTRA, STEP_PROMPT
+from octomate.config import PulseConfig
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import TextSegment
 from octomate.transmuters.interactions import Todo
@@ -53,7 +53,7 @@ from pydantic_ai.settings import ModelSettings
 logger = logging.getLogger(__name__)
 AgentOutputT = TypeVar("AgentOutputT")
 
-SYSTEM_PROMPT = BASE_PROMPT + FLICK_EXTRA
+SYSTEM_PROMPT = BASE_PROMPT + PULSE_EXTRA
 
 
 async def run_streaming(
@@ -130,7 +130,7 @@ def build_summon_toolset(
 
 
 def create_pulse_agents(
-    config: FlickConfig,
+    config: PulseConfig,
     skill_manager: SkillManager | None = None,
     summon_toolset: FunctionToolset[SessionContext] | None = None,
 ) -> PulseAgents:
@@ -171,7 +171,7 @@ def create_pulse_agents(
     )
     step = Agent(
         model,
-        system_prompt=BASE_PROMPT,
+        system_prompt=STEP_PROMPT,
         deps_type=SessionContext,
         output_type=str,
         toolsets=skill_toolsets or None,
@@ -509,7 +509,9 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
         ]
 
         if ctx.deps.tentacle and key and current.todo_id:
-            await ctx.deps.tentacle.feelers.todos.update_todo(current.todo_id, "completed")
+            await ctx.deps.tentacle.feelers.todos.update_todo(
+                current.todo_id, "completed"
+            )
             ctx.state.card_ref = await ctx.deps.tentacle.feelers.todos.upsert_todo_list(
                 key, ctx.state.todos, existing_ts=ctx.state.card_ref
             )
@@ -547,9 +549,7 @@ class Synthesize(BaseNode[PulseState, PulseDeps, list[AgentMessage]]):
         logger.info("[%s] Synthesize complete", key)
 
         if ctx.deps.tentacle and key and ctx.state.card_ref:
-            await ctx.deps.tentacle.feelers.todos.unpin_todo(
-                key, ctx.state.card_ref
-            )
+            await ctx.deps.tentacle.feelers.todos.unpin_todo(key, ctx.state.card_ref)
 
         return End(result.output)
 
