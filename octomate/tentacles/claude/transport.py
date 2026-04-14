@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 MAX_BUFFER_SIZE = 1024 * 1024  # 1 MB, same as the default transport
 
 
-class SshTransport(Transport):
+class SSHTransport(Transport):
     """Transport that runs Claude Code CLI on a remote host via SSH.
 
     Spawns ``ssh <host> claude code --output-format stream-json ...`` and
@@ -55,8 +55,10 @@ class SshTransport(Transport):
         cmd = [
             "ssh",
             "-T",  # disable TTY allocation — essential for piped JSON
-            "-o", "ServerAliveInterval=15",
-            "-o", "ServerAliveCountMax=3",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=3",
         ]
         if self.identity_file:
             cmd += ["-i", self.identity_file]
@@ -70,9 +72,7 @@ class SshTransport(Transport):
             "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
         }
         env_vars.update(self.env)
-        exports = " ".join(
-            f"{k}={shlex.quote(v)}" for k, v in env_vars.items()
-        )
+        exports = " ".join(f"{k}={shlex.quote(v)}" for k, v in env_vars.items())
 
         # Expand leading ~ so the remote shell resolves it correctly.
         # shlex.quote would wrap it in single quotes and prevent expansion.
@@ -147,7 +147,10 @@ class SshTransport(Transport):
             json_buffer += text
 
             if len(json_buffer) > MAX_BUFFER_SIZE:
-                logger.error("SshTransport: JSON buffer exceeded %d bytes, resetting", MAX_BUFFER_SIZE)
+                logger.error(
+                    "SshTransport: JSON buffer exceeded %d bytes, resetting",
+                    MAX_BUFFER_SIZE,
+                )
                 json_buffer = ""
                 continue
 

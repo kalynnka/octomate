@@ -47,7 +47,8 @@ class CopilotTentacle(AgentTentacle):
         contents: list[MessageEvent],
         *,
         session_name: str = "",
-    ) -> None:
+        silent: bool = False,
+    ) -> str | None:
         task = "".join(str(part) for part in contents[0].to_content_parts())
 
         owner, repo, issue_number = _parse_issue_ref(task, self.config)
@@ -96,6 +97,9 @@ class CopilotTentacle(AgentTentacle):
         except httpx.HTTPError as exc:
             logger.error("CopilotTentacle: HTTP error: %s", exc)
             text = f"⚠️ Failed to reach GitHub API: {exc}"
+
+        if silent:
+            return text
 
         nerve = self.octopus.agent_nerve
         await nerve.send(

@@ -32,6 +32,7 @@ from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
+from uuid_utils import uuid7
 
 from octomate.agents.base import RetryTransport, SessionContext
 from octomate.agents.manager import SKILL_METADATA_KEY, SkillManager
@@ -449,6 +450,9 @@ class Triage(BaseNode[PulseState, PulseDeps, list[AgentMessage]]):
         return End(output)  # type: ignore[arg-type]
 
 
+BECKON_TIMEOUT = 900.0  # 15 minutes
+
+
 @dataclass
 class ExecuteStep(BaseNode[PulseState, PulseDeps]):
     """Execute the next pending Todo step."""
@@ -469,11 +473,49 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
             "[%s] Executing step '%s' (%d/%d)", key, current.title, step_index, total
         )
 
+        agent_tentacle = (
+            ctx.deps.tentacle.octopus.agent_tentacles.get(current.assignee)
+            if current.assignee
+            else None
+        )
+
         if ctx.deps.stream:
-            await ctx.deps.stream.set_status(
-                f"Working on: {current.title} ({step_index}/{total})"
+            if agent_tentacle:
+                await ctx.deps.stream.set_status(
+                    f"🐙 Beckoning {agent_tentacle.id}: {current.title} ({step_index}/{total})"
+                )
+            else:
+                await ctx.deps.stream.set_status(
+                    f"Working on: {current.title} ({step_index}/{total})"
+                )
+
+        if agent_tentacle and key:
+            step_output = await self.beckon(ctx, key, current, agent_tentacle)
+        else:
+            step_output = await self.run_step_agent(ctx, current)
+
+        ctx.state.step_outputs.append(f"- {current.title}: {step_output}")
+
+        ctx.state.todos = [
+            t.model_copy(update={"status": "completed"})
+            if t.todo_id == current.todo_id
+            else t
+            for t in ctx.state.todos
+        ]
+
+        if ctx.deps.tentacle and key and current.todo_id:
+            await ctx.deps.tentacle.feelers.todos.update_todo(
+                current.todo_id, "completed"
+            )
+            ctx.state.card_ref = await ctx.deps.tentacle.feelers.todos.upsert_todo_list(
+                key, ctx.state.todos, existing_ts=ctx.state.card_ref
             )
 
+        return ExecuteStep()
+
+    async def run_step_agent(
+        self, ctx: GraphRunContext[PulseState, PulseDeps], current: Todo
+    ) -> str:
         context = (
             "\n".join(ctx.state.step_outputs) if ctx.state.step_outputs else "(none)"
         )
@@ -499,24 +541,60 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
                 ctx.deps.agent_deps,
                 stream=ctx.deps.stream,
             )
-        ctx.state.step_outputs.append(f"- {current.title}: {result.output}")
+        return result.output
 
-        ctx.state.todos = [
-            t.model_copy(update={"status": "completed"})
-            if t.todo_id == current.todo_id
-            else t
-            for t in ctx.state.todos
-        ]
+    async def beckon(
+        self,
+        ctx: GraphRunContext[PulseState, PulseDeps],
+        key: Any,
+        current: Todo,
+        agent_tentacle: AgentTentacle,
+    ) -> str:
+        from octomate.nerve import AgentResult, SummonAgent
+        from octomate.schemas.events import MessageEvent
 
-        if ctx.deps.tentacle and key and current.todo_id:
-            await ctx.deps.tentacle.feelers.todos.update_todo(
-                current.todo_id, "completed"
+        rid = str(uuid7())
+        future = ctx.deps.tentacle.octopus.pending.agent_results.create(rid)
+
+        summary = current.description or current.title
+        content = MessageEvent(
+            tentacle_id=key.tentacle_id,
+            user_id=key.user_id,
+            chat_id=key.chat_id,
+            chat_type="group" if key.group_id else "private",
+            segments=[TextSegment(data={"text": summary})],
+        )
+        await ctx.deps.tentacle.octopus.agent_nerve.send(
+            SummonAgent(
+                key=key,
+                agent_tag=agent_tentacle.id,
+                contents=[content],
+                summary=summary,
+                request_id=rid,
+                silent=True,
             )
-            ctx.state.card_ref = await ctx.deps.tentacle.feelers.todos.upsert_todo_list(
-                key, ctx.state.todos, existing_ts=ctx.state.card_ref
-            )
+        )
 
-        return ExecuteStep()
+        logger.info(
+            "[%s] Beckoned '%s' for step '%s' (request_id=%s)",
+            key,
+            agent_tentacle.id,
+            current.title,
+            rid,
+        )
+
+        try:
+            result: AgentResult = await asyncio.wait_for(future, timeout=BECKON_TIMEOUT)
+            return result.output or "(no output)"
+        except TimeoutError:
+            logger.warning(
+                "[%s] Beckoned agent '%s' timed out for step '%s'",
+                key,
+                agent_tentacle.id,
+                current.title,
+            )
+            ctx.deps.tentacle.octopus.pending.agent_results.cancel(rid)
+            return "(beckoned agent timed out)"
 
 
 @dataclass

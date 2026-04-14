@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from datetime import datetime
@@ -33,6 +34,7 @@ from claude_agent_sdk.types import (
 from uuid_utils import uuid7
 
 from octomate.schemas.events import MessageEvent
+from octomate.tentacles.claude.transport import SSHTransport
 
 try:
     from claude_agent_sdk import ThinkingBlock as _ThinkingBlock
@@ -106,7 +108,8 @@ class ClaudeCodeTentacle(AgentTentacle):
         contents: list[MessageEvent],
         *,
         session_name: str = "",
-    ):
+        silent: bool = False,
+    ) -> str | None:
         task = "".join([str(part) for part in contents[0].to_content_parts()])
 
         nerve = self.octopus.agent_nerve
@@ -253,6 +256,25 @@ class ClaudeCodeTentacle(AgentTentacle):
                 }
             }
 
+        async def silent_hook(
+            input_data: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> SyncHookJSONOutput:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                }
+            }
+
+        async def silent_can_use_tool(
+            tool_name: str,
+            input_data: dict[str, Any],
+            ctx: ToolPermissionContext,
+        ) -> PermissionResult:
+            if tool_name in AUTO_APPROVE:
+                return PermissionResultAllow()
+            return PermissionResultDeny(message="Auto-denied in silent mode")
+
         session_id = self._session_id_map.get(key)
         if session_id is None:
             # Cold start or restart: try to recover the session from the DB so
@@ -284,23 +306,30 @@ class ClaudeCodeTentacle(AgentTentacle):
             model=self.config.model or None,
             permission_mode="acceptEdits",
             max_turns=self.config.max_turns,
-            can_use_tool=can_use_tool,
+            can_use_tool=silent_can_use_tool if silent else can_use_tool,
             resume=session_id,
             extra_args=extra_args,
             hooks={
                 "PreToolUse": [
-                    HookMatcher(matcher="AskUserQuestion", hooks=[hook_ask_user]),
-                    HookMatcher(matcher="TodoWrite", hooks=[hook_todo_write]),
-                    HookMatcher(matcher="ExitPlanMode", hooks=[hook_exit_plan_mode]),
+                    HookMatcher(
+                        matcher="AskUserQuestion",
+                        hooks=[silent_hook if silent else hook_ask_user],
+                    ),
+                    HookMatcher(
+                        matcher="TodoWrite",
+                        hooks=[silent_hook if silent else hook_todo_write],
+                    ),
+                    HookMatcher(
+                        matcher="ExitPlanMode",
+                        hooks=[silent_hook if silent else hook_exit_plan_mode],
+                    ),
                 ],
             },
         )
 
         transport = None
         if self.config.ssh:
-            from octomate.tentacles.claude.transport import SshTransport
-
-            transport = SshTransport(
+            transport = SSHTransport(
                 host=self.config.ssh.host,
                 cwd=self.config.cwd,
                 identity_file=self.config.ssh.identity_file,
@@ -312,8 +341,12 @@ class ClaudeCodeTentacle(AgentTentacle):
         has_text = False
         is_first_response = session_id is None
         try:
-            async with NerveStream(nerve, key) as stream:
-                await stream.set_status("🐙 Channeling")
+            async with contextlib.AsyncExitStack() as stack:
+                if not silent:
+                    stream = await stack.enter_async_context(NerveStream(nerve, key))
+                    await stream.set_status("🐙 Channeling")
+                else:
+                    stream = None
                 async with ClaudeSDKClient(
                     options=options, transport=transport
                 ) as client:
@@ -337,9 +370,13 @@ class ClaudeCodeTentacle(AgentTentacle):
                             self._worktree_paths[key] = worktree_path
                             await self.threads.set_worktree_info(key, worktree_path, "")
 
-                        has_text = await _handle_stream_msg(msg, stream, has_text)
+                        if stream:
+                            has_text = await _handle_stream_msg(msg, stream, has_text)
         finally:
             self._active_clients.pop(key, None)
+
+        if silent:
+            return result_text
 
         session_id_after = self._session_id_map.get(key)
 

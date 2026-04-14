@@ -20,7 +20,7 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from octomate.agents.base import SessionContext
 from octomate.agents.tools import history_toolset
-from octomate.nerve import DismissPending
+from octomate.nerve import AgentResult, DismissPending
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -166,6 +166,8 @@ class AgentTentacle(Tentacle):
         contents: list[MessageEvent],
         *,
         session_name: str = "",
+        request_id: str = "",
+        silent: bool = False,
     ) -> None:
         existing = self._running_tasks.get(key)
         if existing is not None and not existing.done():
@@ -174,16 +176,25 @@ class AgentTentacle(Tentacle):
             asyncio.create_task(self._dismiss_pending(key))
 
         self._running_tasks[key] = asyncio.current_task()  # type: ignore[assignment]
+        result_output = ""
         try:
-            await self.run(key, contents, session_name=session_name)
+            result_output = (
+                await self.run(key, contents, session_name=session_name, silent=silent)
+                or ""
+            )
         except asyncio.CancelledError:
             logger.info("AgentTentacle %s: run cancelled for [%s]", self.id, key)
             raise
         except Exception:
             logger.exception("Error in agent tentacle %s [%s]", self.id, key)
+            result_output = "Agent encountered an error."
         finally:
             if self._running_tasks.get(key) is asyncio.current_task():
                 self._running_tasks.pop(key, None)
+            if request_id:
+                await self.octopus.agent_nerve.send(
+                    AgentResult(key=key, request_id=request_id, output=result_output)
+                )
 
     async def interrupt(self, key: SessionKey) -> None:
         """Send a graceful stop signal before hard-cancelling.
@@ -198,7 +209,8 @@ class AgentTentacle(Tentacle):
         contents: list[MessageEvent],
         *,
         session_name: str = "",
-    ) -> None: ...
+        silent: bool = False,
+    ) -> str | None: ...
 
     async def _dismiss_pending(self, key: SessionKey) -> None:
         """Background task: expire all pending interactions and dismiss their cards."""

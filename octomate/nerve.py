@@ -43,6 +43,8 @@ class SummonAgent(AgentSignal):
     contents: list[MessageEvent]
     summary: str
     session_name: str = ""
+    request_id: str = ""
+    silent: bool = False
     kind: Literal["summon_agent"] = field(default="summon_agent", init=False)
 
 
@@ -124,6 +126,15 @@ class ReleaseThread(AgentSignal):
     kind: Literal["release_thread"] = field(default="release_thread", init=False)
 
 
+@dataclass
+class AgentResult(AgentSignal):
+    """Result from a silently summoned agent tentacle."""
+
+    request_id: str = ""
+    output: str = ""
+    kind: Literal["agent_result"] = field(default="agent_result", init=False)
+
+
 # Union of every signal type that travels through the agent nerve.
 # The `kind` discriminator on each class enables Pydantic-based deserialization
 # (e.g. for a future Redis transport):
@@ -140,6 +151,7 @@ AgentSignalType = (
     | TodoResult
     | DismissPending
     | ReleaseThread
+    | AgentResult
 )
 
 
@@ -171,11 +183,13 @@ class AgentPending:
     answers: PendingRequests[UserAnswer]
     confirmations: PendingRequests[ConfirmResult]
     todos: PendingRequests[TodoResult]
+    agent_results: PendingRequests[AgentResult]
 
     def __init__(self) -> None:
         self.answers = PendingRequests()
         self.confirmations = PendingRequests()
         self.todos = PendingRequests()
+        self.agent_results = PendingRequests()
 
 
 class Nerve(ABC, Generic[T]):
