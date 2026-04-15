@@ -19,7 +19,7 @@ from octomate.schemas.segments import (
     ReplySegment,
     TextSegment,
 )
-from octomate.tentacles.base import PlatformMessage
+from octomate.tentacles.channel.base import PlatformMessage
 
 logger = logging.getLogger(__name__)
 

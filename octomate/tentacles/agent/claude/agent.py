@@ -34,7 +34,7 @@ from claude_agent_sdk.types import (
 from uuid_utils import uuid7
 
 from octomate.schemas.events import MessageEvent
-from octomate.tentacles.claude.transport import SSHTransport
+from octomate.tentacles.agent.claude.transport import SSHTransport
 
 try:
     from claude_agent_sdk import ThinkingBlock as _ThinkingBlock
@@ -56,7 +56,7 @@ from octomate.nerve import (
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.session import SessionKey
 from octomate.stores.thread import ThreadStore
-from octomate.tentacles.base import AgentTentacle
+from octomate.tentacles.agent.base import AgentTentacle
 from octomate.transmuters.interactions import Todo
 
 if TYPE_CHECKING:

@@ -11,7 +11,7 @@ from octomate.nerve import SendSegments
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import AgentTentacle
+from octomate.tentacles.agent.base import AgentTentacle
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus

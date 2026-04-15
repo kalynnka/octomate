@@ -25,6 +25,7 @@ class Todo(BaseTransmuter):
     thread_id: str = ""
     title: str
     description: str = ""
+    depends_on: list[str] = Field(default_factory=list)
     status: str = "pending"
     active_form: str | None = None
     assignee: str | None = None

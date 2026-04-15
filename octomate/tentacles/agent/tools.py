@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic_ai import RunContext
 from pydantic_ai.toolsets import FunctionToolset
 
-from octomate.agents.base import SessionContext
+from octomate.tentacles.agent.context import SessionContext
 from octomate.stores.message import MessageStore
 from octomate.transmuters.messages import Message
 

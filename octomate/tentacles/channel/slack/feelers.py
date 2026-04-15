@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from octomate.stores.interaction import InteractionStore
-from octomate.tentacles.feelers import (
+from octomate.tentacles.channel.feelers import (
     ConfirmationFeeler,
     QuestionFeeler,
     QuestionResponse,
@@ -15,7 +15,7 @@ from octomate.tentacles.feelers import (
 
 if TYPE_CHECKING:
     from octomate.schemas.session import SessionKey
-    from octomate.tentacles.slack.ink import SlackInk
+    from octomate.tentacles.channel.slack.ink import SlackInk
     from octomate.transmuters.interactions import Confirmation, Question
 
 logger = logging.getLogger(__name__)

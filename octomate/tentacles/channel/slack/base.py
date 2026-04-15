@@ -17,25 +17,25 @@ from uuid_utils import uuid7
 
 from octomate.schemas.segments import ImageSegment
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import (
+from octomate.tentacles.channel.base import (
     ChannelTentacle,
     PlatformMessage,
     StreamSink,
 )
-from octomate.tentacles.feelers import Feelers
-from octomate.tentacles.slack.chromo import SlackChromo, _md_to_mrkdwn
-from octomate.tentacles.slack.feelers import (
+from octomate.tentacles.channel.feelers import Feelers
+from octomate.tentacles.channel.slack.chromo import SlackChromo, _md_to_mrkdwn
+from octomate.tentacles.channel.slack.feelers import (
     SlackConfirmationFeeler,
     SlackQuestionFeeler,
     SlackTodoFeeler,
 )
-from octomate.tentacles.slack.ink import SlackInk
+from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
-    from octomate.agents.pulse import PulseAgents
     from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
+    from octomate.tentacles.agent.pulse import PulseTentacle
     from octomate.transmuters.interactions import Confirmation
 
 logger = logging.getLogger(__name__)
@@ -215,7 +215,7 @@ class SlackTentacle(ChannelTentacle):
         *,
         bot_token: SecretStr,
         app_token: SecretStr,
-        agents: PulseAgents,
+        pulse: PulseTentacle,
         memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
@@ -234,7 +234,7 @@ class SlackTentacle(ChannelTentacle):
         self.app_token = app_token.get_secret_value()
         self.handler = None
 
-        super().__init__(tag, octopus, agents, memory, flush_delay=flush_delay)
+        super().__init__(tag, octopus, pulse, memory, flush_delay=flush_delay)
 
         self.feelers = Feelers(
             confirm=SlackConfirmationFeeler(self.ink, self.interactions),

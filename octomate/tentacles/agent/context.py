@@ -10,7 +10,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 
 if TYPE_CHECKING:
-    from octomate.tentacles.base import ChannelTentacle
+    from octomate.tentacles.channel.base import ChannelTentacle
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 3

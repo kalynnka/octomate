@@ -13,7 +13,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
 
 if TYPE_CHECKING:
-    from octomate.tentacles.base import ChannelTentacle
+    from octomate.tentacles.channel.base import ChannelTentacle
 
 logger = logging.getLogger(__name__)
 

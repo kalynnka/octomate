@@ -17,8 +17,7 @@ class TentacleConfig(BaseModel):
             self.tentacle_id = self.name
 
 
-class PulseConfig(BaseModel):
-    enabled: bool = False
+class ModelConfig(BaseModel):
     model: str = "gemini-3-flash-preview"
     api_key: str = ""
     base_url: str = ""
@@ -26,6 +25,17 @@ class PulseConfig(BaseModel):
     project: str = ""
     location: str = ""
     thinking: bool | Literal["minimal", "low", "medium", "high", "xhigh"] = "medium"
+
+
+class SubAgentConfig(ModelConfig):
+    description: str = ""
+    system_prompt: str | None = None
+
+
+class PulseConfig(BaseModel):
+    enabled: bool = False
+    main: ModelConfig = Field(default_factory=ModelConfig)
+    subagents: dict[str, SubAgentConfig] = Field(default_factory=dict)
 
 
 class Mem0Config(Mem0MemoryConfig):

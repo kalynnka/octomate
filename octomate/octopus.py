@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import logging
 
-from octomate.agents.manager import SkillManager
 from octomate.nerve import (
     AgentPending,
     AgentResult,
@@ -29,7 +28,9 @@ from octomate.nerve import (
 )
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import AgentTentacle, ChannelTentacle
+from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agent.skills import SkillManager
+from octomate.tentacles.channel.base import ChannelTentacle
 from octomate.transmuters import sqlalchemy_materia
 
 logger = logging.getLogger(__name__)

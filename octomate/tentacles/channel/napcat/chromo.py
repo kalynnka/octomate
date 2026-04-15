@@ -5,8 +5,8 @@ import logging
 
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import AgentSegment, MarkdownSegment, TextSegment
-from octomate.tentacles.base import PlatformMessage
-from octomate.tentacles.napcat.schema import (
+from octomate.tentacles.channel.base import PlatformMessage
+from octomate.tentacles.channel.napcat.schema import (
     ActionResponse,
     NapcatGroupMessageEvent,
     NapcatPrivateMessageEvent,

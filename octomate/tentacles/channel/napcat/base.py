@@ -17,10 +17,10 @@ from websockets.exceptions import ConnectionClosed
 
 from octomate.schemas.segments import AgentSegment, ImageSegment
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import ChannelTentacle, PlatformMessage
-from octomate.tentacles.napcat.chromo import NapcatChromo
-from octomate.tentacles.napcat.ink import NapcatInk
-from octomate.tentacles.napcat.schema import (
+from octomate.tentacles.channel.base import ChannelTentacle, PlatformMessage
+from octomate.tentacles.channel.napcat.chromo import NapcatChromo
+from octomate.tentacles.channel.napcat.ink import NapcatInk
+from octomate.tentacles.channel.napcat.schema import (
     SendGroupMsgAction,
     SendGroupMsgParams,
     SendPrivateMsgAction,
@@ -29,9 +29,9 @@ from octomate.tentacles.napcat.schema import (
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
-    from octomate.agents.pulse import PulseAgents
     from octomate.memory.base import OctopusMemory
     from octomate.octopus import Octopus
+    from octomate.tentacles.agent.pulse import PulseTentacle
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ class NapcatTentacle(ChannelTentacle):
         backoff_base: float = 1.0,
         backoff_max: float = 60.0,
         backoff_factor: float = 2.0,
-        agents: PulseAgents,
+        pulse: PulseTentacle,
         memory: OctopusMemory,
         flush_delay: float = 0.5,
     ) -> None:
@@ -74,7 +74,7 @@ class NapcatTentacle(ChannelTentacle):
         self.backoff_factor = backoff_factor
         self.ws_client = None
         self.ws_scope = None
-        super().__init__(tag, octopus, agents, memory, flush_delay=flush_delay)
+        super().__init__(tag, octopus, pulse, memory, flush_delay=flush_delay)
 
     async def sense(self, ws: ClientConnection) -> None:
         async for raw in ws:
