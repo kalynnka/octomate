@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -14,6 +15,7 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from octomate.config import ModelConfig, PulseConfig
 from octomate.schemas.actions import AgentMessage
+from octomate.schemas.events import MessageEvent
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.context import RetryTransport, SessionContext
 from octomate.tentacles.agent.pulse.graph import Triage, pulse_graph
@@ -103,7 +105,7 @@ class PulseTentacle(AgentTentacle):
 
     pulse_agent: Agent[SessionContext, TriageOutput]
     subagents: dict[str, SubAgent]
-    triage_toolsets: list[AbstractToolset[SessionContext]] | None
+    triage_toolsets: Sequence[AbstractToolset[SessionContext]] | None
     subagent_catalog: str | None
 
     def __init__(
@@ -216,7 +218,6 @@ class PulseTentacle(AgentTentacle):
         silent: bool = False,
     ) -> str | None:
         """AgentTentacle beckoning path — runs graph, twitches result if not silent."""
-        from octomate.schemas.events import MessageEvent
 
         channel = self.octopus.tentacles.get(key.tentacle_id)
         if channel is None:

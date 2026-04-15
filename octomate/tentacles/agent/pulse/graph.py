@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
@@ -12,8 +12,8 @@ from uuid_utils import uuid7
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.pulse.run import resolve_deferred, run_streaming
-from octomate.tentacles.agent.pulse.state import PulseDeps, PulseState, SubAgent, TriageOutput
+from octomate.tentacles.agent.pulse.run import resolve_deferred, streaming
+from octomate.tentacles.agent.pulse.state import PulseDeps, PulseState, SubAgent
 from octomate.transmuters.interactions import Todo
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class Triage(BaseNode[PulseState, PulseDeps, list[AgentMessage]]):
         if ctx.deps.stream:
             await ctx.deps.stream.set_status("Thinking…")
 
-        result = await run_streaming(
+        result = await streaming(
             ctx.deps.pulse_agent,
             ctx.deps.stream,
             user_prompt=ctx.state.prompt,
@@ -174,7 +174,7 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
                 "Return ONLY the step result as plain text. "
                 "Do not re-plan or summarize other steps."
             )
-            result = await run_streaming(
+            result = await streaming(
                 ctx.deps.pulse_agent,
                 ctx.deps.stream,
                 user_prompt=user_prompt,
@@ -193,7 +193,7 @@ class ExecuteStep(BaseNode[PulseState, PulseDeps]):
                     ctx.deps.toolsets,
                     ctx.deps.stream,
                 )
-            ctx.state.step_outputs[todo.todo_id] = result.output
+            ctx.state.step_outputs[todo.todo_id] = str(result.output)
             ctx.state.main_history = result.all_messages()
             ctx.state.inline_todo_ids.add(todo.todo_id)
             ctx.state.todos = [
@@ -322,7 +322,7 @@ class Synthesize(BaseNode[PulseState, PulseDeps, list[AgentMessage]]):
         else:
             synth_prompt = "Write the final user-facing response."
 
-        result = await run_streaming(
+        result = await streaming(
             ctx.deps.pulse_agent,
             ctx.deps.stream,
             user_prompt=synth_prompt,
@@ -346,7 +346,7 @@ class Synthesize(BaseNode[PulseState, PulseDeps, list[AgentMessage]]):
         if ctx.deps.tentacle and key and ctx.state.card_ref:
             await ctx.deps.tentacle.feelers.todos.unpin_todo(key, ctx.state.card_ref)
 
-        return End(result.output)
+        return End(cast(list[AgentMessage], result.output))
 
 
 pulse_graph = Graph(nodes=[Triage, ExecuteStep, Synthesize])

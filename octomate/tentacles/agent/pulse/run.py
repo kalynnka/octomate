@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic_ai import Agent, AgentRunResult, DeferredToolResults
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 AgentOutputT = TypeVar("AgentOutputT")
 
 
-async def run_streaming(
+async def streaming(
     agent: Agent[SessionContext, AgentOutputT],
     stream: StreamSink | None,
     **kwargs: Any,
@@ -51,7 +52,7 @@ async def resolve_deferred(
     result: AgentRunResult[AgentOutputT],
     tentacle: ChannelTentacle,
     deps: SessionContext,
-    toolsets: list[AbstractToolset[SessionContext]] | None = None,
+    toolsets: Sequence[AbstractToolset[SessionContext]] | None = None,
     stream: StreamSink | None = None,
 ) -> AgentRunResult[AgentOutputT]:
     """Resolve deferred tool calls (HITL interactions) until the agent produces output.
@@ -172,7 +173,7 @@ async def resolve_deferred(
 
             deferred.approvals[call.tool_call_id] = approved
 
-        result = await run_streaming(
+        result = await streaming(
             agent,
             stream,
             message_history=result.all_messages(),

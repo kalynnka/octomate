@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -7,9 +8,9 @@ from pydantic_ai import Agent
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.tentacles.agent.context import SessionContext
-from octomate.tentacles.agent.base import AgentTentacle
 from octomate.schemas.actions import AgentMessage
+from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agent.context import SessionContext
 from octomate.transmuters.interactions import Todo
 
 if TYPE_CHECKING:
@@ -55,8 +56,8 @@ class LocalSubAgent:
         stream: StreamSink | None = None,
         message_history: list[ModelMessage] | None = None,
     ) -> str:
-        from octomate.tentacles.agent.pulse.run import run_streaming
         from octomate.tentacles.agent.pulse.prompts import STEP_INSTRUCTION
+        from octomate.tentacles.agent.pulse.run import streaming
 
         completed = {tid: out for tid, out in state.step_outputs.items()}
         context = (
@@ -73,7 +74,7 @@ class LocalSubAgent:
             title=current.title,
             description=current.description,
         )
-        result = await run_streaming(
+        result = await streaming(
             self.agent,
             stream,
             user_prompt=current.title,
@@ -112,7 +113,7 @@ class PulseDeps:
     tentacles: dict[str, AgentTentacle]
     agent_deps: SessionContext
     tentacle: ChannelTentacle
-    toolsets: list[AbstractToolset[SessionContext]] | None = None
+    toolsets: Sequence[AbstractToolset[SessionContext]] | None = None
     instructions: str | None = None
     message_history: list[ModelMessage] | None = None
     stream: StreamSink | None = None
