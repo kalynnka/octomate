@@ -132,10 +132,33 @@ class CopilotConfig(BaseModel):
     custom_instructions: str = ""
 
 
+class FastResearchConfig(ModelConfig):
+    type: Literal["fast_research"] = "fast_research"
+    tag: str = "fast_research"
+    description: str = (
+        "Fast Research - quick web-grounded answers with source citations"
+    )
+
+
+class DeepResearchConfig(BaseModel):
+    type: Literal["deep_research"] = "deep_research"
+    tag: str = "deep_research"
+    description: str = (
+        "Deep Research - thorough multi-step research producing detailed cited reports"
+    )
+    api_key: str = ""
+    vertexai: bool = False
+    project: str = ""
+    location: str = ""
+    agent: str = "deep-research-pro-preview-12-2025"
+
+
 AgentTentacleConfigUnion = Annotated[
     Union[
         Annotated[ClaudeCodeConfig, Tag("claude_code")],
         Annotated[CopilotConfig, Tag("copilot")],
+        Annotated[FastResearchConfig, Tag("fast_research")],
+        Annotated[DeepResearchConfig, Tag("deep_research")],
     ],
     Discriminator("type"),
 ]

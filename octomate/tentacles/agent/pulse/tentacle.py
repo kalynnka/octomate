@@ -253,11 +253,3 @@ class PulseTentacle(AgentTentacle):
             asyncio.create_task(channel.memory.memo(key, messages, channel))
 
         return "\n".join(str(seg) for msg in messages for seg in msg.segments)
-
-
-def build_pulse_tentacle(
-    config: PulseConfig,
-    octopus: Octopus,
-    skill_manager: SkillManager | None = None,
-) -> PulseTentacle:
-    return PulseTentacle(octopus, config, skill_manager)

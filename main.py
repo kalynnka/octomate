@@ -12,6 +12,8 @@ warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 from octomate.config import (
     ClaudeCodeConfig,
     CopilotConfig,
+    DeepResearchConfig,
+    FastResearchConfig,
     LarkTentacleConfig,
     NapcatTentacleConfig,
     OctomateConfig,
@@ -19,7 +21,7 @@ from octomate.config import (
 )
 from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
 from octomate.octopus import Octopus
-from octomate.tentacles.agent.pulse import build_pulse_tentacle
+from octomate.tentacles.agent.pulse import PulseTentacle
 from octomate.tentacles.agent.skills import SkillManager
 
 logging.basicConfig(level=logging.INFO)
@@ -50,6 +52,14 @@ def _build_octopus() -> Octopus:
             from octomate.tentacles.agent.copilot import CopilotTentacle
 
             octopus.graft(CopilotTentacle(ac.tag, octopus, ac))
+        elif isinstance(ac, FastResearchConfig):
+            from octomate.tentacles.agent.research import FastResearchTentacle
+
+            octopus.graft(FastResearchTentacle(ac.tag, octopus, ac))
+        elif isinstance(ac, DeepResearchConfig):
+            from octomate.tentacles.agent.research import DeepResearchTentacle
+
+            octopus.graft(DeepResearchTentacle(ac.tag, octopus, ac))
 
     for tc in config.tentacles:
         mem = tc.memory
@@ -73,7 +83,7 @@ def _build_octopus() -> Octopus:
                     backoff_base=tc.backoff_base,
                     backoff_max=tc.backoff_max,
                     backoff_factor=tc.backoff_factor,
-                    pulse=build_pulse_tentacle(tc.pulse, octopus, napcat_skill_manager),
+                    pulse=PulseTentacle(octopus, tc.pulse, napcat_skill_manager),
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
@@ -90,7 +100,7 @@ def _build_octopus() -> Octopus:
                     octopus,
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
-                    pulse=build_pulse_tentacle(tc.pulse, octopus, skill_manager),
+                    pulse=PulseTentacle(octopus, tc.pulse, skill_manager),
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
@@ -104,7 +114,7 @@ def _build_octopus() -> Octopus:
                     octopus,
                     bot_token=tc.bot_token,
                     app_token=tc.app_token,
-                    pulse=build_pulse_tentacle(tc.pulse, octopus, skill_manager),
+                    pulse=PulseTentacle(octopus, tc.pulse, skill_manager),
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
