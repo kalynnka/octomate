@@ -13,8 +13,7 @@ from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.agents.base import SessionContext
-from octomate.agents.pulse import PulseAgents
+from octomate.tentacles.agent.context import SessionContext
 from octomate.memory.base import OctopusMemory
 from octomate.octopus import Octopus
 from octomate.schemas.actions import AgentMessage
@@ -30,8 +29,8 @@ from octomate.schemas.session import SessionKey, UserProfile
 from octomate.stores.interaction import InteractionStore
 from octomate.stores.message import MessageStore
 from octomate.stores.thread import ThreadStore
-from octomate.tentacles.base import ChannelTentacle, PlatformMessage, StreamSink
-from octomate.tentacles.feelers import NULL_FEELERS
+from octomate.tentacles.channel.base import ChannelTentacle, PlatformMessage, StreamSink
+from octomate.tentacles.channel.feelers import NULL_FEELERS
 from octomate.transmuters.messages import Message
 from octomate.transmuters.threads import Thread
 
@@ -157,17 +156,39 @@ class MockTentacle(ChannelTentacle):
         self.chromo = MockChromo()
         self.feelers = NULL_FEELERS
         memory = MockOctopusMemory()
+
+        from octomate.tentacles.agent.pulse import PulseTentacle, PulseDeps, PulseState, Triage, pulse_graph
         from octomate.transmuters.interactions import Todo
 
-        triage = Agent(
+        pulse_agent = Agent(
             "test",
             deps_type=SessionContext,
             output_type=[list[AgentMessage], list[Todo], DeferredToolRequests],
         )
-        step = Agent("test", deps_type=SessionContext, output_type=str)
-        synth = Agent("test", deps_type=SessionContext, output_type=list[AgentMessage])
-        agents = PulseAgents(triage=triage, step=step, synthesize=synth)
-        super().__init__(tag, octopus, agents, memory, flush_delay=flush_delay)
+
+        class _MockPulse(PulseTentacle):
+            def __init__(self):
+                # Bypass PulseTentacle.__init__ (no real model needed for tests)
+                from octomate.tentacles.agent.base import AgentTentacle
+                AgentTentacle.__init__(self, "pulse", octopus, description="mock pulse")
+                self.pulse_agent = pulse_agent
+                self.subagents = {}
+                self.triage_toolsets = None
+                self.subagent_catalog = None
+
+            async def process(self, key, state, session_ctx, *, memory_instructions=None, message_history=None, stream=None):
+                deps = PulseDeps(
+                    pulse_agent=self.pulse_agent,
+                    subagents={},
+                    tentacles={},
+                    agent_deps=session_ctx,
+                    tentacle=session_ctx.tentacle if session_ctx else None,
+                )
+                graph_result = await pulse_graph.run(Triage(), state=state, deps=deps)
+                return graph_result.output
+
+        pulse = _MockPulse()
+        super().__init__(tag, octopus, pulse, memory, flush_delay=flush_delay)
         self.threads = MockThreadStore(default_owner=tag)
         self.interactions = InteractionStore(threads=self.threads)
 

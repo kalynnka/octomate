@@ -17,8 +17,7 @@ class TentacleConfig(BaseModel):
             self.tentacle_id = self.name
 
 
-class FlickConfig(BaseModel):
-    enabled: bool = False
+class ModelConfig(BaseModel):
     model: str = "gemini-3-flash-preview"
     api_key: str = ""
     base_url: str = ""
@@ -26,6 +25,17 @@ class FlickConfig(BaseModel):
     project: str = ""
     location: str = ""
     thinking: bool | Literal["minimal", "low", "medium", "high", "xhigh"] = "medium"
+
+
+class SubAgentConfig(ModelConfig):
+    description: str = ""
+    system_prompt: str | None = None
+
+
+class PulseConfig(BaseModel):
+    enabled: bool = False
+    main: ModelConfig = Field(default_factory=ModelConfig)
+    subagents: dict[str, SubAgentConfig] = Field(default_factory=dict)
 
 
 class Mem0Config(Mem0MemoryConfig):
@@ -53,7 +63,7 @@ class NapcatTentacleConfig(TentacleConfig):
     backoff_base: float = 1.0
     backoff_max: float = 60.0
     backoff_factor: float = 2.0
-    flick: FlickConfig = Field(default_factory=FlickConfig)
+    pulse: PulseConfig = Field(default_factory=PulseConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
@@ -62,7 +72,7 @@ class LarkTentacleConfig(TentacleConfig):
     name: str = "lark"
     app_id: str
     app_secret: SecretStr
-    flick: FlickConfig = Field(default_factory=FlickConfig)
+    pulse: PulseConfig = Field(default_factory=PulseConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
@@ -71,7 +81,7 @@ class SlackTentacleConfig(TentacleConfig):
     name: str = "slack"
     bot_token: SecretStr
     app_token: SecretStr
-    flick: FlickConfig = Field(default_factory=FlickConfig)
+    pulse: PulseConfig = Field(default_factory=PulseConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
@@ -122,10 +132,33 @@ class CopilotConfig(BaseModel):
     custom_instructions: str = ""
 
 
+class FastResearchConfig(ModelConfig):
+    type: Literal["fast_research"] = "fast_research"
+    tag: str = "fast_research"
+    description: str = (
+        "Fast Research - quick web-grounded answers with source citations"
+    )
+
+
+class DeepResearchConfig(BaseModel):
+    type: Literal["deep_research"] = "deep_research"
+    tag: str = "deep_research"
+    description: str = (
+        "Deep Research - thorough multi-step research producing detailed cited reports"
+    )
+    api_key: str = ""
+    vertexai: bool = False
+    project: str = ""
+    location: str = ""
+    agent: str = "deep-research-pro-preview-12-2025"
+
+
 AgentTentacleConfigUnion = Annotated[
     Union[
         Annotated[ClaudeCodeConfig, Tag("claude_code")],
         Annotated[CopilotConfig, Tag("copilot")],
+        Annotated[FastResearchConfig, Tag("fast_research")],
+        Annotated[DeepResearchConfig, Tag("deep_research")],
     ],
     Discriminator("type"),
 ]

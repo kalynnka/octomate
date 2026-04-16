@@ -20,7 +20,7 @@ from octomate.transmuters.messages import Message
 
 if TYPE_CHECKING:
     from octomate.schemas.events import MessageEvent
-    from octomate.tentacles.base import ChannelTentacle
+    from octomate.tentacles.channel.base import ChannelTentacle
 
 logger = logging.getLogger(__name__)
 

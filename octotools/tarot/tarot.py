@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from pydantic_ai import RunContext
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-from octomate.agents.manager import SkillManager
+from octomate.tentacles.agent.skills import SkillManager
 
 logger = logging.getLogger(__name__)
 

@@ -4,9 +4,9 @@ import asyncio
 import contextlib
 import logging
 
-from octomate.agents.manager import SkillManager
 from octomate.nerve import (
     AgentPending,
+    AgentResult,
     AgentSignal,
     AnyioNerve,
     AskUser,
@@ -28,7 +28,9 @@ from octomate.nerve import (
 )
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
-from octomate.tentacles.base import AgentTentacle, ChannelTentacle
+from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agent.skills import SkillManager
+from octomate.tentacles.channel.base import ChannelTentacle
 from octomate.transmuters import sqlalchemy_materia
 
 logger = logging.getLogger(__name__)
@@ -91,7 +93,13 @@ class Octopus:
                         signal.key.tentacle_id,
                     )
             asyncio.create_task(
-                agent(signal.key, signal.contents, session_name=signal.session_name)
+                agent(
+                    signal.key,
+                    signal.contents,
+                    session_name=signal.session_name,
+                    request_id=signal.request_id,
+                    silent=signal.silent,
+                )
             )
 
         @self.agent_dispatcher.on(StreamFrame)
@@ -267,6 +275,10 @@ class Octopus:
             channel = self.tentacles.get(signal.key.tentacle_id)
             if channel is not None:
                 await channel.threads.set_owner(signal.key, channel)
+
+        @self.agent_dispatcher.on(AgentResult)
+        async def handle_agent_result(signal: AgentResult) -> None:
+            self.pending.agent_results.resolve(signal.request_id, signal)
 
     async def activate(self) -> None:
         try:

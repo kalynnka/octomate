@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from octomate.tentacles.base import MessageBuffer
+from octomate.tentacles.channel.base import MessageBuffer
 from tests.helpers import make_group_event, make_private_event
 
 

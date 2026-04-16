@@ -9,11 +9,11 @@ import octotools
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
-from octomate.agents.pulse import build_summon_toolset, create_pulse_agents
-from octomate.agents.manager import SkillManager
 from octomate.config import (
     ClaudeCodeConfig,
     CopilotConfig,
+    DeepResearchConfig,
+    FastResearchConfig,
     LarkTentacleConfig,
     NapcatTentacleConfig,
     OctomateConfig,
@@ -21,6 +21,8 @@ from octomate.config import (
 )
 from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
 from octomate.octopus import Octopus
+from octomate.tentacles.agent.pulse import PulseTentacle
+from octomate.tentacles.agent.skills import SkillManager
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
@@ -43,15 +45,21 @@ def _build_octopus() -> Octopus:
 
     for ac in config.agents:
         if isinstance(ac, ClaudeCodeConfig):
-            from octomate.tentacles.claude import ClaudeCodeTentacle
+            from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 
             octopus.graft(ClaudeCodeTentacle(ac.tag, octopus, ac))
         elif isinstance(ac, CopilotConfig):
-            from octomate.tentacles.copilot import CopilotTentacle
+            from octomate.tentacles.agent.copilot import CopilotTentacle
 
             octopus.graft(CopilotTentacle(ac.tag, octopus, ac))
+        elif isinstance(ac, FastResearchConfig):
+            from octomate.tentacles.agent.research import FastResearchTentacle
 
-    summon_toolset = build_summon_toolset(octopus.agent_tentacles)
+            octopus.graft(FastResearchTentacle(ac.tag, octopus, ac))
+        elif isinstance(ac, DeepResearchConfig):
+            from octomate.tentacles.agent.research import DeepResearchTentacle
+
+            octopus.graft(DeepResearchTentacle(ac.tag, octopus, ac))
 
     for tc in config.tentacles:
         mem = tc.memory
@@ -63,7 +71,7 @@ def _build_octopus() -> Octopus:
             memory = OctopusMemory()
 
         if isinstance(tc, NapcatTentacleConfig):
-            from octomate.tentacles.napcat import NapcatTentacle
+            from octomate.tentacles.channel.napcat import NapcatTentacle
 
             octopus.connect(
                 NapcatTentacle(
@@ -75,16 +83,13 @@ def _build_octopus() -> Octopus:
                     backoff_base=tc.backoff_base,
                     backoff_max=tc.backoff_max,
                     backoff_factor=tc.backoff_factor,
-                    agents=create_pulse_agents(
-                        tc.flick,
-                        napcat_skill_manager,
-                    ),
+                    pulse=PulseTentacle(octopus, tc.pulse, napcat_skill_manager),
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
             )
         elif isinstance(tc, LarkTentacleConfig):
-            from octomate.tentacles.lark import LarkTentacle
+            from octomate.tentacles.channel.lark import LarkTentacle
 
             warnings.filterwarnings(
                 "ignore", category=DeprecationWarning, module=r"lark_oapi"
@@ -95,17 +100,13 @@ def _build_octopus() -> Octopus:
                     octopus,
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
-                    agents=create_pulse_agents(
-                        tc.flick,
-                        skill_manager,
-                        summon_toolset=summon_toolset,
-                    ),
+                    pulse=PulseTentacle(octopus, tc.pulse, skill_manager),
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
             )
         elif isinstance(tc, SlackTentacleConfig):
-            from octomate.tentacles.slack import SlackTentacle
+            from octomate.tentacles.channel.slack import SlackTentacle
 
             octopus.connect(
                 SlackTentacle(
@@ -113,11 +114,7 @@ def _build_octopus() -> Octopus:
                     octopus,
                     bot_token=tc.bot_token,
                     app_token=tc.app_token,
-                    agents=create_pulse_agents(
-                        tc.flick,
-                        skill_manager,
-                        summon_toolset=summon_toolset,
-                    ),
+                    pulse=PulseTentacle(octopus, tc.pulse, skill_manager),
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )

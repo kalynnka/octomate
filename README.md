@@ -19,7 +19,7 @@ User sends a message on Slack / Lark / QQ
       Octopus 🐙           ← central coordinator, routes by thread ownership
          │
          ▼
-   Flick Agent ⚡          ← per-tentacle quick brain (Google Gemini)
+   Pulse Agent ⚡          ← per-tentacle quick brain (Google Gemini)
    ┌──────┴──────┐
 ANSWER        SUMMON              SILENT
    │              │                  │
@@ -30,7 +30,7 @@ directly   AgentTentacle
 
 1. A **ChannelTentacle** listens for incoming messages, buffers them briefly (configurable flush delay), and pushes them through the **Nerve**.
 2. The **Octopus** coordinator dispatches the batch to the owning tentacle.
-3. The tentacle's **Flick** agent decides: **ANSWER** directly, **SUMMON** a specialist `AgentTentacle`, or stay **SILENT**.
+3. The tentacle's **Pulse** agent decides: **ANSWER** directly, **SUMMON** a specialist `AgentTentacle`, or stay **SILENT**.
 4. If a tool requires human approval, **Feelers** send interactive cards (approve / deny buttons) inside the chat platform.
 5. **Memory** is recalled before each interaction and updated after.
 
@@ -45,7 +45,7 @@ Octomate uses an octopus anatomy metaphor throughout the codebase:
 | **Octopus** 🐙 | `Octopus` (`octomate/octopus.py`) | Central coordinator. Owns all tentacles and routes messages through the nerve. |
 | **Tentacle** 🦑 | `ChannelTentacle` (`octomate/tentacles/base.py`) | Platform adapter. One per IM platform: `SlackTentacle`, `LarkTentacle`, `NapcatTentacle`. |
 | **Agent Tentacle** 🧠 | `AgentTentacle` (`octomate/tentacles/base.py`) | Specialist agent (e.g. `ClaudeCodeTentacle`) summoned for complex tasks. |
-| **Flick** ⚡ | `create_flick_agent()` (`octomate/agents/flick.py`) | Per-tentacle quick brain — a pydantic-ai Agent on Google Gemini. First to touch every message. |
+| **Pulse** ⚡ | `create_pulse_agents()` (`octomate/agents/pulse.py`) | Per-tentacle quick brain — a pydantic-ai Agent on Google Gemini. First to touch every message. |
 | **Nerve** 🔗 | anyio object stream inside `Octopus` | Message bus that connects tentacles to the coordinator. |
 | **Feeler** 🫧 | `Feelers` (`octomate/tentacles/feelers.py`) | Interactive UI: tool-call confirmations, user questions, todo cards. Platform-specific for Slack and Lark. |
 | **Ink** 🖊️ | Platform API client per tentacle | Sends messages, uploads files, updates cards. |
@@ -66,13 +66,13 @@ Octomate uses an octopus anatomy metaphor throughout the codebase:
 
 ## Agent Tentacles
 
-- **Claude Code** (`octomate/tentacles/claude.py`) — wraps the Claude Agent SDK for coding, file editing, and shell commands. Summoned by Flick when a complex task arrives. Streams responses back to the chat with thinking blocks, live progress, and approval cards.
+- **Claude Code** (`octomate/tentacles/claude.py`) — wraps the Claude Agent SDK for coding, file editing, and shell commands. Summoned by Pulse when a complex task arrives. Streams responses back to the chat with thinking blocks, live progress, and approval cards.
 
 ---
 
 ## Skills (`octotools/`)
 
-Pluggable toolsets that Flick (and other agents) can call:
+Pluggable toolsets that Pulse (and other agents) can call:
 
 | Skill | File | Description |
 |---|---|---|
@@ -95,7 +95,7 @@ Pluggable toolsets that Flick (and other agents) can call:
 │   ├── config.py              # Configuration (pydantic-settings, YAML + env)
 │   ├── database.py            # SQLAlchemy async setup (SQLite by default)
 │   ├── agents/
-│   │   ├── flick.py           # ⚡ Per-tentacle quick agent (Gemini)
+│   │   ├── pulse.py           # ⚡ Per-tentacle pulse agent (Gemini)
 │   │   ├── manager.py         # Skill discovery and management
 │   │   ├── prompts.py         # System prompts
 │   │   └── tools.py           # Built-in tools (chat history)
@@ -125,7 +125,7 @@ Pluggable toolsets that Flick (and other agents) can call:
 ## Tech Stack
 
 - **Python 3.13** · **[uv](https://docs.astral.sh/uv/)** package manager
-- **pydantic-ai** — agent framework (Google Gemini for Flick by default)
+- **pydantic-ai** — agent framework (Google Gemini for Pulse by default)
 - **claude-agent-sdk** — Claude Code agent tentacle
 - **pydantic / pydantic-settings** — config and schema validation
 - **SQLAlchemy** (async + aiosqlite) · **Alembic** — database and migrations

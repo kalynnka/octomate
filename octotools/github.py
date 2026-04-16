@@ -6,7 +6,7 @@ from pydantic import SecretStr
 from pydantic_ai.mcp import MCPServerStreamableHTTP
 from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-from octomate.agents.manager import SkillManager, ToolPermission
+from octomate.tentacles.agent.skills import SkillManager, ToolPermission
 
 REMOTE_MCP_URL = "https://api.githubcopilot.com/mcp/"
 
