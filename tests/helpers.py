@@ -157,13 +157,13 @@ class MockTentacle(ChannelTentacle):
         self.feelers = NULL_FEELERS
         memory = MockOctopusMemory()
 
-        from octomate.tentacles.agent.pulse import PulseTentacle, PulseDeps, PulseState, Triage, pulse_graph
-        from octomate.transmuters.interactions import Todo
+        from octomate.tentacles.agent.pulse import PulseTentacle, PulseState
+        from octomate.tentacles.agent.pulse.tools import build_todo_list_toolset
 
         pulse_agent = Agent(
             "test",
             deps_type=SessionContext,
-            output_type=[list[AgentMessage], list[Todo], DeferredToolRequests],
+            output_type=[list[AgentMessage], DeferredToolRequests],
         )
 
         class _MockPulse(PulseTentacle):
@@ -175,17 +175,27 @@ class MockTentacle(ChannelTentacle):
                 self.subagents = {}
                 self.triage_toolsets = None
                 self.subagent_catalog = None
+                self.max_turns = 50
 
-            async def process(self, key, state, session_ctx, *, memory_instructions=None, message_history=None, stream=None):
-                deps = PulseDeps(
-                    pulse_agent=self.pulse_agent,
-                    subagents={},
-                    tentacles={},
-                    agent_deps=session_ctx,
-                    tentacle=session_ctx.tentacle if session_ctx else None,
+            async def run(self, key, contents, *, session_name="", silent=False):
+                from octomate.schemas.events import MessageEvent as _ME
+                channel = self.octopus.tentacles.get(key.tentacle_id)
+                user_prompt: list = []
+                for msg in contents:
+                    if isinstance(msg, _ME):
+                        user_prompt.extend(msg.to_content_parts())
+                state = PulseState(prompt=user_prompt or "test")
+                todo_toolset = build_todo_list_toolset(state)
+                result = await self.pulse_agent.run(
+                    user_prompt=state.prompt if isinstance(state.prompt, str) else str(state.prompt),
+                    toolsets=[todo_toolset],
                 )
-                graph_result = await pulse_graph.run(Triage(), state=state, deps=deps)
-                return graph_result.output
+                messages = result.output if isinstance(result.output, list) else []
+                if not silent and channel:
+                    for msg in messages:
+                        if isinstance(msg, AgentMessage):
+                            await channel.twitch(key, msg.segments)
+                return "\n".join(str(seg) for msg in messages if isinstance(msg, AgentMessage) for seg in msg.segments)
 
         pulse = _MockPulse()
         super().__init__(tag, octopus, pulse, memory, flush_delay=flush_delay)

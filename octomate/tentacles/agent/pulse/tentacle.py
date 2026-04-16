@@ -1,42 +1,42 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from pydantic_ai import Agent, CallDeferred, RunContext
 from pydantic_ai.common_tools.web_fetch import web_fetch_tool
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
+from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness import CodeMode
 
 from octomate.config import ModelConfig, PulseAgentConfig
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.context import RetryTransport, SessionContext
-from octomate.tentacles.agent.pulse.graph import Triage, pulse_graph
 from octomate.tentacles.agent.pulse.prompts import STEP_PROMPT, SYSTEM_PROMPT
+from octomate.tentacles.agent.pulse.run import streaming
 from octomate.tentacles.agent.pulse.state import (
     LocalSubAgent,
-    PulseDeps,
+    PulseOutput,
     PulseState,
     SubAgent,
-    TriageOutput,
 )
+from octomate.tentacles.agent.pulse.tools import build_delegate_toolset, build_todo_list_toolset
 from octomate.tentacles.agent.skills import SkillManager
-from octomate.transmuters.interactions import Todo
 
 if TYPE_CHECKING:
-    from pydantic_ai.messages import ModelMessage
-
     from octomate.octopus import Octopus
-    from octomate.tentacles.channel.base import StreamSink
 
 logger = logging.getLogger(__name__)
 
@@ -99,16 +99,17 @@ def build_summon_toolset(
 
 
 class PulseTentacle(AgentTentacle):
-    """Octomate's pulse — merged triage/synthesize + subagent execution.
+    """Octomate's pulse — model-loop with tool-driven planning via todo_list.
 
-    Channels invoke process() directly (not via beckon) to run the pulse graph.
+    Channels invoke process() directly (not via beckon) to run the pulse loop.
     Can also be beckoned as an AgentTentacle via run() for silent plan steps.
     """
 
-    pulse_agent: Agent[SessionContext, TriageOutput]
+    pulse_agent: Agent[SessionContext, PulseOutput]
     subagents: dict[str, SubAgent]
     triage_toolsets: Sequence[AbstractToolset[SessionContext]] | None
     subagent_catalog: str | None
+    max_turns: int
 
     def __init__(
         self,
@@ -147,21 +148,23 @@ class PulseTentacle(AgentTentacle):
             main_model,
             system_prompt=SYSTEM_PROMPT,
             deps_type=SessionContext,
-            output_type=[list[AgentMessage], list[Todo], DeferredToolRequests],
+            output_type=[list[AgentMessage], DeferredToolRequests],
             tools=[web_fetch_tool()],
             toolsets=self.triage_toolsets,
             model_settings=main_settings,
         )
 
+        self.max_turns = config.max_turns
+
         self.subagents = {}
-        for tag, sub_cfg in config.subagents.items():
+        for sub_tag, sub_cfg in config.subagents.items():
             sub_model = _build_model(sub_cfg, http_client)
             sub_settings = (
                 ModelSettings(thinking=sub_cfg.thinking) if sub_cfg.thinking else None
             )
-            self.subagents[tag] = LocalSubAgent(
-                id=tag,
-                description=sub_cfg.description or f"Pulse subagent {tag}",
+            self.subagents[sub_tag] = LocalSubAgent(
+                id=sub_tag,
+                description=sub_cfg.description or f"Pulse subagent {sub_tag}",
                 agent=Agent(
                     sub_model,
                     system_prompt=sub_cfg.system_prompt or STEP_PROMPT,
@@ -174,45 +177,13 @@ class PulseTentacle(AgentTentacle):
 
         if self.subagents:
             lines = [
-                f'- "{tag}": {sub.description}' for tag, sub in self.subagents.items()
+                f'- "{sub_tag}": {sub.description}' for sub_tag, sub in self.subagents.items()
             ]
             self.subagent_catalog = (
                 "[available step assignees (subagents)]\n" + "\n".join(lines)
             )
         else:
             self.subagent_catalog = None
-
-    async def process(
-        self,
-        key: Any,
-        state: PulseState,
-        session_ctx: SessionContext,
-        *,
-        memory_instructions: str | None = None,
-        message_history: list[ModelMessage] | None = None,
-        stream: StreamSink | None = None,
-    ) -> list[AgentMessage]:
-        """Run the pulse graph and return the final messages. Called directly by channels."""
-        instructions = (
-            "\n\n".join(filter(None, [self.subagent_catalog, memory_instructions]))
-            or None
-        )
-
-        pulse_deps = PulseDeps(
-            pulse_agent=self.pulse_agent,
-            subagents=self.subagents,
-            tentacles={
-                k: v for k, v in self.octopus.agent_tentacles.items() if k != self.id
-            },
-            agent_deps=session_ctx,
-            tentacle=session_ctx.tentacle,
-            toolsets=session_ctx.tentacle.toolsets if session_ctx.tentacle else None,
-            instructions=instructions,
-            message_history=message_history,
-            stream=stream,
-        )
-        graph_result = await pulse_graph.run(Triage(), state=state, deps=pulse_deps)
-        return graph_result.output
 
     async def run(
         self,
@@ -222,13 +193,13 @@ class PulseTentacle(AgentTentacle):
         session_name: str = "",
         silent: bool = False,
     ) -> str | None:
-        """AgentTentacle beckoning path — runs graph, twitches result if not silent."""
-
         channel = self.octopus.tentacles.get(key.tentacle_id)
         if channel is None:
             return None
 
-        user_prompt: list = []
+        context = f"[group: {key.group_id}]" if key.group_id else "[chat: private]"
+        header = f"[me: {channel.name} ({channel.profile.user_id})] {context}"
+        user_prompt: list = [header]
         for msg in contents:
             if isinstance(msg, MessageEvent):
                 user_prompt.extend(msg.to_content_parts())
@@ -242,15 +213,40 @@ class PulseTentacle(AgentTentacle):
         message_history = await channel.memory.history(key, size=32)
         session_ctx = SessionContext(session_key=key, tentacle=channel)
         state = PulseState(prompt=user_prompt)
-
-        messages = await self.process(
-            key,
-            state,
-            session_ctx,
-            memory_instructions=memory_instructions,
-            message_history=message_history,
-            stream=None,
+        instructions = (
+            "\n\n".join(filter(None, [self.subagent_catalog, memory_instructions]))
+            or None
         )
+        run_toolsets: list[AbstractToolset[SessionContext]] = [
+            *list(channel.toolsets),
+            build_todo_list_toolset(state),
+            *([delegate] if (delegate := build_delegate_toolset(self.subagents, state)) else []),
+        ]
+
+        stream_ctx = contextlib.nullcontext() if silent else channel.open_stream(key)
+        try:
+            async with stream_ctx as stream:
+                result = await streaming(
+                    self.pulse_agent,
+                    stream,
+                    tentacle=channel,
+                    user_prompt=state.prompt,
+                    deps=session_ctx,
+                    toolsets=run_toolsets or None,
+                    instructions=instructions,
+                    message_history=message_history,
+                    usage_limits=UsageLimits(request_limit=self.max_turns),
+                )
+                messages = cast(list[AgentMessage], result.output)
+        except UsageLimitExceeded:
+            logger.warning("[%s] Pulse hit max_turns limit (%d)", key, self.max_turns)
+            messages = [AgentMessage(segments=[TextSegment(data={"text": "Sorry, I hit my turn limit on this task."})])]
+        except Exception:
+            logger.exception("[%s] Pulse encountered an error", key)
+            messages = [AgentMessage(segments=[TextSegment(data={"text": "Something went wrong while processing your request."})])]
+        finally:
+            if state.card_ref:
+                await channel.feelers.todos.unpin_todo(key, state.card_ref)
 
         if not silent:
             for msg in messages:

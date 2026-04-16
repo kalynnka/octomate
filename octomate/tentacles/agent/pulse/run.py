@@ -27,24 +27,36 @@ AgentOutputT = TypeVar("AgentOutputT")
 async def streaming(
     agent: Agent[SessionContext, AgentOutputT],
     stream: StreamSink | None,
+    tentacle: ChannelTentacle | None = None,
     **kwargs: Any,
 ) -> AgentRunResult[AgentOutputT]:
     if not stream:
-        return await agent.run(**kwargs)
-    try:
-        result: AgentRunResult[AgentOutputT] | None = None
-        async for event in agent.run_stream_events(**kwargs):
-            if isinstance(event, AgentRunResultEvent):
-                result = event.result
-            elif isinstance(event, PartEndEvent) and isinstance(
-                event.part, ThinkingPart
-            ):
-                if event.part.content:
-                    await stream.post_thinking_block(event.part.content)
-        assert result is not None, "The stream run did not produce a result"
-        return result
-    except (AssertionError, NotImplementedError):
-        return await agent.run(**kwargs)
+        result = await agent.run(**kwargs)
+    else:
+        try:
+            result = None
+            async for event in agent.run_stream_events(**kwargs):
+                if isinstance(event, AgentRunResultEvent):
+                    result = event.result
+                elif isinstance(event, PartEndEvent) and isinstance(
+                    event.part, ThinkingPart
+                ):
+                    if event.part.content:
+                        await stream.post_thinking_block(event.part.content)
+            assert result is not None, "The stream run did not produce a result"
+        except (AssertionError, NotImplementedError):
+            result = await agent.run(**kwargs)
+
+    if isinstance(result.output, DeferredToolRequests) and tentacle:
+        result = await resolve_deferred(
+            agent,
+            result,
+            tentacle,
+            kwargs["deps"],
+            toolsets=kwargs.get("toolsets"),
+            stream=stream,
+        )
+    return result
 
 
 async def resolve_deferred(

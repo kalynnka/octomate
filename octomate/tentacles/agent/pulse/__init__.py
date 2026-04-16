@@ -1,34 +1,28 @@
-from octomate.tentacles.agent.pulse.graph import (
-    ExecuteStep,
-    Synthesize,
-    Triage,
-    pulse_graph,
-)
 from octomate.tentacles.agent.pulse.run import resolve_deferred, streaming
 from octomate.tentacles.agent.pulse.state import (
     LocalSubAgent,
-    PulseDeps,
+    PulseOutput,
     PulseState,
     SubAgent,
-    TriageOutput,
 )
 from octomate.tentacles.agent.pulse.tentacle import (
     PulseTentacle,
     build_summon_toolset,
 )
+from octomate.tentacles.agent.pulse.tools import (
+    build_delegate_toolset,
+    build_todo_list_toolset,
+)
 
 __all__ = [
-    "ExecuteStep",
     "LocalSubAgent",
-    "PulseDeps",
+    "PulseOutput",
     "PulseState",
     "PulseTentacle",
     "SubAgent",
-    "Synthesize",
-    "TriageOutput",
-    "Triage",
+    "build_delegate_toolset",
     "build_summon_toolset",
-    "pulse_graph",
+    "build_todo_list_toolset",
     "resolve_deferred",
     "streaming",
 ]

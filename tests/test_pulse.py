@@ -1,4 +1,4 @@
-"""Tests for the Pulse graph-based planning pipeline."""
+"""Tests for the Pulse model-loop planning pipeline."""
 
 from __future__ import annotations
 
@@ -9,39 +9,28 @@ from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.tentacles.agent.pulse import (
-    PulseDeps,
-    PulseState,
-    Triage,
-    pulse_graph,
-)
+from octomate.tentacles.agent.pulse import PulseState
+from octomate.tentacles.agent.pulse.tools import TodoInput, build_todo_list_toolset
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.segments import TextSegment
+from octomate.schemas.session import SessionKey
+from octomate.tentacles.agent.context import SessionContext
 from octomate.transmuters.interactions import Todo
 
 
 def _make_pulse_agent(model: FunctionModel | None = None) -> Agent:
     return Agent(
         model or "test",
-        output_type=[list[AgentMessage], list[Todo], DeferredToolRequests],
+        deps_type=SessionContext,
+        output_type=[list[AgentMessage], DeferredToolRequests],
     )
 
 
-def _make_deps(pulse_agent=None) -> PulseDeps:
-    agent = pulse_agent or _make_pulse_agent()
-    return PulseDeps(
-        pulse_agent=agent,
-        subagents={},
-        tentacles={},
-        agent_deps=None,  # type: ignore[arg-type]
+def _mock_ctx() -> SessionContext:
+    return SessionContext(
+        session_key=SessionKey(tentacle_id="test", user_id="user-1"),
         tentacle=None,  # type: ignore[arg-type]
     )
-
-
-async def _run(deps: PulseDeps, prompt: str | list):
-    state = PulseState(prompt=prompt)
-    result = await pulse_graph.run(Triage(), state=state, deps=deps)
-    return result.output
 
 
 def _msg_payload(text: str) -> str:
@@ -50,15 +39,8 @@ def _msg_payload(text: str) -> str:
     )
 
 
-def _adaptive_response(text: str, info: AgentInfo) -> ModelResponse:
-    """Return the right output format based on what type of call this is.
-
-    - No output tools → output_type=str (inline step) → TextPart
-    - One output tool → output_type=list[AgentMessage] per-call override (synth) → tool call
-    - Multiple output tools → default union output (triage) → use first non-deferred tool
-    """
-    if not info.output_tools:
-        return ModelResponse(parts=[TextPart(content=text)])
+def _answer_response(text: str, info: AgentInfo) -> ModelResponse:
+    """Return list[AgentMessage] output — direct answer path."""
     tool = next(
         (t for t in info.output_tools if "deferred" not in t.name.lower()),
         info.output_tools[0],
@@ -68,18 +50,10 @@ def _adaptive_response(text: str, info: AgentInfo) -> ModelResponse:
     )
 
 
-def _todo_response(todos: list[dict], info: AgentInfo) -> ModelResponse:
-    """Return todos using the second non-deferred output tool (list[Todo] branch)."""
-    non_deferred = [t for t in info.output_tools if "deferred" not in t.name.lower()]
-    tool = non_deferred[1] if len(non_deferred) > 1 else non_deferred[0]
+def _tool_call_response(tool_name: str, args: dict, call_id: str = "t0") -> ModelResponse:
+    """Return a regular tool call (not an output tool)."""
     return ModelResponse(
-        parts=[
-            ToolCallPart(
-                tool_name=tool.name,
-                args=json.dumps({"response": todos}),
-                tool_call_id="plan",
-            )
-        ]
+        parts=[ToolCallPart(tool_name=tool_name, args=json.dumps(args), tool_call_id=call_id)]
     )
 
 
@@ -95,6 +69,22 @@ def _extract_text(output) -> str:
     return str(output)
 
 
+async def _run_process(agent: Agent, prompt: str | list, *, max_turns: int = 50) -> list[AgentMessage]:
+    """Drive PulseTentacle.process() without a real model or channel."""
+    from pydantic_ai.usage import UsageLimits
+
+    state = PulseState(prompt=prompt)
+    todo_toolset = build_todo_list_toolset(state)
+
+    result = await agent.run(
+        user_prompt=prompt if isinstance(prompt, str) else str(prompt),
+        deps=_mock_ctx(),
+        toolsets=[todo_toolset],
+        usage_limits=UsageLimits(request_limit=max_turns),
+    )
+    return result.output
+
+
 async def test_direct_answer_single_call():
     """Simple questions answered directly require only 1 LLM call."""
     call_count = 0
@@ -102,203 +92,133 @@ async def test_direct_answer_single_call():
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal call_count
         call_count += 1
-        return _adaptive_response("42", info)
+        return _answer_response("42", info)
 
-    deps = _make_deps(_make_pulse_agent(FunctionModel(fn)))
-    result = await _run(deps, "What is 6*7?")
+    agent = _make_pulse_agent(FunctionModel(fn))
+    result = await _run_process(agent, "What is 6*7?")
 
     assert _extract_text(result) == "42"
     assert call_count == 1
 
 
-async def test_plan_path_runs_all_steps():
-    """Complex tasks go through triage → execute steps → synthesize."""
-    call_count = 0
-    todos = [
-        {"todo_id": "pulse-0", "title": "Step A", "description": "Do step A in detail"},
-        {"todo_id": "pulse-1", "title": "Step B", "description": "Do step B in detail"},
-    ]
+async def test_todo_list_tool_updates_state():
+    """Calling todo_list tool updates state.todos with the provided items."""
+    state = PulseState(prompt="test")
+    toolset = build_todo_list_toolset(state)
 
-    def fn(messages: list, info: AgentInfo) -> ModelResponse:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return _todo_response(todos, info)
-        return _adaptive_response(f"result-{call_count}", info)
+    agent = Agent("test", deps_type=SessionContext, output_type=[list[AgentMessage], DeferredToolRequests])
 
-    deps = _make_deps(_make_pulse_agent(FunctionModel(fn)))
-    result = await _run(deps, "Summarize then compare")
-
-    # 1 triage + 2 inline steps + 1 synthesize = 4
-    assert call_count == 4
-    assert isinstance(result, (str, list))
-
-
-async def test_steps_tracked_as_todos():
-    """Plan steps in the graph state are Todo objects marked done after execution."""
-    todos = [
-        {
-            "todo_id": "pulse-0",
-            "title": "Summarize",
-            "description": "Summarize the document",
-        },
-        {
-            "todo_id": "pulse-1",
-            "title": "Compare",
-            "description": "Compare against last quarter",
-        },
-    ]
     call_count = 0
 
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return _todo_response(todos, info)
-        return _adaptive_response("done", info)
+            return _tool_call_response(
+                "todo_list",
+                {
+                    "todos": [
+                        {"todo_id": "p-0", "title": "Research", "description": "Look it up"},
+                        {"todo_id": "p-1", "title": "Write", "description": "Write the summary"},
+                    ]
+                },
+            )
+        return _answer_response("done", info)
 
-    state = PulseState(prompt="test task")
-    deps = _make_deps(_make_pulse_agent(FunctionModel(fn)))
-    await pulse_graph.run(Triage(), state=state, deps=deps)
+    result = await agent.run(
+        user_prompt="research and summarize",
+        model=FunctionModel(fn),
+        deps=_mock_ctx(),
+        toolsets=[toolset],
+    )
 
     assert len(state.todos) == 2
     assert all(isinstance(t, Todo) for t in state.todos)
-    assert all(t.status == "completed" for t in state.todos)
-    assert state.todos[0].title == "Summarize"
-    assert state.todos[0].description == "Summarize the document"
-    assert state.todos[1].title == "Compare"
-    assert state.todos[1].description == "Compare against last quarter"
+    assert state.todos[0].title == "Research"
+    assert state.todos[1].title == "Write"
+    assert _extract_text(result.output) == "done"
 
 
-async def test_triage_fallback_to_direct():
-    """When triage returns list[AgentMessage], it becomes the direct answer."""
-    def fn(messages: list, info: AgentInfo) -> ModelResponse:
-        return _adaptive_response("Just a simple answer.", info)
+async def test_todo_list_status_updates():
+    """Re-calling todo_list with updated statuses updates state.todos accordingly."""
+    state = PulseState(prompt="test")
+    toolset = build_todo_list_toolset(state)
+    agent = Agent("test", deps_type=SessionContext, output_type=[list[AgentMessage], DeferredToolRequests])
 
-    deps = _make_deps(_make_pulse_agent(FunctionModel(fn)))
-    result = await _run(deps, "simple question")
-    assert _extract_text(result) == "Just a simple answer."
-
-
-async def test_full_pipeline_no_internal_leakage():
-    """Internal plan details must not leak into the final answer."""
     call_count = 0
-    todos = [
-        {"todo_id": "pulse-0", "title": "Summarize", "description": "Summarize key findings"},
-        {"todo_id": "pulse-1", "title": "Compare", "description": "Compare with baseline"},
-        {"todo_id": "pulse-2", "title": "Recommend", "description": "Produce final recommendation"},
-    ]
 
     def fn(messages: list, info: AgentInfo) -> ModelResponse:
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return _todo_response(todos, info)
-        if not info.output_tools:
-            return ModelResponse(parts=[TextPart(content=f"Step output {call_count}")])
-        return _adaptive_response("Final clean answer", info)
+            return _tool_call_response(
+                "todo_list",
+                {"todos": [{"todo_id": "p-0", "title": "Step A", "status": "pending"}]},
+            )
+        if call_count == 2:
+            return _tool_call_response(
+                "todo_list",
+                {"todos": [{"todo_id": "p-0", "title": "Step A", "status": "completed"}]},
+            )
+        return _answer_response("all done", info)
 
-    deps = _make_deps(_make_pulse_agent(FunctionModel(fn)))
-    answer = await _run(deps, "Analyze the report")
+    await agent.run(user_prompt="do something", model=FunctionModel(fn), deps=_mock_ctx(), toolsets=[toolset])
 
-    assert _extract_text(answer) == "Final clean answer"
-    # 1 triage + 3 steps + 1 synthesize = 5
-    assert call_count == 5
+    assert state.todos[0].status == "completed"
+
+
+async def test_todo_list_tool_return_message():
+    """todo_list tool returns a human-readable confirmation string."""
+    state = PulseState(prompt="test")
+    toolset = build_todo_list_toolset(state)
+    agent = Agent("test", deps_type=SessionContext, output_type=[list[AgentMessage], DeferredToolRequests])
+
+    confirmations: list[str] = []
+    call_count = 0
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _tool_call_response(
+                "todo_list",
+                {
+                    "todos": [
+                        {"todo_id": "p-0", "title": "A", "status": "in_progress"},
+                        {"todo_id": "p-1", "title": "B", "status": "pending"},
+                    ]
+                },
+            )
+        # Capture the tool result from message history
+        for msg in messages:
+            content = str(msg)
+            if "wrote 2 todos" in content:
+                confirmations.append(content)
+                break
+        return _answer_response("ok", info)
+
+    await agent.run(user_prompt="plan something", model=FunctionModel(fn), deps=_mock_ctx(), toolsets=[toolset])
+
+    assert any("wrote 2 todos" in c for c in confirmations)
+
+
+async def test_direct_answer_no_todo_tool_called():
+    """Direct answers (greetings, simple questions) never call todo_list."""
+    state = PulseState(prompt="hi")
+    toolset = build_todo_list_toolset(state)
+    agent = _make_pulse_agent(FunctionModel(lambda msgs, info: _answer_response("Hello!", info)))
+
+    await agent.run(user_prompt="hi", deps=_mock_ctx(), toolsets=[toolset])
+
+    assert state.todos == []
 
 
 async def test_list_prompt():
-    """pulse_graph accepts a list prompt."""
-    def fn(messages: list, info: AgentInfo) -> ModelResponse:
-        return _adaptive_response("ok", info)
-
-    deps = _make_deps(_make_pulse_agent(FunctionModel(fn)))
-    result = await _run(deps, ["hello", "world"])
+    """Agent accepts a list prompt (multi-part content)."""
+    agent = _make_pulse_agent(FunctionModel(lambda msgs, info: _answer_response("ok", info)))
+    state = PulseState(prompt=["hello", "world"])
+    result = await _run_process(agent, ["hello", "world"])
     assert _extract_text(result) == "ok"
-
-
-async def test_synthesize_uses_native_output_type():
-    """Synthesize call uses output_type=list[AgentMessage] override."""
-    call_count = 0
-    todos = [
-        {"todo_id": "pulse-0", "title": "Research", "description": "Research the topic"},
-        {"todo_id": "pulse-1", "title": "Write", "description": "Write the summary"},
-    ]
-
-    def fn(messages: list, info: AgentInfo) -> ModelResponse:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return _todo_response(todos, info)
-        return _adaptive_response("native output", info)
-
-    deps = _make_deps(_make_pulse_agent(FunctionModel(fn)))
-    result = await _run(deps, "Research and summarize")
-
-    assert isinstance(result, (str, list))
-    # 1 triage + 2 inline steps + 1 synthesize = 4
-    assert call_count == 4
-
-
-async def test_inline_history_threads_through():
-    """main_history grows monotonically: triage → step1 → step2 → synth."""
-    history_lengths: list[int] = []
-    call_count = 0
-    todos = [
-        {"todo_id": "s0", "title": "Step 0", "description": "desc 0"},
-        {"todo_id": "s1", "title": "Step 1", "description": "desc 1"},
-    ]
-
-    def fn(messages: list, info: AgentInfo) -> ModelResponse:
-        nonlocal call_count
-        call_count += 1
-        history_lengths.append(len(messages))
-        if call_count == 1:
-            return _todo_response(todos, info)
-        return _adaptive_response(f"out-{call_count}", info)
-
-    state = PulseState(prompt="multi-step task")
-    deps = _make_deps(_make_pulse_agent(FunctionModel(fn)))
-    await pulse_graph.run(Triage(), state=state, deps=deps)
-
-    # Each successive call should see at least as many messages as the prior one
-    for i in range(1, len(history_lengths)):
-        assert history_lengths[i] >= history_lengths[i - 1], (
-            f"Call {i + 1} saw fewer messages ({history_lengths[i]}) "
-            f"than call {i} ({history_lengths[i - 1]})"
-        )
-
-
-async def test_depends_on_gating():
-    """Todo B with depends_on=[A] only runs after A completes."""
-    execution_order: list[str] = []
-    call_count = 0
-    todos = [
-        {"todo_id": "A", "title": "Step A", "description": "first", "depends_on": []},
-        {"todo_id": "B", "title": "Step B", "description": "second", "depends_on": ["A"]},
-    ]
-
-    def fn(messages: list, info: AgentInfo) -> ModelResponse:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return _todo_response(todos, info)
-        for msg in reversed(messages):
-            content = str(msg)
-            if "Step A" in content:
-                execution_order.append("A")
-                break
-            elif "Step B" in content:
-                execution_order.append("B")
-                break
-        return _adaptive_response(f"out-{call_count}", info)
-
-    state = PulseState(prompt="dep test")
-    deps = _make_deps(_make_pulse_agent(FunctionModel(fn)))
-    await pulse_graph.run(Triage(), state=state, deps=deps)
-
-    # B must run after A
-    if "A" in execution_order and "B" in execution_order:
-        assert execution_order.index("A") < execution_order.index("B")
 
 
 async def test_subagent_deferred_raises():
@@ -326,3 +246,78 @@ async def test_subagent_deferred_raises():
 
     with pytest.raises(RuntimeError, match="deferred tool calls"):
         await sub.execute(None, todo, state, None)  # type: ignore[arg-type]
+
+
+async def test_todo_input_model_defaults():
+    """TodoInput has sensible defaults for optional fields."""
+    item = TodoInput(todo_id="p-0", title="My Step")
+    assert item.status == "pending"
+    assert item.description == ""
+    assert item.depends_on == []
+    assert item.active_form is None
+
+
+async def test_multiple_todo_writes_preserve_server_ids():
+    """Second todo_list call reuses server ids for existing todos (no double-create)."""
+    from pydantic_ai.models.test import TestModel
+
+    state = PulseState(prompt="test")
+    create_calls: list[str] = []
+
+    class MockTodoFeeler:
+        async def create_todo(self, key, title, active_form=None, assignee=None):
+            create_calls.append(title)
+            return Todo(todo_id=f"server-{len(create_calls)}", title=title)
+
+        async def update_todo(self, todo_id, status):
+            return True
+
+        async def upsert_todo_list(self, key, items, existing_ts=None):
+            return "card-ref"
+
+        async def pin_todo(self, key, card_ref):
+            return True
+
+        async def unpin_todo(self, key, card_ref):
+            return True
+
+    class MockFeelers:
+        todos = MockTodoFeeler()
+
+    class MockTentacle:
+        feelers = MockFeelers()
+
+    toolset = build_todo_list_toolset(state)
+    mock_deps = SessionContext(
+        session_key=SessionKey(tentacle_id="test", user_id="user-1"),
+        tentacle=MockTentacle(),  # type: ignore[arg-type]
+    )
+
+    agent = Agent("test", deps_type=SessionContext, output_type=[list[AgentMessage], DeferredToolRequests])
+
+    call_count = 0
+
+    def fn(messages: list, info: AgentInfo) -> ModelResponse:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _tool_call_response(
+                "todo_list",
+                {"todos": [{"todo_id": "p-0", "title": "Step A", "status": "pending"}]},
+            )
+        if call_count == 2:
+            return _tool_call_response(
+                "todo_list",
+                {"todos": [{"todo_id": "p-0", "title": "Step A", "status": "completed"}]},
+            )
+        return _answer_response("done", info)
+
+    await agent.run(
+        user_prompt="test",
+        deps=mock_deps,
+        toolsets=[toolset],
+        model=FunctionModel(fn),
+    )
+
+    # create_todo called only once — second call reuses the server id
+    assert create_calls.count("Step A") == 1

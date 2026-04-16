@@ -165,51 +165,17 @@ class ChannelTentacle(Tentacle):
     async def deactivate(self) -> None: ...
 
     async def __call__(self, key: SessionKey, contents: list[MessageEvent]) -> None:
-        """Process an inbound message batch via the pulse graph."""
         if not contents:
             return
         try:
-            from octomate.tentacles.agent.pulse import PulseState
-
             await self.memory.record(key, contents)
-
             if key.group_id and not any(
                 msg.is_at(self.profile.user_id) for msg in contents
             ):
                 await self.memory.memo(key, contents, self)
                 return
-
-            context = f"[group: {key.group_id}]" if key.group_id else "[chat: private]"
-            header = f"[me: {self.name} ({self.profile.user_id})] {context}"
-            user_prompt: list = [header]
-            for msg in contents:
-                user_prompt.extend(msg.to_content_parts())
-
-            memories = await self.memory.recall(key, contents, self)
-            memory_instructions: str | None = None
-            if memories:
-                facts = "\n".join(f"- {m}" for m in memories)
-                memory_instructions = f"[relevant memories]\n{facts}"
-
-            logger.info(
-                "Tentacle %s pulse [%s] (%d messages)", self.id, key, len(contents)
-            )
-
-            session_ctx = SessionContext(session_key=key, tentacle=self)
-            state = PulseState(prompt=user_prompt)
-            message_history = await self.memory.history(key, size=32)
-            async with self.open_stream(key) as stream:
-                result = await self.pulse.process(
-                    key,
-                    state,
-                    session_ctx,
-                    memory_instructions=memory_instructions,
-                    message_history=message_history,
-                    stream=stream,
-                )
-            for msg_out in result:
-                await self.twitch(key, msg_out.segments)
-            asyncio.create_task(self.memory.memo(key, result, self))
+            logger.info("Tentacle %s pulse [%s] (%d messages)", self.id, key, len(contents))
+            await self.pulse.run(key, contents)
         except Exception:
             logger.exception("Error in tentacle %s [%s]", self.id, key)
 

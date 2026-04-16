@@ -52,6 +52,7 @@ class PulseAgentConfig(BaseModel):
     skill_roots: list[Path] = Field(
         default_factory=lambda: [Path("octoskills"), Path(".octomate/skills")]
     )
+    max_turns: int = 50
 
 
 class Mem0Config(Mem0MemoryConfig):
