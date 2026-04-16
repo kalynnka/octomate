@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
+from functools import cached_property
+from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from pydantic_ai import RunContext, ToolDefinition
 from pydantic_ai.toolsets import (
     AbstractToolset,
@@ -31,6 +34,125 @@ ToolPermission = Literal[
     "default",  # visible, requires approval when approvers match the tentacle
     "masked",  # hidden from the agent entirely
 ]
+
+FRONTMATTER_DELIMITER = "---"
+
+
+def _parse_skill_file(path: Path) -> tuple[dict[str, Any], str]:
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+
+    if not lines or lines[0].strip() != FRONTMATTER_DELIMITER:
+        return {}, text
+
+    end = next(
+        (
+            i
+            for i, ln in enumerate(lines[1:], start=1)
+            if ln.strip() == FRONTMATTER_DELIMITER
+        ),
+        None,
+    )
+    if end is None:
+        return {}, text
+
+    fm_text = "".join(lines[1:end])
+    body = "".join(lines[end + 1 :]).lstrip("\n")
+    try:
+        fm = yaml.safe_load(fm_text) or {}
+    except yaml.YAMLError:
+        logger.warning("skills: failed to parse frontmatter in %s", path)
+        fm = {}
+    return fm, body
+
+
+@dataclass
+class SkillDoc:
+    name: str
+    description: str
+    path: Path
+    frontmatter: dict[str, Any]
+    body: str
+
+
+class SkillLibrary:
+    docs: dict[str, SkillDoc]
+    roots: list[Path]
+
+    def __init__(self, roots: Sequence[Path | str]) -> None:
+        self.roots = [Path(r) for r in roots]
+        self.docs = {}
+
+    def discover(self) -> None:
+        """Scan all roots for */SKILL.md files and register valid ones.
+
+        Later roots override earlier ones on name clash, so user skills
+        in .octomate/skills/ naturally override built-ins in octoskills/.
+        """
+        for root in self.roots:
+            if not root.is_dir():
+                continue
+            for skill_md in sorted(root.glob("*/SKILL.md")):
+                fm, body = _parse_skill_file(skill_md)
+                name = fm.get("name", "")
+                description = fm.get("description", "")
+                if not name or not description:
+                    logger.warning(
+                        "skills: skipping %s — missing name or description in frontmatter",
+                        skill_md,
+                    )
+                    continue
+                self.docs[name] = SkillDoc(
+                    name=name,
+                    description=description,
+                    path=skill_md,
+                    frontmatter=fm,
+                    body=body,
+                )
+                logger.debug("skills: registered skill %r from %s", name, skill_md)
+
+        logger.info("skills: discovered %d skill(s)", len(self.docs))
+
+    def load(self, name: str) -> str:
+        doc = self.docs.get(name)
+        if doc is None:
+            raise KeyError(f"skill {name!r} not found")
+        return doc.body
+
+    @cached_property
+    def toolset(self) -> FunctionToolset[Any]:
+        toolset: FunctionToolset[Any] = FunctionToolset()
+        docs = self.docs
+
+        @toolset.tool(requires_approval=False)
+        async def list_skills(ctx: RunContext[Any]) -> list[dict[str, str]]:
+            """List all available guidance skills by name and description.
+
+            Use this to browse available skills. Each skill provides reusable
+            step-by-step guidance for a specific task. Call load_skill(name)
+            to read the full instructions for a skill that matches the user's request.
+            """
+            return [
+                {"name": d.name, "description": d.description} for d in docs.values()
+            ]
+
+        @toolset.tool(requires_approval=False)
+        async def load_skill(ctx: RunContext[Any], name: str) -> str:
+            """Load the full instructions for a named guidance skill.
+
+            Returns the skill's markdown body — read it, then follow its
+            instructions to complete the user's request.
+
+            Args:
+                name: The skill name as returned by list_skills().
+            """
+            doc = docs.get(name)
+            if doc is None:
+                known = ", ".join(sorted(docs)) or "(none)"
+                return f"Skill {name!r} not found. Available skills: {known}"
+            return doc.body
+
+        return toolset
 
 
 def make_metadata_injector(
@@ -152,6 +274,20 @@ class SkillManager:
         )
         self.mcp_toolsets[name] = prepared
 
+    def register_skill_library(
+        self,
+        name: str,
+        library: SkillLibrary,
+        description: str = "Reusable prose guidance bundles. Call list_skills() to browse, load_skill(name) to read full instructions.",
+    ) -> None:
+        """Register a SkillLibrary as a discoverable skill toolset.
+
+        The library's list_skills / load_skill tools flow through
+        build_skillsets() exactly like any other FunctionToolset.
+        """
+        self.skills[name] = SkillInfo(name=name, description=description)
+        self.toolsets[name] = library.toolset
+
     def register_mcp_group(
         self,
         prefix: str,
@@ -197,7 +333,7 @@ class SkillManager:
     async def __aexit__(self, *args):
         await self._exit_stack.aclose()
 
-    def build_skillsets(self) -> list[AbstractToolset[Any]]:
+    def build_toolsets(self) -> list[AbstractToolset[Any]]:
         """Build the list of skills' toolsets to pass to Agent(toolsets=[...]).
 
         All skill tools are marked with defer_loading so they are hidden from

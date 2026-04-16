@@ -5,7 +5,7 @@ from octomate.tentacles.agent.pulse import (
     build_summon_toolset,
 )
 from octomate.tentacles.agent.research import DeepResearchTentacle, FastResearchTentacle
-from octomate.tentacles.agent.skills import SkillInfo, SkillManager
+from octomate.tentacles.agent.skills import SkillDoc, SkillInfo, SkillLibrary, SkillManager
 
 __all__ = [
     "AgentTentacle",
@@ -13,7 +13,9 @@ __all__ = [
     "FastResearchTentacle",
     "PulseTentacle",
     "SessionContext",
+    "SkillDoc",
     "SkillInfo",
+    "SkillLibrary",
     "SkillManager",
     "SummonRequest",
     "build_summon_toolset",

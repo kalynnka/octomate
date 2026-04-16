@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Any, Literal, Union
 
 from mem0.configs.base import MemoryConfig as Mem0MemoryConfig
@@ -36,6 +37,9 @@ class PulseConfig(BaseModel):
     enabled: bool = False
     main: ModelConfig = Field(default_factory=ModelConfig)
     subagents: dict[str, SubAgentConfig] = Field(default_factory=dict)
+    skill_roots: list[Path] = Field(
+        default_factory=lambda: [Path("octoskills"), Path(".octomate/skills")]
+    )
 
 
 class Mem0Config(Mem0MemoryConfig):

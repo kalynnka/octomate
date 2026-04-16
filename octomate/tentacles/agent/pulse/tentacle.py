@@ -133,7 +133,7 @@ class PulseTentacle(AgentTentacle):
             else None
         )
 
-        skill_toolsets = skill_manager.build_skillsets() if skill_manager else []
+        skill_toolsets = skill_manager.build_toolsets() if skill_manager else []
         summon_toolset = build_summon_toolset(octopus.agent_tentacles)
         self.triage_toolsets = [
             *skill_toolsets,

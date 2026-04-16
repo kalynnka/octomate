@@ -22,24 +22,37 @@ from octomate.config import (
 from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
 from octomate.octopus import Octopus
 from octomate.tentacles.agent.pulse import PulseTentacle
-from octomate.tentacles.agent.skills import SkillManager
+from octomate.tentacles.agent.skills import SkillLibrary, SkillManager
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 
+def _build_skill_library(config: OctomateConfig) -> SkillLibrary | None:
+    roots = config.tentacles[0].pulse.skill_roots
+    library = SkillLibrary(roots)
+    library.discover()
+    return library if library.docs else None
+
+
 def _build_octopus() -> Octopus:
     config = OctomateConfig()
+
+    skill_library = _build_skill_library(config)
 
     skill_manager = SkillManager()
     octotools.streamify.register(skill_manager)
     octotools.github.register(skill_manager)
     octotools.linear.register(skill_manager)
     octotools.tarot.register(skill_manager)
+    if skill_library:
+        skill_manager.register_skill_library("skills", skill_library)
 
     napcat_skill_manager = SkillManager()
     octotools.streamify.register(napcat_skill_manager)
     octotools.tarot.register(napcat_skill_manager)
+    if skill_library:
+        napcat_skill_manager.register_skill_library("skills", skill_library)
 
     octopus = Octopus(skill_manager=skill_manager)
 
