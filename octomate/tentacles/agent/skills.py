@@ -102,7 +102,7 @@ class SkillLibrary:
         self.roots = [Path(r) for r in roots]
         self.docs = {}
 
-    def _scan(self) -> None:
+    def scan(self) -> None:
         """Populate self.docs from all roots (does not clear first).
 
         Later roots override earlier ones on name clash, so user skills
@@ -135,7 +135,7 @@ class SkillLibrary:
                 logger.debug("skills: registered skill %r from %s", name, skill_md)
 
     def discover(self) -> None:
-        self._scan()
+        self.scan()
         logger.info("skills: discovered %d skill(s)", len(self.docs))
 
     def reload(self) -> None:
@@ -144,7 +144,7 @@ class SkillLibrary:
         """
         old_count = len(self.docs)
         self.docs.clear()
-        self._scan()
+        self.scan()
         logger.info("skills: reloaded %d skill(s) (was %d)", len(self.docs), old_count)
 
     async def watch(self) -> None:
@@ -209,7 +209,11 @@ class SkillLibrary:
             return doc.body
 
         @toolset.tool(requires_approval=False)
-        async def load_reference(ctx: RunContext[Any], skill_name: str, reference_name: str) -> str:
+        async def load_reference(
+            ctx: RunContext[Any],
+            skill_name: str,
+            reference_name: str,
+        ) -> str:
             """Load a bundled reference file from a skill's references/ directory.
 
             Use when a skill's instructions point you to a reference file for
@@ -263,9 +267,16 @@ class SkillLibrary:
                     stderr=asyncio.subprocess.STDOUT,
                     cwd=str(doc.skill_dir),
                 )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_SCRIPT_TIMEOUT)
+                stdout, _ = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=_SCRIPT_TIMEOUT,
+                )
                 output = stdout.decode(errors="replace").strip()
-                return output if output else f"(script exited with code {proc.returncode}, no output)"
+                return (
+                    output
+                    if output
+                    else f"(script exited with code {proc.returncode}, no output)"
+                )
             except TimeoutError:
                 proc.kill()
                 return f"Script timed out after {_SCRIPT_TIMEOUT}s."
