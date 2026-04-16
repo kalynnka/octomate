@@ -1,25 +1,18 @@
 octomate:
-  tentacles: []
-  agents: []
-
-qweather:
-  api_host: "devapi.qweather.com"
-  key_id: ""
-  project_id: ""
-
-pixiv:
-  refresh_token: ""
-  search_limit: 8
-  ranking_limit: 8
-  image_dir: "./.octomate/pixiv/images"
-
-streamify:
-  base_url: "https://app.dev1.internal.holovita.ai"
-
-github:
-  approvers: {}
-
-linear:
-  api_key: ""
-
-tarot: {}
+  tentacles: {}
+  agents:
+    # pulse:
+    #   type: pulse
+    #   main:
+    #     model: gemini-3-flash-preview
+    #     api_key: ""
+    #     # vertexai: true
+    #     # project: my-gcp-project
+    #     # location: global
+    #   subagents:
+    #     code:
+    #       description: "Code execution and data analysis"
+    #       code_mode: true
+    #   skill_roots:
+    #     - octoskills
+    #     - .octomate/skills

@@ -26,8 +26,7 @@ logger = logging.getLogger(__name__)
 class PixivConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="PIXIV_",
-        yaml_file=["octomate.default.yaml", "octomate.yaml"],
-        yaml_config_section="pixiv",
+        yaml_file=["octotools/pixiv/config.yaml"],
     )
 
     refresh_token: SecretStr = SecretStr("")

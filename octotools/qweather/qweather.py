@@ -27,8 +27,7 @@ http_client = httpx.AsyncClient(
 class QWeatherConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="QWEATHER_",
-        yaml_file=["octomate.default.yaml", "octomate.yaml"],
-        yaml_config_section="qweather",
+        yaml_file=["octotools/qweather/config.yaml"],
     )
 
     api_host: str = "devapi.qweather.com"

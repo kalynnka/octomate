@@ -7,13 +7,15 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 from pydantic_ai import Agent, CallDeferred, RunContext
+from pydantic_ai.common_tools.web_fetch import web_fetch_tool
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
+from pydantic_ai_harness import CodeMode
 
-from octomate.config import ModelConfig, PulseConfig
+from octomate.config import ModelConfig, PulseAgentConfig
 from octomate.schemas.actions import AgentMessage
 from octomate.schemas.events import MessageEvent
 from octomate.tentacles.agent.base import AgentTentacle
@@ -110,14 +112,15 @@ class PulseTentacle(AgentTentacle):
 
     def __init__(
         self,
+        tag: str,
         octopus: Octopus,
-        config: PulseConfig,
+        config: PulseAgentConfig,
         skill_manager: SkillManager | None = None,
     ) -> None:
         super().__init__(
-            "pulse",
+            tag,
             octopus,
-            description="Pulse — triage, planning, and step execution",
+            description=config.description,
             handover=False,
         )
 
@@ -145,6 +148,7 @@ class PulseTentacle(AgentTentacle):
             system_prompt=SYSTEM_PROMPT,
             deps_type=SessionContext,
             output_type=[list[AgentMessage], list[Todo], DeferredToolRequests],
+            tools=[web_fetch_tool()],
             toolsets=self.triage_toolsets,
             model_settings=main_settings,
         )
@@ -163,6 +167,7 @@ class PulseTentacle(AgentTentacle):
                     system_prompt=sub_cfg.system_prompt or STEP_PROMPT,
                     deps_type=SessionContext,
                     output_type=str,
+                    capabilities=[CodeMode()] if sub_cfg.code_mode else [],
                     model_settings=sub_settings,
                 ),
             )

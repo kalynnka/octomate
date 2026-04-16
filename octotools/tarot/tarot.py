@@ -30,8 +30,7 @@ with open(TAROT_DATA_PATH, "r", encoding="utf-8") as _f:
 class TarotConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="TAROT_",
-        yaml_file=["octomate.default.yaml", "octomate.yaml"],
-        yaml_config_section="tarot",
+        yaml_file=["octotools/tarot/config.yaml"],
     )
 
     image_dir: Path = Path(__file__).parent / "resources"

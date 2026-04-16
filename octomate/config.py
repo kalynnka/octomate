@@ -31,12 +31,24 @@ class ModelConfig(BaseModel):
 class SubAgentConfig(ModelConfig):
     description: str = ""
     system_prompt: str | None = None
+    code_mode: bool = False
 
 
-class PulseConfig(BaseModel):
-    enabled: bool = False
+def _default_subagents() -> dict[str, SubAgentConfig]:
+    return {
+        "code": SubAgentConfig(
+            description="Code execution and data analysis — uses code mode for efficient multi-tool calls",
+            code_mode=True,
+        )
+    }
+
+
+class PulseAgentConfig(BaseModel):
+    type: Literal["pulse"] = "pulse"
+    tag: str = "pulse"
+    description: str = "Pulse — triage, planning, and step execution"
     main: ModelConfig = Field(default_factory=ModelConfig)
-    subagents: dict[str, SubAgentConfig] = Field(default_factory=dict)
+    subagents: dict[str, SubAgentConfig] = Field(default_factory=_default_subagents)
     skill_roots: list[Path] = Field(
         default_factory=lambda: [Path("octoskills"), Path(".octomate/skills")]
     )
@@ -67,7 +79,6 @@ class NapcatTentacleConfig(TentacleConfig):
     backoff_base: float = 1.0
     backoff_max: float = 60.0
     backoff_factor: float = 2.0
-    pulse: PulseConfig = Field(default_factory=PulseConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
@@ -76,7 +87,6 @@ class LarkTentacleConfig(TentacleConfig):
     name: str = "lark"
     app_id: str
     app_secret: SecretStr
-    pulse: PulseConfig = Field(default_factory=PulseConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
@@ -85,7 +95,6 @@ class SlackTentacleConfig(TentacleConfig):
     name: str = "slack"
     bot_token: SecretStr
     app_token: SecretStr
-    pulse: PulseConfig = Field(default_factory=PulseConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
 
@@ -159,6 +168,7 @@ class DeepResearchConfig(BaseModel):
 
 AgentTentacleConfigUnion = Annotated[
     Union[
+        Annotated[PulseAgentConfig, Tag("pulse")],
         Annotated[ClaudeCodeConfig, Tag("claude_code")],
         Annotated[CopilotConfig, Tag("copilot")],
         Annotated[FastResearchConfig, Tag("fast_research")],
@@ -176,8 +186,8 @@ class OctomateConfig(BaseSettings):
         yaml_file=["octomate.default.yaml", "octomate.yaml"],
     )
 
-    tentacles: list[TentacleConfigUnion] = []
-    agents: list[AgentTentacleConfigUnion] = []
+    tentacles: dict[str, TentacleConfigUnion] = {}
+    agents: dict[str, AgentTentacleConfigUnion] = {}
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):

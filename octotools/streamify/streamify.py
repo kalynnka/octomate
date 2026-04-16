@@ -24,8 +24,7 @@ http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
 class StreamifyConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="STREAMIFY_",
-        yaml_file=["octomate.default.yaml", "octomate.yaml"],
-        yaml_config_section="streamify",
+        yaml_file=["octotools/streamify/config.yaml"],
     )
 
     base_url: str = "https://app.dev1.internal.holovita.ai"

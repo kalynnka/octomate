@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import warnings
+from collections.abc import Awaitable, Callable, MutableMapping
+from typing import Any
 
 import octotools
 
@@ -17,6 +19,7 @@ from octomate.config import (
     LarkTentacleConfig,
     NapcatTentacleConfig,
     OctomateConfig,
+    PulseAgentConfig,
     SlackTentacleConfig,
 )
 from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
@@ -28,53 +31,65 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
 
 
-def _build_skill_library(config: OctomateConfig) -> SkillLibrary | None:
-    roots = config.tentacles[0].pulse.skill_roots
-    library = SkillLibrary(roots)
+def _build_skill_manager(pulse_cfg: PulseAgentConfig) -> SkillManager:
+    library = SkillLibrary(pulse_cfg.skill_roots)
     library.discover()
-    return library if library.docs else None
+
+    manager = SkillManager()
+    octotools.streamify.register(manager)
+    octotools.github.register(manager)
+    octotools.linear.register(manager)
+    octotools.tarot.register(manager)
+    if library.docs:
+        manager.register_skill_library("skills", library)
+    return manager
 
 
 def _build_octopus() -> Octopus:
     config = OctomateConfig()
-
-    skill_library = _build_skill_library(config)
 
     skill_manager = SkillManager()
     octotools.streamify.register(skill_manager)
     octotools.github.register(skill_manager)
     octotools.linear.register(skill_manager)
     octotools.tarot.register(skill_manager)
-    if skill_library:
-        skill_manager.register_skill_library("skills", skill_library)
-
-    napcat_skill_manager = SkillManager()
-    octotools.streamify.register(napcat_skill_manager)
-    octotools.tarot.register(napcat_skill_manager)
-    if skill_library:
-        napcat_skill_manager.register_skill_library("skills", skill_library)
 
     octopus = Octopus(skill_manager=skill_manager)
 
-    for ac in config.agents:
-        if isinstance(ac, ClaudeCodeConfig):
+    for tag, ac in config.agents.items():
+        if isinstance(ac, PulseAgentConfig):
+            octopus.graft(PulseTentacle(tag, octopus, ac, _build_skill_manager(ac)))
+        elif isinstance(ac, ClaudeCodeConfig):
             from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 
-            octopus.graft(ClaudeCodeTentacle(ac.tag, octopus, ac))
+            octopus.graft(ClaudeCodeTentacle(tag, octopus, ac))
         elif isinstance(ac, CopilotConfig):
             from octomate.tentacles.agent.copilot import CopilotTentacle
 
-            octopus.graft(CopilotTentacle(ac.tag, octopus, ac))
+            octopus.graft(CopilotTentacle(tag, octopus, ac))
         elif isinstance(ac, FastResearchConfig):
             from octomate.tentacles.agent.research import FastResearchTentacle
 
-            octopus.graft(FastResearchTentacle(ac.tag, octopus, ac))
+            octopus.graft(FastResearchTentacle(tag, octopus, ac))
         elif isinstance(ac, DeepResearchConfig):
             from octomate.tentacles.agent.research import DeepResearchTentacle
 
-            octopus.graft(DeepResearchTentacle(ac.tag, octopus, ac))
+            octopus.graft(DeepResearchTentacle(tag, octopus, ac))
 
-    for tc in config.tentacles:
+    pulse = next(
+        (t for t in octopus.agent_tentacles.values() if isinstance(t, PulseTentacle)),
+        None,
+    )
+
+    if not config.tentacles:
+        return octopus
+    if pulse is None:
+        raise RuntimeError(
+            "Pulse agent is required when tentacles are configured. "
+            "Add a pulse entry under agents: in your octomate.yaml."
+        )
+
+    for name, tc in config.tentacles.items():
         mem = tc.memory
         if mem.mem0.enabled:
             memory = Mem0Memory(config=mem.mem0)
@@ -88,7 +103,7 @@ def _build_octopus() -> Octopus:
 
             octopus.connect(
                 NapcatTentacle(
-                    tc.name,
+                    name,
                     octopus,
                     ws_url=tc.ws_url,
                     http_url=str(tc.http_url),
@@ -96,7 +111,7 @@ def _build_octopus() -> Octopus:
                     backoff_base=tc.backoff_base,
                     backoff_max=tc.backoff_max,
                     backoff_factor=tc.backoff_factor,
-                    pulse=PulseTentacle(octopus, tc.pulse, napcat_skill_manager),
+                    pulse=pulse,
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
@@ -109,11 +124,11 @@ def _build_octopus() -> Octopus:
             )
             octopus.connect(
                 LarkTentacle(
-                    tc.name,
+                    name,
                     octopus,
                     app_id=tc.app_id,
                     app_secret=tc.app_secret,
-                    pulse=PulseTentacle(octopus, tc.pulse, skill_manager),
+                    pulse=pulse,
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
@@ -123,11 +138,11 @@ def _build_octopus() -> Octopus:
 
             octopus.connect(
                 SlackTentacle(
-                    tc.name,
+                    name,
                     octopus,
                     bot_token=tc.bot_token,
                     app_token=tc.app_token,
-                    pulse=PulseTentacle(octopus, tc.pulse, skill_manager),
+                    pulse=pulse,
                     memory=memory,
                     flush_delay=tc.flush_delay,
                 )
@@ -136,7 +151,11 @@ def _build_octopus() -> Octopus:
     return octopus
 
 
-async def app(scope, receive, send):
+async def app(
+    scope: MutableMapping[str, Any],
+    receive: Callable[[], Awaitable[MutableMapping[str, Any]]],
+    send: Callable[[MutableMapping[str, Any]], Awaitable[None]],
+) -> None:
     if scope["type"] != "lifespan":
         return
     while True:

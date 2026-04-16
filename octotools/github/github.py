@@ -40,8 +40,7 @@ GitHubToolset = Literal[
 class GitHubConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="GITHUB_",
-        yaml_file=["octomate.default.yaml", "octomate.yaml"],
-        yaml_config_section="github",
+        yaml_file=["octotools/github/config.yaml"],
     )
 
     api_key: SecretStr = SecretStr("")
