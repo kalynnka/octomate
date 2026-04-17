@@ -199,23 +199,31 @@ class ClaudeCodeTentacle(AgentTentacle):
         ) -> PermissionResult:
             if tool_name in AUTO_APPROVE:
                 return PermissionResultAllow()
+            logger.info("can_use_tool: requesting confirmation for %s key=%s", tool_name, key)
             request_id = str(uuid7())
             future = self.octopus.pending.confirmations.create(request_id)
-            await nerve.send(
-                ConfirmTool(
-                    key=key,
-                    request_id=request_id,
-                    tool_name=tool_name,
-                    args=input_data,
-                    title=f"Claude Code: {tool_name}",
-                    description=_summarize(tool_name, input_data),
-                    skill="claude_code",
+            try:
+                await nerve.send(
+                    ConfirmTool(
+                        key=key,
+                        request_id=request_id,
+                        tool_name=tool_name,
+                        args=input_data,
+                        title=f"Claude Code: {tool_name}",
+                        description=_summarize(tool_name, input_data),
+                        skill="claude_code",
+                    )
                 )
-            )
+            except Exception:
+                logger.exception("can_use_tool: failed to send ConfirmTool for %s", tool_name)
+                self.octopus.pending.confirmations.cancel(request_id)
+                return PermissionResultDeny(message="Internal error sending confirmation")
             try:
                 result: ConfirmResult = await future
             except asyncio.CancelledError:
+                logger.debug("can_use_tool: cancelled while waiting for %s", tool_name)
                 raise
+            logger.info("can_use_tool: %s approved=%s", tool_name, result.approved)
             if result.approved:
                 return PermissionResultAllow()
             return PermissionResultDeny(message="Denied by user")

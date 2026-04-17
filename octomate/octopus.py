@@ -162,8 +162,18 @@ class Octopus:
 
         @self.agent_dispatcher.on(ConfirmTool)
         async def handle_confirm_tool(signal: ConfirmTool) -> None:
+            logger.info(
+                "handle_confirm_tool: tool=%s tentacle_id=%r",
+                signal.tool_name,
+                signal.key.tentacle_id,
+            )
             channel = self.tentacles.get(signal.key.tentacle_id)
             if channel is None:
+                logger.warning(
+                    "handle_confirm_tool: no channel for tentacle_id=%r, auto-denying %s",
+                    signal.key.tentacle_id,
+                    signal.tool_name,
+                )
                 await self.agent_nerve.send(
                     ConfirmResult(
                         key=signal.key, request_id=signal.request_id, approved=False
@@ -191,6 +201,11 @@ class Octopus:
             )
             sent = await channel.feelers.confirm.send_confirmation(key, action)
             if not sent:
+                logger.warning(
+                    "handle_confirm_tool: send_confirmation failed for tool=%s key=%s, auto-denying",
+                    signal.tool_name,
+                    key,
+                )
                 await channel.feelers.confirm.expire_confirmation(
                     action.confirmation_id
                 )
