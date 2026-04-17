@@ -13,7 +13,6 @@ from pydantic_ai import Agent, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.tentacles.agent.context import SessionContext
 from octomate.memory.base import OctopusMemory
 from octomate.octopus import Octopus
 from octomate.schemas.actions import AgentMessage
@@ -29,6 +28,7 @@ from octomate.schemas.session import SessionKey, UserProfile
 from octomate.stores.interaction import InteractionStore
 from octomate.stores.message import MessageStore
 from octomate.stores.thread import ThreadStore
+from octomate.tentacles.agent.context import SessionContext
 from octomate.tentacles.channel.base import ChannelTentacle, PlatformMessage, StreamSink
 from octomate.tentacles.channel.feelers import NULL_FEELERS
 from octomate.transmuters.messages import Message
@@ -157,7 +157,7 @@ class MockTentacle(ChannelTentacle):
         self.feelers = NULL_FEELERS
         memory = MockOctopusMemory()
 
-        from octomate.tentacles.agent.pulse import PulseTentacle, PulseState
+        from octomate.tentacles.agent.pulse import PulseState, PulseTentacle
         from octomate.tentacles.agent.pulse.tools import build_todo_list_toolset
 
         pulse_agent = Agent(
@@ -170,15 +170,17 @@ class MockTentacle(ChannelTentacle):
             def __init__(self):
                 # Bypass PulseTentacle.__init__ (no real model needed for tests)
                 from octomate.tentacles.agent.base import AgentTentacle
+
                 AgentTentacle.__init__(self, "pulse", octopus, description="mock pulse")
                 self.pulse_agent = pulse_agent
                 self.subagents = {}
-                self.triage_toolsets = None
+                self.toolsets = None
                 self.subagent_catalog = None
                 self.max_turns = 50
 
             async def run(self, key, contents, *, session_name="", silent=False):
                 from octomate.schemas.events import MessageEvent as _ME
+
                 channel = self.octopus.tentacles.get(key.tentacle_id)
                 user_prompt: list = []
                 for msg in contents:
@@ -187,7 +189,9 @@ class MockTentacle(ChannelTentacle):
                 state = PulseState(prompt=user_prompt or "test")
                 todo_toolset = build_todo_list_toolset(state)
                 result = await self.pulse_agent.run(
-                    user_prompt=state.prompt if isinstance(state.prompt, str) else str(state.prompt),
+                    user_prompt=state.prompt
+                    if isinstance(state.prompt, str)
+                    else str(state.prompt),
                     toolsets=[todo_toolset],
                 )
                 messages = result.output if isinstance(result.output, list) else []
@@ -195,7 +199,12 @@ class MockTentacle(ChannelTentacle):
                     for msg in messages:
                         if isinstance(msg, AgentMessage):
                             await channel.twitch(key, msg.segments)
-                return "\n".join(str(seg) for msg in messages if isinstance(msg, AgentMessage) for seg in msg.segments)
+                return "\n".join(
+                    str(seg)
+                    for msg in messages
+                    if isinstance(msg, AgentMessage)
+                    for seg in msg.segments
+                )
 
         pulse = _MockPulse()
         super().__init__(tag, octopus, pulse, memory, flush_delay=flush_delay)

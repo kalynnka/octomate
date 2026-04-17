@@ -32,7 +32,12 @@ from octomate.tentacles.agent.pulse.state import (
     PulseState,
     SubAgent,
 )
-from octomate.tentacles.agent.pulse.tools import build_delegate_toolset, build_todo_list_toolset
+from octomate.tentacles.agent.pulse.tools import (
+    build_bash_tool,
+    build_delegate_toolset,
+    build_file_management_toolset,
+    build_todo_list_toolset,
+)
 from octomate.tentacles.agent.skills import SkillManager
 
 if TYPE_CHECKING:
@@ -107,7 +112,7 @@ class PulseTentacle(AgentTentacle):
 
     pulse_agent: Agent[SessionContext, PulseOutput]
     subagents: dict[str, SubAgent]
-    triage_toolsets: Sequence[AbstractToolset[SessionContext]] | None
+    toolsets: Sequence[AbstractToolset[SessionContext]] | None
     subagent_catalog: str | None
     max_turns: int
 
@@ -139,8 +144,9 @@ class PulseTentacle(AgentTentacle):
 
         skill_toolsets = skill_manager.build_toolsets() if skill_manager else []
         summon_toolset = build_summon_toolset(octopus.agent_tentacles)
-        self.triage_toolsets = [
+        self.toolsets = [
             *skill_toolsets,
+            build_file_management_toolset(),
             *([summon_toolset] if summon_toolset else []),
         ] or None
 
@@ -149,8 +155,8 @@ class PulseTentacle(AgentTentacle):
             system_prompt=SYSTEM_PROMPT,
             deps_type=SessionContext,
             output_type=[list[AgentMessage], DeferredToolRequests],
-            tools=[web_fetch_tool()],
-            toolsets=self.triage_toolsets,
+            tools=[web_fetch_tool(), build_bash_tool()],
+            toolsets=self.toolsets,
             model_settings=main_settings,
         )
 
@@ -177,7 +183,8 @@ class PulseTentacle(AgentTentacle):
 
         if self.subagents:
             lines = [
-                f'- "{sub_tag}": {sub.description}' for sub_tag, sub in self.subagents.items()
+                f'- "{sub_tag}": {sub.description}'
+                for sub_tag, sub in self.subagents.items()
             ]
             self.subagent_catalog = (
                 "[available step assignees (subagents)]\n" + "\n".join(lines)
@@ -220,7 +227,11 @@ class PulseTentacle(AgentTentacle):
         run_toolsets: list[AbstractToolset[SessionContext]] = [
             *list(channel.toolsets),
             build_todo_list_toolset(state),
-            *([delegate] if (delegate := build_delegate_toolset(self.subagents, state)) else []),
+            *(
+                [delegate]
+                if (delegate := build_delegate_toolset(self.subagents, state))
+                else []
+            ),
         ]
 
         stream_ctx = contextlib.nullcontext() if silent else channel.open_stream(key)
@@ -240,10 +251,28 @@ class PulseTentacle(AgentTentacle):
                 messages = cast(list[AgentMessage], result.output)
         except UsageLimitExceeded:
             logger.warning("[%s] Pulse hit max_turns limit (%d)", key, self.max_turns)
-            messages = [AgentMessage(segments=[TextSegment(data={"text": "Sorry, I hit my turn limit on this task."})])]
+            messages = [
+                AgentMessage(
+                    segments=[
+                        TextSegment(
+                            data={"text": "Sorry, I hit my turn limit on this task."}
+                        )
+                    ]
+                )
+            ]
         except Exception:
             logger.exception("[%s] Pulse encountered an error", key)
-            messages = [AgentMessage(segments=[TextSegment(data={"text": "Something went wrong while processing your request."})])]
+            messages = [
+                AgentMessage(
+                    segments=[
+                        TextSegment(
+                            data={
+                                "text": "Something went wrong while processing your request."
+                            }
+                        )
+                    ]
+                )
+            ]
         finally:
             if state.card_ref:
                 await channel.feelers.todos.unpin_todo(key, state.card_ref)

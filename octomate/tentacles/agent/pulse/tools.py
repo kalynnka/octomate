@@ -1,16 +1,42 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+import dataclasses
+from typing import TYPE_CHECKING, Any, Literal, cast
 
+from langchain_community.agent_toolkits import FileManagementToolkit
+from langchain_community.tools.shell.tool import ShellTool
 from pydantic import BaseModel, Field
-from pydantic_ai import RunContext
-from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai import RunContext, ToolDefinition
+from pydantic_ai.ext.langchain import LangChainTool, LangChainToolset, tool_from_langchain
+from pydantic_ai.tools import Tool
+from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from octomate.tentacles.agent.context import SessionContext
 from octomate.transmuters.interactions import Todo
 
 if TYPE_CHECKING:
     from octomate.tentacles.agent.pulse.state import PulseState, SubAgent
+
+READONLY_FILE_TOOLS: frozenset[str] = frozenset(
+    {"read_file", "list_directory", "file_search"}
+)
+
+
+def build_bash_tool() -> Tool[SessionContext]:
+    return dataclasses.replace(tool_from_langchain(ShellTool()), requires_approval=True)
+
+
+def build_file_management_toolset() -> AbstractToolset[Any]:
+    toolset = LangChainToolset(cast(list[LangChainTool], FileManagementToolkit().get_tools()))
+
+    def needs_approval(
+        ctx: RunContext[Any],
+        tool_def: ToolDefinition,
+        args: dict[str, Any],
+    ) -> bool:
+        return tool_def.name not in READONLY_FILE_TOOLS
+
+    return toolset.approval_required(needs_approval)
 
 
 class TodoInput(BaseModel):

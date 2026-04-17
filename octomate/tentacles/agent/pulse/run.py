@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 from pydantic_ai.messages import PartEndEvent, ThinkingPart
 from pydantic_ai.run import AgentRunResultEvent
 
+from octomate.nerve import SummonAgent
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 
 logger = logging.getLogger(__name__)
@@ -72,8 +74,6 @@ async def resolve_deferred(
     Handles summon (dispatches via nerve, handover sends a notification to the
     channel), ask_user, and tool approval flows using the tentacle's feelers.
     """
-    from octomate.nerve import SummonAgent
-    from octomate.schemas.events import MessageEvent
 
     key = deps.session_key
     while isinstance(result.output, DeferredToolRequests):
