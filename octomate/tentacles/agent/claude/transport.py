@@ -86,6 +86,7 @@ class SSHTransport(Transport):
             f"cd {cwd_expr} && "
             f"export {exports} && "
             f"{self.claude_bin} code --output-format stream-json --verbose --input-format stream-json"
+            f" --permission-prompt-tool stdio"
         )
         cmd.append(remote)
         return cmd
