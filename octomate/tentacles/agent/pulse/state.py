@@ -86,6 +86,10 @@ class PulseState:
     prompt: str | list
     todos: list[Todo] = field(default_factory=list)
     card_ref: str | None = None
+    tool_call_count: int = 0
+    distinct_tools_used: set[str] = field(default_factory=set)
+    error_count: int = 0
+    loaded_skills: set[str] = field(default_factory=set)
 
     @property
     def goal(self) -> str:

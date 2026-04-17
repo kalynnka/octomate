@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from pydantic_ai import Agent, CallDeferred, RunContext
+from pydantic_ai.messages import RetryPromptPart, ToolCallPart
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
@@ -23,7 +24,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.context import RetryTransport, SessionContext
-from octomate.tentacles.agent.pulse.prompts import STEP_PROMPT, SYSTEM_PROMPT
+from octomate.tentacles.agent.pulse.prompts import STEP_PROMPT, build_system_prompt
 from octomate.tentacles.agent.pulse.run import streaming
 from octomate.tentacles.agent.pulse.state import (
     LocalSubAgent,
@@ -43,8 +44,25 @@ from octomate.tentacles.agent.skills import SkillManager
 
 if TYPE_CHECKING:
     from octomate.octopus import Octopus
+    from octomate.tentacles.agent.skills.distiller import SkillDistiller
+    from pydantic_ai.messages import ModelMessage
 
 logger = logging.getLogger(__name__)
+
+
+def _populate_state_counters(state: PulseState, messages: list[ModelMessage]) -> None:
+    for msg in messages:
+        for part in msg.parts:
+            if isinstance(part, ToolCallPart):
+                state.tool_call_count += 1
+                state.distinct_tools_used.add(part.tool_name)
+                if part.tool_name == "load_skill":
+                    args = part.args_as_dict() if callable(part.args_as_dict) else {}
+                    skill_name = args.get("name", "")
+                    if skill_name:
+                        state.loaded_skills.add(skill_name)
+            elif isinstance(part, RetryPromptPart):
+                state.error_count += 1
 
 
 def _build_model(config: ModelConfig, http_client: httpx.AsyncClient) -> GoogleModel:
@@ -153,7 +171,7 @@ class PulseTentacle(AgentTentacle):
 
         self.pulse_agent = Agent(
             main_model,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=build_system_prompt(config.skill.evolving),
             deps_type=SessionContext,
             output_type=[list[AgentMessage], DeferredToolRequests],
             tools=[
@@ -196,6 +214,16 @@ class PulseTentacle(AgentTentacle):
             )
         else:
             self.subagent_catalog = None
+
+        self._distiller: SkillDistiller | None = None
+
+    @property
+    def distiller(self) -> SkillDistiller | None:
+        return self._distiller
+
+    @distiller.setter
+    def distiller(self, value: SkillDistiller | None) -> None:
+        self._distiller = value
 
     async def run(
         self,
@@ -240,6 +268,7 @@ class PulseTentacle(AgentTentacle):
         ]
 
         stream_ctx = contextlib.nullcontext() if silent else channel.open_stream(key)
+        all_model_messages: list[Any] = []
         try:
             async with stream_ctx as stream:
                 result = await streaming(
@@ -254,6 +283,8 @@ class PulseTentacle(AgentTentacle):
                     usage_limits=UsageLimits(request_limit=self.max_turns),
                 )
                 messages = cast(list[AgentMessage], result.output)
+                all_model_messages = result.all_messages()
+                _populate_state_counters(state, all_model_messages)
         except UsageLimitExceeded:
             logger.warning("[%s] Pulse hit max_turns limit (%d)", key, self.max_turns)
             messages = [
@@ -286,5 +317,11 @@ class PulseTentacle(AgentTentacle):
             for msg in messages:
                 await channel.twitch(key, msg.segments)
             asyncio.create_task(channel.memory.memo(key, messages, channel))
+            if self.distiller is not None and self.distiller.should_distill(state):
+                t = asyncio.create_task(
+                    self.distiller.distill(all_model_messages, state.goal, state),
+                    name="skill-distill",
+                )
+                t.add_done_callback(lambda fut: fut.exception() if not fut.cancelled() else None)
 
         return "\n".join(str(seg) for msg in messages for seg in msg.segments)

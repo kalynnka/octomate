@@ -25,24 +25,10 @@ from octomate.config import (
 from octomate.memory import Mem0Memory, OctopusMemory, ZepMemory
 from octomate.octopus import Octopus
 from octomate.tentacles.agent.pulse import PulseTentacle
-from octomate.tentacles.agent.skills import SkillLibrary, SkillManager
+from octomate.tentacles.agent.skills import SkillManager, build_skill_manager
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("watchfiles").setLevel(logging.WARNING)
-
-
-def _build_skill_manager(pulse_cfg: PulseAgentConfig) -> SkillManager:
-    library = SkillLibrary(pulse_cfg.skill_roots)
-    library.discover()
-
-    manager = SkillManager()
-    octotools.streamify.register(manager)
-    octotools.github.register(manager)
-    octotools.linear.register(manager)
-    octotools.tarot.register(manager)
-    if library.docs:
-        manager.register_skill_library("skills", library)
-    return manager
 
 
 def _build_octopus() -> Octopus:
@@ -58,7 +44,14 @@ def _build_octopus() -> Octopus:
 
     for tag, ac in config.agents.items():
         if isinstance(ac, PulseAgentConfig):
-            octopus.graft(PulseTentacle(tag, octopus, ac, _build_skill_manager(ac)))
+            mgr, distiller = build_skill_manager(ac, config.workdir)
+            octotools.streamify.register(mgr)
+            octotools.github.register(mgr)
+            octotools.linear.register(mgr)
+            octotools.tarot.register(mgr)
+            tentacle = PulseTentacle(tag, octopus, ac, mgr)
+            tentacle.distiller = distiller
+            octopus.graft(tentacle)
         elif isinstance(ac, ClaudeCodeConfig):
             from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 

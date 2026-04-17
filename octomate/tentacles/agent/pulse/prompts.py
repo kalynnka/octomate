@@ -102,6 +102,7 @@ Guidelines:
 - Do not mention the plan, other steps, or any meta-commentary about the process.
 """
 
+
 SYSTEM_PROMPT = BASE_PROMPT + PULSE_EXTRA
 
 STEP_INSTRUCTION = (
@@ -112,3 +113,15 @@ STEP_INSTRUCTION = (
     "Current step: {title}\n"
     "Instructions: {description}"
 )
+
+
+# Imported here rather than at module top to avoid a circular import:
+# pulse/prompts.py is imported very early (before the skills package is fully
+# wired up in main.py), and skills/prompts.py is a leaf with no imports so
+# there is no real circularity — but the skills package __init__ re-exports
+# things that depend on pulse internals transitively.  Keeping it lazy is safe.
+def build_system_prompt(evolving: bool = False) -> str:
+    from octomate.tentacles.agent.skills.prompts import SKILL_EVOLVING_EXTRA
+
+    extra = SKILL_EVOLVING_EXTRA if evolving else ""
+    return BASE_PROMPT + PULSE_EXTRA + extra

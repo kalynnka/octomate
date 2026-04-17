@@ -63,6 +63,21 @@ class WebToolConfig(BaseModel):
     jina_reader: JinaReaderConfig | None = None
 
 
+class SkillConfig(BaseModel):
+    evolving: bool = True
+    auto_patch_enabled: bool = True
+    min_tool_calls: int = 5
+    min_distinct_tools: int = 3
+    dedup_name_threshold: int = 80
+    dedup_semantic_threshold: float = 0.88
+    semantic_dedup_enabled: bool = False
+    embedding_model: str = "gemini-embedding-001"
+    embedding_task_type: str = "SEMANTIC_SIMILARITY"
+    fuzzy_patch_threshold: int = 92
+    max_skill_body_chars: int = 20_000
+    user_root_name: str = "skills"
+
+
 class PulseAgentConfig(BaseModel):
     type: Literal["pulse"] = "pulse"
     tag: str = "pulse"
@@ -74,6 +89,7 @@ class PulseAgentConfig(BaseModel):
     )
     max_turns: int = 50
     web_tool: WebToolConfig = Field(default_factory=WebToolConfig)
+    skill: SkillConfig = Field(default_factory=SkillConfig)
 
 
 class Mem0Config(Mem0MemoryConfig):
