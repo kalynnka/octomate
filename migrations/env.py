@@ -6,7 +6,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from octomate.database import DB_URL
+from octomate.config import OctomateConfig
 from octomate.models.base import Base
 import octomate.models.interactions  # noqa: F401 — registers Todo/Question/Confirmation
 import octomate.models.messages  # noqa: F401 — registers Message
@@ -17,7 +17,7 @@ import octomate.models.threads  # noqa: F401 — registers Thread
 config = context.config
 
 # Override sqlalchemy.url with our config
-config.set_main_option("sqlalchemy.url", DB_URL)
+config.set_main_option("sqlalchemy.url", OctomateConfig().db_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

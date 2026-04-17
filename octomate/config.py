@@ -179,6 +179,11 @@ AgentTentacleConfigUnion = Annotated[
 ]
 
 
+class DatabaseConfig(BaseModel):
+    driver: Literal["sqlite"] = "sqlite"
+    path: str = "octomate.db"
+
+
 class OctomateConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OCTOMATE__",
@@ -187,8 +192,14 @@ class OctomateConfig(BaseSettings):
         yaml_file=["octomate.default.yaml", "octomate.yaml"],
     )
 
+    workdir: Path = Path(".octomate")
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     tentacles: dict[str, TentacleConfigUnion] = {}
     agents: dict[str, AgentTentacleConfigUnion] = {}
+
+    @property
+    def db_url(self) -> str:
+        return f"sqlite+aiosqlite:///{self.workdir / self.database.path}"
 
     @classmethod
     def settings_customise_sources(cls, settings_cls, **kwargs):

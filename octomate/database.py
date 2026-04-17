@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import logging
 from functools import cache
-from pathlib import Path
 
 from arcanus.materia.sqlalchemy import AsyncSession
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-logger = logging.getLogger(__name__)
+from octomate.config import OctomateConfig
 
-DB_PATH = Path(".octomate/octomate.db")
-DB_URL = f"sqlite+aiosqlite:///{DB_PATH}"
+logger = logging.getLogger(__name__)
 
 
 @cache
-def engine(db_path: Path = DB_PATH) -> AsyncEngine:
-    return create_async_engine(DB_URL)
+def engine() -> AsyncEngine:
+    return create_async_engine(OctomateConfig().db_url)
 
 
 @cache
