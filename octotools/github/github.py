@@ -100,16 +100,6 @@ class GitHubConfig(BaseSettings):
         )
 
 
-CATEGORY_DESCRIPTIONS: dict[str, str] = {
-    "repos": "Read GitHub repository info, file contents, and branches.",
-    "issues": "Create, search, read, and update GitHub issues.",
-    "pull_requests": "Create, read, update, and manage GitHub pull requests and reviews.",
-    "copilot": "Trigger GitHub Copilot coding agent to work on issues.",
-    "projects": "Manage GitHub Projects boards and items.",
-    "search": "Search code and repositories on GitHub.",
-}
-
-
 def register(manager: SkillManager) -> None:
     config = GitHubConfig()
     token = config.api_key.get_secret_value()
@@ -127,16 +117,14 @@ def register(manager: SkillManager) -> None:
         timeout=30,
     )
 
-    categories: dict[str, tuple[str, dict[str, ToolPermission]]] = {}
-    for category, perms in config.tools.items():
-        description = CATEGORY_DESCRIPTIONS.get(
-            category, f"GitHub {category} operations."
-        )
-        categories[category] = (description, perms)
+    merged_permissions: dict[str, ToolPermission] = {}
+    for perms in config.tools.values():
+        merged_permissions.update(perms)
 
-    manager.register_mcp_group(
-        prefix="github",
+    manager.register_mcp(
+        name="github",
+        description="GitHub operations: repositories, issues, pull requests, projects, search, and Copilot.",
         toolset=mcp_server,
-        categories=categories,
         approvers=config.approvers or None,
+        tool_permissions=merged_permissions,
     )

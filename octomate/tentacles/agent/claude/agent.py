@@ -83,8 +83,9 @@ class ClaudeCodeTentacle(AgentTentacle):
         self.config = config
         self.threads = ThreadStore(default_owner=tag)
         if config.ssh:
+            cwd = config.cwd if config.cwd.startswith("/") else f"/{config.cwd}"
             self._vscode_uri = (
-                f"vscode://vscode-remote/ssh-remote+{config.ssh.host}{config.cwd}"
+                f"vscode://vscode-remote/ssh-remote+{config.ssh.host}{cwd}"
             )
         else:
             self._vscode_uri = f"vscode://file{os.path.abspath(config.cwd)}"
@@ -400,9 +401,10 @@ class ClaudeCodeTentacle(AgentTentacle):
 
         if current_worktree:
             if self.config.ssh:
+                worktree = current_worktree if current_worktree.startswith("/") else f"/{current_worktree}"
                 vscode_link_uri = (
                     f"vscode://vscode-remote/ssh-remote+{self.config.ssh.host}"
-                    f"{current_worktree}"
+                    f"{worktree}"
                 )
             else:
                 vscode_link_uri = f"vscode://file{os.path.abspath(current_worktree)}"
@@ -414,7 +416,10 @@ class ClaudeCodeTentacle(AgentTentacle):
                 f"vscode://anthropic.claude-code/open?session={session_id_after}"
             )
             if self.config.ssh:
-                resume_uri += f"&remote=ssh-remote+{self.config.ssh.host}"
+                folder = current_worktree or self.config.cwd
+                if not folder.startswith("/"):
+                    folder = f"/{folder}"
+                resume_uri += f"&remote=ssh-remote+{self.config.ssh.host}&folder={folder}"
         else:
             resume_uri = None
 

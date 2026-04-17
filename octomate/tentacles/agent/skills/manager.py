@@ -11,7 +11,6 @@ from pydantic_ai.toolsets import (
     AbstractToolset,
     CombinedToolset,
     FunctionToolset,
-    PrefixedToolset,
     PreparedToolset,
 )
 
@@ -159,26 +158,6 @@ class SkillManager:
         self.library = library
         self.skills[name] = SkillInfo(name=name, description=description)
         self.toolsets[name] = library.toolset
-
-    def register_mcp_group(
-        self,
-        prefix: str,
-        toolset: AbstractToolset[Any],
-        categories: dict[str, tuple[str, dict[str, ToolPermission]]],
-        approvers: dict[str, list[str]] | None = None,
-    ) -> None:
-        """Register multiple sub-skills from one MCP server."""
-        self._track_server(toolset)
-        for category, (description, perms) in categories.items():
-            skill_name = f"{prefix}.{category}"
-            self.skills[skill_name] = SkillInfo(
-                name=skill_name, description=description
-            )
-            prepared = PreparedToolset(
-                wrapped=toolset,
-                prepare_func=make_metadata_injector(skill_name, approvers, perms),
-            )
-            self.mcp_toolsets[skill_name] = PrefixedToolset(prepared, prefix=prefix)
 
     def _track_server(self, toolset: AbstractToolset[Any]) -> None:
         if toolset not in self.mcp_servers:

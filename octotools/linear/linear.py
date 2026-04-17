@@ -64,16 +64,6 @@ class LinearConfig(BaseSettings):
         )
 
 
-CATEGORY_DESCRIPTIONS: dict[str, str] = {
-    "issues": "Search, read, create, and update Linear issues and their statuses/labels.",
-    "projects": "Browse, create, and update Linear projects.",
-    "comments": "Read and post comments on Linear issues.",
-    "teams": "Browse Linear teams.",
-    "users": "Browse Linear workspace members.",
-    "documents": "Browse and search Linear documents.",
-}
-
-
 def register(manager: SkillManager) -> None:
     config = LinearConfig()
     api_key = config.api_key.get_secret_value()
@@ -86,16 +76,14 @@ def register(manager: SkillManager) -> None:
         timeout=30,
     )
 
-    categories: dict[str, tuple[str, dict[str, ToolPermission]]] = {}
-    for category, perms in config.tools.items():
-        description = CATEGORY_DESCRIPTIONS.get(
-            category, f"Linear {category} operations."
-        )
-        categories[category] = (description, perms)
+    merged_permissions: dict[str, ToolPermission] = {}
+    for perms in config.tools.values():
+        merged_permissions.update(perms)
 
-    manager.register_mcp_group(
-        prefix="linear",
+    manager.register_mcp(
+        name="linear",
+        description="Linear operations: issues, projects, comments, teams, users, and documents.",
         toolset=mcp_server,
-        categories=categories,
         approvers=config.approvers or None,
+        tool_permissions=merged_permissions,
     )
