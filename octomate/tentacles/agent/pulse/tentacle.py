@@ -163,11 +163,9 @@ class PulseTentacle(AgentTentacle):
         )
 
         skill_toolsets = skill_manager.build_toolsets() if skill_manager else []
-        summon_toolset = build_summon_toolset(octopus.agent_tentacles)
         self.toolsets = [
             *skill_toolsets,
             build_file_management_toolset(),
-            *([summon_toolset] if summon_toolset else []),
         ] or None
 
         self.pulse_agent = Agent(
@@ -258,6 +256,7 @@ class PulseTentacle(AgentTentacle):
             "\n\n".join(filter(None, [self.subagent_catalog, memory_instructions]))
             or None
         )
+        summon_toolset = build_summon_toolset(self.octopus.agent_tentacles)
         run_toolsets: list[AbstractToolset[SessionContext]] = [
             *list(channel.toolsets),
             build_todo_list_toolset(state),
@@ -266,6 +265,7 @@ class PulseTentacle(AgentTentacle):
                 if (delegate := build_delegate_toolset(self.subagents, state))
                 else []
             ),
+            *([summon_toolset] if summon_toolset else []),
         ]
 
         stream_ctx = contextlib.nullcontext() if silent else channel.open_stream(key)
