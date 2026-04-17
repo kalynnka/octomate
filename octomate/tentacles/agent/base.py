@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Self
 
 from octomate.nerve import AgentResult, DismissPending
 from octomate.schemas.events import MessageEvent
@@ -78,6 +78,12 @@ class AgentTentacle(Tentacle):
                 await self.octopus.agent_nerve.send(
                     AgentResult(key=key, request_id=request_id, output=result_output)
                 )
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        pass
 
     async def interrupt(self, key: SessionKey) -> None:
         """Send a graceful stop signal before hard-cancelling.

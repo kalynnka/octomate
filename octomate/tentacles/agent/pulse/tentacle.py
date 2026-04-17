@@ -135,6 +135,7 @@ class PulseTentacle(AgentTentacle):
     toolsets: Sequence[AbstractToolset[SessionContext]] | None
     subagent_catalog: str | None
     max_turns: int
+    skill_manager: SkillManager | None
 
     def __init__(
         self,
@@ -214,7 +215,17 @@ class PulseTentacle(AgentTentacle):
         else:
             self.subagent_catalog = None
 
+        self.skill_manager = skill_manager
         self._distiller: SkillDistiller | None = None
+
+    async def __aenter__(self) -> PulseTentacle:
+        if self.skill_manager:
+            await self.skill_manager.__aenter__()
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        if self.skill_manager:
+            await self.skill_manager.__aexit__(*args)
 
     @property
     def distiller(self) -> SkillDistiller | None:

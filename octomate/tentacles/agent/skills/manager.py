@@ -101,6 +101,8 @@ class SkillManager:
     mcp_toolsets: dict[str, AbstractToolset[Any]]
     mcp_servers: list[AbstractToolset[Any]]
     library: SkillLibrary | None
+    _watch_task: asyncio.Task[None] | None
+    _server_exit_stack: contextlib.AsyncExitStack | None
 
     def __init__(self) -> None:
         self.skills = {}
@@ -108,6 +110,8 @@ class SkillManager:
         self.mcp_toolsets = {}
         self.mcp_servers = []
         self.library = None
+        self._watch_task = None
+        self._server_exit_stack = None
 
     def register(self, name: str, description: str) -> FunctionToolset:
         """Register a skill and return its FunctionToolset for adding tools."""
@@ -181,10 +185,9 @@ class SkillManager:
             self.mcp_servers.append(toolset)
 
     async def __aenter__(self):
-        self._exit_stack = contextlib.AsyncExitStack()
+        self._server_exit_stack = contextlib.AsyncExitStack()
         for server in self.mcp_servers:
-            await self._exit_stack.enter_async_context(server)
-        self._watch_task: asyncio.Task | None = None
+            await self._server_exit_stack.enter_async_context(server)
         if self.library:
             self._watch_task = asyncio.create_task(
                 self.library.watch(), name="skill-watcher"
@@ -196,7 +199,9 @@ class SkillManager:
             self._watch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watch_task
-        await self._exit_stack.aclose()
+        if self._server_exit_stack:
+            await self._server_exit_stack.aclose()
+            self._server_exit_stack = None
 
     def build_toolsets(self) -> list[AbstractToolset[Any]]:
         """Build the list of skills' toolsets to pass to Agent(toolsets=[...]).

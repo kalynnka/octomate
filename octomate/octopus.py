@@ -286,6 +286,8 @@ class Octopus:
                 stack.enter_context(sqlalchemy_materia)
                 if self.skill_manager:
                     await stack.enter_async_context(self.skill_manager)
+                for tentacle in self.agent_tentacles.values():
+                    await stack.enter_async_context(tentacle)
                 async with asyncio.TaskGroup() as tg:
                     for name, tentacle in self.tentacles.items():
                         tg.create_task(tentacle.activate(), name=f"tentacle:{name}")
