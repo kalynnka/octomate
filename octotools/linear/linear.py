@@ -83,11 +83,14 @@ def register(manager: SkillManager) -> None:
     mcp_server = MCPServerStreamableHTTP(
         url=REMOTE_MCP_URL,
         headers={"Authorization": f"Bearer {api_key}"},
+        timeout=30,
     )
 
     categories: dict[str, tuple[str, dict[str, ToolPermission]]] = {}
     for category, perms in config.tools.items():
-        description = CATEGORY_DESCRIPTIONS.get(category, f"Linear {category} operations.")
+        description = CATEGORY_DESCRIPTIONS.get(
+            category, f"Linear {category} operations."
+        )
         categories[category] = (description, perms)
 
     manager.register_mcp_group(

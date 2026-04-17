@@ -124,6 +124,7 @@ def register(manager: SkillManager) -> None:
     mcp_server = MCPServerStreamableHTTP(
         url=REMOTE_MCP_URL,
         headers=headers,
+        timeout=30,
     )
 
     categories: dict[str, tuple[str, dict[str, ToolPermission]]] = {}

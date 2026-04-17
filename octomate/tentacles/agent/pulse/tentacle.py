@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from pydantic_ai import Agent, CallDeferred, RunContext
-from pydantic_ai.messages import RetryPromptPart, ToolCallPart
 from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.messages import RetryPromptPart, ToolCallPart
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.settings import ModelSettings
@@ -43,9 +43,10 @@ from octomate.tentacles.agent.pulse.tools import (
 from octomate.tentacles.agent.skills import SkillManager
 
 if TYPE_CHECKING:
+    from pydantic_ai.messages import ModelMessage
+
     from octomate.octopus import Octopus
     from octomate.tentacles.agent.skills.distiller import SkillDistiller
-    from pydantic_ai.messages import ModelMessage
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class PulseTentacle(AgentTentacle):
 
         http_client = httpx.AsyncClient(
             transport=RetryTransport(httpx.AsyncHTTPTransport()),
-            timeout=httpx.Timeout(180.0),
+            timeout=httpx.Timeout(None, connect=10.0),
         )
 
         main_model = _build_model(config.main, http_client)
@@ -322,6 +323,8 @@ class PulseTentacle(AgentTentacle):
                     self.distiller.distill(all_model_messages, state.goal, state),
                     name="skill-distill",
                 )
-                t.add_done_callback(lambda fut: fut.exception() if not fut.cancelled() else None)
+                t.add_done_callback(
+                    lambda fut: fut.exception() if not fut.cancelled() else None
+                )
 
         return "\n".join(str(seg) for msg in messages for seg in msg.segments)

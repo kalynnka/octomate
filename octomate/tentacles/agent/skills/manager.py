@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -182,9 +181,6 @@ class SkillManager:
             self.mcp_servers.append(toolset)
 
     async def __aenter__(self):
-        self._exit_stack = AsyncExitStack()
-        for server in self.mcp_servers:
-            await self._exit_stack.enter_async_context(server)
         self._watch_task: asyncio.Task | None = None
         if self.library:
             self._watch_task = asyncio.create_task(
@@ -197,7 +193,6 @@ class SkillManager:
             self._watch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watch_task
-        await self._exit_stack.aclose()
 
     def build_toolsets(self) -> list[AbstractToolset[Any]]:
         """Build the list of skills' toolsets to pass to Agent(toolsets=[...]).
