@@ -110,7 +110,7 @@ def build_summon_toolset(
 
     toolset = FunctionToolset[SessionContext]()
 
-    @toolset.tool(requires_approval=False, description=tool_description)
+    @toolset.tool(requires_approval=True, description=tool_description)
     async def summon(
         ctx: RunContext[SessionContext],
         tentacle_tag: str,
