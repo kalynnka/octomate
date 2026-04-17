@@ -52,41 +52,29 @@ class GitHubConfig(BaseSettings):
         "projects",
         "context",
     ]
-    tools: dict[str, dict[str, ToolPermission]] = {
-        "repos": {
-            "get_repository": "bypass",
-            "get_file_contents": "bypass",
-            "list_branches": "bypass",
-        },
-        "issues": {
-            "create_issue": "default",
-            "get_issue": "bypass",
-            "list_issues": "bypass",
-            "update_issue": "default",
-            "search_issues": "bypass",
-            "add_issue_comment": "default",
-        },
-        "pull_requests": {
-            "create_pull_request": "default",
-            "get_pull_request": "bypass",
-            "list_pull_requests": "bypass",
-            "update_pull_request": "default",
-            "request_copilot_review": "default",
-            "merge_pull_request": "default",
-        },
-        "copilot": {
-            "create_copilot_task": "default",
-        },
-        "projects": {
-            "get_project": "bypass",
-            "add_project_item": "default",
-            "list_project_items": "bypass",
-            "update_project_item": "default",
-        },
-        "search": {
-            "search_code": "bypass",
-            "search_repositories": "bypass",
-        },
+    tools: dict[str, ToolPermission] = {
+        "get_repository": "bypass",
+        "get_file_contents": "bypass",
+        "list_branches": "bypass",
+        "create_issue": "default",
+        "get_issue": "bypass",
+        "list_issues": "bypass",
+        "update_issue": "default",
+        "search_issues": "bypass",
+        "add_issue_comment": "default",
+        "create_pull_request": "default",
+        "get_pull_request": "bypass",
+        "list_pull_requests": "bypass",
+        "update_pull_request": "default",
+        "request_copilot_review": "default",
+        "merge_pull_request": "default",
+        "create_copilot_task": "default",
+        "get_project": "bypass",
+        "add_project_item": "default",
+        "list_project_items": "bypass",
+        "update_project_item": "default",
+        "search_code": "bypass",
+        "search_repositories": "bypass",
     }
     approvers: dict[str, list[str]] = {}
 
@@ -117,14 +105,10 @@ def register(manager: SkillManager) -> None:
         timeout=30,
     )
 
-    merged_permissions: dict[str, ToolPermission] = {}
-    for perms in config.tools.values():
-        merged_permissions.update(perms)
-
     manager.register_mcp(
         name="github",
         description="GitHub operations: repositories, issues, pull requests, projects, search, and Copilot.",
         toolset=mcp_server,
         approvers=config.approvers or None,
-        tool_permissions=merged_permissions,
+        tool_permissions=config.tools,
     )

@@ -11,6 +11,7 @@ from pydantic_ai.toolsets import (
     AbstractToolset,
     CombinedToolset,
     FunctionToolset,
+    PrefixedToolset,
     PreparedToolset,
 )
 
@@ -97,8 +98,7 @@ class SkillInfo:
 class SkillManager:
     skills: dict[str, SkillInfo]
     toolsets: dict[str, FunctionToolset]
-    mcp_toolsets: dict[str, AbstractToolset[Any]]
-    mcp_servers: list[AbstractToolset[Any]]
+    mcp_servers: dict[str, AbstractToolset[Any]]
     library: SkillLibrary | None
     _watch_task: asyncio.Task[None] | None
     _server_exit_stack: contextlib.AsyncExitStack | None
@@ -106,14 +106,13 @@ class SkillManager:
     def __init__(self) -> None:
         self.skills = {}
         self.toolsets = {}
-        self.mcp_toolsets = {}
-        self.mcp_servers = []
+        self.mcp_servers = {}
         self.library = None
         self._watch_task = None
         self._server_exit_stack = None
 
     def register(self, name: str, description: str) -> FunctionToolset:
-        """Register a skill and return its FunctionToolset for adding tools."""
+        """Register a tool and return its FunctionToolset for adding tools."""
         self.skills[name] = SkillInfo(name=name, description=description)
         toolset: FunctionToolset = FunctionToolset(
             metadata={SKILL_METADATA_KEY: name},
@@ -139,14 +138,13 @@ class SkillManager:
         approvers: dict[str, list[str]] | None = None,
         tool_permissions: dict[str, ToolPermission] | None = None,
     ) -> None:
-        """Register an MCP-based skill."""
-        self._track_server(toolset)
+        """Register an MCP-based skill. All tools are prefixed with the skill name."""
         self.skills[name] = SkillInfo(name=name, description=description)
         prepared = PreparedToolset(
             wrapped=toolset,
             prepare_func=make_metadata_injector(name, approvers, tool_permissions),
         )
-        self.mcp_toolsets[name] = prepared
+        self.mcp_servers[name] = PrefixedToolset(prepared, prefix=name)
 
     def register_skill_library(
         self,
@@ -159,13 +157,9 @@ class SkillManager:
         self.skills[name] = SkillInfo(name=name, description=description)
         self.toolsets[name] = library.toolset
 
-    def _track_server(self, toolset: AbstractToolset[Any]) -> None:
-        if toolset not in self.mcp_servers:
-            self.mcp_servers.append(toolset)
-
     async def __aenter__(self):
         self._server_exit_stack = contextlib.AsyncExitStack()
-        for server in self.mcp_servers:
+        for server in self.mcp_servers.values():
             await self._server_exit_stack.enter_async_context(server)
         if self.library:
             self._watch_task = asyncio.create_task(
@@ -189,7 +183,7 @@ class SkillManager:
         the model's initial context.
         """
         all_toolsets: list[AbstractToolset[Any]] = list(self.toolsets.values())
-        all_toolsets.extend(self.mcp_toolsets.values())
+        all_toolsets.extend(self.mcp_servers.values())
         if not all_toolsets:
             return []
         combined = CombinedToolset(all_toolsets)

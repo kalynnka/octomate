@@ -16,41 +16,29 @@ class LinearConfig(BaseSettings):
     )
 
     api_key: SecretStr = SecretStr("")
-    tools: dict[str, dict[str, ToolPermission]] = {
-        "issues": {
-            "search_issues": "bypass",
-            "list_issues": "bypass",
-            "list_my_issues": "bypass",
-            "get_issue": "bypass",
-            "list_issue_statuses": "bypass",
-            "get_issue_status": "bypass",
-            "list_issue_labels": "bypass",
-            "create_issue": "default",
-            "update_issue": "default",
-        },
-        "projects": {
-            "list_projects": "bypass",
-            "get_project": "bypass",
-            "create_project": "default",
-            "update_project": "default",
-        },
-        "comments": {
-            "list_comments": "bypass",
-            "create_comment": "default",
-        },
-        "teams": {
-            "list_teams": "bypass",
-            "get_team": "bypass",
-        },
-        "users": {
-            "list_users": "bypass",
-            "get_user": "bypass",
-        },
-        "documents": {
-            "list_documents": "bypass",
-            "get_document": "bypass",
-            "search_documentation": "bypass",
-        },
+    tools: dict[str, ToolPermission] = {
+        "search_issues": "bypass",
+        "list_issues": "bypass",
+        "list_my_issues": "bypass",
+        "get_issue": "bypass",
+        "list_issue_statuses": "bypass",
+        "get_issue_status": "bypass",
+        "list_issue_labels": "bypass",
+        "create_issue": "default",
+        "update_issue": "default",
+        "list_projects": "bypass",
+        "get_project": "bypass",
+        "create_project": "default",
+        "update_project": "default",
+        "list_comments": "bypass",
+        "create_comment": "default",
+        "list_teams": "bypass",
+        "get_team": "bypass",
+        "list_users": "bypass",
+        "get_user": "bypass",
+        "list_documents": "bypass",
+        "get_document": "bypass",
+        "search_documentation": "bypass",
     }
     approvers: dict[str, list[str]] = {}
 
@@ -76,14 +64,10 @@ def register(manager: SkillManager) -> None:
         timeout=30,
     )
 
-    merged_permissions: dict[str, ToolPermission] = {}
-    for perms in config.tools.values():
-        merged_permissions.update(perms)
-
     manager.register_mcp(
         name="linear",
         description="Linear operations: issues, projects, comments, teams, users, and documents.",
         toolset=mcp_server,
         approvers=config.approvers or None,
-        tool_permissions=merged_permissions,
+        tool_permissions=config.tools,
     )
