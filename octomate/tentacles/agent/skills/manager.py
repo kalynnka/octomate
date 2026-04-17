@@ -12,20 +12,21 @@ from pydantic_ai.toolsets import (
     AbstractToolset,
     CombinedToolset,
     FunctionToolset,
+    PrefixedToolset,
     PreparedToolset,
 )
 
 from octomate.tentacles.agent.context import SessionContext
-from octomate.tentacles.agent.skills.library import SkillLibrary, SkillDoc
+from octomate.tentacles.agent.skills.library import SkillLibrary
 
 logger = logging.getLogger(__name__)
 
 SKILL_METADATA_KEY = "skill"
 
 ToolPermission = Literal[
-    "bypass",   # visible, never requires approval
+    "bypass",  # visible, never requires approval
     "default",  # visible, requires approval when approvers match the tentacle
-    "masked",   # hidden from the agent entirely
+    "masked",  # hidden from the agent entirely
 ]
 
 
@@ -174,7 +175,7 @@ class SkillManager:
                 wrapped=toolset,
                 prepare_func=make_metadata_injector(skill_name, approvers, perms),
             )
-            self.mcp_toolsets[skill_name] = prepared
+            self.mcp_toolsets[skill_name] = PrefixedToolset(prepared, prefix=prefix)
 
     def _track_server(self, toolset: AbstractToolset[Any]) -> None:
         if toolset not in self.mcp_servers:

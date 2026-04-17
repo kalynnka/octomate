@@ -6,7 +6,7 @@
       "type": "debugpy",
       "request": "launch",
       "module": "uvicorn",
-      "args": ["main:app"],
+      "args": ["main:app", "--port", "2333"],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
@@ -19,6 +19,7 @@
       "module": "uvicorn",
       "args": [
         "main:app",
+        "--port", "2333",
         "--reload",
         "--reload-dir", "octomate",
         "--reload-dir", "octotools"

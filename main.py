@@ -9,6 +9,7 @@ from typing import Any
 import octotools
 
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"lark_oapi")
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"zep_cloud")
 
 from octomate.config import (
@@ -112,9 +113,6 @@ def _build_octopus() -> Octopus:
         elif isinstance(tc, LarkTentacleConfig):
             from octomate.tentacles.channel.lark import LarkTentacle
 
-            warnings.filterwarnings(
-                "ignore", category=DeprecationWarning, module=r"lark_oapi"
-            )
             octopus.connect(
                 LarkTentacle(
                     name,

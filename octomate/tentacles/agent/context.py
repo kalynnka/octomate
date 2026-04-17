@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from octomate.tentacles.channel.base import ChannelTentacle
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
-MAX_RETRIES = 3
+MAX_RETRIES = 6
 
 
 @dataclass
