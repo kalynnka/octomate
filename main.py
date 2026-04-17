@@ -6,6 +6,14 @@ import warnings
 from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 
+import logfire
+
+logfire.configure()
+logfire.instrument_pydantic_ai()
+logfire.instrument_httpx()
+logfire.instrument_sqlalchemy()
+logfire.instrument_system_metrics()
+
 import octotools
 
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"websockets")

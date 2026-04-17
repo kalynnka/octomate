@@ -12,10 +12,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 import anyio
+import logfire
 from pydantic_ai.toolsets import FunctionToolset
 
-from octomate.tentacles.agent.context import SessionContext
-from octomate.tentacles.agent.tools import history_toolset
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AgentSegment,
@@ -27,6 +26,8 @@ from octomate.schemas.segments import (
 from octomate.schemas.session import SessionKey, UserProfile
 from octomate.stores.interaction import InteractionStore
 from octomate.stores.thread import ThreadStore
+from octomate.tentacles.agent.context import SessionContext
+from octomate.tentacles.agent.tools import history_toolset
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel.feelers import NULL_FEELERS, Feelers
 
@@ -164,6 +165,7 @@ class ChannelTentacle(Tentacle):
     @abstractmethod
     async def deactivate(self) -> None: ...
 
+    @logfire.instrument("ChannelTentacle {self.id} call [{key}]")
     async def __call__(self, key: SessionKey, contents: list[MessageEvent]) -> None:
         if not contents:
             return
@@ -174,7 +176,9 @@ class ChannelTentacle(Tentacle):
             ):
                 await self.memory.memo(key, contents, self)
                 return
-            logger.info("Tentacle %s pulse [%s] (%d messages)", self.id, key, len(contents))
+            logger.info(
+                "Tentacle %s pulse [%s] (%d messages)", self.id, key, len(contents)
+            )
             await self.pulse.run(key, contents)
         except Exception:
             logger.exception("Error in tentacle %s [%s]", self.id, key)
@@ -280,6 +284,7 @@ class ChannelTentacle(Tentacle):
     @cached_property
     def toolsets(self) -> list[FunctionToolset[SessionContext]]:
         from octomate.tentacles.channel.tools import channel_toolset
+
         return [channel_toolset(), history_toolset()]
 
 

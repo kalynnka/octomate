@@ -5,6 +5,8 @@ import logging
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Self
 
+import logfire
+
 from octomate.nerve import AgentResult, DismissPending
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.session import SessionKey
@@ -43,6 +45,7 @@ class AgentTentacle(Tentacle):
         self.handover = handover
         self._running_tasks = {}
 
+    @logfire.instrument("AgentTentacle {self.id} call [{key}]")
     async def __call__(
         self,
         key: SessionKey,
