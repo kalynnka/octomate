@@ -3,14 +3,22 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+import httpx
 from langchain_community.agent_toolkits import FileManagementToolkit
 from langchain_community.tools.shell.tool import ShellTool
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext, ToolDefinition
-from pydantic_ai.ext.langchain import LangChainTool, LangChainToolset, tool_from_langchain
+from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool
+from pydantic_ai.common_tools.web_fetch import web_fetch_tool
+from pydantic_ai.ext.langchain import (
+    LangChainTool,
+    LangChainToolset,
+    tool_from_langchain,
+)
 from pydantic_ai.tools import Tool
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
+from octomate.config import JinaReaderConfig, QueritConfig
 from octomate.tentacles.agent.context import SessionContext
 from octomate.transmuters.interactions import Todo
 
@@ -27,7 +35,9 @@ def build_bash_tool() -> Tool[SessionContext]:
 
 
 def build_file_management_toolset() -> AbstractToolset[Any]:
-    toolset = LangChainToolset(cast(list[LangChainTool], FileManagementToolkit().get_tools()))
+    toolset = LangChainToolset(
+        cast(list[LangChainTool], FileManagementToolkit().get_tools())
+    )
 
     def needs_approval(
         ctx: RunContext[Any],
@@ -152,3 +162,75 @@ def build_delegate_toolset(
         )
 
     return toolset
+
+
+WEB_SEARCH_DESCRIPTION = (
+    "Search the web for current information, recent events, and facts. "
+    "Returns a ranked list of results each with a title, URL, and snippet. "
+    "Use web_fetch to read the full content of a promising result."
+)
+
+WEB_FETCH_DESCRIPTION = (
+    "Fetch and read the full content of a URL, returned as markdown. "
+    "Use after web_search to read a specific result in full, or to access any URL directly. "
+    "Supports HTML pages, PDFs, and other document types."
+)
+
+
+def build_web_search_tool(config: QueritConfig | None) -> Tool[Any]:
+    if config is None:
+        return dataclasses.replace(
+            duckduckgo_search_tool(), description=WEB_SEARCH_DESCRIPTION
+        )
+    api_key = config.api_key.get_secret_value()
+    if not api_key:
+        return dataclasses.replace(
+            duckduckgo_search_tool(max_results=config.max_results),
+            description=WEB_SEARCH_DESCRIPTION,
+        )
+
+    async def querit_search(query: str) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=config.timeout) as client:
+            resp = await client.post(
+                f"{config.base_url}/v1/search",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"query": query, "count": config.max_results},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        return data.get("results", {}).get("result", [])
+
+    return Tool[Any](
+        querit_search, name="web_search", description=WEB_SEARCH_DESCRIPTION
+    )
+
+
+def build_web_fetch_tool(config: JinaReaderConfig | None) -> Tool[Any]:
+    if config is None:
+        return dataclasses.replace(web_fetch_tool(), description=WEB_FETCH_DESCRIPTION)
+    api_key = config.api_key.get_secret_value()
+    if not api_key:
+        return dataclasses.replace(
+            web_fetch_tool(
+                max_content_length=config.max_content_length,
+                timeout=int(config.timeout),
+            ),
+            description=WEB_FETCH_DESCRIPTION,
+        )
+
+    async def jina_fetch(url: str) -> str:
+        headers: dict[str, str] = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "text/markdown",
+        }
+        if config.wait_for_selector:
+            headers["X-Wait-For-Selector"] = config.wait_for_selector
+        async with httpx.AsyncClient(timeout=config.timeout) as client:
+            resp = await client.get(f"{config.base_url}/{url}", headers=headers)
+            resp.raise_for_status()
+            text = resp.text
+        if config.max_content_length and len(text) > config.max_content_length:
+            text = text[: config.max_content_length]
+        return text
+
+    return Tool[Any](jina_fetch, name="web_fetch", description=WEB_FETCH_DESCRIPTION)

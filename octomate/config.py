@@ -43,6 +43,26 @@ def _default_subagents() -> dict[str, SubAgentConfig]:
     }
 
 
+class QueritConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    base_url: str = "https://api.querit.ai"
+    max_results: int = 5
+    timeout: float = 15.0
+
+
+class JinaReaderConfig(BaseModel):
+    api_key: SecretStr = SecretStr("")
+    base_url: str = "https://r.jina.ai"
+    timeout: float = 30.0
+    max_content_length: int = 64000
+    wait_for_selector: str = ""
+
+
+class WebToolConfig(BaseModel):
+    querit: QueritConfig | None = None
+    jina_reader: JinaReaderConfig | None = None
+
+
 class PulseAgentConfig(BaseModel):
     type: Literal["pulse"] = "pulse"
     tag: str = "pulse"
@@ -53,6 +73,7 @@ class PulseAgentConfig(BaseModel):
         default_factory=lambda: [Path("octoskills"), Path(".octomate/skills")]
     )
     max_turns: int = 50
+    web_tool: WebToolConfig = Field(default_factory=WebToolConfig)
 
 
 class Mem0Config(Mem0MemoryConfig):

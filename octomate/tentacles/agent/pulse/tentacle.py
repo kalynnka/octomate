@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from pydantic_ai import Agent, CallDeferred, RunContext
-from pydantic_ai.common_tools.web_fetch import web_fetch_tool
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
@@ -37,6 +36,8 @@ from octomate.tentacles.agent.pulse.tools import (
     build_delegate_toolset,
     build_file_management_toolset,
     build_todo_list_toolset,
+    build_web_fetch_tool,
+    build_web_search_tool,
 )
 from octomate.tentacles.agent.skills import SkillManager
 
@@ -155,7 +156,11 @@ class PulseTentacle(AgentTentacle):
             system_prompt=SYSTEM_PROMPT,
             deps_type=SessionContext,
             output_type=[list[AgentMessage], DeferredToolRequests],
-            tools=[web_fetch_tool(), build_bash_tool()],
+            tools=[
+                build_web_fetch_tool(config.web_tool.jina_reader),
+                build_web_search_tool(config.web_tool.querit),
+                build_bash_tool(),
+            ],
             toolsets=self.toolsets,
             model_settings=main_settings,
         )
