@@ -135,6 +135,12 @@ class SkillDistiller:
         self._distill_agent: Agent[None, DistillOutput] | None = None
         self._patch_agent: Agent[None, PatchDraft] | None = None
 
+    def _build_distill_system_prompt(self) -> str:
+        doc = self.library.docs.get("create-skill")
+        if doc is None:
+            return _DISTILL_SYSTEM
+        return _DISTILL_SYSTEM + f"\n\nSkill writing conventions to follow:\n{doc.body}"
+
     def _get_distill_agent(self) -> Agent[None, DistillOutput]:
         if self._distill_agent is None:
             model = _build_model(self.model_config)
@@ -143,7 +149,7 @@ class SkillDistiller:
             )
             self._distill_agent = Agent(
                 model,
-                system_prompt=_DISTILL_SYSTEM,
+                system_prompt=self._build_distill_system_prompt(),
                 output_type=DistillOutput,
                 model_settings=settings,
             )
