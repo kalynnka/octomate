@@ -166,6 +166,8 @@ class ClaudeCodeConfig(BaseModel):
         None  # if set, enables per-session git worktree isolation
     )
     ssh: SSHConfig | None = None  # if set, runs Claude Code on the remote host via SSH
+    vscode_host: str | None = None  # explicit host for VS Code SSH-remote links
+    vscode_local_links: bool = False  # force local vscode://file links even when ssh is set
 
 
 class CopilotConfig(BaseModel):

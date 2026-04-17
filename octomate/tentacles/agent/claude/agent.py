@@ -407,27 +407,29 @@ class ClaudeCodeTentacle(AgentTentacle):
                 current_worktree = worktree_info[0]
                 self._worktree_paths[key] = current_worktree
 
+        if self.config.vscode_local_links:
+            link_host = None
+        elif self.config.vscode_host:
+            link_host = self.config.vscode_host
+        elif self.config.ssh:
+            link_host = self.config.ssh.host
+        else:
+            link_host = None
+
         if current_worktree:
-            if self.config.ssh:
+            if link_host:
                 worktree = current_worktree if current_worktree.startswith("/") else f"/{current_worktree}"
-                vscode_link_uri = (
-                    f"vscode://vscode-remote/ssh-remote+{self.config.ssh.host}"
-                    f"{worktree}"
-                )
+                vscode_link_uri = f"vscode://vscode-remote/ssh-remote+{link_host}{worktree}"
             else:
                 vscode_link_uri = f"vscode://file{os.path.abspath(current_worktree)}"
         else:
             vscode_link_uri = self._vscode_uri
 
         if session_id_after:
-            resume_uri = (
-                f"vscode://anthropic.claude-code/open?session={session_id_after}"
-            )
-            if self.config.ssh:
-                folder = current_worktree or self.config.cwd
-                if not folder.startswith("/"):
-                    folder = f"/{folder}"
-                resume_uri += f"&remote=ssh-remote+{self.config.ssh.host}&folder={folder}"
+            if link_host:
+                resume_uri = f"vscode://anthropic.claude-code/open?session={session_id_after}&remote=ssh-remote+{link_host}"
+            else:
+                resume_uri = f"vscode://anthropic.claude-code/open?session={session_id_after}"
         else:
             resume_uri = None
 
