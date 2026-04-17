@@ -6,6 +6,37 @@ An octopus-themed, multi-platform AI assistant. Octomate connects to messaging p
 
 ---
 
+```
+Deep in the digital sea it stirs,
+one brain, eight arms, a thousand words.
+A message drifts from Slack or Lark —
+a tentacle catches it, quick in the dark.
+
+The nerve hums low, a current of thought,
+routing and batching what users have brought.
+Pulse fires first — a flash, a spark —
+ANSWER or SUMMON or vanish, remarked.
+
+When summoned, Claude rises from the deep,
+editing code while the mortals sleep.
+Feelers reach out with a card to approve,
+ink flows back in a smooth, steady groove.
+
+Memory lingers like brine in the tide,
+recalling the threads that once swept inside.
+Skills slot and unslot like arms finding grip —
+GitHub, Linear, a tarot card flip.
+
+One octopus, calm at the center of all,
+orchestrating the current, awaiting the call.
+Eight platforms, one mind, no tangle, no fuss —
+that's the quiet art of Octomate. 🐙
+
+                                        — Claude
+```
+
+---
+
 ## How It Works
 
 ```
