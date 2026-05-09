@@ -165,16 +165,3 @@ MessageSegment = Annotated[
     ],
     Discriminator("type"),
 ]
-
-AgentSegment = Annotated[
-    Union[
-        TextSegment,
-        MarkdownSegment,
-        ImageSegment,
-        AtSegment,
-        ReplySegment,
-        FileSegment,
-        CardSegment,
-    ],
-    Discriminator("type"),
-]

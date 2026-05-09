@@ -4,14 +4,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from octomate.schemas.segments import AgentSegment
+from octomate.schemas.segments import MessageSegment
 from octomate.schemas.session import SessionKey
 
 
 class AgentMessage(BaseModel):
     """A single outgoing message composed of one or more segments."""
 
-    segments: list[AgentSegment]
+    segments: list[MessageSegment]
 
     def __str__(self) -> str:
         return "".join(str(seg) for seg in self.segments)
