@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
 from sqlalchemy import String, UniqueConstraint, Uuid
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
+
+if TYPE_CHECKING:
+    from octomate.models.messages import ModelMessage
 
 
 class Session(Base, TransmuterProxiedMixin):
@@ -38,3 +42,11 @@ class Session(Base, TransmuterProxiedMixin):
 
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+
+    messages: Mapped[list[ModelMessage]] = relationship(
+        "ModelMessage",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="ModelMessage.id",
+        lazy="selectin",
+    )

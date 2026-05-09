@@ -5,13 +5,14 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Annotated, Literal
 
-from arcanus import BaseTransmuter
+from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
 from pydantic import BaseModel, ConfigDict, Field
 from uuid_utils.compat import uuid7
 
 from octomate.models.session import Session as SessionModel
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.messages import ModelRequest, ModelResponse
 
 ChatType = Literal["private", "group"]
 
@@ -63,6 +64,8 @@ class Session(BaseTransmuter):
 
     name: str | None = None
     status: str = "active"
+
+    messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
     @cached_property
     def key(self) -> SessionKey:
