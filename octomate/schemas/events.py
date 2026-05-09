@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from functools import cached_property
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import UserContent
 
 from octomate.schemas.segments import AtSegment, MessageSegment, TextSegment
-from octomate.schemas.session import SessionKey, UserProfile
+from octomate.schemas.session import UserProfile
 
 
 class MessageEvent(BaseModel):
@@ -25,14 +24,6 @@ class MessageEvent(BaseModel):
     sender: UserProfile = Field(default_factory=UserProfile)
     segments: list[MessageSegment] = Field(default_factory=list)
     raw: str = ""
-
-    @cached_property
-    def session_key(self) -> SessionKey:
-        group_id = self.chat_id if self.chat_type == "group" else ""
-        thread_id = self.thread_id or ""
-        return SessionKey(
-            self.tentacle_id, self.user_id, group_id, thread_id, self.chat_id
-        )
 
     @property
     def display_name(self) -> str:
