@@ -22,12 +22,6 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolCallPartDelta,
 )
-from pydantic_ai.messages import (
-    ModelRequest as PydanticModelRequest,
-)
-from pydantic_ai.messages import (
-    ModelResponse as PydanticModelResponse,
-)
 from pydantic_ai.tools import (
     DeferredToolApprovalResult,
     DeferredToolRequests,
@@ -59,18 +53,17 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     ToolInputStartChunk,
 )
 
-from octomate.managers.sessions import SessionManager
+from octomate.managers.conversations import ConversationManager
 from octomate.schemas.actions import AgentMessage
-from octomate.schemas.messages import ModelMessage as BlessedModelMessage
-from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.schemas.segments import MessageSegment
-from octomate.schemas.session import Session, SessionKey
 from octomate.tentacles.agent.inkling.graph import (
     InklingDeps,
     InklingOutput,
     InklingState,
     ResolveDeferred,
-    RunAgent,
+    ResumeTurn,
+    StartTurn,
     inkling_graph,
 )
 from octomate.tentacles.agent.inkling.resolver import DeferredResolver
@@ -107,17 +100,18 @@ STREAM_END = StreamEnd()
 class GraphAdapter:
     """Translates Vercel AI Data Stream Protocol requests into inkling_graph runs.
 
-    Each `/api/chat` POST is a stateless slice: load history from the stores,
-    run one graph invocation, persist new messages, stream events. Round-2
-    approvals are pulled from the request body and fed back as
-    `deferred_tool_results`.
+    Each `/api/chat` POST is a stateless slice: load history from the
+    conversation store, run one graph invocation, persist new messages,
+    stream events. Round-2 approvals are pulled from the request body and
+    fed back as `deferred_tool_results`.
     """
 
     SDK_VERSION: ClassVar[int] = 6
 
     tentacle_id: str
     agent: Agent[None, InklingOutput]
-    sessions: SessionManager
+    conversations: ConversationManager
+    agent_id: str = "Inkling"
 
     async def handle_request(self, body: RequestData) -> StreamingResponse:
         if not isinstance(body, SubmitMessage):
@@ -131,23 +125,24 @@ class GraphAdapter:
         user_text = self._extract_latest_user_text(body.messages)
         deferred = self._extract_deferred_results(body.messages)
 
-        session = await self.sessions.ensure(
-            SessionKey(
+        conversation = await self.conversations.ensure(
+            ConversationKey(
                 channel_tentacle_id=self.tentacle_id,
                 chat_type="private",
                 chat_id=chat_id,
                 user_id="dev",
                 thread_id="",
             ),
-            agent_tentacle_id="inkling",
+            agent_tentacle_id=self.agent_id,
         )
-        # Session.messages is loaded eagerly via the arcanus relationship;
-        # no extra DB roundtrip needed.
-        history: list[ModelMessage] = list(session.messages)
+        # Conversation.messages is a viewonly secondary relationship across
+        # all AgentRuns, loaded eagerly via selectin — already in
+        # conversation order.
+        history: list[ModelMessage] = list(conversation.messages)
 
         return StreamingResponse(
             self._stream(
-                session=session,
+                conversation=conversation,
                 history=history,
                 user_text=user_text,
                 deferred=deferred,
@@ -159,7 +154,7 @@ class GraphAdapter:
     async def _stream(
         self,
         *,
-        session: Session,
+        conversation: Conversation,
         history: list[ModelMessage],
         user_text: str,
         deferred: DeferredToolResults | None,
@@ -174,16 +169,23 @@ class GraphAdapter:
         deps = InklingDeps(
             agent=self.agent,
             resolver=NeverResolver(),
-            user_prompt=user_text,
             event_sink=sink,
+            conversation_manager=self.conversations,
         )
-        state = InklingState(message_history=list(history))
-        history_len = len(history)
+        state = InklingState(
+            message_history=list(history),
+            conversation=conversation,
+        )
+        start_node = (
+            ResumeTurn(deferred_results=deferred)
+            if deferred is not None
+            else StartTurn(user_prompt=user_text)
+        )
 
         async def driver() -> None:
             try:
                 async with inkling_graph.iter(
-                    RunAgent(deferred_results=deferred),
+                    start_node,
                     state=state,
                     deps=deps,
                 ) as run:
@@ -212,12 +214,10 @@ class GraphAdapter:
                 if isinstance(item, DeferredSentinel):
                     for chunk in self._emit_approval_requests(item.requests):
                         yield self._encode(chunk)
-                    await self._persist_new(session, state.message_history, history_len)
                     continue
                 if isinstance(item, FinalSentinel):
                     for chunk in self._emit_final_messages(item.output):
                         yield self._encode(chunk)
-                    await self._persist_new(session, state.message_history, history_len)
                     continue
                 for chunk in self._translate(item):
                     yield self._encode(chunk)
@@ -226,36 +226,6 @@ class GraphAdapter:
             yield self._encode(FinishChunk())
             yield self._encode(DoneChunk())
             await task
-
-    async def _persist_new(
-        self,
-        session: Session,
-        full_history: list[ModelMessage],
-        already_persisted: int,
-    ) -> None:
-        new_msgs = full_history[already_persisted:]
-        if not new_msgs:
-            return
-        blessed = [self._bless_message(m, session.id) for m in new_msgs]
-        await self.sessions.append_messages(session, blessed)
-
-    @staticmethod
-    def _bless_message(msg: ModelMessage, session_id: uuid.UUID) -> BlessedModelMessage:
-        """Convert a raw pydantic-ai ModelMessage into our arcanus-blessed schema.
-
-        Agent runs produce vanilla `pydantic_ai.messages.ModelRequest /
-        ModelResponse`. Persistence goes through arcanus' Transmuter, so we
-        rebuild each message via the blessed subclass with `session_id`
-        attached.
-        """
-        if isinstance(msg, PydanticModelRequest):
-            cls: type[ModelRequest | ModelResponse] = ModelRequest
-        elif isinstance(msg, PydanticModelResponse):
-            cls = ModelResponse
-        else:
-            raise TypeError(f"Unexpected message type: {type(msg)!r}")
-        data = vars(msg) if not isinstance(msg, dict) else dict(msg)
-        return cls(**data, session_id=session_id)
 
     async def _noop_stream(self) -> AsyncIterator[bytes]:
         yield self._encode(StartChunk())

@@ -19,7 +19,7 @@ from octomate.schemas.actions import (
     QuestionResponse,
     TodoAction,
 )
-from octomate.schemas.session import SessionKey
+from octomate.schemas.conversation import ConversationKey
 
 
 class ConfirmationFeeler(ABC):
@@ -28,7 +28,7 @@ class ConfirmationFeeler(ABC):
     @abstractmethod
     async def create_confirmation(
         self,
-        key: SessionKey,
+        key: ConversationKey,
         tool_name: str,
         tool_call_id: str,
         args: dict[str, Any],
@@ -40,17 +40,17 @@ class ConfirmationFeeler(ABC):
 
     @abstractmethod
     async def send_confirmation(
-        self, key: SessionKey, action: ConfirmAction
+        self, key: ConversationKey, action: ConfirmAction
     ) -> bool: ...
 
     @abstractmethod
     async def send_timeout_notification(
-        self, key: SessionKey, action: ConfirmAction
+        self, key: ConversationKey, action: ConfirmAction
     ) -> None: ...
 
     @abstractmethod
     async def dismiss_confirmation(
-        self, key: SessionKey, action: ConfirmAction
+        self, key: ConversationKey, action: ConfirmAction
     ) -> None: ...
 
 
@@ -60,7 +60,7 @@ class QuestionFeeler(ABC):
     @abstractmethod
     async def create_question(
         self,
-        key: SessionKey,
+        key: ConversationKey,
         text: str,
         options: list[str] | None = None,
     ) -> tuple[QuestionAction, asyncio.Future[QuestionResponse]]: ...
@@ -68,16 +68,16 @@ class QuestionFeeler(ABC):
     @abstractmethod
     async def ask_question(
         self,
-        key: SessionKey,
+        key: ConversationKey,
         text: str,
-        session_key: SessionKey,
+        conversation_key: ConversationKey,
         options: list[str] | None = None,
         multi_select: bool = False,
     ) -> QuestionResponse | None: ...
 
     @abstractmethod
     async def dismiss_question(
-        self, key: SessionKey, question: QuestionAction
+        self, key: ConversationKey, question: QuestionAction
     ) -> None: ...
 
 
@@ -87,7 +87,7 @@ class TodoFeeler(ABC):
     @abstractmethod
     async def create_todo(
         self,
-        key: SessionKey,
+        key: ConversationKey,
         title: str,
         active_form: str | None = None,
         assignee: str | None = None,
@@ -99,16 +99,16 @@ class TodoFeeler(ABC):
     @abstractmethod
     async def upsert_todo_list(
         self,
-        key: SessionKey,
+        key: ConversationKey,
         items: list[TodoAction],
         existing_ts: str | None = None,
     ) -> str | None: ...
 
     @abstractmethod
-    async def pin_todo(self, key: SessionKey, card_ref: str) -> bool: ...
+    async def pin_todo(self, key: ConversationKey, card_ref: str) -> bool: ...
 
     @abstractmethod
-    async def unpin_todo(self, key: SessionKey, card_ref: str) -> bool: ...
+    async def unpin_todo(self, key: ConversationKey, card_ref: str) -> bool: ...
 
 
 @dataclass

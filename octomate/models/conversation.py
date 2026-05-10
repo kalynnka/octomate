@@ -12,17 +12,18 @@ from octomate.models.base import Base
 
 if TYPE_CHECKING:
     from octomate.models.messages import ModelMessage
+    from octomate.models.runs import AgentRun
 
 
-class Session(Base, TransmuterProxiedMixin):
-    __tablename__ = "sessions"
+class Conversation(Base, TransmuterProxiedMixin):
+    __tablename__ = "conversations"
     __table_args__ = (
         UniqueConstraint(
             "chat_type",
             "chat_id",
             "thread_id",
             "user_id",
-            name="uq_sessions_session_key",
+            name="uq_conversations_conversation_key",
         ),
     )
 
@@ -43,10 +44,21 @@ class Session(Base, TransmuterProxiedMixin):
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
 
+    runs: Mapped[list[AgentRun]] = relationship(
+        "AgentRun",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="AgentRun.started_at",
+        lazy="selectin",
+    )
+    # Read-only flat view of every message in the conversation, joined through
+    # agent_runs. Writes go through `runs` and each run's `messages`.
     messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",
-        back_populates="session",
-        cascade="all, delete-orphan",
-        order_by="ModelMessage.id",
+        secondary="agent_runs",
+        primaryjoin="Conversation.id == AgentRun.conversation_id",
+        secondaryjoin="AgentRun.id == ModelMessage.run_id",
+        order_by="(AgentRun.started_at, ModelMessage.id)",
+        viewonly=True,
         lazy="selectin",
     )

@@ -1,3 +1,3 @@
-from octomate.managers.sessions import SessionManager
+from octomate.managers.conversations import ConversationManager
 
-__all__ = ["SessionManager"]
+__all__ = ["ConversationManager"]

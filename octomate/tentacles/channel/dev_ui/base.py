@@ -5,10 +5,10 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from octomate.managers.conversations import ConversationManager
+from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment
-from octomate.schemas.session import SessionKey
-from octomate.managers.sessions import SessionManager
 from octomate.tentacles.agent.inkling import build_inkling_agent
 from octomate.tentacles.base import Octopus
 from octomate.tentacles.channel.base import ChannelTentacle
@@ -26,11 +26,11 @@ class DevUITentacle(ChannelTentacle):
     Bypasses the standard `ingest -> octopus.kick` path: each /api/chat POST
     runs one inkling_graph invocation server-side, persisting messages to
     the RDB. The UI's `messages` array is ignored — only the conversation
-    `id` (treated as the session key's chat_id) and the latest user prompt
-    are read from the request.
+    `id` (treated as the conversation key's chat_id) and the latest user
+    prompt are read from the request.
     """
 
-    sessions: SessionManager
+    conversations: ConversationManager
     adapter: GraphAdapter
 
     # `feelers` is not set: the DevUI never invokes confirm/question/todo
@@ -41,15 +41,15 @@ class DevUITentacle(ChannelTentacle):
         self.ink = StubInk()
         self.chromo = StubChromo()
         super().__init__(id, octopus)
-        self.sessions = SessionManager()
+        self.conversations = ConversationManager()
         self.adapter = GraphAdapter(
             tentacle_id=id,
             agent=build_inkling_agent(),
-            sessions=self.sessions,
+            conversations=self.conversations,
         )
 
     async def __call__(
-        self, key: SessionKey, contents: list[MessageEvent]
+        self, key: ConversationKey, contents: list[MessageEvent]
     ) -> None:
         logger.info(
             "DevUI tentacle %s ignored kick (HTTP request is the dispatch): %s",

@@ -34,7 +34,7 @@ from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.inkling import (
     InklingDeps,
     InklingState,
-    RunAgent,
+    StartTurn,
     StubResolver,
     inkling_graph,
     inkling_toolset,
@@ -143,18 +143,20 @@ async def test_inkling_loop_resolves_both_deferral_flavors() -> None:
     deps = InklingDeps(
         agent=agent,
         resolver=StubResolver(canned={"ask_user": "Alice"}),
-        user_prompt="hi octomate",
         event_sink=sink,
     )
     state = InklingState()
 
-    async with inkling_graph.iter(RunAgent(), state=state, deps=deps) as run:
+    async with inkling_graph.iter(
+        StartTurn(user_prompt="hi octomate"), state=state, deps=deps
+    ) as run:
         async for node in run:
             visited.append(type(node).__name__)
         result = run.result
 
     assert result is not None
     assert visited == [
+        "StartTurn",
         "RunAgent",
         "ResolveDeferred",
         "RunAgent",
@@ -192,15 +194,18 @@ async def test_inkling_loop_handles_immediate_final_response() -> None:
     deps = InklingDeps(
         agent=agent,
         resolver=StubResolver(),
-        user_prompt="just say done",
     )
 
     visited: list[str] = []
-    async with inkling_graph.iter(RunAgent(), state=InklingState(), deps=deps) as run:
+    async with inkling_graph.iter(
+        StartTurn(user_prompt="just say done"),
+        state=InklingState(),
+        deps=deps,
+    ) as run:
         async for node in run:
             visited.append(type(node).__name__)
 
-    assert visited == ["RunAgent", "End"]
+    assert visited == ["StartTurn", "RunAgent", "End"]
 
 
 async def test_stub_resolver_round_trips_calls_and_approvals() -> None:

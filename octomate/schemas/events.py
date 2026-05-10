@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import UserContent
 
 from octomate.schemas.segments import AtSegment, MessageSegment, TextSegment
-from octomate.schemas.session import UserProfile
+from octomate.schemas.conversation import UserProfile
 
 
 class MessageEvent(BaseModel):

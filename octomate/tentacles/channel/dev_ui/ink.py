@@ -8,7 +8,7 @@ response stream, not via Ink. We satisfy the protocol with no-op methods so
 from typing import Any
 
 from octomate.schemas.segments import MessageSegment
-from octomate.schemas.session import UserProfile
+from octomate.schemas.conversation import UserProfile
 
 DEV_UI_PROFILE = UserProfile(user_id="inkling", name="Inkling")
 

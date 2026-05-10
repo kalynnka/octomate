@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Protocol, runtime_checkable
 
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.session import SessionKey
+from octomate.schemas.conversation import ConversationKey
 
 
 @runtime_checkable
@@ -14,7 +14,7 @@ class Octopus(Protocol):
     Concrete Octopus (with agent dispatch, sink registry, etc.) lands later.
     """
 
-    async def kick(self, key: SessionKey, contents: list[MessageEvent]) -> None: ...
+    async def kick(self, key: ConversationKey, contents: list[MessageEvent]) -> None: ...
 
 
 class Tentacle(ABC):
@@ -29,5 +29,5 @@ class Tentacle(ABC):
 
     @abstractmethod
     async def __call__(
-        self, key: SessionKey, contents: list[MessageEvent]
+        self, key: ConversationKey, contents: list[MessageEvent]
     ) -> None: ...

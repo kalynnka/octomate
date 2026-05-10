@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from octomate.schemas.segments import MessageSegment
-from octomate.schemas.session import SessionKey
+from octomate.schemas.conversation import ConversationKey
 
 
 class AgentMessage(BaseModel):
@@ -19,7 +19,7 @@ class AgentMessage(BaseModel):
 
 class ConfirmAction(BaseModel):
     confirmation_id: str
-    session_key: SessionKey
+    conversation_key: ConversationKey
     tool_name: str
     tool_call_id: str
     args: dict[str, Any]
@@ -34,7 +34,7 @@ class ConfirmAction(BaseModel):
 
 class QuestionAction(BaseModel):
     question_id: str
-    session_key: SessionKey
+    conversation_key: ConversationKey
     text: str
     options: list[str] = Field(default_factory=list)
     multi_select: bool = False

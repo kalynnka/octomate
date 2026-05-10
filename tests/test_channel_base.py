@@ -16,15 +16,15 @@ from octomate.schemas.segments import (
     MessageSegment,
     TextSegment,
 )
-from octomate.schemas.session import SessionKey, UserProfile
+from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.tentacles.channel.base import ChannelTentacle
 
 
 @dataclass
 class FakeOctopus:
-    kicks: list[tuple[SessionKey, list[MessageEvent]]] = field(default_factory=list)
+    kicks: list[tuple[ConversationKey, list[MessageEvent]]] = field(default_factory=list)
 
-    async def kick(self, key: SessionKey, contents: list[MessageEvent]) -> None:
+    async def kick(self, key: ConversationKey, contents: list[MessageEvent]) -> None:
         self.kicks.append((key, contents))
 
 
@@ -102,9 +102,9 @@ class FakeChannelTentacle(ChannelTentacle):
         self.ink = ink
         self.chromo = chromo
         super().__init__(id, octopus)
-        self.received_batches: list[tuple[SessionKey, list[MessageEvent]]] = []
+        self.received_batches: list[tuple[ConversationKey, list[MessageEvent]]] = []
 
-    async def __call__(self, key: SessionKey, contents: list[MessageEvent]) -> None:
+    async def __call__(self, key: ConversationKey, contents: list[MessageEvent]) -> None:
         self.received_batches.append((key, contents))
 
     async def activate(self) -> None:
@@ -148,7 +148,7 @@ async def test_ingest_kicks_octopus_directly_with_single_event(
     assert len(octopus.kicks) == 1
     key, batch = octopus.kicks[0]
 
-    assert isinstance(key, SessionKey)
+    assert isinstance(key, ConversationKey)
     assert key.channel_tentacle_id == "chan1"
     assert key.chat_id == "lobby"
     assert key.chat_type == "group"
@@ -167,7 +167,7 @@ async def test_ingest_kicks_octopus_directly_with_single_event(
 async def test_twitch_passes_segments_directly_to_ink(
     channel: FakeChannelTentacle,
 ) -> None:
-    key = SessionKey(
+    key = ConversationKey(
         channel_tentacle_id="chan1",
         chat_type="private",
         chat_id="alice",
@@ -177,8 +177,10 @@ async def test_twitch_passes_segments_directly_to_ink(
 
     await channel.twitch(key, message)
 
-    assert len(channel.ink.sent) == 1
-    chat_id, chat_type, segments, reply_to, _ = channel.ink.sent[0]
+    ink = channel.ink
+    assert isinstance(ink, FakeInk)
+    assert len(ink.sent) == 1
+    chat_id, chat_type, segments, reply_to, _ = ink.sent[0]
     assert chat_id == "alice"
     assert chat_type == "private"
     assert len(segments) == 1
@@ -189,7 +191,7 @@ async def test_twitch_passes_segments_directly_to_ink(
 async def test_wave_iterates_and_twitches_each_message(
     channel: FakeChannelTentacle,
 ) -> None:
-    key = SessionKey(
+    key = ConversationKey(
         channel_tentacle_id="chan1",
         chat_type="private",
         chat_id="alice",
@@ -202,8 +204,10 @@ async def test_wave_iterates_and_twitches_each_message(
 
     await channel.wave(key, messages())
 
-    assert len(channel.ink.sent) == 3
-    contents = [_segment_text(call[2][0]) for call in channel.ink.sent]
+    ink = channel.ink
+    assert isinstance(ink, FakeInk)
+    assert len(ink.sent) == 3
+    contents = [_segment_text(call[2][0]) for call in ink.sent]
     assert contents == ["first", "second", "third"]
 
 

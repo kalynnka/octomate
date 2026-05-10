@@ -10,15 +10,16 @@ from arcanus.base import Identity
 from pydantic import BaseModel, ConfigDict, Field
 from uuid_utils.compat import uuid7
 
-from octomate.models.session import Session as SessionModel
+from octomate.models.conversation import Conversation as ConversationModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.schemas.runs import AgentRun
 
 ChatType = Literal["private", "group"]
 
 
 @dataclass(frozen=True)
-class SessionKey:
+class ConversationKey:
     channel_tentacle_id: str
     chat_type: ChatType
     chat_id: str
@@ -48,8 +49,8 @@ class SessionKey:
         )
 
 
-@sqlalchemy_materia.bless(SessionModel)
-class Session(BaseTransmuter):
+@sqlalchemy_materia.bless(ConversationModel)
+class Conversation(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True, frozen=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
@@ -65,11 +66,12 @@ class Session(BaseTransmuter):
     name: str | None = None
     status: str = "active"
 
+    runs: RelationCollection[AgentRun] = Relationships()
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
     @cached_property
-    def key(self) -> SessionKey:
-        return SessionKey(
+    def key(self) -> ConversationKey:
+        return ConversationKey(
             channel_tentacle_id=self.channel_tentacle_id,
             chat_type=self.chat_type,
             chat_id=self.chat_id,

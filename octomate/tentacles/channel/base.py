@@ -16,7 +16,7 @@ from octomate.schemas.segments import (
     MessageSegment,
     ReplySegment,
 )
-from octomate.schemas.session import SessionKey, UserProfile
+from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.tentacles.base import Octopus, Tentacle
 from octomate.tentacles.channel.feelers import Feelers
 
@@ -110,7 +110,7 @@ class ChannelTentacle(Tentacle):
             event.self_id = self.profile.user_id
             event.sender = await self.ink.get_user_profile(event.user_id)
             await self.submerge(event)
-            key = SessionKey(
+            key = ConversationKey(
                 channel_tentacle_id=self.id,
                 chat_type=event.chat_type,
                 chat_id=event.chat_id,
@@ -121,7 +121,7 @@ class ChannelTentacle(Tentacle):
         except Exception:
             logger.exception("Tentacle %s: error in ingest", self.id)
 
-    async def twitch(self, key: SessionKey, message: AgentMessage) -> None:
+    async def twitch(self, key: ConversationKey, message: AgentMessage) -> None:
         """One-shot send: a single finalized AgentMessage to the platform.
 
         Each ReplySegment retargets the reply for the segments that follow.
@@ -148,7 +148,7 @@ class ChannelTentacle(Tentacle):
 
     async def wave(
         self,
-        key: SessionKey,
+        key: ConversationKey,
         messages: AsyncIterator[AgentMessage],
     ) -> None:
         """Stream: handle a generator of messages — channel decides per-event handling.

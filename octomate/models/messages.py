@@ -14,7 +14,7 @@ from uuid_utils.compat import uuid7
 from octomate.models.base import Base
 
 if TYPE_CHECKING:
-    from octomate.models.session import Session
+    from octomate.models.runs import AgentRun
 
 
 class PydanticJSON(TypeDecorator):
@@ -38,9 +38,9 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     }
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    session_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        ForeignKey("sessions.id", ondelete="CASCADE"),
+    run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("agent_runs.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -50,7 +50,6 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     timestamp: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, index=True
     )
-    run_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     # `metadata` is reserved by SQLAlchemy's DeclarativeBase for the table
     # MetaData; expose the column as `meta` on Python and `metadata` in the DB.
     meta: Mapped[dict[str, Any] | None] = mapped_column(
@@ -70,8 +69,17 @@ class ModelMessage(Base, TransmuterProxiedMixin):
         String, nullable=True, index=True
     )
     finish_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    # `state` is response-only on pydantic-ai's side ('complete' | 'interrupted'),
+    # but lives on the shared table since responses and requests share the same
+    # polymorphic table. Defaulted to 'complete' so requests have a sane value.
+    state: Mapped[str] = mapped_column(
+        String, nullable=False, default="complete", index=True
+    )
+    conversation_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
 
-    session: Mapped[Session] = relationship("Session", back_populates="messages")
+    run: Mapped[AgentRun] = relationship("AgentRun", back_populates="messages")
 
 
 class ModelRequest(ModelMessage):

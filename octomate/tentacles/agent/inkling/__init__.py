@@ -5,7 +5,9 @@ from octomate.tentacles.agent.inkling.graph import (
     InklingOutput,
     InklingState,
     ResolveDeferred,
+    ResumeTurn,
     RunAgent,
+    StartTurn,
     inkling_graph,
 )
 from octomate.tentacles.agent.inkling.resolver import DeferredResolver, StubResolver
@@ -18,7 +20,9 @@ __all__ = [
     "InklingOutput",
     "InklingState",
     "ResolveDeferred",
+    "ResumeTurn",
     "RunAgent",
+    "StartTurn",
     "StubResolver",
     "build_inkling_agent",
     "inkling_graph",
