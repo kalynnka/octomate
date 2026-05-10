@@ -2,11 +2,22 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Python Debugger: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal"
+    },
+    {
       "name": "Octomate",
       "type": "debugpy",
       "request": "launch",
       "module": "uvicorn",
-      "args": ["main:app", "--port", "2333"],
+      "args": [
+        "main:app",
+        "--port",
+        "2333"
+      ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
@@ -19,10 +30,35 @@
       "module": "uvicorn",
       "args": [
         "main:app",
-        "--port", "2333",
+        "--port",
+        "2333",
         "--reload",
-        "--reload-dir", "octomate",
-        "--reload-dir", "octotools"
+        "--reload-dir",
+        "octomate",
+        "--reload-dir",
+        "octotools"
+      ],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "Inkling web",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "scripts.inkling_web:app",
+        "--app-dir",
+        ".",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "octomate",
+        "--reload-dir",
+        "scripts"
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",

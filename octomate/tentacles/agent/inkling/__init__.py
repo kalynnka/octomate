@@ -1,4 +1,4 @@
-from octomate.tentacles.agent.inkling.agent import build_inkling_agent
+from octomate.tentacles.agent.inkling.base import build_inkling_agent
 from octomate.tentacles.agent.inkling.graph import (
     EventSink,
     InklingDeps,

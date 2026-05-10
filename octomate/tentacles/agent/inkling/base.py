@@ -1,5 +1,3 @@
-import os
-
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
@@ -14,7 +12,7 @@ from octomate.tentacles.agent.inkling.tools import inkling_toolset
 def build_inkling_agent() -> Agent[None, InklingOutput]:
     model = GoogleModel(
         "gemini-3-flash-preview",
-        provider=GoogleProvider(api_key=os.environ["GEMINI_API_KEY"]),
+        provider=GoogleProvider(location="global"),
     )
     return Agent(
         model,
