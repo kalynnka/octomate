@@ -30,3 +30,28 @@ class ConfirmAction(BaseModel):
     created_at: float
     expires_at: float
     status: Literal["pending", "approved", "denied", "expired"] = "pending"
+
+
+class QuestionAction(BaseModel):
+    question_id: str
+    session_key: SessionKey
+    text: str
+    options: list[str] = Field(default_factory=list)
+    multi_select: bool = False
+    created_at: float
+    expires_at: float
+    status: Literal["pending", "answered", "expired"] = "pending"
+
+
+class QuestionResponse(BaseModel):
+    question_id: str
+    answer: str
+    responder_id: str
+
+
+class TodoAction(BaseModel):
+    todo_id: str
+    title: str
+    active_form: str = ""
+    assignee: str = ""
+    status: Literal["pending", "in_progress", "completed", "cancelled"] = "pending"
