@@ -40,11 +40,14 @@ class RunAgent(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
     async def run(
         self, ctx: GraphRunContext[InklingState, InklingDeps]
     ) -> ResolveDeferred | End[list[AgentMessage]]:
-        first_turn = not ctx.state.message_history
+        # user_prompt is only consumed on the first call into the graph
+        # (deferred_results=None). Resumed calls after ResolveDeferred carry
+        # the deferred outcomes instead and must not re-submit the prompt.
+        is_initial = self.deferred_results is None
         result: AgentRunResult[InklingOutput] | None = None
 
         async for event in ctx.deps.agent.run_stream_events(
-            user_prompt=ctx.deps.user_prompt if first_turn else None,
+            user_prompt=ctx.deps.user_prompt if (is_initial and ctx.deps.user_prompt) else None,
             message_history=ctx.state.message_history or None,
             deferred_tool_results=self.deferred_results,
         ):

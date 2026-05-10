@@ -44,12 +44,12 @@
       "justMyCode": false
     },
     {
-      "name": "Inkling web",
+      "name": "Inkling Dev",
       "type": "debugpy",
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "scripts.inkling_web:app",
+        "scripts.inkling_dev:app",
         "--app-dir",
         ".",
         "--port",
