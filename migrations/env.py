@@ -6,7 +6,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from octomate.models.base import Base
+from octomate.models import Base  # noqa: F401 — registers all ORM tables on Base.metadata
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
