@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, CallToolsNode, ModelRequestNode
 from pydantic_ai.messages import (
     AgentStreamEvent,
     ModelMessage,
     ToolCallPart,
+    UserContent,
 )
-from pydantic_ai.run import AgentRunResult, AgentRunResultEvent
+from pydantic_ai.run import AgentRunResult
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
@@ -24,9 +25,14 @@ logger = logging.getLogger(__name__)
 
 InklingOutput = list[AgentMessage] | DeferredToolRequests
 EventSink = Callable[[AgentStreamEvent], Awaitable[None]]
+MessageSink = Callable[[ModelMessage], Awaitable[None]]
 
 
-async def noop_sink(_: AgentStreamEvent) -> None:
+async def noop_event_sink(_: AgentStreamEvent) -> None:
+    pass
+
+
+async def noop_message_sink(_: ModelMessage) -> None:
     pass
 
 
@@ -44,7 +50,8 @@ class InklingState:
 class InklingDeps:
     agent: Agent[None, InklingOutput]
     resolver: DeferredResolver
-    event_sink: EventSink = noop_sink
+    event_sink: EventSink = noop_event_sink
+    message_sink: MessageSink = noop_message_sink
     conversation_manager: ConversationManager = ConversationManager()
 
 
@@ -60,7 +67,7 @@ class StartTurn(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
     preserved for audit/debugging.
     """
 
-    user_prompt: str
+    user_prompt: str | Sequence[UserContent]
 
     async def run(self, ctx: GraphRunContext[InklingState, InklingDeps]) -> RunAgent:
         if not self.user_prompt:
@@ -97,36 +104,46 @@ class RunAgent(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
     """Runs `agent.run_stream_events` once. The entry node guarantees that
     exactly one of `user_prompt` or `deferred_results` is set."""
 
-    user_prompt: str | None = None
+    user_prompt: str | Sequence[UserContent] | None = None
     deferred_results: DeferredToolResults | None = None
 
     async def run(
         self, ctx: GraphRunContext[InklingState, InklingDeps]
     ) -> ResolveDeferred | End[list[AgentMessage]]:
-        result: AgentRunResult[InklingOutput] | None = None
-
-        # Pass our conversation's id as pydantic-ai's `conversation_id` so it
-        # tags every produced ModelMessage with it natively (no manual
-        # backfilling at persist time).
+        # `conversation_id` tags every produced ModelMessage natively, so we
+        # don't backfill at persist time.
         conversation_id = (
             str(ctx.state.conversation.id)
             if ctx.state.conversation is not None
             else None
         )
-        async for event in ctx.deps.agent.run_stream_events(
+
+        result: AgentRunResult[InklingOutput] | None = None
+        async with ctx.deps.agent.iter(
             user_prompt=self.user_prompt,
             message_history=ctx.state.message_history or None,
             deferred_tool_results=self.deferred_results,
             conversation_id=conversation_id,
-        ):
-            if isinstance(event, AgentRunResultEvent):
-                result = event.result
-            else:
-                await ctx.deps.event_sink(event)
+        ) as agent_run:
+            async for node in agent_run:
+                # Per-message emission: ModelRequestNode carries the request
+                # about to be sent; CallToolsNode carries the just-received
+                # response. Streaming each as it appears means downstream
+                # channels see history grow in real time rather than at end-
+                # of-run.
+                if isinstance(node, ModelRequestNode):
+                    await ctx.deps.message_sink(node.request)
+                    async with node.stream(agent_run.ctx) as stream:
+                        async for event in stream:
+                            await ctx.deps.event_sink(event)
+                elif isinstance(node, CallToolsNode):
+                    await ctx.deps.message_sink(node.model_response)
+                    async with node.stream(agent_run.ctx) as stream:
+                        async for event in stream:
+                            await ctx.deps.event_sink(event)
+            result = agent_run.result
 
-        assert result is not None, (
-            "agent.run_stream_events did not yield AgentRunResultEvent"
-        )
+        assert result is not None, "agent.iter ended without a result"
         ctx.state.message_history = list(result.all_messages())
 
         if ctx.state.conversation is not None and (

@@ -5,20 +5,25 @@ import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 import anyio
 
 from octomate.schemas.actions import AgentMessage
+from octomate.schemas.conversation import Conversation, ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     ImageSegment,
     MessageSegment,
     ReplySegment,
 )
-from octomate.schemas.conversation import ConversationKey, UserProfile
-from octomate.tentacles.base import Octopus, Tentacle
+from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel.feelers import Feelers
+
+if TYPE_CHECKING:
+    from fastapi import APIRouter
+
+    from octomate.nerve import StreamSink
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +85,8 @@ class ChannelTentacle(Tentacle):
     chromo: Chromo
     feelers: Feelers
 
-    def __init__(self, id: str, octopus: Octopus) -> None:
-        super().__init__(id, octopus)
+    def __init__(self, id: str) -> None:
+        super().__init__(id)
         self.profile = self.ink.inspect()
         logger.info(
             "Tentacle %s: probed as %s (%s)",
@@ -94,11 +99,44 @@ class ChannelTentacle(Tentacle):
     def name(self) -> str:
         return self.profile.name
 
-    @abstractmethod
-    async def activate(self) -> None: ...
+    async def activate(self) -> None:
+        """Start any background task (WS receive loop, etc.).
+
+        Default is a no-op for HTTP-only channels. Called concurrently for
+        every channel inside `Octopus.run()`'s TaskGroup — long-running
+        loops here should respect the surrounding cancel scope.
+        """
+        return None
+
+    async def deactivate(self) -> None:
+        """Stop background tasks. Default no-op; symmetric with `activate`."""
+        return None
+
+    def router(self) -> APIRouter | None:
+        """Return an `APIRouter` to include on the shared FastAPI app, or `None`.
+
+        `Octomate.app()` calls this once per channel during construction and
+        `app.include_router`s the result before lifespan starts (FastAPI
+        freezes routes at startup). Default `None` for WS-only channels;
+        HTTP-only channels (DevUI) and hybrids (Lark) override.
+
+        Convention: routers should namespace under `/channels/{self.id}/...`
+        to avoid collisions when two of the same type are configured. DevUI
+        is the only exception — its chat UI expects bare `/`.
+        """
+        return None
 
     @abstractmethod
-    async def deactivate(self) -> None: ...
+    def open_stream(self, conversation: Conversation) -> StreamSink:
+        """Return a fresh `StreamSink` for this conversation.
+
+        The octopus's `_on_stream_frame` handler calls this lazily the first
+        time a `StreamFrame` arrives for the conversation (unless the channel
+        pre-registered one via `octopus.sinks.set(key, sink)`). The returned
+        sink consumes streaming frames and renders them in the channel's
+        native protocol (SSE chunks for DevUI, message-edits for Slack).
+        """
+        ...
 
     async def ingest(self, raw: Any) -> None:
         """Inbound: decode → enrich sender → resolve media → kick octopus."""

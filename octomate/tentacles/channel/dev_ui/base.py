@@ -2,66 +2,70 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from fastapi import FastAPI
-
-from octomate.managers.conversations import ConversationManager
-from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.events import MessageEvent
+from octomate.nerve import StreamSink
+from octomate.schemas.conversation import Conversation
 from octomate.schemas.segments import ImageSegment
-from octomate.tentacles.agent.inkling import build_inkling_agent
-from octomate.tentacles.base import Octopus
 from octomate.tentacles.channel.base import ChannelTentacle
-from octomate.tentacles.channel.dev_ui.adapter import GraphAdapter
-from octomate.tentacles.channel.dev_ui.app import build_dev_ui_app
+from octomate.tentacles.channel.dev_ui.adapter import DevUIStreamSink
 from octomate.tentacles.channel.dev_ui.chromo import StubChromo
 from octomate.tentacles.channel.dev_ui.ink import StubInk
+
+if TYPE_CHECKING:
+    from fastapi import APIRouter
 
 logger = logging.getLogger(__name__)
 
 
 class DevUITentacle(ChannelTentacle):
-    """Channel tentacle that serves pydantic-ai's chat UI and drives inkling_graph.
+    """HTTP-only channel: serves pydantic-ai's chat UI + a Vercel-AI SSE endpoint.
 
-    Bypasses the standard `ingest -> octopus.kick` path: each /api/chat POST
-    runs one inkling_graph invocation server-side, persisting messages to
-    the RDB. The UI's `messages` array is ignored — only the conversation
-    `id` (treated as the conversation key's chat_id) and the latest user
-    prompt are read from the request.
+    HTTP-only means `activate()` stays a no-op (inherited from base) and
+    `router()` returns the DevUI routes. The chat endpoint pre-registers a
+    `DevUIStreamSink` in `octopus.sinks` before kicking — that way the
+    sink exists when the agent's first `StreamFrame` arrives.
     """
 
-    conversations: ConversationManager
-    adapter: GraphAdapter
+    agent_id: str
 
-    # `feelers` is not set: the DevUI never invokes confirm/question/todo
-    # feelers (round-trips happen via the Vercel approval protocol inside
-    # GraphAdapter). Real feelers land when InteractionStore lands.
-
-    def __init__(self, id: str, octopus: Octopus) -> None:
+    def __init__(self, id: str, *, agent_id: str = "inkling") -> None:
         self.ink = StubInk()
         self.chromo = StubChromo()
-        super().__init__(id, octopus)
-        self.conversations = ConversationManager()
-        self.adapter = GraphAdapter(
-            tentacle_id=id,
-            agent=build_inkling_agent(),
-            conversations=self.conversations,
-        )
+        super().__init__(id)
+        self.agent_id = agent_id
 
-    async def __call__(
-        self, key: ConversationKey, contents: list[MessageEvent]
-    ) -> None:
-        logger.info(
-            "DevUI tentacle %s ignored kick (HTTP request is the dispatch): %s",
-            self.id,
-            key,
-        )
+    def router(self) -> APIRouter:
+        from octomate.tentacles.channel.dev_ui.routes import build_dev_ui_router
 
-    async def activate(self) -> None:
-        return None
+        return build_dev_ui_router(self)
 
-    async def deactivate(self) -> None:
-        return None
+    async def twitch(self, key, message) -> None:
+        """Discrete reply — writes a final-segments block onto the sink.
+
+        For DevUI both `StreamFrame`s and `SendSegments` flow through the
+        same per-request sink (the only "send" channel a request has is
+        its own SSE response). We look up the active sink for this
+        conversation and write the segments as Vercel text chunks.
+        """
+        sink = self.octopus.sinks.get(key)
+        if isinstance(sink, DevUIStreamSink):
+            from octomate.nerve import SendSegments
+
+            await sink.write_segments(SendSegments(target_key=key, segments=message.segments))
+        else:
+            logger.warning(
+                "DevUITentacle %s: twitch for %s but no active sink — message dropped",
+                self.id,
+                key,
+            )
+
+    def open_stream(self, conversation: Conversation) -> StreamSink:
+        # In practice DevUI always pre-registers its sink in the chat handler
+        # before kicking, so the octopus's `get_or_open` falls back to the
+        # pre-registered one and this factory isn't called. We still implement
+        # the ABC contract — a fresh sink is harmless if invoked.
+        return DevUIStreamSink()
 
     async def absorb(
         self, seg: ImageSegment, save_dir: Path, message_id: str
@@ -70,8 +74,3 @@ class DevUITentacle(ChannelTentacle):
 
     async def secrete(self, seg: ImageSegment) -> None:
         return None
-
-    @property
-    def app(self) -> FastAPI:
-        """FastAPI app exposing GET /, POST /api/chat, and Swagger at /docs."""
-        return build_dev_ui_app(self.adapter)

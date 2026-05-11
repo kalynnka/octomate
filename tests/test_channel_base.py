@@ -96,12 +96,10 @@ def _segment_text(seg: MessageSegment) -> str:
 class FakeChannelTentacle(ChannelTentacle):
     """Test channel: stubs every abstract method."""
 
-    def __init__(
-        self, id: str, octopus: FakeOctopus, ink: FakeInk, chromo: FakeChromo
-    ) -> None:
+    def __init__(self, id: str, ink: FakeInk, chromo: FakeChromo) -> None:
         self.ink = ink
         self.chromo = chromo
-        super().__init__(id, octopus)
+        super().__init__(id)
         self.received_batches: list[tuple[ConversationKey, list[MessageEvent]]] = []
 
     async def __call__(self, key: ConversationKey, contents: list[MessageEvent]) -> None:
@@ -113,6 +111,9 @@ class FakeChannelTentacle(ChannelTentacle):
     async def deactivate(self) -> None:
         pass
 
+    def open_stream(self, conversation):  # type: ignore[override]
+        raise NotImplementedError("test fake — open_stream is unused")
+
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         pass
 
@@ -122,12 +123,9 @@ class FakeChannelTentacle(ChannelTentacle):
 
 @pytest.fixture
 def channel() -> FakeChannelTentacle:
-    return FakeChannelTentacle(
-        id="chan1",
-        octopus=FakeOctopus(),
-        ink=FakeInk(),
-        chromo=FakeChromo(),
-    )
+    ch = FakeChannelTentacle(id="chan1", ink=FakeInk(), chromo=FakeChromo())
+    ch.octopus = FakeOctopus()  # type: ignore[assignment]
+    return ch
 
 
 async def test_ingest_kicks_octopus_directly_with_single_event(
@@ -213,4 +211,4 @@ async def test_wave_iterates_and_twitches_each_message(
 
 async def test_channel_tentacle_cannot_be_instantiated_directly() -> None:
     with pytest.raises(TypeError):
-        ChannelTentacle(id="x", octopus=FakeOctopus())  # type: ignore[abstract]
+        ChannelTentacle(id="x")  # type: ignore[abstract]

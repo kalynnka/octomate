@@ -19,6 +19,7 @@ class Conversation(Base, TransmuterProxiedMixin):
     __tablename__ = "conversations"
     __table_args__ = (
         UniqueConstraint(
+            "channel_tentacle_id",
             "chat_type",
             "chat_id",
             "thread_id",

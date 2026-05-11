@@ -1,3 +1,21 @@
+"""DevUI translation between octopus signals and Vercel AI chunks.
+
+Two pieces:
+
+- `extract_user_text` / `extract_deferred_results` parse the inbound
+  Vercel `SubmitMessage` body into octopus inputs (a user text prompt
+  and optional deferred-tool approval results).
+- `DevUIStreamSink` consumes the agent's `StreamFrame`s for one request,
+  encodes them into Vercel chunks, and feeds an SSE response generator
+  via an internal queue. It also handles the discrete `SendSegments`
+  branch (final messages, approval cards) via `write_segments`.
+
+A new sink is constructed per `POST /api/chat` request and pre-registered
+in `octopus.sinks` before kicking. When the agent emits `StreamFrame(close)`,
+the sink's `aclose()` runs, the queue yields its terminal Vercel chunks,
+and the SSE generator returns.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -5,14 +23,9 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from fastapi.responses import StreamingResponse
-from pydantic_ai import Agent
 from pydantic_ai.messages import (
-    AgentStreamEvent,
-    ModelMessage,
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
@@ -28,14 +41,8 @@ from pydantic_ai.tools import (
     DeferredToolResults,
     ToolDenied,
 )
-from pydantic_ai.ui.vercel_ai._event_stream import VERCEL_AI_DSP_HEADERS
 from pydantic_ai.ui.vercel_ai._utils import iter_tool_approval_responses
-from pydantic_ai.ui.vercel_ai.request_types import (
-    RequestData,
-    SubmitMessage,
-    TextUIPart,
-    UIMessage,
-)
+from pydantic_ai.ui.vercel_ai.request_types import TextUIPart, UIMessage
 from pydantic_ai.ui.vercel_ai.response_types import (
     BaseChunk,
     DoneChunk,
@@ -53,224 +60,115 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     ToolInputStartChunk,
 )
 
-from octomate.managers.conversations import ConversationManager
-from octomate.schemas.actions import AgentMessage
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.nerve import SendSegments, StreamFrame
 from octomate.schemas.segments import MessageSegment
-from octomate.tentacles.agent.inkling.graph import (
-    InklingDeps,
-    InklingOutput,
-    InklingState,
-    ResolveDeferred,
-    ResumeTurn,
-    StartTurn,
-    inkling_graph,
-)
-from octomate.tentacles.agent.inkling.resolver import DeferredResolver
 
 logger = logging.getLogger(__name__)
 
-
-class NeverResolver(DeferredResolver):
-    """Defensive resolver — DevUI intercepts ResolveDeferred at the graph-iter boundary."""
-
-    async def resolve(self, requests: DeferredToolRequests) -> DeferredToolResults:
-        raise AssertionError(
-            "DevUI's GraphAdapter should intercept ResolveDeferred before this is called"
-        )
+SDK_VERSION: ClassVar = 6  # type: ignore[valid-type]
 
 
-@dataclass
-class DeferredSentinel:
-    requests: DeferredToolRequests
+def extract_user_text(messages: list[UIMessage]) -> str:
+    for msg in reversed(messages):
+        if msg.role != "user":
+            continue
+        text_parts = [p.text for p in msg.parts if isinstance(p, TextUIPart)]
+        if text_parts:
+            return "\n".join(text_parts)
+    return ""
 
 
-@dataclass
-class FinalSentinel:
-    output: list[AgentMessage]
+def extract_deferred_results(messages: list[UIMessage]) -> DeferredToolResults | None:
+    approvals: dict[str, DeferredToolApprovalResult | bool] = {}
+    for tool_call_id, approval in iter_tool_approval_responses(messages):
+        if approval.approved:
+            approvals[tool_call_id] = True
+        elif approval.reason:
+            approvals[tool_call_id] = ToolDenied(message=approval.reason)
+        else:
+            approvals[tool_call_id] = False
+    if not approvals:
+        return None
+    return DeferredToolResults(approvals=approvals)
 
 
-class StreamEnd: ...
+class DevUIStreamSink:
+    """Per-request streaming sink. Implements `nerve.StreamSink`."""
 
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._started = False
+        self._closed = False
 
-STREAM_END = StreamEnd()
+    async def write(self, frame: StreamFrame) -> None:
+        """Receive a `StreamFrame` from the agent and encode it to Vercel chunks."""
+        if frame.frame_type == "close":
+            await self.aclose()
+            return
+        payload = frame.payload or {}
+        if (event := payload.get("event")) is not None:
+            for chunk in self._translate_agent_event(event):
+                await self._enqueue(chunk)
+        if (deferred := payload.get("deferred")) is not None:
+            for chunk in self._emit_approval_requests(deferred):
+                await self._enqueue(chunk)
 
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for chunk in (FinishStepChunk(), FinishChunk(), DoneChunk()):
+            await self._enqueue(chunk)
+        # Sentinel — tells the SSE generator to stop.
+        await self._queue.put(None)
 
-@dataclass
-class GraphAdapter:
-    """Translates Vercel AI Data Stream Protocol requests into inkling_graph runs.
+    async def write_segments(self, sig: SendSegments) -> None:
+        """Handle a discrete `SendSegments` (final reply) — encode as text chunks."""
+        text_id = f"final-{uuid.uuid4().hex[:8]}"
+        await self._enqueue(TextStartChunk(id=text_id))
+        for seg in sig.segments:
+            text = _segment_text(seg)
+            if text:
+                await self._enqueue(TextDeltaChunk(id=text_id, delta=text))
+        await self._enqueue(TextEndChunk(id=text_id))
 
-    Each `/api/chat` POST is a stateless slice: load history from the
-    conversation store, run one graph invocation, persist new messages,
-    stream events. Round-2 approvals are pulled from the request body and
-    fed back as `deferred_tool_results`.
-    """
+    async def iter_sse(self) -> AsyncIterator[bytes]:
+        """SSE generator — yields `data:` framed Vercel chunks until close."""
+        while True:
+            item = await self._queue.get()
+            if item is None:
+                return
+            yield item
 
-    SDK_VERSION: ClassVar[int] = 6
+    async def _enqueue(self, chunk: BaseChunk) -> None:
+        if not self._started:
+            self._started = True
+            await self._queue.put(_encode(StartChunk(message_id=str(uuid.uuid4()))))
+            await self._queue.put(_encode(StartStepChunk()))
+        await self._queue.put(_encode(chunk))
 
-    tentacle_id: str
-    agent: Agent[None, InklingOutput]
-    conversations: ConversationManager
-    agent_id: str = "Inkling"
-
-    async def handle_request(self, body: RequestData) -> StreamingResponse:
-        if not isinstance(body, SubmitMessage):
-            return StreamingResponse(
-                self._noop_stream(),
-                media_type="text/event-stream",
-                headers=VERCEL_AI_DSP_HEADERS,
+    @staticmethod
+    def _emit_approval_requests(requests: DeferredToolRequests) -> list[BaseChunk]:
+        return [
+            ToolApprovalRequestChunk(
+                approval_id=str(uuid.uuid4()),
+                tool_call_id=call.tool_call_id,
             )
-
-        chat_id = body.id
-        user_text = self._extract_latest_user_text(body.messages)
-        deferred = self._extract_deferred_results(body.messages)
-
-        conversation = await self.conversations.ensure(
-            ConversationKey(
-                channel_tentacle_id=self.tentacle_id,
-                chat_type="private",
-                chat_id=chat_id,
-                user_id="dev",
-                thread_id="",
-            ),
-            agent_tentacle_id=self.agent_id,
-        )
-        # Conversation.messages is a viewonly secondary relationship across
-        # all AgentRuns, loaded eagerly via selectin — already in
-        # conversation order.
-        history: list[ModelMessage] = list(conversation.messages)
-
-        return StreamingResponse(
-            self._stream(
-                conversation=conversation,
-                history=history,
-                user_text=user_text,
-                deferred=deferred,
-            ),
-            media_type="text/event-stream",
-            headers=VERCEL_AI_DSP_HEADERS,
-        )
-
-    async def _stream(
-        self,
-        *,
-        conversation: Conversation,
-        history: list[ModelMessage],
-        user_text: str,
-        deferred: DeferredToolResults | None,
-    ) -> AsyncIterator[bytes]:
-        queue: asyncio.Queue[
-            AgentStreamEvent | DeferredSentinel | FinalSentinel | StreamEnd
-        ] = asyncio.Queue()
-
-        async def sink(event: AgentStreamEvent) -> None:
-            await queue.put(event)
-
-        deps = InklingDeps(
-            agent=self.agent,
-            resolver=NeverResolver(),
-            event_sink=sink,
-            conversation_manager=self.conversations,
-        )
-        state = InklingState(
-            message_history=list(history),
-            conversation=conversation,
-        )
-        start_node = (
-            ResumeTurn(deferred_results=deferred)
-            if deferred is not None
-            else StartTurn(user_prompt=user_text)
-        )
-
-        async def driver() -> None:
-            try:
-                async with inkling_graph.iter(
-                    start_node,
-                    state=state,
-                    deps=deps,
-                ) as run:
-                    async for node in run:
-                        if isinstance(node, ResolveDeferred):
-                            await queue.put(DeferredSentinel(node.requests))
-                            return
-                    if run.result is not None:
-                        await queue.put(FinalSentinel(run.result.output))
-            except Exception:
-                logger.exception("DevUI graph driver failed")
-                await queue.put(FinalSentinel([]))
-            finally:
-                await queue.put(STREAM_END)
-
-        task = asyncio.create_task(driver())
-
-        yield self._encode(StartChunk(message_id=str(uuid.uuid4())))
-        yield self._encode(StartStepChunk())
-
-        try:
-            while True:
-                item = await queue.get()
-                if isinstance(item, StreamEnd):
-                    break
-                if isinstance(item, DeferredSentinel):
-                    for chunk in self._emit_approval_requests(item.requests):
-                        yield self._encode(chunk)
-                    continue
-                if isinstance(item, FinalSentinel):
-                    for chunk in self._emit_final_messages(item.output):
-                        yield self._encode(chunk)
-                    continue
-                for chunk in self._translate(item):
-                    yield self._encode(chunk)
-        finally:
-            yield self._encode(FinishStepChunk())
-            yield self._encode(FinishChunk())
-            yield self._encode(DoneChunk())
-            await task
-
-    async def _noop_stream(self) -> AsyncIterator[bytes]:
-        yield self._encode(StartChunk())
-        yield self._encode(DoneChunk())
+            for call in requests.approvals
+        ]
 
     @classmethod
-    def _encode(cls, chunk: BaseChunk) -> bytes:
-        return f"data: {chunk.encode(cls.SDK_VERSION)}\n\n".encode()
-
-    @staticmethod
-    def _extract_latest_user_text(messages: list[UIMessage]) -> str:
-        for msg in reversed(messages):
-            if msg.role != "user":
-                continue
-            text_parts = [p.text for p in msg.parts if isinstance(p, TextUIPart)]
-            if text_parts:
-                return "\n".join(text_parts)
-        return ""
-
-    @staticmethod
-    def _extract_deferred_results(
-        messages: list[UIMessage],
-    ) -> DeferredToolResults | None:
-        approvals: dict[str, DeferredToolApprovalResult | bool] = {}
-        for tool_call_id, approval in iter_tool_approval_responses(messages):
-            if approval.approved:
-                approvals[tool_call_id] = True
-            elif approval.reason:
-                approvals[tool_call_id] = ToolDenied(message=approval.reason)
-            else:
-                approvals[tool_call_id] = False
-        if not approvals:
-            return None
-        return DeferredToolResults(approvals=approvals)
-
-    def _translate(self, event: AgentStreamEvent) -> list[BaseChunk]:
+    def _translate_agent_event(cls, event: Any) -> list[BaseChunk]:
         if isinstance(event, PartStartEvent):
-            return self._translate_part_start(event.part, event.index)
+            return cls._translate_part_start(event.part, event.index)
         if isinstance(event, PartDeltaEvent):
-            return self._translate_part_delta(event.delta, event.index)
+            return cls._translate_part_delta(event.delta, event.index)
         if isinstance(event, PartEndEvent):
-            return self._translate_part_end(event.part, event.index)
+            return cls._translate_part_end(event.part, event.index)
         return []
 
-    def _translate_part_start(self, part: Any, index: int) -> list[BaseChunk]:
+    @classmethod
+    def _translate_part_start(cls, part: Any, index: int) -> list[BaseChunk]:
         if isinstance(part, TextPart):
             chunks: list[BaseChunk] = [TextStartChunk(id=f"t-{index}")]
             if part.content:
@@ -285,7 +183,7 @@ class GraphAdapter:
                     tool_name=part.tool_name,
                 ),
             ]
-            args_str = self._args_to_str(part.args)
+            args_str = _args_to_str(part.args)
             if args_str:
                 chunks.append(
                     ToolInputDeltaChunk(
@@ -296,12 +194,13 @@ class GraphAdapter:
             return chunks
         return []
 
-    def _translate_part_delta(self, delta: Any, index: int) -> list[BaseChunk]:
+    @classmethod
+    def _translate_part_delta(cls, delta: Any, index: int) -> list[BaseChunk]:
         if isinstance(delta, TextPartDelta) and delta.content_delta:
             return [TextDeltaChunk(id=f"t-{index}", delta=delta.content_delta)]
         if isinstance(delta, ToolCallPartDelta):
             tool_call_id = delta.tool_call_id or ""
-            args_str = self._args_to_str(delta.args_delta)
+            args_str = _args_to_str(delta.args_delta)
             if not args_str:
                 return []
             return [
@@ -312,7 +211,8 @@ class GraphAdapter:
             ]
         return []
 
-    def _translate_part_end(self, part: Any, index: int) -> list[BaseChunk]:
+    @classmethod
+    def _translate_part_end(cls, part: Any, index: int) -> list[BaseChunk]:
         if isinstance(part, TextPart):
             return [TextEndChunk(id=f"t-{index}")]
         if isinstance(part, ToolCallPart):
@@ -330,40 +230,21 @@ class GraphAdapter:
             ]
         return []
 
-    def _emit_final_messages(self, output: list[AgentMessage]) -> list[BaseChunk]:
-        chunks: list[BaseChunk] = []
-        for i, msg in enumerate(output):
-            text_id = f"final-{i}"
-            chunks.append(TextStartChunk(id=text_id))
-            for seg in msg.segments:
-                text = self._segment_text(seg)
-                if text:
-                    chunks.append(TextDeltaChunk(id=text_id, delta=text))
-            chunks.append(TextEndChunk(id=text_id))
-        return chunks
 
-    def _emit_approval_requests(
-        self, requests: DeferredToolRequests
-    ) -> list[BaseChunk]:
-        return [
-            ToolApprovalRequestChunk(
-                approval_id=str(uuid.uuid4()),
-                tool_call_id=call.tool_call_id,
-            )
-            for call in requests.approvals
-        ]
+def _encode(chunk: BaseChunk) -> bytes:
+    return f"data: {chunk.encode(SDK_VERSION)}\n\n".encode()
 
-    @staticmethod
-    def _args_to_str(args: Any) -> str:
-        if args is None or args == "":
-            return ""
-        if isinstance(args, str):
-            return args
-        return json.dumps(args)
 
-    @staticmethod
-    def _segment_text(seg: MessageSegment) -> str:
-        data = getattr(seg, "data", None)
-        if isinstance(data, dict) and "text" in data:
-            return str(data["text"])
-        return str(seg)
+def _args_to_str(args: Any) -> str:
+    if args is None or args == "":
+        return ""
+    if isinstance(args, str):
+        return args
+    return json.dumps(args)
+
+
+def _segment_text(seg: MessageSegment) -> str:
+    data = getattr(seg, "data", None)
+    if isinstance(data, dict) and "text" in data:
+        return str(data["text"])
+    return str(seg)

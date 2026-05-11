@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import UserContent
@@ -47,3 +47,20 @@ class MessageEvent(BaseModel):
     def to_content_parts(self) -> list[UserContent]:
         header = f"{self.display_name} ({self.user_id}) #msg:{self.message_id}: "
         return [header] + [seg.to_content() for seg in self.segments]
+
+
+class ResumeEvent(BaseModel):
+    """Continuation marker — resumes an in-flight turn from a deferred-tool
+    resolution. `payload` is agent-specific (Inkling stores pydantic-ai's
+    `DeferredToolResults`). Channels build one when the user resolves an
+    approval card; it flows through `octopus.kick` just like a `MessageEvent`."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    payload: Any = None
+
+    def __str__(self) -> str:
+        return "[resume]"
+
+
+AgentInput = MessageEvent | ResumeEvent
