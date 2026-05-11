@@ -2,21 +2,14 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python Debugger: Current File",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${file}",
-      "console": "integratedTerminal"
-    },
-    {
       "name": "Octomate",
       "type": "debugpy",
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "main:app",
+        "app:app",
         "--port",
-        "2333"
+        "8000"
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
@@ -29,56 +22,19 @@
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "main:app",
-        "--port",
-        "2333",
-        "--reload",
-        "--reload-dir",
-        "octomate",
-        "--reload-dir",
-        "octotools"
-      ],
-      "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
-      "console": "integratedTerminal",
-      "justMyCode": false
-    },
-    {
-      "name": "Inkling Dev",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "uvicorn",
-      "args": [
-        "scripts.inkling_dev:app",
-        "--app-dir",
-        ".",
+        "app:app",
         "--port",
         "8000",
         "--reload",
         "--reload-dir",
         "octomate",
-        "--reload-dir",
-        "scripts"
+        // "--reload-dir",
+        // "octotools"
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
       "justMyCode": false
     },
-    {
-      "name": "Attach to tmux (debugpy)",
-      "type": "debugpy",
-      "request": "attach",
-      "connect": {
-        "host": "localhost",
-        "port": 5678
-      },
-      "pathMappings": [
-        {
-          "localRoot": "${workspaceFolder}",
-          "remoteRoot": "${workspaceFolder}"
-        }
-      ]
-    }
   ]
 }
