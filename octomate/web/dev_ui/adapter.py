@@ -108,7 +108,7 @@ class GraphAdapter:
 
     SDK_VERSION: ClassVar[int] = 6
 
-    tentacle_id: str
+    channel_id: str
     agent: Agent[None, InklingOutput]
     conversations: ConversationManager
     agent_id: str = "Inkling"
@@ -127,7 +127,7 @@ class GraphAdapter:
 
         conversation = await self.conversations.ensure(
             ConversationKey(
-                channel_tentacle_id=self.tentacle_id,
+                channel_tentacle_id=self.channel_id,
                 chat_type="private",
                 chat_id=chat_id,
                 user_id="dev",
