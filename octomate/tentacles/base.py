@@ -1,33 +1,26 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from octomate.schemas.events import MessageEvent
-from octomate.schemas.conversation import ConversationKey
+if TYPE_CHECKING:
+    from octomate.base import Octomate
 
 
-@runtime_checkable
-class Octopus(Protocol):
-    """Minimal orchestrator surface that Tentacles depend on.
+@dataclass
+class Tentacle:
+    """Base for external integrations managed by the Octomate host.
 
-    Concrete Octopus (with agent dispatch, sink registry, etc.) lands later.
+    A tentacle is a lifecycle component, not a message dispatcher. Channel
+    tentacles receive platform events and call Octomate.kick; agent tentacles
+    expose pydantic-ai-style run methods.
     """
 
-    async def kick(self, key: ConversationKey, contents: list[MessageEvent]) -> None: ...
-
-
-class Tentacle(ABC):
-    """Base for all tentacles — any bidirectional message channel."""
-
     id: str
-    octopus: Octopus
+    octomate: Octomate | None = field(default=None, repr=False)
 
-    def __init__(self, id: str, octopus: Octopus) -> None:
-        self.id = id
-        self.octopus = octopus
+    async def activate(self) -> None:
+        """Start any long-lived platform client owned by the tentacle."""
 
-    @abstractmethod
-    async def __call__(
-        self, key: ConversationKey, contents: list[MessageEvent]
-    ) -> None: ...
+    async def deactivate(self) -> None:
+        """Stop any long-lived platform client owned by the tentacle."""

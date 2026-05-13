@@ -51,16 +51,16 @@ class ConversationKey:
 
 @sqlalchemy_materia.bless(ConversationModel)
 class Conversation(BaseTransmuter):
-    model_config = ConfigDict(from_attributes=True, frozen=True)
+    model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
 
-    chat_type: ChatType
-    chat_id: str
-    thread_id: str = ""
-    user_id: str
+    chat_type: ChatType = Field(frozen=True)
+    chat_id: str = Field(frozen=True)
+    thread_id: str = Field(default="", frozen=True)
+    user_id: str = Field(frozen=True)
 
-    channel_tentacle_id: str
+    channel_tentacle_id: str = Field(frozen=True)
     agent_tentacle_id: str | None = None
 
     name: str | None = None

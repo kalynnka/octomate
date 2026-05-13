@@ -1,8 +1,9 @@
-from octomate.tentacles.agent.inkling.base import build_inkling_agent
+from octomate.tentacles.agent.inkling.base import InklingTentacle, build_inkling_agent
 from octomate.tentacles.agent.inkling.graph import (
     EventSink,
     InklingDeps,
     InklingOutput,
+    InklingStreamEvent,
     InklingState,
     ResolveDeferred,
     ResumeTurn,
@@ -18,7 +19,9 @@ __all__ = [
     "EventSink",
     "InklingDeps",
     "InklingOutput",
+    "InklingStreamEvent",
     "InklingState",
+    "InklingTentacle",
     "ResolveDeferred",
     "ResumeTurn",
     "RunAgent",

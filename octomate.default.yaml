@@ -1,18 +1,21 @@
 octomate:
-  tentacles: {}
   agents:
-    # pulse:
-    #   type: pulse
-    #   main:
-    #     model: gemini-3-flash-preview
-    #     api_key: ""
-    #     # vertexai: true
-    #     # project: my-gcp-project
-    #     # location: global
-    #   subagents:
-    #     code:
-    #       description: "Code execution and data analysis"
-    #       code_mode: true
-    #   skill_roots:
-    #     - octoskills
-    #     - .octomate/skills
+    inkling:
+      model: gemini-3-flash-preview
+
+  # Runtime IM channels. Keep disabled examples here and put real secrets in
+  # octomate.yaml or environment variables.
+  channels: {}
+  # channels:
+  #   slack:
+  #     agent_id: inkling
+  #     bot_token: xoxb-...
+  #     app_token: xapp-...
+  #   lark:
+  #     agent_id: inkling
+  #     app_id: cli_...
+  #     app_secret: ...
+  #   napcat:
+  #     agent_id: inkling
+  #     ws_url: ws://127.0.0.1:3001
+  #     http_url: http://127.0.0.1:3000

@@ -13,7 +13,7 @@ A message drifts from Slack or Lark —
 a tentacle catches it, quick in the dark.
 
 The nerve hums low, a current of thought,
-routing and batching what users have brought.
+routing each message the users have brought.
 Pulse fires first — a flash, a spark —
 ANSWER or SUMMON or vanish, remarked.
 
@@ -44,7 +44,7 @@ User sends a message on Slack / Lark / QQ
          │
          ▼
   ChannelTentacle          ← platform adapter (Slack, Lark, NapCat)
-  buffers + batches it
+  dispatches it
          │  nerve (anyio stream)
          ▼
       Octopus 🐙           ← central coordinator, routes by thread ownership
@@ -59,8 +59,8 @@ directly   AgentTentacle
            (Claude Code)
 ```
 
-1. A **ChannelTentacle** listens for incoming messages, buffers them briefly (configurable flush delay), and pushes them through the **Nerve**.
-2. The **Octopus** coordinator dispatches the batch to the owning tentacle.
+1. A **ChannelTentacle** listens for incoming messages and pushes each event through the **Nerve**.
+2. The **Octopus** coordinator dispatches the event to the owning tentacle.
 3. The tentacle's **Pulse** agent decides: **ANSWER** directly, **SUMMON** a specialist `AgentTentacle`, or stay **SILENT**.
 4. If a tool requires human approval, **Feelers** send interactive cards (approve / deny buttons) inside the chat platform.
 5. **Memory** is recalled before each interaction and updated after.

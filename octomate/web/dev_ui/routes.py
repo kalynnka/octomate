@@ -25,9 +25,11 @@ def build_dev_ui_router(
     if agent is None:
         raise ValueError(f"DevUI requires registered agent {agent_id!r}")
 
+    graph_agent = getattr(agent, "agent", agent)
+
     adapter = GraphAdapter(
         channel_id=channel_id,
-        agent=agent,
+        agent=graph_agent,
         conversations=octomate.conversations,
         agent_id=agent_id,
     )

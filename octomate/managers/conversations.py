@@ -31,6 +31,9 @@ class ConversationManager:
                 ],
             )
             if existing is not None:
+                if existing.agent_tentacle_id is None and agent_tentacle_id is not None:
+                    existing.agent_tentacle_id = agent_tentacle_id
+                    await session.commit()
                 await existing.runs
                 await existing.messages
                 return existing
