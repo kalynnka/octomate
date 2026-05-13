@@ -1,17 +1,34 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass, field, replace
+from typing import Any
 
-from pydantic_ai import Agent
-from pydantic_ai.messages import (
+import anyio
+from anyio.abc import ObjectSendStream
+from pydantic_ai import (
+    Agent,
+    AgentBuiltinTool,
+    AgentCapability,
+    AgentModelSettings,
+    AgentRunResult,
+    AgentRunResultEvent,
+    AgentSpec,
     AgentStreamEvent,
+    RunUsage,
+    UsageLimits,
+)
+from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata
+from pydantic_ai.messages import (
     ModelMessage,
     ToolCallPart,
+    UserContent,
 )
-from pydantic_ai.run import AgentRunResult, AgentRunResultEvent
+from pydantic_ai.models import KnownModelName, Model
+from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.managers.conversations import ConversationManager
@@ -23,33 +40,46 @@ from octomate.tentacles.agent.inkling.resolver import DeferredResolver
 logger = logging.getLogger(__name__)
 
 InklingOutput = list[AgentMessage] | DeferredToolRequests
-EventSink = Callable[[AgentStreamEvent], Awaitable[None]]
-
-
-async def noop_sink(_: AgentStreamEvent) -> None:
-    pass
 
 
 @dataclass
 class InklingState:
+    conversation: Conversation
     message_history: list[ModelMessage] = field(default_factory=list)
-    # The conversation being driven. When present alongside
-    # `deps.conversation_manager`, nodes persist their newly-produced messages
-    # through the manager. None for graph-only callers (tests, embedded use)
-    # that don't need durability.
-    conversation: Conversation | None = None
 
 
 @dataclass
 class InklingDeps:
     agent: Agent[None, InklingOutput]
-    resolver: DeferredResolver
-    event_sink: EventSink = noop_sink
-    conversation_manager: ConversationManager = ConversationManager()
+    conversation_manager: ConversationManager
+    event_send_stream: ObjectSendStream[
+        AgentStreamEvent | AgentRunResultEvent[InklingOutput]
+    ] | None = None
+    resolver: DeferredResolver | None = None
+    output_type: OutputSpec[Any] | None = None
+    model: Model | KnownModelName | str | None = None
+    instructions: AgentInstructions[None] = None
+    agent_deps: None = None
+    model_settings: AgentModelSettings[None] | None = None
+    usage_limits: UsageLimits | None = None
+    usage: RunUsage | None = None
+    metadata: AgentMetadata[None] | None = None
+    output_retries: int | None = None
+    infer_name: bool = True
+    toolsets: Sequence[AbstractToolset[None]] | None = None
+    builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None
+    capabilities: Sequence[AgentCapability[None]] | None = None
+    spec: dict[str, Any] | AgentSpec | None = None
 
 
 @dataclass
-class StartTurn(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
+class StartTurn(
+    BaseNode[
+        InklingState,
+        InklingDeps,
+        AgentRunResult[InklingOutput],
+    ]
+):
     """Entry node: a new user message starts (or continues) a conversation.
 
     Validates the prompt and drops any trailing deferred-tool ModelResponse
@@ -60,17 +90,16 @@ class StartTurn(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
     preserved for audit/debugging.
     """
 
-    user_prompt: str
+    user_prompt: str | Sequence[UserContent] | None
 
     async def run(self, ctx: GraphRunContext[InklingState, InklingDeps]) -> RunAgent:
-        if not self.user_prompt:
-            raise ValueError("StartTurn requires a non-empty user_prompt")
-        if (abandoned := drop_trailing_deferral(ctx.state.message_history)) is not None:
-            if ctx.state.conversation is not None:
-                # Drop the DB row too — otherwise the abandoned response
-                # reappears mid-history on the next reload, past the reach
-                # of `drop_trailing_deferral`.
-                await ctx.deps.conversation_manager.discard_message(abandoned)
+        if self.user_prompt is not None and (
+            abandoned := drop_trailing_deferral(ctx.state.message_history)
+        ) is not None:
+            # Drop the DB row too — otherwise the abandoned response
+            # reappears mid-history on the next reload, past the reach
+            # of `drop_trailing_deferral`.
+            await ctx.deps.conversation_manager.discard_message(abandoned)
             logger.info(
                 "StartTurn dropped a trailing deferred ModelResponse; the "
                 "new user prompt supersedes the abandoned tool-call request"
@@ -79,7 +108,13 @@ class StartTurn(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
 
 
 @dataclass
-class ResumeTurn(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
+class ResumeTurn(
+    BaseNode[
+        InklingState,
+        InklingDeps,
+        AgentRunResult[InklingOutput],
+    ]
+):
     """Entry node: continue an in-flight run with resolved deferred-tool results."""
 
     deferred_results: DeferredToolResults
@@ -93,63 +128,113 @@ class ResumeTurn(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
 
 
 @dataclass
-class RunAgent(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
-    """Runs `agent.run_stream_events` once. The entry node guarantees that
-    exactly one of `user_prompt` or `deferred_results` is set."""
+class RunAgent(
+    BaseNode[
+        InklingState,
+        InklingDeps,
+        AgentRunResult[InklingOutput],
+    ]
+):
+    """Runs one pydantic-ai turn and forwards raw stream events."""
 
-    user_prompt: str | None = None
+    user_prompt: str | Sequence[UserContent] | None = None
     deferred_results: DeferredToolResults | None = None
 
     async def run(
         self, ctx: GraphRunContext[InklingState, InklingDeps]
-    ) -> ResolveDeferred | End[list[AgentMessage]]:
-        result: AgentRunResult[InklingOutput] | None = None
+    ) -> ResolveDeferred | End[AgentRunResult[InklingOutput]]:
+        if ctx.deps.event_send_stream is None:
+            result = await ctx.deps.agent.run(
+                self.user_prompt,
+                output_type=ctx.deps.output_type,
+                message_history=ctx.state.message_history or None,
+                deferred_tool_results=self.deferred_results,
+                conversation_id=str(ctx.state.conversation.id),
+                model=ctx.deps.model,
+                instructions=ctx.deps.instructions,
+                deps=ctx.deps.agent_deps,
+                model_settings=ctx.deps.model_settings,
+                usage_limits=ctx.deps.usage_limits,
+                usage=ctx.deps.usage,
+                metadata=ctx.deps.metadata,
+                output_retries=ctx.deps.output_retries,
+                infer_name=ctx.deps.infer_name,
+                toolsets=ctx.deps.toolsets,
+                builtin_tools=ctx.deps.builtin_tools,
+                capabilities=ctx.deps.capabilities,
+                spec=ctx.deps.spec,
+            )
+            return await self.next_node(ctx, result)
 
-        # Pass our conversation's id as pydantic-ai's `conversation_id` so it
-        # tags every produced ModelMessage with it natively (no manual
-        # backfilling at persist time).
-        conversation_id = (
-            str(ctx.state.conversation.id)
-            if ctx.state.conversation is not None
-            else None
-        )
-        async for event in ctx.deps.agent.run_stream_events(
+        result: AgentRunResult[InklingOutput] | None = None
+        async with ctx.deps.agent.run_stream_events(
             user_prompt=self.user_prompt,
+            output_type=ctx.deps.output_type,
             message_history=ctx.state.message_history or None,
             deferred_tool_results=self.deferred_results,
-            conversation_id=conversation_id,
-        ):
-            if isinstance(event, AgentRunResultEvent):
-                result = event.result
-            else:
-                await ctx.deps.event_sink(event)
+            conversation_id=str(ctx.state.conversation.id),
+            model=ctx.deps.model,
+            instructions=ctx.deps.instructions,
+            deps=ctx.deps.agent_deps,
+            model_settings=ctx.deps.model_settings,
+            usage_limits=ctx.deps.usage_limits,
+            usage=ctx.deps.usage,
+            metadata=ctx.deps.metadata,
+            output_retries=ctx.deps.output_retries,
+            infer_name=ctx.deps.infer_name,
+            toolsets=ctx.deps.toolsets,
+            builtin_tools=ctx.deps.builtin_tools,
+            capabilities=ctx.deps.capabilities,
+            spec=ctx.deps.spec,
+        ) as stream:
+            async for event in stream:
+                if ctx.deps.event_send_stream is not None:
+                    await ctx.deps.event_send_stream.send(event)
+                if isinstance(event, AgentRunResultEvent):
+                    result = event.result
 
-        assert result is not None, (
-            "agent.run_stream_events did not yield AgentRunResultEvent"
-        )
+        if result is None:
+            raise RuntimeError(
+                "agent.run_stream_events did not yield AgentRunResultEvent"
+            )
+        return await self.next_node(ctx, result)
+
+    async def next_node(
+        self,
+        ctx: GraphRunContext[InklingState, InklingDeps],
+        result: AgentRunResult[InklingOutput],
+    ) -> ResolveDeferred | End[AgentRunResult[InklingOutput]]:
+
         ctx.state.message_history = list(result.all_messages())
 
-        if ctx.state.conversation is not None and (
-            new_messages := result.new_messages()
-        ):
+        if new_messages := result.new_messages():
             await ctx.deps.conversation_manager.record_agent_run(
                 ctx.state.conversation,
                 run_id=result.run_id,
                 messages=new_messages,
             )
 
-        if isinstance(result.output, DeferredToolRequests):
+        if isinstance(result.output, DeferredToolRequests) and (
+            ctx.deps.resolver is not None
+        ):
             return ResolveDeferred(requests=result.output)
-        return End(result.output)
+        return End(result)
 
 
 @dataclass
-class ResolveDeferred(BaseNode[InklingState, InklingDeps, list[AgentMessage]]):
+class ResolveDeferred(
+    BaseNode[
+        InklingState,
+        InklingDeps,
+        AgentRunResult[InklingOutput],
+    ]
+):
     requests: DeferredToolRequests
 
     async def run(self, ctx: GraphRunContext[InklingState, InklingDeps]) -> RunAgent:
-        results = await ctx.deps.resolver.resolve(self.requests)
-        return RunAgent(deferred_results=results)
+        if ctx.deps.resolver is None:
+            raise RuntimeError("ResolveDeferred requires an InklingDeps.resolver")
+        return RunAgent(deferred_results=await ctx.deps.resolver.resolve(self.requests))
 
 
 # `state` is NOT a reliable signal for deferred-tool aborts: pydantic-ai sets
@@ -204,7 +289,40 @@ def drop_trailing_deferral(history: list[ModelMessage]) -> ModelResponse | None:
     return last
 
 
-inkling_graph = Graph[InklingState, InklingDeps, list[AgentMessage]](
+async def iter_inkling_graph_events(
+    start_node: StartTurn | ResumeTurn,
+    *,
+    state: InklingState,
+    deps: InklingDeps,
+) -> AsyncGenerator[
+    AgentStreamEvent | AgentRunResultEvent[InklingOutput],
+    None,
+]:
+    send_stream, receive_stream = anyio.create_memory_object_stream[
+        AgentStreamEvent | AgentRunResultEvent[InklingOutput]
+    ](100)
+    graph_deps = replace(deps, event_send_stream=send_stream)
+
+    async def run_graph() -> None:
+        async with send_stream:
+            await inkling_graph.run(
+                start_node,
+                state=state,
+                deps=graph_deps,
+            )
+
+    async with receive_stream:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run_graph)
+            async for event in receive_stream:
+                yield event
+
+
+inkling_graph = Graph[
+    InklingState,
+    InklingDeps,
+    AgentRunResult[InklingOutput],
+](
     nodes=[StartTurn, ResumeTurn, RunAgent, ResolveDeferred],
     name="inkling",
 )

@@ -1,17 +1,56 @@
-from pydantic_ai import Agent
-from pydantic_ai.models.google import GoogleModel
-from pydantic_ai.providers.google import GoogleProvider
-from pydantic_ai.tools import DeferredToolRequests
+from __future__ import annotations
 
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Any
+
+from pydantic_ai import (
+    Agent,
+    AgentBuiltinTool,
+    AgentCapability,
+    AgentEventStream,
+    AgentModelSettings,
+    AgentRunResult,
+    AgentRunResultEvent,
+    AgentSpec,
+    AgentStreamEvent,
+    RunUsage,
+    UsageLimits,
+)
+from pydantic_ai.agent import EventStreamHandler
+from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata
+from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.models import KnownModelName, Model
+from pydantic_ai.models.google import GoogleModel
+from pydantic_ai.output import OutputSpec
+from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.result import StreamedRunResult
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.toolsets import AbstractToolset
+
+from octomate.managers.conversations import ConversationManager
 from octomate.schemas.actions import AgentMessage
-from octomate.tentacles.agent.inkling.graph import InklingOutput
+from octomate.schemas.conversation import ConversationKey
+from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agent.inkling.graph import (
+    InklingDeps,
+    InklingOutput,
+    InklingState,
+    ResumeTurn,
+    StartTurn,
+    iter_inkling_graph_events,
+)
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.agent.inkling.resolver import StubResolver
 from octomate.tentacles.agent.inkling.tools import inkling_toolset
 
 
-def build_inkling_agent() -> Agent[None, InklingOutput]:
+def build_inkling_agent(
+    model_name: str = "gemini-3-flash-preview",
+) -> Agent[None, InklingOutput]:
     model = GoogleModel(
-        "gemini-3-flash-preview",
+        model_name,
         provider=GoogleProvider(location="global"),
     )
     return Agent(
@@ -21,3 +60,233 @@ def build_inkling_agent() -> Agent[None, InklingOutput]:
         toolsets=[inkling_toolset],
         system_prompt=SYSTEM_PROMPT,
     )
+
+
+@dataclass
+class InklingTentacle(AgentTentacle):
+    """Inkling agent wrapper with pydantic-ai-style run entrypoints."""
+
+    agent: Agent[None, InklingOutput] = field(default_factory=build_inkling_agent)
+    conversation_manager: ConversationManager = field(
+        default_factory=ConversationManager
+    )
+
+    def __init__(
+        self,
+        id: str = "inkling",
+        *,
+        agent: Agent[None, InklingOutput] | None = None,
+        conversation_manager: ConversationManager | None = None,
+    ) -> None:
+        super().__init__(id=id)
+        self.agent = agent or build_inkling_agent()
+        self.conversation_manager = conversation_manager or ConversationManager()
+
+    async def run(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        conversation_key: ConversationKey,
+        output_type: OutputSpec[Any] | None = None,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[None] = None,
+        deps: None = None,
+        model_settings: AgentModelSettings[None] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[None] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[None]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
+        event_stream_handler: EventStreamHandler[None] | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+        spec: dict[str, Any] | AgentSpec | None = None,
+    ) -> AgentRunResult[Any]:
+        result: AgentRunResult[InklingOutput] | None = None
+        async for event in self.iter_graph_events(
+            user_prompt=user_prompt,
+            conversation_key=conversation_key,
+            output_type=output_type,
+            message_history=message_history,
+            deferred_tool_results=deferred_tool_results,
+            model=model,
+            instructions=instructions,
+            deps=deps,
+            model_settings=model_settings,
+            usage_limits=usage_limits,
+            usage=usage,
+            metadata=metadata,
+            output_retries=output_retries,
+            infer_name=infer_name,
+            toolsets=toolsets,
+            builtin_tools=builtin_tools,
+            capabilities=capabilities,
+            spec=spec,
+        ):
+            if isinstance(event, AgentRunResultEvent):
+                result = event.result
+        if result is None:
+            raise RuntimeError("inkling graph completed without an AgentRunResult")
+        return result
+
+    @asynccontextmanager
+    async def run_stream(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        conversation_key: ConversationKey,
+        output_type: OutputSpec[Any] | None = None,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[None] = None,
+        deps: None = None,
+        model_settings: AgentModelSettings[None] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[None] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[None]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
+        event_stream_handler: EventStreamHandler[None] | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+        spec: dict[str, Any] | AgentSpec | None = None,
+    ) -> AsyncIterator[StreamedRunResult[None, Any]]:
+        conversation = await self.conversation_manager.ensure(
+            conversation_key,
+            agent_tentacle_id=self.id,
+        )
+        async with self.agent.run_stream(
+            user_prompt=user_prompt,
+            output_type=output_type,
+            message_history=message_history,
+            deferred_tool_results=deferred_tool_results,
+            conversation_id=str(conversation.id),
+            model=model,
+            instructions=instructions,
+            deps=deps,
+            model_settings=model_settings,
+            usage_limits=usage_limits,
+            usage=usage,
+            metadata=metadata,
+            output_retries=output_retries,
+            infer_name=infer_name,
+            toolsets=toolsets,
+            builtin_tools=builtin_tools,
+            event_stream_handler=event_stream_handler,
+            capabilities=capabilities,
+            spec=spec,
+        ) as stream:
+            yield stream
+
+    def run_stream_events(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        conversation_key: ConversationKey,
+        output_type: OutputSpec[Any] | None = None,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[None] = None,
+        deps: None = None,
+        model_settings: AgentModelSettings[None] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[None] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[None]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+        spec: dict[str, Any] | AgentSpec | None = None,
+    ) -> AgentEventStream[Any]:
+        return AgentEventStream(
+            self.iter_graph_events(
+                user_prompt=user_prompt,
+                conversation_key=conversation_key,
+                output_type=output_type,
+                message_history=message_history,
+                deferred_tool_results=deferred_tool_results,
+                model=model,
+                instructions=instructions,
+                deps=deps,
+                model_settings=model_settings,
+                usage_limits=usage_limits,
+                usage=usage,
+                metadata=metadata,
+                output_retries=output_retries,
+                infer_name=infer_name,
+                toolsets=toolsets,
+                builtin_tools=builtin_tools,
+                capabilities=capabilities,
+                spec=spec,
+            )
+        )
+
+    async def iter_graph_events(
+        self,
+        *,
+        user_prompt: str | Sequence[UserContent] | None,
+        conversation_key: ConversationKey,
+        output_type: OutputSpec[Any] | None,
+        message_history: Sequence[ModelMessage] | None,
+        deferred_tool_results: DeferredToolResults | None,
+        model: Model | KnownModelName | str | None,
+        instructions: AgentInstructions[None],
+        deps: None,
+        model_settings: AgentModelSettings[None] | None,
+        usage_limits: UsageLimits | None,
+        usage: RunUsage | None,
+        metadata: AgentMetadata[None] | None,
+        output_retries: int | None,
+        infer_name: bool,
+        toolsets: Sequence[AbstractToolset[None]] | None,
+        builtin_tools: Sequence[AgentBuiltinTool[None]] | None,
+        capabilities: Sequence[AgentCapability[None]] | None,
+        spec: dict[str, Any] | AgentSpec | None,
+    ) -> AsyncGenerator[
+        AgentStreamEvent | AgentRunResultEvent[InklingOutput],
+        None,
+    ]:
+        graph_deps = InklingDeps(
+            agent=self.agent,
+            conversation_manager=self.conversation_manager,
+            resolver=StubResolver(),
+            output_type=output_type,
+            model=model,
+            instructions=instructions,
+            agent_deps=deps,
+            model_settings=model_settings,
+            usage_limits=usage_limits,
+            usage=usage,
+            metadata=metadata,
+            output_retries=output_retries,
+            infer_name=infer_name,
+            toolsets=toolsets,
+            builtin_tools=builtin_tools,
+            capabilities=capabilities,
+            spec=spec,
+        )
+        state = InklingState(
+            conversation=await self.conversation_manager.ensure(
+                conversation_key,
+                agent_tentacle_id=self.id,
+            ),
+            message_history=list(message_history or []),
+        )
+        start_node = (
+            ResumeTurn(deferred_results=deferred_tool_results)
+            if deferred_tool_results is not None
+            else StartTurn(user_prompt=user_prompt)
+        )
+        async for event in iter_inkling_graph_events(
+            start_node,
+            state=state,
+            deps=graph_deps,
+        ):
+            yield event

@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
+from pydantic_ai import AgentEventStream, AgentRunResult
+from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.result import StreamedRunResult
+from pydantic_ai.tools import DeferredToolResults
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+import octomate.database as database
+from octomate import Octomate
+from octomate.models import Base
+from octomate.schemas.actions import AgentMessage
+from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import TextSegment
+from octomate.tentacles.agent.base import AgentTentacle
+
+
+@pytest.fixture(autouse=True)
+async def _in_memory_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[AsyncEngine]:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    maker = async_sessionmaker(
+        engine,
+        class_=database.AsyncSession,
+        expire_on_commit=False,
+    )
+
+    database.engine.cache_clear()
+    database.session_maker.cache_clear()
+    monkeypatch.setattr(database, "engine", lambda: engine)
+    monkeypatch.setattr(database, "session_maker", lambda: maker)
+
+    with sqlalchemy_materia:
+        yield engine
+
+    await engine.dispose()
+
+
+@dataclass
+class FakeAgent(AgentTentacle):
+    turns: list[
+        tuple[str | Sequence[UserContent] | None, list[ModelMessage], ConversationKey]
+    ] = field(default_factory=list)
+
+    async def run(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        conversation_key: ConversationKey,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        **kwargs: Any,
+    ) -> AgentRunResult[Any]:
+        self.turns.append((user_prompt, list(message_history or []), conversation_key))
+        return AgentRunResult(
+            [AgentMessage(segments=[TextSegment(data={"text": "handled"})])]
+        )
+
+    @asynccontextmanager
+    async def run_stream(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        conversation_key: ConversationKey,
+        **kwargs: Any,
+    ) -> AsyncIterator[StreamedRunResult[Any, Any]]:
+        if False:
+            yield
+        raise NotImplementedError
+
+    def run_stream_events(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        conversation_key: ConversationKey,
+        **kwargs: Any,
+    ) -> AgentEventStream[Any]:
+        async def events():
+            if False:
+                yield
+
+        return AgentEventStream(events())
+
+
+@dataclass
+class FakeChannel:
+    id: str = "im"
+    octomate: Octomate | None = None
+    sent: list[tuple[ConversationKey, AgentMessage]] = field(default_factory=list)
+
+    async def activate(self) -> None:
+        pass
+
+    async def deactivate(self) -> None:
+        pass
+
+    async def twitch(self, key: ConversationKey, message: AgentMessage) -> None:
+        self.sent.append((key, message))
+
+
+async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
+    octomate = Octomate()
+    agent = octomate.register_agent("inkling", FakeAgent("inkling"))
+    channel = octomate.connect_channel("im", FakeChannel())
+
+    key = ConversationKey(
+        channel_tentacle_id="im",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+    event = MessageEvent(
+        tentacle_id="im",
+        message_id="m1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+        segments=[TextSegment(data={"text": "hi"})],
+    )
+
+    await octomate.kick(key, [event], agent_id="inkling")
+
+    assert len(agent.turns) == 1
+    assert agent.turns[0][0] == str(event)
+    assert agent.turns[0][2] == key
+    assert len(channel.sent) == 1
+    assert str(channel.sent[0][1]) == "handled"

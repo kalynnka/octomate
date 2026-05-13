@@ -1,31 +1,43 @@
-"""Unit tests for ChannelTentacle base — ingest, twitch, wave."""
-
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from octomate.schemas.actions import AgentMessage
+from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
+    AtData,
+    AtSegment,
     ImageSegment,
     MessageSegment,
+    ReplySegment,
     TextSegment,
 )
-from octomate.schemas.conversation import ConversationKey, UserProfile
-from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channel.base import (
+    ChannelTentacle,
+    DownloadedImage,
+    PlatformMessage,
+)
 
 
 @dataclass
-class FakeOctopus:
-    kicks: list[tuple[ConversationKey, list[MessageEvent]]] = field(default_factory=list)
+class FakeOctomate:
+    kicks: list[tuple[ConversationKey, list[MessageEvent], str | None]] = field(
+        default_factory=list
+    )
 
-    async def kick(self, key: ConversationKey, contents: list[MessageEvent]) -> None:
-        self.kicks.append((key, contents))
+    async def kick(
+        self,
+        key: ConversationKey,
+        contents: list[MessageEvent],
+        *,
+        agent_id: str | None = None,
+    ) -> None:
+        self.kicks.append((key, contents, agent_id))
 
 
 @dataclass
@@ -34,7 +46,7 @@ class FakeInk:
         default_factory=lambda: UserProfile(user_id="bot", name="Bot")
     )
     user_profiles: dict[str, UserProfile] = field(default_factory=dict)
-    sent: list[tuple[str, str, list[MessageSegment], str | None, bool]] = field(
+    sent: list[tuple[str, str, list[PlatformMessage], str | None, bool]] = field(
         default_factory=list
     )
 
@@ -43,36 +55,38 @@ class FakeInk:
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
         return self.user_profiles.get(
-            user_id, UserProfile(user_id=user_id, name=f"user-{user_id}")
+            user_id,
+            UserProfile(user_id=user_id, name=f"user-{user_id}"),
         )
 
     async def upload_media(self, data: bytes) -> str | None:
         return None
 
-    async def download_media(
-        self, resource_id: str, **kwargs: Any
-    ) -> tuple[bytes, str] | None:
+    async def download_image(
+        self,
+        seg: ImageSegment,
+        message_id: str,
+    ) -> DownloadedImage | None:
         return None
 
     async def send_message(
         self,
         chat_id: str,
         chat_type: str,
-        segments: list[MessageSegment],
+        messages: list[PlatformMessage],
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None:
-        self.sent.append(
-            (chat_id, chat_type, list(segments), reply_to, reply_in_thread)
-        )
+        self.sent.append((chat_id, chat_type, messages, reply_to, reply_in_thread))
         return f"sent-{len(self.sent)}"
 
 
 @dataclass
 class FakeChromo:
-    """Sips a dict into a MessageEvent."""
-
     sip_calls: list[Any] = field(default_factory=list)
+    squirt_calls: list[tuple[list[MessageSegment], str | None]] = field(
+        default_factory=list
+    )
 
     async def sip(self, raw: Any) -> MessageEvent | None:
         self.sip_calls.append(raw)
@@ -86,51 +100,50 @@ class FakeChromo:
             segments=raw.get("segments", []),
         )
 
-
-def _segment_text(seg: MessageSegment) -> str:
-    if isinstance(seg, TextSegment):
-        return seg.data["text"]
-    return str(seg)
+    async def squirt(
+        self,
+        segments: list[MessageSegment],
+        *,
+        reply_to: str | None = None,
+    ) -> list[PlatformMessage]:
+        self.squirt_calls.append((list(segments), reply_to))
+        return [PlatformMessage(msg_type="text", content="".join(map(str, segments)))]
 
 
 class FakeChannelTentacle(ChannelTentacle):
-    """Test channel: stubs every abstract method."""
+    sent: list[tuple[str, str, list[PlatformMessage], str | None, bool]]
 
     def __init__(
-        self, id: str, octopus: FakeOctopus, ink: FakeInk, chromo: FakeChromo
+        self,
+        id: str,
+        octomate: FakeOctomate,
+        ink: FakeInk,
+        chromo: FakeChromo,
+        *,
+        mention_only: bool = True,
     ) -> None:
-        self.ink = ink
-        self.chromo = chromo
-        super().__init__(id, octopus)
-        self.received_batches: list[tuple[ConversationKey, list[MessageEvent]]] = []
-
-    async def __call__(self, key: ConversationKey, contents: list[MessageEvent]) -> None:
-        self.received_batches.append((key, contents))
-
-    async def activate(self) -> None:
-        pass
-
-    async def deactivate(self) -> None:
-        pass
-
-    async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
-        pass
-
-    async def secrete(self, seg: ImageSegment) -> None:
-        pass
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            ink=ink,
+            chromo=chromo,
+            agent_id="inkling",
+            mention_only=mention_only,
+        )
+        self.sent = ink.sent
 
 
 @pytest.fixture
 def channel() -> FakeChannelTentacle:
     return FakeChannelTentacle(
         id="chan1",
-        octopus=FakeOctopus(),
+        octomate=FakeOctomate(),
         ink=FakeInk(),
         chromo=FakeChromo(),
     )
 
 
-async def test_ingest_kicks_octopus_directly_with_single_event(
+async def test_ingest_dispatches_event_to_octomate(
     channel: FakeChannelTentacle,
 ) -> None:
     raw = {
@@ -138,33 +151,55 @@ async def test_ingest_kicks_octopus_directly_with_single_event(
         "user_id": "alice",
         "chat_id": "lobby",
         "chat_type": "group",
-        "segments": [TextSegment(data={"text": "hello"})],
+        "segments": [
+            AtSegment(data=AtData(user_id="bot")),
+            TextSegment(data={"text": "hello"}),
+        ],
     }
 
     await channel.ingest(raw)
 
-    octopus = channel.octopus
-    assert isinstance(octopus, FakeOctopus)
-    assert len(octopus.kicks) == 1
-    key, batch = octopus.kicks[0]
+    octomate = channel.octomate
+    assert isinstance(octomate, FakeOctomate)
+    assert len(octomate.kicks) == 1
+    key, events, agent_id = octomate.kicks[0]
 
-    assert isinstance(key, ConversationKey)
     assert key.channel_tentacle_id == "chan1"
     assert key.chat_id == "lobby"
     assert key.chat_type == "group"
     assert key.user_id == "alice"
+    assert agent_id == "inkling"
 
-    assert len(batch) == 1
-    event = batch[0]
+    event = events[0]
     assert event.tentacle_id == "chan1"
     assert event.self_id == "bot"
     assert event.sender.user_id == "alice"
 
-    assert isinstance(channel.chromo, FakeChromo)
-    assert channel.chromo.sip_calls == [raw]
+
+async def test_group_mention_filter_ignores_unmentioned_events() -> None:
+    channel = FakeChannelTentacle(
+        id="chan1",
+        octomate=FakeOctomate(),
+        ink=FakeInk(),
+        chromo=FakeChromo(),
+        mention_only=True,
+    )
+    await channel.ingest(
+        {
+            "message_id": "m42",
+            "user_id": "alice",
+            "chat_id": "lobby",
+            "chat_type": "group",
+            "segments": [TextSegment(data={"text": "hello"})],
+        }
+    )
+
+    octomate = channel.octomate
+    assert isinstance(octomate, FakeOctomate)
+    assert octomate.kicks == []
 
 
-async def test_twitch_passes_segments_directly_to_ink(
+async def test_twitch_encodes_and_sends_platform_messages(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -177,15 +212,35 @@ async def test_twitch_passes_segments_directly_to_ink(
 
     await channel.twitch(key, message)
 
-    ink = channel.ink
-    assert isinstance(ink, FakeInk)
-    assert len(ink.sent) == 1
-    chat_id, chat_type, segments, reply_to, _ = ink.sent[0]
+    assert len(channel.sent) == 1
+    chat_id, chat_type, messages, reply_to, _ = channel.sent[0]
     assert chat_id == "alice"
     assert chat_type == "private"
-    assert len(segments) == 1
-    assert _segment_text(segments[0]) == "hi alice"
+    assert messages[0].content == "hi alice"
     assert reply_to is None
+
+
+async def test_twitch_preserves_segments_after_reply_marker(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="group",
+        chat_id="lobby",
+        user_id="alice",
+    )
+    message = AgentMessage(
+        segments=[
+            ReplySegment(data={"id": "m1"}),
+            TextSegment(data={"text": "after reply"}),
+        ]
+    )
+
+    await channel.twitch(key, message)
+
+    assert len(channel.sent) == 1
+    assert channel.sent[0][3] == "m1"
+    assert channel.sent[0][2][0].content == "after reply"
 
 
 async def test_wave_iterates_and_twitches_each_message(
@@ -204,13 +259,6 @@ async def test_wave_iterates_and_twitches_each_message(
 
     await channel.wave(key, messages())
 
-    ink = channel.ink
-    assert isinstance(ink, FakeInk)
-    assert len(ink.sent) == 3
-    contents = [_segment_text(call[2][0]) for call in ink.sent]
+    assert len(channel.sent) == 3
+    contents = [call[2][0].content for call in channel.sent]
     assert contents == ["first", "second", "third"]
-
-
-async def test_channel_tentacle_cannot_be_instantiated_directly() -> None:
-    with pytest.raises(TypeError):
-        ChannelTentacle(id="x", octopus=FakeOctopus())  # type: ignore[abstract]

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import anyio
 from fastapi import APIRouter, FastAPI, Request, Response
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.actions import AgentMessage
@@ -72,15 +73,30 @@ class Octomate:
             resolved_agent_id = agent_id or conversation.agent_tentacle_id
             if not resolved_agent_id:
                 raise ValueError(f"conversation {key} has no agent assigned")
-            agent = self.agents.get(resolved_agent_id)
-            if agent is None:
+            agent_tentacle = self.agents.get(resolved_agent_id)
+            if agent_tentacle is None:
                 raise ValueError(f"unknown agent {resolved_agent_id!r}")
 
             try:
                 user_prompt = "\n\n".join(str(event) for event in contents).strip()
                 if not user_prompt:
                     return
-                for message in await agent.run(conversation, user_prompt):
+                result = await agent_tentacle.run(
+                    user_prompt,
+                    conversation_key=key,
+                    message_history=list(conversation.messages),
+                )
+                if new_messages := result.new_messages():
+                    await self.conversations.record_agent_run(
+                        conversation,
+                        run_id=result.run_id,
+                        messages=new_messages,
+                    )
+                if isinstance(result.output, DeferredToolRequests):
+                    return
+                if not isinstance(result.output, list):
+                    return
+                for message in result.output:
                     await channel.twitch(key, message)
             except Exception as exc:
                 logger.exception(

@@ -75,6 +75,19 @@ async def test_ensure_loads_existing_conversation() -> None:
     assert fetched.id == created.id
 
 
+async def test_ensure_backfills_missing_agent_tentacle_id() -> None:
+    service = ConversationManager()
+    created = await service.ensure(_key())
+    assert created.agent_tentacle_id is None
+
+    updated = await service.ensure(_key(), agent_tentacle_id="inkling")
+    assert updated.id == created.id
+    assert updated.agent_tentacle_id == "inkling"
+
+    reloaded = await ConversationManager().ensure(_key())
+    assert reloaded.agent_tentacle_id == "inkling"
+
+
 async def test_record_run_creates_run_and_persists_messages() -> None:
     service = ConversationManager()
     conversation = await service.ensure(_key())
