@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
-from pydantic_ai import AgentEventStream, AgentRunResult
+from pydantic_ai import AgentEventStream, AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import DeferredToolResults
@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import (
 import octomate.database as database
 from octomate import Octomate
 from octomate.models import Base
-from octomate.schemas.actions import AgentMessage
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.schemas.events import MessageEvent
@@ -68,9 +67,7 @@ class FakeAgent(AgentTentacle):
         **kwargs: Any,
     ) -> AgentRunResult[Any]:
         self.turns.append((user_prompt, list(message_history or []), conversation_key))
-        return AgentRunResult(
-            [AgentMessage(segments=[TextSegment(data={"text": "handled"})])]
-        )
+        return AgentRunResult("handled")
 
     @asynccontextmanager
     async def run_stream(
@@ -89,11 +86,14 @@ class FakeAgent(AgentTentacle):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_key: ConversationKey,
+        message_history: Sequence[ModelMessage] | None = None,
         **kwargs: Any,
     ) -> AgentEventStream[Any]:
         async def events():
-            if False:
-                yield
+            self.turns.append(
+                (user_prompt, list(message_history or []), conversation_key)
+            )
+            yield AgentRunResultEvent(AgentRunResult("handled"))
 
         return AgentEventStream(events())
 
@@ -102,7 +102,7 @@ class FakeAgent(AgentTentacle):
 class FakeChannel:
     id: str = "im"
     octomate: Octomate | None = None
-    sent: list[tuple[ConversationKey, AgentMessage]] = field(default_factory=list)
+    sent: list[tuple[ConversationKey, list[Any]]] = field(default_factory=list)
 
     async def activate(self) -> None:
         pass
@@ -110,8 +110,15 @@ class FakeChannel:
     async def deactivate(self) -> None:
         pass
 
-    async def twitch(self, key: ConversationKey, message: AgentMessage) -> None:
-        self.sent.append((key, message))
+    async def emit(self, key: ConversationKey, events: AsyncIterator[Any]) -> None:
+        outputs: list[Any] = []
+        async for event in events:
+            if isinstance(event, AgentRunResultEvent):
+                outputs.append(event.result.output)
+        self.sent.append((key, outputs))
+
+    async def emit_text(self, key: ConversationKey, text: str) -> None:
+        self.sent.append((key, [text]))
 
 
 async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
@@ -140,4 +147,4 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     assert agent.turns[0][0] == str(event)
     assert agent.turns[0][2] == key
     assert len(channel.sent) == 1
-    assert str(channel.sent[0][1]) == "handled"
+    assert channel.sent[0][1] == ["handled"]

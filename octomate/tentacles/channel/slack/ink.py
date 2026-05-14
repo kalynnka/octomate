@@ -10,8 +10,11 @@ from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.client import WebClient
 
 from octomate.schemas.segments import ImageSegment
-from octomate.tentacles.channel.base import DownloadedImage, PlatformMessage
-from octomate.tentacles.channel.slack.schema import SlackUserProfile
+from octomate.tentacles.channel.base import DownloadedImage
+from octomate.tentacles.channel.slack.schema import (
+    SlackOutboundMessage,
+    SlackUserProfile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +127,7 @@ class SlackInk:
         self,
         chat_id: str,
         chat_type: str,
-        messages: list[PlatformMessage],
+        messages: list[SlackOutboundMessage],
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None:
@@ -132,7 +135,7 @@ class SlackInk:
         thread_ts = reply_to
         for msg in messages:
             try:
-                blocks = msg.metadata.get("blocks")
+                blocks = msg.blocks
                 all_blocks = _split_oversized_blocks(blocks) if blocks else None
                 batches = (
                     [
@@ -143,7 +146,7 @@ class SlackInk:
                     else [None]
                 )
                 for batch in batches:
-                    kwargs: dict[str, Any] = {"channel": chat_id, "text": msg.content}
+                    kwargs: dict[str, Any] = {"channel": chat_id, "text": msg.text}
                     if batch:
                         kwargs["blocks"] = batch
                     if thread_ts:

@@ -1,7 +1,6 @@
 from octomate.tentacles.agent.inkling.base import InklingTentacle, build_inkling_agent
 from octomate.tentacles.agent.inkling.graph import (
     InklingDeps,
-    InklingOutput,
     InklingState,
     ResolveDeferred,
     ResumeTurn,
@@ -16,7 +15,6 @@ from octomate.tentacles.agent.inkling.tools import inkling_toolset
 __all__ = [
     "DeferredResolver",
     "InklingDeps",
-    "InklingOutput",
     "InklingState",
     "InklingTentacle",
     "ResolveDeferred",

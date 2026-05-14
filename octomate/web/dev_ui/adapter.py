@@ -3,8 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Literal
-from uuid import uuid4
+from typing import Any, ClassVar, Literal
 
 from fastapi.responses import StreamingResponse
 from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
@@ -16,25 +15,17 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
-from pydantic_ai.ui import OnCompleteFunc
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import RequestData
 from pydantic_ai.ui.vercel_ai.response_types import (
     BaseChunk,
     DataChunk,
-    TextDeltaChunk,
-    TextEndChunk,
-    TextStartChunk,
-    ToolInputDeltaChunk,
-    ToolInputAvailableChunk,
-    ToolInputStartChunk,
 )
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.tentacles.agent.inkling.graph import (
     InklingDeps,
-    InklingOutput,
     InklingState,
     ResumeTurn,
     StartTurn,
@@ -44,23 +35,6 @@ from octomate.tentacles.agent.inkling.graph import (
 logger = logging.getLogger(__name__)
 
 
-class OctomateVercelEventStream(VercelAIEventStream):
-    async def transform_stream(
-        self,
-        stream: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[InklingOutput]],
-        on_complete: OnCompleteFunc[BaseChunk] | None = None,
-    ) -> AsyncIterator[BaseChunk]:
-        async for chunk in super().transform_stream(stream, on_complete=on_complete):
-            if isinstance(chunk, ToolInputStartChunk | ToolInputDeltaChunk):
-                continue
-            if (
-                isinstance(chunk, ToolInputAvailableChunk)
-                and chunk.tool_name == "final_result"
-            ):
-                continue
-            yield chunk
-
-
 @dataclass
 class GraphAdapter:
     """Drive inkling_graph and let pydantic-ai handle Vercel UI protocol details."""
@@ -68,7 +42,7 @@ class GraphAdapter:
     SDK_VERSION: ClassVar[Literal[6]] = 6
 
     channel_id: str
-    agent: Agent[None, InklingOutput]
+    agent: Agent[None, Any]
     conversations: ConversationManager
     agent_id: str = "Inkling"
 
@@ -95,7 +69,7 @@ class GraphAdapter:
             deferred_tool_results=deferred,
         )
 
-        event_stream = OctomateVercelEventStream(
+        event_stream = VercelAIEventStream(
             body,
             sdk_version=self.SDK_VERSION,
         )
@@ -118,7 +92,7 @@ class GraphAdapter:
         history: Sequence[ModelMessage],
         user_prompt: str | Sequence[UserContent] | None,
         deferred: DeferredToolResults | None,
-    ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[InklingOutput]]:
+    ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]]:
         try:
             async for event in iter_inkling_graph_events(
                 self.start_node(user_prompt=user_prompt, deferred=deferred),
@@ -174,18 +148,8 @@ class GraphAdapter:
 
     @staticmethod
     async def complete_chunks(
-        result: AgentRunResult[InklingOutput],
+        result: AgentRunResult[Any],
     ) -> AsyncIterator[BaseChunk]:
-        if isinstance(result.output, list):
-            text = "\n\n".join(str(message) for message in result.output).strip()
-            if not text:
-                return
-            text_id = str(uuid4())
-            yield TextStartChunk(id=text_id)
-            yield TextDeltaChunk(id=text_id, delta=text)
-            yield TextEndChunk(id=text_id)
-            return
-
         if not isinstance(result.output, DeferredToolRequests):
             return
         for call in result.output.calls:

@@ -4,7 +4,13 @@ import json
 import logging
 import re
 import time
+from collections.abc import AsyncIterator
+from dataclasses import asdict, is_dataclass
 from typing import Any
+
+from pydantic import BaseModel
+from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
@@ -12,13 +18,15 @@ from octomate.schemas.segments import (
     AtSegment,
     ImageData,
     ImageSegment,
-    MarkdownSegment,
     MessageSegment,
     ReplySegment,
     TextSegment,
 )
-from octomate.tentacles.channel.base import PlatformMessage
-from octomate.tentacles.channel.slack.schema import SlackFileInfo, SlackMessageEvent
+from octomate.tentacles.channel.slack.schema import (
+    SlackFileInfo,
+    SlackMessageEvent,
+    SlackOutboundMessage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,48 +86,16 @@ class SlackChromo:
 
     async def squirt(
         self,
-        segments: list[MessageSegment],
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
         *,
         reply_to: str | None = None,
-    ) -> list[PlatformMessage]:
-        if not segments:
-            return []
-
-        result: list[PlatformMessage] = []
-        blocks: list[dict[str, Any]] = []
-        content_parts: list[str] = []
-
-        for seg in segments:
-            if isinstance(seg, (MarkdownSegment, TextSegment, AtSegment)):
-                if isinstance(seg, MarkdownSegment):
-                    text = _md_to_mrkdwn(seg.data["text"])
-                elif isinstance(seg, AtSegment):
-                    text = f"<@{seg.data.user_id}>"
-                else:
-                    text = seg.data["text"]
-                blocks.append(
-                    {"type": "section", "text": {"type": "mrkdwn", "text": text}}
-                )
-                content_parts.append(text)
-            elif isinstance(seg, ImageSegment) and seg.data.url:
-                blocks.append(
-                    {
-                        "type": "image",
-                        "image_url": seg.data.url,
-                        "alt_text": seg.data.summary or seg.data.name or "image",
-                    }
-                )
-                content_parts.append("[image]")
-
-        if blocks:
-            result.append(
-                PlatformMessage(
-                    msg_type="blocks",
-                    content=" ".join(content_parts),
-                    metadata={"blocks": blocks},
-                )
-            )
-        return result
+    ) -> AsyncIterator[SlackOutboundMessage]:
+        async for event in events:
+            if not isinstance(event, AgentRunResultEvent):
+                continue
+            text = self._render_result(event.result)
+            if text:
+                yield self._make_message(text)
 
     def _parse_segments(
         self,
@@ -157,3 +133,62 @@ class SlackChromo:
                 )
 
         return segments
+
+    def _render_result(self, result: AgentRunResult[Any]) -> str:
+        output = result.output
+        if isinstance(output, DeferredToolRequests):
+            return self._render_deferred(output)
+        if isinstance(output, str):
+            return output
+        if output is None:
+            return ""
+        return self._render_structured(output)
+
+    def _render_deferred(self, requests: DeferredToolRequests) -> str:
+        lines: list[str] = ["Deferred tool requests:"]
+        for call in requests.calls:
+            lines.append(
+                f"- `{call.tool_name}` needs input "
+                f"(`{call.tool_call_id}`): `{self._json_inline(call.args_as_dict())}`"
+            )
+        for call in requests.approvals:
+            lines.append(
+                f"- `{call.tool_name}` needs approval "
+                f"(`{call.tool_call_id}`): `{self._json_inline(call.args_as_dict())}`"
+            )
+        return "\n".join(lines)
+
+    def _render_structured(self, output: Any) -> str:
+        payload = json.dumps(_jsonable(output), ensure_ascii=False, indent=2)
+        return f"```json\n{payload}\n```"
+
+    def _json_inline(self, value: Any) -> str:
+        return json.dumps(_jsonable(value), ensure_ascii=False, default=str)
+
+    def _make_message(self, text: str) -> SlackOutboundMessage:
+        mrkdwn = _md_to_mrkdwn(text)
+        return SlackOutboundMessage(
+            text=text,
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": mrkdwn},
+                }
+            ],
+        )
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(item) for item in value]
+    try:
+        json.dumps(value)
+    except TypeError:
+        return str(value)
+    return value

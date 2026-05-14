@@ -5,22 +5,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from pydantic_ai import AgentRunResult, AgentRunResultEvent
+from pydantic_ai.messages import PartStartEvent, TextPart
 
-from octomate.schemas.actions import AgentMessage
 from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AtData,
     AtSegment,
     ImageSegment,
-    MessageSegment,
-    ReplySegment,
     TextSegment,
 )
 from octomate.tentacles.channel.base import (
     ChannelTentacle,
     DownloadedImage,
-    PlatformMessage,
 )
 
 
@@ -46,7 +44,7 @@ class FakeInk:
         default_factory=lambda: UserProfile(user_id="bot", name="Bot")
     )
     user_profiles: dict[str, UserProfile] = field(default_factory=dict)
-    sent: list[tuple[str, str, list[PlatformMessage], str | None, bool]] = field(
+    sent: list[tuple[str, str, list[Any], str | None, bool]] = field(
         default_factory=list
     )
 
@@ -73,7 +71,7 @@ class FakeInk:
         self,
         chat_id: str,
         chat_type: str,
-        messages: list[PlatformMessage],
+        messages: list[Any],
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None:
@@ -84,9 +82,7 @@ class FakeInk:
 @dataclass
 class FakeChromo:
     sip_calls: list[Any] = field(default_factory=list)
-    squirt_calls: list[tuple[list[MessageSegment], str | None]] = field(
-        default_factory=list
-    )
+    squirt_calls: list[str | None] = field(default_factory=list)
 
     async def sip(self, raw: Any) -> MessageEvent | None:
         self.sip_calls.append(raw)
@@ -102,16 +98,18 @@ class FakeChromo:
 
     async def squirt(
         self,
-        segments: list[MessageSegment],
+        events: AsyncIterator[Any],
         *,
         reply_to: str | None = None,
-    ) -> list[PlatformMessage]:
-        self.squirt_calls.append((list(segments), reply_to))
-        return [PlatformMessage(msg_type="text", content="".join(map(str, segments)))]
+    ) -> AsyncIterator[dict[str, str]]:
+        self.squirt_calls.append(reply_to)
+        async for event in events:
+            if isinstance(event, AgentRunResultEvent):
+                yield {"text": str(event.result.output)}
 
 
 class FakeChannelTentacle(ChannelTentacle):
-    sent: list[tuple[str, str, list[PlatformMessage], str | None, bool]]
+    sent: list[tuple[str, str, list[Any], str | None, bool]]
 
     def __init__(
         self,
@@ -199,7 +197,7 @@ async def test_group_mention_filter_ignores_unmentioned_events() -> None:
     assert octomate.kicks == []
 
 
-async def test_twitch_encodes_and_sends_platform_messages(
+async def test_emit_encodes_final_agent_result_and_sends_native_messages(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -208,19 +206,22 @@ async def test_twitch_encodes_and_sends_platform_messages(
         chat_id="alice",
         user_id="alice",
     )
-    message = AgentMessage(segments=[TextSegment(data={"text": "hi alice"})])
 
-    await channel.twitch(key, message)
+    async def events() -> AsyncIterator[Any]:
+        yield PartStartEvent(index=0, part=TextPart(content="ignored draft"))
+        yield AgentRunResultEvent(AgentRunResult("hi alice"))
+
+    await channel.emit(key, events())
 
     assert len(channel.sent) == 1
     chat_id, chat_type, messages, reply_to, _ = channel.sent[0]
     assert chat_id == "alice"
     assert chat_type == "private"
-    assert messages[0].content == "hi alice"
+    assert messages[0]["text"] == "hi alice"
     assert reply_to is None
 
 
-async def test_twitch_preserves_segments_after_reply_marker(
+async def test_emit_uses_conversation_thread_as_reply_target(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -228,22 +229,20 @@ async def test_twitch_preserves_segments_after_reply_marker(
         chat_type="group",
         chat_id="lobby",
         user_id="alice",
-    )
-    message = AgentMessage(
-        segments=[
-            ReplySegment(data={"id": "m1"}),
-            TextSegment(data={"text": "after reply"}),
-        ]
+        thread_id="m1",
     )
 
-    await channel.twitch(key, message)
+    async def events() -> AsyncIterator[Any]:
+        yield AgentRunResultEvent(AgentRunResult("after reply"))
+
+    await channel.emit(key, events())
 
     assert len(channel.sent) == 1
     assert channel.sent[0][3] == "m1"
-    assert channel.sent[0][2][0].content == "after reply"
+    assert channel.sent[0][2][0]["text"] == "after reply"
 
 
-async def test_wave_iterates_and_twitches_each_message(
+async def test_emit_text_uses_normal_adapter(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -253,12 +252,7 @@ async def test_wave_iterates_and_twitches_each_message(
         user_id="alice",
     )
 
-    async def messages() -> AsyncIterator[AgentMessage]:
-        for text in ("first", "second", "third"):
-            yield AgentMessage(segments=[TextSegment(data={"text": text})])
+    await channel.emit_text(key, "fallback")
 
-    await channel.wave(key, messages())
-
-    assert len(channel.sent) == 3
-    contents = [call[2][0].content for call in channel.sent]
-    assert contents == ["first", "second", "third"]
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "fallback"

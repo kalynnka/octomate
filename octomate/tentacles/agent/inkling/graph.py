@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Generic
 
 import anyio
 from anyio.abc import ObjectSendStream
@@ -26,20 +26,17 @@ from pydantic_ai.messages import (
     UserContent,
 )
 from pydantic_ai.models import KnownModelName, Model
-from pydantic_ai.output import OutputSpec
+from pydantic_ai.output import OutputDataT, OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.managers.conversations import ConversationManager
-from octomate.schemas.actions import AgentMessage
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelResponse
 from octomate.tentacles.agent.inkling.resolver import DeferredResolver
 
 logger = logging.getLogger(__name__)
-
-InklingOutput = list[AgentMessage] | DeferredToolRequests
 
 
 @dataclass
@@ -50,11 +47,11 @@ class InklingState:
 
 @dataclass
 class InklingDeps:
-    agent: Agent[None, InklingOutput]
+    agent: Agent[None, Any]
     conversation_manager: ConversationManager
-    event_send_stream: ObjectSendStream[
-        AgentStreamEvent | AgentRunResultEvent[InklingOutput]
-    ] | None = None
+    event_send_stream: (
+        ObjectSendStream[AgentStreamEvent | AgentRunResultEvent[Any]] | None
+    ) = None
     resolver: DeferredResolver | None = None
     output_type: OutputSpec[Any] | None = None
     model: Model | KnownModelName | str | None = None
@@ -77,8 +74,9 @@ class StartTurn(
     BaseNode[
         InklingState,
         InklingDeps,
-        AgentRunResult[InklingOutput],
-    ]
+        AgentRunResult[OutputDataT],
+    ],
+    Generic[OutputDataT],
 ):
     """Entry node: a new user message starts (or continues) a conversation.
 
@@ -92,10 +90,14 @@ class StartTurn(
 
     user_prompt: str | Sequence[UserContent] | None
 
-    async def run(self, ctx: GraphRunContext[InklingState, InklingDeps]) -> RunAgent:
-        if self.user_prompt is not None and (
-            abandoned := drop_trailing_deferral(ctx.state.message_history)
-        ) is not None:
+    async def run(
+        self, ctx: GraphRunContext[InklingState, InklingDeps]
+    ) -> RunAgent[OutputDataT]:
+        if (
+            self.user_prompt is not None
+            and (abandoned := drop_trailing_deferral(ctx.state.message_history))
+            is not None
+        ):
             # Drop the DB row too — otherwise the abandoned response
             # reappears mid-history on the next reload, past the reach
             # of `drop_trailing_deferral`.
@@ -112,14 +114,17 @@ class ResumeTurn(
     BaseNode[
         InklingState,
         InklingDeps,
-        AgentRunResult[InklingOutput],
-    ]
+        AgentRunResult[OutputDataT],
+    ],
+    Generic[OutputDataT],
 ):
     """Entry node: continue an in-flight run with resolved deferred-tool results."""
 
     deferred_results: DeferredToolResults
 
-    async def run(self, ctx: GraphRunContext[InklingState, InklingDeps]) -> RunAgent:
+    async def run(
+        self, ctx: GraphRunContext[InklingState, InklingDeps]
+    ) -> RunAgent[OutputDataT]:
         if not self.deferred_results.calls and not self.deferred_results.approvals:
             raise ValueError(
                 "ResumeTurn requires at least one resolved call or approval"
@@ -132,8 +137,9 @@ class RunAgent(
     BaseNode[
         InklingState,
         InklingDeps,
-        AgentRunResult[InklingOutput],
-    ]
+        AgentRunResult[OutputDataT],
+    ],
+    Generic[OutputDataT],
 ):
     """Runs one pydantic-ai turn and forwards raw stream events."""
 
@@ -142,7 +148,7 @@ class RunAgent(
 
     async def run(
         self, ctx: GraphRunContext[InklingState, InklingDeps]
-    ) -> ResolveDeferred | End[AgentRunResult[InklingOutput]]:
+    ) -> ResolveDeferred[OutputDataT] | End[AgentRunResult[OutputDataT]]:
         if ctx.deps.event_send_stream is None:
             result = await ctx.deps.agent.run(
                 self.user_prompt,
@@ -166,7 +172,7 @@ class RunAgent(
             )
             return await self.next_node(ctx, result)
 
-        result: AgentRunResult[InklingOutput] | None = None
+        result: AgentRunResult[OutputDataT] | None = None
         async with ctx.deps.agent.run_stream_events(
             user_prompt=self.user_prompt,
             output_type=ctx.deps.output_type,
@@ -202,9 +208,8 @@ class RunAgent(
     async def next_node(
         self,
         ctx: GraphRunContext[InklingState, InklingDeps],
-        result: AgentRunResult[InklingOutput],
-    ) -> ResolveDeferred | End[AgentRunResult[InklingOutput]]:
-
+        result: AgentRunResult[OutputDataT],
+    ) -> ResolveDeferred[OutputDataT] | End[AgentRunResult[OutputDataT]]:
         ctx.state.message_history = list(result.all_messages())
 
         if new_messages := result.new_messages():
@@ -226,12 +231,15 @@ class ResolveDeferred(
     BaseNode[
         InklingState,
         InklingDeps,
-        AgentRunResult[InklingOutput],
-    ]
+        AgentRunResult[OutputDataT],
+    ],
+    Generic[OutputDataT],
 ):
     requests: DeferredToolRequests
 
-    async def run(self, ctx: GraphRunContext[InklingState, InklingDeps]) -> RunAgent:
+    async def run(
+        self, ctx: GraphRunContext[InklingState, InklingDeps]
+    ) -> RunAgent[OutputDataT]:
         if ctx.deps.resolver is None:
             raise RuntimeError("ResolveDeferred requires an InklingDeps.resolver")
         return RunAgent(deferred_results=await ctx.deps.resolver.resolve(self.requests))
@@ -251,9 +259,9 @@ class ResolveDeferred(
 #   | Text final answer                | `ModelResponse(parts=[TextPart, ...])`        | no     |
 #   | Multi-step w/ a normal tool      | `ModelResponse(parts=[TextPart])` — the tool  | no     |
 #   |                                  | call/return live at [-3]/[-2]                 |        |
-#   | Structured output `final_result` | `ModelRequest(parts=[ToolReturnPart(          | no     |
-#   |                                  | final_result)])` — pydantic-ai synthesizes    |        |
-#   |                                  | the return after the output tool call         |        |
+#   | Structured output tool           | `ModelRequest(parts=[ToolReturnPart(...)])`   | no     |
+#   |                                  | pydantic-ai synthesizes the return after the  |        |
+#   |                                  | output tool call                              |        |
 #   | Deferred-tool abort              | `ModelResponse(parts=[ToolCallPart(...)])`    | YES    |
 #
 # Invariant pydantic-ai maintains: any tool call that was actually executed
@@ -262,9 +270,9 @@ class ResolveDeferred(
 # trailing element is if pydantic-ai chose not to execute it — i.e. deferred.
 #
 # Edge case to revisit if load-bearing: a single `ModelResponse` mixing a
-# `final_result` output-tool call with deferred tool calls. Current behavior
-# would drop it; whether that's right depends on whether the structured
-# output should be preserved.
+# structured output-tool call with deferred tool calls. Current behavior would
+# drop it; whether that's right depends on whether the structured output should
+# be preserved.
 def drop_trailing_deferral(history: list[ModelMessage]) -> ModelResponse | None:
     """Pop a trailing ModelResponse that ended on unresolved tool calls.
 
@@ -290,16 +298,16 @@ def drop_trailing_deferral(history: list[ModelMessage]) -> ModelResponse | None:
 
 
 async def iter_inkling_graph_events(
-    start_node: StartTurn | ResumeTurn,
+    start_node: StartTurn[OutputDataT] | ResumeTurn[OutputDataT],
     *,
     state: InklingState,
     deps: InklingDeps,
 ) -> AsyncGenerator[
-    AgentStreamEvent | AgentRunResultEvent[InklingOutput],
+    AgentStreamEvent | AgentRunResultEvent[OutputDataT],
     None,
 ]:
     send_stream, receive_stream = anyio.create_memory_object_stream[
-        AgentStreamEvent | AgentRunResultEvent[InklingOutput]
+        AgentStreamEvent | AgentRunResultEvent[OutputDataT]
     ](100)
     graph_deps = replace(deps, event_send_stream=send_stream)
 
@@ -321,7 +329,7 @@ async def iter_inkling_graph_events(
 inkling_graph = Graph[
     InklingState,
     InklingDeps,
-    AgentRunResult[InklingOutput],
+    AgentRunResult[Any],
 ](
     nodes=[StartTurn, ResumeTurn, RunAgent, ResolveDeferred],
     name="inkling",

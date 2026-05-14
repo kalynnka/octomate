@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
     AgentStreamEvent,
     ModelMessage,
     ModelResponse,
+    TextPart,
     ToolCallPart,
 )
 from pydantic_ai.models.function import (
@@ -29,9 +30,7 @@ from pydantic_ai.models.function import (
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.managers.conversations import ConversationManager
-from octomate.schemas.actions import AgentMessage
 from octomate.schemas.conversation import Conversation, ConversationKey
-from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
     InklingDeps,
@@ -55,20 +54,20 @@ class ScriptedTurn:
 
 @dataclass
 class ScriptedStream:
-    """FunctionModel stream callback: emits each scripted turn as a single delta."""
+    """FunctionModel stream callback: emits tool-call deltas or text output."""
 
-    turns: list[ScriptedTurn]
+    turns: list[ScriptedTurn | str]
     cursor: int = 0
     seen_output_tools: list[list[str]] = field(default_factory=list)
     __name__: str = "scripted_stream"
 
     def __call__(
         self, messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[DeltaToolCalls]:
+    ) -> AsyncIterator[str | DeltaToolCalls]:
         self.seen_output_tools.append([t.name for t in info.output_tools])
         turn = self.turns[self.cursor]
         self.cursor += 1
-        return _emit_single_tool_call(turn)
+        return _emit_scripted_turn(turn)
 
 
 @dataclass
@@ -100,9 +99,12 @@ class FakeConversationManager(ConversationManager):
         self.discarded.append(message)
 
 
-async def _emit_single_tool_call(
-    turn: ScriptedTurn,
-) -> AsyncIterator[DeltaToolCalls]:
+async def _emit_scripted_turn(
+    turn: ScriptedTurn | str,
+) -> AsyncIterator[str | DeltaToolCalls]:
+    if isinstance(turn, str):
+        yield turn
+        return
     yield {
         0: DeltaToolCall(
             name=turn.tool_name,
@@ -112,53 +114,31 @@ async def _emit_single_tool_call(
     }
 
 
-def _final_result_args() -> dict[str, Any]:
-    """Args for the synthetic `final_result` output tool wrapping list[AgentMessage].
-
-    pydantic-ai wraps non-model-like output types as `{"response": <value>}`.
-    """
-    return {
-        "response": [
-            AgentMessage(
-                segments=[TextSegment(data={"text": "all done!"})]
-            ).model_dump()
-        ]
-    }
-
-
 def _build_test_agent(
-    turns: list[ScriptedTurn],
+    turns: list[ScriptedTurn | str],
 ) -> tuple[Agent[None, Any], ScriptedStream]:
     script = ScriptedStream(turns=turns)
     agent: Agent[None, Any] = Agent(
         FunctionModel(stream_function=script, model_name="scripted"),
         deps_type=type(None),
-        output_type=[list[AgentMessage], DeferredToolRequests],
+        output_type=[str, DeferredToolRequests],
         toolsets=[inkling_toolset],
         system_prompt=SYSTEM_PROMPT,
     )
     return agent, script
 
 
-def _build_non_stream_agent(turn: ScriptedTurn) -> Agent[None, Any]:
+def _build_non_stream_agent() -> Agent[None, Any]:
     def respond(
         messages: list[ModelMessage],
         info: AgentInfo,
     ) -> ModelResponse:
-        return ModelResponse(
-            parts=[
-                ToolCallPart(
-                    tool_name=turn.tool_name,
-                    args=turn.args,
-                    tool_call_id=turn.tool_call_id,
-                )
-            ]
-        )
+        return ModelResponse(parts=[TextPart(content="all done!")])
 
     return Agent(
         FunctionModel(function=respond, model_name="scripted"),
         deps_type=type(None),
-        output_type=[list[AgentMessage], DeferredToolRequests],
+        output_type=[str, DeferredToolRequests],
         toolsets=[inkling_toolset],
         system_prompt=SYSTEM_PROMPT,
     )
@@ -190,11 +170,7 @@ async def test_inkling_loop_resolves_deferred_calls() -> None:
                 args={"question": "what's your name?"},
                 tool_call_id="call_ask_1",
             ),
-            ScriptedTurn(
-                tool_name="final_result",
-                args=_final_result_args(),
-                tool_call_id="call_final_1",
-            ),
+            "all done!",
         ]
     )
 
@@ -215,10 +191,7 @@ async def test_inkling_loop_resolves_deferred_calls() -> None:
     result = result_events[-1].result
 
     output = result.output
-    assert isinstance(output, list)
-    assert len(output) == 1
-    assert isinstance(output[0], AgentMessage)
-    assert str(output[0]) == "all done!"
+    assert output == "all done!"
 
     assert captured_events, "graph output should stream pydantic events"
 
@@ -229,11 +202,7 @@ async def test_inkling_loop_resolves_deferred_calls() -> None:
 async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
     agent, script = _build_test_agent(
         [
-            ScriptedTurn(
-                tool_name="final_result",
-                args=_final_result_args(),
-                tool_call_id="call_final_stream",
-            )
+            "all done!",
         ]
     )
     tentacle = InklingTentacle(
@@ -253,20 +222,14 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
         event for event in captured_events if isinstance(event, AgentRunResultEvent)
     ]
     assert result_events
-    assert isinstance(result_events[-1].result.output, list)
+    assert result_events[-1].result.output == "all done!"
     assert script.cursor == 1
 
 
 async def test_inkling_loop_handles_immediate_final_response() -> None:
     """If the model finalizes immediately, the loop ends after one RunAgent step."""
 
-    agent = _build_non_stream_agent(
-        ScriptedTurn(
-            tool_name="final_result",
-            args=_final_result_args(),
-            tool_call_id="call_final_immediate",
-        )
-    )
+    agent = _build_non_stream_agent()
 
     deps = InklingDeps(
         agent=agent,
@@ -279,7 +242,7 @@ async def test_inkling_loop_handles_immediate_final_response() -> None:
         deps=deps,
     )
 
-    assert isinstance(result.output.output, list)
+    assert result.output.output == "all done!"
 
 
 async def test_stub_resolver_round_trips_calls_and_approvals() -> None:

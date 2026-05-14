@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from dataclasses import dataclass
+from typing import Any, Literal, TypedDict
 
 from pydantic import Field
 
@@ -24,6 +25,12 @@ class SlackMessageEvent(TypedDict, total=False):
     thread_ts: str
     text: str
     files: list[SlackFileInfo]
+
+
+@dataclass(frozen=True)
+class SlackOutboundMessage:
+    text: str
+    blocks: list[dict[str, Any]] | None = None
 
 
 class SlackUserProfile(UserProfile):

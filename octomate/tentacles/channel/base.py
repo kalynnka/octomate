@@ -3,21 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 import anyio
+from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from uuid_utils import uuid7
 
-from octomate.schemas.actions import AgentMessage
 from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import (
-    ImageSegment,
-    MessageSegment,
-    ReplySegment,
-)
+from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.base import Tentacle
 from octomate.utils import guess_image_ext
 
@@ -25,13 +21,6 @@ if TYPE_CHECKING:
     from octomate.base import Octomate
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class PlatformMessage:
-    msg_type: str
-    content: str
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -48,12 +37,12 @@ class Chromo(Protocol):
 
     async def sip(self, raw: Any) -> MessageEvent | None: ...
 
-    async def squirt(
+    def squirt(
         self,
-        segments: list[MessageSegment],
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
         *,
         reply_to: str | None = None,
-    ) -> list[PlatformMessage]: ...
+    ) -> AsyncIterator[Any]: ...
 
 
 @runtime_checkable
@@ -78,7 +67,7 @@ class Ink(Protocol):
         self,
         chat_id: str,
         chat_type: str,
-        messages: list[PlatformMessage],
+        messages: list[Any],
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None:
@@ -160,47 +149,32 @@ class ChannelTentacle(Tentacle):
         except Exception:
             logger.exception("Channel %s: error in ingest", self.id)
 
-    async def twitch(self, key: ConversationKey, message: AgentMessage) -> None:
-        """Send one finalized message to the platform."""
-        await self.emerge(message.segments)
+    async def emit(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+    ) -> None:
+        """Send pydantic-ai stream events/results to the platform."""
         chat_id = key.chat_id or key.user_id
         chat_type = key.chat_type
         reply_to: str | None = key.thread_id or None
-        segments: list[MessageSegment] = []
+        async for message in self.chromo.squirt(events, reply_to=reply_to):
+            await self.ink.send_message(
+                chat_id,
+                chat_type,
+                [message],
+                reply_to,
+            )
 
-        for seg in message.segments:
-            if isinstance(seg, ReplySegment):
-                if segments:
-                    messages = await self.chromo.squirt(segments, reply_to=reply_to)
-                    if messages:
-                        await self.ink.send_message(
-                            chat_id,
-                            chat_type,
-                            messages,
-                            reply_to,
-                        )
-                    segments = []
-                reply_to = seg.data["id"]
-                continue
-            segments.append(seg)
+    async def emit_text(self, key: ConversationKey, text: str) -> None:
+        """Emit a synthetic text result through the normal channel adapter."""
 
-        if segments:
-            messages = await self.chromo.squirt(segments, reply_to=reply_to)
-            if messages:
-                await self.ink.send_message(
-                    chat_id,
-                    chat_type,
-                    messages,
-                    reply_to,
-                )
+        async def events() -> AsyncIterator[
+            AgentStreamEvent | AgentRunResultEvent[Any]
+        ]:
+            yield AgentRunResultEvent(AgentRunResult(text))
 
-    async def wave(
-        self,
-        key: ConversationKey,
-        messages: AsyncIterator[AgentMessage],
-    ) -> None:
-        async for message in messages:
-            await self.twitch(key, message)
+        await self.emit(key, events())
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
         cached = self.user_profiles.get(user_id)
@@ -221,11 +195,6 @@ class ChannelTentacle(Tentacle):
             for seg in pending:
                 tg.create_task(self.absorb(seg, save, message_id))
 
-    async def emerge(self, segments: list[MessageSegment]) -> None:
-        for seg in segments:
-            if isinstance(seg, ImageSegment):
-                await self.secrete(seg)
-
     async def absorb(self, seg: ImageSegment, save_dir: Path, message_id: str) -> None:
         """Download one inbound image to save_dir and rewrite seg.data.file."""
         try:
@@ -242,20 +211,6 @@ class ChannelTentacle(Tentacle):
             logger.warning(
                 "Channel %s: failed to download image", self.id, exc_info=True
             )
-
-    async def secrete(self, seg: ImageSegment) -> None:
-        """Prepare one outbound image for platform sending."""
-        apath = anyio.Path(seg.data.path)
-        if not await apath.exists():
-            logger.warning("Channel %s: image file not found: %s", self.id, apath)
-            return
-        try:
-            data = await apath.read_bytes()
-            url = await self.ink.upload_media(data)
-            if url:
-                seg.data.url = url
-        except Exception:
-            logger.warning("Channel %s: failed to upload image", self.id, exc_info=True)
 
     def den(self, event: MessageEvent) -> Path:
         subdir = event.chat_id if event.chat_type == "group" else event.user_id

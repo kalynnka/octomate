@@ -7,14 +7,11 @@ from dataclasses import dataclass, field
 
 import anyio
 from fastapi import APIRouter, FastAPI, Request, Response
-from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.managers.conversations import ConversationManager
-from octomate.schemas.actions import AgentMessage
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.channel.base import ChannelTentacle
 
@@ -81,33 +78,17 @@ class Octomate:
                 user_prompt = "\n\n".join(str(event) for event in contents).strip()
                 if not user_prompt:
                     return
-                result = await agent_tentacle.run(
+                async with agent_tentacle.run_stream_events(
                     user_prompt,
                     conversation_key=key,
                     message_history=list(conversation.messages),
-                )
-                if new_messages := result.new_messages():
-                    await self.conversations.record_agent_run(
-                        conversation,
-                        run_id=result.run_id,
-                        messages=new_messages,
-                    )
-                if isinstance(result.output, DeferredToolRequests):
-                    return
-                if not isinstance(result.output, list):
-                    return
-                for message in result.output:
-                    await channel.twitch(key, message)
+                ) as events:
+                    await channel.emit(key, events)
             except Exception as exc:
                 logger.exception(
                     "Agent %s failed while handling %s", resolved_agent_id, key
                 )
-                await channel.twitch(
-                    key,
-                    AgentMessage(
-                        segments=[TextSegment(data={"text": f"Agent error: {exc}"})]
-                    ),
-                )
+                await channel.emit_text(key, f"Agent error: {exc}")
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
         @asynccontextmanager
