@@ -83,12 +83,16 @@ class Octomate:
                     conversation_key=key,
                     message_history=list(conversation.messages),
                 ) as events:
-                    await channel.emit(key, events)
+                    await channel.respond(key, events, source_events=contents)
             except Exception as exc:
                 logger.exception(
                     "Agent %s failed while handling %s", resolved_agent_id, key
                 )
-                await channel.emit_text(key, f"Agent error: {exc}")
+                await channel.respond_text(
+                    key,
+                    f"Agent error: {exc}",
+                    source_events=contents,
+                )
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
         @asynccontextmanager

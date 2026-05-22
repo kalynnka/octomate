@@ -2,24 +2,31 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import cast
 
 import pytest
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
-from pydantic_ai.messages import PartStartEvent, TextPart
+from pydantic_ai.messages import AgentStreamEvent, PartStartEvent, TextPart
 
+from octomate import Octomate
 from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AtData,
     AtSegment,
     ImageSegment,
+    MessageSegment,
     TextSegment,
 )
 from octomate.tentacles.channel.base import (
     ChannelTentacle,
+    Chromo,
     DownloadedImage,
+    Ink,
 )
+
+NativeMessage = dict[str, str]
+ChannelEvent = AgentStreamEvent | AgentRunResultEvent[str]
 
 
 @dataclass
@@ -44,7 +51,7 @@ class FakeInk:
         default_factory=lambda: UserProfile(user_id="bot", name="Bot")
     )
     user_profiles: dict[str, UserProfile] = field(default_factory=dict)
-    sent: list[tuple[str, str, list[Any], str | None, bool]] = field(
+    sent: list[tuple[str, str, list[NativeMessage], str | None, bool]] = field(
         default_factory=list
     )
 
@@ -71,7 +78,7 @@ class FakeInk:
         self,
         chat_id: str,
         chat_type: str,
-        messages: list[Any],
+        messages: list[NativeMessage],
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None:
@@ -81,27 +88,31 @@ class FakeInk:
 
 @dataclass
 class FakeChromo:
-    sip_calls: list[Any] = field(default_factory=list)
+    sip_calls: list[object] = field(default_factory=list)
     squirt_calls: list[str | None] = field(default_factory=list)
 
-    async def sip(self, raw: Any) -> MessageEvent | None:
+    async def sip(self, raw: object) -> MessageEvent | None:
         self.sip_calls.append(raw)
         if not isinstance(raw, dict):
             return None
+        data = cast(dict[str, object], raw)
+        chat_type = data.get("chat_type", "private")
+        if chat_type not in ("private", "group"):
+            chat_type = "private"
         return MessageEvent(
-            message_id=raw.get("message_id", "m1"),
-            user_id=raw.get("user_id", "u1"),
-            chat_id=raw.get("chat_id", "c1"),
-            chat_type=raw.get("chat_type", "private"),
-            segments=raw.get("segments", []),
+            message_id=str(data.get("message_id", "m1")),
+            user_id=str(data.get("user_id", "u1")),
+            chat_id=str(data.get("chat_id", "c1")),
+            chat_type=chat_type,
+            segments=cast(list[MessageSegment], data.get("segments", [])),
         )
 
     async def squirt(
         self,
-        events: AsyncIterator[Any],
+        events: AsyncIterator[ChannelEvent],
         *,
         reply_to: str | None = None,
-    ) -> AsyncIterator[dict[str, str]]:
+    ) -> AsyncIterator[NativeMessage]:
         self.squirt_calls.append(reply_to)
         async for event in events:
             if isinstance(event, AgentRunResultEvent):
@@ -109,7 +120,7 @@ class FakeChromo:
 
 
 class FakeChannelTentacle(ChannelTentacle):
-    sent: list[tuple[str, str, list[Any], str | None, bool]]
+    sent: list[tuple[str, str, list[NativeMessage], str | None, bool]]
 
     def __init__(
         self,
@@ -122,9 +133,9 @@ class FakeChannelTentacle(ChannelTentacle):
     ) -> None:
         super().__init__(
             id=id,
-            octomate=octomate,
-            ink=ink,
-            chromo=chromo,
+            octomate=cast(Octomate, octomate),
+            ink=cast(Ink, ink),
+            chromo=cast(Chromo, chromo),
             agent_id="inkling",
             mention_only=mention_only,
         )
@@ -197,7 +208,7 @@ async def test_group_mention_filter_ignores_unmentioned_events() -> None:
     assert octomate.kicks == []
 
 
-async def test_emit_encodes_final_agent_result_and_sends_native_messages(
+async def test_respond_encodes_final_agent_result_and_sends_native_messages(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -207,11 +218,11 @@ async def test_emit_encodes_final_agent_result_and_sends_native_messages(
         user_id="alice",
     )
 
-    async def events() -> AsyncIterator[Any]:
+    async def events() -> AsyncIterator[ChannelEvent]:
         yield PartStartEvent(index=0, part=TextPart(content="ignored draft"))
         yield AgentRunResultEvent(AgentRunResult("hi alice"))
 
-    await channel.emit(key, events())
+    await channel.respond(key, events())
 
     assert len(channel.sent) == 1
     chat_id, chat_type, messages, reply_to, _ = channel.sent[0]
@@ -221,7 +232,7 @@ async def test_emit_encodes_final_agent_result_and_sends_native_messages(
     assert reply_to is None
 
 
-async def test_emit_uses_conversation_thread_as_reply_target(
+async def test_respond_uses_conversation_thread_as_reply_target(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -232,17 +243,17 @@ async def test_emit_uses_conversation_thread_as_reply_target(
         thread_id="m1",
     )
 
-    async def events() -> AsyncIterator[Any]:
+    async def events() -> AsyncIterator[ChannelEvent]:
         yield AgentRunResultEvent(AgentRunResult("after reply"))
 
-    await channel.emit(key, events())
+    await channel.respond(key, events())
 
     assert len(channel.sent) == 1
     assert channel.sent[0][3] == "m1"
     assert channel.sent[0][2][0]["text"] == "after reply"
 
 
-async def test_emit_text_uses_normal_adapter(
+async def test_respond_text_uses_normal_adapter(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -252,7 +263,7 @@ async def test_emit_text_uses_normal_adapter(
         user_id="alice",
     )
 
-    await channel.emit_text(key, "fallback")
+    await channel.respond_text(key, "fallback")
 
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "fallback"

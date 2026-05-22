@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any
 
 from pydantic_ai import Agent, AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -42,13 +41,16 @@ from octomate.tentacles.agent.inkling import (
 )
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 
+InklingTestOutput = str | DeferredToolRequests
+InklingTestEvent = AgentStreamEvent | AgentRunResultEvent[InklingTestOutput]
+
 
 @dataclass
 class ScriptedTurn:
     """One turn of the conversation: one tool call to emit as a streamed delta."""
 
     tool_name: str
-    args: dict[str, Any]
+    args: dict[str, object]
     tool_call_id: str
 
 
@@ -116,9 +118,9 @@ async def _emit_scripted_turn(
 
 def _build_test_agent(
     turns: list[ScriptedTurn | str],
-) -> tuple[Agent[None, Any], ScriptedStream]:
+) -> tuple[Agent[None, InklingTestOutput], ScriptedStream]:
     script = ScriptedStream(turns=turns)
-    agent: Agent[None, Any] = Agent(
+    agent: Agent[None, InklingTestOutput] = Agent(
         FunctionModel(stream_function=script, model_name="scripted"),
         deps_type=type(None),
         output_type=[str, DeferredToolRequests],
@@ -128,7 +130,7 @@ def _build_test_agent(
     return agent, script
 
 
-def _build_non_stream_agent() -> Agent[None, Any]:
+def _build_non_stream_agent() -> Agent[None, InklingTestOutput]:
     def respond(
         messages: list[ModelMessage],
         info: AgentInfo,
@@ -174,7 +176,7 @@ async def test_inkling_loop_resolves_deferred_calls() -> None:
         ]
     )
 
-    captured_events: list[AgentStreamEvent | AgentRunResultEvent[Any]] = []
+    captured_events: list[InklingTestEvent] = []
     conversations = FakeConversationManager()
     tentacle = InklingTentacle(agent=agent, conversation_manager=conversations)
     async with tentacle.run_stream_events(
@@ -210,7 +212,7 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
         conversation_manager=FakeConversationManager(),
     )
 
-    captured_events: list[AgentStreamEvent | AgentRunResultEvent[Any]] = []
+    captured_events: list[InklingTestEvent] = []
     async with tentacle.run_stream_events(
         "hi octomate",
         conversation_key=_test_conversation_key(),

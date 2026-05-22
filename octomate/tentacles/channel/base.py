@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,70 @@ class DownloadedImage:
     file_name: str
     content_type: str = ""
     url: str | None = None
+
+
+@dataclass(frozen=True)
+class MarkdownChunker:
+    DEFAULT_LIMIT: ClassVar[int] = 12_000
+
+    limit: int = DEFAULT_LIMIT
+    natural_min_size: int | None = None
+
+    @property
+    def effective_natural_min_size(self) -> int:
+        if self.natural_min_size is not None:
+            return self.natural_min_size
+        return self.limit // 2
+
+    def chunk(self, text: str) -> list[str]:
+        if not text:
+            return [""]
+
+        chunks: list[str] = []
+        remaining = text
+        while len(remaining) > self.limit:
+            split_at = self.split_index(remaining)
+            chunks.append(remaining[:split_at])
+            remaining = remaining[split_at:]
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
+    def split_index(self, text: str) -> int:
+        for boundary in (
+            self.last_separator_boundary(text, "\n\n"),
+            self.last_separator_boundary(text, "\n"),
+            self.last_sentence_boundary(text),
+            self.last_whitespace_boundary(text),
+        ):
+            if boundary >= self.effective_natural_min_size:
+                return boundary
+
+        return self.last_whitespace_boundary(text) or self.limit
+
+    def last_separator_boundary(self, text: str, separator: str) -> int:
+        boundary = 0
+        start = 0
+        while True:
+            index = text.find(separator, start, self.limit)
+            if index < 0:
+                return boundary
+            candidate = index + len(separator)
+            if candidate <= self.limit:
+                boundary = candidate
+            start = index + len(separator)
+
+    def last_sentence_boundary(self, text: str) -> int:
+        boundary = 0
+        for match in re.finditer(r'[.!?][)"\']?\s+', text[: self.limit]):
+            boundary = match.end()
+        return boundary
+
+    def last_whitespace_boundary(self, text: str) -> int:
+        boundary = 0
+        for match in re.finditer(r"\s+", text[: self.limit]):
+            boundary = match.end()
+        return boundary
 
 
 @runtime_checkable
@@ -149,12 +214,14 @@ class ChannelTentacle(Tentacle):
         except Exception:
             logger.exception("Channel %s: error in ingest", self.id)
 
-    async def emit(
+    async def respond(
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        *,
+        source_events: list[MessageEvent] | None = None,
     ) -> None:
-        """Send pydantic-ai stream events/results to the platform."""
+        """Respond to a conversation with pydantic-ai stream events/results."""
         chat_id = key.chat_id or key.user_id
         chat_type = key.chat_type
         reply_to: str | None = key.thread_id or None
@@ -166,15 +233,21 @@ class ChannelTentacle(Tentacle):
                 reply_to,
             )
 
-    async def emit_text(self, key: ConversationKey, text: str) -> None:
-        """Emit a synthetic text result through the normal channel adapter."""
+    async def respond_text(
+        self,
+        key: ConversationKey,
+        text: str,
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> None:
+        """Respond with synthetic text through the normal channel adapter."""
 
         async def events() -> AsyncIterator[
             AgentStreamEvent | AgentRunResultEvent[Any]
         ]:
             yield AgentRunResultEvent(AgentRunResult(text))
 
-        await self.emit(key, events())
+        await self.respond(key, events(), source_events=source_events)
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
         cached = self.user_profiles.get(user_id)

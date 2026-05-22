@@ -18,6 +18,7 @@
 1. Class attributes should be explicitly defined with proper type hints. Use `ClassVar` for class variables.
 2. Do not leave Python type hint warnings or type checker errors. Always satisfy the configured type checker.
 3. Avoid `typing.Any`. Prefer concrete types, `object` with runtime narrowing, or narrow `Protocol` contracts. If an external payload is genuinely dynamic, keep `Any` at the boundary and validate it into typed data before passing it deeper.
+4. Prefer precise collection types in annotations when the runtime shape is known (`list[T]` or `tuple[...]`) instead of broad abstractions like `Sequence[T]`; this also keeps Pydantic validation cheaper and clearer.
 
 ## Persistence
 

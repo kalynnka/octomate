@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING, Any
 
 from pydantic import SecretStr
+from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
+from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.events import MessageEvent
 from octomate.tentacles.channel.base import ChannelTentacle
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
@@ -76,3 +80,47 @@ class SlackTentacle(ChannelTentacle):
         if event.get("bot_id") or event.get("user") == self.profile.user_id:
             return
         await self.ingest(event)
+
+    async def respond(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> None:
+        context = self.chromo.thread_context(key, source_events)
+        if not context.thread_ts:
+            await super().respond(key, events, source_events=source_events)
+            return
+
+        channel = key.chat_id or key.user_id
+        final_text = ""
+
+        try:
+            async with self.ink.open_stream(
+                channel,
+                context.thread_ts,
+                recipient_user_id=context.recipient_user_id,
+                recipient_team_id=context.recipient_team_id,
+            ) as stream:
+                async for event in events:
+                    delta = self.chromo.render_stream_delta(event)
+                    if delta:
+                        await stream.append(delta)
+
+                    if isinstance(event, AgentRunResultEvent):
+                        final_text = self.chromo.render_result(event.result)
+                        stream.final_markdown_text = final_text
+        except Exception:
+            logger.warning(
+                "Channel %s: failed to stream Slack response",
+                self.id,
+                exc_info=True,
+            )
+            if final_text:
+                await self.ink.send_message(
+                    channel,
+                    key.chat_type,
+                    [self.chromo.make_message(final_text)],
+                    context.thread_ts,
+                )

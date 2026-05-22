@@ -1,45 +1,54 @@
 from __future__ import annotations
 
 import logging
-import textwrap
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from pydantic import SecretStr
+from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.client import WebClient
 
 from octomate.schemas.segments import ImageSegment
-from octomate.tentacles.channel.base import DownloadedImage
+from octomate.tentacles.channel.base import DownloadedImage, MarkdownChunker
 from octomate.tentacles.channel.slack.schema import (
     SlackOutboundMessage,
+    SlackPostMessageKwargs,
     SlackUserProfile,
 )
 
 logger = logging.getLogger(__name__)
 
-BLOCK_TEXT_LIMIT = 3000
-MAX_BLOCKS = 50
+
+STREAM_BUFFER_SIZE = 1024
+LONG_MARKDOWN_FILENAME = "octomate-response.md"
+LONG_MARKDOWN_NOTE = (
+    "Response was too long for a Slack message, so I uploaded it as a Markdown file."
+)
+
+SLACK_MARKDOWN_TEXT_LIMIT = 12_000
+SLACK_MARKDOWN_CHUNKER = MarkdownChunker(limit=SLACK_MARKDOWN_TEXT_LIMIT)
 
 
-def _split_oversized_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for block in blocks:
-        text_obj = block.get("text") if block.get("type") == "section" else None
-        if isinstance(text_obj, dict):
-            content = text_obj.get("text", "")
-            if len(content) > BLOCK_TEXT_LIMIT:
-                text_type = text_obj.get("type", "mrkdwn")
-                result.extend(
-                    {
-                        "type": "section",
-                        "text": {"type": text_type, "text": chunk},
-                    }
-                    for chunk in textwrap.wrap(content, BLOCK_TEXT_LIMIT)
-                )
-                continue
-        result.append(block)
-    return result
+@dataclass
+class SlackStreamSession:
+    ink: SlackInk
+    stream: AsyncChatStream
+    appended: bool = False
+    final_markdown_text: str = ""
+
+    async def append(self, markdown_text: str) -> None:
+        self.appended = True
+        await self.ink.append_stream(self.stream, markdown_text)
+
+    async def close(self) -> str | None:
+        markdown_text = None
+        if not self.appended and self.final_markdown_text:
+            markdown_text = self.final_markdown_text
+        return await self.ink.stop_stream(self.stream, markdown_text=markdown_text)
 
 
 class SlackInk:
@@ -135,20 +144,22 @@ class SlackInk:
         thread_ts = reply_to
         for msg in messages:
             try:
-                blocks = msg.blocks
-                all_blocks = _split_oversized_blocks(blocks) if blocks else None
-                batches = (
-                    [
-                        all_blocks[i : i + MAX_BLOCKS]
-                        for i in range(0, len(all_blocks), MAX_BLOCKS)
-                    ]
-                    if all_blocks
-                    else [None]
-                )
-                for batch in batches:
-                    kwargs: dict[str, Any] = {"channel": chat_id, "text": msg.text}
-                    if batch:
-                        kwargs["blocks"] = batch
+                markdown_text = msg.markdown_text or msg.text
+                if len(markdown_text) > SLACK_MARKDOWN_TEXT_LIMIT:
+                    result = await self.upload_markdown_file(
+                        channel=chat_id,
+                        markdown_text=markdown_text,
+                        thread_ts=thread_ts,
+                    )
+                    first_msg_id = first_msg_id or result
+                else:
+                    kwargs: SlackPostMessageKwargs = {
+                        "channel": chat_id,
+                        "text": msg.text,
+                        "markdown_text": markdown_text,
+                    }
+                    if msg.blocks:
+                        kwargs["blocks"] = msg.blocks
                     if thread_ts:
                         kwargs["thread_ts"] = thread_ts
                     resp = await self.client.chat_postMessage(**kwargs)
@@ -158,6 +169,113 @@ class SlackInk:
             if not reply_in_thread:
                 thread_ts = None
         return first_msg_id
+
+    async def start_stream(
+        self,
+        channel: str,
+        thread_ts: str,
+        *,
+        recipient_user_id: str | None = None,
+        recipient_team_id: str | None = None,
+    ) -> AsyncChatStream:
+        return await self.client.chat_stream(
+            buffer_size=STREAM_BUFFER_SIZE,
+            channel=channel,
+            thread_ts=thread_ts,
+            recipient_user_id=recipient_user_id,
+            recipient_team_id=recipient_team_id,
+        )
+
+    async def append_stream(
+        self,
+        stream: AsyncChatStream,
+        markdown_text: str,
+    ) -> None:
+        for chunk in SLACK_MARKDOWN_CHUNKER.chunk(markdown_text):
+            await stream.append(markdown_text=chunk)
+
+    @asynccontextmanager
+    async def open_stream(
+        self,
+        channel: str,
+        thread_ts: str,
+        *,
+        recipient_user_id: str | None = None,
+        recipient_team_id: str | None = None,
+    ) -> AsyncIterator[SlackStreamSession]:
+        stream = await self.start_stream(
+            channel,
+            thread_ts,
+            recipient_user_id=recipient_user_id,
+            recipient_team_id=recipient_team_id,
+        )
+        session = SlackStreamSession(ink=self, stream=stream)
+        try:
+            yield session
+        finally:
+            try:
+                await session.close()
+            except Exception:
+                logger.warning("SlackInk: failed to stop stream", exc_info=True)
+
+    async def stop_stream(
+        self,
+        stream: AsyncChatStream,
+        *,
+        markdown_text: str | None = None,
+    ) -> str | None:
+        if markdown_text and len(markdown_text) > SLACK_MARKDOWN_TEXT_LIMIT:
+            await self.append_stream(stream, markdown_text)
+            markdown_text = None
+        resp = await stream.stop(markdown_text=markdown_text)
+        return resp.get("ts")
+
+    async def stream_markdown(
+        self,
+        channel: str,
+        thread_ts: str,
+        markdown_text: str,
+        *,
+        recipient_user_id: str | None = None,
+        recipient_team_id: str | None = None,
+    ) -> str | None:
+        if len(markdown_text) > SLACK_MARKDOWN_TEXT_LIMIT:
+            return await self.upload_markdown_file(
+                channel=channel,
+                markdown_text=markdown_text,
+                thread_ts=thread_ts,
+            )
+        stream = await self.start_stream(
+            channel,
+            thread_ts,
+            recipient_user_id=recipient_user_id,
+            recipient_team_id=recipient_team_id,
+        )
+        return await self.stop_stream(stream, markdown_text=markdown_text)
+
+    async def upload_markdown_file(
+        self,
+        *,
+        channel: str,
+        markdown_text: str,
+        thread_ts: str | None = None,
+        filename: str = LONG_MARKDOWN_FILENAME,
+    ) -> str | None:
+        resp = await self.client.files_upload_v2(
+            channel=channel,
+            content=markdown_text,
+            filename=filename,
+            title="Octomate response",
+            snippet_type="markdown",
+            initial_comment=LONG_MARKDOWN_NOTE,
+            thread_ts=thread_ts,
+        )
+        file_info = resp.get("file", {})
+        return (
+            file_info.get("permalink")
+            or file_info.get("url_private")
+            or resp.get("file_id")
+        )
 
     async def update_message(
         self,
@@ -173,7 +291,7 @@ class SlackInk:
                 "text": text,
             }
             if blocks:
-                kwargs["blocks"] = _split_oversized_blocks(blocks)[:MAX_BLOCKS]
+                kwargs["blocks"] = blocks
             await self.client.chat_update(**kwargs)
             return True
         except Exception:

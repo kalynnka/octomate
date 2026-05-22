@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import cast
 
 import pytest
 from pydantic_ai import AgentEventStream, AgentRunResult, AgentRunResultEvent
-from pydantic_ai.messages import ModelMessage, UserContent
-from pydantic_ai.result import StreamedRunResult
-from pydantic_ai.tools import DeferredToolResults
+from pydantic_ai.messages import AgentStreamEvent, ModelMessage, UserContent
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -20,10 +17,11 @@ import octomate.database as database
 from octomate import Octomate
 from octomate.models import Base
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.channel.base import ChannelTentacle
 
 
 @pytest.fixture(autouse=True)
@@ -52,34 +50,12 @@ async def _in_memory_engine(
 
 
 @dataclass
-class FakeAgent(AgentTentacle):
+class FakeAgent:
+    id: str = "inkling"
+    octomate: Octomate | None = None
     turns: list[
         tuple[str | Sequence[UserContent] | None, list[ModelMessage], ConversationKey]
     ] = field(default_factory=list)
-
-    async def run(
-        self,
-        user_prompt: str | Sequence[UserContent] | None = None,
-        *,
-        conversation_key: ConversationKey,
-        message_history: Sequence[ModelMessage] | None = None,
-        deferred_tool_results: DeferredToolResults | None = None,
-        **kwargs: Any,
-    ) -> AgentRunResult[Any]:
-        self.turns.append((user_prompt, list(message_history or []), conversation_key))
-        return AgentRunResult("handled")
-
-    @asynccontextmanager
-    async def run_stream(
-        self,
-        user_prompt: str | Sequence[UserContent] | None = None,
-        *,
-        conversation_key: ConversationKey,
-        **kwargs: Any,
-    ) -> AsyncIterator[StreamedRunResult[Any, Any]]:
-        if False:
-            yield
-        raise NotImplementedError
 
     def run_stream_events(
         self,
@@ -87,9 +63,11 @@ class FakeAgent(AgentTentacle):
         *,
         conversation_key: ConversationKey,
         message_history: Sequence[ModelMessage] | None = None,
-        **kwargs: Any,
-    ) -> AgentEventStream[Any]:
-        async def events():
+    ) -> AgentEventStream[str]:
+        async def events() -> AsyncGenerator[
+            AgentStreamEvent | AgentRunResultEvent[str],
+            None,
+        ]:
             self.turns.append(
                 (user_prompt, list(message_history or []), conversation_key)
             )
@@ -102,7 +80,9 @@ class FakeAgent(AgentTentacle):
 class FakeChannel:
     id: str = "im"
     octomate: Octomate | None = None
-    sent: list[tuple[ConversationKey, list[Any]]] = field(default_factory=list)
+    sent: list[tuple[ConversationKey, list[str], list[MessageEvent]]] = field(
+        default_factory=list
+    )
 
     async def activate(self) -> None:
         pass
@@ -110,21 +90,35 @@ class FakeChannel:
     async def deactivate(self) -> None:
         pass
 
-    async def emit(self, key: ConversationKey, events: AsyncIterator[Any]) -> None:
-        outputs: list[Any] = []
+    async def respond(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]],
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> None:
+        outputs: list[str] = []
         async for event in events:
             if isinstance(event, AgentRunResultEvent):
                 outputs.append(event.result.output)
-        self.sent.append((key, outputs))
+        self.sent.append((key, outputs, list(source_events or [])))
 
-    async def emit_text(self, key: ConversationKey, text: str) -> None:
-        self.sent.append((key, [text]))
+    async def respond_text(
+        self,
+        key: ConversationKey,
+        text: str,
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> None:
+        self.sent.append((key, [text], list(source_events or [])))
 
 
 async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     octomate = Octomate()
-    agent = octomate.register_agent("inkling", FakeAgent("inkling"))
-    channel = octomate.connect_channel("im", FakeChannel())
+    agent = FakeAgent()
+    channel = FakeChannel()
+    octomate.register_agent("inkling", cast(AgentTentacle, agent))
+    octomate.connect_channel("im", cast(ChannelTentacle, channel))
 
     key = ConversationKey(
         channel_tentacle_id="im",
@@ -148,3 +142,4 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     assert agent.turns[0][2] == key
     assert len(channel.sent) == 1
     assert channel.sent[0][1] == ["handled"]
+    assert channel.sent[0][2] == [event]

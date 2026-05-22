@@ -10,8 +10,15 @@ from typing import Any
 
 from pydantic import BaseModel
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai.messages import (
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+)
 from pydantic_ai.tools import DeferredToolRequests
 
+from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AtData,
@@ -26,29 +33,12 @@ from octomate.tentacles.channel.slack.schema import (
     SlackFileInfo,
     SlackMessageEvent,
     SlackOutboundMessage,
+    SlackThreadContext,
 )
 
 logger = logging.getLogger(__name__)
 
 AT_RE = re.compile(r"<@(U[A-Z0-9]+)>")
-TABLE_RE = re.compile(r"((?:^\|[^\n]+\n?)+)", re.MULTILINE)
-
-
-def _tables_to_code(text: str) -> str:
-    def _wrap(match: re.Match) -> str:
-        table = match.group(1).rstrip("\n")
-        return f"```\n{table}\n```\n"
-
-    return TABLE_RE.sub(_wrap, text)
-
-
-def _md_to_mrkdwn(text: str) -> str:
-    text = re.sub(r"\*{2}(.+?)\*{2}", r"*\1*", text)
-    text = re.sub(r"_{2}(.+?)_{2}", r"*\1*", text)
-    text = re.sub(r"~~(.+?)~~", r"~\1~", text)
-    text = re.sub(r"\[(.+?)\]\((.+?)\)", r"<\2|\1>", text)
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    return _tables_to_code(text)
 
 
 class SlackChromo:
@@ -93,9 +83,51 @@ class SlackChromo:
         async for event in events:
             if not isinstance(event, AgentRunResultEvent):
                 continue
-            text = self._render_result(event.result)
+            text = self.render_result(event.result)
             if text:
-                yield self._make_message(text)
+                yield self.make_message(text)
+
+    def thread_context(
+        self,
+        key: ConversationKey,
+        source_events: list[MessageEvent] | None,
+    ) -> SlackThreadContext:
+        for event in reversed(source_events or ()):
+            raw = _raw_event(event)
+            thread_ts = raw.get("thread_ts") or raw.get("ts")
+            if not thread_ts:
+                thread_ts = event.thread_id or event.message_id
+            if thread_ts:
+                return SlackThreadContext(
+                    thread_ts=str(thread_ts),
+                    recipient_user_id=str(raw.get("user") or event.user_id or "")
+                    or None,
+                    recipient_team_id=str(
+                        raw.get("team")
+                        or raw.get("team_id")
+                        or raw.get("enterprise_id")
+                        or ""
+                    )
+                    or None,
+                )
+
+        return SlackThreadContext(
+            thread_ts=key.thread_id,
+            recipient_user_id=key.user_id or None,
+        )
+
+    def render_stream_delta(
+        self,
+        event: AgentStreamEvent | AgentRunResultEvent[Any],
+    ) -> str:
+        if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+            return event.part.content
+        if isinstance(event, PartDeltaEvent) and isinstance(
+            event.delta,
+            TextPartDelta,
+        ):
+            return event.delta.content_delta
+        return ""
 
     def _parse_segments(
         self,
@@ -134,7 +166,7 @@ class SlackChromo:
 
         return segments
 
-    def _render_result(self, result: AgentRunResult[Any]) -> str:
+    def render_result(self, result: AgentRunResult[Any]) -> str:
         output = result.output
         if isinstance(output, DeferredToolRequests):
             return self._render_deferred(output)
@@ -165,17 +197,8 @@ class SlackChromo:
     def _json_inline(self, value: Any) -> str:
         return json.dumps(_jsonable(value), ensure_ascii=False, default=str)
 
-    def _make_message(self, text: str) -> SlackOutboundMessage:
-        mrkdwn = _md_to_mrkdwn(text)
-        return SlackOutboundMessage(
-            text=text,
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {"type": "mrkdwn", "text": mrkdwn},
-                }
-            ],
-        )
+    def make_message(self, text: str) -> SlackOutboundMessage:
+        return SlackOutboundMessage(text=text, markdown_text=text)
 
 
 def _jsonable(value: Any) -> Any:
@@ -192,3 +215,13 @@ def _jsonable(value: Any) -> Any:
     except TypeError:
         return str(value)
     return value
+
+
+def _raw_event(event: MessageEvent) -> dict[str, Any]:
+    if not event.raw:
+        return {}
+    try:
+        raw = json.loads(event.raw)
+    except json.JSONDecodeError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
