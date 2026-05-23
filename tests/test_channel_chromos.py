@@ -17,6 +17,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
 )
 from pydantic_ai.tools import DeferredToolRequests
+from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
 
 from octomate.schemas.conversation import ConversationKey
@@ -353,6 +354,22 @@ async def test_slack_ink_uploads_long_markdown_instead_of_truncating() -> None:
     assert client.uploads[0]["channel"] == "C1"
     assert client.uploads[0]["thread_ts"] == "1710000000.000100"
     assert client.uploads[0]["content"] == content
+
+
+async def test_slack_ink_flushes_each_stream_append() -> None:
+    class FakeSlackStream:
+        def __init__(self) -> None:
+            self.appends: list[dict[str, object]] = []
+
+        async def append(self, **kwargs: object) -> None:
+            self.appends.append(kwargs)
+
+    ink = object.__new__(SlackInk)
+    stream = FakeSlackStream()
+
+    await ink.append_stream(cast(AsyncChatStream, stream), "hello")
+
+    assert stream.appends == [{"markdown_text": "hello", "chunks": ()}]
 
 
 def test_markdown_chunker_prefers_paragraph_boundaries() -> None:

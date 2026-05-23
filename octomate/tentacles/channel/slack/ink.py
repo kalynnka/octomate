@@ -192,7 +192,8 @@ class SlackInk:
         markdown_text: str,
     ) -> None:
         for chunk in SLACK_MARKDOWN_CHUNKER.chunk(markdown_text):
-            await stream.append(markdown_text=chunk)
+            # `chunks=()` forces slack-sdk to flush its internal text buffer.
+            await stream.append(markdown_text=chunk, chunks=())
 
     @asynccontextmanager
     async def open_stream(

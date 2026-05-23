@@ -35,8 +35,6 @@
         "--reload",
         "--reload-dir",
         "octomate",
-        "--reload-dir",
-        "octotools"
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",

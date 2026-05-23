@@ -40,11 +40,13 @@ class SlackTentacle(ChannelTentacle):
         id: str,
         octomate: Octomate | None,
         *,
+        app_id: str,
         bot_token: SecretStr,
         app_token: SecretStr,
         agent_id: str = "inkling",
         mention_only: bool = True,
     ) -> None:
+        self.app_id = app_id
         self.ink = SlackInk(bot_token)
         self.chromo = SlackChromo()
         self.app = AsyncApp(token=bot_token.get_secret_value())
@@ -106,10 +108,20 @@ class SlackTentacle(ChannelTentacle):
                 async for event in events:
                     delta = self.chromo.render_stream_delta(event)
                     if delta:
+                        logger.debug(
+                            "Channel %s: streaming Slack delta chars=%d",
+                            self.id,
+                            len(delta),
+                        )
                         await stream.append(delta)
 
                     if isinstance(event, AgentRunResultEvent):
                         final_text = self.chromo.render_result(event.result)
+                        logger.debug(
+                            "Channel %s: Slack stream result chars=%d",
+                            self.id,
+                            len(final_text),
+                        )
                         stream.final_markdown_text = final_text
         except Exception:
             logger.warning(

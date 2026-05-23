@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -19,6 +19,19 @@ class AgentsConfig(BaseModel):
     inkling: InklingConfig = Field(default_factory=InklingConfig)
 
 
+LogLevel = Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"]
+
+
+class LoggingConfig(BaseModel):
+    level: LogLevel = "INFO"
+    format: str = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def normalize_level(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
+
+
 class ChannelConfig(BaseModel):
     type: str
     agent_id: str = "inkling"
@@ -28,6 +41,7 @@ class ChannelConfig(BaseModel):
 
 class SlackChannelConfig(ChannelConfig):
     type: Literal["slack"] = "slack"
+    app_id: str
     bot_token: SecretStr
     app_token: SecretStr
 
@@ -66,6 +80,7 @@ class OctomateConfig(BaseSettings):
     )
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
 
     @classmethod

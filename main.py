@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import uvicorn
 
 from octomate import Octomate
@@ -9,6 +11,11 @@ from octomate.tentacles.channel.slack import SlackTentacle
 from octomate.web.dev_ui import build_dev_ui_router
 
 config = OctomateConfig()
+logging.basicConfig(
+    level=config.logging.level,
+    format=config.logging.format,
+    force=True,
+)
 octomate = Octomate()
 octomate.register_agent(
     "inkling",
@@ -25,6 +32,7 @@ if (channel_config := config.channels.slack) is not None and channel_config.enab
         SlackTentacle(
             "slack",
             octomate,
+            app_id=channel_config.app_id,
             bot_token=channel_config.bot_token,
             app_token=channel_config.app_token,
             agent_id=channel_config.agent_id,
@@ -45,4 +53,10 @@ app = octomate.app(title="Octomate")
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True,
+        log_level=config.logging.level.lower(),
+    )

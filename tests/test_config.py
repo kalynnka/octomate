@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pydantic_settings import SettingsConfigDict
+
 from octomate.config import (
     ChannelsConfig,
     LarkChannelConfig,
@@ -9,8 +11,18 @@ from octomate.config import (
 )
 
 
+class DefaultYamlOnlyConfig(OctomateConfig):
+    model_config = SettingsConfigDict(
+        env_prefix="OCTOMATE_",
+        env_nested_delimiter="__",
+        yaml_file=("octomate.default.yaml",),
+        yaml_config_section="octomate",
+        extra="ignore",
+    )
+
+
 def test_default_config_loads_yaml_section() -> None:
-    config = OctomateConfig()
+    config = DefaultYamlOnlyConfig()
     assert config.agents.inkling.model == "gemini-3-flash-preview"
     assert isinstance(config.channels, ChannelsConfig)
     assert config.channels.slack is None
@@ -22,6 +34,7 @@ def test_channel_config_parses_supported_channels() -> None:
     config = OctomateConfig(
         channels={
             "slack": {
+                "app_id": "A-test",
                 "bot_token": "xoxb-test",
                 "app_token": "xapp-test",
             },

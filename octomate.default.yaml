@@ -3,12 +3,17 @@ octomate:
     inkling:
       model: gemini-3-flash-preview
 
+  logging:
+    level: INFO
+    format: "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+
   # Runtime IM channels. Keep disabled examples here and put real secrets in
   # octomate.yaml or environment variables.
   channels: {}
   # channels:
   #   slack:
   #     agent_id: inkling
+  #     app_id: A...
   #     bot_token: xoxb-...
   #     app_token: xapp-...
   #   lark:
