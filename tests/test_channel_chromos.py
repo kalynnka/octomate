@@ -137,10 +137,7 @@ async def test_napcat_chromo_ignores_responses_and_non_message_events() -> None:
 async def test_napcat_chromo_renders_final_text_without_markdown() -> None:
     chromo = NapcatChromo()
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
-        yield AgentRunResultEvent(AgentRunResult("hello **napcat**"))
-
-    messages = [message async for message in chromo.squirt(events())]
+    messages = chromo.squirt(AgentRunResult("hello **napcat**"))
 
     assert messages == [
         NapcatOutboundMessage(
@@ -156,10 +153,7 @@ async def test_napcat_chromo_renders_structured_output_as_plain_json() -> None:
 
     chromo = NapcatChromo()
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[Answer]]:
-        yield AgentRunResultEvent(AgentRunResult(Answer(ok=True, count=2)))
-
-    messages = [message async for message in chromo.squirt(events())]
+    messages = chromo.squirt(AgentRunResult(Answer(ok=True, count=2)))
     text = messages[0].segments[0]["data"]["text"]
 
     assert text.startswith("{")
@@ -170,22 +164,19 @@ async def test_napcat_chromo_renders_structured_output_as_plain_json() -> None:
 async def test_napcat_chromo_renders_deferred_requests_as_plain_text() -> None:
     chromo = NapcatChromo()
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[DeferredToolRequests]]:
-        yield AgentRunResultEvent(
-            AgentRunResult(
-                DeferredToolRequests(
-                    calls=[
-                        ToolCallPart(
-                            tool_name="ask_user",
-                            args={"question": "Continue?"},
-                            tool_call_id="call_1",
-                        )
-                    ]
-                )
+    messages = chromo.squirt(
+        AgentRunResult(
+            DeferredToolRequests(
+                calls=[
+                    ToolCallPart(
+                        tool_name="ask_user",
+                        args={"question": "Continue?"},
+                        tool_call_id="call_1",
+                    )
+                ]
             )
         )
-
-    messages = [message async for message in chromo.squirt(events())]
+    )
     text = messages[0].segments[0]["data"]["text"]
 
     assert "ask_user needs input" in text
@@ -440,10 +431,7 @@ async def test_lark_chromo_decodes_post_content() -> None:
 async def test_lark_chromo_renders_final_text_as_interactive_markdown() -> None:
     chromo = LarkChromo()
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
-        yield AgentRunResultEvent(AgentRunResult("hello **lark**"))
-
-    messages = [message async for message in chromo.squirt(events())]
+    messages = chromo.squirt(AgentRunResult("hello **lark**"))
 
     assert len(messages) == 1
     assert messages[0].msg_type == "interactive"
@@ -461,6 +449,8 @@ async def test_lark_chromo_builds_streaming_card_payload() -> None:
 
     assert data["schema"] == "2.0"
     assert data["config"]["streaming_mode"] is True
+    assert data["config"]["streaming_config"]["print_frequency_ms"]["default"] == 20
+    assert data["config"]["streaming_config"]["print_step"]["default"] == 12
     assert data["body"]["elements"] == [
         {
             "tag": "markdown",
@@ -481,10 +471,7 @@ async def test_lark_chromo_renders_structured_output_as_json_card() -> None:
 
     chromo = LarkChromo()
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[Answer]]:
-        yield AgentRunResultEvent(AgentRunResult(Answer(ok=True, count=2)))
-
-    messages = [message async for message in chromo.squirt(events())]
+    messages = chromo.squirt(AgentRunResult(Answer(ok=True, count=2)))
     content = json.loads(messages[0].content)
     markdown = content["body"]["elements"][0]["content"]
 
@@ -496,22 +483,19 @@ async def test_lark_chromo_renders_structured_output_as_json_card() -> None:
 async def test_lark_chromo_renders_deferred_requests_as_markdown_card() -> None:
     chromo = LarkChromo()
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[DeferredToolRequests]]:
-        yield AgentRunResultEvent(
-            AgentRunResult(
-                DeferredToolRequests(
-                    calls=[
-                        ToolCallPart(
-                            tool_name="ask_user",
-                            args={"question": "Continue?"},
-                            tool_call_id="call_1",
-                        )
-                    ]
-                )
+    messages = chromo.squirt(
+        AgentRunResult(
+            DeferredToolRequests(
+                calls=[
+                    ToolCallPart(
+                        tool_name="ask_user",
+                        args={"question": "Continue?"},
+                        tool_call_id="call_1",
+                    )
+                ]
             )
         )
-
-    messages = [message async for message in chromo.squirt(events())]
+    )
     content = json.loads(messages[0].content)
     markdown = content["body"]["elements"][0]["content"]
 
@@ -727,13 +711,17 @@ async def test_lark_tentacle_streams_batched_card_updates_in_reply_thread() -> N
         chat_id="oc_group",
         chat_type="group",
     )
+    drained: list[str] = []
 
     async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
         yield PartStartEvent(index=0, part=TextPart(content="he"))
         yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="llo"))
         yield AgentRunResultEvent(AgentRunResult("hello"))
+        assert ink.stream_updates == []
+        drained.append("after-final")
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" ignored"))
 
-    await channel.respond(key, events(), source_events=[source])
+    await channel.stream_respond(key, events(), source_events=[source])
 
     assert len(ink.stream_cards) == 1
     assert json.loads(ink.stream_cards[0][0])["config"]["streaming_mode"] is True
@@ -753,6 +741,7 @@ async def test_lark_tentacle_streams_batched_card_updates_in_reply_thread() -> N
             1,
         )
     ]
+    assert drained == ["after-final"]
     assert ink.created == []
     assert ink.replies == []
 
@@ -773,7 +762,7 @@ async def test_lark_tentacle_can_stream_immediate_updates_when_configured() -> N
         yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="llo"))
         yield AgentRunResultEvent(AgentRunResult("hello"))
 
-    await channel.respond(key, events(), source_events=[])
+    await channel.stream_respond(key, events(), source_events=[])
 
     assert [(content, sequence) for _, content, sequence in ink.stream_updates] == [
         ("he", 1),
@@ -797,7 +786,7 @@ async def test_lark_tentacle_falls_back_to_final_message_on_stream_failure() -> 
         yield PartStartEvent(index=0, part=TextPart(content="hello"))
         yield AgentRunResultEvent(AgentRunResult("hello"))
 
-    await channel.respond(key, events(), source_events=[])
+    await channel.stream_respond(key, events(), source_events=[])
 
     assert ink.stream_messages == []
     assert ink.created[0][:3] == ("ou_user", "open_id", "interactive")
@@ -814,6 +803,7 @@ async def test_lark_tentacle_stops_stream_on_deferred_result() -> None:
         chat_id="ou_user",
         user_id="ou_user",
     )
+    drained: list[str] = []
 
     async def events() -> AsyncIterator[
         AgentStreamEvent | AgentRunResultEvent[DeferredToolRequests]
@@ -832,12 +822,15 @@ async def test_lark_tentacle_stops_stream_on_deferred_result() -> None:
                 )
             )
         )
+        drained.append("after-deferred")
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" ignored"))
 
-    await channel.respond(key, events(), source_events=[])
+    await channel.stream_respond(key, events(), source_events=[])
 
     assert [(content, sequence) for _, content, sequence in ink.stream_updates] == [
         ("partial", 1)
     ]
+    assert drained == ["after-deferred"]
     assert ink.created == []
     assert ink.replies == []
 
@@ -896,10 +889,7 @@ async def test_slack_chromo_renders_final_text_result() -> None:
         "| a | b |\n| - | - |\n| 1 | 2 |"
     )
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
-        yield AgentRunResultEvent(AgentRunResult(markdown))
-
-    messages = [message async for message in chromo.squirt(events())]
+    messages = chromo.squirt(AgentRunResult(markdown))
 
     assert len(messages) == 1
     assert messages[0].text == markdown
@@ -914,10 +904,7 @@ async def test_slack_chromo_renders_structured_output_as_json() -> None:
 
     chromo = SlackChromo()
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[Answer]]:
-        yield AgentRunResultEvent(AgentRunResult(Answer(ok=True, count=2)))
-
-    messages = [message async for message in chromo.squirt(events())]
+    messages = chromo.squirt(AgentRunResult(Answer(ok=True, count=2)))
 
     assert len(messages) == 1
     assert messages[0].text.startswith("```json")
@@ -929,22 +916,19 @@ async def test_slack_chromo_renders_structured_output_as_json() -> None:
 async def test_slack_chromo_renders_deferred_requests_as_markdown() -> None:
     chromo = SlackChromo()
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[DeferredToolRequests]]:
-        yield AgentRunResultEvent(
-            AgentRunResult(
-                DeferredToolRequests(
-                    calls=[
-                        ToolCallPart(
-                            tool_name="ask_user",
-                            args={"question": "Continue?"},
-                            tool_call_id="call_1",
-                        )
-                    ]
-                )
+    messages = chromo.squirt(
+        AgentRunResult(
+            DeferredToolRequests(
+                calls=[
+                    ToolCallPart(
+                        tool_name="ask_user",
+                        args={"question": "Continue?"},
+                        tool_call_id="call_1",
+                    )
+                ]
             )
         )
-
-    messages = [message async for message in chromo.squirt(events())]
+    )
 
     assert len(messages) == 1
     assert messages[0].markdown_text is not None
@@ -1084,13 +1068,20 @@ def _source_event() -> MessageEvent:
 async def test_slack_tentacle_streams_text_deltas_in_source_thread() -> None:
     ink = FakeSlackInk()
     channel = _slack_channel(ink)
+    drained: list[str] = []
 
     async def events() -> AsyncIterator[SlackEvent]:
         yield PartStartEvent(index=0, part=TextPart(content="# Hello\n"))
         yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="**world**"))
         yield AgentRunResultEvent(AgentRunResult("# Hello\n**world**"))
+        drained.append("after-final")
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" ignored"))
 
-    await channel.respond(_slack_key(), events(), source_events=[_source_event()])
+    await channel.stream_respond(
+        _slack_key(),
+        events(),
+        source_events=[_source_event()],
+    )
 
     assert ink.streams == [
         {
@@ -1103,20 +1094,29 @@ async def test_slack_tentacle_streams_text_deltas_in_source_thread() -> None:
     assert ink.appends == ["# Hello\n", "**world**"]
     assert ink.stops == [None]
     assert ink.finals == []
+    assert drained == ["after-final"]
 
 
 async def test_slack_tentacle_can_batch_stream_deltas_when_configured() -> None:
     ink = FakeSlackInk()
     channel = _slack_channel(ink)
     channel.config.stream = ChannelStreamConfig(flush_interval=999, min_chars=100)
+    drained: list[str] = []
 
     async def events() -> AsyncIterator[SlackEvent]:
         yield PartStartEvent(index=0, part=TextPart(content="# Hello\n"))
         yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="**world**"))
         yield AgentRunResultEvent(AgentRunResult("# Hello\n**world**"))
+        assert ink.appends == []
+        drained.append("after-final")
 
-    await channel.respond(_slack_key(), events(), source_events=[_source_event()])
+    await channel.stream_respond(
+        _slack_key(),
+        events(),
+        source_events=[_source_event()],
+    )
 
+    assert drained == ["after-final"]
     assert ink.appends == ["# Hello\n**world**"]
     assert ink.stops == [None]
 
@@ -1124,6 +1124,7 @@ async def test_slack_tentacle_can_batch_stream_deltas_when_configured() -> None:
 async def test_slack_tentacle_stops_stream_on_deferred_result() -> None:
     ink = FakeSlackInk()
     channel = _slack_channel(ink)
+    drained: list[str] = []
 
     async def events() -> AsyncIterator[
         AgentStreamEvent | AgentRunResultEvent[DeferredToolRequests]
@@ -1142,11 +1143,18 @@ async def test_slack_tentacle_stops_stream_on_deferred_result() -> None:
                 )
             )
         )
+        drained.append("after-deferred")
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" ignored"))
 
-    await channel.respond(_slack_key(), events(), source_events=[_source_event()])
+    await channel.stream_respond(
+        _slack_key(),
+        events(),
+        source_events=[_source_event()],
+    )
 
     assert ink.appends == ["partial"]
     assert ink.sent == []
+    assert drained == ["after-deferred"]
 
 
 async def test_slack_tentacle_streams_final_only_result_once() -> None:
@@ -1156,7 +1164,11 @@ async def test_slack_tentacle_streams_final_only_result_once() -> None:
     async def events() -> AsyncIterator[SlackEvent]:
         yield AgentRunResultEvent(AgentRunResult("final **markdown**"))
 
-    await channel.respond(_slack_key(), events(), source_events=[_source_event()])
+    await channel.stream_respond(
+        _slack_key(),
+        events(),
+        source_events=[_source_event()],
+    )
 
     assert len(ink.streams) == 1
     assert ink.appends == ["final **markdown**"]
@@ -1176,7 +1188,11 @@ async def test_slack_tentacle_closes_open_stream_on_append_error() -> None:
     async def events() -> AsyncIterator[SlackEvent]:
         yield PartStartEvent(index=0, part=TextPart(content="hello"))
 
-    await channel.respond(_slack_key(), events(), source_events=[_source_event()])
+    await channel.stream_respond(
+        _slack_key(),
+        events(),
+        source_events=[_source_event()],
+    )
 
     assert ink.appends == ["hello"]
     assert ink.stops == [None]

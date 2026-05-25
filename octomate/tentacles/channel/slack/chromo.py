@@ -4,7 +4,6 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncIterator
 from typing import Any
 
 from pydantic_core import to_json
@@ -29,7 +28,6 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.tentacles.channel.slack.schema import (
-    SlackFileInfo,
     SlackMessageEvent,
     SlackOutboundMessage,
     SlackThreadContext,
@@ -51,7 +49,34 @@ class SlackChromo:
             thread_id = thread_ts if thread_ts and thread_ts != message_id else ""
 
             text: str = raw.get("text", "")
-            segments = self._parse_segments(text, raw.get("files"))
+            segments: list[MessageSegment] = []
+            if text:
+                cursor = 0
+                for match in AT_RE.finditer(text):
+                    if match.start() > cursor:
+                        segments.append(
+                            TextSegment(data={"text": text[cursor : match.start()]})
+                        )
+                    segments.append(AtSegment(data=AtData(user_id=match.group(1))))
+                    cursor = match.end()
+                if cursor < len(text):
+                    segments.append(TextSegment(data={"text": text[cursor:]}))
+
+            if files := raw.get("files"):
+                for file_info in files:
+                    mimetype = file_info.get("mimetype", "")
+                    if not mimetype.startswith("image/"):
+                        continue
+                    url = file_info.get("url_private", "")
+                    segments.append(
+                        ImageSegment(
+                            data=ImageData(
+                                file=url,
+                                url=url,
+                                name=file_info.get("name", ""),
+                            )
+                        )
+                    )
 
             reply_id = ""
             if thread_ts and thread_ts != message_id:
@@ -73,18 +98,36 @@ class SlackChromo:
             logger.warning("SlackChromo: failed to decode event", exc_info=True)
             return None
 
-    async def squirt(
+    def squirt(
         self,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        result: AgentRunResult[Any],
         *,
         reply_to: str | None = None,
-    ) -> AsyncIterator[SlackOutboundMessage]:
-        async for event in events:
-            if not isinstance(event, AgentRunResultEvent):
-                continue
-            text = self.render_result(event.result)
-            if text:
-                yield self.make_message(text)
+    ) -> list[SlackOutboundMessage]:
+        output = result.output
+        if isinstance(output, DeferredToolRequests):
+            lines: list[str] = ["Deferred tool requests:"]
+            for call in output.calls:
+                lines.append(
+                    f"- `{call.tool_name}` needs input "
+                    f"(`{call.tool_call_id}`): "
+                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
+                )
+            for call in output.approvals:
+                lines.append(
+                    f"- `{call.tool_name}` needs approval "
+                    f"(`{call.tool_call_id}`): "
+                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
+                )
+            text = "\n".join(lines)
+        elif isinstance(output, str):
+            text = output
+        elif output is None:
+            return []
+        else:
+            payload = to_json(output, indent=2, ensure_ascii=False, fallback=str).decode()
+            text = f"```json\n{payload}\n```"
+        return [SlackOutboundMessage(text=text, markdown_text=text)] if text else []
 
     def thread_context(
         self,
@@ -92,7 +135,14 @@ class SlackChromo:
         source_events: list[MessageEvent] | None,
     ) -> SlackThreadContext:
         for event in reversed(source_events or ()):
-            raw = _raw_event(event)
+            raw: dict[str, Any] = {}
+            if event.raw:
+                try:
+                    maybe_raw = json.loads(event.raw)
+                except json.JSONDecodeError:
+                    maybe_raw = {}
+                if isinstance(maybe_raw, dict):
+                    raw = maybe_raw
             thread_ts = raw.get("thread_ts") or raw.get("ts")
             if not thread_ts:
                 thread_ts = event.thread_id or event.message_id
@@ -127,77 +177,3 @@ class SlackChromo:
         ):
             return event.delta.content_delta
         return ""
-
-    def _parse_segments(
-        self,
-        text: str,
-        files: list[SlackFileInfo] | None,
-    ) -> list[MessageSegment]:
-        segments: list[MessageSegment] = []
-
-        if text:
-            cursor = 0
-            for match in AT_RE.finditer(text):
-                if match.start() > cursor:
-                    segments.append(
-                        TextSegment(data={"text": text[cursor : match.start()]})
-                    )
-                segments.append(AtSegment(data=AtData(user_id=match.group(1))))
-                cursor = match.end()
-            if cursor < len(text):
-                segments.append(TextSegment(data={"text": text[cursor:]}))
-
-        if files:
-            for file_info in files:
-                mimetype = file_info.get("mimetype", "")
-                if not mimetype.startswith("image/"):
-                    continue
-                url = file_info.get("url_private", "")
-                segments.append(
-                    ImageSegment(
-                        data=ImageData(
-                            file=url,
-                            url=url,
-                            name=file_info.get("name", ""),
-                        )
-                    )
-                )
-
-        return segments
-
-    def render_result(self, result: AgentRunResult[Any]) -> str:
-        output = result.output
-        if isinstance(output, DeferredToolRequests):
-            lines: list[str] = ["Deferred tool requests:"]
-            for call in output.calls:
-                lines.append(
-                    f"- `{call.tool_name}` needs input "
-                    f"(`{call.tool_call_id}`): "
-                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
-                )
-            for call in output.approvals:
-                lines.append(
-                    f"- `{call.tool_name}` needs approval "
-                    f"(`{call.tool_call_id}`): "
-                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
-                )
-            return "\n".join(lines)
-        if isinstance(output, str):
-            return output
-        if output is None:
-            return ""
-        payload = to_json(output, indent=2, ensure_ascii=False, fallback=str).decode()
-        return f"```json\n{payload}\n```"
-
-    def make_message(self, text: str) -> SlackOutboundMessage:
-        return SlackOutboundMessage(text=text, markdown_text=text)
-
-
-def _raw_event(event: MessageEvent) -> dict[str, Any]:
-    if not event.raw:
-        return {}
-    try:
-        raw = json.loads(event.raw)
-    except json.JSONDecodeError:
-        return {}
-    return raw if isinstance(raw, dict) else {}

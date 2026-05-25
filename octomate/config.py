@@ -33,7 +33,7 @@ class LoggingConfig(BaseModel):
 
 
 class ChannelStreamConfig(BaseModel):
-    enabled: bool = True
+    enabled: bool = False
     flush_interval: float = 0.5
     min_chars: int = 120
     max_chars: int = 1000

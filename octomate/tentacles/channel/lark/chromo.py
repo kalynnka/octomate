@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic_core import to_json
-from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import AgentRunResult
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.events import MessageEvent
@@ -76,28 +75,36 @@ class LarkChromo:
             logger.warning("LarkChromo: failed to decode event", exc_info=True)
             return None
 
-    async def squirt(
+    def squirt(
         self,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        result: AgentRunResult[Any],
         *,
         reply_to: str | None = None,
-    ) -> AsyncIterator[LarkOutboundMessage]:
-        async for event in events:
-            if not isinstance(event, AgentRunResultEvent):
-                continue
-            text = self.render_result(event.result)
-            if text:
-                yield self.make_markdown_message(text)
-
-    def render_result(self, result: AgentRunResult[Any]) -> str:
+    ) -> list[LarkOutboundMessage]:
         output = result.output
         if isinstance(output, DeferredToolRequests):
-            return self._render_deferred(output)
-        if isinstance(output, str):
-            return output
-        if output is None:
-            return ""
-        return self._render_structured(output)
+            lines: list[str] = ["Deferred tool requests:"]
+            for call in output.calls:
+                lines.append(
+                    f"- `{call.tool_name}` needs input "
+                    f"(`{call.tool_call_id}`): "
+                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
+                )
+            for call in output.approvals:
+                lines.append(
+                    f"- `{call.tool_name}` needs approval "
+                    f"(`{call.tool_call_id}`): "
+                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
+                )
+            text = "\n".join(lines)
+        elif isinstance(output, str):
+            text = output
+        elif output is None:
+            return []
+        else:
+            payload = to_json(output, indent=2, ensure_ascii=False, fallback=str).decode()
+            text = f"```json\n{payload}\n```"
+        return [self.make_markdown_message(text)] if text else []
 
     def make_markdown_message(self, text: str) -> LarkOutboundMessage:
         payload = {
@@ -119,16 +126,16 @@ class LarkChromo:
                 "summary": {"content": ""},
                 "streaming_config": {
                     "print_frequency_ms": {
-                        "default": 70,
-                        "android": 70,
-                        "ios": 70,
-                        "pc": 70,
+                        "default": 20,
+                        "android": 20,
+                        "ios": 20,
+                        "pc": 20,
                     },
                     "print_step": {
-                        "default": 1,
-                        "android": 1,
-                        "ios": 1,
-                        "pc": 1,
+                        "default": 12,
+                        "android": 12,
+                        "ios": 12,
+                        "pc": 12,
                     },
                     "print_strategy": "fast",
                 },
@@ -151,26 +158,6 @@ class LarkChromo:
             msg_type="interactive",
             content=json.dumps(content, ensure_ascii=False, separators=(",", ":")),
         )
-
-    def _render_deferred(self, requests: DeferredToolRequests) -> str:
-        lines: list[str] = ["Deferred tool requests:"]
-        for call in requests.calls:
-            lines.append(
-                f"- `{call.tool_name}` needs input "
-                f"(`{call.tool_call_id}`): "
-                f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
-            )
-        for call in requests.approvals:
-            lines.append(
-                f"- `{call.tool_name}` needs approval "
-                f"(`{call.tool_call_id}`): "
-                f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
-            )
-        return "\n".join(lines)
-
-    def _render_structured(self, output: Any) -> str:
-        payload = to_json(output, indent=2, ensure_ascii=False, fallback=str).decode()
-        return f"```json\n{payload}\n```"
 
     def _parse_segments(
         self,
@@ -211,43 +198,40 @@ class LarkChromo:
             image_key = content.get("image_key", "")
             segments.append(ImageSegment(data=ImageData(file=image_key, name=image_key)))
         elif msg_type == "post":
-            self._parse_post_segments(content, segments)
+            title = content.get("title", "")
+            if title:
+                segments.append(TextSegment(data={"text": f"[{title}]\n"}))
+            for lang_content in content.values():
+                if not isinstance(lang_content, list):
+                    continue
+                for line in lang_content:
+                    for element in line:
+                        tag = element.get("tag", "")
+                        if tag == "text":
+                            segments.append(
+                                TextSegment(data={"text": element.get("text", "")})
+                            )
+                        elif tag == "a":
+                            segments.append(
+                                TextSegment(data={"text": element.get("href", "")})
+                            )
+                        elif tag == "at":
+                            segments.append(
+                                AtSegment(
+                                    data=AtData(
+                                        user_id=element.get("user_id", ""),
+                                        name=element.get("user_name", ""),
+                                    )
+                                )
+                            )
+                        elif tag == "img":
+                            image_key = element.get("image_key", "")
+                            segments.append(
+                                ImageSegment(
+                                    data=ImageData(file=image_key, name=image_key)
+                                )
+                            )
+                break
         else:
             segments.append(TextSegment(data={"text": f"[{msg_type}]"}))
         return segments
-
-    def _parse_post_segments(
-        self, content: dict[str, Any], segments: list[MessageSegment]
-    ) -> None:
-        title = content.get("title", "")
-        if title:
-            segments.append(TextSegment(data={"text": f"[{title}]\n"}))
-        for lang_content in content.values():
-            if not isinstance(lang_content, list):
-                continue
-            for line in lang_content:
-                for element in line:
-                    tag = element.get("tag", "")
-                    if tag == "text":
-                        segments.append(
-                            TextSegment(data={"text": element.get("text", "")})
-                        )
-                    elif tag == "a":
-                        segments.append(
-                            TextSegment(data={"text": element.get("href", "")})
-                        )
-                    elif tag == "at":
-                        segments.append(
-                            AtSegment(
-                                data=AtData(
-                                    user_id=element.get("user_id", ""),
-                                    name=element.get("user_name", ""),
-                                )
-                            )
-                        )
-                    elif tag == "img":
-                        image_key = element.get("image_key", "")
-                        segments.append(
-                            ImageSegment(data=ImageData(file=image_key, name=image_key))
-                        )
-            break

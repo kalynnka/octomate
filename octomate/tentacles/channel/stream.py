@@ -11,7 +11,6 @@ from pydantic_ai.messages import (
     TextPart,
     TextPartDelta,
 )
-from pydantic_ai.tools import DeferredToolRequests
 
 StreamBlockType = Literal["answer", "thinking", "tool_call", "tool_result", "subagent"]
 StreamBlockStatus = Literal["streaming", "done", "error"]
@@ -160,11 +159,3 @@ def render_text_stream_delta(
         return event.delta.content_delta
     return ""
 
-
-def is_deferred_result_event(
-    event: AgentStreamEvent | AgentRunResultEvent[Any],
-) -> bool:
-    return isinstance(event, AgentRunResultEvent) and isinstance(
-        event.result.output,
-        DeferredToolRequests,
-    )

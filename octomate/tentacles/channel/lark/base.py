@@ -9,6 +9,7 @@ import lark_oapi
 import lark_oapi.ws.client as ws_mod
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config import LarkChannelConfig
 from octomate.schemas.conversation import ConversationKey
@@ -17,7 +18,6 @@ from octomate.tentacles.channel.base import ChannelTentacle
 from octomate.tentacles.channel.stream import (
     BatchedTextUpdate,
     TextStreamBatcher,
-    is_deferred_result_event,
     render_text_stream_delta,
 )
 from octomate.tentacles.channel.lark.chromo import (
@@ -25,7 +25,7 @@ from octomate.tentacles.channel.lark.chromo import (
     LarkChromo,
 )
 from octomate.tentacles.channel.lark.ink import LarkInk
-from octomate.tentacles.channel.lark.schema import LarkStreamCard
+from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -98,17 +98,31 @@ class LarkTentacle(ChannelTentacle):
         chat_id = key.chat_id or key.user_id
         reply_to = self.reply_target_from_source_events(source_events)
         reply_in_thread = key.chat_type == "group" and reply_to is not None
-        if not self.config.stream.enabled:
-            async for message in self.chromo.squirt(events, reply_to=reply_to):
+        result_event: AgentRunResultEvent[Any] | None = None
+        async for event in events:
+            if isinstance(event, AgentRunResultEvent):
+                result_event = event
+        if result_event is not None:
+            messages = self.chromo.squirt(result_event.result)
+            if messages:
                 await self.ink.send_message(
                     chat_id,
                     key.chat_type,
-                    [message],
+                    messages,
                     reply_to,
                     reply_in_thread=reply_in_thread,
                 )
-            return
 
+    async def stream_respond(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> None:
+        chat_id = key.chat_id or key.user_id
+        reply_to = self.reply_target_from_source_events(source_events)
+        reply_in_thread = key.chat_type == "group" and reply_to is not None
         batcher = TextStreamBatcher(
             flush_interval=self.config.stream.flush_interval,
             min_chars=self.config.stream.min_chars,
@@ -117,7 +131,8 @@ class LarkTentacle(ChannelTentacle):
         )
         card: LarkStreamCard | None = None
         stream_started = False
-        final_text = ""
+        final_messages: list[LarkOutboundMessage] = []
+        result_event: AgentRunResultEvent[Any] | None = None
 
         async def apply_update(update: BatchedTextUpdate) -> None:
             nonlocal card, stream_started
@@ -152,10 +167,8 @@ class LarkTentacle(ChannelTentacle):
 
         try:
             async for event in events:
-                if is_deferred_result_event(event):
-                    for update in batcher.finish_all():
-                        await apply_update(update)
-                    return
+                if result_event is not None:
+                    continue
 
                 delta = render_text_stream_delta(event)
                 if delta:
@@ -163,28 +176,45 @@ class LarkTentacle(ChannelTentacle):
                         await apply_update(update)
 
                 if isinstance(event, AgentRunResultEvent):
-                    final_text = self.chromo.render_result(event.result)
-                    for update in batcher.finish_all():
-                        await apply_update(update)
-                    if final_text and not stream_started:
-                        await self.ink.send_message(
-                            chat_id,
-                            key.chat_type,
-                            [self.chromo.make_markdown_message(final_text)],
-                            reply_to,
-                            reply_in_thread=reply_in_thread,
-                        )
-                    return
+                    result_event = event
 
+            is_deferred_result = result_event is not None and isinstance(
+                result_event.result.output,
+                DeferredToolRequests,
+            )
+            if result_event is not None and not is_deferred_result:
+                final_messages = self.chromo.squirt(result_event.result)
             for update in batcher.finish_all():
                 await apply_update(update)
+            if (
+                result_event is not None
+                and not is_deferred_result
+                and final_messages
+                and not stream_started
+            ):
+                await self.ink.send_message(
+                    chat_id,
+                    key.chat_type,
+                    final_messages,
+                    reply_to,
+                    reply_in_thread=reply_in_thread,
+                )
         except Exception:
             logger.warning(
                 "Channel %s: failed to stream Lark response",
                 self.id,
                 exc_info=True,
             )
-            fallback_text = final_text or batcher.full_text()
+            if final_messages:
+                await self.ink.send_message(
+                    chat_id,
+                    key.chat_type,
+                    final_messages,
+                    reply_to,
+                    reply_in_thread=reply_in_thread,
+                )
+                return
+            fallback_text = batcher.full_text()
             if fallback_text:
                 await self.ink.send_message(
                     chat_id,

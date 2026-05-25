@@ -83,7 +83,14 @@ class Octomate:
                     conversation_key=key,
                     message_history=list(conversation.messages),
                 ) as events:
-                    await channel.respond(key, events, source_events=contents)
+                    if channel.config.stream.enabled:
+                        await channel.stream_respond(
+                            key,
+                            events,
+                            source_events=contents,
+                        )
+                    else:
+                        await channel.respond(key, events, source_events=contents)
             except Exception as exc:
                 logger.exception(
                     "Agent %s failed while handling %s", resolved_agent_id, key

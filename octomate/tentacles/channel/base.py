@@ -40,10 +40,10 @@ class Chromo(Protocol):
 
     def squirt(
         self,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        result: AgentRunResult[Any],
         *,
         reply_to: str | None = None,
-    ) -> AsyncIterator[Any]: ...
+    ) -> list[Any]: ...
 
 
 @runtime_checkable
@@ -156,17 +156,37 @@ class ChannelTentacle(Tentacle):
         *,
         source_events: list[MessageEvent] | None = None,
     ) -> None:
-        """Respond to a conversation with pydantic-ai stream events/results."""
+        """Send a final, non-streaming response for a conversation."""
         chat_id = key.chat_id or key.user_id
         chat_type = key.chat_type
         reply_to: str | None = key.thread_id or None
-        async for message in self.chromo.squirt(events, reply_to=reply_to):
+        result_event: AgentRunResultEvent[Any] | None = None
+        async for event in events:
+            if isinstance(event, AgentRunResultEvent):
+                result_event = event
+        if result_event is None:
+            return
+
+        for message in self.chromo.squirt(result_event.result, reply_to=reply_to):
             await self.ink.send_message(
                 chat_id,
                 chat_type,
                 [message],
                 reply_to,
             )
+
+    async def stream_respond(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> None:
+        logger.warning(
+            "Channel %s does not support streaming responses; falling back to final response",
+            self.id,
+        )
+        await self.respond(key, events, source_events=source_events)
 
     async def respond_text(
         self,

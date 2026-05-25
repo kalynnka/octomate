@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai.tools import DeferredToolRequests
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
@@ -13,15 +14,13 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.tentacles.channel.base import ChannelTentacle
-from octomate.tentacles.channel.stream import (
-    TextStreamBatcher,
-    is_deferred_result_event,
-)
+from octomate.tentacles.channel.stream import TextStreamBatcher
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
     SlackAssistantThreadEvent,
     SlackMessageEvent,
+    SlackOutboundMessage,
 )
 
 if TYPE_CHECKING:
@@ -141,13 +140,19 @@ class SlackTentacle(ChannelTentacle):
         *,
         source_events: list[MessageEvent] | None = None,
     ) -> None:
-        context = self.chromo.thread_context(key, source_events)
-        if not self.config.stream.enabled or not context.thread_ts:
-            await super().respond(key, events, source_events=source_events)
-            return
+        await super().respond(key, events, source_events=source_events)
 
+    async def stream_respond(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> None:
+        context = self.chromo.thread_context(key, source_events)
         channel = key.chat_id or key.user_id
-        final_text = ""
+        final_messages: list[SlackOutboundMessage] = []
+        result_event: AgentRunResultEvent[Any] | None = None
         batcher = TextStreamBatcher(
             flush_interval=self.config.stream.flush_interval,
             min_chars=self.config.stream.min_chars,
@@ -164,17 +169,8 @@ class SlackTentacle(ChannelTentacle):
             ) as stream:
                 appended = False
                 async for event in events:
-                    if is_deferred_result_event(event):
-                        for update in batcher.finish_all():
-                            logger.debug(
-                                "Channel %s: streaming Slack delta chars=%d sequence=%d",
-                                self.id,
-                                len(update.delta_text),
-                                update.sequence,
-                            )
-                            await self.ink.append_stream(stream, update.delta_text)
-                            appended = True
-                        break
+                    if result_event is not None:
+                        continue
 
                     delta = self.chromo.render_stream_delta(event)
                     if delta:
@@ -189,34 +185,53 @@ class SlackTentacle(ChannelTentacle):
                             appended = True
 
                     if isinstance(event, AgentRunResultEvent):
-                        final_text = self.chromo.render_result(event.result)
-                        logger.debug(
-                            "Channel %s: Slack stream result chars=%d",
-                            self.id,
-                            len(final_text),
+                        result_event = event
+
+                is_deferred_result = result_event is not None and isinstance(
+                    result_event.result.output,
+                    DeferredToolRequests,
+                )
+                if result_event is not None and not is_deferred_result:
+                    final_messages = self.chromo.squirt(result_event.result)
+                    final_text = "\n".join(
+                        message.markdown_text or message.text
+                        for message in final_messages
+                    )
+                    logger.debug(
+                        "Channel %s: Slack stream result chars=%d",
+                        self.id,
+                        len(final_text),
+                    )
+                for update in batcher.finish_all():
+                    logger.debug(
+                        "Channel %s: streaming Slack delta chars=%d sequence=%d",
+                        self.id,
+                        len(update.delta_text),
+                        update.sequence,
+                    )
+                    await self.ink.append_stream(stream, update.delta_text)
+                    appended = True
+                if (
+                    result_event is not None
+                    and not is_deferred_result
+                    and final_messages
+                    and not appended
+                ):
+                    for message in final_messages:
+                        await self.ink.append_stream(
+                            stream,
+                            message.markdown_text or message.text,
                         )
-                        for update in batcher.finish_all():
-                            logger.debug(
-                                "Channel %s: streaming Slack delta chars=%d sequence=%d",
-                                self.id,
-                                len(update.delta_text),
-                                update.sequence,
-                            )
-                            await self.ink.append_stream(stream, update.delta_text)
-                            appended = True
-                        if final_text and not appended:
-                            await self.ink.append_stream(stream, final_text)
-                            appended = True
         except Exception:
             logger.warning(
                 "Channel %s: failed to stream Slack response",
                 self.id,
                 exc_info=True,
             )
-            if final_text:
+            if final_messages:
                 await self.ink.send_message(
                     channel,
                     key.chat_type,
-                    [self.chromo.make_message(final_text)],
+                    final_messages,
                     context.thread_ts,
                 )

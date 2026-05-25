@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
 
 import octomate.database as database
 from octomate import Octomate
+from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.models import Base
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
@@ -80,7 +81,13 @@ class FakeAgent:
 class FakeChannel:
     id: str = "im"
     octomate: Octomate | None = None
+    config: ChannelConfig = field(
+        default_factory=lambda: ChannelConfig(type="fake")
+    )
     sent: list[tuple[ConversationKey, list[str], list[MessageEvent]]] = field(
+        default_factory=list
+    )
+    stream_sent: list[tuple[ConversationKey, list[str], list[MessageEvent]]] = field(
         default_factory=list
     )
 
@@ -102,6 +109,19 @@ class FakeChannel:
             if isinstance(event, AgentRunResultEvent):
                 outputs.append(event.result.output)
         self.sent.append((key, outputs, list(source_events or [])))
+
+    async def stream_respond(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]],
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> None:
+        outputs: list[str] = []
+        async for event in events:
+            if isinstance(event, AgentRunResultEvent):
+                outputs.append(event.result.output)
+        self.stream_sent.append((key, outputs, list(source_events or [])))
 
     async def respond_text(
         self,
@@ -143,3 +163,39 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     assert len(channel.sent) == 1
     assert channel.sent[0][1] == ["handled"]
     assert channel.sent[0][2] == [event]
+    assert channel.stream_sent == []
+
+
+async def test_octomate_kick_routes_to_stream_response_when_enabled() -> None:
+    octomate = Octomate()
+    agent = FakeAgent()
+    channel = FakeChannel(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=True),
+        ),
+    )
+    octomate.register_agent("inkling", cast(AgentTentacle, agent))
+    octomate.connect_channel("im", cast(ChannelTentacle, channel))
+
+    key = ConversationKey(
+        channel_tentacle_id="im",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+    event = MessageEvent(
+        tentacle_id="im",
+        message_id="m1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+        segments=[TextSegment(data={"text": "hi"})],
+    )
+
+    await octomate.kick(key, [event], agent_id="inkling")
+
+    assert channel.sent == []
+    assert len(channel.stream_sent) == 1
+    assert channel.stream_sent[0][1] == ["handled"]
+    assert channel.stream_sent[0][2] == [event]

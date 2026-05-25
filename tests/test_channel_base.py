@@ -112,16 +112,14 @@ class FakeChromo:
             segments=cast(list[MessageSegment], data.get("segments", [])),
         )
 
-    async def squirt(
+    def squirt(
         self,
-        events: AsyncIterator[ChannelEvent],
+        result: AgentRunResult[str],
         *,
         reply_to: str | None = None,
-    ) -> AsyncIterator[NativeMessage]:
+    ) -> list[NativeMessage]:
         self.squirt_calls.append(reply_to)
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                yield {"text": str(event.result.output)}
+        return [{"text": str(result.output)}]
 
 
 class FakeChannelTentacle(ChannelTentacle):
@@ -225,13 +223,17 @@ async def test_respond_encodes_final_agent_result_and_sends_native_messages(
         chat_id="alice",
         user_id="alice",
     )
+    drained: list[str] = []
 
     async def events() -> AsyncIterator[ChannelEvent]:
         yield PartStartEvent(index=0, part=TextPart(content="ignored draft"))
         yield AgentRunResultEvent(AgentRunResult("hi alice"))
+        assert channel.sent == []
+        drained.append("after-result")
 
     await channel.respond(key, events())
 
+    assert drained == ["after-result"]
     assert len(channel.sent) == 1
     chat_id, chat_type, messages, reply_to, _ = channel.sent[0]
     assert chat_id == "alice"
@@ -259,6 +261,28 @@ async def test_respond_uses_conversation_thread_as_reply_target(
     assert len(channel.sent) == 1
     assert channel.sent[0][3] == "m1"
     assert channel.sent[0][2][0]["text"] == "after reply"
+
+
+async def test_stream_respond_default_warns_and_falls_back_to_final_response(
+    channel: FakeChannelTentacle,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+
+    async def events() -> AsyncIterator[ChannelEvent]:
+        yield AgentRunResultEvent(AgentRunResult("stream me"))
+
+    with caplog.at_level("WARNING"):
+        await channel.stream_respond(key, events())
+
+    assert "does not support streaming responses" in caplog.text
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "stream me"
 
 
 async def test_respond_text_uses_normal_adapter(
