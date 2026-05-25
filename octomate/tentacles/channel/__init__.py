@@ -3,7 +3,6 @@ from octomate.tentacles.channel.base import (
     Chromo,
     DownloadedImage,
     Ink,
-    MarkdownChunker,
 )
 
 __all__ = [
@@ -11,5 +10,4 @@ __all__ = [
     "Chromo",
     "DownloadedImage",
     "Ink",
-    "MarkdownChunker",
 ]

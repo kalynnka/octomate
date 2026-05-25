@@ -5,10 +5,9 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator
-from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic_core import to_json
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
     PartDeltaEvent,
@@ -169,52 +168,29 @@ class SlackChromo:
     def render_result(self, result: AgentRunResult[Any]) -> str:
         output = result.output
         if isinstance(output, DeferredToolRequests):
-            return self._render_deferred(output)
+            lines: list[str] = ["Deferred tool requests:"]
+            for call in output.calls:
+                lines.append(
+                    f"- `{call.tool_name}` needs input "
+                    f"(`{call.tool_call_id}`): "
+                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
+                )
+            for call in output.approvals:
+                lines.append(
+                    f"- `{call.tool_name}` needs approval "
+                    f"(`{call.tool_call_id}`): "
+                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
+                )
+            return "\n".join(lines)
         if isinstance(output, str):
             return output
         if output is None:
             return ""
-        return self._render_structured(output)
-
-    def _render_deferred(self, requests: DeferredToolRequests) -> str:
-        lines: list[str] = ["Deferred tool requests:"]
-        for call in requests.calls:
-            lines.append(
-                f"- `{call.tool_name}` needs input "
-                f"(`{call.tool_call_id}`): `{self._json_inline(call.args_as_dict())}`"
-            )
-        for call in requests.approvals:
-            lines.append(
-                f"- `{call.tool_name}` needs approval "
-                f"(`{call.tool_call_id}`): `{self._json_inline(call.args_as_dict())}`"
-            )
-        return "\n".join(lines)
-
-    def _render_structured(self, output: Any) -> str:
-        payload = json.dumps(_jsonable(output), ensure_ascii=False, indent=2)
+        payload = to_json(output, indent=2, ensure_ascii=False, fallback=str).decode()
         return f"```json\n{payload}\n```"
-
-    def _json_inline(self, value: Any) -> str:
-        return json.dumps(_jsonable(value), ensure_ascii=False, default=str)
 
     def make_message(self, text: str) -> SlackOutboundMessage:
         return SlackOutboundMessage(text=text, markdown_text=text)
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if is_dataclass(value) and not isinstance(value, type):
-        return asdict(value)
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_jsonable(item) for item in value]
-    try:
-        json.dumps(value)
-    except TypeError:
-        return str(value)
-    return value
 
 
 def _raw_event(event: MessageEvent) -> dict[str, Any]:

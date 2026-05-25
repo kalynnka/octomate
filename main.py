@@ -34,11 +34,7 @@ if (channel_config := config.channels.slack) is not None and channel_config.enab
         SlackTentacle(
             "slack",
             octomate,
-            app_id=channel_config.app_id,
-            bot_token=channel_config.bot_token,
-            app_token=channel_config.app_token,
-            agent_id=channel_config.agent_id,
-            mention_only=channel_config.mention_only,
+            config=channel_config,
         ),
     )
 
@@ -48,10 +44,7 @@ if (channel_config := config.channels.lark) is not None and channel_config.enabl
         LarkTentacle(
             "lark",
             octomate,
-            app_id=channel_config.app_id,
-            app_secret=channel_config.app_secret,
-            agent_id=channel_config.agent_id,
-            mention_only=channel_config.mention_only,
+            config=channel_config,
         ),
     )
 
@@ -61,14 +54,7 @@ if (channel_config := config.channels.napcat) is not None and channel_config.ena
         NapcatTentacle(
             "napcat",
             octomate,
-            ws_url=channel_config.ws_url,
-            http_url=channel_config.http_url,
-            access_token=channel_config.access_token,
-            backoff_base=channel_config.backoff_base,
-            backoff_max=channel_config.backoff_max,
-            backoff_factor=channel_config.backoff_factor,
-            agent_id=channel_config.agent_id,
-            mention_only=channel_config.mention_only,
+            config=channel_config,
         ),
     )
 

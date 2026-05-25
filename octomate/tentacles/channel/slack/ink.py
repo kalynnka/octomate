@@ -12,7 +12,8 @@ from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.client import WebClient
 
 from octomate.schemas.segments import ImageSegment
-from octomate.tentacles.channel.base import DownloadedImage, MarkdownChunker
+from octomate.tentacles.channel.base import DownloadedImage
+from octomate.tentacles.channel.markdown import MarkdownChunker
 from octomate.tentacles.channel.slack.schema import (
     SlackOutboundMessage,
     SlackPostMessageKwargs,

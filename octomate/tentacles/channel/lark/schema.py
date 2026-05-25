@@ -14,6 +14,12 @@ class LarkOutboundMessage:
     content: str
 
 
+@dataclass(frozen=True)
+class LarkStreamCard:
+    card_id: str
+    element_id: str
+
+
 class LarkUserProfile(UserProfile):
     user_id: str = Field(default="", validation_alias="open_id")
     title: str | None = Field(default=None, validation_alias="job_title")

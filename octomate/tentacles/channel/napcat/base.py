@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
+from octomate.config import NapcatChannelConfig
 from octomate.tentacles.channel.base import ChannelTentacle
 from octomate.tentacles.channel.napcat.chromo import NapcatChromo
 from octomate.tentacles.channel.napcat.ink import NapcatInk
@@ -33,22 +34,15 @@ class NapcatTentacle(ChannelTentacle):
         id: str,
         octomate: Octomate | None,
         *,
-        ws_url: str,
-        http_url: str,
-        access_token: SecretStr | None = None,
-        backoff_base: float = 1.0,
-        backoff_max: float = 60.0,
-        backoff_factor: float = 2.0,
-        agent_id: str = "inkling",
-        mention_only: bool = True,
+        config: NapcatChannelConfig,
     ) -> None:
-        self.ws_url = ws_url
-        self.access_token = access_token
-        self.ink = NapcatInk(http_url, access_token)
+        self.ws_url = config.ws_url
+        self.access_token = config.access_token
+        self.ink = NapcatInk(config.http_url, config.access_token)
         self.chromo = NapcatChromo()
-        self.backoff_base = backoff_base
-        self.backoff_max = backoff_max
-        self.backoff_factor = backoff_factor
+        self.backoff_base = config.backoff_base
+        self.backoff_max = config.backoff_max
+        self.backoff_factor = config.backoff_factor
         self.ws_client = None
         self.stop_event = None
         super().__init__(
@@ -56,8 +50,7 @@ class NapcatTentacle(ChannelTentacle):
             octomate=octomate,
             ink=self.ink,
             chromo=self.chromo,
-            agent_id=agent_id,
-            mention_only=mention_only,
+            config=config,
         )
 
     async def activate(self) -> None:

@@ -32,11 +32,33 @@ class LoggingConfig(BaseModel):
         return value.upper() if isinstance(value, str) else value
 
 
+class ChannelStreamConfig(BaseModel):
+    enabled: bool = True
+    flush_interval: float = 0.5
+    min_chars: int = 120
+    max_chars: int = 1000
+    fold_threshold: int = 1500
+
+
+class SlackStreamConfig(ChannelStreamConfig):
+    flush_interval: float = 0.0
+
+
+class LarkStreamConfig(ChannelStreamConfig):
+    flush_interval: float = 0.2
+    min_chars: int = 1
+
+
+class NapcatStreamConfig(ChannelStreamConfig):
+    enabled: bool = False
+
+
 class ChannelConfig(BaseModel):
     type: str
     agent_id: str = "inkling"
     mention_only: bool = True
     enabled: bool = True
+    stream: ChannelStreamConfig = Field(default=ChannelStreamConfig())
 
 
 class SlackChannelConfig(ChannelConfig):
@@ -44,16 +66,19 @@ class SlackChannelConfig(ChannelConfig):
     app_id: str
     bot_token: SecretStr
     app_token: SecretStr
+    stream: SlackStreamConfig = Field(default=SlackStreamConfig())
 
 
 class LarkChannelConfig(ChannelConfig):
     type: Literal["lark"] = "lark"
     app_id: str
     app_secret: SecretStr
+    stream: LarkStreamConfig = Field(default=LarkStreamConfig())
 
 
 class NapcatChannelConfig(ChannelConfig):
     type: Literal["napcat"] = "napcat"
+    stream: NapcatStreamConfig = Field(default=NapcatStreamConfig())
     ws_url: str
     http_url: str
     access_token: SecretStr | None = None
@@ -76,6 +101,7 @@ class OctomateConfig(BaseSettings):
         env_nested_delimiter="__",
         yaml_file=("octomate.default.yaml", "octomate.yaml"),
         yaml_config_section="octomate",
+        nested_model_default_partial_update=True,
         extra="ignore",
     )
 

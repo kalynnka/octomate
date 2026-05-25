@@ -4,11 +4,10 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from dataclasses import asdict, is_dataclass
 from typing import Any, Literal
 
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
-from pydantic import BaseModel
+from pydantic_core import to_json
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.tools import DeferredToolRequests
 
@@ -25,6 +24,8 @@ from octomate.schemas.segments import (
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 
 logger = logging.getLogger(__name__)
+
+LARK_STREAM_ELEMENT_ID = "octomate_answer"
 
 
 class LarkChromo:
@@ -105,26 +106,71 @@ class LarkChromo:
         }
         return LarkOutboundMessage(msg_type="interactive", content=json.dumps(payload))
 
+    def make_stream_card_data(
+        self,
+        text: str = "",
+        *,
+        element_id: str = LARK_STREAM_ELEMENT_ID,
+    ) -> str:
+        payload = {
+            "schema": "2.0",
+            "config": {
+                "streaming_mode": True,
+                "summary": {"content": ""},
+                "streaming_config": {
+                    "print_frequency_ms": {
+                        "default": 70,
+                        "android": 70,
+                        "ios": 70,
+                        "pc": 70,
+                    },
+                    "print_step": {
+                        "default": 1,
+                        "android": 1,
+                        "ios": 1,
+                        "pc": 1,
+                    },
+                    "print_strategy": "fast",
+                },
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": text,
+                        "element_id": element_id,
+                    }
+                ]
+            },
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    def make_stream_card_message(self, card_id: str) -> LarkOutboundMessage:
+        content = {"type": "card", "data": {"card_id": card_id}}
+        return LarkOutboundMessage(
+            msg_type="interactive",
+            content=json.dumps(content, ensure_ascii=False, separators=(",", ":")),
+        )
+
     def _render_deferred(self, requests: DeferredToolRequests) -> str:
         lines: list[str] = ["Deferred tool requests:"]
         for call in requests.calls:
             lines.append(
                 f"- `{call.tool_name}` needs input "
-                f"(`{call.tool_call_id}`): `{self._json_inline(call.args_as_dict())}`"
+                f"(`{call.tool_call_id}`): "
+                f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
             )
         for call in requests.approvals:
             lines.append(
                 f"- `{call.tool_name}` needs approval "
-                f"(`{call.tool_call_id}`): `{self._json_inline(call.args_as_dict())}`"
+                f"(`{call.tool_call_id}`): "
+                f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
             )
         return "\n".join(lines)
 
     def _render_structured(self, output: Any) -> str:
-        payload = json.dumps(_jsonable(output), ensure_ascii=False, indent=2)
+        payload = to_json(output, indent=2, ensure_ascii=False, fallback=str).decode()
         return f"```json\n{payload}\n```"
-
-    def _json_inline(self, value: Any) -> str:
-        return json.dumps(_jsonable(value), ensure_ascii=False, default=str)
 
     def _parse_segments(
         self,
@@ -205,19 +251,3 @@ class LarkChromo:
                             ImageSegment(data=ImageData(file=image_key, name=image_key))
                         )
             break
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
-    if is_dataclass(value) and not isinstance(value, type):
-        return asdict(value)
-    if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_jsonable(item) for item in value]
-    try:
-        json.dumps(value)
-    except TypeError:
-        return str(value)
-    return value

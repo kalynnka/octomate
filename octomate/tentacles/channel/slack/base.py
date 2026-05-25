@@ -4,15 +4,19 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from pydantic import SecretStr
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
+from octomate.config import SlackChannelConfig
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channel.stream import (
+    TextStreamBatcher,
+    is_deferred_result_event,
+)
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
@@ -44,30 +48,25 @@ class SlackTentacle(ChannelTentacle):
         id: str,
         octomate: Octomate | None,
         *,
-        app_id: str,
-        bot_token: SecretStr,
-        app_token: SecretStr,
-        agent_id: str = "inkling",
-        mention_only: bool = True,
+        config: SlackChannelConfig,
     ) -> None:
-        self.app_id = app_id
-        self.ink = SlackInk(bot_token)
+        self.app_id = config.app_id
+        self.ink = SlackInk(config.bot_token)
         self.chromo = SlackChromo()
-        self.app = AsyncApp(token=bot_token.get_secret_value())
+        self.app = AsyncApp(token=config.bot_token.get_secret_value())
         self.app.event("message")(self.on_message)
         self.app.event("assistant_thread_started")(self.on_assistant_thread_started)
         self.app.event("assistant_thread_context_changed")(
             self.on_assistant_thread_context_changed
         )
-        self.app_token = app_token
+        self.app_token = config.app_token
         self.handler: AsyncSocketModeHandler | None = None
         super().__init__(
             id=id,
             octomate=octomate,
             ink=self.ink,
             chromo=self.chromo,
-            agent_id=agent_id,
-            mention_only=mention_only,
+            config=config,
         )
 
     async def activate(self) -> None:
@@ -143,12 +142,18 @@ class SlackTentacle(ChannelTentacle):
         source_events: list[MessageEvent] | None = None,
     ) -> None:
         context = self.chromo.thread_context(key, source_events)
-        if not context.thread_ts:
+        if not self.config.stream.enabled or not context.thread_ts:
             await super().respond(key, events, source_events=source_events)
             return
 
         channel = key.chat_id or key.user_id
         final_text = ""
+        batcher = TextStreamBatcher(
+            flush_interval=self.config.stream.flush_interval,
+            min_chars=self.config.stream.min_chars,
+            max_chars=self.config.stream.max_chars,
+            fold_threshold=self.config.stream.fold_threshold,
+        )
 
         try:
             async with self.ink.open_stream(
@@ -159,15 +164,29 @@ class SlackTentacle(ChannelTentacle):
             ) as stream:
                 appended = False
                 async for event in events:
+                    if is_deferred_result_event(event):
+                        for update in batcher.finish_all():
+                            logger.debug(
+                                "Channel %s: streaming Slack delta chars=%d sequence=%d",
+                                self.id,
+                                len(update.delta_text),
+                                update.sequence,
+                            )
+                            await self.ink.append_stream(stream, update.delta_text)
+                            appended = True
+                        break
+
                     delta = self.chromo.render_stream_delta(event)
                     if delta:
-                        logger.debug(
-                            "Channel %s: streaming Slack delta chars=%d",
-                            self.id,
-                            len(delta),
-                        )
-                        await self.ink.append_stream(stream, delta)
-                        appended = True
+                        for update in batcher.push_text(delta):
+                            logger.debug(
+                                "Channel %s: streaming Slack delta chars=%d sequence=%d",
+                                self.id,
+                                len(update.delta_text),
+                                update.sequence,
+                            )
+                            await self.ink.append_stream(stream, update.delta_text)
+                            appended = True
 
                     if isinstance(event, AgentRunResultEvent):
                         final_text = self.chromo.render_result(event.result)
@@ -176,6 +195,15 @@ class SlackTentacle(ChannelTentacle):
                             self.id,
                             len(final_text),
                         )
+                        for update in batcher.finish_all():
+                            logger.debug(
+                                "Channel %s: streaming Slack delta chars=%d sequence=%d",
+                                self.id,
+                                len(update.delta_text),
+                                update.sequence,
+                            )
+                            await self.ink.append_stream(stream, update.delta_text)
+                            appended = True
                         if final_text and not appended:
                             await self.ink.append_stream(stream, final_text)
                             appended = True

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 
 import httpx
 import lark_oapi as lark
+from lark_oapi.api.cardkit.v1 import (
+    ContentCardElementRequest,
+    ContentCardElementRequestBody,
+    CreateCardRequest,
+    CreateCardRequestBody,
+)
 from lark_oapi.api.contact.v3 import GetUserRequest
 from lark_oapi.api.im.v1 import (
     CreateImageRequest,
@@ -16,11 +23,13 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageRequestBody,
 )
 from pydantic import SecretStr
+from uuid_utils import uuid7
 
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.channel.base import DownloadedImage
 from octomate.tentacles.channel.lark.schema import (
     LarkOutboundMessage,
+    LarkStreamCard,
     LarkUserProfile,
 )
 
@@ -193,6 +202,96 @@ class LarkInk:
             except Exception:
                 logger.warning("LarkInk: send_message failed", exc_info=True)
         return first_msg_id
+
+    async def create_stream_card(
+        self,
+        card_data: str,
+        *,
+        element_id: str,
+    ) -> LarkStreamCard | None:
+        request = (
+            CreateCardRequest.builder()
+            .request_body(
+                CreateCardRequestBody.builder()
+                .type("card_json")
+                .data(card_data)
+                .build()
+            )
+            .build()
+        )
+        try:
+            resp = await self.client.cardkit.v1.card.acreate(request)  # type: ignore[union-attr]
+            if resp.success() and resp.data and resp.data.card_id:
+                return LarkStreamCard(
+                    card_id=resp.data.card_id,
+                    element_id=element_id,
+                )
+            logger.warning(
+                "LarkInk: create stream card failed: %s %s",
+                resp.code,
+                resp.msg,
+            )
+        except Exception:
+            logger.warning("LarkInk: create stream card failed", exc_info=True)
+        return None
+
+    async def send_stream_card(
+        self,
+        chat_id: str,
+        chat_type: str,
+        card: LarkStreamCard,
+        *,
+        reply_to: str | None = None,
+        reply_in_thread: bool = False,
+    ) -> str | None:
+        msg = LarkOutboundMessage(
+            msg_type="interactive",
+            content=json.dumps(
+                {"type": "card", "data": {"card_id": card.card_id}},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+        return await self.send_message(
+            chat_id,
+            chat_type,
+            [msg],
+            reply_to,
+            reply_in_thread=reply_in_thread,
+        )
+
+    async def update_stream_card(
+        self,
+        card: LarkStreamCard,
+        *,
+        content: str,
+        sequence: int,
+    ) -> bool:
+        request = (
+            ContentCardElementRequest.builder()
+            .card_id(card.card_id)
+            .element_id(card.element_id)
+            .request_body(
+                ContentCardElementRequestBody.builder()
+                .uuid(str(uuid7()))
+                .content(content)
+                .sequence(sequence)
+                .build()
+            )
+            .build()
+        )
+        try:
+            resp = await self.client.cardkit.v1.card_element.acontent(request)  # type: ignore[union-attr]
+            if resp.success():
+                return True
+            logger.warning(
+                "LarkInk: update stream card failed: %s %s",
+                resp.code,
+                resp.msg,
+            )
+        except Exception:
+            logger.warning("LarkInk: update stream card failed", exc_info=True)
+        return False
 
     async def _create_message(
         self,

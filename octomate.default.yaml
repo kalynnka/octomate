@@ -16,11 +16,18 @@ octomate:
   #     app_id: A...
   #     bot_token: xoxb-...
   #     app_token: xapp-...
+  #     stream:
+  #       flush_interval: 0
   #   lark:
   #     agent_id: inkling
   #     app_id: cli_...
   #     app_secret: ...
+  #     stream:
+  #       flush_interval: 0.2
+  #       min_chars: 1
   #   napcat:
   #     agent_id: inkling
+  #     stream:
+  #       enabled: false
   #     ws_url: ws://127.0.0.1:3001
   #     http_url: http://127.0.0.1:3000

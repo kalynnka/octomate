@@ -8,14 +8,24 @@ from typing import TYPE_CHECKING, Any
 import lark_oapi
 import lark_oapi.ws.client as ws_mod
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
-from pydantic import SecretStr
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 
+from octomate.config import LarkChannelConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.tentacles.channel.base import ChannelTentacle
-from octomate.tentacles.channel.lark.chromo import LarkChromo
+from octomate.tentacles.channel.stream import (
+    BatchedTextUpdate,
+    TextStreamBatcher,
+    is_deferred_result_event,
+    render_text_stream_delta,
+)
+from octomate.tentacles.channel.lark.chromo import (
+    LARK_STREAM_ELEMENT_ID,
+    LarkChromo,
+)
 from octomate.tentacles.channel.lark.ink import LarkInk
+from octomate.tentacles.channel.lark.schema import LarkStreamCard
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -33,12 +43,9 @@ class LarkTentacle(ChannelTentacle):
         id: str,
         octomate: Octomate | None,
         *,
-        app_id: str,
-        app_secret: SecretStr,
-        agent_id: str = "inkling",
-        mention_only: bool = True,
+        config: LarkChannelConfig,
     ) -> None:
-        self.ink = LarkInk(app_id, app_secret)
+        self.ink = LarkInk(config.app_id, config.app_secret)
         self.chromo = LarkChromo()
 
         event_handler = (
@@ -59,8 +66,7 @@ class LarkTentacle(ChannelTentacle):
             octomate=octomate,
             ink=self.ink,
             chromo=self.chromo,
-            agent_id=agent_id,
-            mention_only=mention_only,
+            config=config,
         )
 
     async def activate(self) -> None:
@@ -92,14 +98,101 @@ class LarkTentacle(ChannelTentacle):
         chat_id = key.chat_id or key.user_id
         reply_to = self.reply_target_from_source_events(source_events)
         reply_in_thread = key.chat_type == "group" and reply_to is not None
-        async for message in self.chromo.squirt(events, reply_to=reply_to):
-            await self.ink.send_message(
-                chat_id,
-                key.chat_type,
-                [message],
-                reply_to,
-                reply_in_thread=reply_in_thread,
+        if not self.config.stream.enabled:
+            async for message in self.chromo.squirt(events, reply_to=reply_to):
+                await self.ink.send_message(
+                    chat_id,
+                    key.chat_type,
+                    [message],
+                    reply_to,
+                    reply_in_thread=reply_in_thread,
+                )
+            return
+
+        batcher = TextStreamBatcher(
+            flush_interval=self.config.stream.flush_interval,
+            min_chars=self.config.stream.min_chars,
+            max_chars=self.config.stream.max_chars,
+            fold_threshold=self.config.stream.fold_threshold,
+        )
+        card: LarkStreamCard | None = None
+        stream_started = False
+        final_text = ""
+
+        async def apply_update(update: BatchedTextUpdate) -> None:
+            nonlocal card, stream_started
+            if card is None:
+                card_data = self.chromo.make_stream_card_data(
+                    "",
+                    element_id=LARK_STREAM_ELEMENT_ID,
+                )
+                card = await self.ink.create_stream_card(
+                    card_data,
+                    element_id=LARK_STREAM_ELEMENT_ID,
+                )
+                if card is None:
+                    raise RuntimeError("failed to create Lark stream card")
+                msg_id = await self.ink.send_stream_card(
+                    chat_id,
+                    key.chat_type,
+                    card,
+                    reply_to=reply_to,
+                    reply_in_thread=reply_in_thread,
+                )
+                if msg_id is None:
+                    raise RuntimeError("failed to send Lark stream card")
+                stream_started = True
+
+            if not await self.ink.update_stream_card(
+                card,
+                content=update.full_text,
+                sequence=update.sequence,
+            ):
+                raise RuntimeError("failed to update Lark stream card")
+
+        try:
+            async for event in events:
+                if is_deferred_result_event(event):
+                    for update in batcher.finish_all():
+                        await apply_update(update)
+                    return
+
+                delta = render_text_stream_delta(event)
+                if delta:
+                    for update in batcher.push_text(delta):
+                        await apply_update(update)
+
+                if isinstance(event, AgentRunResultEvent):
+                    final_text = self.chromo.render_result(event.result)
+                    for update in batcher.finish_all():
+                        await apply_update(update)
+                    if final_text and not stream_started:
+                        await self.ink.send_message(
+                            chat_id,
+                            key.chat_type,
+                            [self.chromo.make_markdown_message(final_text)],
+                            reply_to,
+                            reply_in_thread=reply_in_thread,
+                        )
+                    return
+
+            for update in batcher.finish_all():
+                await apply_update(update)
+        except Exception:
+            logger.warning(
+                "Channel %s: failed to stream Lark response",
+                self.id,
+                exc_info=True,
             )
+            fallback_text = final_text or batcher.full_text()
+            if fallback_text:
+                await self.ink.send_message(
+                    chat_id,
+                    key.chat_type,
+                    [self.chromo.make_markdown_message(fallback_text)],
+                    reply_to,
+                    reply_in_thread=reply_in_thread,
+                )
 
     def sense(self, data: P2ImMessageReceiveV1) -> None:
         task = asyncio.create_task(self.ingest(data))

@@ -9,6 +9,7 @@ from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import AgentStreamEvent, PartStartEvent, TextPart
 
 from octomate import Octomate
+from octomate.config import ChannelConfig
 from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
@@ -23,6 +24,10 @@ from octomate.tentacles.channel.base import (
     Chromo,
     DownloadedImage,
     Ink,
+)
+from octomate.tentacles.channel.stream import (
+    StreamBlock,
+    TextStreamBatcher,
 )
 
 NativeMessage = dict[str, str]
@@ -136,8 +141,11 @@ class FakeChannelTentacle(ChannelTentacle):
             octomate=cast(Octomate, octomate),
             ink=cast(Ink, ink),
             chromo=cast(Chromo, chromo),
-            agent_id="inkling",
-            mention_only=mention_only,
+            config=ChannelConfig(
+                type="fake",
+                agent_id="inkling",
+                mention_only=mention_only,
+            ),
         )
         self.sent = ink.sent
 
@@ -267,3 +275,71 @@ async def test_respond_text_uses_normal_adapter(
 
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "fallback"
+
+
+def test_text_stream_batcher_immediate_mode_flushes_each_push() -> None:
+    batcher = TextStreamBatcher(flush_interval=0)
+
+    first = batcher.push_text("hel")
+    second = batcher.push_text("lo")
+
+    assert [update.delta_text for update in first + second] == ["hel", "lo"]
+    assert [update.sequence for update in first + second] == [1, 2]
+
+
+def test_text_stream_batcher_flushes_by_time_and_size() -> None:
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    batcher = TextStreamBatcher(
+        flush_interval=0.2,
+        min_chars=3,
+        max_chars=10,
+        clock=clock,
+    )
+
+    assert batcher.push_text("he") == []
+    now = 0.3
+    updates = batcher.push_text("y")
+
+    assert len(updates) == 1
+    assert updates[0].delta_text == "hey"
+    assert updates[0].full_text == "hey"
+
+    updates = batcher.push_text("x" * 10)
+
+    assert len(updates) == 1
+    assert updates[0].delta_text == "x" * 10
+    assert updates[0].full_text == "hey" + ("x" * 10)
+
+
+def test_text_stream_batcher_final_flush_and_block_switching() -> None:
+    batcher = TextStreamBatcher(flush_interval=999, min_chars=100)
+
+    assert batcher.push_text("answer") == []
+    updates = batcher.push_text(
+        "thinking",
+        block=StreamBlock(id="think-1", type="thinking", title="Thinking"),
+    )
+
+    assert len(updates) == 1
+    assert updates[0].block_id == "answer"
+    assert updates[0].delta_text == "answer"
+
+    final_updates = batcher.finish_all()
+
+    assert len(final_updates) == 1
+    assert final_updates[0].block_id == "think-1"
+    assert final_updates[0].delta_text == "thinking"
+    assert final_updates[0].is_final is True
+
+
+def test_text_stream_batcher_marks_large_blocks_foldable() -> None:
+    batcher = TextStreamBatcher(flush_interval=0, fold_threshold=5)
+
+    updates = batcher.push_text("abcdef")
+
+    assert len(updates) == 1
+    assert updates[0].foldable is True
