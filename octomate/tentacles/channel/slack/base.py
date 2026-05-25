@@ -105,6 +105,7 @@ class SlackTentacle(ChannelTentacle):
                 recipient_user_id=context.recipient_user_id,
                 recipient_team_id=context.recipient_team_id,
             ) as stream:
+                appended = False
                 async for event in events:
                     delta = self.chromo.render_stream_delta(event)
                     if delta:
@@ -113,7 +114,8 @@ class SlackTentacle(ChannelTentacle):
                             self.id,
                             len(delta),
                         )
-                        await stream.append(delta)
+                        await self.ink.append_stream(stream, delta)
+                        appended = True
 
                     if isinstance(event, AgentRunResultEvent):
                         final_text = self.chromo.render_result(event.result)
@@ -122,7 +124,9 @@ class SlackTentacle(ChannelTentacle):
                             self.id,
                             len(final_text),
                         )
-                        stream.final_markdown_text = final_text
+                        if final_text and not appended:
+                            await self.ink.append_stream(stream, final_text)
+                            appended = True
         except Exception:
             logger.warning(
                 "Channel %s: failed to stream Slack response",

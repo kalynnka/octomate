@@ -33,7 +33,6 @@ class SlackMessageEvent(TypedDict, total=False):
 class SlackPostMessageKwargs(TypedDict):
     channel: str
     text: str
-    markdown_text: str
     blocks: NotRequired[list[dict[str, Any]]]
     thread_ts: NotRequired[str]
 

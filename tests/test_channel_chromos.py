@@ -127,24 +127,6 @@ async def test_slack_chromo_renders_deferred_requests_as_markdown() -> None:
 
 
 @dataclass
-class FakeSlackStreamSession:
-    ink: FakeSlackInk
-    stream: object
-    appended: bool = False
-    final_markdown_text: str = ""
-
-    async def append(self, markdown_text: str) -> None:
-        self.appended = True
-        await self.ink.append_stream(self.stream, markdown_text)
-
-    async def close(self) -> None:
-        await self.ink.stop_stream(
-            self.stream,
-            markdown_text=None if self.appended else self.final_markdown_text or None,
-        )
-
-
-@dataclass
 class FakeSlackInk:
     streams: list[dict[str, str | None]] = field(default_factory=list)
     appends: list[str] = field(default_factory=list)
@@ -180,18 +162,17 @@ class FakeSlackInk:
         *,
         recipient_user_id: str | None = None,
         recipient_team_id: str | None = None,
-    ) -> AsyncIterator[FakeSlackStreamSession]:
+    ) -> AsyncIterator[object]:
         stream = await self.start_stream(
             channel,
             thread_ts,
             recipient_user_id=recipient_user_id,
             recipient_team_id=recipient_team_id,
         )
-        session = FakeSlackStreamSession(ink=self, stream=stream)
         try:
-            yield session
+            yield stream
         finally:
-            await session.close()
+            await self.stop_stream(stream)
 
     async def append_stream(self, stream: object, markdown_text: str) -> None:
         self.appends.append(markdown_text)
@@ -304,8 +285,8 @@ async def test_slack_tentacle_streams_final_only_result_once() -> None:
     await channel.respond(_slack_key(), events(), source_events=[_source_event()])
 
     assert len(ink.streams) == 1
-    assert ink.appends == []
-    assert ink.stops == ["final **markdown**"]
+    assert ink.appends == ["final **markdown**"]
+    assert ink.stops == [None]
     assert ink.finals == []
 
 

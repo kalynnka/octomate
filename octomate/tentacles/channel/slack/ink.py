@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -31,24 +30,6 @@ LONG_MARKDOWN_NOTE = (
 
 SLACK_MARKDOWN_TEXT_LIMIT = 12_000
 SLACK_MARKDOWN_CHUNKER = MarkdownChunker(limit=SLACK_MARKDOWN_TEXT_LIMIT)
-
-
-@dataclass
-class SlackStreamSession:
-    ink: SlackInk
-    stream: AsyncChatStream
-    appended: bool = False
-    final_markdown_text: str = ""
-
-    async def append(self, markdown_text: str) -> None:
-        self.appended = True
-        await self.ink.append_stream(self.stream, markdown_text)
-
-    async def close(self) -> str | None:
-        markdown_text = None
-        if not self.appended and self.final_markdown_text:
-            markdown_text = self.final_markdown_text
-        return await self.ink.stop_stream(self.stream, markdown_text=markdown_text)
 
 
 class SlackInk:
@@ -156,7 +137,6 @@ class SlackInk:
                     kwargs: SlackPostMessageKwargs = {
                         "channel": chat_id,
                         "text": msg.text,
-                        "markdown_text": markdown_text,
                     }
                     if msg.blocks:
                         kwargs["blocks"] = msg.blocks
@@ -203,19 +183,18 @@ class SlackInk:
         *,
         recipient_user_id: str | None = None,
         recipient_team_id: str | None = None,
-    ) -> AsyncIterator[SlackStreamSession]:
+    ) -> AsyncIterator[AsyncChatStream]:
         stream = await self.start_stream(
             channel,
             thread_ts,
             recipient_user_id=recipient_user_id,
             recipient_team_id=recipient_team_id,
         )
-        session = SlackStreamSession(ink=self, stream=stream)
         try:
-            yield session
+            yield stream
         finally:
             try:
-                await session.close()
+                await self.stop_stream(stream)
             except Exception:
                 logger.warning("SlackInk: failed to stop stream", exc_info=True)
 
