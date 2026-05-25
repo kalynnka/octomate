@@ -697,6 +697,50 @@ async def test_slack_ink_flushes_each_stream_append() -> None:
     assert stream.appends == [{"markdown_text": "hello", "chunks": ()}]
 
 
+async def test_slack_tentacle_ensures_assistant_thread_conversation() -> None:
+    class FakeConversations:
+        def __init__(self) -> None:
+            self.calls: list[tuple[ConversationKey, str | None]] = []
+
+        async def ensure(
+            self,
+            key: ConversationKey,
+            *,
+            agent_tentacle_id: str | None = None,
+        ) -> object:
+            self.calls.append((key, agent_tentacle_id))
+            return object()
+
+    conversations = FakeConversations()
+    channel = _slack_channel(FakeSlackInk())
+    channel.octomate = SimpleNamespace(conversations=conversations)
+    channel.agent_id = "inkling"
+
+    await channel.on_assistant_thread_started(
+        {
+            "type": "assistant_thread_started",
+            "assistant_thread": {
+                "user_id": "U1",
+                "channel_id": "D1",
+                "thread_ts": "1710000000.000100",
+                "context": {"channel_id": "C1", "team_id": "T1"},
+            },
+            "event_ts": "1710000000.000200",
+        }
+    )
+
+    assert len(conversations.calls) == 1
+    key, agent_id = conversations.calls[0]
+    assert key == ConversationKey(
+        channel_tentacle_id="slack",
+        chat_type="private",
+        chat_id="D1",
+        user_id="U1",
+        thread_id="1710000000.000100",
+    )
+    assert agent_id == "inkling"
+
+
 def test_markdown_chunker_prefers_paragraph_boundaries() -> None:
     chunker = MarkdownChunker()
     first = ("a" * (SLACK_MARKDOWN_TEXT_LIMIT // 2)) + "\n\n"

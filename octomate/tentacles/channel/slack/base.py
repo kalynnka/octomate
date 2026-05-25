@@ -9,12 +9,16 @@ from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
+from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.tentacles.channel.base import ChannelTentacle
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
-from octomate.tentacles.channel.slack.schema import SlackMessageEvent
+from octomate.tentacles.channel.slack.schema import (
+    SlackAssistantThreadEvent,
+    SlackMessageEvent,
+)
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -51,6 +55,10 @@ class SlackTentacle(ChannelTentacle):
         self.chromo = SlackChromo()
         self.app = AsyncApp(token=bot_token.get_secret_value())
         self.app.event("message")(self.on_message)
+        self.app.event("assistant_thread_started")(self.on_assistant_thread_started)
+        self.app.event("assistant_thread_context_changed")(
+            self.on_assistant_thread_context_changed
+        )
         self.app_token = app_token
         self.handler: AsyncSocketModeHandler | None = None
         super().__init__(
@@ -82,6 +90,50 @@ class SlackTentacle(ChannelTentacle):
         if event.get("bot_id") or event.get("user") == self.profile.user_id:
             return
         await self.ingest(event)
+
+    async def on_assistant_thread_started(
+        self,
+        event: SlackAssistantThreadEvent,
+    ) -> None:
+        await self.ensure_assistant_thread(event)
+
+    async def on_assistant_thread_context_changed(
+        self,
+        event: SlackAssistantThreadEvent,
+    ) -> None:
+        await self.ensure_assistant_thread(event)
+
+    async def ensure_assistant_thread(
+        self,
+        event: SlackAssistantThreadEvent,
+    ) -> None:
+        thread = event.get("assistant_thread", {})
+        channel_id = thread.get("channel_id", "")
+        thread_ts = thread.get("thread_ts", "")
+        user_id = thread.get("user_id", "")
+        if not channel_id or not thread_ts or not user_id:
+            logger.debug(
+                "Channel %s: ignored incomplete Slack assistant thread event %s",
+                self.id,
+                event,
+            )
+            return
+        if self.octomate is None:
+            raise RuntimeError(f"channel {self.id!r} is not attached to Octomate")
+
+        key = ConversationKey(
+            channel_tentacle_id=self.id,
+            chat_type="private",
+            chat_id=channel_id,
+            user_id=user_id,
+            thread_id=thread_ts,
+        )
+        with sqlalchemy_materia():
+            await self.octomate.conversations.ensure(
+                key,
+                agent_tentacle_id=self.agent_id,
+            )
+        logger.info("Channel %s: ensured Slack assistant thread %s", self.id, key)
 
     async def respond(
         self,
