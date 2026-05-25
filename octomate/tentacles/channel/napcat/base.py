@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import TYPE_CHECKING
+
+from pydantic import SecretStr
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed
+
+from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channel.napcat.chromo import NapcatChromo
+from octomate.tentacles.channel.napcat.ink import NapcatInk
+
+if TYPE_CHECKING:
+    from octomate.base import Octomate
+
+logger = logging.getLogger(__name__)
+
+
+class NapcatTentacle(ChannelTentacle):
+    ws_url: str
+    ws_client: ClientConnection | None
+    stop_event: asyncio.Event | None
+
+    access_token: SecretStr | None
+    backoff_base: float
+    backoff_max: float
+    backoff_factor: float
+
+    def __init__(
+        self,
+        id: str,
+        octomate: Octomate | None,
+        *,
+        ws_url: str,
+        http_url: str,
+        access_token: SecretStr | None = None,
+        backoff_base: float = 1.0,
+        backoff_max: float = 60.0,
+        backoff_factor: float = 2.0,
+        agent_id: str = "inkling",
+        mention_only: bool = True,
+    ) -> None:
+        self.ws_url = ws_url
+        self.access_token = access_token
+        self.ink = NapcatInk(http_url, access_token)
+        self.chromo = NapcatChromo()
+        self.backoff_base = backoff_base
+        self.backoff_max = backoff_max
+        self.backoff_factor = backoff_factor
+        self.ws_client = None
+        self.stop_event = None
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            ink=self.ink,
+            chromo=self.chromo,
+            agent_id=agent_id,
+            mention_only=mention_only,
+        )
+
+    async def activate(self) -> None:
+        logger.info("Channel %s: connecting to Napcat at %s", self.id, self.ws_url)
+        self.stop_event = asyncio.Event()
+        delay = self.backoff_base
+        while self.stop_event is not None and not self.stop_event.is_set():
+            try:
+                extra_headers: dict[str, str] = {}
+                if self.access_token:
+                    extra_headers["Authorization"] = (
+                        f"Bearer {self.access_token.get_secret_value()}"
+                    )
+
+                async with connect(
+                    self.ws_url,
+                    additional_headers=extra_headers or None,
+                ) as ws:
+                    self.ws_client = ws
+                    delay = self.backoff_base
+                    logger.info("Channel %s: connected to Napcat", self.id)
+                    await self.sense(ws)
+            except ConnectionClosed:
+                logger.warning(
+                    "Channel %s: Napcat connection lost, reconnecting in %.1fs",
+                    self.id,
+                    delay,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Channel %s: Napcat connection failed (%s), retrying in %.1fs",
+                    self.id,
+                    exc,
+                    delay,
+                )
+            finally:
+                self.ws_client = None
+
+            if self.stop_event is None or self.stop_event.is_set():
+                break
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=delay)
+            except TimeoutError:
+                pass
+            delay = min(delay * self.backoff_factor, self.backoff_max)
+
+    async def deactivate(self) -> None:
+        if self.stop_event is not None:
+            self.stop_event.set()
+        if self.ws_client is not None:
+            await self.ws_client.close()
+            self.ws_client = None
+
+    async def sense(self, ws: ClientConnection) -> None:
+        async for raw in ws:
+            await self.ingest(raw)
+
+    async def close(self) -> None:
+        await self.deactivate()
+        await self.ink.close()

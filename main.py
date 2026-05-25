@@ -8,6 +8,7 @@ from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.tentacles.agent.inkling import InklingTentacle, build_inkling_agent
 from octomate.tentacles.channel.lark import LarkTentacle
+from octomate.tentacles.channel.napcat import NapcatTentacle
 from octomate.tentacles.channel.slack import SlackTentacle
 from octomate.web.dev_ui import build_dev_ui_router
 
@@ -49,6 +50,23 @@ if (channel_config := config.channels.lark) is not None and channel_config.enabl
             octomate,
             app_id=channel_config.app_id,
             app_secret=channel_config.app_secret,
+            agent_id=channel_config.agent_id,
+            mention_only=channel_config.mention_only,
+        ),
+    )
+
+if (channel_config := config.channels.napcat) is not None and channel_config.enabled:
+    octomate.connect_channel(
+        "napcat",
+        NapcatTentacle(
+            "napcat",
+            octomate,
+            ws_url=channel_config.ws_url,
+            http_url=channel_config.http_url,
+            access_token=channel_config.access_token,
+            backoff_base=channel_config.backoff_base,
+            backoff_max=channel_config.backoff_max,
+            backoff_factor=channel_config.backoff_factor,
             agent_id=channel_config.agent_id,
             mention_only=channel_config.mention_only,
         ),

@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+from pydantic import SecretStr
+
+from octomate.schemas.segments import ImageSegment
+from octomate.tentacles.channel.base import DownloadedImage
+from octomate.tentacles.channel.napcat.schema import (
+    NapcatOutboundMessage,
+    NapcatUserProfile,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class NapcatInk:
+    http_url: str
+    access_token: SecretStr | None
+    httpx: httpx.AsyncClient
+    sync_httpx: httpx.Client
+
+    def __init__(self, http_url: str, access_token: SecretStr | None = None) -> None:
+        self.http_url = str(http_url).rstrip("/")
+        self.access_token = access_token
+        headers: dict[str, str] = {}
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token.get_secret_value()}"
+        self.httpx = httpx.AsyncClient(base_url=self.http_url, headers=headers)
+        self.sync_httpx = httpx.Client(base_url=self.http_url, headers=headers)
+
+    def inspect(self) -> NapcatUserProfile:
+        resp = self.sync_httpx.post("/get_login_info", json={})
+        resp.raise_for_status()
+        login_data = resp.json().get("data", {})
+        user_id = str(login_data.get("user_id", ""))
+        resp = self.sync_httpx.post(
+            "/get_stranger_info",
+            json={"user_id": user_id},
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", {})
+        data.setdefault("user_id", user_id)
+        return NapcatUserProfile.model_validate(data)
+
+    async def get_user_profile(self, user_id: str) -> NapcatUserProfile:
+        try:
+            resp = await self.httpx.post(
+                "/get_stranger_info",
+                json={"user_id": user_id},
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", {})
+            data.setdefault("user_id", user_id)
+            return NapcatUserProfile.model_validate(data)
+        except Exception:
+            logger.warning(
+                "NapcatInk: get_user_profile failed for %s", user_id, exc_info=True
+            )
+            return NapcatUserProfile(user_id=user_id, name=user_id)
+
+    async def upload_media(self, data: bytes) -> str | None:
+        return None
+
+    async def get_image_url(self, file: str) -> str | None:
+        resp = await self.httpx.post("/get_image", json={"file": file})
+        resp.raise_for_status()
+        return resp.json().get("data", {}).get("url")
+
+    async def download(self, url: str) -> httpx.Response:
+        resp = await self.httpx.get(url)
+        resp.raise_for_status()
+        return resp
+
+    async def download_image(
+        self,
+        seg: ImageSegment,
+        message_id: str,
+    ) -> DownloadedImage | None:
+        try:
+            url = seg.data.url or await self.get_image_url(str(seg.data.file))
+            if not url:
+                return None
+            resp = await self.download(url)
+            return DownloadedImage(
+                data=resp.content,
+                file_name=url.rsplit("/", 1)[-1] or str(seg.data.file),
+                content_type=resp.headers.get("content-type", ""),
+                url=url,
+            )
+        except Exception:
+            logger.warning("NapcatInk: download_image failed", exc_info=True)
+            return None
+
+    async def send_message(
+        self,
+        chat_id: str,
+        chat_type: str,
+        messages: list[NapcatOutboundMessage],
+        reply_to: str | None = None,
+        reply_in_thread: bool = False,
+    ) -> str | None:
+        first_msg_id: str | None = None
+        endpoint = "/send_group_msg" if chat_type == "group" else "/send_private_msg"
+        id_field = "group_id" if chat_type == "group" else "user_id"
+        for message in messages:
+            payload: dict[str, Any] = {
+                id_field: chat_id,
+                "message": message.segments,
+            }
+            if reply_to:
+                payload["reply"] = reply_to
+            try:
+                resp = await self.httpx.post(endpoint, json=payload)
+                resp.raise_for_status()
+                data = resp.json().get("data") or {}
+                first_msg_id = first_msg_id or data.get("message_id")
+            except Exception:
+                logger.warning("NapcatInk: send_message failed", exc_info=True)
+        return first_msg_id
+
+    async def close(self) -> None:
+        await self.httpx.aclose()
+        self.sync_httpx.close()

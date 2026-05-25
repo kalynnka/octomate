@@ -9,7 +9,8 @@ from types import SimpleNamespace
 from typing import Any
 from typing import cast
 
-from pydantic import BaseModel
+from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
+from pydantic import BaseModel, SecretStr
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     AgentStreamEvent,
@@ -29,6 +30,8 @@ from octomate.schemas.segments import AtSegment, ImageSegment, ReplySegment, Tex
 from octomate.tentacles.channel.base import MarkdownChunker
 from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
+from octomate.tentacles.channel.napcat import NapcatChromo, NapcatInk, NapcatTentacle
+from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
 from octomate.tentacles.channel.slack import SlackChromo, SlackInk, SlackTentacle
 from octomate.tentacles.channel.slack.ink import (
     SLACK_MARKDOWN_TEXT_LIMIT,
@@ -37,6 +40,268 @@ from octomate.tentacles.channel.slack.ink import SlackInk as SlackInkType
 from octomate.tentacles.channel.slack.schema import SlackOutboundMessage
 
 SlackEvent = AgentStreamEvent | AgentRunResultEvent[str]
+
+
+async def test_napcat_chromo_decodes_group_message_segments() -> None:
+    chromo = NapcatChromo()
+    event = await chromo.sip(
+        json.dumps(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "time": 1710000000,
+                "self_id": 42,
+                "message_id": 1001,
+                "group_id": 2002,
+                "user_id": 3003,
+                "sender": {"user_id": 3003, "nickname": "Alice"},
+                "raw_message": "hello",
+                "message": [
+                    {"type": "reply", "data": {"id": "999"}},
+                    {"type": "text", "data": {"text": "hello "}},
+                    {"type": "at", "data": {"qq": "42", "name": "Octomate"}},
+                    {
+                        "type": "image",
+                        "data": {"file": "image-key", "url": "https://image"},
+                    },
+                    {"type": "face", "data": {"id": "14"}},
+                ],
+            }
+        )
+    )
+
+    assert event is not None
+    assert event.chat_type == "group"
+    assert event.chat_id == "2002"
+    assert event.user_id == "3003"
+    assert event.self_id == "42"
+    assert event.message_id == "1001"
+    assert event.reply_id == "999"
+    assert [type(seg) for seg in event.segments] == [
+        ReplySegment,
+        TextSegment,
+        AtSegment,
+        ImageSegment,
+    ]
+    at_seg = event.segments[2]
+    image_seg = event.segments[3]
+    assert isinstance(at_seg, AtSegment)
+    assert isinstance(image_seg, ImageSegment)
+    assert at_seg.data.user_id == "42"
+    assert image_seg.data.file == "image-key"
+
+
+async def test_napcat_chromo_decodes_private_message() -> None:
+    chromo = NapcatChromo()
+    event = await chromo.sip(
+        json.dumps(
+            {
+                "post_type": "message",
+                "message_type": "private",
+                "time": 1710000000,
+                "self_id": 42,
+                "message_id": 1001,
+                "user_id": 3003,
+                "raw_message": "hello",
+                "message": [{"type": "text", "data": {"text": "hello"}}],
+            }
+        )
+    )
+
+    assert event is not None
+    assert event.chat_type == "private"
+    assert event.chat_id == "3003"
+    assert event.user_id == "3003"
+    assert [type(seg) for seg in event.segments] == [TextSegment]
+
+
+async def test_napcat_chromo_ignores_responses_and_non_message_events() -> None:
+    chromo = NapcatChromo()
+
+    response = await chromo.sip(json.dumps({"status": "ok", "retcode": 0}))
+    notice = await chromo.sip(
+        json.dumps(
+            {
+                "post_type": "notice",
+                "notice_type": "group_recall",
+                "message_id": 1,
+            }
+        )
+    )
+
+    assert response is None
+    assert notice is None
+
+
+async def test_napcat_chromo_renders_final_text_without_markdown() -> None:
+    chromo = NapcatChromo()
+
+    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
+        yield AgentRunResultEvent(AgentRunResult("hello **napcat**"))
+
+    messages = [message async for message in chromo.squirt(events())]
+
+    assert messages == [
+        NapcatOutboundMessage(
+            segments=[{"type": "text", "data": {"text": "hello napcat"}}]
+        )
+    ]
+
+
+async def test_napcat_chromo_renders_structured_output_as_plain_json() -> None:
+    class Answer(BaseModel):
+        ok: bool
+        count: int
+
+    chromo = NapcatChromo()
+
+    async def events() -> AsyncIterator[AgentRunResultEvent[Answer]]:
+        yield AgentRunResultEvent(AgentRunResult(Answer(ok=True, count=2)))
+
+    messages = [message async for message in chromo.squirt(events())]
+    text = messages[0].segments[0]["data"]["text"]
+
+    assert text.startswith("{")
+    assert '"ok": true' in text
+    assert '"count": 2' in text
+
+
+async def test_napcat_chromo_renders_deferred_requests_as_plain_text() -> None:
+    chromo = NapcatChromo()
+
+    async def events() -> AsyncIterator[AgentRunResultEvent[DeferredToolRequests]]:
+        yield AgentRunResultEvent(
+            AgentRunResult(
+                DeferredToolRequests(
+                    calls=[
+                        ToolCallPart(
+                            tool_name="ask_user",
+                            args={"question": "Continue?"},
+                            tool_call_id="call_1",
+                        )
+                    ]
+                )
+            )
+        )
+
+    messages = [message async for message in chromo.squirt(events())]
+    text = messages[0].segments[0]["data"]["text"]
+
+    assert "ask_user needs input" in text
+    assert "call_1" in text
+
+
+class FakeNapcatResponse:
+    def __init__(self, data: dict[str, object] | None = None) -> None:
+        self._data = data or {"data": {"message_id": "msg-1"}}
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return self._data
+
+
+class FakeNapcatHTTP:
+    def __init__(self) -> None:
+        self.posts: list[tuple[str, dict[str, object]]] = []
+
+    async def post(self, endpoint: str, json: dict[str, object]) -> FakeNapcatResponse:
+        self.posts.append((endpoint, json))
+        return FakeNapcatResponse()
+
+
+async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
+    http = FakeNapcatHTTP()
+    ink = object.__new__(NapcatInk)
+    cast(Any, ink).httpx = http
+    message = NapcatOutboundMessage(
+        segments=[{"type": "text", "data": {"text": "hello"}}]
+    )
+
+    group_id = await ink.send_message("2002", "group", [message], reply_to="1001")
+    private_id = await ink.send_message("3003", "private", [message])
+
+    assert group_id == "msg-1"
+    assert private_id == "msg-1"
+    assert http.posts == [
+        (
+            "/send_group_msg",
+            {
+                "group_id": "2002",
+                "message": message.segments,
+                "reply": "1001",
+            },
+        ),
+        (
+            "/send_private_msg",
+            {"user_id": "3003", "message": message.segments},
+        ),
+    ]
+
+
+async def test_napcat_tentacle_sense_invokes_ingest() -> None:
+    channel = object.__new__(NapcatTentacle)
+    calls: list[object] = []
+
+    async def ingest(raw: object) -> None:
+        calls.append(raw)
+
+    class FakeWS:
+        def __aiter__(self) -> AsyncIterator[str]:
+            return self._events()
+
+        async def _events(self) -> AsyncIterator[str]:
+            yield "event-1"
+            yield "event-2"
+
+    cast(Any, channel).ingest = ingest
+
+    await channel.sense(cast(Any, FakeWS()))
+
+    assert calls == ["event-1", "event-2"]
+
+
+async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    channel = object.__new__(NapcatTentacle)
+    channel.id = "napcat"
+    channel.ws_url = "ws://napcat"
+    channel.access_token = SecretStr("token")
+    channel.backoff_base = 0.01
+    channel.backoff_max = 0.01
+    channel.backoff_factor = 2.0
+    channel.ws_client = None
+    channel.stop_event = None
+
+    class FakeConnect:
+        def __init__(self, url: str, additional_headers: dict[str, str] | None) -> None:
+            calls.append({"url": url, "additional_headers": additional_headers})
+
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    async def sense(ws: object) -> None:
+        assert channel.stop_event is not None
+        channel.stop_event.set()
+
+    channel.sense = sense
+    monkeypatch.setattr(
+        "octomate.tentacles.channel.napcat.base.connect",
+        FakeConnect,
+    )
+
+    await channel.activate()
+
+    assert calls == [
+        {
+            "url": "ws://napcat",
+            "additional_headers": {"Authorization": "Bearer token"},
+        }
+    ]
 
 
 def _lark_raw(
@@ -50,20 +315,23 @@ def _lark_raw(
     message_id: str = "om_message",
     thread_id: str = "",
     parent_id: str = "",
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        event=SimpleNamespace(
-            message=SimpleNamespace(
-                message_type=message_type,
-                chat_type=chat_type,
-                content=json.dumps(content),
-                mentions=mentions,
-                chat_id=chat_id,
-                message_id=message_id,
-                thread_id=thread_id,
-                parent_id=parent_id,
-            ),
-            sender=SimpleNamespace(sender_id=SimpleNamespace(open_id=sender_id)),
+) -> P2ImMessageReceiveV1:
+    return cast(
+        P2ImMessageReceiveV1,
+        SimpleNamespace(
+            event=SimpleNamespace(
+                message=SimpleNamespace(
+                    message_type=message_type,
+                    chat_type=chat_type,
+                    content=json.dumps(content),
+                    mentions=mentions,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    thread_id=thread_id,
+                    parent_id=parent_id,
+                ),
+                sender=SimpleNamespace(sender_id=SimpleNamespace(open_id=sender_id)),
+            )
         )
     )
 
@@ -100,7 +368,9 @@ async def test_lark_chromo_decodes_text_mentions_and_reply_metadata() -> None:
         AtSegment,
         TextSegment,
     ]
-    assert event.segments[2].data.user_id == "ou_mentioned"
+    mention_seg = event.segments[2]
+    assert isinstance(mention_seg, AtSegment)
+    assert mention_seg.data.user_id == "ou_mentioned"
 
 
 async def test_lark_chromo_decodes_private_images() -> None:
@@ -119,7 +389,9 @@ async def test_lark_chromo_decodes_private_images() -> None:
     assert event.chat_type == "private"
     assert event.chat_id == "ou_private"
     assert [type(seg) for seg in event.segments] == [ImageSegment]
-    assert event.segments[0].data.file == "img_key"
+    image_seg = event.segments[0]
+    assert isinstance(image_seg, ImageSegment)
+    assert image_seg.data.file == "img_key"
 
 
 async def test_lark_chromo_decodes_post_content() -> None:
@@ -156,8 +428,12 @@ async def test_lark_chromo_decodes_post_content() -> None:
         ImageSegment,
     ]
     assert event.text_parts() == ["[Release]\n", "ready ", "https://example.com"]
-    assert event.segments[3].data.user_id == "ou_reviewer"
-    assert event.segments[4].data.file == "img_post"
+    at_seg = event.segments[3]
+    image_seg = event.segments[4]
+    assert isinstance(at_seg, AtSegment)
+    assert isinstance(image_seg, ImageSegment)
+    assert at_seg.data.user_id == "ou_reviewer"
+    assert image_seg.data.file == "img_post"
 
 
 async def test_lark_chromo_renders_final_text_as_interactive_markdown() -> None:
@@ -366,13 +642,13 @@ async def test_lark_tentacle_message_callback_invokes_ingest() -> None:
     calls: list[object] = []
     done = asyncio.Event()
 
-    async def ingest(data: object) -> None:
-        calls.append(data)
+    async def ingest(raw: object) -> None:
+        calls.append(raw)
         done.set()
 
     channel.ingest = ingest
 
-    channel.sense(raw)
+    channel.sense(cast(Any, raw))
     await asyncio.wait_for(done.wait(), timeout=1)
 
     assert calls == [raw]
@@ -713,7 +989,7 @@ async def test_slack_tentacle_ensures_assistant_thread_conversation() -> None:
 
     conversations = FakeConversations()
     channel = _slack_channel(FakeSlackInk())
-    channel.octomate = SimpleNamespace(conversations=conversations)
+    cast(Any, channel).octomate = SimpleNamespace(conversations=conversations)
     channel.agent_id = "inkling"
 
     await channel.on_assistant_thread_started(
