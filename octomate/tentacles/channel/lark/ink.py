@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import io
+import logging
+
+import httpx
+import lark_oapi as lark
+from lark_oapi.api.contact.v3 import GetUserRequest
+from lark_oapi.api.im.v1 import (
+    CreateImageRequest,
+    CreateImageRequestBody,
+    CreateMessageRequest,
+    CreateMessageRequestBody,
+    GetMessageResourceRequest,
+    ReplyMessageRequest,
+    ReplyMessageRequestBody,
+)
+from pydantic import SecretStr
+
+from octomate.schemas.segments import ImageSegment
+from octomate.tentacles.channel.base import DownloadedImage
+from octomate.tentacles.channel.lark.schema import (
+    LarkOutboundMessage,
+    LarkUserProfile,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class LarkInk:
+    app_id: str
+    app_secret: SecretStr
+    client: lark.Client
+    sync_http: httpx.Client
+
+    def __init__(self, app_id: str, app_secret: SecretStr) -> None:
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.client = (
+            lark.Client.builder()
+            .app_id(app_id)
+            .app_secret(app_secret.get_secret_value())
+            .build()
+        )
+        self.sync_http = httpx.Client(base_url="https://open.feishu.cn")
+        self._authenticate()
+
+    def _authenticate(self) -> None:
+        resp = self.sync_http.post(
+            "/open-apis/auth/v3/tenant_access_token/internal",
+            json={
+                "app_id": self.app_id,
+                "app_secret": self.app_secret.get_secret_value(),
+            },
+        )
+        resp.raise_for_status()
+        token = resp.json().get("tenant_access_token")
+        if not token:
+            raise RuntimeError("LarkInk: failed to obtain tenant_access_token")
+        self.sync_http.headers["Authorization"] = f"Bearer {token}"
+
+    def inspect(self) -> LarkUserProfile:
+        resp = self.sync_http.get("/open-apis/bot/v3/info")
+        resp.raise_for_status()
+        bot = resp.json().get("bot", {})
+        if not bot:
+            raise RuntimeError("LarkInk: inspect failed, no bot info returned")
+        return LarkUserProfile(
+            user_id=bot.get("open_id", ""),
+            name=bot.get("app_name", ""),
+            avatar_url=bot.get("avatar_url", ""),
+        )
+
+    async def get_user_profile(self, user_id: str) -> LarkUserProfile:
+        try:
+            request = (
+                GetUserRequest.builder()
+                .user_id_type("open_id")
+                .user_id(user_id)
+                .build()
+            )
+            resp = await self.client.contact.v3.user.aget(request)  # type: ignore[union-attr]
+            if resp.success() and resp.data and resp.data.user:
+                attrs = {
+                    key: value
+                    for key, value in vars(resp.data.user).items()
+                    if value is not None
+                }
+                profile = LarkUserProfile.model_validate(attrs)
+                if profile.name:
+                    return profile
+            else:
+                logger.warning(
+                    "LarkInk: get_user_profile failed: %s %s",
+                    resp.code,
+                    resp.msg,
+                )
+        except Exception:
+            logger.warning(
+                "LarkInk: get_user_profile failed for %s", user_id, exc_info=True
+            )
+        return LarkUserProfile(user_id=user_id, name=user_id)
+
+    async def upload_media(self, data: bytes) -> str | None:
+        request = (
+            CreateImageRequest.builder()
+            .request_body(
+                CreateImageRequestBody.builder()
+                .image_type("message")
+                .image(io.BytesIO(data))
+                .build()
+            )
+            .build()
+        )
+        try:
+            resp = await self.client.im.v1.image.acreate(request)  # type: ignore[union-attr]
+            if resp.success() and resp.data and resp.data.image_key:
+                return resp.data.image_key
+            logger.warning("LarkInk: image upload failed: %s %s", resp.code, resp.msg)
+        except Exception:
+            logger.warning("LarkInk: image upload failed", exc_info=True)
+        return None
+
+    async def download_media(
+        self,
+        message_id: str,
+        *,
+        file_key: str,
+    ) -> tuple[bytes, str] | None:
+        request = (
+            GetMessageResourceRequest.builder()
+            .message_id(message_id)
+            .file_key(file_key)
+            .type("image")
+            .build()
+        )
+        try:
+            resp = await self.client.im.v1.message_resource.aget(request)  # type: ignore[union-attr]
+            if not resp.success():
+                logger.warning(
+                    "LarkInk: download_media failed: %s %s", resp.code, resp.msg
+                )
+                return None
+            file_name: str = resp.file_name or file_key
+            data = resp.file.read() if resp.file else b""
+            return data, file_name
+        except Exception:
+            logger.warning("LarkInk: download_media failed", exc_info=True)
+            return None
+
+    async def download_image(
+        self,
+        seg: ImageSegment,
+        message_id: str,
+    ) -> DownloadedImage | None:
+        if not seg.data.file:
+            return None
+        result = await self.download_media(message_id, file_key=seg.data.file)
+        if result is None:
+            return None
+        data, file_name = result
+        return DownloadedImage(data=data, file_name=file_name)
+
+    async def send_message(
+        self,
+        chat_id: str,
+        chat_type: str,
+        messages: list[LarkOutboundMessage],
+        reply_to: str | None = None,
+        reply_in_thread: bool = False,
+    ) -> str | None:
+        receive_id_type = "chat_id" if chat_type == "group" else "open_id"
+        first_msg_id: str | None = None
+        for msg in messages:
+            try:
+                if reply_to:
+                    msg_id = await self._reply_message(
+                        reply_to,
+                        msg.msg_type,
+                        msg.content,
+                        reply_in_thread=reply_in_thread,
+                    )
+                    if not reply_in_thread:
+                        reply_to = None
+                else:
+                    msg_id = await self._create_message(
+                        chat_id,
+                        receive_id_type,
+                        msg.msg_type,
+                        msg.content,
+                    )
+                first_msg_id = first_msg_id or msg_id
+            except Exception:
+                logger.warning("LarkInk: send_message failed", exc_info=True)
+        return first_msg_id
+
+    async def _create_message(
+        self,
+        receive_id: str,
+        receive_id_type: str,
+        msg_type: str,
+        content: str,
+    ) -> str | None:
+        request = (
+            CreateMessageRequest.builder()
+            .receive_id_type(receive_id_type)
+            .request_body(
+                CreateMessageRequestBody.builder()
+                .receive_id(receive_id)
+                .msg_type(msg_type)
+                .content(content)
+                .build()
+            )
+            .build()
+        )
+        resp = await self.client.im.v1.message.acreate(request)  # type: ignore[union-attr]
+        if not resp.success():
+            logger.warning("LarkInk: create message failed: %s %s", resp.code, resp.msg)
+            return None
+        return resp.data.message_id if resp.data else None
+
+    async def _reply_message(
+        self,
+        message_id: str,
+        msg_type: str,
+        content: str,
+        *,
+        reply_in_thread: bool = False,
+    ) -> str | None:
+        request = (
+            ReplyMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                ReplyMessageRequestBody.builder()
+                .msg_type(msg_type)
+                .content(content)
+                .reply_in_thread(reply_in_thread)
+                .build()
+            )
+            .build()
+        )
+        resp = await self.client.im.v1.message.areply(request)  # type: ignore[union-attr]
+        if not resp.success():
+            logger.warning("LarkInk: reply message failed: %s %s", resp.code, resp.msg)
+            return None
+        return resp.data.message_id if resp.data else None
+
+    def close(self) -> None:
+        self.sync_http.close()

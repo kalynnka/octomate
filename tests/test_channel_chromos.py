@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from types import SimpleNamespace
+from typing import Any
 from typing import cast
 
 from pydantic import BaseModel
@@ -22,8 +25,10 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import AtSegment, ImageSegment, TextSegment
+from octomate.schemas.segments import AtSegment, ImageSegment, ReplySegment, TextSegment
 from octomate.tentacles.channel.base import MarkdownChunker
+from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
+from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.tentacles.channel.slack import SlackChromo, SlackInk, SlackTentacle
 from octomate.tentacles.channel.slack.ink import (
     SLACK_MARKDOWN_TEXT_LIMIT,
@@ -32,6 +37,345 @@ from octomate.tentacles.channel.slack.ink import SlackInk as SlackInkType
 from octomate.tentacles.channel.slack.schema import SlackOutboundMessage
 
 SlackEvent = AgentStreamEvent | AgentRunResultEvent[str]
+
+
+def _lark_raw(
+    *,
+    message_type: str,
+    chat_type: str,
+    content: dict[str, Any],
+    mentions: list[Any] | None = None,
+    chat_id: str = "oc_group",
+    sender_id: str = "ou_sender",
+    message_id: str = "om_message",
+    thread_id: str = "",
+    parent_id: str = "",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        event=SimpleNamespace(
+            message=SimpleNamespace(
+                message_type=message_type,
+                chat_type=chat_type,
+                content=json.dumps(content),
+                mentions=mentions,
+                chat_id=chat_id,
+                message_id=message_id,
+                thread_id=thread_id,
+                parent_id=parent_id,
+            ),
+            sender=SimpleNamespace(sender_id=SimpleNamespace(open_id=sender_id)),
+        )
+    )
+
+
+async def test_lark_chromo_decodes_text_mentions_and_reply_metadata() -> None:
+    chromo = LarkChromo()
+    raw = _lark_raw(
+        message_type="text",
+        chat_type="group",
+        content={"text": "hello @user world"},
+        mentions=[
+            SimpleNamespace(
+                key="@user",
+                id=SimpleNamespace(open_id="ou_mentioned"),
+                name="Mentioned User",
+            )
+        ],
+        thread_id="omt_thread",
+        parent_id="om_parent",
+    )
+
+    event = await chromo.sip(raw)
+
+    assert event is not None
+    assert event.chat_type == "group"
+    assert event.chat_id == "oc_group"
+    assert event.user_id == "ou_sender"
+    assert event.message_id == "om_message"
+    assert event.thread_id == "omt_thread"
+    assert event.reply_id == "om_parent"
+    assert [type(seg) for seg in event.segments] == [
+        ReplySegment,
+        TextSegment,
+        AtSegment,
+        TextSegment,
+    ]
+    assert event.segments[2].data.user_id == "ou_mentioned"
+
+
+async def test_lark_chromo_decodes_private_images() -> None:
+    chromo = LarkChromo()
+
+    event = await chromo.sip(
+        _lark_raw(
+            message_type="image",
+            chat_type="p2p",
+            content={"image_key": "img_key"},
+            sender_id="ou_private",
+        )
+    )
+
+    assert event is not None
+    assert event.chat_type == "private"
+    assert event.chat_id == "ou_private"
+    assert [type(seg) for seg in event.segments] == [ImageSegment]
+    assert event.segments[0].data.file == "img_key"
+
+
+async def test_lark_chromo_decodes_post_content() -> None:
+    chromo = LarkChromo()
+
+    event = await chromo.sip(
+        _lark_raw(
+            message_type="post",
+            chat_type="group",
+            content={
+                "title": "Release",
+                "zh_cn": [
+                    [
+                        {"tag": "text", "text": "ready "},
+                        {"tag": "a", "href": "https://example.com"},
+                        {
+                            "tag": "at",
+                            "user_id": "ou_reviewer",
+                            "user_name": "Reviewer",
+                        },
+                        {"tag": "img", "image_key": "img_post"},
+                    ]
+                ],
+            },
+        )
+    )
+
+    assert event is not None
+    assert [type(seg) for seg in event.segments] == [
+        TextSegment,
+        TextSegment,
+        TextSegment,
+        AtSegment,
+        ImageSegment,
+    ]
+    assert event.text_parts() == ["[Release]\n", "ready ", "https://example.com"]
+    assert event.segments[3].data.user_id == "ou_reviewer"
+    assert event.segments[4].data.file == "img_post"
+
+
+async def test_lark_chromo_renders_final_text_as_interactive_markdown() -> None:
+    chromo = LarkChromo()
+
+    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
+        yield AgentRunResultEvent(AgentRunResult("hello **lark**"))
+
+    messages = [message async for message in chromo.squirt(events())]
+
+    assert len(messages) == 1
+    assert messages[0].msg_type == "interactive"
+    content = json.loads(messages[0].content)
+    assert content["body"]["elements"] == [
+        {"tag": "markdown", "content": "hello **lark**"}
+    ]
+
+
+async def test_lark_chromo_renders_structured_output_as_json_card() -> None:
+    class Answer(BaseModel):
+        ok: bool
+        count: int
+
+    chromo = LarkChromo()
+
+    async def events() -> AsyncIterator[AgentRunResultEvent[Answer]]:
+        yield AgentRunResultEvent(AgentRunResult(Answer(ok=True, count=2)))
+
+    messages = [message async for message in chromo.squirt(events())]
+    content = json.loads(messages[0].content)
+    markdown = content["body"]["elements"][0]["content"]
+
+    assert markdown.startswith("```json")
+    assert '"ok": true' in markdown
+    assert '"count": 2' in markdown
+
+
+async def test_lark_chromo_renders_deferred_requests_as_markdown_card() -> None:
+    chromo = LarkChromo()
+
+    async def events() -> AsyncIterator[AgentRunResultEvent[DeferredToolRequests]]:
+        yield AgentRunResultEvent(
+            AgentRunResult(
+                DeferredToolRequests(
+                    calls=[
+                        ToolCallPart(
+                            tool_name="ask_user",
+                            args={"question": "Continue?"},
+                            tool_call_id="call_1",
+                        )
+                    ]
+                )
+            )
+        )
+
+    messages = [message async for message in chromo.squirt(events())]
+    content = json.loads(messages[0].content)
+    markdown = content["body"]["elements"][0]["content"]
+
+    assert "`ask_user` needs input" in markdown
+    assert "`call_1`" in markdown
+
+
+class FakeLarkInk(LarkInk):
+    def __init__(self) -> None:
+        self.created: list[tuple[str, str, str, str]] = []
+        self.replies: list[tuple[str, str, str, bool]] = []
+
+    async def _create_message(
+        self,
+        receive_id: str,
+        receive_id_type: str,
+        msg_type: str,
+        content: str,
+    ) -> str:
+        self.created.append((receive_id, receive_id_type, msg_type, content))
+        return f"created-{len(self.created)}"
+
+    async def _reply_message(
+        self,
+        message_id: str,
+        msg_type: str,
+        content: str,
+        *,
+        reply_in_thread: bool = False,
+    ) -> str:
+        self.replies.append((message_id, msg_type, content, reply_in_thread))
+        return f"reply-{len(self.replies)}"
+
+
+async def test_lark_ink_selects_group_and_private_targets() -> None:
+    ink = FakeLarkInk()
+    message = LarkOutboundMessage(msg_type="interactive", content="{}")
+
+    group_id = await ink.send_message("oc_group", "group", [message])
+    private_id = await ink.send_message("ou_user", "private", [message])
+
+    assert group_id == "created-1"
+    assert private_id == "created-2"
+    assert ink.created == [
+        ("oc_group", "chat_id", "interactive", "{}"),
+        ("ou_user", "open_id", "interactive", "{}"),
+    ]
+
+
+async def test_lark_ink_replies_to_first_message_unless_threaded() -> None:
+    ink = FakeLarkInk()
+    messages = [
+        LarkOutboundMessage(msg_type="interactive", content="one"),
+        LarkOutboundMessage(msg_type="interactive", content="two"),
+    ]
+
+    first_id = await ink.send_message("oc_group", "group", messages, "om_parent")
+
+    assert first_id == "reply-1"
+    assert ink.replies == [("om_parent", "interactive", "one", False)]
+    assert ink.created == [("oc_group", "chat_id", "interactive", "two")]
+
+
+async def test_lark_ink_replies_to_each_message_when_threaded() -> None:
+    ink = FakeLarkInk()
+    messages = [
+        LarkOutboundMessage(msg_type="interactive", content="one"),
+        LarkOutboundMessage(msg_type="interactive", content="two"),
+    ]
+
+    first_id = await ink.send_message(
+        "oc_group",
+        "group",
+        messages,
+        "om_parent",
+        reply_in_thread=True,
+    )
+
+    assert first_id == "reply-1"
+    assert ink.created == []
+    assert ink.replies == [
+        ("om_parent", "interactive", "one", True),
+        ("om_parent", "interactive", "two", True),
+    ]
+
+
+def _lark_channel(ink: FakeLarkInk) -> LarkTentacle:
+    channel = object.__new__(LarkTentacle)
+    channel.id = "lark"
+    channel.ink = ink
+    channel.chromo = LarkChromo()
+    return channel
+
+
+async def test_lark_tentacle_replies_to_source_message_not_thread_id() -> None:
+    ink = FakeLarkInk()
+    channel = _lark_channel(ink)
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="group",
+        chat_id="oc_group",
+        user_id="ou_user",
+        thread_id="omt_19766a1bf00edb8e",
+    )
+    source = MessageEvent(
+        message_id="om_child_message",
+        thread_id="omt_19766a1bf00edb8e",
+        user_id="ou_user",
+        chat_id="oc_group",
+        chat_type="group",
+    )
+
+    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
+        yield AgentRunResultEvent(AgentRunResult("thread reply"))
+
+    await channel.respond(key, events(), source_events=[source])
+
+    assert ink.created == []
+    assert len(ink.replies) == 1
+    message_id, msg_type, content, reply_in_thread = ink.replies[0]
+    assert message_id == "om_child_message"
+    assert msg_type == "interactive"
+    assert "thread reply" in content
+    assert reply_in_thread is True
+
+
+async def test_lark_tentacle_ignores_thread_id_as_reply_target() -> None:
+    ink = FakeLarkInk()
+    channel = _lark_channel(ink)
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="group",
+        chat_id="oc_group",
+        user_id="ou_user",
+        thread_id="omt_19766a1bf00edb8e",
+    )
+
+    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
+        yield AgentRunResultEvent(AgentRunResult("new message"))
+
+    await channel.respond(key, events(), source_events=[])
+
+    assert ink.replies == []
+    assert ink.created[0][:2] == ("oc_group", "chat_id")
+
+
+async def test_lark_tentacle_message_callback_invokes_ingest() -> None:
+    channel = object.__new__(LarkTentacle)
+    raw = object()
+    calls: list[object] = []
+    done = asyncio.Event()
+
+    async def ingest(data: object) -> None:
+        calls.append(data)
+        done.set()
+
+    channel.ingest = ingest
+
+    channel.sense(raw)
+    await asyncio.wait_for(done.wait(), timeout=1)
+
+    assert calls == [raw]
 
 
 async def test_slack_chromo_decodes_mentions_and_images() -> None:
