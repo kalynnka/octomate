@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 import lark_oapi
@@ -15,17 +16,17 @@ from octomate.config import LarkChannelConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.tentacles.channel.base import ChannelTentacle
-from octomate.tentacles.channel.stream import (
-    BatchedTextUpdate,
-    TextStreamBatcher,
-    render_text_stream_delta,
-)
 from octomate.tentacles.channel.lark.chromo import (
     LARK_STREAM_ELEMENT_ID,
     LarkChromo,
 )
 from octomate.tentacles.channel.lark.ink import LarkInk
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
+from octomate.tentacles.channel.stream import (
+    BatchedTextUpdate,
+    TextStreamBatcher,
+    render_text_stream_delta,
+)
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -97,6 +98,8 @@ class LarkTentacle(ChannelTentacle):
     ) -> None:
         chat_id = key.chat_id or key.user_id
         reply_to = self.reply_target_from_source_events(source_events)
+        if reply_to is None and key.thread_id.startswith("om_"):
+            reply_to = key.thread_id
         reply_in_thread = key.chat_type == "group" and reply_to is not None
         result_event: AgentRunResultEvent[Any] | None = None
         async for event in events:
@@ -122,6 +125,8 @@ class LarkTentacle(ChannelTentacle):
     ) -> None:
         chat_id = key.chat_id or key.user_id
         reply_to = self.reply_target_from_source_events(source_events)
+        if reply_to is None and key.thread_id.startswith("om_"):
+            reply_to = key.thread_id
         reply_in_thread = key.chat_type == "group" and reply_to is not None
         batcher = TextStreamBatcher(
             flush_interval=self.config.stream.flush_interval,
@@ -223,6 +228,21 @@ class LarkTentacle(ChannelTentacle):
                     reply_to,
                     reply_in_thread=reply_in_thread,
                 )
+
+    async def start_sub_thread(
+        self,
+        key: ConversationKey,
+        hint_text: str,
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> ConversationKey:
+        message_id = await self.ink.send_message(
+            key.chat_id or key.user_id,
+            key.chat_type,
+            [self.chromo.make_markdown_message(hint_text)],
+            None,
+        )
+        return replace(key, thread_id=message_id or key.thread_id)
 
     def sense(self, data: P2ImMessageReceiveV1) -> None:
         task = asyncio.create_task(self.ingest(data))

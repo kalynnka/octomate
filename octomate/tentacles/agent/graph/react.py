@@ -34,19 +34,19 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelResponse
-from octomate.tentacles.agent.inkling.resolver import DeferredResolver
+from octomate.tentacles.agent.graph.resolver import DeferredResolver
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class InklingState:
+class ReactState:
     conversation: Conversation
     message_history: list[ModelMessage] = field(default_factory=list)
 
 
 @dataclass
-class InklingDeps:
+class ReactDeps:
     agent: Agent[None, Any]
     conversation_manager: ConversationManager
     event_send_stream: (
@@ -54,6 +54,7 @@ class InklingDeps:
     ) = None
     resolver: DeferredResolver | None = None
     output_type: OutputSpec[Any] | None = None
+    run_name: str = "react"
     model: Model | KnownModelName | str | None = None
     instructions: AgentInstructions[None] = None
     agent_deps: None = None
@@ -72,35 +73,22 @@ class InklingDeps:
 @dataclass
 class StartTurn(
     BaseNode[
-        InklingState,
-        InklingDeps,
+        ReactState,
+        ReactDeps,
         AgentRunResult[OutputDataT],
     ],
     Generic[OutputDataT],
 ):
-    """Entry node: a new user message starts (or continues) a conversation.
-
-    Validates the prompt and drops any trailing deferred-tool ModelResponse
-    from the in-memory history before dispatching to RunAgent. pydantic-ai
-    rejects `user_prompt` + dangling tool calls (UserError at
-    `_agent_graph.py`); a new user message implicitly abandons the prior
-    deferral, so we don't show the LLM that response. The DB row is
-    preserved for audit/debugging.
-    """
-
     user_prompt: str | Sequence[UserContent] | None
 
     async def run(
-        self, ctx: GraphRunContext[InklingState, InklingDeps]
+        self, ctx: GraphRunContext[ReactState, ReactDeps]
     ) -> RunAgent[OutputDataT]:
         if (
             self.user_prompt is not None
             and (abandoned := drop_trailing_deferral(ctx.state.message_history))
             is not None
         ):
-            # Drop the DB row too — otherwise the abandoned response
-            # reappears mid-history on the next reload, past the reach
-            # of `drop_trailing_deferral`.
             await ctx.deps.conversation_manager.discard_message(abandoned)
             logger.info(
                 "StartTurn dropped a trailing deferred ModelResponse; the "
@@ -112,18 +100,16 @@ class StartTurn(
 @dataclass
 class ResumeTurn(
     BaseNode[
-        InklingState,
-        InklingDeps,
+        ReactState,
+        ReactDeps,
         AgentRunResult[OutputDataT],
     ],
     Generic[OutputDataT],
 ):
-    """Entry node: continue an in-flight run with resolved deferred-tool results."""
-
     deferred_results: DeferredToolResults
 
     async def run(
-        self, ctx: GraphRunContext[InklingState, InklingDeps]
+        self, ctx: GraphRunContext[ReactState, ReactDeps]
     ) -> RunAgent[OutputDataT]:
         if not self.deferred_results.calls and not self.deferred_results.approvals:
             raise ValueError(
@@ -135,19 +121,17 @@ class ResumeTurn(
 @dataclass
 class RunAgent(
     BaseNode[
-        InklingState,
-        InklingDeps,
+        ReactState,
+        ReactDeps,
         AgentRunResult[OutputDataT],
     ],
     Generic[OutputDataT],
 ):
-    """Runs one pydantic-ai turn and forwards raw stream events."""
-
     user_prompt: str | Sequence[UserContent] | None = None
     deferred_results: DeferredToolResults | None = None
 
     async def run(
-        self, ctx: GraphRunContext[InklingState, InklingDeps]
+        self, ctx: GraphRunContext[ReactState, ReactDeps]
     ) -> ResolveDeferred[OutputDataT] | End[AgentRunResult[OutputDataT]]:
         if ctx.deps.event_send_stream is None:
             result = await ctx.deps.agent.run(
@@ -207,7 +191,7 @@ class RunAgent(
 
     async def next_node(
         self,
-        ctx: GraphRunContext[InklingState, InklingDeps],
+        ctx: GraphRunContext[ReactState, ReactDeps],
         result: AgentRunResult[OutputDataT],
     ) -> ResolveDeferred[OutputDataT] | End[AgentRunResult[OutputDataT]]:
         ctx.state.message_history = list(result.all_messages())
@@ -217,6 +201,7 @@ class RunAgent(
                 ctx.state.conversation,
                 run_id=result.run_id,
                 messages=new_messages,
+                name=ctx.deps.run_name,
             )
 
         if isinstance(result.output, DeferredToolRequests) and (
@@ -229,8 +214,8 @@ class RunAgent(
 @dataclass
 class ResolveDeferred(
     BaseNode[
-        InklingState,
-        InklingDeps,
+        ReactState,
+        ReactDeps,
         AgentRunResult[OutputDataT],
     ],
     Generic[OutputDataT],
@@ -238,54 +223,14 @@ class ResolveDeferred(
     requests: DeferredToolRequests
 
     async def run(
-        self, ctx: GraphRunContext[InklingState, InklingDeps]
+        self, ctx: GraphRunContext[ReactState, ReactDeps]
     ) -> RunAgent[OutputDataT]:
         if ctx.deps.resolver is None:
-            raise RuntimeError("ResolveDeferred requires an InklingDeps.resolver")
+            raise RuntimeError("ResolveDeferred requires a ReactDeps.resolver")
         return RunAgent(deferred_results=await ctx.deps.resolver.resolve(self.requests))
 
 
-# `state` is NOT a reliable signal for deferred-tool aborts: pydantic-ai sets
-# `state='interrupted'` only on stream cancellation, not on a normal deferred
-# abort (the stream completes; the agent loop bubbles up DeferredToolRequests
-# afterwards). So we detect the deferred-tail by structure — last message is a
-# `ModelResponse` with `ToolCallPart`s.
-#
-# Why the structural check is precise rather than too wide (verified
-# empirically against `FunctionModel`-driven runs):
-#
-#   | Completion mode                  | Trailing message                              | Drops? |
-#   |----------------------------------|-----------------------------------------------|--------|
-#   | Text final answer                | `ModelResponse(parts=[TextPart, ...])`        | no     |
-#   | Multi-step w/ a normal tool      | `ModelResponse(parts=[TextPart])` — the tool  | no     |
-#   |                                  | call/return live at [-3]/[-2]                 |        |
-#   | Structured output tool           | `ModelRequest(parts=[ToolReturnPart(...)])`   | no     |
-#   |                                  | pydantic-ai synthesizes the return after the  |        |
-#   |                                  | output tool call                              |        |
-#   | Deferred-tool abort              | `ModelResponse(parts=[ToolCallPart(...)])`    | YES    |
-#
-# Invariant pydantic-ai maintains: any tool call that was actually executed
-# gets a matching `ToolReturnPart` in the next `ModelRequest` before the run
-# completes or aborts. The only way a `ToolCallPart` can survive as the
-# trailing element is if pydantic-ai chose not to execute it — i.e. deferred.
-#
-# Edge case to revisit if load-bearing: a single `ModelResponse` mixing a
-# structured output-tool call with deferred tool calls. Current behavior would
-# drop it; whether that's right depends on whether the structured output should
-# be preserved.
 def drop_trailing_deferral(history: list[ModelMessage]) -> ModelResponse | None:
-    """Pop a trailing ModelResponse that ended on unresolved tool calls.
-
-    Mutates `history` in place — pops the abandoned response and returns
-    it so the caller can also clean up the corresponding DB row. Returns
-    `None` when nothing needs dropping (history empty, doesn't end in a
-    response, or the trailing response carries no tool calls).
-
-    The user is implicitly abandoning the prior deferral by starting a
-    new turn; the trailing response must come out of the in-memory
-    history because pydantic-ai raises `UserError` if `user_prompt` is
-    provided alongside dangling tool calls.
-    """
     if not history:
         return None
     last = history[-1]
@@ -297,11 +242,11 @@ def drop_trailing_deferral(history: list[ModelMessage]) -> ModelResponse | None:
     return last
 
 
-async def iter_inkling_graph_events(
+async def iter_react_graph_events(
     start_node: StartTurn[OutputDataT] | ResumeTurn[OutputDataT],
     *,
-    state: InklingState,
-    deps: InklingDeps,
+    state: ReactState,
+    deps: ReactDeps,
 ) -> AsyncGenerator[
     AgentStreamEvent | AgentRunResultEvent[OutputDataT],
     None,
@@ -313,7 +258,7 @@ async def iter_inkling_graph_events(
 
     async def run_graph() -> None:
         async with send_stream:
-            await inkling_graph.run(
+            await react_graph.run(
                 start_node,
                 state=state,
                 deps=graph_deps,
@@ -326,11 +271,11 @@ async def iter_inkling_graph_events(
                 yield event
 
 
-inkling_graph = Graph[
-    InklingState,
-    InklingDeps,
+react_graph = Graph[
+    ReactState,
+    ReactDeps,
     AgentRunResult[Any],
 ](
     nodes=[StartTurn, ResumeTurn, RunAgent, ResolveDeferred],
-    name="inkling",
+    name="react",
 )

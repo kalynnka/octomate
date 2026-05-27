@@ -16,7 +16,7 @@ from octomate.web.dev_ui import build_dev_ui_router
 
 
 class FakeAgent:
-    model = None
+    agent = object()
 
 
 def test_dev_ui_router_is_bound_to_octomate_instance() -> None:

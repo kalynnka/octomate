@@ -21,6 +21,7 @@ class AgentRun(BaseTransmuter):
 
     id: Annotated[str, Identity]
     conversation_id: uuid.UUID
+    name: str | None = None
     started_at: datetime | None = None
 
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()

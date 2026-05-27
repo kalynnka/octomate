@@ -9,10 +9,17 @@ import anyio
 from fastapi import APIRouter, FastAPI, Request, Response
 
 from octomate.managers.conversations import ConversationManager
+from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.base import sqlalchemy_materia
 from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agent.graph import (
+    ResponseTarget,
+    TriageDeps,
+    TriageState,
+    triage_graph,
+)
+from octomate.tentacles.agent.graph.triage import RunTriage
 from octomate.tentacles.channel.base import ChannelTentacle
 
 logger = logging.getLogger(__name__)
@@ -54,7 +61,7 @@ class Octomate:
         *,
         agent_id: str | None = None,
     ) -> None:
-        """Dispatch one channel-originated turn directly to its agent."""
+        """Dispatch one channel-originated turn through triage and delivery."""
         if not contents:
             return
         channel = self.channels.get(key.channel_tentacle_id)
@@ -78,19 +85,22 @@ class Octomate:
                 user_prompt = "\n\n".join(str(event) for event in contents).strip()
                 if not user_prompt:
                     return
-                async with agent_tentacle.run_stream_events(
-                    user_prompt,
-                    conversation_key=key,
-                    message_history=list(conversation.messages),
-                ) as events:
-                    if channel.config.stream.enabled:
-                        await channel.stream_respond(
-                            key,
-                            events,
-                            source_events=contents,
-                        )
-                    else:
-                        await channel.respond(key, events, source_events=contents)
+                targets = self.build_response_targets(key)
+                await triage_graph.run(
+                    RunTriage(user_prompt=user_prompt),
+                    state=TriageState(
+                        message_history=list(conversation.messages),
+                    ),
+                    deps=TriageDeps(
+                        agent=agent_tentacle,
+                        conversation_key=key,
+                        targets=targets,
+                        channels=self.channels,
+                        source_events=contents,
+                        direct_target_id=key.channel_tentacle_id,
+                        reception_target_id=key.channel_tentacle_id,
+                    ),
+                )
             except Exception as exc:
                 logger.exception(
                     "Agent %s failed while handling %s", resolved_agent_id, key
@@ -100,6 +110,25 @@ class Octomate:
                     f"Agent error: {exc}",
                     source_events=contents,
                 )
+
+    def build_response_targets(self, key: ConversationKey) -> dict[str, ResponseTarget]:
+        targets: dict[str, ResponseTarget] = {}
+        for channel_id in self.channels:
+            targets[channel_id] = ResponseTarget(
+                id=channel_id,
+                channel_id=channel_id,
+                key=ConversationKey(
+                    channel_tentacle_id=channel_id,
+                    chat_type=key.chat_type,
+                    chat_id=key.chat_id,
+                    user_id=key.user_id,
+                    thread_id=key.thread_id
+                    if channel_id == key.channel_tentacle_id
+                    else "",
+                ),
+                mode="main",
+            )
+        return targets
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
         @asynccontextmanager

@@ -113,6 +113,7 @@ async def test_record_run_creates_run_and_persists_messages() -> None:
     runs = list(reloaded.runs)
     assert len(runs) == 1
     assert runs[0].id == run_id
+    assert runs[0].name is None
     listed = list(runs[0].messages)
     assert len(listed) == 2
     kinds = {type(m).__name__ for m in listed}
@@ -144,6 +145,31 @@ async def test_record_run_preserves_finish_reason() -> None:
     msgs = list(reloaded.messages)
     assert len(msgs) == 1
     assert msgs[0].finish_reason == "tool_call"
+
+
+async def test_record_run_persists_name() -> None:
+    service = ConversationManager()
+    conversation = await service.ensure(_key())
+
+    await service.record_agent_run(
+        conversation,
+        run_id="run-named",
+        name="triage",
+        messages=[
+            RawModelResponse(
+                parts=[TextPart(content="route")],
+                run_id="run-named",
+                timestamp=datetime.now(timezone.utc),
+                finish_reason="stop",
+            ),
+        ],
+    )
+
+    fresh = ConversationManager()
+    reloaded = await fresh.ensure(_key())
+    runs = list(reloaded.runs)
+    assert len(runs) == 1
+    assert runs[0].name == "triage"
 
 
 async def test_record_run_no_op_for_empty_list() -> None:

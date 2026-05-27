@@ -32,6 +32,12 @@ class AgentRun(Base, TransmuterProxiedMixin):
         nullable=False,
         index=True,
     )
+    name: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        default=None,
+        index=True,
+    )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, index=True
     )

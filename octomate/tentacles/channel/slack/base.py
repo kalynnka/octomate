@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
@@ -14,7 +15,6 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.tentacles.channel.base import ChannelTentacle
-from octomate.tentacles.channel.stream import TextStreamBatcher
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
@@ -22,6 +22,7 @@ from octomate.tentacles.channel.slack.schema import (
     SlackMessageEvent,
     SlackOutboundMessage,
 )
+from octomate.tentacles.channel.stream import TextStreamBatcher
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -235,3 +236,18 @@ class SlackTentacle(ChannelTentacle):
                     final_messages,
                     context.thread_ts,
                 )
+
+    async def start_sub_thread(
+        self,
+        key: ConversationKey,
+        hint_text: str,
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> ConversationKey:
+        message_id = await self.ink.send_message(
+            key.chat_id or key.user_id,
+            key.chat_type,
+            [SlackOutboundMessage(text=hint_text, markdown_text=hint_text)],
+            None,
+        )
+        return replace(key, thread_id=message_id or key.thread_id)

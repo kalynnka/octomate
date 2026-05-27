@@ -24,20 +24,19 @@ from pydantic_ai.ui.vercel_ai.response_types import (
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
-from octomate.tentacles.agent.inkling.graph import (
-    InklingDeps,
-    InklingState,
-    ResumeTurn,
-    StartTurn,
-    iter_inkling_graph_events,
+from octomate.tentacles.agent.graph import (
+    ReactDeps,
+    ReactState,
+    iter_react_graph_events,
 )
+from octomate.tentacles.agent.graph.react import ResumeTurn, StartTurn
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class GraphAdapter:
-    """Drive inkling_graph and let pydantic-ai handle Vercel UI protocol details."""
+    """Drive react_graph and let pydantic-ai handle Vercel UI protocol details."""
 
     SDK_VERSION: ClassVar[Literal[6]] = 6
 
@@ -94,13 +93,13 @@ class GraphAdapter:
         deferred: DeferredToolResults | None,
     ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]]:
         try:
-            async for event in iter_inkling_graph_events(
+            async for event in iter_react_graph_events(
                 self.start_node(user_prompt=user_prompt, deferred=deferred),
-                state=InklingState(
+                state=ReactState(
                     conversation=conversation,
                     message_history=list(history),
                 ),
-                deps=InklingDeps(
+                deps=ReactDeps(
                     agent=self.agent,
                     conversation_manager=self.conversations,
                 ),

@@ -301,6 +301,26 @@ async def test_respond_text_uses_normal_adapter(
     assert channel.sent[0][2][0]["text"] == "fallback"
 
 
+async def test_start_sub_thread_falls_back_to_main_target(
+    channel: FakeChannelTentacle,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+
+    with caplog.at_level("WARNING"):
+        returned = await channel.start_sub_thread(key, "handoff")
+
+    assert returned == key
+    assert "does not support sub-thread startup" in caplog.text
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "handoff"
+
+
 def test_text_stream_batcher_immediate_mode_flushes_each_push() -> None:
     batcher = TextStreamBatcher(flush_interval=0)
 

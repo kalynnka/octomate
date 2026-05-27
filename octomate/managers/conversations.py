@@ -57,6 +57,8 @@ class ConversationManager:
         conversation: Conversation,
         run_id: str,
         messages: Sequence[ModelMessage],
+        *,
+        name: str | None = None,
     ) -> None:
         """Persist a fresh agent run with the raw pydantic-ai messages it
         produced. Blessing happens here so callers stay clean of the
@@ -71,6 +73,7 @@ class ConversationManager:
         run = AgentRun(
             id=run_id,
             conversation_id=conversation.id,
+            name=name,
             started_at=messages[0].timestamp,
             messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
         )

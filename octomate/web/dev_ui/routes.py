@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from fastapi import APIRouter, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from pydantic_ai import Agent
 from pydantic_ai.models import infer_model
 from pydantic_ai.ui._web.app import _get_ui_html
 from pydantic_ai.ui.vercel_ai.request_types import RequestData
@@ -25,11 +26,15 @@ def build_dev_ui_router(
     if agent is None:
         raise ValueError(f"DevUI requires registered agent {agent_id!r}")
 
-    graph_agent = getattr(agent, "agent", agent)
+    graph_agent = getattr(agent, "agent", None)
+    if graph_agent is None:
+        raise ValueError(
+            f"DevUI requires registered agent {agent_id!r} to expose a pydantic-ai agent"
+        )
 
     adapter = GraphAdapter(
         channel_id=channel_id,
-        agent=graph_agent,
+        agent=cast(Agent[None, Any], graph_agent),
         conversations=octomate.conversations,
         agent_id=agent_id,
     )
@@ -54,7 +59,7 @@ def build_dev_ui_router(
     @router.post(
         "/api/chat",
         responses={200: {"content": {"text/event-stream": {}}}},
-        summary="Vercel AI Data Stream Protocol — drives inkling_graph",
+        summary="Vercel AI Data Stream Protocol — drives react_graph",
     )
     async def chat(body: RequestData) -> StreamingResponse:
         return await adapter.handle_request(body)

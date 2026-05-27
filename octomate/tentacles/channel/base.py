@@ -204,6 +204,20 @@ class ChannelTentacle(Tentacle):
 
         await self.respond(key, events(), source_events=source_events)
 
+    async def start_sub_thread(
+        self,
+        key: ConversationKey,
+        hint_text: str,
+        *,
+        source_events: list[MessageEvent] | None = None,
+    ) -> ConversationKey:
+        logger.warning(
+            "Channel %s does not support sub-thread startup; using main target",
+            self.id,
+        )
+        await self.respond_text(key, hint_text, source_events=source_events)
+        return key
+
     async def get_user_profile(self, user_id: str) -> UserProfile:
         cached = self.user_profiles.get(user_id)
         if cached is not None:

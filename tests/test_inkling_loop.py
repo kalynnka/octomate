@@ -30,15 +30,14 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
-from octomate.tentacles.agent.inkling import (
-    InklingTentacle,
-    InklingDeps,
-    InklingState,
-    StartTurn,
+from octomate.tentacles.agent.graph import (
+    ReactDeps,
+    ReactState,
     StubResolver,
-    inkling_graph,
-    inkling_toolset,
+    react_graph,
 )
+from octomate.tentacles.agent.graph.react import StartTurn
+from octomate.tentacles.agent.inkling import InklingTentacle, inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 
 InklingTestOutput = str | DeferredToolRequests
@@ -94,8 +93,10 @@ class FakeConversationManager(ConversationManager):
         conversation: Conversation,
         run_id: str,
         messages: Sequence[ModelMessage],
+        *,
+        name: str | None = None,
     ) -> None:
-        self.runs.append((conversation, run_id, list(messages)))
+        self.runs.append((conversation, f"{name}:{run_id}", list(messages)))
 
     async def discard_message(self, message: ModelResponse) -> None:
         self.discarded.append(message)
@@ -199,6 +200,7 @@ async def test_inkling_loop_resolves_deferred_calls() -> None:
 
     assert script.cursor == 2, "both turns should have been consumed"
     assert len(conversations.runs) == 2
+    assert all(run[1].startswith("None:") for run in conversations.runs)
 
 
 async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
@@ -233,14 +235,14 @@ async def test_inkling_loop_handles_immediate_final_response() -> None:
 
     agent = _build_non_stream_agent()
 
-    deps = InklingDeps(
+    deps = ReactDeps(
         agent=agent,
         conversation_manager=FakeConversationManager(),
     )
 
-    result = await inkling_graph.run(
+    result = await react_graph.run(
         StartTurn(user_prompt="just say done"),
-        state=InklingState(conversation=_test_conversation()),
+        state=ReactState(conversation=_test_conversation()),
         deps=deps,
     )
 

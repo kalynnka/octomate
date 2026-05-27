@@ -32,15 +32,14 @@ from pydantic_ai.toolsets import AbstractToolset
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.inkling.graph import (
-    InklingDeps,
-    InklingState,
-    ResumeTurn,
-    StartTurn,
-    iter_inkling_graph_events,
+from octomate.tentacles.agent.graph import (
+    ReactDeps,
+    ReactState,
+    StubResolver,
+    iter_react_graph_events,
 )
+from octomate.tentacles.agent.graph.react import ResumeTurn, StartTurn
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
-from octomate.tentacles.agent.inkling.resolver import StubResolver
 from octomate.tentacles.agent.inkling.tools import inkling_toolset
 
 
@@ -87,6 +86,7 @@ class InklingTentacle(AgentTentacle):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_key: ConversationKey,
+        run_name: str | None = None,
         output_type: OutputSpec[Any] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -109,6 +109,7 @@ class InklingTentacle(AgentTentacle):
         async for event in self.iter_graph_events(
             user_prompt=user_prompt,
             conversation_key=conversation_key,
+            run_name=run_name,
             output_type=output_type,
             message_history=message_history,
             deferred_tool_results=deferred_tool_results,
@@ -129,7 +130,7 @@ class InklingTentacle(AgentTentacle):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
         if result is None:
-            raise RuntimeError("inkling graph completed without an AgentRunResult")
+            raise RuntimeError("react graph completed without an AgentRunResult")
         return result
 
     @asynccontextmanager
@@ -138,6 +139,7 @@ class InklingTentacle(AgentTentacle):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_key: ConversationKey,
+        run_name: str | None = None,
         output_type: OutputSpec[Any] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -188,6 +190,7 @@ class InklingTentacle(AgentTentacle):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_key: ConversationKey,
+        run_name: str | None = None,
         output_type: OutputSpec[Any] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -209,6 +212,7 @@ class InklingTentacle(AgentTentacle):
             self.iter_graph_events(
                 user_prompt=user_prompt,
                 conversation_key=conversation_key,
+                run_name=run_name,
                 output_type=output_type,
                 message_history=message_history,
                 deferred_tool_results=deferred_tool_results,
@@ -233,6 +237,7 @@ class InklingTentacle(AgentTentacle):
         *,
         user_prompt: str | Sequence[UserContent] | None,
         conversation_key: ConversationKey,
+        run_name: str | None,
         output_type: OutputSpec[Any] | None,
         message_history: Sequence[ModelMessage] | None,
         deferred_tool_results: DeferredToolResults | None,
@@ -253,7 +258,7 @@ class InklingTentacle(AgentTentacle):
         AgentStreamEvent | AgentRunResultEvent[str | DeferredToolRequests],
         None,
     ]:
-        graph_deps = InklingDeps(
+        graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
             resolver=StubResolver(),
@@ -261,6 +266,7 @@ class InklingTentacle(AgentTentacle):
                 str if output_type is None else output_type,
                 DeferredToolRequests,
             ],
+            run_name=run_name,
             model=model,
             instructions=instructions,
             agent_deps=deps,
@@ -275,7 +281,7 @@ class InklingTentacle(AgentTentacle):
             capabilities=capabilities,
             spec=spec,
         )
-        state = InklingState(
+        state = ReactState(
             conversation=await self.conversation_manager.ensure(
                 conversation_key,
                 agent_tentacle_id=self.id,
@@ -287,7 +293,7 @@ class InklingTentacle(AgentTentacle):
             if deferred_tool_results is not None
             else StartTurn(user_prompt=user_prompt)
         )
-        async for event in iter_inkling_graph_events(
+        async for event in iter_react_graph_events(
             start_node,
             state=state,
             deps=graph_deps,
