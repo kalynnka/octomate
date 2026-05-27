@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import lark_oapi
 import lark_oapi.ws.client as ws_mod
@@ -14,8 +14,7 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config import LarkChannelConfig
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.events import MessageEvent
-from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
 from octomate.tentacles.channel.lark.chromo import (
     LARK_STREAM_ELEMENT_ID,
     LarkChromo,
@@ -35,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 
 class LarkTentacle(ChannelTentacle):
+    thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
+
     ws_client: lark_oapi.ws.Client
     stop_event: asyncio.Event | None
     ping_task: asyncio.Task[None] | None
@@ -93,14 +94,10 @@ class LarkTentacle(ChannelTentacle):
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
         chat_id = key.chat_id or key.user_id
-        reply_to = self.reply_target_from_source_events(source_events)
-        if reply_to is None and key.thread_id.startswith("om_"):
-            reply_to = key.thread_id
-        reply_in_thread = key.chat_type == "group" and reply_to is not None
+        reply_to = key.thread_id if key.thread_id.startswith("om_") else None
+        reply_in_thread = reply_to is not None
         result_event: AgentRunResultEvent[Any] | None = None
         async for event in events:
             if isinstance(event, AgentRunResultEvent):
@@ -120,14 +117,10 @@ class LarkTentacle(ChannelTentacle):
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
         chat_id = key.chat_id or key.user_id
-        reply_to = self.reply_target_from_source_events(source_events)
-        if reply_to is None and key.thread_id.startswith("om_"):
-            reply_to = key.thread_id
-        reply_in_thread = key.chat_type == "group" and reply_to is not None
+        reply_to = key.thread_id if key.thread_id.startswith("om_") else None
+        reply_in_thread = reply_to is not None
         batcher = TextStreamBatcher(
             flush_interval=self.config.stream.flush_interval,
             min_chars=self.config.stream.min_chars,
@@ -233,8 +226,6 @@ class LarkTentacle(ChannelTentacle):
         self,
         key: ConversationKey,
         hint_text: str,
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> ConversationKey:
         message_id = await self.ink.send_message(
             key.chat_id or key.user_id,
@@ -271,14 +262,3 @@ class LarkTentacle(ChannelTentacle):
             return
         except Exception:
             logger.exception("Channel %s: failed to handle Lark message", self.id)
-
-    def reply_target_from_source_events(
-        self,
-        source_events: list[MessageEvent] | None,
-    ) -> str | None:
-        for event in reversed(source_events or ()):
-            if event.message_id.startswith("om_"):
-                return event.message_id
-            if event.reply_id.startswith("om_"):
-                return event.reply_id
-        return None

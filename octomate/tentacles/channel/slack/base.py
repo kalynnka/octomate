@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.tools import DeferredToolRequests
@@ -13,8 +13,7 @@ from slack_bolt.async_app import AsyncApp, AsyncSay
 from octomate.config import SlackChannelConfig
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.events import MessageEvent
-from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
@@ -43,6 +42,8 @@ IGNORED_SUBTYPES = frozenset(
 
 
 class SlackTentacle(ChannelTentacle):
+    thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
+
     def __init__(
         self,
         id: str,
@@ -134,23 +135,12 @@ class SlackTentacle(ChannelTentacle):
             )
         logger.info("Channel %s: ensured Slack assistant thread %s", self.id, key)
 
-    async def respond(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-        *,
-        source_events: list[MessageEvent] | None = None,
-    ) -> None:
-        await super().respond(key, events, source_events=source_events)
-
     async def stream_respond(
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
-        context = self.chromo.thread_context(key, source_events)
+        context = self.chromo.thread_context(key)
         channel = key.chat_id or key.user_id
         final_messages: list[SlackOutboundMessage] = []
         result_event: AgentRunResultEvent[Any] | None = None
@@ -241,8 +231,6 @@ class SlackTentacle(ChannelTentacle):
         self,
         key: ConversationKey,
         hint_text: str,
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> ConversationKey:
         message_id = await self.ink.send_message(
             key.chat_id or key.user_id,

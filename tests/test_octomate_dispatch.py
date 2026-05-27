@@ -24,7 +24,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.graph import TriageDecision
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
 
 
 @pytest.fixture(autouse=True)
@@ -119,18 +119,13 @@ class FakeAgent:
 class FakeChannel:
     id: str = "im"
     octomate: Octomate | None = None
+    thread_strategy: ThreadStrategy = "flat_thread"
     config: ChannelConfig = field(
         default_factory=lambda: ChannelConfig(type="fake")
     )
-    sent: list[tuple[ConversationKey, list[str], list[MessageEvent]]] = field(
-        default_factory=list
-    )
-    stream_sent: list[tuple[ConversationKey, list[str], list[MessageEvent]]] = field(
-        default_factory=list
-    )
-    sub_threads: list[tuple[ConversationKey, str, list[MessageEvent]]] = field(
-        default_factory=list
-    )
+    sent: list[tuple[ConversationKey, list[str]]] = field(default_factory=list)
+    stream_sent: list[tuple[ConversationKey, list[str]]] = field(default_factory=list)
+    sub_threads: list[tuple[ConversationKey, str]] = field(default_factory=list)
 
     async def activate(self) -> None:
         pass
@@ -142,45 +137,37 @@ class FakeChannel:
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]],
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
         outputs: list[str] = []
         async for event in events:
             if isinstance(event, AgentRunResultEvent):
                 outputs.append(event.result.output)
-        self.sent.append((key, outputs, list(source_events or [])))
+        self.sent.append((key, outputs))
 
     async def stream_respond(
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]],
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
         outputs: list[str] = []
         async for event in events:
             if isinstance(event, AgentRunResultEvent):
                 outputs.append(event.result.output)
-        self.stream_sent.append((key, outputs, list(source_events or [])))
+        self.stream_sent.append((key, outputs))
 
     async def respond_text(
         self,
         key: ConversationKey,
         text: str,
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
-        self.sent.append((key, [text], list(source_events or [])))
+        self.sent.append((key, [text]))
 
     async def start_sub_thread(
         self,
         key: ConversationKey,
         hint_text: str,
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> ConversationKey:
-        self.sub_threads.append((key, hint_text, list(source_events or [])))
+        self.sub_threads.append((key, hint_text))
         return ConversationKey(
             channel_tentacle_id=key.channel_tentacle_id,
             chat_type=key.chat_type,
@@ -220,7 +207,6 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     assert agent.turns[0][3] == "triage"
     assert len(channel.sent) == 1
     assert channel.sent[0][1] == ["handled"]
-    assert channel.sent[0][2] == [event]
     assert channel.stream_sent == []
     assert agent.streams == []
 
@@ -232,6 +218,7 @@ async def test_octomate_kick_streams_reception_result_when_enabled() -> None:
             action="reception",
             target_id="im",
             reason="debugging",
+            handoff="Please continue debugging in reception.",
         )
     )
     channel = FakeChannel(
@@ -261,13 +248,58 @@ async def test_octomate_kick_streams_reception_result_when_enabled() -> None:
     await octomate.kick(key, [event], agent_id="inkling")
 
     assert channel.sent == []
+    assert len(channel.sub_threads) == 1
+    assert channel.sub_threads[0][1] == "debugging"
     assert len(channel.stream_sent) == 1
+    assert channel.stream_sent[0][0].thread_id == "hint-thread"
     assert channel.stream_sent[0][1] == ["handled"]
-    assert channel.stream_sent[0][2] == [event]
     assert len(agent.turns) == 1
     assert len(agent.streams) == 1
     assert agent.turns[0][3] == "triage"
+    assert agent.streams[0][0] == "Please continue debugging in reception."
+    assert agent.streams[0][1] == []
+    assert agent.streams[0][2].thread_id == "hint-thread"
     assert agent.streams[0][3] == "reception"
+
+
+async def test_octomate_kick_skips_triage_inside_flat_thread() -> None:
+    octomate = Octomate()
+    agent = FakeAgent()
+    channel = FakeChannel(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=True),
+        ),
+    )
+    octomate.register_agent("inkling", cast(AgentTentacle, agent))
+    octomate.connect_channel("im", cast(ChannelTentacle, channel))
+
+    key = ConversationKey(
+        channel_tentacle_id="im",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+        thread_id="existing-thread",
+    )
+    event = MessageEvent(
+        tentacle_id="im",
+        message_id="m1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+        thread_id="existing-thread",
+        segments=[TextSegment(data={"text": "continue"})],
+    )
+
+    await octomate.kick(key, [event], agent_id="inkling")
+
+    assert agent.turns == []
+    assert len(agent.streams) == 1
+    assert agent.streams[0][2] == key
+    assert agent.streams[0][3] == "reception"
+    assert channel.sub_threads == []
+    assert channel.stream_sent[0][0] == key
+    assert channel.stream_sent[0][1] == ["handled"]
 
 
 async def test_octomate_kick_routes_reception_to_attached_channel_sub_thread() -> None:
@@ -277,7 +309,8 @@ async def test_octomate_kick_routes_reception_to_attached_channel_sub_thread() -
             action="reception",
             target_id="ops",
             reason="needs work",
-            title="Working on it",
+            hint="Working on it",
+            handoff="Please investigate this in ops.",
         )
     )
     source = FakeChannel()
@@ -314,13 +347,62 @@ async def test_octomate_kick_routes_reception_to_attached_channel_sub_thread() -
     assert ops.sub_threads[0][1] == "Working on it"
     assert ops.sent == []
     assert len(ops.stream_sent) == 1
-    target_key, outputs, source_events = ops.stream_sent[0]
+    target_key, outputs = ops.stream_sent[0]
     assert target_key.channel_tentacle_id == "ops"
     assert target_key.chat_id == "alice"
     assert target_key.thread_id == "hint-thread"
     assert outputs == ["handled"]
-    assert source_events == []
     assert len(agent.turns) == 1
     assert len(agent.streams) == 1
     assert agent.turns[0][3] == "triage"
+    assert agent.streams[0][0] == "Please investigate this in ops."
+    assert agent.streams[0][1] == []
+    assert agent.streams[0][2] == target_key
+    assert agent.streams[0][3] == "reception"
+
+
+async def test_octomate_kick_keeps_reception_in_main_for_main_only_channel() -> None:
+    octomate = Octomate()
+    agent = FakeAgent(
+        triage_decision=TriageDecision(
+            action="reception",
+            target_id="im",
+            reason="needs work",
+            handoff="Please investigate this in main.",
+        )
+    )
+    channel = FakeChannel(
+        thread_strategy="main_only",
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=True),
+        ),
+    )
+    octomate.register_agent("inkling", cast(AgentTentacle, agent))
+    octomate.connect_channel("im", cast(ChannelTentacle, channel))
+
+    key = ConversationKey(
+        channel_tentacle_id="im",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+    event = MessageEvent(
+        tentacle_id="im",
+        message_id="m1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+        segments=[TextSegment(data={"text": "please investigate"})],
+    )
+
+    await octomate.kick(key, [event], agent_id="inkling")
+
+    assert channel.sub_threads == []
+    assert channel.sent == []
+    assert len(channel.stream_sent) == 1
+    assert channel.stream_sent[0][0] == key
+    assert agent.turns[0][3] == "triage"
+    assert agent.streams[0][0] == "Please investigate this in main."
+    assert agent.streams[0][2] == key
     assert agent.streams[0][3] == "reception"

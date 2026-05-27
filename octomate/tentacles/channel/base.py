@@ -5,7 +5,7 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import anyio
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from octomate.base import Octomate
 
 logger = logging.getLogger(__name__)
+
+ThreadStrategy = Literal["main_only", "flat_thread", "nested_thread"]
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,7 @@ class ChannelTentacle(Tentacle):
     """
 
     FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
+    thread_strategy: ClassVar[ThreadStrategy] = "main_only"
 
     profile: UserProfile
 
@@ -153,8 +156,6 @@ class ChannelTentacle(Tentacle):
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
         """Send a final, non-streaming response for a conversation."""
         chat_id = key.chat_id or key.user_id
@@ -179,21 +180,17 @@ class ChannelTentacle(Tentacle):
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
         logger.warning(
             "Channel %s does not support streaming responses; falling back to final response",
             self.id,
         )
-        await self.respond(key, events, source_events=source_events)
+        await self.respond(key, events)
 
     async def respond_text(
         self,
         key: ConversationKey,
         text: str,
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
         """Respond with synthetic text through the normal channel adapter."""
 
@@ -202,20 +199,18 @@ class ChannelTentacle(Tentacle):
         ]:
             yield AgentRunResultEvent(AgentRunResult(text))
 
-        await self.respond(key, events(), source_events=source_events)
+        await self.respond(key, events())
 
     async def start_sub_thread(
         self,
         key: ConversationKey,
         hint_text: str,
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> ConversationKey:
         logger.warning(
             "Channel %s does not support sub-thread startup; using main target",
             self.id,
         )
-        await self.respond_text(key, hint_text, source_events=source_events)
+        await self.respond_text(key, hint_text)
         return key
 
     async def get_user_profile(self, user_id: str) -> UserProfile:

@@ -9,8 +9,8 @@ from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import ModelMessage, UserContent
 
 from octomate.config import ChannelConfig, ChannelStreamConfig
+from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.events import MessageEvent
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.graph import (
     ResponseTarget,
@@ -20,15 +20,50 @@ from octomate.tentacles.agent.graph import (
     triage_graph,
 )
 from octomate.tentacles.agent.graph.triage import RunTriage
-from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
+
+
+@dataclass
+class FakeConversation:
+    messages: list[ModelMessage] = field(default_factory=list)
+
+
+@dataclass
+class FakeConversationManager:
+    conversations: dict[ConversationKey, FakeConversation] = field(
+        default_factory=dict
+    )
+    ensured: list[ConversationKey] = field(default_factory=list)
+
+    async def ensure(
+        self,
+        key: ConversationKey,
+        *,
+        agent_tentacle_id: str | None = None,
+    ) -> FakeConversation:
+        self.ensured.append(key)
+        conversation = self.conversations.get(key)
+        if conversation is None:
+            conversation = FakeConversation()
+            self.conversations[key] = conversation
+        return conversation
 
 
 @dataclass
 class FakeAgent:
     decision: TriageDecision
+    id: str = "inkling"
     reception_output: str = "done"
+    allow_reception_run: bool = False
     runs: list[str | None] = field(default_factory=list)
-    streams: list[str | None] = field(default_factory=list)
+    streams: list[
+        tuple[
+            str | Sequence[UserContent] | None,
+            list[ModelMessage],
+            ConversationKey,
+            str | None,
+        ]
+    ] = field(default_factory=list)
 
     async def run(
         self,
@@ -41,7 +76,9 @@ class FakeAgent:
     ) -> AgentRunResult[Any]:
         self.runs.append(run_name)
         if run_name == "reception":
-            raise AssertionError("reception should use run_stream_events")
+            if not self.allow_reception_run:
+                raise AssertionError("reception should use run_stream_events")
+            return AgentRunResult(self.reception_output)
         return AgentRunResult(self.decision)
 
     @asynccontextmanager
@@ -54,7 +91,9 @@ class FakeAgent:
         message_history: Sequence[ModelMessage] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]]]:
-        self.streams.append(run_name)
+        self.streams.append(
+            (user_prompt, list(message_history or []), conversation_key, run_name)
+        )
 
         async def events() -> AsyncIterator[
             AgentStreamEvent | AgentRunResultEvent[Any]
@@ -66,65 +105,52 @@ class FakeAgent:
 
 @dataclass
 class FakeChannel:
+    thread_strategy: ThreadStrategy = "flat_thread"
     config: ChannelConfig = field(
         default_factory=lambda: ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
         )
     )
-    sent: list[tuple[ConversationKey, list[str], list[MessageEvent]]] = field(
-        default_factory=list
-    )
-    stream_sent: list[tuple[ConversationKey, list[str], list[MessageEvent]]] = field(
-        default_factory=list
-    )
-    sub_threads: list[tuple[ConversationKey, str, list[MessageEvent]]] = field(
-        default_factory=list
-    )
+    sent: list[tuple[ConversationKey, list[str]]] = field(default_factory=list)
+    stream_sent: list[tuple[ConversationKey, list[str]]] = field(default_factory=list)
+    sub_threads: list[tuple[ConversationKey, str]] = field(default_factory=list)
 
     async def respond(
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
         outputs: list[str] = []
         async for event in events:
             if isinstance(event, AgentRunResultEvent):
                 outputs.append(str(event.result.output))
-        self.sent.append((key, outputs, list(source_events or [])))
+        self.sent.append((key, outputs))
 
     async def stream_respond(
         self,
         key: ConversationKey,
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
         outputs: list[str] = []
         async for event in events:
             if isinstance(event, AgentRunResultEvent):
                 outputs.append(str(event.result.output))
-        self.stream_sent.append((key, outputs, list(source_events or [])))
+        self.stream_sent.append((key, outputs))
 
     async def respond_text(
         self,
         key: ConversationKey,
         text: str,
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> None:
-        self.sent.append((key, [text], list(source_events or [])))
+        self.sent.append((key, [text]))
 
     async def start_sub_thread(
         self,
         key: ConversationKey,
         hint_text: str,
-        *,
-        source_events: list[MessageEvent] | None = None,
     ) -> ConversationKey:
-        self.sub_threads.append((key, hint_text, list(source_events or [])))
+        self.sub_threads.append((key, hint_text))
         return ConversationKey(
             channel_tentacle_id=key.channel_tentacle_id,
             chat_type=key.chat_type,
@@ -143,31 +169,19 @@ def _key() -> ConversationKey:
     )
 
 
-def _targets(key: ConversationKey) -> dict[str, ResponseTarget]:
-    return {
-        "im": ResponseTarget(
-            id="im",
-            channel_id="im",
-            key=key,
-            mode="main",
-        ),
-        "ops": ResponseTarget(
-            id="ops",
-            channel_id="ops",
-            key=ConversationKey(
-                channel_tentacle_id="ops",
-                chat_type="private",
-                chat_id="alice",
-                user_id="alice",
-            ),
-            mode="main",
-        ),
-    }
+def _source_target(key: ConversationKey) -> ResponseTarget:
+    return ResponseTarget(
+        channel_id="im",
+        key=key,
+        thread_strategy="flat_thread",
+        mode="main",
+    )
 
 
 async def test_triage_graph_emits_direct_route() -> None:
     key = _key()
     agent = FakeAgent(TriageDecision(action="answer", answer="hello"))
+    conversations = FakeConversationManager()
     im = FakeChannel()
     ops = FakeChannel()
 
@@ -177,24 +191,22 @@ async def test_triage_graph_emits_direct_route() -> None:
             state=TriageState(),
             deps=TriageDeps(
                 agent=cast(AgentTentacle, agent),
-                conversation_key=key,
-                targets=_targets(key),
+                conversation_manager=cast(ConversationManager, conversations),
+                source_target=_source_target(key),
                 channels={
                     "im": cast(ChannelTentacle, im),
                     "ops": cast(ChannelTentacle, ops),
                 },
-                source_events=[],
-                direct_target_id="im",
-                reception_target_id="im",
             ),
         )
     ).output
 
     assert result.decision.answer == "hello"
-    assert result.target.id == "im"
+    assert result.target.channel_id == "im"
     assert result.result is None
     assert agent.runs == ["triage"]
     assert agent.streams == []
+    assert conversations.ensured == []
     assert im.sent[0][1] == ["hello"]
     assert im.stream_sent == []
     assert ops.sent == []
@@ -207,9 +219,11 @@ async def test_triage_graph_emits_reception_after_route() -> None:
             action="reception",
             target_id="ops",
             reason="needs work",
-            title="Working on it",
+            hint="Working on it",
+            handoff="Please debug this in reception.",
         )
     )
+    conversations = FakeConversationManager()
     im = FakeChannel()
     ops = FakeChannel()
 
@@ -219,26 +233,67 @@ async def test_triage_graph_emits_reception_after_route() -> None:
             state=TriageState(),
             deps=TriageDeps(
                 agent=cast(AgentTentacle, agent),
-                conversation_key=key,
-                targets=_targets(key),
+                conversation_manager=cast(ConversationManager, conversations),
+                source_target=_source_target(key),
                 channels={
                     "im": cast(ChannelTentacle, im),
                     "ops": cast(ChannelTentacle, ops),
                 },
-                source_events=[],
-                direct_target_id="im",
-                reception_target_id="im",
             ),
         )
     ).output
 
-    assert result.target.id == "ops"
+    assert result.target.channel_id == "ops"
     assert result.target.mode == "sub"
     assert result.result is not None
     assert result.result.output == "done"
     assert agent.runs == ["triage"]
-    assert agent.streams == ["reception"]
+    assert agent.streams[0][2].thread_id == "hint-thread"
+    assert agent.streams[0][3] == "reception"
+    assert agent.streams[0][0] == "Please debug this in reception."
+    assert conversations.ensured == [agent.streams[0][2]]
     assert im.sent == []
     assert ops.sub_threads[0][1] == "Working on it"
     assert ops.stream_sent[0][0].thread_id == "hint-thread"
     assert ops.stream_sent[0][1] == ["done"]
+
+
+async def test_triage_graph_runs_final_reception_without_stream_when_disabled() -> None:
+    key = _key()
+    agent = FakeAgent(
+        TriageDecision(
+            action="reception",
+            target_id="im",
+            reason="needs work",
+            handoff="Please finish this without streaming.",
+        ),
+        allow_reception_run=True,
+    )
+    conversations = FakeConversationManager()
+    im = FakeChannel(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+        )
+    )
+
+    result = (
+        await triage_graph.run(
+            RunTriage(user_prompt="debug this"),
+            state=TriageState(),
+            deps=TriageDeps(
+                agent=cast(AgentTentacle, agent),
+                conversation_manager=cast(ConversationManager, conversations),
+                source_target=_source_target(key),
+                channels={"im": cast(ChannelTentacle, im)},
+            ),
+        )
+    ).output
+
+    assert result.result is not None
+    assert result.result.output == "done"
+    assert agent.runs == ["triage", "reception"]
+    assert agent.streams == []
+    assert im.sub_threads[0][1] == "needs work"
+    assert im.sent[0][0].thread_id == "hint-thread"
+    assert im.sent[0][1] == ["done"]

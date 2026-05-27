@@ -85,21 +85,24 @@ class Octomate:
                 user_prompt = "\n\n".join(str(event) for event in contents).strip()
                 if not user_prompt:
                     return
-                targets = self.build_response_targets(key)
+                deps = TriageDeps(
+                    agent=agent_tentacle,
+                    conversation_manager=self.conversations,
+                    source_target=ResponseTarget(
+                        channel_id=key.channel_tentacle_id,
+                        key=key,
+                        thread_strategy=channel.thread_strategy,
+                        mode="main",
+                    ),
+                    channels=self.channels,
+                )
                 await triage_graph.run(
-                    RunTriage(user_prompt=user_prompt),
-                    state=TriageState(
+                    RunTriage(
+                        user_prompt=user_prompt,
                         message_history=list(conversation.messages),
                     ),
-                    deps=TriageDeps(
-                        agent=agent_tentacle,
-                        conversation_key=key,
-                        targets=targets,
-                        channels=self.channels,
-                        source_events=contents,
-                        direct_target_id=key.channel_tentacle_id,
-                        reception_target_id=key.channel_tentacle_id,
-                    ),
+                    state=TriageState(),
+                    deps=deps,
                 )
             except Exception as exc:
                 logger.exception(
@@ -108,27 +111,7 @@ class Octomate:
                 await channel.respond_text(
                     key,
                     f"Agent error: {exc}",
-                    source_events=contents,
                 )
-
-    def build_response_targets(self, key: ConversationKey) -> dict[str, ResponseTarget]:
-        targets: dict[str, ResponseTarget] = {}
-        for channel_id in self.channels:
-            targets[channel_id] = ResponseTarget(
-                id=channel_id,
-                channel_id=channel_id,
-                key=ConversationKey(
-                    channel_tentacle_id=channel_id,
-                    chat_type=key.chat_type,
-                    chat_id=key.chat_id,
-                    user_id=key.user_id,
-                    thread_id=key.thread_id
-                    if channel_id == key.channel_tentacle_id
-                    else "",
-                ),
-                mode="main",
-            )
-        return targets
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
         @asynccontextmanager

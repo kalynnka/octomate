@@ -132,34 +132,7 @@ class SlackChromo:
     def thread_context(
         self,
         key: ConversationKey,
-        source_events: list[MessageEvent] | None,
     ) -> SlackThreadContext:
-        for event in reversed(source_events or ()):
-            raw: dict[str, Any] = {}
-            if event.raw:
-                try:
-                    maybe_raw = json.loads(event.raw)
-                except json.JSONDecodeError:
-                    maybe_raw = {}
-                if isinstance(maybe_raw, dict):
-                    raw = maybe_raw
-            thread_ts = raw.get("thread_ts") or raw.get("ts")
-            if not thread_ts:
-                thread_ts = event.thread_id or event.message_id
-            if thread_ts:
-                return SlackThreadContext(
-                    thread_ts=str(thread_ts),
-                    recipient_user_id=str(raw.get("user") or event.user_id or "")
-                    or None,
-                    recipient_team_id=str(
-                        raw.get("team")
-                        or raw.get("team_id")
-                        or raw.get("enterprise_id")
-                        or ""
-                    )
-                    or None,
-                )
-
         return SlackThreadContext(
             thread_ts=key.thread_id,
             recipient_user_id=key.user_id or None,
