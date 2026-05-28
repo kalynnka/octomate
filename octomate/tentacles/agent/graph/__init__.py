@@ -6,6 +6,7 @@ from octomate.tentacles.agent.graph.react import (
 )
 from octomate.tentacles.agent.graph.resolver import DeferredResolver, StubResolver
 from octomate.tentacles.agent.graph.triage import (
+    Awake,
     ResponseTarget,
     ResponseTargetMode,
     TriageDecision,
@@ -21,6 +22,7 @@ __all__ = [
     "DeferredResolver",
     "ResponseTarget",
     "ResponseTargetMode",
+    "Awake",
     "TriageDecision",
     "TriageDeps",
     "TriageGraphResult",

@@ -9,17 +9,16 @@ import anyio
 from fastapi import APIRouter, FastAPI, Request, Response
 
 from octomate.managers.conversations import ConversationManager
+from octomate.managers.deferred import DeferredActionManager
+from octomate.schemas.awakes import AwakeSignal
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.events import MessageEvent
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.graph import (
-    ResponseTarget,
+    Awake,
     TriageDeps,
     TriageState,
     triage_graph,
 )
-from octomate.tentacles.agent.graph.triage import RunTriage
 from octomate.tentacles.channel.base import ChannelTentacle
 
 logger = logging.getLogger(__name__)
@@ -30,6 +29,9 @@ class Octomate:
     """Application host for shared services, agents, channels, and routers."""
 
     conversations: ConversationManager = field(default_factory=ConversationManager)
+    deferred_actions: DeferredActionManager = field(
+        default_factory=DeferredActionManager
+    )
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
     routers: list[APIRouter] = field(default_factory=list)
@@ -56,62 +58,20 @@ class Octomate:
 
     async def kick(
         self,
-        key: ConversationKey,
-        contents: list[MessageEvent],
-        *,
-        agent_id: str | None = None,
+        signal: AwakeSignal,
     ) -> None:
-        """Dispatch one channel-originated turn through triage and delivery."""
-        if not contents:
-            return
-        channel = self.channels.get(key.channel_tentacle_id)
-        if channel is None:
-            raise ValueError(f"unknown channel {key.channel_tentacle_id!r}")
-
+        """Trigger the agent graph from a user message turn or deferred response."""
         with sqlalchemy_materia():
-            conversation = await self.conversations.ensure(
-                key,
-                agent_tentacle_id=agent_id,
-            )
-
-            resolved_agent_id = agent_id or conversation.agent_tentacle_id
-            if not resolved_agent_id:
-                raise ValueError(f"conversation {key} has no agent assigned")
-            agent_tentacle = self.agents.get(resolved_agent_id)
-            if agent_tentacle is None:
-                raise ValueError(f"unknown agent {resolved_agent_id!r}")
-
-            try:
-                user_prompt = "\n\n".join(str(event) for event in contents).strip()
-                if not user_prompt:
-                    return
-                deps = TriageDeps(
-                    agent=agent_tentacle,
-                    conversation_manager=self.conversations,
-                    source_target=ResponseTarget(
-                        channel_id=key.channel_tentacle_id,
-                        key=key,
-                        thread_strategy=channel.thread_strategy,
-                        mode="main",
-                    ),
+            await triage_graph.run(
+                Awake(signal=signal),
+                state=TriageState(),
+                deps=TriageDeps(
+                    agents=self.agents,
                     channels=self.channels,
-                )
-                await triage_graph.run(
-                    RunTriage(
-                        user_prompt=user_prompt,
-                        message_history=list(conversation.messages),
-                    ),
-                    state=TriageState(),
-                    deps=deps,
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Agent %s failed while handling %s", resolved_agent_id, key
-                )
-                await channel.respond_text(
-                    key,
-                    f"Agent error: {exc}",
-                )
+                    conversation_manager=self.conversations,
+                    deferred_actions=self.deferred_actions,
+                ),
+            )
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
         @asynccontextmanager

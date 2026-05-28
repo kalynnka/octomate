@@ -1,25 +1,25 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
-from functools import cached_property
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.managers.conversations import ConversationManager
+from octomate.managers.deferred import DeferredActionManager
+from octomate.schemas.awakes import AwakeSignal, DeferredActionResponse
 from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
 
 logger = logging.getLogger(__name__)
-
-TriageAction = Literal["answer", "reception"]
-ResponseTargetMode = Literal["main", "sub"]
 
 TRIAGE_INSTRUCTIONS = """\
 Decide how Octomate should respond to the latest user message.
@@ -37,15 +37,6 @@ message in hint, explain the routing in reason, and put the complete reception
 handoff prompt in handoff. Include the user's request in handoff so the reception
 run can start from it without reading the triage model output.
 """
-
-
-class TriageDecision(BaseModel):
-    action: TriageAction
-    answer: str = ""
-    target_id: str = ""
-    reason: str = ""
-    hint: str = ""
-    handoff: str = ""
 
 
 @dataclass(frozen=True)
@@ -77,18 +68,12 @@ class TriageState:
 
 @dataclass
 class TriageDeps:
-    agent: AgentTentacle
-
-    source_target: ResponseTarget
-
     channels: dict[str, ChannelTentacle]
     conversation_manager: ConversationManager
-
-    @cached_property
-    def source_key(self) -> ConversationKey:
-        if self.source_target.key is None:
-            raise ValueError("TriageDeps.source_target requires a ConversationKey")
-        return self.source_target.key
+    agents: dict[str, AgentTentacle] = field(default_factory=dict)
+    deferred_actions: DeferredActionManager = field(
+        default_factory=DeferredActionManager
+    )
 
     def channel_for(self, target: ResponseTarget) -> ChannelTentacle:
         channel = self.channels.get(target.channel_id)
@@ -96,26 +81,116 @@ class TriageDeps:
             raise ValueError(f"unknown channel {target.channel_id!r}")
         return channel
 
-    @cached_property
-    def response_targets(self) -> dict[str, ResponseTarget]:
-        source_key = self.source_key
-        targets = {
-            channel_id: ResponseTarget(
-                channel_id=channel_id,
-                key=source_key if channel_id == self.source_target.channel_id else None,
-                thread_strategy=channel.thread_strategy,
+
+@dataclass
+class Awake(
+    BaseNode[TriageState, TriageDeps, TriageGraphResult],
+):
+    signal: AwakeSignal
+
+    async def run(
+        self,
+        ctx: GraphRunContext[TriageState, TriageDeps],
+    ) -> RunTriage | ResumeDeferredActions | End[TriageGraphResult]:
+        if not self.signal:
+            return End(
+                TriageGraphResult(
+                    decision=TriageDecision(
+                        action="answer",
+                        reason="Empty awake signal.",
+                    ),
+                    target=ResponseTarget(channel_id=""),
+                )
+            )
+
+        if isinstance(self.signal, DeferredActionResponse):
+            context = await ctx.deps.deferred_actions.get_action_context(
+                self.signal.action_id
+            )
+            source_key = context.batch.source_key
+            target_key = context.batch.target_key
+            source_channel = ctx.deps.channels.get(source_key.channel_tentacle_id)
+            target_channel = ctx.deps.channels.get(target_key.channel_tentacle_id)
+            if source_channel is None:
+                raise ValueError(f"unknown channel {source_key.channel_tentacle_id!r}")
+            if target_channel is None:
+                raise ValueError(f"unknown channel {target_key.channel_tentacle_id!r}")
+
+            agent_tentacle = ctx.deps.agents.get(context.batch.agent_tentacle_id)
+            if agent_tentacle is None:
+                raise ValueError(f"unknown agent {context.batch.agent_tentacle_id!r}")
+
+            source_target = ResponseTarget(
+                channel_id=source_key.channel_tentacle_id,
+                key=source_key,
+                thread_strategy=source_channel.thread_strategy,
                 mode="main",
             )
-            for channel_id, channel in self.channels.items()
-        }
-        targets[self.source_target.channel_id] = self.source_target
-        return targets
+            return ResumeDeferredActions(
+                awake=self.signal,
+                agent=agent_tentacle,
+                source_target=ResponseTarget(
+                    channel_id=source_key.channel_tentacle_id,
+                    key=source_key,
+                    thread_strategy=source_channel.thread_strategy,
+                    mode="main",
+                ),
+            )
+
+        first_event = self.signal[0]
+        key = ConversationKey(
+            channel_tentacle_id=first_event.tentacle_id,
+            chat_type=first_event.chat_type,
+            chat_id=first_event.chat_id,
+            user_id=first_event.user_id,
+            thread_id=first_event.thread_id,
+        )
+        channel = ctx.deps.channels.get(key.channel_tentacle_id)
+        if channel is None:
+            raise ValueError(f"unknown channel {key.channel_tentacle_id!r}")
+
+        conversation = await ctx.deps.conversation_manager.ensure(
+            key,
+            agent_tentacle_id=channel.config.agent_id,
+        )
+        resolved_agent_id = channel.config.agent_id or conversation.agent_tentacle_id
+        if not resolved_agent_id:
+            raise ValueError(f"conversation {key} has no agent assigned")
+        agent_tentacle = ctx.deps.agents.get(resolved_agent_id)
+        if agent_tentacle is None:
+            raise ValueError(f"unknown agent {resolved_agent_id!r}")
+
+        user_prompt = "\n\n".join(str(event) for event in self.signal).strip()
+        source_target = ResponseTarget(
+            channel_id=key.channel_tentacle_id,
+            key=key,
+            thread_strategy=channel.thread_strategy,
+            mode="main",
+        )
+        if not user_prompt:
+            return End(
+                TriageGraphResult(
+                    decision=TriageDecision(
+                        action="answer",
+                        reason="Empty user prompt.",
+                    ),
+                    target=source_target,
+                )
+            )
+        return RunTriage(
+            agent=agent_tentacle,
+            source_target=source_target,
+            user_prompt=user_prompt,
+            message_history=list(conversation.messages),
+        )
 
 
 @dataclass
 class RunTriage(
     BaseNode[TriageState, TriageDeps, TriageGraphResult],
 ):
+    agent: AgentTentacle
+    source_target: ResponseTarget
     user_prompt: str | Sequence[UserContent] | None
     message_history: list[ModelMessage] = field(default_factory=list)
 
@@ -123,11 +198,24 @@ class RunTriage(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
     ) -> AnswerDirect | PrepareReception | RunReception:
-        source_target = ctx.deps.source_target
-        source_key = ctx.deps.source_key
-        targets = ctx.deps.response_targets
+        source_target = self.source_target
+        if source_target.key is None:
+            raise ValueError("RunTriage.source_target requires a ConversationKey")
+        source_key = source_target.key
+        targets = {
+            channel_id: ResponseTarget(
+                channel_id=channel_id,
+                key=source_key if channel_id == source_target.channel_id else None,
+                thread_strategy=channel.thread_strategy,
+                mode="main",
+            )
+            for channel_id, channel in ctx.deps.channels.items()
+        }
+        targets[source_target.channel_id] = source_target
         if source_key.thread_id and source_target.thread_strategy == "flat_thread":
             return RunReception(
+                agent=self.agent,
+                source_key=source_key,
                 user_prompt=self.user_prompt,
                 decision=TriageDecision(
                     action="reception",
@@ -139,7 +227,7 @@ class RunTriage(
                 target_key=source_key,
             )
 
-        result = await ctx.deps.agent.run(
+        result = await self.agent.run(
             self.user_prompt,
             conversation_key=source_key,
             run_name="triage",
@@ -160,6 +248,8 @@ class RunTriage(
         if decision.action == "answer":
             return AnswerDirect(decision=decision, target=target)
         return PrepareReception(
+            agent=self.agent,
+            source_key=source_key,
             user_prompt=self.user_prompt,
             decision=decision,
             target=target,
@@ -192,6 +282,8 @@ class AnswerDirect(
 class PrepareReception(
     BaseNode[TriageState, TriageDeps, TriageGraphResult],
 ):
+    agent: AgentTentacle
+    source_key: ConversationKey
     user_prompt: str | Sequence[UserContent] | None
     decision: TriageDecision
     target: ResponseTarget
@@ -205,12 +297,11 @@ class PrepareReception(
         target = self.target
         target_key = target.key
         if target_key is None:
-            source_key = ctx.deps.source_key
             target_key = ConversationKey(
                 channel_tentacle_id=target.channel_id,
-                chat_type=source_key.chat_type,
-                chat_id=source_key.chat_id,
-                user_id=source_key.user_id,
+                chat_type=self.source_key.chat_type,
+                chat_id=self.source_key.chat_id,
+                user_id=self.source_key.user_id,
                 thread_id="",
             )
             target = replace(target, key=target_key)
@@ -237,13 +328,15 @@ class PrepareReception(
             target = replace(target, key=target_key)
 
         return RunReception(
+            agent=self.agent,
+            source_key=self.source_key,
             user_prompt=self.decision.handoff or str(self.user_prompt or ""),
             decision=self.decision,
             target=target,
             target_key=target_key,
             message_history=(
                 list(self.source_message_history)
-                if target_key == ctx.deps.source_key and target.mode == "main"
+                if target_key == self.source_key and target.mode == "main"
                 else None
             ),
         )
@@ -253,24 +346,28 @@ class PrepareReception(
 class RunReception(
     BaseNode[TriageState, TriageDeps, TriageGraphResult],
 ):
+    agent: AgentTentacle
+    source_key: ConversationKey
     user_prompt: str | Sequence[UserContent] | None
     decision: TriageDecision
     target: ResponseTarget
     target_key: ConversationKey
     message_history: list[ModelMessage] | None = None
+    deferred_tool_results: DeferredToolResults | None = None
+    deferred_batch_id: uuid.UUID | None = None
     result: AgentRunResult[Any] | None = None
 
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
-    ) -> End[TriageGraphResult]:
+    ) -> RequestDeferredActions | End[TriageGraphResult]:
         target_channel = ctx.deps.channel_for(self.target)
         if self.message_history is not None:
             message_history = self.message_history
         else:
             conversation = await ctx.deps.conversation_manager.ensure(
                 self.target_key,
-                agent_tentacle_id=ctx.deps.agent.id,
+                agent_tentacle_id=self.agent.id,
             )
             message_history = list(conversation.messages)
 
@@ -279,11 +376,12 @@ class RunReception(
             async def stream_events() -> AsyncIterator[
                 AgentStreamEvent | AgentRunResultEvent[Any]
             ]:
-                async with ctx.deps.agent.run_stream_events(
+                async with self.agent.run_stream_events(
                     self.user_prompt,
                     conversation_key=self.target_key,
                     run_name="reception",
                     message_history=message_history,
+                    deferred_tool_results=self.deferred_tool_results,
                 ) as stream:
                     async for event in stream:
                         if isinstance(event, AgentRunResultEvent):
@@ -295,12 +393,23 @@ class RunReception(
                 stream_events(),
             )
         else:
-            self.result = await ctx.deps.agent.run(
+            self.result = await self.agent.run(
                 self.user_prompt,
                 conversation_key=self.target_key,
                 run_name="reception",
                 message_history=message_history,
+                deferred_tool_results=self.deferred_tool_results,
             )
+
+            if isinstance(self.result.output, DeferredToolRequests):
+                return RequestDeferredActions(
+                    agent=self.agent,
+                    source_key=self.source_key,
+                    requests=self.result.output,
+                    decision=self.decision,
+                    target=self.target,
+                    target_key=self.target_key,
+                )
 
             async def result_events() -> AsyncIterator[AgentRunResultEvent[Any]]:
                 if self.result is not None:
@@ -309,6 +418,26 @@ class RunReception(
             await target_channel.respond(
                 self.target_key,
                 result_events(),
+            )
+
+        if self.result is not None and isinstance(
+            self.result.output,
+            DeferredToolRequests,
+        ):
+            return RequestDeferredActions(
+                agent=self.agent,
+                source_key=self.source_key,
+                requests=self.result.output,
+                decision=self.decision,
+                target=self.target,
+                target_key=self.target_key,
+            )
+
+        if self.deferred_batch_id is not None:
+            await ctx.deps.deferred_actions.mark_batch(
+                self.deferred_batch_id,
+                "completed",
+                completed=True,
             )
 
         return End(
@@ -320,7 +449,117 @@ class RunReception(
         )
 
 
+@dataclass
+class RequestDeferredActions(
+    BaseNode[TriageState, TriageDeps, TriageGraphResult],
+):
+    agent: AgentTentacle
+    source_key: ConversationKey
+    requests: DeferredToolRequests
+    decision: TriageDecision
+    target: ResponseTarget
+    target_key: ConversationKey
+
+    async def run(
+        self,
+        ctx: GraphRunContext[TriageState, TriageDeps],
+    ) -> End[TriageGraphResult]:
+        target_channel = ctx.deps.channel_for(self.target)
+        conversation = await ctx.deps.conversation_manager.ensure(
+            self.target_key,
+            agent_tentacle_id=self.agent.id,
+        )
+        context = await ctx.deps.deferred_actions.create_batch(
+            conversation=conversation,
+            agent_tentacle_id=self.agent.id,
+            run_name="reception",
+            source_key=self.source_key,
+            target_key=self.target_key,
+            target_mode=self.target.mode,
+            decision=self.decision,
+            requests=self.requests,
+        )
+        for action in context.actions:
+            platform_message_id = await target_channel.send_deferred_action(
+                self.target_key,
+                action,
+            )
+            await ctx.deps.deferred_actions.mark_action_presented(
+                action.id,
+                platform_message_id,
+            )
+
+        return End(
+            TriageGraphResult(
+                decision=self.decision,
+                target=self.target,
+                result=AgentRunResult(self.requests),
+            )
+        )
+
+
+@dataclass
+class ResumeDeferredActions(
+    BaseNode[TriageState, TriageDeps, TriageGraphResult],
+):
+    awake: DeferredActionResponse
+    agent: AgentTentacle
+    source_target: ResponseTarget
+
+    async def run(
+        self,
+        ctx: GraphRunContext[TriageState, TriageDeps],
+    ) -> RunReception | End[TriageGraphResult]:
+        context = await ctx.deps.deferred_actions.resolve_action(self.awake)
+        batch = context.batch
+        if isinstance(batch.decision, TriageDecision):
+            decision = batch.decision
+        elif batch.decision:
+            decision = TriageDecision.model_validate(batch.decision)
+        else:
+            decision = TriageDecision(
+                action="reception",
+                target_id=batch.target_key.channel_tentacle_id,
+                reason="Resuming deferred human input.",
+            )
+        target_channel = ctx.deps.channels.get(batch.target_key.channel_tentacle_id)
+        if target_channel is None:
+            raise ValueError(
+                f"unknown channel {batch.target_key.channel_tentacle_id!r}"
+            )
+        target = ResponseTarget(
+            channel_id=batch.target_key.channel_tentacle_id,
+            key=batch.target_key,
+            thread_strategy=target_channel.thread_strategy,
+            mode=batch.target_mode,
+        )
+        if batch.status == "completed":
+            return End(TriageGraphResult(decision=decision, target=target))
+        if not context.is_complete:
+            return End(TriageGraphResult(decision=decision, target=target))
+
+        await ctx.deps.deferred_actions.mark_batch(batch.id, "resuming")
+        return RunReception(
+            agent=self.agent,
+            source_key=batch.source_key,
+            user_prompt=None,
+            decision=decision,
+            target=target,
+            target_key=batch.target_key,
+            deferred_tool_results=context.build_results(),
+            deferred_batch_id=batch.id,
+        )
+
+
 triage_graph = Graph[TriageState, TriageDeps, TriageGraphResult](
-    nodes=[RunTriage, AnswerDirect, PrepareReception, RunReception],
+    nodes=[
+        Awake,
+        RunTriage,
+        AnswerDirect,
+        PrepareReception,
+        RunReception,
+        RequestDeferredActions,
+        ResumeDeferredActions,
+    ],
     name="triage",
 )

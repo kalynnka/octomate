@@ -33,9 +33,9 @@ from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.graph import (
+    DeferredResolver,
     ReactDeps,
     ReactState,
-    StubResolver,
     iter_react_graph_events,
 )
 from octomate.tentacles.agent.graph.react import ResumeTurn, StartTurn
@@ -69,6 +69,7 @@ class InklingTentacle(AgentTentacle):
     conversation_manager: ConversationManager = field(
         default_factory=ConversationManager
     )
+    deferred_resolver: DeferredResolver | None = None
 
     def __init__(
         self,
@@ -76,10 +77,12 @@ class InklingTentacle(AgentTentacle):
         *,
         agent: Agent[None, str | DeferredToolRequests] | None = None,
         conversation_manager: ConversationManager | None = None,
+        deferred_resolver: DeferredResolver | None = None,
     ) -> None:
         super().__init__(id=id)
         self.agent = agent or build_inkling_agent()
         self.conversation_manager = conversation_manager or ConversationManager()
+        self.deferred_resolver = deferred_resolver
 
     async def run(
         self,
@@ -258,15 +261,16 @@ class InklingTentacle(AgentTentacle):
         AgentStreamEvent | AgentRunResultEvent[str | DeferredToolRequests],
         None,
     ]:
+        resolved_run_name = run_name or "react"
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
-            resolver=StubResolver(),
+            resolver=self.deferred_resolver,
             output_type=[
                 str if output_type is None else output_type,
                 DeferredToolRequests,
             ],
-            run_name=run_name,
+            run_name=resolved_run_name,
             model=model,
             instructions=instructions,
             agent_deps=deps,
