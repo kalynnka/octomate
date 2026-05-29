@@ -1,120 +1,147 @@
-"""Feelers — per-tentacle interactive API, split into composable parts.
-
-Each sub-feeler is an independent ABC covering one interaction domain.
-Platform subclasses implement the abstract send / render methods.
-Persistence (InteractionStore) is not wired up in this iteration — concrete
-implementations and null variants land alongside it later.
-"""
+"""Channel feelers for human-in-the-loop deferred actions."""
 
 from __future__ import annotations
 
-import asyncio
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING
+from uuid import UUID
 
-from octomate.schemas.actions import (
-    ConfirmAction,
-    QuestionAction,
-    QuestionResponse,
-    TodoAction,
+from pydantic_ai.tools import DeferredToolRequests
+
+from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.deferred import (
+    DeferredApproval,
+    DeferredQuestion,
 )
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.triage import ResponseTargetMode, TriageDecision
+
+if TYPE_CHECKING:
+    from octomate.managers.deferred import DeferredActionContext, DeferredActionManager
 
 
-class ConfirmationFeeler(ABC):
-    """Handles HITL confirmation cards."""
+TextResponder = Callable[[ConversationKey, str], Awaitable[None]]
+
+
+class ApprovalFeeler(ABC):
+    """Presents approval actions for one response target."""
 
     @abstractmethod
-    async def create_confirmation(
+    async def present(
         self,
         key: ConversationKey,
-        tool_name: str,
-        tool_call_id: str,
-        args: dict[str, Any],
-        title: str = "",
-        description: str = "",
-        skill: str = "",
-        approvers: list[str] | None = None,
-    ) -> tuple[ConfirmAction, asyncio.Future[bool]]: ...
-
-    @abstractmethod
-    async def send_confirmation(
-        self, key: ConversationKey, action: ConfirmAction
-    ) -> bool: ...
-
-    @abstractmethod
-    async def send_timeout_notification(
-        self, key: ConversationKey, action: ConfirmAction
-    ) -> None: ...
-
-    @abstractmethod
-    async def dismiss_confirmation(
-        self, key: ConversationKey, action: ConfirmAction
-    ) -> None: ...
-
-
-class QuestionFeeler(ABC):
-    """Handles question / input-collection cards."""
-
-    @abstractmethod
-    async def create_question(
-        self,
-        key: ConversationKey,
-        text: str,
-        options: list[str] | None = None,
-    ) -> tuple[QuestionAction, asyncio.Future[QuestionResponse]]: ...
-
-    @abstractmethod
-    async def ask_question(
-        self,
-        key: ConversationKey,
-        text: str,
-        conversation_key: ConversationKey,
-        options: list[str] | None = None,
-        multi_select: bool = False,
-    ) -> QuestionResponse | None: ...
-
-    @abstractmethod
-    async def dismiss_question(
-        self, key: ConversationKey, question: QuestionAction
-    ) -> None: ...
-
-
-class TodoFeeler(ABC):
-    """Handles TODO list cards."""
-
-    @abstractmethod
-    async def create_todo(
-        self,
-        key: ConversationKey,
-        title: str,
-        active_form: str | None = None,
-        assignee: str | None = None,
-    ) -> TodoAction: ...
-
-    @abstractmethod
-    async def update_todo(self, todo_id: str, status: str) -> bool: ...
-
-    @abstractmethod
-    async def upsert_todo_list(
-        self,
-        key: ConversationKey,
-        items: list[TodoAction],
-        existing_ts: str | None = None,
+        action: DeferredApproval,
     ) -> str | None: ...
 
-    @abstractmethod
-    async def pin_todo(self, key: ConversationKey, card_ref: str) -> bool: ...
+
+class AskQuestionFeeler(ABC):
+    """Presents a card-based question wizard for one response target."""
 
     @abstractmethod
-    async def unpin_todo(self, key: ConversationKey, card_ref: str) -> bool: ...
+    async def present(
+        self,
+        key: ConversationKey,
+        actions: list[DeferredQuestion],
+    ) -> dict[UUID, str | None]: ...
 
 
 @dataclass
 class Feelers:
-    """Composed collection of per-tentacle interactive feeler parts."""
+    """Per-channel human-interaction surface."""
 
-    confirm: ConfirmationFeeler
-    todos: TodoFeeler
-    questions: QuestionFeeler
+    approvals: ApprovalFeeler
+    ask_questions: AskQuestionFeeler
+
+    async def present_actions(
+        self,
+        *,
+        action_manager: DeferredActionManager,
+        conversation: Conversation,
+        agent_tentacle_id: str,
+        run_name: str | None,
+        source_key: ConversationKey,
+        target_key: ConversationKey,
+        target_mode: ResponseTargetMode,
+        decision: TriageDecision | None,
+        requests: DeferredToolRequests,
+    ) -> DeferredActionContext:
+        context = await action_manager.create_batch(
+            conversation=conversation,
+            agent_tentacle_id=agent_tentacle_id,
+            run_name=run_name,
+            source_key=source_key,
+            target_key=target_key,
+            target_mode=target_mode,
+            decision=decision,
+            requests=requests,
+        )
+        approval_actions = [
+            action for action in context.actions if isinstance(action, DeferredApproval)
+        ]
+        question_actions = [
+            action for action in context.actions if isinstance(action, DeferredQuestion)
+        ]
+
+        for action in approval_actions:
+            platform_message_id = await self.approvals.present(target_key, action)
+            await action_manager.mark_action_presented(
+                action.id,
+                platform_message_id,
+            )
+
+        message_ids = await self.ask_questions.present(target_key, question_actions)
+        for action in question_actions:
+            await action_manager.mark_action_presented(
+                action.id,
+                message_ids.get(action.id),
+            )
+
+        return context
+
+
+class PlainTextApprovalFeeler(ApprovalFeeler):
+    def __init__(self, respond_text: TextResponder) -> None:
+        self.respond_text = respond_text
+
+    async def present(
+        self,
+        key: ConversationKey,
+        action: DeferredApproval,
+    ) -> str | None:
+        await self.respond_text(
+            key,
+            (
+                f"Octomate needs approval for `{action.tool_name}` "
+                f"({action.id}). This channel can show the request, but does "
+                "not support interactive approval cards yet."
+            ),
+        )
+        return None
+
+
+class PlainTextAskQuestionFeeler(AskQuestionFeeler):
+    def __init__(self, respond_text: TextResponder) -> None:
+        self.respond_text = respond_text
+
+    async def present(
+        self,
+        key: ConversationKey,
+        actions: list[DeferredQuestion],
+    ) -> dict[UUID, str | None]:
+        for action in actions:
+            choices_text = ""
+            if choices := action.args.get("choices"):
+                choices_text = "\nChoices:\n" + "\n".join(
+                    f"- {choice}" for choice in choices
+                )
+            hint = action.args.get("hint") or ""
+            hint_text = f"\nHint: {hint}" if hint else ""
+            await self.respond_text(
+                key,
+                (
+                    f"Octomate needs an answer: {action.args['question']}"
+                    f"{hint_text}{choices_text}\nDeferred action: `{action.id}`"
+                ),
+            )
+        return {action.id: None for action in actions}

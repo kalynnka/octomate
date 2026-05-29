@@ -447,7 +447,8 @@ class RequestDeferredActions(
             self.target_key,
             agent_tentacle_id=self.agent.id,
         )
-        context = await ctx.deps.action_manager.create_batch(
+        await target_channel.feelers.present_actions(
+            action_manager=ctx.deps.action_manager,
             conversation=conversation,
             agent_tentacle_id=self.agent.id,
             run_name="reception",
@@ -456,22 +457,6 @@ class RequestDeferredActions(
             target_mode=self.target.mode,
             decision=self.decision,
             requests=self.requests,
-        )
-        approval_actions = [
-            action for action in context.actions if action.kind == "approval"
-        ]
-        question_actions = [
-            action for action in context.actions if action.kind == "question"
-        ]
-
-        for action in approval_actions:
-            await target_channel.feelers.approvals.present(
-                self.target_key,
-                action,
-            )
-        await target_channel.feelers.ask_questions.present(
-            self.target_key,
-            question_actions,
         )
 
         return End(

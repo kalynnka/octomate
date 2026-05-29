@@ -10,6 +10,7 @@ from pydantic_ai.messages import AgentStreamEvent
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
+from octomate.schemas.awakes import AwakeSignal, UserMessageSignal
 from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
@@ -36,18 +37,13 @@ ChannelEvent = AgentStreamEvent | AgentRunResultEvent[str]
 
 @dataclass
 class FakeOctomate:
-    kicks: list[tuple[ConversationKey, list[MessageEvent], str | None]] = field(
-        default_factory=list
-    )
+    kicks: list[AwakeSignal] = field(default_factory=list)
 
     async def kick(
         self,
-        key: ConversationKey,
-        contents: list[MessageEvent],
-        *,
-        agent_id: str | None = None,
+        signal: AwakeSignal,
     ) -> None:
-        self.kicks.append((key, contents, agent_id))
+        self.kicks.append(signal)
 
 
 @dataclass
@@ -177,15 +173,16 @@ async def test_ingest_dispatches_event_to_octomate(
     octomate = channel.octomate
     assert isinstance(octomate, FakeOctomate)
     assert len(octomate.kicks) == 1
-    key, events, agent_id = octomate.kicks[0]
+    signal = octomate.kicks[0]
+    assert isinstance(signal, UserMessageSignal)
+    key = signal.key
 
     assert key.channel_tentacle_id == "chan1"
     assert key.chat_id == "lobby"
     assert key.chat_type == "group"
     assert key.user_id == "alice"
-    assert agent_id == "inkling"
 
-    event = events[0]
+    event = signal.messages[0]
     assert event.tentacle_id == "chan1"
     assert event.self_id == "bot"
     assert event.sender.user_id == "alice"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Literal, NotRequired, TypeAlias, TypedDict
+from typing import Annotated, Literal, NotRequired, TypeAlias, TypedDict, cast
 
 from arcanus import (
     BaseTransmuter,
@@ -103,18 +103,23 @@ DeferredActionVariant: TypeAlias = Annotated[
     DeferredQuestion | DeferredApproval,
     Field(discriminator="kind"),
 ]
+DeferredActionVariantAdapter: TypeAdapter[DeferredActionVariant] = TypeAdapter(
+    DeferredActionVariant
+)
 
 
-def from_deferred_requests(request: DeferredToolRequests) -> object:
+def from_deferred_requests(request: object) -> object:
     if not isinstance(request, DeferredToolRequests):
         return request
     action_payloads: list[object] = []
     for call in request.calls:
         metadata = request.metadata.get(call.tool_call_id, {})
-        if metadata.get("kind") != "question":
-            continue
         args = call.args_as_dict()
-        questions: list[QuestionRequest] = args.get("questions")  # pyright: ignore[reportAssignmentType]
+        questions = cast(list[QuestionRequest], args.get("questions") or [])
+        if not questions:
+            raise ValueError(
+                f"deferred call {call.tool_call_id!r} has no questions"
+            )
         action_payloads.extend(
             {
                 "kind": "question",

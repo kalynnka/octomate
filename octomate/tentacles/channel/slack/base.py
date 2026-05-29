@@ -1,20 +1,35 @@
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from pydantic import ValidationError
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.tools import DeferredToolRequests
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.config import SlackChannelConfig
+from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
+from octomate.tentacles.channel.feelers import Feelers
 from octomate.tentacles.channel.slack.chromo import SlackChromo
+from octomate.tentacles.channel.slack.feelers import (
+    SlackBlockAction,
+    SlackQuestionActionsAdapter,
+    SlackApprovalFeeler,
+    SlackAskQuestionFeeler,
+    approval_resolution_blocks,
+    ask_question_blocks,
+    collect_current_answer,
+    submitted_blocks,
+)
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
     SlackAssistantThreadEvent,
@@ -43,6 +58,7 @@ IGNORED_SUBTYPES = frozenset(
 
 class SlackTentacle(ChannelTentacle):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
+    octomate: Octomate
 
     def __init__(
         self,
@@ -51,6 +67,8 @@ class SlackTentacle(ChannelTentacle):
         *,
         config: SlackChannelConfig,
     ) -> None:
+        if octomate is None:
+            raise ValueError(f"channel {id!r} requires an attached Octomate")
         self.app_id = config.app_id
         self.ink = SlackInk(config.bot_token)
         self.chromo = SlackChromo()
@@ -60,6 +78,22 @@ class SlackTentacle(ChannelTentacle):
         self.app.event("assistant_thread_context_changed")(
             self.on_assistant_thread_context_changed
         )
+        self.app.action(SlackBlockAction.APPROVAL_APPROVE.value)(
+            self.on_approval_action
+        )
+        self.app.action(SlackBlockAction.APPROVAL_DENY.value)(self.on_approval_action)
+        self.app.action(SlackBlockAction.ASK_QUESTION_BACK.value)(
+            self.on_question_nav
+        )
+        self.app.action(SlackBlockAction.ASK_QUESTION_NEXT.value)(
+            self.on_question_nav
+        )
+        self.app.action(SlackBlockAction.ASK_QUESTION_SUBMIT.value)(
+            self.on_question_nav
+        )
+        self.app.action(SlackBlockAction.ASK_QUESTION_CHOICE.value)(
+            self.on_question_choice
+        )
         self.app_token = config.app_token
         self.handler: AsyncSocketModeHandler | None = None
         super().__init__(
@@ -68,6 +102,10 @@ class SlackTentacle(ChannelTentacle):
             ink=self.ink,
             chromo=self.chromo,
             config=config,
+        )
+        self.feelers = Feelers(
+            approvals=SlackApprovalFeeler(self.ink),
+            ask_questions=SlackAskQuestionFeeler(self.ink),
         )
 
     async def activate(self) -> None:
@@ -103,6 +141,95 @@ class SlackTentacle(ChannelTentacle):
     ) -> None:
         await self.ensure_assistant_thread(event)
 
+    async def on_approval_action(self, ack, body: dict[str, Any]) -> None:
+        await ack()
+        action_body = _first_action_value(body)
+        action_id = action_body.get("action_id")
+        batch_id = action_body.get("batch_id")
+        if not action_id or not batch_id:
+            return
+        responder_id = body.get("user", {}).get("id", "")
+        approved = bool(action_body.get("approved"))
+        channel = body.get("channel", {}).get("id", "")
+        message_ts = body.get("message", {}).get("ts", "")
+        tool_name = str(action_body.get("tool_name") or "Tool call")
+        if channel and message_ts:
+            await self.ink.update_message(
+                channel,
+                message_ts,
+                text=f"{tool_name} - {'Approved' if approved else 'Denied'}",
+                blocks=approval_resolution_blocks(
+                    tool_name=tool_name,
+                    approved=approved,
+                    responder_id=responder_id,
+                ),
+            )
+        await self.octomate.kick(
+            DeferredActionBatchResponse(
+                batch_id=uuid.UUID(str(batch_id)),
+                responder_id=responder_id,
+                approvals={uuid.UUID(str(action_id)): approved},
+            )
+        )
+
+    async def on_question_nav(self, ack, body: dict[str, Any]) -> None:
+        await ack()
+        action_value = _first_action_value(body)
+        try:
+            actions = SlackQuestionActionsAdapter.validate_python(
+                action_value.get("questions") or []
+            )
+        except ValidationError:
+            return
+        if not actions:
+            return
+        page = int(action_value.get("page") or 0)
+        answers = dict(action_value.get("answers") or {})
+        answers = collect_current_answer(body, actions, page, answers)
+        action_id = (body.get("actions") or [{}])[0].get("action_id", "")
+        if action_id == SlackBlockAction.ASK_QUESTION_BACK:
+            page -= 1
+        elif action_id == SlackBlockAction.ASK_QUESTION_NEXT:
+            page += 1
+        else:
+            batch_id = str(action_value.get("batch_id") or actions[0].batch_id)
+            await self.octomate.kick(
+                DeferredActionBatchResponse(
+                    batch_id=uuid.UUID(batch_id),
+                    responder_id=body.get("user", {}).get("id", ""),
+                    answers={
+                        action.id: str(answers.get(str(action.id), ""))
+                        for action in actions
+                    },
+                )
+            )
+            channel = body.get("channel", {}).get("id", "")
+            message_ts = body.get("message", {}).get("ts", "")
+            if channel and message_ts:
+                await self.ink.update_message(
+                    channel,
+                    message_ts,
+                    text="Answers submitted",
+                    blocks=submitted_blocks(actions),
+                )
+            return
+        channel = body.get("channel", {}).get("id", "")
+        message_ts = body.get("message", {}).get("ts", "")
+        if channel and message_ts:
+            await self.ink.update_message(
+                channel,
+                message_ts,
+                text="Questions needed",
+                blocks=ask_question_blocks(
+                    actions,
+                    page=page,
+                    answers=answers,
+                ),
+            )
+
+    async def on_question_choice(self, ack) -> None:
+        await ack()
+
     async def ensure_assistant_thread(
         self,
         event: SlackAssistantThreadEvent,
@@ -118,8 +245,6 @@ class SlackTentacle(ChannelTentacle):
                 event,
             )
             return
-        if self.octomate is None:
-            raise RuntimeError(f"channel {self.id!r} is not attached to Octomate")
 
         key = ConversationKey(
             channel_tentacle_id=self.id,
@@ -239,3 +364,14 @@ class SlackTentacle(ChannelTentacle):
             None,
         )
         return replace(key, thread_id=message_id or key.thread_id)
+
+
+def _first_action_value(body: dict[str, Any]) -> dict[str, Any]:
+    actions = body.get("actions") or []
+    if not actions:
+        return {}
+    try:
+        value = json.loads(actions[0].get("value") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}

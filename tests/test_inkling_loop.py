@@ -1,8 +1,8 @@
-"""Unit tests for the Inkling ReAct loop with deferred-tool resolution.
+"""Unit tests for the Inkling ReAct loop with deferred-tool requests.
 
 Drives the graph end-to-end against a scripted FunctionModel (no real LLM call)
 to prove:
-- `CallDeferred` from `ask_user` round-trips through the loop
+- `CallDeferred` from `ask_questions` leaves a deferred request for triage
 - streaming events from `agent.run_stream_events` come from the graph output
 """
 
@@ -165,15 +165,22 @@ def _test_conversation_key() -> ConversationKey:
     )
 
 
-async def test_inkling_loop_resolves_deferred_calls() -> None:
+async def test_inkling_loop_emits_deferred_question_batch() -> None:
     agent, script = _build_test_agent(
         [
             ScriptedTurn(
-                tool_name="ask_user",
-                args={"question": "what's your name?"},
+                tool_name="ask_questions",
+                args={
+                    "questions": [
+                        {
+                            "question": "what's your name?",
+                            "choices": ["Ada", "Grace"],
+                            "hint": "Pick or type the name to use.",
+                        },
+                    ]
+                },
                 tool_call_id="call_ask_1",
             ),
-            "all done!",
         ]
     )
 
@@ -190,17 +197,20 @@ async def test_inkling_loop_resolves_deferred_calls() -> None:
     result_events = [
         event for event in captured_events if isinstance(event, AgentRunResultEvent)
     ]
-    assert len(result_events) == 2
-    result = result_events[-1].result
+    assert len(result_events) == 1
 
-    output = result.output
-    assert output == "all done!"
+    output = result_events[-1].result.output
+    assert isinstance(output, DeferredToolRequests)
+    assert len(output.calls) == 1
+    call = output.calls[0]
+    assert call.tool_name == "ask_questions"
+    assert call.args_as_dict()["questions"][0]["question"] == "what's your name?"
 
     assert captured_events, "graph output should stream pydantic events"
 
-    assert script.cursor == 2, "both turns should have been consumed"
-    assert len(conversations.runs) == 2
-    assert all(run[1].startswith("None:") for run in conversations.runs)
+    assert script.cursor == 1
+    assert len(conversations.runs) == 1
+    assert all(run[1].startswith("react:") for run in conversations.runs)
 
 
 async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
@@ -255,7 +265,9 @@ async def test_stub_resolver_round_trips_calls_and_approvals() -> None:
     requests = DeferredToolRequests(
         calls=[
             ToolCallPart(
-                tool_name="ask_user", args={"question": "?"}, tool_call_id="c1"
+                tool_name="ask_questions",
+                args={"questions": [{"question": "?"}]},
+                tool_call_id="c1",
             )
         ],
         approvals=[
@@ -266,7 +278,7 @@ async def test_stub_resolver_round_trips_calls_and_approvals() -> None:
             )
         ],
     )
-    resolver = StubResolver(canned={"ask_user": "yes please"})
+    resolver = StubResolver(canned={"ask_questions": "yes please"})
     results = await resolver.resolve(requests)
 
     assert results.calls["c1"] == "yes please"

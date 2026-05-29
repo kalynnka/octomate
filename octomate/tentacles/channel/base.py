@@ -12,10 +12,16 @@ from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from uuid_utils import uuid7
 
 from octomate.config import ChannelConfig
+from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.base import Tentacle
+from octomate.tentacles.channel.feelers import (
+    Feelers,
+    PlainTextApprovalFeeler,
+    PlainTextAskQuestionFeeler,
+)
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
@@ -88,7 +94,9 @@ class ChannelTentacle(Tentacle):
     FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
     thread_strategy: ClassVar[ThreadStrategy] = "main_only"
 
+    octomate: Octomate
     profile: UserProfile
+    feelers: Feelers
 
     def __init__(
         self,
@@ -99,12 +107,18 @@ class ChannelTentacle(Tentacle):
         chromo: Chromo,
         config: ChannelConfig,
     ) -> None:
+        if octomate is None:
+            raise ValueError(f"channel {id!r} requires an attached Octomate")
         super().__init__(id=id, octomate=octomate)
         self.config = config
         self.ink = ink
         self.chromo = chromo
         self.agent_id = config.agent_id
         self.user_profiles: dict[str, UserProfile] = {}
+        self.feelers = Feelers(
+            approvals=PlainTextApprovalFeeler(self.respond_text),
+            ask_questions=PlainTextAskQuestionFeeler(self.respond_text),
+        )
 
         self.profile = self.ink.inspect()
         logger.info(
@@ -146,9 +160,7 @@ class ChannelTentacle(Tentacle):
                     key,
                 )
                 return
-            if self.octomate is None:
-                raise RuntimeError(f"channel {self.id!r} is not attached to Octomate")
-            await self.octomate.kick(key, [event], agent_id=self.agent_id)
+            await self.octomate.kick(UserMessageSignal([event]))
         except Exception:
             logger.exception("Channel %s: error in ingest", self.id)
 

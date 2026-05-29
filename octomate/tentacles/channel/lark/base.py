@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -9,15 +10,30 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import lark_oapi
 import lark_oapi.ws.client as ws_mod
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
+from lark_oapi.event.callback.model.p2_card_action_trigger import (
+    P2CardActionTrigger,
+    P2CardActionTriggerResponse,
+)
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config import LarkChannelConfig
+from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
+from octomate.tentacles.channel.feelers import Feelers
 from octomate.tentacles.channel.lark.chromo import (
     LARK_STREAM_ELEMENT_ID,
     LarkChromo,
+)
+from octomate.tentacles.channel.lark.feelers import (
+    LarkCardAction,
+    LarkApprovalFeeler,
+    LarkAskQuestionFeeler,
+    approval_resolution_card_data,
+    ask_question_card_data,
+    collect_answer,
+    submitted_card_data,
 )
 from octomate.tentacles.channel.lark.ink import LarkInk
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
@@ -33,8 +49,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def log_card_action_result(channel_id: str, task: asyncio.Task[None]) -> None:
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.error(
+            "Channel %s: failed to handle Lark card action",
+            channel_id,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
+
 class LarkTentacle(ChannelTentacle):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
+    octomate: Octomate
 
     ws_client: lark_oapi.ws.Client
     stop_event: asyncio.Event | None
@@ -47,12 +76,15 @@ class LarkTentacle(ChannelTentacle):
         *,
         config: LarkChannelConfig,
     ) -> None:
+        if octomate is None:
+            raise ValueError(f"channel {id!r} requires an attached Octomate")
         self.ink = LarkInk(config.app_id, config.app_secret)
         self.chromo = LarkChromo()
 
         event_handler = (
             lark_oapi.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(self.sense)
+            .register_p2_card_action_trigger(self.on_card_action)
             .build()
         )
         self.ws_client = lark_oapi.ws.Client(
@@ -69,6 +101,10 @@ class LarkTentacle(ChannelTentacle):
             ink=self.ink,
             chromo=self.chromo,
             config=config,
+        )
+        self.feelers = Feelers(
+            approvals=LarkApprovalFeeler(self.ink),
+            ask_questions=LarkAskQuestionFeeler(self.ink),
         )
 
     async def activate(self) -> None:
@@ -232,7 +268,129 @@ class LarkTentacle(ChannelTentacle):
 
     def sense(self, data: P2ImMessageReceiveV1) -> None:
         task = asyncio.create_task(self.ingest(data))
-        task.add_done_callback(self._log_ingest_result)
+
+        def log_result(task: asyncio.Task[None]) -> None:
+            if task.cancelled():
+                return
+            error = task.exception()
+            if error is not None:
+                logger.error(
+                    "Channel %s: failed to handle Lark message",
+                    self.id,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        task.add_done_callback(log_result)
+
+    def on_card_action(
+        self,
+        data: P2CardActionTrigger,
+    ) -> P2CardActionTriggerResponse:
+        if data.event is None or data.event.action is None:
+            return P2CardActionTriggerResponse({})
+        callback_action = data.event.action
+        value = callback_action.value or {}
+        try:
+            action = LarkCardAction(str(value.get("action") or ""))
+        except ValueError:
+            return P2CardActionTriggerResponse({})
+        responder_id = ""
+        if data.event.operator is not None:
+            responder_id = (
+                data.event.operator.open_id or data.event.operator.user_id or ""
+            )
+
+        if action in {
+            LarkCardAction.APPROVAL_APPROVE,
+            LarkCardAction.APPROVAL_DENY,
+        }:
+            action_id = value.get("action_id")
+            batch_id = value.get("batch_id")
+            if not action_id or not batch_id:
+                return P2CardActionTriggerResponse({})
+            approved = action == LarkCardAction.APPROVAL_APPROVE
+            task = asyncio.create_task(
+                self.octomate.kick(
+                    DeferredActionBatchResponse(
+                        batch_id=uuid.UUID(str(batch_id)),
+                        responder_id=responder_id,
+                        approvals={uuid.UUID(str(action_id)): approved},
+                    )
+                )
+            )
+            task.add_done_callback(
+                lambda task: log_card_action_result(self.id, task)
+            )
+            return P2CardActionTriggerResponse(
+                {
+                    "toast": {
+                        "type": "success",
+                        "content": "Approved" if approved else "Denied",
+                    },
+                    "card": {
+                        "type": "raw",
+                        "data": approval_resolution_card_data(
+                            tool_name=str(value.get("tool_name") or "Tool call"),
+                            approved=approved,
+                        ),
+                    },
+                }
+            )
+
+        if action in {
+            LarkCardAction.ASK_QUESTION_BACK,
+            LarkCardAction.ASK_QUESTION_NEXT,
+            LarkCardAction.ASK_QUESTION_SUBMIT,
+        }:
+            questions = value.get("questions") or []
+            if not isinstance(questions, list) or not questions:
+                return P2CardActionTriggerResponse({})
+            answers = collect_answer(value, callback_action.form_value or {})
+            page = int(value.get("page") or 0)
+            if action == LarkCardAction.ASK_QUESTION_BACK:
+                page -= 1
+            elif action == LarkCardAction.ASK_QUESTION_NEXT:
+                page += 1
+            else:
+                batch_id = str(value.get("batch_id") or questions[0].get("batch_id"))
+                task = asyncio.create_task(
+                    self.octomate.kick(
+                        DeferredActionBatchResponse(
+                            batch_id=uuid.UUID(batch_id),
+                            responder_id=responder_id,
+                            answers={
+                                uuid.UUID(str(question["action_id"])): str(
+                                    answers.get(str(question["action_id"]), "")
+                                )
+                                for question in questions
+                            },
+                        )
+                    )
+                )
+                task.add_done_callback(
+                    lambda task: log_card_action_result(self.id, task)
+                )
+                return P2CardActionTriggerResponse(
+                    {
+                        "toast": {"type": "success", "content": "Answers submitted"},
+                        "card": {"type": "raw", "data": submitted_card_data(questions)},
+                    }
+                )
+            return P2CardActionTriggerResponse(
+                {
+                    "toast": {"type": "success", "content": "Received"},
+                    "card": {
+                        "type": "raw",
+                        "data": ask_question_card_data(
+                            questions=questions,
+                            page=page,
+                            answers=answers,
+                        ),
+                    },
+                }
+            )
+
+        return P2CardActionTriggerResponse({})
 
     async def close(self) -> None:
         await self.deactivate()
@@ -249,11 +407,3 @@ class LarkTentacle(ChannelTentacle):
             except asyncio.CancelledError:
                 pass
         await self.ws_client._disconnect()  # type: ignore[attr-defined]
-
-    def _log_ingest_result(self, task: asyncio.Task[None]) -> None:
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.exception("Channel %s: failed to handle Lark message", self.id)

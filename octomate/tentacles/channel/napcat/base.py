@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 class NapcatTentacle(ChannelTentacle):
+    octomate: Octomate
+
     ws_url: str
     ws_client: ClientConnection | None
     stop_event: asyncio.Event | None
@@ -36,6 +38,8 @@ class NapcatTentacle(ChannelTentacle):
         *,
         config: NapcatChannelConfig,
     ) -> None:
+        if octomate is None:
+            raise ValueError(f"channel {id!r} requires an attached Octomate")
         self.ws_url = config.ws_url
         self.access_token = config.access_token
         self.ink = NapcatInk(config.http_url, config.access_token)

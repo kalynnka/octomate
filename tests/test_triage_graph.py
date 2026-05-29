@@ -182,16 +182,18 @@ async def test_triage_graph_emits_direct_route() -> None:
     ops = FakeChannel()
 
     result = (
-        await triage_graph.run(
-            RunTriage(user_prompt="hi"),
-            state=TriageState(),
-            deps=TriageDeps(
-                agent=cast(AgentTentacle, agent),
-                conversation_manager=cast(ConversationManager, conversations),
-                source_target=_source_target(key),
-                channels={
-                    "im": cast(ChannelTentacle, im),
-                    "ops": cast(ChannelTentacle, ops),
+            await triage_graph.run(
+                RunTriage(
+                    agent=cast(AgentTentacle, agent),
+                    source_target=_source_target(key),
+                    user_prompt="hi",
+                ),
+                state=TriageState(),
+                deps=TriageDeps(
+                    conversation_manager=cast(ConversationManager, conversations),
+                    channels={
+                        "im": cast(ChannelTentacle, im),
+                        "ops": cast(ChannelTentacle, ops),
                 },
             ),
         )
@@ -224,16 +226,18 @@ async def test_triage_graph_emits_reception_after_route() -> None:
     ops = FakeChannel()
 
     result = (
-        await triage_graph.run(
-            RunTriage(user_prompt="debug this"),
-            state=TriageState(),
-            deps=TriageDeps(
-                agent=cast(AgentTentacle, agent),
-                conversation_manager=cast(ConversationManager, conversations),
-                source_target=_source_target(key),
-                channels={
-                    "im": cast(ChannelTentacle, im),
-                    "ops": cast(ChannelTentacle, ops),
+            await triage_graph.run(
+                RunTriage(
+                    agent=cast(AgentTentacle, agent),
+                    source_target=_source_target(key),
+                    user_prompt="debug this",
+                ),
+                state=TriageState(),
+                deps=TriageDeps(
+                    conversation_manager=cast(ConversationManager, conversations),
+                    channels={
+                        "im": cast(ChannelTentacle, im),
+                        "ops": cast(ChannelTentacle, ops),
                 },
             ),
         )
@@ -274,16 +278,18 @@ async def test_triage_graph_runs_final_reception_without_stream_when_disabled() 
     )
 
     result = (
-        await triage_graph.run(
-            RunTriage(user_prompt="debug this"),
-            state=TriageState(),
-            deps=TriageDeps(
-                agent=cast(AgentTentacle, agent),
-                conversation_manager=cast(ConversationManager, conversations),
-                source_target=_source_target(key),
-                channels={"im": cast(ChannelTentacle, im)},
-            ),
-        )
+            await triage_graph.run(
+                RunTriage(
+                    agent=cast(AgentTentacle, agent),
+                    source_target=_source_target(key),
+                    user_prompt="debug this",
+                ),
+                state=TriageState(),
+                deps=TriageDeps(
+                    conversation_manager=cast(ConversationManager, conversations),
+                    channels={"im": cast(ChannelTentacle, im)},
+                ),
+            )
     ).output
 
     assert result.result is not None

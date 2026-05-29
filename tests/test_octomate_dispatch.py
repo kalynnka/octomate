@@ -18,6 +18,7 @@ import octomate.database as database
 from octomate import Octomate
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.models import Base
+from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
@@ -195,7 +196,7 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
         segments=[TextSegment(data={"text": "hi"})],
     )
 
-    await octomate.kick(key, [event], agent_id="inkling")
+    await octomate.kick(UserMessageSignal([event]))
 
     assert len(agent.turns) == 1
     assert agent.turns[0][0] == str(event)
@@ -241,7 +242,7 @@ async def test_octomate_kick_streams_reception_result_when_enabled() -> None:
         segments=[TextSegment(data={"text": "hi"})],
     )
 
-    await octomate.kick(key, [event], agent_id="inkling")
+    await octomate.kick(UserMessageSignal([event]))
 
     assert channel.sent == []
     assert len(channel.sub_threads) == 1
@@ -287,7 +288,7 @@ async def test_octomate_kick_skips_triage_inside_flat_thread() -> None:
         segments=[TextSegment(data={"text": "continue"})],
     )
 
-    await octomate.kick(key, [event], agent_id="inkling")
+    await octomate.kick(UserMessageSignal([event]))
 
     assert agent.turns == []
     assert len(agent.streams) == 1
@@ -336,7 +337,7 @@ async def test_octomate_kick_routes_reception_to_attached_channel_sub_thread() -
         segments=[TextSegment(data={"text": "please investigate"})],
     )
 
-    await octomate.kick(key, [event], agent_id="inkling")
+    await octomate.kick(UserMessageSignal([event]))
 
     assert source.sent == []
     assert len(ops.sub_threads) == 1
@@ -392,7 +393,7 @@ async def test_octomate_kick_keeps_reception_in_main_for_main_only_channel() -> 
         segments=[TextSegment(data={"text": "please investigate"})],
     )
 
-    await octomate.kick(key, [event], agent_id="inkling")
+    await octomate.kick(UserMessageSignal([event]))
 
     assert channel.sub_threads == []
     assert channel.sent == []
