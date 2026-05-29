@@ -69,7 +69,7 @@ class Octomate:
                     agents=self.agents,
                     channels=self.channels,
                     conversation_manager=self.conversations,
-                    deferred_actions=self.deferred_actions,
+                    action_manager=self.deferred_actions,
                 ),
             )
 

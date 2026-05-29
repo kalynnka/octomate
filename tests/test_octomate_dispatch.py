@@ -136,13 +136,9 @@ class FakeChannel:
     async def respond(
         self,
         key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]],
+        result: AgentRunResult[str],
     ) -> None:
-        outputs: list[str] = []
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                outputs.append(event.result.output)
-        self.sent.append((key, outputs))
+        self.sent.append((key, [result.output]))
 
     async def stream_respond(
         self,

@@ -155,20 +155,14 @@ class ChannelTentacle(Tentacle):
     async def respond(
         self,
         key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        result: AgentRunResult[Any],
     ) -> None:
         """Send a final, non-streaming response for a conversation."""
         chat_id = key.chat_id or key.user_id
         chat_type = key.chat_type
         reply_to: str | None = key.thread_id or None
-        result_event: AgentRunResultEvent[Any] | None = None
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                result_event = event
-        if result_event is None:
-            return
 
-        for message in self.chromo.squirt(result_event.result, reply_to=reply_to):
+        for message in self.chromo.squirt(result, reply_to=reply_to):
             await self.ink.send_message(
                 chat_id,
                 chat_type,
@@ -185,7 +179,12 @@ class ChannelTentacle(Tentacle):
             "Channel %s does not support streaming responses; falling back to final response",
             self.id,
         )
-        await self.respond(key, events)
+        result_event: AgentRunResultEvent[Any] | None = None
+        async for event in events:
+            if isinstance(event, AgentRunResultEvent):
+                result_event = event
+        if result_event is not None:
+            await self.respond(key, result_event.result)
 
     async def respond_text(
         self,
@@ -194,12 +193,7 @@ class ChannelTentacle(Tentacle):
     ) -> None:
         """Respond with synthetic text through the normal channel adapter."""
 
-        async def events() -> AsyncIterator[
-            AgentStreamEvent | AgentRunResultEvent[Any]
-        ]:
-            yield AgentRunResultEvent(AgentRunResult(text))
-
-        await self.respond(key, events())
+        await self.respond(key, AgentRunResult(text))
 
     async def start_sub_thread(
         self,

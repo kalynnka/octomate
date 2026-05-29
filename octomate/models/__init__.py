@@ -1,6 +1,11 @@
 from octomate.models.base import Base
 from octomate.models.conversation import Conversation
-from octomate.models.deferred import DeferredAction, DeferredActionBatch
+from octomate.models.deferred import (
+    DeferredAction,
+    DeferredActionBatch,
+    DeferredApprovalAction,
+    DeferredQuestionAction,
+)
 from octomate.models.messages import (
     ModelMessage,
     ModelRequest,
@@ -15,6 +20,8 @@ __all__ = [
     "Conversation",
     "DeferredAction",
     "DeferredActionBatch",
+    "DeferredApprovalAction",
+    "DeferredQuestionAction",
     "ModelMessage",
     "ModelRequest",
     "ModelResponse",

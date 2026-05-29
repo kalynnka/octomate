@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Literal, NotRequired, TypeAlias, TypedDict
 
 from arcanus import (
     BaseTransmuter,
@@ -12,7 +12,15 @@ from arcanus import (
     Relationships,
 )
 from arcanus.base import Identity
-from pydantic import AliasChoices, ConfigDict, Field, JsonValue
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+)
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
@@ -23,8 +31,23 @@ from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import (
     DeferredActionKind,
     DeferredActionStatus,
+    DeferredApprovalStatus,
     DeferredBatchStatus,
+    DeferredQuestionStatus,
 )
+
+
+class QuestionRequest(TypedDict):
+    question: str
+    choices: NotRequired[list[str] | None]
+    hint: NotRequired[str]
+
+
+class ApprovalRequest(BaseModel):
+    tool_name: str
+    args: dict[str, JsonValue] = Field(default_factory=dict)
+    title: str = "Permission Required"
+    description: str = ""
 
 
 @sqlalchemy_materia.bless(deferred_models.DeferredAction)
@@ -40,6 +63,7 @@ class DeferredAction(BaseTransmuter):
     status: DeferredActionStatus = "pending"
     tool_name: str
     tool_call_id: str
+    position: int = 0
     args: dict[str, JsonValue]
     metadata: dict[str, JsonValue] = Field(
         default_factory=dict,
@@ -55,8 +79,75 @@ class DeferredAction(BaseTransmuter):
     batch: Relation[DeferredActionBatch] = Relationship()
 
     @property
-    def is_resolved(self) -> bool:
+    def resolved(self) -> bool:
         return self.status in {"answered", "approved", "denied", "expired", "failed"}
+
+
+@sqlalchemy_materia.bless(deferred_models.DeferredQuestionAction)
+class DeferredQuestion(DeferredAction):
+    kind: Literal["question"] = "question"
+    args: QuestionRequest
+    status: DeferredQuestionStatus = "pending"
+    result: str | None = None
+
+
+@sqlalchemy_materia.bless(deferred_models.DeferredApprovalAction)
+class DeferredApproval(DeferredAction):
+    kind: Literal["approval"] = "approval"
+    args: ApprovalRequest
+    status: DeferredApprovalStatus = "pending"
+    result: bool | None = None
+
+
+DeferredActionVariant: TypeAlias = Annotated[
+    DeferredQuestion | DeferredApproval,
+    Field(discriminator="kind"),
+]
+
+
+def from_deferred_requests(request: DeferredToolRequests) -> object:
+    if not isinstance(request, DeferredToolRequests):
+        return request
+    action_payloads: list[object] = []
+    for call in request.calls:
+        metadata = request.metadata.get(call.tool_call_id, {})
+        if metadata.get("kind") != "question":
+            continue
+        args = call.args_as_dict()
+        questions: list[QuestionRequest] = args.get("questions")  # pyright: ignore[reportAssignmentType]
+        action_payloads.extend(
+            {
+                "kind": "question",
+                "tool_name": call.tool_name,
+                "tool_call_id": call.tool_call_id,
+                "position": position,
+                "args": question,
+                "metadata": dict(metadata or {}),
+            }
+            for position, question in enumerate(questions)
+        )
+    action_payloads.extend(
+        {
+            "kind": "approval",
+            "tool_name": call.tool_name,
+            "tool_call_id": call.tool_call_id,
+            "args": {
+                "tool_name": call.tool_name,
+                "args": call.args_as_dict(),
+            },
+            "metadata": dict(request.metadata.get(call.tool_call_id, {}) or {}),
+        }
+        for call in request.approvals
+    )
+    return action_payloads
+
+
+DeferredActionCollection: TypeAdapter[list[DeferredActionVariant]] = TypeAdapter(
+    Annotated[
+        list[DeferredActionVariant],
+        BeforeValidator(from_deferred_requests),
+    ]
+)
 
 
 @sqlalchemy_materia.bless(deferred_models.DeferredActionBatch)
@@ -73,10 +164,8 @@ class DeferredActionBatch(BaseTransmuter):
     target_mode: ResponseTargetMode = "main"
     decision: TriageDecision | None = None
     requests: DeferredToolRequests
-    actions: RelationCollection[DeferredAction] = Relationships()
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
 
-
-DeferredAction.model_rebuild()
+    actions: RelationCollection[DeferredActionVariant] = Relationships()

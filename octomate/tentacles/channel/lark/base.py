@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import lark_oapi
 import lark_oapi.ws.client as ws_mod
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
-from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config import LarkChannelConfig
@@ -93,25 +93,20 @@ class LarkTentacle(ChannelTentacle):
     async def respond(
         self,
         key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
+        result: AgentRunResult[Any],
     ) -> None:
         chat_id = key.chat_id or key.user_id
         reply_to = key.thread_id if key.thread_id.startswith("om_") else None
         reply_in_thread = reply_to is not None
-        result_event: AgentRunResultEvent[Any] | None = None
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                result_event = event
-        if result_event is not None:
-            messages = self.chromo.squirt(result_event.result)
-            if messages:
-                await self.ink.send_message(
-                    chat_id,
-                    key.chat_type,
-                    messages,
-                    reply_to,
-                    reply_in_thread=reply_in_thread,
-                )
+        messages = self.chromo.squirt(result)
+        if messages:
+            await self.ink.send_message(
+                chat_id,
+                key.chat_type,
+                messages,
+                reply_to,
+                reply_in_thread=reply_in_thread,
+            )
 
     async def stream_respond(
         self,

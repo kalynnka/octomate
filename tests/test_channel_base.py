@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
-from pydantic_ai.messages import AgentStreamEvent, PartStartEvent, TextPart
+from pydantic_ai.messages import AgentStreamEvent
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
@@ -223,17 +223,9 @@ async def test_respond_encodes_final_agent_result_and_sends_native_messages(
         chat_id="alice",
         user_id="alice",
     )
-    drained: list[str] = []
 
-    async def events() -> AsyncIterator[ChannelEvent]:
-        yield PartStartEvent(index=0, part=TextPart(content="ignored draft"))
-        yield AgentRunResultEvent(AgentRunResult("hi alice"))
-        assert channel.sent == []
-        drained.append("after-result")
+    await channel.respond(key, AgentRunResult("hi alice"))
 
-    await channel.respond(key, events())
-
-    assert drained == ["after-result"]
     assert len(channel.sent) == 1
     chat_id, chat_type, messages, reply_to, _ = channel.sent[0]
     assert chat_id == "alice"
@@ -253,10 +245,7 @@ async def test_respond_uses_conversation_thread_as_reply_target(
         thread_id="m1",
     )
 
-    async def events() -> AsyncIterator[ChannelEvent]:
-        yield AgentRunResultEvent(AgentRunResult("after reply"))
-
-    await channel.respond(key, events())
+    await channel.respond(key, AgentRunResult("after reply"))
 
     assert len(channel.sent) == 1
     assert channel.sent[0][3] == "m1"

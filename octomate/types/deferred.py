@@ -11,10 +11,23 @@ DeferredBatchStatus = Literal[
     "superseded",
     "failed",
 ]
-DeferredActionKind = Literal["call", "approval"]
+DeferredActionKind = Literal["question", "approval"]
 DeferredActionStatus = Literal[
     "pending",
     "answered",
+    "approved",
+    "denied",
+    "expired",
+    "failed",
+]
+DeferredQuestionStatus = Literal[
+    "pending",
+    "answered",
+    "expired",
+    "failed",
+]
+DeferredApprovalStatus = Literal[
+    "pending",
     "approved",
     "denied",
     "expired",

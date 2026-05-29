@@ -659,10 +659,7 @@ async def test_lark_tentacle_replies_to_key_thread_id_when_it_is_open_message_id
         thread_id="om_child_message",
     )
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
-        yield AgentRunResultEvent(AgentRunResult("thread reply"))
-
-    await channel.respond(key, events())
+    await channel.respond(key, AgentRunResult("thread reply"))
 
     assert ink.created == []
     assert len(ink.replies) == 1
@@ -684,10 +681,7 @@ async def test_lark_tentacle_private_thread_uses_reply_in_thread() -> None:
         thread_id="om_private_anchor",
     )
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
-        yield AgentRunResultEvent(AgentRunResult("private thread reply"))
-
-    await channel.respond(key, events())
+    await channel.respond(key, AgentRunResult("private thread reply"))
 
     assert ink.created == []
     assert len(ink.replies) == 1
@@ -709,10 +703,7 @@ async def test_lark_tentacle_ignores_thread_id_as_reply_target() -> None:
         thread_id="omt_19766a1bf00edb8e",
     )
 
-    async def events() -> AsyncIterator[AgentRunResultEvent[str]]:
-        yield AgentRunResultEvent(AgentRunResult("new message"))
-
-    await channel.respond(key, events())
+    await channel.respond(key, AgentRunResult("new message"))
 
     assert ink.replies == []
     assert ink.created[0][:2] == ("oc_group", "chat_id")
