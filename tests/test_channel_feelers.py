@@ -27,11 +27,11 @@ from octomate.tentacles.channel.lark.feelers import (
     LarkApprovalFeeler,
     LarkAskQuestionFeeler,
     LarkCardAction,
+    LarkQuestionActionsAdapter,
     approval_card_data,
     ask_question_card,
     ask_question_card_data,
     collect_answer,
-    question_payload,
 )
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.tentacles.channel.slack.base import SlackTentacle
@@ -496,10 +496,14 @@ def test_lark_card_data_and_answer_collection() -> None:
     assert card["elements"][0]["content"].startswith("**Question 1 of 1**")
     form = card["elements"][2]
     submit = form["elements"][-1]
-    assert submit["value"]["questions"] == question_payload([action])
+    restored = LarkQuestionActionsAdapter.validate_python(submit["value"]["questions"])
+    assert restored[0].id == action.id
+    assert restored[0].args == action.args
     answers = collect_answer(
-        submit["value"],
+        restored,
+        int(submit["value"]["page"]),
         {"choice": "night", "answer": ""},
+        submit["value"]["answers"],
     )
     assert answers == {str(action.id): "night"}
 
@@ -533,9 +537,9 @@ async def test_lark_card_callbacks_emit_deferred_responses() -> None:
         approvals={approval.id: True},
     )
 
-    submit_value = ask_question_card_data(
-        questions=question_payload([question])
-    )["elements"][2]["elements"][-1]["value"]
+    submit_value = ask_question_card_data(actions=[question])["elements"][2][
+        "elements"
+    ][-1]["value"]
     submit_response = channel.on_card_action(
         cast(
             Any,

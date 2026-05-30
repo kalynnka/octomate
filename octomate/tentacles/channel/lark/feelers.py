@@ -5,6 +5,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from pydantic import TypeAdapter
+
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
@@ -23,6 +25,18 @@ if TYPE_CHECKING:
 
 ACTION_CARD_FIELDS = {"kind", "tool_name", "args"}
 ACTION_CARD_JSON_LIMIT = 2000
+QUESTION_STATE_FIELDS = {
+    "id",
+    "batch_id",
+    "kind",
+    "tool_name",
+    "tool_call_id",
+    "position",
+    "args",
+}
+LarkQuestionActionsAdapter: TypeAdapter[list[DeferredQuestion]] = TypeAdapter(
+    list[DeferredQuestion]
+)
 
 
 class LarkCardAction(StrEnum):
@@ -160,19 +174,14 @@ def approval_resolution_card_data(
 
 
 def ask_question_card(
-    actions: list[DeferredQuestion] | list[dict[str, Any]],
+    actions: list[DeferredQuestion],
     *,
     page: int = 0,
     answers: dict[str, str] | None = None,
 ) -> str:
-    questions = (
-        actions
-        if actions and isinstance(actions[0], dict)
-        else question_payload(actions)  # type: ignore[arg-type]
-    )
     return json.dumps(
         ask_question_card_data(
-            questions=questions,  # type: ignore[arg-type]
+            actions=actions,
             page=page,
             answers=answers,
         ),
@@ -182,17 +191,17 @@ def ask_question_card(
 
 def ask_question_card_data(
     *,
-    questions: list[dict[str, Any]],
+    actions: list[DeferredQuestion],
     page: int = 0,
     answers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     answers = answers or {}
-    page = max(0, min(page, len(questions) - 1))
-    question = questions[page]
-    action_id = str(question["action_id"])
-    choices = list(question.get("choices") or [])
-    hint = str(question.get("hint") or "")
-    text = str(question["question"])
+    page = max(0, min(page, len(actions) - 1))
+    action = actions[page]
+    action_id = str(action.id)
+    choices = list(action.args.get("choices") or [])
+    hint = str(action.args.get("hint") or "")
+    text = action.args["question"]
     if hint:
         text = f"{text}\n\n_Hint: {hint}_"
     saved = answers.get(action_id, "")
@@ -227,17 +236,17 @@ def ask_question_card_data(
             nav_button(
                 "Back",
                 LarkCardAction.ASK_QUESTION_BACK,
-                questions,
+                actions,
                 page,
                 answers,
             )
         )
-    if page < len(questions) - 1:
+    if page < len(actions) - 1:
         buttons.append(
             nav_button(
                 "Next",
                 LarkCardAction.ASK_QUESTION_NEXT,
-                questions,
+                actions,
                 page,
                 answers,
                 button_type="primary",
@@ -248,7 +257,7 @@ def ask_question_card_data(
             nav_button(
                 "Submit",
                 LarkCardAction.ASK_QUESTION_SUBMIT,
-                questions,
+                actions,
                 page,
                 answers,
                 button_type="primary",
@@ -263,7 +272,7 @@ def ask_question_card_data(
         "elements": [
             {
                 "tag": "markdown",
-                "content": f"**Question {page + 1} of {len(questions)}**\n\n{text}",
+                "content": f"**Question {page + 1} of {len(actions)}**\n\n{text}",
             },
             {"tag": "hr"},
             {
@@ -275,8 +284,8 @@ def ask_question_card_data(
     }
 
 
-def submitted_card_data(questions: list[dict[str, Any]]) -> dict[str, Any]:
-    count = len(questions)
+def submitted_card_data(actions: list[DeferredQuestion]) -> dict[str, Any]:
+    count = len(actions)
     noun = "question" if count == 1 else "questions"
     return {
         "header": {
@@ -289,25 +298,28 @@ def submitted_card_data(questions: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def collect_answer(value: dict[str, Any], form_value: dict[str, Any]) -> dict[str, str]:
-    answers = dict(value.get("answers") or {})
-    questions = value.get("questions") or []
-    page = int(value.get("page") or 0)
-    if not questions:
-        return answers
-    page = max(0, min(page, len(questions) - 1))
-    action_id = str(questions[page]["action_id"])
+def collect_answer(
+    actions: list[DeferredQuestion],
+    page: int,
+    form_value: dict[str, Any],
+    answers: dict[str, str] | None = None,
+) -> dict[str, str]:
+    collected = dict(answers or {})
+    if not actions:
+        return collected
+    page = max(0, min(page, len(actions) - 1))
+    action_id = str(actions[page].id)
     answer = str(form_value.get("answer") or "").strip()
     if not answer:
         answer = str(form_value.get("choice") or "").strip()
-    answers[action_id] = answer
-    return answers
+    collected[action_id] = answer
+    return collected
 
 
 def nav_button(
     text: str,
     action: LarkCardAction,
-    questions: list[dict[str, Any]],
+    actions: list[DeferredQuestion],
     page: int,
     answers: dict[str, str],
     *,
@@ -321,22 +333,15 @@ def nav_button(
         "name": action.value,
         "value": {
             "action": action.value,
-            "batch_id": questions[0].get("batch_id", "") if questions else "",
-            "questions": questions,
+            "batch_id": str(actions[0].batch_id) if actions else "",
+            "questions": LarkQuestionActionsAdapter.dump_python(
+                actions,
+                mode="json",
+                include={"__all__": QUESTION_STATE_FIELDS},
+                exclude_defaults=True,
+                exclude_none=True,
+            ),
             "page": page,
             "answers": answers,
         },
     }
-
-
-def question_payload(actions: list[DeferredQuestion]) -> list[dict[str, Any]]:
-    return [
-        {
-            "batch_id": str(action.batch_id),
-            "action_id": str(action.id),
-            "question": action.args["question"],
-            "hint": action.args.get("hint") or "",
-            "choices": action.args.get("choices") or [],
-        }
-        for action in actions
-    ]

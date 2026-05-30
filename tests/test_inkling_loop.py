@@ -18,7 +18,6 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
     TextPart,
-    ToolCallPart,
 )
 from pydantic_ai.models.function import (
     AgentInfo,
@@ -33,7 +32,6 @@ from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.tentacles.agent.graph import (
     ReactDeps,
     ReactState,
-    StubResolver,
     react_graph,
 )
 from octomate.tentacles.agent.graph.react import StartTurn
@@ -257,29 +255,3 @@ async def test_inkling_loop_handles_immediate_final_response() -> None:
     )
 
     assert result.output.output == "all done!"
-
-
-async def test_stub_resolver_round_trips_calls_and_approvals() -> None:
-    """Direct unit-style check: calls get canned strings, approvals get bools."""
-
-    requests = DeferredToolRequests(
-        calls=[
-            ToolCallPart(
-                tool_name="ask_questions",
-                args={"questions": [{"question": "?"}]},
-                tool_call_id="c1",
-            )
-        ],
-        approvals=[
-            ToolCallPart(
-                tool_name="confirm_action",
-                args={"action": "archive"},
-                tool_call_id="a1",
-            )
-        ],
-    )
-    resolver = StubResolver(canned={"ask_questions": "yes please"})
-    results = await resolver.resolve(requests)
-
-    assert results.calls["c1"] == "yes please"
-    assert results.approvals["a1"] is True
