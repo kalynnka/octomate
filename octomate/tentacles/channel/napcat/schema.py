@@ -193,7 +193,7 @@ InboundFrame = Annotated[
     Discriminator(_inbound_discriminator),
 ]
 
-inbound_adapter: TypeAdapter[InboundFrame] = TypeAdapter(InboundFrame)
+inbound_adapter = TypeAdapter(InboundFrame)
 
 COMPATIBLE_SEGMENTS = (TextSegment, AtSegment, ImageSegment, ReplySegment)
 

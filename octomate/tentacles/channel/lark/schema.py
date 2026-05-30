@@ -1,11 +1,36 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
+from uuid import UUID
 
 from pydantic import Field, model_validator
+from typing_extensions import NotRequired, TypedDict
 
 from octomate.schemas.conversation import UserProfile
+from octomate.schemas.deferred import DeferredQuestion
+
+NonEmptyStr = Annotated[str, Field(min_length=1)]
+
+
+class LarkApprovalActionValue(TypedDict):
+    action: NonEmptyStr
+    batch_id: UUID
+    action_id: UUID
+    tool_name: NotRequired[str]
+
+
+class LarkQuestionActionValue(TypedDict):
+    action: NonEmptyStr
+    batch_id: UUID
+    questions: Annotated[list[DeferredQuestion], Field(min_length=1)]
+    page: int
+    answers: dict[UUID, str]
+
+
+class LarkQuestionFormValue(TypedDict, total=False):
+    answer: str | None
+    choice: str | None
 
 
 @dataclass(frozen=True)

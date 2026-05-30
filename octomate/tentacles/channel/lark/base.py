@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -14,7 +13,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger,
     P2CardActionTriggerResponse,
 )
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.tools import DeferredToolRequests
 
@@ -31,14 +30,19 @@ from octomate.tentacles.channel.lark.feelers import (
     LarkApprovalFeeler,
     LarkAskQuestionFeeler,
     LarkCardAction,
-    LarkQuestionActionsAdapter,
     approval_resolution_card_data,
     ask_question_card_data,
     collect_answer,
     submitted_card_data,
 )
 from octomate.tentacles.channel.lark.ink import LarkInk
-from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
+from octomate.tentacles.channel.lark.schema import (
+    LarkApprovalActionValue,
+    LarkOutboundMessage,
+    LarkQuestionActionValue,
+    LarkQuestionFormValue,
+    LarkStreamCard,
+)
 from octomate.tentacles.channel.stream import (
     BatchedTextUpdate,
     TextStreamBatcher,
@@ -49,6 +53,9 @@ if TYPE_CHECKING:
     from octomate.base import Octomate
 
 logger = logging.getLogger(__name__)
+LarkApprovalActionValueAdapter = TypeAdapter(LarkApprovalActionValue)
+LarkQuestionActionValueAdapter = TypeAdapter(LarkQuestionActionValue)
+LarkQuestionFormValueAdapter = TypeAdapter(LarkQuestionFormValue)
 
 
 def log_card_action_result(channel_id: str, task: asyncio.Task[None]) -> None:
@@ -306,17 +313,17 @@ class LarkTentacle(ChannelTentacle):
             LarkCardAction.APPROVAL_APPROVE,
             LarkCardAction.APPROVAL_DENY,
         }:
-            action_id = value.get("action_id")
-            batch_id = value.get("batch_id")
-            if not action_id or not batch_id:
+            try:
+                action_value = LarkApprovalActionValueAdapter.validate_python(value)
+            except ValidationError:
                 return P2CardActionTriggerResponse({})
             approved = action == LarkCardAction.APPROVAL_APPROVE
             task = asyncio.create_task(
                 self.octomate.kick(
                     DeferredActionBatchResponse(
-                        batch_id=uuid.UUID(str(batch_id)),
+                        batch_id=action_value["batch_id"],
                         responder_id=responder_id,
-                        approvals={uuid.UUID(str(action_id)): approved},
+                        approvals={action_value["action_id"]: approved},
                     )
                 )
             )
@@ -332,7 +339,7 @@ class LarkTentacle(ChannelTentacle):
                     "card": {
                         "type": "raw",
                         "data": approval_resolution_card_data(
-                            tool_name=str(value.get("tool_name") or "Tool call"),
+                            tool_name=action_value.get("tool_name", "Tool call"),
                             approved=approved,
                         ),
                     },
@@ -345,33 +352,32 @@ class LarkTentacle(ChannelTentacle):
             LarkCardAction.ASK_QUESTION_SUBMIT,
         }:
             try:
-                question_actions = LarkQuestionActionsAdapter.validate_python(
-                    value.get("questions") or []
+                action_value = LarkQuestionActionValueAdapter.validate_python(value)
+                form_value = LarkQuestionFormValueAdapter.validate_python(
+                    callback_action.form_value or {}
                 )
             except ValidationError:
                 return P2CardActionTriggerResponse({})
-            if not question_actions:
-                return P2CardActionTriggerResponse({})
-            page = int(value.get("page") or 0)
+            question_actions = action_value["questions"]
+            page = action_value["page"]
             answers = collect_answer(
                 question_actions,
                 page,
-                callback_action.form_value or {},
-                value.get("answers") or {},
+                form_value,
+                action_value["answers"],
             )
             if action == LarkCardAction.ASK_QUESTION_BACK:
                 page -= 1
             elif action == LarkCardAction.ASK_QUESTION_NEXT:
                 page += 1
             else:
-                batch_id = str(value.get("batch_id") or question_actions[0].batch_id)
                 task = asyncio.create_task(
                     self.octomate.kick(
                         DeferredActionBatchResponse(
-                            batch_id=uuid.UUID(batch_id),
+                            batch_id=action_value["batch_id"],
                             responder_id=responder_id,
                             answers={
-                                question.id: str(answers.get(str(question.id), ""))
+                                question.id: str(answers.get(question.id, ""))
                                 for question in question_actions
                             },
                         )

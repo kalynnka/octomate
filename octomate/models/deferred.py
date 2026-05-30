@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid, and_
+from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
@@ -65,12 +65,27 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
     )
 
     conversation: Mapped[Conversation] = relationship("Conversation")
-    actions: Mapped[list[DeferredAction]] = relationship(
-        "DeferredAction",
-        back_populates="batch",
+    questions: Mapped[list[DeferredQuestionAction]] = relationship(
+        "DeferredQuestionAction",
+        primaryjoin=lambda: and_(
+            DeferredActionBatch.id == foreign(DeferredQuestionAction.batch_id),
+            DeferredQuestionAction.kind == "question",
+        ),
         cascade="all, delete-orphan",
-        order_by="DeferredAction.id",
+        order_by="DeferredAction.position",
         lazy="selectin",
+        overlaps="batch,approvals",
+    )
+    approvals: Mapped[list[DeferredApprovalAction]] = relationship(
+        "DeferredApprovalAction",
+        primaryjoin=lambda: and_(
+            DeferredActionBatch.id == foreign(DeferredApprovalAction.batch_id),
+            DeferredApprovalAction.kind == "approval",
+        ),
+        cascade="all, delete-orphan",
+        order_by="DeferredAction.position",
+        lazy="selectin",
+        overlaps="batch,questions",
     )
 
 
@@ -133,7 +148,7 @@ class DeferredAction(Base, TransmuterProxiedMixin):
 
     batch: Mapped[DeferredActionBatch] = relationship(
         "DeferredActionBatch",
-        back_populates="actions",
+        overlaps="approvals,questions",
     )
 
 

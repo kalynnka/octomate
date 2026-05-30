@@ -105,6 +105,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(), nullable=False),
         sa.Column("tool_name", sa.String(), nullable=False),
         sa.Column("tool_call_id", sa.String(), nullable=False),
+        sa.Column("position", sa.Integer(), nullable=False),
         sa.Column("args", octomate.models.messages.PydanticJSON(), nullable=False),
         sa.Column(
             "metadata",

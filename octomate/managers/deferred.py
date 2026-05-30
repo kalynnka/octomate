@@ -14,7 +14,8 @@ from octomate.schemas.deferred import (
     DeferredAction,
     DeferredActionBatch,
     DeferredActionCollection,
-    DeferredActionVariant,
+    DeferredApproval,
+    DeferredQuestion,
 )
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import DeferredBatchStatus
@@ -25,28 +26,34 @@ class DeferredActionContext:
     batch: DeferredActionBatch
 
     @property
-    def actions(self) -> list[DeferredActionVariant]:
-        return list(self.batch.actions)
+    def questions(self) -> list[DeferredQuestion]:
+        return list(self.batch.questions)
+
+    @property
+    def approvals(self) -> list[DeferredApproval]:
+        return list(self.batch.approvals)
 
     @property
     def completed(self) -> bool:
-        return all(action.resolved for action in self.actions)
+        return all(action.resolved for action in self.questions) and all(
+            action.resolved for action in self.approvals
+        )
 
     def build_results(self) -> DeferredToolResults:
         results = DeferredToolResults()
-        question_actions: dict[str, list[DeferredActionVariant]] = {}
-        for action in self.actions:
-            if action.kind == "question":
-                question_actions.setdefault(action.tool_call_id, []).append(action)
-            elif action.kind == "approval":
-                results.approvals[action.tool_call_id] = bool(action.result)
+        question_actions: dict[str, list[DeferredQuestion]] = {}
+        for action in self.questions:
+            question_actions.setdefault(action.tool_call_id, []).append(action)
+            if action.metadata:
+                results.metadata[action.tool_call_id] = action.metadata
+        for action in self.approvals:
+            results.approvals[action.tool_call_id] = bool(action.result)
             if action.metadata:
                 results.metadata[action.tool_call_id] = action.metadata
         for tool_call_id, actions in question_actions.items():
-            ordered = sorted(actions, key=lambda action: action.position)
             results.calls[tool_call_id] = [
                 "" if action.result is None else str(action.result)
-                for action in ordered
+                for action in sorted(actions)
             ]
         return results
 
@@ -65,6 +72,12 @@ class DeferredActionManager:
         requests: DeferredToolRequests,
     ) -> DeferredActionContext:
         actions = DeferredActionCollection.validate_python(requests)
+        questions = [
+            action for action in actions if isinstance(action, DeferredQuestion)
+        ]
+        approvals = [
+            action for action in actions if isinstance(action, DeferredApproval)
+        ]
         batch = DeferredActionBatch(
             conversation_id=conversation.id,
             agent_tentacle_id=agent_tentacle_id,
@@ -74,13 +87,15 @@ class DeferredActionManager:
             target_mode=target_mode,
             decision=decision,
             requests=requests,
-            actions=RelationCollection(actions),
+            questions=RelationCollection(questions),
+            approvals=RelationCollection(approvals),
         )
 
         async with async_session() as session:
             session.add(batch)
             await session.commit()
-            await batch.actions
+            await batch.questions
+            await batch.approvals
             return DeferredActionContext(batch=batch)
 
     async def get_batch_context(
@@ -91,7 +106,8 @@ class DeferredActionManager:
             batch = await session.get(DeferredActionBatch, batch_id)
             if batch is None:
                 raise ValueError(f"unknown deferred action batch {batch_id}")
-            await batch.actions
+            await batch.questions
+            await batch.approvals
             return DeferredActionContext(batch=batch)
 
     async def resolve_batch(
@@ -102,21 +118,21 @@ class DeferredActionManager:
             batch = await session.get(DeferredActionBatch, awake.batch_id)
             if batch is None:
                 raise ValueError(f"unknown deferred action batch {awake.batch_id}")
-            await batch.actions
+            await batch.questions
+            await batch.approvals
             context = DeferredActionContext(batch=batch)
             if batch.status in {"completed", "resuming"}:
                 return context
-            actions_by_id = {action.id: action for action in context.actions}
+            questions_by_id = {action.id: action for action in context.questions}
+            approvals_by_id = {action.id: action for action in context.approvals}
             now = datetime.now(timezone.utc)
 
             for action_id, answer in awake.answers.items():
-                action = actions_by_id.get(action_id)
+                action = questions_by_id.get(action_id)
                 if action is None:
                     raise ValueError(
                         f"unknown deferred action {action_id} in batch {awake.batch_id}"
                     )
-                if action.kind != "question":
-                    raise ValueError(f"deferred action {action_id} is not a question")
                 if action.status != "pending":
                     continue
                 action.status = "answered"
@@ -126,13 +142,11 @@ class DeferredActionManager:
                 action.updated_at = now
 
             for action_id, approved in awake.approvals.items():
-                action = actions_by_id.get(action_id)
+                action = approvals_by_id.get(action_id)
                 if action is None:
                     raise ValueError(
                         f"unknown deferred action {action_id} in batch {awake.batch_id}"
                     )
-                if action.kind != "approval":
-                    raise ValueError(f"deferred action {action_id} is not an approval")
                 if action.status != "pending":
                     continue
                 action.status = "approved" if approved else "denied"
@@ -145,7 +159,7 @@ class DeferredActionManager:
                 action.resolved_at = now
                 action.updated_at = now
 
-            if all(item.status != "pending" for item in context.batch.actions):
+            if context.completed:
                 context.batch.status = "resolved"
             context.batch.updated_at = now
             await session.commit()

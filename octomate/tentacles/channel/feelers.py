@@ -76,22 +76,15 @@ class Feelers:
             decision=decision,
             requests=requests,
         )
-        approval_actions = [
-            action for action in context.actions if isinstance(action, DeferredApproval)
-        ]
-        question_actions = [
-            action for action in context.actions if isinstance(action, DeferredQuestion)
-        ]
-
-        for action in approval_actions:
+        for action in context.approvals:
             platform_message_id = await self.approvals.present(target_key, action)
             await action_manager.mark_action_presented(
                 action.id,
                 platform_message_id,
             )
 
-        message_ids = await self.ask_questions.present(target_key, question_actions)
-        for action in question_actions:
+        message_ids = await self.ask_questions.present(target_key, context.questions)
+        for action in context.questions:
             await action_manager.mark_action_presented(
                 action.id,
                 message_ids.get(action.id),

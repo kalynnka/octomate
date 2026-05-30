@@ -17,7 +17,11 @@ from octomate.tentacles.channel.feelers import (
     ApprovalFeeler,
     AskQuestionFeeler,
 )
-from octomate.tentacles.channel.slack.schema import SlackOutboundMessage
+from octomate.tentacles.channel.slack.schema import (
+    SlackOutboundMessage,
+    SlackQuestionActionValue,
+    SlackQuestionState,
+)
 
 if TYPE_CHECKING:
     from octomate.tentacles.channel.slack.ink import SlackInk
@@ -25,6 +29,7 @@ if TYPE_CHECKING:
 
 ACTION_CARD_FIELDS = {"kind", "tool_name", "args"}
 ACTION_CARD_JSON_LIMIT = 2000
+MAX_QUESTION_CHOICES = 3
 QUESTION_STATE_FIELDS = {
     "id",
     "batch_id",
@@ -34,9 +39,8 @@ QUESTION_STATE_FIELDS = {
     "position",
     "args",
 }
-SlackQuestionActionsAdapter: TypeAdapter[list[DeferredQuestion]] = TypeAdapter(
-    list[DeferredQuestion]
-)
+SlackQuestionActionsAdapter = TypeAdapter(list[DeferredQuestion])
+SlackQuestionActionValueAdapter = TypeAdapter(SlackQuestionActionValue)
 
 
 class SlackBlockAction(StrEnum):
@@ -182,17 +186,16 @@ def ask_question_blocks(
     actions: list[DeferredQuestion],
     *,
     page: int = 0,
-    answers: dict[str, str] | None = None,
+    answers: dict[UUID, str] | None = None,
 ) -> list[dict[str, Any]]:
     if not actions:
         return []
     answers = answers or {}
     page = max(0, min(page, len(actions) - 1))
     action = actions[page]
-    action_id = str(action.id)
-    choices = action.args.get("choices") or []
+    choices = list(action.args.get("choices") or [])[:MAX_QUESTION_CHOICES]
     hint = action.args.get("hint") or ""
-    saved = answers.get(action_id, "")
+    saved = answers.get(action.id, "")
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
@@ -217,30 +220,30 @@ def ask_question_blocks(
             }
         )
     if choices:
-        options = [
-            {"text": {"type": "plain_text", "text": str(choice)}, "value": str(choice)}
-            for choice in choices
-        ]
-        element: dict[str, Any] = {
-            "type": "static_select",
-            "action_id": SlackBlockAction.ASK_QUESTION_CHOICE.value,
-            "placeholder": {"type": "plain_text", "text": "Select an option"},
-            "options": options,
-        }
-        if saved in choices:
-            element["initial_option"] = options[choices.index(saved)]
         blocks.append(
             {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "Choose one option:"},
-                "accessory": element,
+                "type": "actions",
+                "elements": [
+                    choice_button(
+                        choice,
+                        actions,
+                        page,
+                        answers,
+                        saved,
+                        choice_index,
+                    )
+                    for choice_index, choice in enumerate(choices)
+                ],
             }
         )
     input_element: dict[str, Any] = {
         "type": "plain_text_input",
         "action_id": SlackBlockAction.ASK_QUESTION_ANSWER.value,
-        "multiline": True,
-        "placeholder": {"type": "plain_text", "text": "Type an answer"},
+        "multiline": not bool(choices),
+        "placeholder": {
+            "type": "plain_text",
+            "text": "Optional details" if choices else "Type an answer",
+        },
     }
     if saved and saved not in choices:
         input_element["initial_value"] = saved
@@ -250,7 +253,10 @@ def ask_question_blocks(
             "block_id": "answer_block",
             "optional": True,
             "element": input_element,
-            "label": {"type": "plain_text", "text": "Answer"},
+            "label": {
+                "type": "plain_text",
+                "text": "Other / details" if choices else "Answer",
+            },
         }
     )
     nav: list[dict[str, Any]] = []
@@ -305,58 +311,94 @@ def submitted_blocks(actions: list[DeferredQuestion]) -> list[dict[str, Any]]:
 
 
 def collect_current_answer(
-    body: dict[str, Any],
+    state: SlackQuestionState,
     actions: list[DeferredQuestion],
     page: int,
-    answers: dict[str, str],
-) -> dict[str, str]:
+    answers: dict[UUID, str],
+    selected_answer: str | None = None,
+) -> dict[UUID, str]:
     if not actions:
         return answers
     page = max(0, min(page, len(actions) - 1))
-    action_id = str(actions[page].id)
-    values = body.get("state", {}).get("values", {})
+    action_id = actions[page].id
     answer = ""
     choice = ""
-    for block in values.values():
-        if SlackBlockAction.ASK_QUESTION_ANSWER in block:
+    for block in state["values"].values():
+        if SlackBlockAction.ASK_QUESTION_ANSWER.value in block:
             answer = str(
-                block[SlackBlockAction.ASK_QUESTION_ANSWER].get("value") or ""
+                block[SlackBlockAction.ASK_QUESTION_ANSWER.value].get("value") or ""
             ).strip()
-        if SlackBlockAction.ASK_QUESTION_CHOICE in block:
-            selected = (
-                block[SlackBlockAction.ASK_QUESTION_CHOICE].get("selected_option") or {}
-            )
-            choice = str(selected.get("value") or "").strip()
-    answers[action_id] = answer or choice or answers.get(action_id, "")
+        if SlackBlockAction.ASK_QUESTION_CHOICE.value in block:
+            select_state = block[SlackBlockAction.ASK_QUESTION_CHOICE.value]
+            if "selected_option" in select_state and select_state["selected_option"]:
+                choice = str(select_state["selected_option"]["value"]).strip()
+    answers[action_id] = (
+        selected_answer or answer or choice or answers.get(action_id, "")
+    )
     return answers
+
+
+def choice_button(
+    choice: Any,
+    actions: list[DeferredQuestion],
+    page: int,
+    answers: dict[UUID, str],
+    saved: str,
+    choice_index: int,
+) -> dict[str, Any]:
+    choice_text = str(choice)
+    action_id = actions[page].id
+    next_answers = {**answers, action_id: choice_text}
+    return question_button(
+        choice_text,
+        f"{SlackBlockAction.ASK_QUESTION_CHOICE.value}:{choice_index}",
+        actions,
+        page,
+        next_answers,
+        selected_answer=choice_text,
+        style="primary" if saved == choice_text else None,
+    )
 
 
 def question_button(
     text: str,
-    action: SlackBlockAction,
+    action: SlackBlockAction | str,
     actions: list[DeferredQuestion],
     page: int,
-    answers: dict[str, str],
+    answers: dict[UUID, str],
     *,
+    selected_answer: str | None = None,
     style: str | None = None,
 ) -> dict[str, Any]:
+    batch_id = actions[0].batch_id
+    if batch_id is None:
+        raise ValueError("question buttons require a batch id")
+    value: SlackQuestionActionValue = {
+        "batch_id": batch_id,
+        "questions": actions,
+        "page": page,
+        "answers": answers,
+    }
+    if selected_answer is not None:
+        value["selected_answer"] = selected_answer
     button: dict[str, Any] = {
         "type": "button",
         "text": {"type": "plain_text", "text": text},
-        "action_id": action.value,
+        "action_id": action.value if isinstance(action, SlackBlockAction) else action,
         "value": json.dumps(
-            {
-                "batch_id": str(actions[0].batch_id) if actions else "",
-                "questions": SlackQuestionActionsAdapter.dump_python(
-                    actions,
-                    mode="json",
-                    include={"__all__": QUESTION_STATE_FIELDS},
-                    exclude_defaults=True,
-                    exclude_none=True,
-                ),
-                "page": page,
-                "answers": answers,
-            }
+            SlackQuestionActionValueAdapter.dump_python(
+                value,
+                mode="json",
+                include={
+                    "batch_id": True,
+                    "questions": {"__all__": QUESTION_STATE_FIELDS},
+                    "page": True,
+                    "answers": True,
+                    "selected_answer": True,
+                },
+                exclude_defaults=True,
+                exclude_none=True,
+            )
         ),
     }
     if style:

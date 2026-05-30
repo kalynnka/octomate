@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 import logging
-import uuid
+import re
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.tools import DeferredToolRequests
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -22,7 +21,6 @@ from octomate.tentacles.channel.feelers import Feelers
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.feelers import (
     SlackBlockAction,
-    SlackQuestionActionsAdapter,
     SlackApprovalFeeler,
     SlackAskQuestionFeeler,
     approval_resolution_blocks,
@@ -32,9 +30,11 @@ from octomate.tentacles.channel.slack.feelers import (
 )
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
+    SlackApprovalActionBody,
     SlackAssistantThreadEvent,
     SlackMessageEvent,
     SlackOutboundMessage,
+    SlackQuestionActionBody,
 )
 from octomate.tentacles.channel.stream import TextStreamBatcher
 
@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from octomate.base import Octomate
 
 logger = logging.getLogger(__name__)
+SlackApprovalActionBodyAdapter = TypeAdapter(SlackApprovalActionBody)
+SlackQuestionActionBodyAdapter = TypeAdapter(SlackQuestionActionBody)
 
 IGNORED_SUBTYPES = frozenset(
     {
@@ -91,8 +93,10 @@ class SlackTentacle(ChannelTentacle):
         self.app.action(SlackBlockAction.ASK_QUESTION_SUBMIT.value)(
             self.on_question_nav
         )
-        self.app.action(SlackBlockAction.ASK_QUESTION_CHOICE.value)(
-            self.on_question_choice
+        self.app.action(
+            re.compile(rf"^{re.escape(SlackBlockAction.ASK_QUESTION_CHOICE.value)}")
+        )(
+            self.on_question_nav
         )
         self.app_token = config.app_token
         self.handler: AsyncSocketModeHandler | None = None
@@ -141,94 +145,108 @@ class SlackTentacle(ChannelTentacle):
     ) -> None:
         await self.ensure_assistant_thread(event)
 
-    async def on_approval_action(self, ack, body: dict[str, Any]) -> None:
+    async def on_approval_action(self, ack, body: object) -> None:
         await ack()
-        action_body = _first_action_value(body)
-        action_id = action_body.get("action_id")
-        batch_id = action_body.get("batch_id")
-        if not action_id or not batch_id:
-            return
-        responder_id = body.get("user", {}).get("id", "")
-        approved = bool(action_body.get("approved"))
-        channel = body.get("channel", {}).get("id", "")
-        message_ts = body.get("message", {}).get("ts", "")
-        tool_name = str(action_body.get("tool_name") or "Tool call")
-        if channel and message_ts:
-            await self.ink.update_message(
-                channel,
-                message_ts,
-                text=f"{tool_name} - {'Approved' if approved else 'Denied'}",
-                blocks=approval_resolution_blocks(
-                    tool_name=tool_name,
-                    approved=approved,
-                    responder_id=responder_id,
+        try:
+            action_body = SlackApprovalActionBodyAdapter.validate_python(body)
+        except ValidationError as error:
+            logger.warning(
+                "Channel %s: ignored invalid Slack approval action: %s",
+                self.id,
+                error.errors(
+                    include_url=False,
+                    include_context=False,
+                    include_input=False,
                 ),
             )
+            return
+        action_value = action_body["actions"][0]["value"]
+        responder_id = action_body["user"]["id"]
+        approved = action_value["approved"]
+        channel = action_body["channel"]["id"]
+        message_ts = action_body["message"]["ts"]
+        tool_name = action_value.get("tool_name", "Tool call")
+        await self.ink.update_message(
+            channel,
+            message_ts,
+            text=f"{tool_name} - {'Approved' if approved else 'Denied'}",
+            blocks=approval_resolution_blocks(
+                tool_name=tool_name,
+                approved=approved,
+                responder_id=responder_id,
+            ),
+        )
         await self.octomate.kick(
             DeferredActionBatchResponse(
-                batch_id=uuid.UUID(str(batch_id)),
+                batch_id=action_value["batch_id"],
                 responder_id=responder_id,
-                approvals={uuid.UUID(str(action_id)): approved},
+                approvals={action_value["action_id"]: approved},
             )
         )
 
-    async def on_question_nav(self, ack, body: dict[str, Any]) -> None:
+    async def on_question_nav(self, ack, body: object) -> None:
         await ack()
-        action_value = _first_action_value(body)
         try:
-            actions = SlackQuestionActionsAdapter.validate_python(
-                action_value.get("questions") or []
+            action_body = SlackQuestionActionBodyAdapter.validate_python(body)
+        except ValidationError as error:
+            logger.warning(
+                "Channel %s: ignored invalid Slack question action: %s",
+                self.id,
+                error.errors(
+                    include_url=False,
+                    include_context=False,
+                    include_input=False,
+                ),
             )
-        except ValidationError:
             return
-        if not actions:
-            return
-        page = int(action_value.get("page") or 0)
-        answers = dict(action_value.get("answers") or {})
-        answers = collect_current_answer(body, actions, page, answers)
-        action_id = (body.get("actions") or [{}])[0].get("action_id", "")
+        action = action_body["actions"][0]
+        action_value = action["value"]
+        actions = action_value["questions"]
+        page = action_value["page"]
+        answers = dict(action_value["answers"])
+        selected_answer = action_value.get("selected_answer")
+        answers = collect_current_answer(
+            action_body["state"],
+            actions,
+            page,
+            answers,
+            selected_answer=selected_answer,
+        )
+        action_id = action["action_id"]
         if action_id == SlackBlockAction.ASK_QUESTION_BACK:
             page -= 1
         elif action_id == SlackBlockAction.ASK_QUESTION_NEXT:
             page += 1
+        elif action_id.startswith(SlackBlockAction.ASK_QUESTION_CHOICE.value):
+            pass
         else:
-            batch_id = str(action_value.get("batch_id") or actions[0].batch_id)
             await self.octomate.kick(
                 DeferredActionBatchResponse(
-                    batch_id=uuid.UUID(batch_id),
-                    responder_id=body.get("user", {}).get("id", ""),
+                    batch_id=action_value["batch_id"],
+                    responder_id=action_body["user"]["id"],
                     answers={
-                        action.id: str(answers.get(str(action.id), ""))
+                        action.id: str(answers.get(action.id, ""))
                         for action in actions
                     },
                 )
             )
-            channel = body.get("channel", {}).get("id", "")
-            message_ts = body.get("message", {}).get("ts", "")
-            if channel and message_ts:
-                await self.ink.update_message(
-                    channel,
-                    message_ts,
-                    text="Answers submitted",
-                    blocks=submitted_blocks(actions),
-                )
-            return
-        channel = body.get("channel", {}).get("id", "")
-        message_ts = body.get("message", {}).get("ts", "")
-        if channel and message_ts:
             await self.ink.update_message(
-                channel,
-                message_ts,
-                text="Questions needed",
-                blocks=ask_question_blocks(
-                    actions,
-                    page=page,
-                    answers=answers,
-                ),
+                action_body["channel"]["id"],
+                action_body["message"]["ts"],
+                text="Answers submitted",
+                blocks=submitted_blocks(actions),
             )
-
-    async def on_question_choice(self, ack) -> None:
-        await ack()
+            return
+        await self.ink.update_message(
+            action_body["channel"]["id"],
+            action_body["message"]["ts"],
+            text="Questions needed",
+            blocks=ask_question_blocks(
+                actions,
+                page=page,
+                answers=answers,
+            ),
+        )
 
     async def ensure_assistant_thread(
         self,
@@ -364,14 +382,3 @@ class SlackTentacle(ChannelTentacle):
             None,
         )
         return replace(key, thread_id=message_id or key.thread_id)
-
-
-def _first_action_value(body: dict[str, Any]) -> dict[str, Any]:
-    actions = body.get("actions") or []
-    if not actions:
-        return {}
-    try:
-        value = json.loads(actions[0].get("value") or "{}")
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}

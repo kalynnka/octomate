@@ -17,7 +17,11 @@ from octomate.tentacles.channel.feelers import (
     ApprovalFeeler,
     AskQuestionFeeler,
 )
-from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
+from octomate.tentacles.channel.lark.schema import (
+    LarkOutboundMessage,
+    LarkQuestionActionValue,
+    LarkQuestionFormValue,
+)
 
 if TYPE_CHECKING:
     from octomate.tentacles.channel.lark.ink import LarkInk
@@ -34,9 +38,8 @@ QUESTION_STATE_FIELDS = {
     "position",
     "args",
 }
-LarkQuestionActionsAdapter: TypeAdapter[list[DeferredQuestion]] = TypeAdapter(
-    list[DeferredQuestion]
-)
+LarkQuestionActionsAdapter = TypeAdapter(list[DeferredQuestion])
+LarkQuestionActionValueAdapter = TypeAdapter(LarkQuestionActionValue)
 
 
 class LarkCardAction(StrEnum):
@@ -177,7 +180,7 @@ def ask_question_card(
     actions: list[DeferredQuestion],
     *,
     page: int = 0,
-    answers: dict[str, str] | None = None,
+    answers: dict[UUID, str] | None = None,
 ) -> str:
     return json.dumps(
         ask_question_card_data(
@@ -193,18 +196,17 @@ def ask_question_card_data(
     *,
     actions: list[DeferredQuestion],
     page: int = 0,
-    answers: dict[str, str] | None = None,
+    answers: dict[UUID, str] | None = None,
 ) -> dict[str, Any]:
     answers = answers or {}
     page = max(0, min(page, len(actions) - 1))
     action = actions[page]
-    action_id = str(action.id)
     choices = list(action.args.get("choices") or [])
     hint = str(action.args.get("hint") or "")
     text = action.args["question"]
     if hint:
         text = f"{text}\n\n_Hint: {hint}_"
-    saved = answers.get(action_id, "")
+    saved = answers.get(action.id, "")
     elements: list[dict[str, Any]] = []
     if choices:
         elements.append(
@@ -277,7 +279,7 @@ def ask_question_card_data(
             {"tag": "hr"},
             {
                 "tag": "form",
-                "name": f"question_{action_id}",
+                "name": f"question_{action.id}",
                 "elements": elements,
             },
         ],
@@ -301,14 +303,14 @@ def submitted_card_data(actions: list[DeferredQuestion]) -> dict[str, Any]:
 def collect_answer(
     actions: list[DeferredQuestion],
     page: int,
-    form_value: dict[str, Any],
-    answers: dict[str, str] | None = None,
-) -> dict[str, str]:
+    form_value: LarkQuestionFormValue,
+    answers: dict[UUID, str] | None = None,
+) -> dict[UUID, str]:
     collected = dict(answers or {})
     if not actions:
         return collected
     page = max(0, min(page, len(actions) - 1))
-    action_id = str(actions[page].id)
+    action_id = actions[page].id
     answer = str(form_value.get("answer") or "").strip()
     if not answer:
         answer = str(form_value.get("choice") or "").strip()
@@ -321,27 +323,37 @@ def nav_button(
     action: LarkCardAction,
     actions: list[DeferredQuestion],
     page: int,
-    answers: dict[str, str],
+    answers: dict[UUID, str],
     *,
     button_type: str = "default",
 ) -> dict[str, Any]:
+    batch_id = actions[0].batch_id
+    if batch_id is None:
+        raise ValueError("question buttons require a batch id")
+    value: LarkQuestionActionValue = {
+        "action": action.value,
+        "batch_id": batch_id,
+        "questions": actions,
+        "page": page,
+        "answers": answers,
+    }
     return {
         "tag": "button",
         "text": {"tag": "plain_text", "content": text},
         "type": button_type,
         "action_type": "form_submit",
         "name": action.value,
-        "value": {
-            "action": action.value,
-            "batch_id": str(actions[0].batch_id) if actions else "",
-            "questions": LarkQuestionActionsAdapter.dump_python(
-                actions,
-                mode="json",
-                include={"__all__": QUESTION_STATE_FIELDS},
-                exclude_defaults=True,
-                exclude_none=True,
-            ),
-            "page": page,
-            "answers": answers,
-        },
+        "value": LarkQuestionActionValueAdapter.dump_python(
+            value,
+            mode="json",
+            include={
+                "action": True,
+                "batch_id": True,
+                "questions": {"__all__": QUESTION_STATE_FIELDS},
+                "page": True,
+                "answers": True,
+            },
+            exclude_defaults=True,
+            exclude_none=True,
+        ),
     }

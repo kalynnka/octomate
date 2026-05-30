@@ -39,7 +39,17 @@ from octomate.types.deferred import (
 
 class QuestionRequest(TypedDict):
     question: str
-    choices: NotRequired[list[str] | None]
+    choices: NotRequired[
+        Annotated[
+            list[str] | None,
+            Field(
+                max_length=3,
+                description=(
+                    "Up to 3 suggested choices. The user can still answer with text."
+                ),
+            ),
+        ]
+    ]
     hint: NotRequired[str]
 
 
@@ -90,6 +100,12 @@ class DeferredQuestion(DeferredAction):
     status: DeferredQuestionStatus = "pending"
     result: str | None = None
 
+    def __lt__(self, other: DeferredQuestion) -> bool:
+        return self.position < other.position
+
+    def __gt__(self, other: DeferredQuestion) -> bool:
+        return self.position > other.position
+
 
 @sqlalchemy_materia.bless(deferred_models.DeferredApprovalAction)
 class DeferredApproval(DeferredAction):
@@ -103,9 +119,7 @@ DeferredActionVariant: TypeAlias = Annotated[
     DeferredQuestion | DeferredApproval,
     Field(discriminator="kind"),
 ]
-DeferredActionVariantAdapter: TypeAdapter[DeferredActionVariant] = TypeAdapter(
-    DeferredActionVariant
-)
+DeferredActionVariantAdapter = TypeAdapter(DeferredActionVariant)
 
 
 def from_deferred_requests(request: object) -> object:
@@ -117,9 +131,7 @@ def from_deferred_requests(request: object) -> object:
         args = call.args_as_dict()
         questions = cast(list[QuestionRequest], args.get("questions") or [])
         if not questions:
-            raise ValueError(
-                f"deferred call {call.tool_call_id!r} has no questions"
-            )
+            raise ValueError(f"deferred call {call.tool_call_id!r} has no questions")
         action_payloads.extend(
             {
                 "kind": "question",
@@ -147,7 +159,7 @@ def from_deferred_requests(request: object) -> object:
     return action_payloads
 
 
-DeferredActionCollection: TypeAdapter[list[DeferredActionVariant]] = TypeAdapter(
+DeferredActionCollection = TypeAdapter(
     Annotated[
         list[DeferredActionVariant],
         BeforeValidator(from_deferred_requests),
@@ -173,4 +185,5 @@ class DeferredActionBatch(BaseTransmuter):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None
 
-    actions: RelationCollection[DeferredActionVariant] = Relationships()
+    questions: RelationCollection[DeferredQuestion] = Relationships()
+    approvals: RelationCollection[DeferredApproval] = Relationships()

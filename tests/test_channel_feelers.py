@@ -27,7 +27,7 @@ from octomate.tentacles.channel.lark.feelers import (
     LarkApprovalFeeler,
     LarkAskQuestionFeeler,
     LarkCardAction,
-    LarkQuestionActionsAdapter,
+    LarkQuestionActionValueAdapter,
     approval_card_data,
     ask_question_card,
     ask_question_card_data,
@@ -40,7 +40,6 @@ from octomate.tentacles.channel.slack.feelers import (
     SlackAskQuestionFeeler,
     SlackBlockAction,
     SlackQuestionActionsAdapter,
-    approval_blocks,
     ask_question_blocks,
     collect_current_answer,
 )
@@ -162,7 +161,8 @@ class RecordingAskQuestionFeeler(AskQuestionFeeler):
 
 @dataclass
 class FakeActionContext:
-    actions: list[DeferredQuestion | DeferredApproval]
+    questions: list[DeferredQuestion]
+    approvals: list[DeferredApproval]
 
 
 @dataclass
@@ -189,7 +189,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
     second = _question(question="Second?", position=1)
     approvals = RecordingApprovalFeeler()
     ask_questions = RecordingAskQuestionFeeler()
-    manager = FakeActionManager(FakeActionContext([first, approval, second]))
+    manager = FakeActionManager(FakeActionContext([first, second], [approval]))
     source_key = _key("source")
     target_key = _key("target")
     decision = TriageDecision(action="reception", reason="needs input")
@@ -318,27 +318,41 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     assert first_page[-1]["elements"][0]["action_id"] == (
         SlackBlockAction.ASK_QUESTION_NEXT.value
     )
+    choice_blocks = [
+        block
+        for block in first_page
+        if block["type"] == "actions"
+        and block["elements"][0]["action_id"].startswith(
+            SlackBlockAction.ASK_QUESTION_CHOICE.value
+        )
+    ]
+    assert [
+        button["text"]["text"] for button in choice_blocks[0]["elements"]
+    ] == ["blue", "green"]
+    choice_state = json.loads(choice_blocks[0]["elements"][1]["value"])
+    assert choice_state["answers"][str(actions[0].id)] == "green"
+    input_block = next(block for block in first_page if block["type"] == "input")
+    assert input_block["label"]["text"] == "Other / details"
+    assert input_block["element"]["multiline"] is False
     next_state = json.loads(first_page[-1]["elements"][0]["value"])
     restored = SlackQuestionActionsAdapter.validate_python(next_state["questions"])
     assert restored[0].args["question"] == "Color?"
 
     answers = collect_current_answer(
         {
-            "state": {
-                "values": {
-                    "answer_block": {
-                        SlackBlockAction.ASK_QUESTION_ANSWER.value: {
-                            "value": "typed blue"
-                        },
+            "values": {
+                "answer_block": {
+                    SlackBlockAction.ASK_QUESTION_ANSWER.value: {
+                        "value": "typed blue"
                     },
-                }
+                },
             }
         },
         restored,
         0,
         {},
     )
-    assert answers == {str(actions[0].id): "typed blue"}
+    assert answers == {actions[0].id: "typed blue"}
     second_page = ask_question_blocks(restored, page=1, answers=answers)
     assert [button["action_id"] for button in second_page[-1]["elements"]] == [
         SlackBlockAction.ASK_QUESTION_BACK.value,
@@ -373,6 +387,7 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
         {
             "actions": [
                 {
+                    "action_id": SlackBlockAction.APPROVAL_APPROVE.value,
                     "value": json.dumps(
                         {
                             "batch_id": str(approval.batch_id),
@@ -396,7 +411,9 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
     )
     assert ink.updates[0][0:3] == ("C1", "111.222", "shell - Approved")
 
-    submit_state = json.loads(ask_question_blocks(questions)[-1]["elements"][0]["value"])
+    submit_state = json.loads(
+        ask_question_blocks(questions)[-1]["elements"][0]["value"]
+    )
     await channel.on_question_nav(
         _ack,
         {
@@ -425,6 +442,113 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
         answers={questions[0].id: "yes"},
     )
     assert ink.updates[1][0:3] == ("C1", "333.444", "Answers submitted")
+
+
+async def test_slack_choice_buttons_update_and_submit_selected_answer() -> None:
+    ink = FakeSlackInk()
+    octomate = FakeOctomate()
+    channel = object.__new__(SlackTentacle)
+    channel.id = "slack"
+    channel.ink = cast(Any, ink)
+    channel.octomate = cast(Any, octomate)
+    question = _question(
+        question="Ocean zone?",
+        choices=["Coral Reef", "Kelp Forest"],
+    )
+
+    blocks = ask_question_blocks([question])
+    choice_block = next(
+        block
+        for block in blocks
+        if block["type"] == "actions"
+        and block["elements"][0]["action_id"].startswith(
+            SlackBlockAction.ASK_QUESTION_CHOICE.value
+        )
+    )
+    choice_state = json.loads(choice_block["elements"][1]["value"])
+    await channel.on_question_nav(
+        _ack,
+        {
+            "actions": [
+                {
+                    "action_id": choice_block["elements"][1]["action_id"],
+                    "value": json.dumps(choice_state),
+                }
+            ],
+            "state": {"values": {}},
+            "user": {"id": "U2"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "333.444"},
+        },
+    )
+
+    assert octomate.kicks == []
+    assert ink.updates[0][0:3] == ("C1", "333.444", "Questions needed")
+    selected_block = next(
+        block
+        for block in ink.updates[0][3]
+        if block["type"] == "actions"
+        and block["elements"][0]["action_id"].startswith(
+            SlackBlockAction.ASK_QUESTION_CHOICE.value
+        )
+    )
+    assert selected_block["elements"][1]["style"] == "primary"
+
+    submit_state = json.loads(ink.updates[0][3][-1]["elements"][0]["value"])
+    await channel.on_question_nav(
+        _ack,
+        {
+            "actions": [
+                {
+                    "action_id": SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+                    "value": json.dumps(submit_state),
+                }
+            ],
+            "state": {"values": {}},
+            "user": {"id": "U2"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "333.444"},
+        },
+    )
+
+    assert octomate.kicks[0] == DeferredActionBatchResponse(
+        batch_id=question.batch_id,
+        responder_id="U2",
+        answers={question.id: "Kelp Forest"},
+    )
+
+
+async def test_slack_question_submit_ignores_invalid_batch_id() -> None:
+    ink = FakeSlackInk()
+    octomate = FakeOctomate()
+    channel = object.__new__(SlackTentacle)
+    channel.id = "slack"
+    channel.ink = cast(Any, ink)
+    channel.octomate = cast(Any, octomate)
+    question = _question(question="Ship it?")
+    submit_state = json.loads(
+        ask_question_blocks([question])[-1]["elements"][0]["value"]
+    )
+    submit_state["batch_id"] = "not-a-uuid"
+
+    await channel.on_question_nav(
+        _ack,
+        {
+            "actions": [
+                {
+                    "action_id": SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+                    "value": json.dumps(submit_state),
+                }
+            ],
+            "state": {"values": {}},
+            "user": {"id": "U2"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "333.444"},
+        },
+    )
+
+    assert octomate.kicks == []
+    assert ink.updates == []
 
 
 @dataclass
@@ -496,16 +620,17 @@ def test_lark_card_data_and_answer_collection() -> None:
     assert card["elements"][0]["content"].startswith("**Question 1 of 1**")
     form = card["elements"][2]
     submit = form["elements"][-1]
-    restored = LarkQuestionActionsAdapter.validate_python(submit["value"]["questions"])
+    submit_value = LarkQuestionActionValueAdapter.validate_python(submit["value"])
+    restored = submit_value["questions"]
     assert restored[0].id == action.id
     assert restored[0].args == action.args
     answers = collect_answer(
         restored,
-        int(submit["value"]["page"]),
+        submit_value["page"],
         {"choice": "night", "answer": ""},
-        submit["value"]["answers"],
+        submit_value["answers"],
     )
-    assert answers == {str(action.id): "night"}
+    assert answers == {action.id: "night"}
 
 
 async def test_lark_card_callbacks_emit_deferred_responses() -> None:
