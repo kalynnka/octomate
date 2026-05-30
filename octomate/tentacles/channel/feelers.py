@@ -12,13 +12,14 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.schemas.deferred import (
+    DeferredActionBatch,
     DeferredApproval,
     DeferredQuestion,
 )
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 
 if TYPE_CHECKING:
-    from octomate.managers.deferred import DeferredActionContext, DeferredActionManager
+    from octomate.managers.deferred import DeferredActionManager
 
 
 TextResponder = Callable[[ConversationKey, str], Awaitable[None]]
@@ -65,8 +66,8 @@ class Feelers:
         target_mode: ResponseTargetMode,
         decision: TriageDecision | None,
         requests: DeferredToolRequests,
-    ) -> DeferredActionContext:
-        context = await action_manager.create_batch(
+    ) -> DeferredActionBatch:
+        batch = await action_manager.create_batch(
             conversation=conversation,
             agent_tentacle_id=agent_tentacle_id,
             run_name=run_name,
@@ -76,21 +77,22 @@ class Feelers:
             decision=decision,
             requests=requests,
         )
-        for action in context.approvals:
+        for action in batch.approvals:
             platform_message_id = await self.approvals.present(target_key, action)
             await action_manager.mark_action_presented(
                 action.id,
                 platform_message_id,
             )
 
-        message_ids = await self.ask_questions.present(target_key, context.questions)
-        for action in context.questions:
+        questions = list(batch.questions)
+        message_ids = await self.ask_questions.present(target_key, questions)
+        for action in questions:
             await action_manager.mark_action_presented(
                 action.id,
                 message_ids.get(action.id),
             )
 
-        return context
+        return batch
 
 
 class PlainTextApprovalFeeler(ApprovalFeeler):

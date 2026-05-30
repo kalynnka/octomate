@@ -126,10 +126,15 @@ async def test_deferred_action_batch_relationships_filter_by_kind(
         requests=_requests(),
     )
 
-    reloaded = await DeferredActionManager().get_batch_context(created.batch.id)
+    assert [action.batch_id for action in created.questions] == [created.id]
+    assert [action.batch_id for action in created.approvals] == [created.id]
+
+    reloaded = await DeferredActionManager().get_batch(created.id)
 
     assert [action.kind for action in reloaded.questions] == ["question"]
     assert [action.kind for action in reloaded.approvals] == ["approval"]
+    assert [action.batch_id for action in reloaded.questions] == [created.id]
+    assert [action.batch_id for action in reloaded.approvals] == [created.id]
 
 
 def test_deferred_questions_sort_by_position() -> None:

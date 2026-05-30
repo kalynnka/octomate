@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from arcanus import RelationCollection
-from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.database import async_session
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -21,43 +20,6 @@ from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import DeferredBatchStatus
 
 
-@dataclass(frozen=True)
-class DeferredActionContext:
-    batch: DeferredActionBatch
-
-    @property
-    def questions(self) -> list[DeferredQuestion]:
-        return list(self.batch.questions)
-
-    @property
-    def approvals(self) -> list[DeferredApproval]:
-        return list(self.batch.approvals)
-
-    @property
-    def completed(self) -> bool:
-        return all(action.resolved for action in self.questions) and all(
-            action.resolved for action in self.approvals
-        )
-
-    def build_results(self) -> DeferredToolResults:
-        results = DeferredToolResults()
-        question_actions: dict[str, list[DeferredQuestion]] = {}
-        for action in self.questions:
-            question_actions.setdefault(action.tool_call_id, []).append(action)
-            if action.metadata:
-                results.metadata[action.tool_call_id] = action.metadata
-        for action in self.approvals:
-            results.approvals[action.tool_call_id] = bool(action.result)
-            if action.metadata:
-                results.metadata[action.tool_call_id] = action.metadata
-        for tool_call_id, actions in question_actions.items():
-            results.calls[tool_call_id] = [
-                "" if action.result is None else str(action.result)
-                for action in sorted(actions)
-            ]
-        return results
-
-
 class DeferredActionManager:
     async def create_batch(
         self,
@@ -70,7 +32,7 @@ class DeferredActionManager:
         target_mode: ResponseTargetMode,
         decision: TriageDecision | None,
         requests: DeferredToolRequests,
-    ) -> DeferredActionContext:
+    ) -> DeferredActionBatch:
         actions = DeferredActionCollection.validate_python(requests)
         questions = [
             action for action in actions if isinstance(action, DeferredQuestion)
@@ -96,35 +58,35 @@ class DeferredActionManager:
             await session.commit()
             await batch.questions
             await batch.approvals
-            return DeferredActionContext(batch=batch)
+            batch.revalidate()
+            return batch
 
-    async def get_batch_context(
+    async def get_batch(
         self,
         batch_id: uuid.UUID,
-    ) -> DeferredActionContext:
+    ) -> DeferredActionBatch:
         async with async_session() as session:
             batch = await session.get(DeferredActionBatch, batch_id)
             if batch is None:
                 raise ValueError(f"unknown deferred action batch {batch_id}")
             await batch.questions
             await batch.approvals
-            return DeferredActionContext(batch=batch)
+            return batch
 
     async def resolve_batch(
         self,
         awake: DeferredActionBatchResponse,
-    ) -> DeferredActionContext:
+    ) -> DeferredActionBatch:
         async with async_session() as session:
             batch = await session.get(DeferredActionBatch, awake.batch_id)
             if batch is None:
                 raise ValueError(f"unknown deferred action batch {awake.batch_id}")
             await batch.questions
             await batch.approvals
-            context = DeferredActionContext(batch=batch)
             if batch.status in {"completed", "resuming"}:
-                return context
-            questions_by_id = {action.id: action for action in context.questions}
-            approvals_by_id = {action.id: action for action in context.approvals}
+                return batch
+            questions_by_id = {action.id: action for action in batch.questions}
+            approvals_by_id = {action.id: action for action in batch.approvals}
             now = datetime.now(timezone.utc)
 
             for action_id, answer in awake.answers.items():
@@ -159,11 +121,11 @@ class DeferredActionManager:
                 action.resolved_at = now
                 action.updated_at = now
 
-            if context.completed:
-                context.batch.status = "resolved"
-            context.batch.updated_at = now
+            if batch.completed:
+                batch.status = "resolved"
+            batch.updated_at = now
             await session.commit()
-            return context
+            return batch
 
     async def mark_action_presented(
         self,

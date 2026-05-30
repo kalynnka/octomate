@@ -96,11 +96,9 @@ class Awake(
         ctx: GraphRunContext[TriageState, TriageDeps],
     ) -> RunTriage | ResumeDeferredActions | End[TriageGraphResult]:
         if isinstance(self.signal, DeferredActionBatchResponse):
-            context = await ctx.deps.action_manager.get_batch_context(
-                self.signal.batch_id
-            )
-            source_key = context.batch.source_key
-            target_key = context.batch.target_key
+            batch = await ctx.deps.action_manager.get_batch(self.signal.batch_id)
+            source_key = batch.source_key
+            target_key = batch.target_key
             source_channel = ctx.deps.channels.get(source_key.channel_tentacle_id)
             target_channel = ctx.deps.channels.get(target_key.channel_tentacle_id)
             if source_channel is None:
@@ -108,9 +106,9 @@ class Awake(
             if target_channel is None:
                 raise ValueError(f"unknown channel {target_key.channel_tentacle_id!r}")
 
-            agent_tentacle = ctx.deps.agents.get(context.batch.agent_tentacle_id)
+            agent_tentacle = ctx.deps.agents.get(batch.agent_tentacle_id)
             if agent_tentacle is None:
-                raise ValueError(f"unknown agent {context.batch.agent_tentacle_id!r}")
+                raise ValueError(f"unknown agent {batch.agent_tentacle_id!r}")
 
             source_target = ResponseTarget(
                 channel_id=source_key.channel_tentacle_id,
@@ -480,8 +478,7 @@ class ResumeDeferredActions(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
     ) -> RunReception | End[TriageGraphResult]:
-        context = await ctx.deps.action_manager.resolve_batch(self.awake)
-        batch = context.batch
+        batch = await ctx.deps.action_manager.resolve_batch(self.awake)
         if isinstance(batch.decision, TriageDecision):
             decision = batch.decision
         elif batch.decision:
@@ -505,7 +502,7 @@ class ResumeDeferredActions(
         )
         if batch.status in {"completed", "resuming"}:
             return End(TriageGraphResult(decision=decision, target=target))
-        if not context.completed:
+        if not batch.completed:
             return End(TriageGraphResult(decision=decision, target=target))
 
         await ctx.deps.action_manager.mark_batch(batch.id, "resuming")
@@ -516,7 +513,7 @@ class ResumeDeferredActions(
             decision=decision,
             target=target,
             target_key=batch.target_key,
-            deferred_tool_results=context.build_results(),
+            deferred_tool_results=batch.build_results(),
             deferred_batch_id=batch.id,
         )
 

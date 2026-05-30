@@ -21,7 +21,7 @@ from pydantic import (
     JsonValue,
     TypeAdapter,
 )
-from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
 from octomate.models import deferred as deferred_models
@@ -187,3 +187,27 @@ class DeferredActionBatch(BaseTransmuter):
 
     questions: RelationCollection[DeferredQuestion] = Relationships()
     approvals: RelationCollection[DeferredApproval] = Relationships()
+
+    @property
+    def completed(self) -> bool:
+        return all(action.resolved for action in self.questions) and all(
+            action.resolved for action in self.approvals
+        )
+
+    def build_results(self) -> DeferredToolResults:
+        results = DeferredToolResults()
+        question_actions: dict[str, list[DeferredQuestion]] = {}
+        for action in self.questions:
+            question_actions.setdefault(action.tool_call_id, []).append(action)
+            if action.metadata:
+                results.metadata[action.tool_call_id] = action.metadata
+        for action in self.approvals:
+            results.approvals[action.tool_call_id] = bool(action.result)
+            if action.metadata:
+                results.metadata[action.tool_call_id] = action.metadata
+        for tool_call_id, actions in question_actions.items():
+            results.calls[tool_call_id] = [
+                "" if action.result is None else str(action.result)
+                for action in sorted(actions)
+            ]
+        return results
