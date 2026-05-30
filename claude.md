@@ -1,4 +1,4 @@
-# Repository Guidelines
+# Guidelines
 
 ## Engineering Judgment
 
@@ -20,6 +20,16 @@
 2. Do not leave Python type hint warnings or type checker errors. Always satisfy the configured type checker.
 3. Avoid `typing.Any`. Prefer concrete types, `object` with runtime narrowing, or narrow `Protocol` contracts. If an external payload is genuinely dynamic, keep `Any` at the boundary and validate it into typed data before passing it deeper.
 4. Prefer precise collection types in annotations when the runtime shape is known (`list[T]` or `tuple[...]`) instead of broad abstractions like `Sequence[T]`; this also keeps Pydantic validation cheaper and clearer.
+5. Prefer `TypedDict` for simple structured tool arguments and request payloads when a full model adds no behavior. Use `TypedDict` plus `**payload` unpacking to pass structured payloads through typed call sites instead of building ad hoc dict wrappers.
+6. Do not duplicate the same payload shape as both a model and a `TypedDict` without a concrete reason.
+
+## Data Modeling
+
+1. Model real domain concepts directly instead of hiding them in loose metadata dictionaries. If two cases have different fields, statuses, or behavior, represent them as separate typed variants.
+2. Prefer discriminated unions plus `TypeAdapter` at dynamic boundaries. Validate external or serialized payloads once into typed variants, then pass those typed objects through the rest of the code.
+3. Keep batch/action ownership clear: batches group actions; each action represents exactly one user-facing approval or one user-facing question. Do not wrap multiple logical actions inside one action's metadata.
+4. Use polymorphic ORM/schema mappings when persisted variants share a table but have distinct types. The ORM inheritance, schema classes, and status types should line up with the domain variants.
+5. Preserve platform callback state as typed action data where practical. Cards and blocks may serialize ids and fields, but callback handlers should rehydrate typed actions before applying business logic.
 
 ## Persistence
 
