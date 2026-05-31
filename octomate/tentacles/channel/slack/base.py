@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -23,6 +22,7 @@ from octomate.tentacles.channel.slack.feelers import (
     SlackBlockAction,
     SlackApprovalFeeler,
     SlackAskQuestionFeeler,
+    SlackQuestionActionValueAdapter,
     approval_resolution_blocks,
     ask_question_blocks,
     collect_current_answer,
@@ -94,9 +94,7 @@ class SlackTentacle(ChannelTentacle):
         self.app.action(SlackBlockAction.ASK_QUESTION_SUBMIT.value)(
             self.on_question_nav
         )
-        self.app.action(
-            re.compile(rf"^{re.escape(SlackBlockAction.ASK_QUESTION_CHOICE.value)}")
-        )(
+        self.app.action(SlackBlockAction.ASK_QUESTION_CHOICE.value)(
             self.on_question_nav
         )
         self.app_token = config.app_token
@@ -201,27 +199,61 @@ class SlackTentacle(ChannelTentacle):
             )
             return
         action = action_body["actions"][0]
-        action_value = action["value"]
+        action_value = action.get("value")
+        if action_value is None:
+            for block in reversed(action_body["message"].get("blocks", [])):
+                if block.get("type") != "actions":
+                    continue
+                for element in block.get("elements", []):
+                    if element.get("action_id") not in {
+                        SlackBlockAction.ASK_QUESTION_BACK.value,
+                        SlackBlockAction.ASK_QUESTION_NEXT.value,
+                        SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+                    }:
+                        continue
+                    value = element.get("value")
+                    if not isinstance(value, str):
+                        continue
+                    try:
+                        action_value = SlackQuestionActionValueAdapter.validate_json(
+                            value
+                        )
+                    except ValidationError:
+                        continue
+                    break
+                if action_value is not None:
+                    break
+        if action_value is None:
+            logger.warning(
+                "Channel %s: ignored Slack question action without navigation state",
+                self.id,
+            )
+            return
         actions = action_value["questions"]
         page = action_value["page"]
         answers = dict(action_value["answers"])
-        selected_answer = action_value.get("selected_answer")
+        action_id = action["action_id"]
         answers = collect_current_answer(
             action_body["state"],
             actions,
             page,
             answers,
-            selected_answer=selected_answer,
+            prefer_choice=action_id == SlackBlockAction.ASK_QUESTION_CHOICE.value,
         )
-        action_id = action["action_id"]
-        if action_id == SlackBlockAction.ASK_QUESTION_BACK:
+        if action_id == SlackBlockAction.ASK_QUESTION_BACK.value:
             page -= 1
-        elif action_id == SlackBlockAction.ASK_QUESTION_NEXT:
+        elif action_id in {
+            SlackBlockAction.ASK_QUESTION_NEXT.value,
+            SlackBlockAction.ASK_QUESTION_CHOICE.value,
+        }:
             page += 1
-        elif action_id.startswith(SlackBlockAction.ASK_QUESTION_CHOICE.value):
-            if page < len(actions) - 1:
-                page += 1
         else:
+            await self.ink.update_message(
+                action_body["channel"]["id"],
+                action_body["message"]["ts"],
+                text="Answers submitted",
+                blocks=submitted_blocks(actions, answers),
+            )
             await self.octomate.kick(
                 DeferredActionBatchResponse(
                     batch_id=action_value["batch_id"],
@@ -231,12 +263,6 @@ class SlackTentacle(ChannelTentacle):
                         for action in actions
                     },
                 )
-            )
-            await self.ink.update_message(
-                action_body["channel"]["id"],
-                action_body["message"]["ts"],
-                text="Answers submitted",
-                blocks=submitted_blocks(actions, answers),
             )
             return
         await self.ink.update_message(
@@ -249,6 +275,7 @@ class SlackTentacle(ChannelTentacle):
                 answers=answers,
             ),
         )
+
 
     async def ensure_assistant_thread(
         self,

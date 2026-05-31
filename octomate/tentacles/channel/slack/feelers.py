@@ -198,20 +198,23 @@ def ask_question_blocks(
     saved = answers.get(action.id, "")
     blocks: list[dict[str, Any]] = [
         {
-            "type": "header",
-            "text": {"type": "plain_text", "text": question_heading(actions)},
-        },
-        {
-            "type": "context",
-            "elements": [
-                {"type": "mrkdwn", "text": f"Question {page + 1} of {len(actions)}"}
-            ],
-        },
-        {
             "type": "section",
             "text": {"type": "mrkdwn", "text": f"*{action.args['question']}*"},
         },
     ]
+    if len(actions) > 1:
+        blocks.insert(
+            0,
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Questions {page + 1} of {len(actions)}",
+                    }
+                ],
+            },
+        )
     if hint:
         blocks.append(
             {
@@ -222,18 +225,12 @@ def ask_question_blocks(
     if choices:
         blocks.append(
             {
-                "type": "actions",
-                "elements": [
-                    choice_button(
-                        choice,
-                        actions,
-                        page,
-                        answers,
-                        saved,
-                        choice_index,
-                    )
-                    for choice_index, choice in enumerate(choices)
-                ],
+                "type": "input",
+                "block_id": "choice_block",
+                "dispatch_action": True,
+                "optional": True,
+                "element": choice_radio_buttons(choices, saved),
+                "label": {"type": "plain_text", "text": "Choose one"},
             }
         )
     input_element: dict[str, Any] = {
@@ -257,7 +254,7 @@ def ask_question_blocks(
             "element": input_element,
             "label": {
                 "type": "plain_text",
-                "text": "Details" if choices else "Answer",
+                "text": "Other" if choices else "Answer",
             },
         }
     )
@@ -328,7 +325,8 @@ def collect_current_answer(
     actions: list[DeferredQuestion],
     page: int,
     answers: dict[UUID, str],
-    selected_answer: str | None = None,
+    *,
+    prefer_choice: bool = False,
 ) -> dict[UUID, str]:
     if not actions:
         return answers
@@ -345,32 +343,36 @@ def collect_current_answer(
             select_state = block[SlackBlockAction.ASK_QUESTION_CHOICE.value]
             if "selected_option" in select_state and select_state["selected_option"]:
                 choice = str(select_state["selected_option"]["value"]).strip()
-    answers[action_id] = (
-        selected_answer or answer or choice or answers.get(action_id, "")
-    )
+    if prefer_choice:
+        answers[action_id] = choice or answer or answers.get(action_id, "")
+    else:
+        answers[action_id] = answer or choice or answers.get(action_id, "")
     return answers
 
 
-def choice_button(
-    choice: Any,
-    actions: list[DeferredQuestion],
-    page: int,
-    answers: dict[UUID, str],
+def choice_radio_buttons(
+    choices: list[Any],
     saved: str,
-    choice_index: int,
 ) -> dict[str, Any]:
-    choice_text = str(choice)
-    action_id = actions[page].id
-    next_answers = {**answers, action_id: choice_text}
-    return question_button(
-        choice_text,
-        f"{SlackBlockAction.ASK_QUESTION_CHOICE.value}:{choice_index}",
-        actions,
-        page,
-        next_answers,
-        selected_answer=choice_text,
-        style="primary" if saved == choice_text else None,
+    options = [
+        {
+            "text": {"type": "plain_text", "text": str(choice)},
+            "value": str(choice),
+        }
+        for choice in choices
+    ]
+    element: dict[str, Any] = {
+        "type": "radio_buttons",
+        "action_id": SlackBlockAction.ASK_QUESTION_CHOICE.value,
+        "options": options,
+    }
+    initial_option = next(
+        (option for option in options if option["value"] == saved),
+        None,
     )
+    if initial_option is not None:
+        element["initial_option"] = initial_option
+    return element
 
 
 def question_button(
@@ -380,7 +382,6 @@ def question_button(
     page: int,
     answers: dict[UUID, str],
     *,
-    selected_answer: str | None = None,
     style: str | None = None,
 ) -> dict[str, Any]:
     batch_id = actions[0].batch_id
@@ -392,8 +393,6 @@ def question_button(
         "page": page,
         "answers": answers,
     }
-    if selected_answer is not None:
-        value["selected_answer"] = selected_answer
     button: dict[str, Any] = {
         "type": "button",
         "text": {"type": "plain_text", "text": text},
@@ -407,7 +406,6 @@ def question_button(
                     "questions": {"__all__": QUESTION_STATE_FIELDS},
                     "page": True,
                     "answers": True,
-                    "selected_answer": True,
                 },
                 exclude_defaults=True,
                 exclude_none=True,
@@ -423,7 +421,3 @@ def question_title(actions: list[DeferredQuestion]) -> str:
     count = len(actions)
     noun = "question" if count == 1 else "questions"
     return f"Octomate needs {count} {noun} answered"
-
-
-def question_heading(actions: list[DeferredQuestion]) -> str:
-    return "Question" if len(actions) == 1 else "Questions"

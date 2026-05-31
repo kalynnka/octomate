@@ -65,6 +65,7 @@ class SlackActionChannel(TypedDict):
 
 class SlackActionMessage(TypedDict):
     ts: NonEmptyStr
+    blocks: NotRequired[list[dict[str, Any]]]
 
 
 class SlackApprovalActionValue(TypedDict):
@@ -79,7 +80,6 @@ class SlackQuestionActionValue(TypedDict):
     questions: Annotated[list[DeferredQuestion], Field(min_length=1)]
     page: int
     answers: dict[UUID, str]
-    selected_answer: NotRequired[str]
 
 
 class SlackApprovalBlockAction(TypedDict):
@@ -89,24 +89,24 @@ class SlackApprovalBlockAction(TypedDict):
 
 class SlackQuestionBlockAction(TypedDict):
     action_id: NonEmptyStr
-    value: Json[SlackQuestionActionValue]
+    value: NotRequired[Json[SlackQuestionActionValue]]
 
 
 class SlackPlainTextInputState(TypedDict, total=False):
     value: str | None
 
 
-class SlackStaticSelectOption(TypedDict):
+class SlackChoiceOption(TypedDict):
     value: str
 
 
-class SlackStaticSelectState(TypedDict, total=False):
-    selected_option: SlackStaticSelectOption | None
+class SlackChoiceState(TypedDict, total=False):
+    selected_option: SlackChoiceOption | None
 
 
 class SlackQuestionStateBlock(TypedDict, total=False):
     octomate_question_answer: SlackPlainTextInputState
-    octomate_question_choice: SlackStaticSelectState
+    octomate_question_choice: SlackChoiceState
 
 
 class SlackQuestionState(TypedDict):

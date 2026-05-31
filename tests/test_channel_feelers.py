@@ -13,7 +13,12 @@ from uuid_utils.compat import uuid7
 
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import Conversation, ConversationKey
-from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.schemas.deferred import (
+    ApprovalRequest,
+    DeferredApproval,
+    DeferredQuestion,
+    QuestionRequest,
+)
 from octomate.schemas.triage import TriageDecision
 from octomate.tentacles.channel.feelers import (
     ApprovalFeeler,
@@ -65,7 +70,7 @@ def _question(
     choices: list[str] | None = None,
     hint: str = "",
 ) -> DeferredQuestion:
-    args: dict[str, Any] = {"question": question}
+    args: QuestionRequest = {"question": question}
     if choices is not None:
         args["choices"] = choices
     if hint:
@@ -90,8 +95,13 @@ def _approval(
         batch_id=batch_id or uuid7(),
         tool_name="shell",
         tool_call_id="call_approval",
-        args={"tool_name": "shell", "args": {"cmd": "git status"}},
+        args=ApprovalRequest(tool_name="shell", args={"cmd": "git status"}),
     )
+
+
+def _batch_id(action: DeferredQuestion | DeferredApproval) -> uuid.UUID:
+    assert action.batch_id is not None
+    return action.batch_id
 
 
 async def test_plain_text_feelers_present_approval_and_questions() -> None:
@@ -249,6 +259,7 @@ class FakeSlackInk:
     updates: list[tuple[str, str, str, list[dict[str, Any]]]] = field(
         default_factory=list
     )
+    events: list[str] | None = None
 
     async def send_message(
         self,
@@ -269,6 +280,8 @@ class FakeSlackInk:
         blocks: list[dict[str, Any]],
     ) -> None:
         self.updates.append((channel, message_ts, text, blocks))
+        if self.events is not None:
+            self.events.append("update")
 
 
 async def test_slack_feelers_send_approval_and_question_cards() -> None:
@@ -314,34 +327,52 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     ]
 
     first_page = ask_question_blocks(actions)
-    assert first_page[1]["elements"][0]["text"] == "Question 1 of 2"
+    assert first_page[0]["elements"][0]["text"] == "Questions 1 of 2"
+    assert first_page[1]["text"]["text"] == "*Color?*"
     assert first_page[-1]["elements"][0]["action_id"] == (
         SlackBlockAction.ASK_QUESTION_NEXT.value
     )
-    choice_blocks = [
-        block
-        for block in first_page
-        if block["type"] == "actions"
-        and block["elements"][0]["action_id"].startswith(
-            SlackBlockAction.ASK_QUESTION_CHOICE.value
-        )
-    ]
+    choice_block = next(
+        block for block in first_page if block.get("block_id") == "choice_block"
+    )
     assert [
-        button["text"]["text"] for button in choice_blocks[0]["elements"]
+        option["text"]["text"] for option in choice_block["element"]["options"]
     ] == ["blue", "green"]
-    choice_state = json.loads(choice_blocks[0]["elements"][1]["value"])
-    assert choice_state["answers"][str(actions[0].id)] == "green"
-    input_block = next(block for block in first_page if block["type"] == "input")
-    assert input_block["label"]["text"] == "Details"
+    assert choice_block["dispatch_action"] is True
+    assert choice_block["element"]["type"] == "radio_buttons"
+    input_block = next(
+        block for block in first_page if block.get("block_id") == "answer_block"
+    )
+    assert input_block["label"]["text"] == "Other"
     assert input_block["element"]["multiline"] is False
     assert input_block["element"]["max_length"] == 160
     next_state = json.loads(first_page[-1]["elements"][0]["value"])
     restored = SlackQuestionActionsAdapter.validate_python(next_state["questions"])
     assert restored[0].args["question"] == "Color?"
 
+    radio_answers = collect_current_answer(
+        {
+            "values": {
+                "choice_block": {
+                    SlackBlockAction.ASK_QUESTION_CHOICE.value: {
+                        "selected_option": {"value": "green"}
+                    }
+                }
+            }
+        },
+        restored,
+        0,
+        {},
+    )
+    assert radio_answers == {actions[0].id: "green"}
     answers = collect_current_answer(
         {
             "values": {
+                "choice_block": {
+                    SlackBlockAction.ASK_QUESTION_CHOICE.value: {
+                        "selected_option": {"value": "green"}
+                    }
+                },
                 "answer_block": {
                     SlackBlockAction.ASK_QUESTION_ANSWER.value: {
                         "value": "typed blue"
@@ -359,14 +390,31 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
         SlackBlockAction.ASK_QUESTION_BACK.value,
         SlackBlockAction.ASK_QUESTION_SUBMIT.value,
     ]
+    restored_page = ask_question_blocks(restored, answers={actions[0].id: "green"})
+    restored_choice = next(
+        block for block in restored_page if block.get("block_id") == "choice_block"
+    )
+    assert restored_choice["element"]["initial_option"]["value"] == "green"
+    only_page = ask_question_blocks([actions[0]])
+    assert only_page[0]["text"]["text"] == "*Color?*"
+    assert all(
+        block.get("elements", [{}])[0].get("text") != "Questions 1 of 1"
+        for block in only_page
+    )
+    assert [button["action_id"] for button in only_page[-1]["elements"]] == [
+        SlackBlockAction.ASK_QUESTION_SUBMIT.value
+    ]
 
 
 @dataclass
 class FakeOctomate:
     kicks: list[DeferredActionBatchResponse] = field(default_factory=list)
+    events: list[str] | None = None
 
     async def kick(self, signal: DeferredActionBatchResponse) -> None:
         self.kicks.append(signal)
+        if self.events is not None:
+            self.events.append("kick")
 
 
 async def _ack() -> None:
@@ -376,12 +424,15 @@ async def _ack() -> None:
 async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> None:
     ink = FakeSlackInk()
     octomate = FakeOctomate()
+    events: list[str] = []
+    ink.events = events
+    octomate.events = events
     channel = object.__new__(SlackTentacle)
     channel.id = "slack"
     channel.ink = cast(Any, ink)
     channel.octomate = cast(Any, octomate)
     approval = _approval()
-    questions = [_question(batch_id=approval.batch_id, question="Ship it?")]
+    questions = [_question(batch_id=_batch_id(approval), question="Ship it?")]
 
     await channel.on_approval_action(
         _ack,
@@ -406,7 +457,7 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
     )
 
     assert octomate.kicks[0] == DeferredActionBatchResponse(
-        batch_id=approval.batch_id,
+        batch_id=_batch_id(approval),
         responder_id="U1",
         approvals={approval.id: True},
     )
@@ -438,14 +489,15 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
     )
 
     assert octomate.kicks[1] == DeferredActionBatchResponse(
-        batch_id=questions[0].batch_id,
+        batch_id=_batch_id(questions[0]),
         responder_id="U2",
         answers={questions[0].id: "yes"},
     )
     assert ink.updates[1][0:3] == ("C1", "333.444", "Answers submitted")
+    assert events[-2:] == ["update", "kick"]
 
 
-async def test_slack_choice_buttons_update_and_submit_selected_answer() -> None:
+async def test_slack_radio_choice_submits_selected_answer() -> None:
     ink = FakeSlackInk()
     octomate = FakeOctomate()
     channel = object.__new__(SlackTentacle)
@@ -458,48 +510,7 @@ async def test_slack_choice_buttons_update_and_submit_selected_answer() -> None:
     )
 
     blocks = ask_question_blocks([question])
-    choice_block = next(
-        block
-        for block in blocks
-        if block["type"] == "actions"
-        and block["elements"][0]["action_id"].startswith(
-            SlackBlockAction.ASK_QUESTION_CHOICE.value
-        )
-    )
-    choice_state = json.loads(choice_block["elements"][1]["value"])
-    await channel.on_question_nav(
-        _ack,
-        {
-            "actions": [
-                {
-                    "action_id": choice_block["elements"][1]["action_id"],
-                    "value": json.dumps(choice_state),
-                }
-            ],
-            "state": {"values": {}},
-            "user": {"id": "U2"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "333.444"},
-        },
-    )
-
-    assert octomate.kicks == []
-    assert ink.updates[0][0:3] == (
-        "C1",
-        "333.444",
-        "Octomate needs 1 question answered",
-    )
-    selected_block = next(
-        block
-        for block in ink.updates[0][3]
-        if block["type"] == "actions"
-        and block["elements"][0]["action_id"].startswith(
-            SlackBlockAction.ASK_QUESTION_CHOICE.value
-        )
-    )
-    assert selected_block["elements"][1]["style"] == "primary"
-
-    submit_state = json.loads(ink.updates[0][3][-1]["elements"][0]["value"])
+    submit_state = json.loads(blocks[-1]["elements"][0]["value"])
     await channel.on_question_nav(
         _ack,
         {
@@ -509,7 +520,15 @@ async def test_slack_choice_buttons_update_and_submit_selected_answer() -> None:
                     "value": json.dumps(submit_state),
                 }
             ],
-            "state": {"values": {}},
+            "state": {
+                "values": {
+                    "choice_block": {
+                        SlackBlockAction.ASK_QUESTION_CHOICE.value: {
+                            "selected_option": {"value": "Kelp Forest"}
+                        }
+                    }
+                }
+            },
             "user": {"id": "U2"},
             "channel": {"id": "C1"},
             "message": {"ts": "333.444"},
@@ -517,16 +536,16 @@ async def test_slack_choice_buttons_update_and_submit_selected_answer() -> None:
     )
 
     assert octomate.kicks[0] == DeferredActionBatchResponse(
-        batch_id=question.batch_id,
+        batch_id=_batch_id(question),
         responder_id="U2",
         answers={question.id: "Kelp Forest"},
     )
-    submitted_text = ink.updates[1][3][0]["text"]["text"]
+    submitted_text = ink.updates[0][3][0]["text"]["text"]
     assert "Ocean zone?" in submitted_text
     assert "Kelp Forest" in submitted_text
 
 
-async def test_slack_choice_buttons_advance_and_allow_backtracking() -> None:
+async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
     ink = FakeSlackInk()
     octomate = FakeOctomate()
     channel = object.__new__(SlackTentacle)
@@ -538,38 +557,37 @@ async def test_slack_choice_buttons_advance_and_allow_backtracking() -> None:
         choices=["Coral Reef", "Kelp Forest"],
     )
     second = _question(
-        batch_id=first.batch_id,
+        batch_id=_batch_id(first),
         question="Why?",
         position=1,
     )
 
     blocks = ask_question_blocks([first, second])
-    choice_block = next(
-        block
-        for block in blocks
-        if block["type"] == "actions"
-        and block["elements"][0]["action_id"].startswith(
-            SlackBlockAction.ASK_QUESTION_CHOICE.value
-        )
-    )
     await channel.on_question_nav(
         _ack,
         {
             "actions": [
                 {
-                    "action_id": choice_block["elements"][1]["action_id"],
-                    "value": choice_block["elements"][1]["value"],
+                    "action_id": SlackBlockAction.ASK_QUESTION_CHOICE.value,
                 }
             ],
-            "state": {"values": {}},
+            "state": {
+                "values": {
+                    "choice_block": {
+                        SlackBlockAction.ASK_QUESTION_CHOICE.value: {
+                            "selected_option": {"value": "Kelp Forest"}
+                        }
+                    }
+                }
+            },
             "user": {"id": "U2"},
             "channel": {"id": "C1"},
-            "message": {"ts": "333.444"},
+            "message": {"ts": "333.444", "blocks": blocks},
         },
     )
 
-    page_block = ink.updates[0][3][1]
-    assert page_block["elements"][0]["text"] == "Question 2 of 2"
+    page_block = ink.updates[0][3][0]
+    assert page_block["elements"][0]["text"] == "Questions 2 of 2"
     back_button = ink.updates[0][3][-1]["elements"][0]
     await channel.on_question_nav(
         _ack,
@@ -580,35 +598,45 @@ async def test_slack_choice_buttons_advance_and_allow_backtracking() -> None:
                     "value": back_button["value"],
                 }
             ],
-            "state": {"values": {}},
+            "state": {
+                "values": {
+                    "answer_block": {
+                        SlackBlockAction.ASK_QUESTION_ANSWER.value: {
+                            "value": "I like kelp"
+                        }
+                    }
+                }
+            },
             "user": {"id": "U2"},
             "channel": {"id": "C1"},
             "message": {"ts": "333.444"},
         },
     )
 
-    selected_block = next(
-        block
-        for block in ink.updates[1][3]
-        if block["type"] == "actions"
-        and block["elements"][0]["action_id"].startswith(
-            SlackBlockAction.ASK_QUESTION_CHOICE.value
-        )
+    choice_block = next(
+        block for block in ink.updates[1][3] if block.get("block_id") == "choice_block"
     )
-    assert selected_block["elements"][1]["style"] == "primary"
+    assert choice_block["element"]["initial_option"]["value"] == "Kelp Forest"
     await channel.on_question_nav(
         _ack,
         {
             "actions": [
                 {
-                    "action_id": selected_block["elements"][0]["action_id"],
-                    "value": selected_block["elements"][0]["value"],
+                    "action_id": SlackBlockAction.ASK_QUESTION_CHOICE.value,
                 }
             ],
-            "state": {"values": {}},
+            "state": {
+                "values": {
+                    "choice_block": {
+                        SlackBlockAction.ASK_QUESTION_CHOICE.value: {
+                            "selected_option": {"value": "Coral Reef"}
+                        }
+                    }
+                }
+            },
             "user": {"id": "U2"},
             "channel": {"id": "C1"},
-            "message": {"ts": "333.444"},
+            "message": {"ts": "333.444", "blocks": ink.updates[1][3]},
         },
     )
 
@@ -642,7 +670,7 @@ async def test_slack_choice_buttons_advance_and_allow_backtracking() -> None:
     )
 
     assert octomate.kicks[0] == DeferredActionBatchResponse(
-        batch_id=first.batch_id,
+        batch_id=_batch_id(first),
         responder_id="U2",
         answers={first.id: "Coral Reef", second.id: "I like reefs"},
     )
@@ -774,7 +802,7 @@ async def test_lark_card_callbacks_emit_deferred_responses() -> None:
     channel.id = "lark"
     channel.octomate = cast(Any, octomate)
     approval = _approval()
-    question = _question(batch_id=approval.batch_id, question="Proceed?")
+    question = _question(batch_id=_batch_id(approval), question="Proceed?")
 
     approval_value = approval_card_data(approval)["elements"][2]["actions"][0]["value"]
     approval_response = channel.on_card_action(
@@ -790,9 +818,11 @@ async def test_lark_card_callbacks_emit_deferred_responses() -> None:
     )
     await asyncio.sleep(0)
 
-    assert approval_response.toast.content == "Approved"
+    approval_toast = approval_response.toast
+    assert approval_toast is not None
+    assert approval_toast.content == "Approved"
     assert octomate.kicks[0] == DeferredActionBatchResponse(
-        batch_id=approval.batch_id,
+        batch_id=_batch_id(approval),
         responder_id="ou_user",
         approvals={approval.id: True},
     )
@@ -816,9 +846,11 @@ async def test_lark_card_callbacks_emit_deferred_responses() -> None:
     )
     await asyncio.sleep(0)
 
-    assert submit_response.toast.content == "Answers submitted"
+    submit_toast = submit_response.toast
+    assert submit_toast is not None
+    assert submit_toast.content == "Answers submitted"
     assert octomate.kicks[1] == DeferredActionBatchResponse(
-        batch_id=question.batch_id,
+        batch_id=_batch_id(question),
         responder_id="ou_user",
         answers={question.id: "yes"},
     )
