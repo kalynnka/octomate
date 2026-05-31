@@ -39,7 +39,7 @@ class BatchedTextUpdate:
 
 
 @dataclass
-class _TextStreamBuffer:
+class TextStreamBuffer:
     block: StreamBlock
     full_text: str = ""
     pending_delta: str = ""
@@ -62,7 +62,7 @@ class TextStreamBatcher:
         self.max_chars = max(max_chars, 1)
         self.fold_threshold = max(fold_threshold, 1)
         self.clock = clock
-        self.buffers: dict[str, _TextStreamBuffer] = {}
+        self.buffers: dict[str, TextStreamBuffer] = {}
         self.active_block_id: str | None = None
 
     def push_text(
@@ -83,14 +83,14 @@ class TextStreamBatcher:
         self.active_block_id = block.id
         buffer = self.buffers.get(block.id)
         if buffer is None:
-            buffer = _TextStreamBuffer(block=block, last_flush_at=self.clock())
+            buffer = TextStreamBuffer(block=block, last_flush_at=self.clock())
             self.buffers[block.id] = buffer
         else:
             buffer.block = block
 
         buffer.full_text += text
         buffer.pending_delta += text
-        if self._should_flush(buffer):
+        if self.should_flush(buffer):
             update = self.flush_block(block.id)
             if update is not None:
                 updates.append(update)
@@ -140,7 +140,7 @@ class TextStreamBatcher:
         buffer = self.buffers.get(block_id)
         return buffer.full_text if buffer is not None else ""
 
-    def _should_flush(self, buffer: _TextStreamBuffer) -> bool:
+    def should_flush(self, buffer: TextStreamBuffer) -> bool:
         if self.flush_interval <= 0:
             return True
         if len(buffer.pending_delta) >= self.max_chars:
@@ -158,4 +158,3 @@ def render_text_stream_delta(
     if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
         return event.delta.content_delta
     return ""
-
