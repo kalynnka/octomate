@@ -10,6 +10,10 @@ from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.tentacles.channel.feelers import AskQuestionFeeler
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
+from octomate.tentacles.channel.slack.feelers.cards import (
+    QUESTION_CARD_ICON,
+    card_block,
+)
 from octomate.tentacles.channel.slack.schema import (
     SlackOutboundMessage,
     SlackQuestionActionValue,
@@ -75,35 +79,16 @@ def ask_question_blocks(
     choices = list(action.args.get("choices") or [])[:MAX_QUESTION_CHOICES]
     hint = action.args.get("hint") or ""
     saved = answers.get(action.id, "")
-    question_text = f"*{action.args['question']}*"
-    if len(actions) == 1:
-        question_text = f":memo: {question_text}"
     blocks: list[dict[str, Any]] = [
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": question_text},
-        },
+        card_block(
+            title=f"*{action.args['question']}*",
+            icon=QUESTION_CARD_ICON,
+            subtitle=(
+                f"Questions {page + 1} of {len(actions)}" if len(actions) > 1 else ""
+            ),
+            body=f"*Hint:* {hint}" if hint else "",
+        )
     ]
-    if len(actions) > 1:
-        blocks.insert(
-            0,
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f":memo: *Questions {page + 1} of {len(actions)}*",
-                    }
-                ],
-            },
-        )
-    if hint:
-        blocks.append(
-            {
-                "type": "context",
-                "elements": [{"type": "mrkdwn", "text": f"*Hint:* {hint}"}],
-            }
-        )
     if choices:
         blocks.append(
             {
@@ -192,13 +177,12 @@ def submitted_blocks(
         for index, action in enumerate(actions, start=1)
     )
     return [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f"Answers submitted for *{count} {noun}*:\n\n{summary}",
-            },
-        }
+        card_block(
+            title="Answers submitted",
+            icon=QUESTION_CARD_ICON,
+            subtitle=f"{count} {noun}",
+            body=summary,
+        )
     ]
 
 

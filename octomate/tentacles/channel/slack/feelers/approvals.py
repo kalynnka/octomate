@@ -13,6 +13,10 @@ from octomate.schemas.deferred import (
 )
 from octomate.tentacles.channel.feelers import ApprovalFeeler
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
+from octomate.tentacles.channel.slack.feelers.cards import (
+    APPROVAL_CARD_ICON,
+    card_block,
+)
 from octomate.tentacles.channel.slack.schema import (
     SlackApprovalActionValue,
     SlackOutboundMessage,
@@ -87,27 +91,21 @@ def approval_blocks(
         request_json = request_json[:ACTION_CARD_JSON_LIMIT] + "\n... (truncated)"
     title = action.args.title or "Permission Required"
     description = action.args.description
-    detail = f"\n{description}" if description else ""
     progress = (
-        f":lock: *Approvals {page + 1} of {len(actions)}*"
-        if len(actions) > 1
-        else ":lock: *Approval*"
+        f"Approvals {page + 1} of {len(actions)}" if len(actions) > 1 else "Approval"
+    )
+    body = (
+        f"{description}\n\n*Request:*\n```{request_json}```"
+        if description
+        else f"*Request:*\n```{request_json}```"
     )
     return [
-        {
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": progress}],
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*{title}: `{action.tool_name}`*{detail}\n"
-                    f"*Request:*\n```{request_json}```"
-                ),
-            },
-        },
+        card_block(
+            title=f"*{title}: `{action.tool_name}`*",
+            icon=APPROVAL_CARD_ICON,
+            subtitle=progress,
+            body=body,
+        ),
         {"type": "divider"},
         {
             "type": "actions",
@@ -152,13 +150,12 @@ def approval_submitted_blocks(
         if action.id in decisions
     )
     return [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": f":lock: Handled *{count} {noun}*:{byline}\n\n{summary}",
-            },
-        }
+        card_block(
+            title="Approvals handled",
+            icon=APPROVAL_CARD_ICON,
+            subtitle=f"{count} {noun}{byline}",
+            body=summary,
+        )
     ]
 
 

@@ -325,7 +325,9 @@ async def test_slack_feelers_send_approval_and_question_cards() -> None:
     approval_msg = ink.sent[0][2][0]
     assert approval_msg.text == "Octomate needs 2 approvals"
     assert approval_msg.blocks is not None
-    assert approval_msg.blocks[0]["elements"][0]["text"] == ":lock: *Approvals 1 of 2*"
+    assert approval_msg.blocks[0]["type"] == "card"
+    assert approval_msg.blocks[0]["slack_icon"]["name"] == "check"
+    assert approval_msg.blocks[0]["subtitle"]["text"] == "Approvals 1 of 2"
     approval_value = json.loads(approval_msg.blocks[-1]["elements"][0]["value"])
     assert approval_msg.blocks[-1]["elements"][0]["action_id"] == (
         SlackBlockAction.APPROVAL_APPROVE.value
@@ -352,8 +354,10 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     ]
 
     first_page = ask_question_blocks(actions)
-    assert first_page[0]["elements"][0]["text"] == ":memo: *Questions 1 of 2*"
-    assert first_page[1]["text"]["text"] == "*Color?*"
+    assert first_page[0]["type"] == "card"
+    assert first_page[0]["slack_icon"]["name"] == "comment"
+    assert first_page[0]["title"]["text"] == "*Color?*"
+    assert first_page[0]["subtitle"]["text"] == "Questions 1 of 2"
     assert first_page[-1]["elements"][0]["action_id"] == (
         SlackBlockAction.ASK_QUESTION_NEXT.value
     )
@@ -419,11 +423,8 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     )
     assert restored_choice["element"]["initial_option"]["value"] == "green"
     only_page = ask_question_blocks([actions[0]])
-    assert only_page[0]["text"]["text"] == ":memo: *Color?*"
-    assert all(
-        block.get("elements", [{}])[0].get("text") != "Questions 1 of 1"
-        for block in only_page
-    )
+    assert only_page[0]["title"]["text"] == "*Color?*"
+    assert "subtitle" not in only_page[0]
     assert [button["action_id"] for button in only_page[-1]["elements"]] == [
         SlackBlockAction.ASK_QUESTION_SUBMIT.value
     ]
@@ -479,7 +480,7 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
         approvals={approval.id: True},
     )
     assert ink.updates[0][0:3] == ("C1", "111.222", "Approvals handled")
-    assert "shell" in ink.updates[0][3][0]["text"]["text"]
+    assert "shell" in ink.updates[0][3][0]["body"]["text"]
 
     submit_state = json.loads(
         ask_question_blocks(questions)[-1]["elements"][0]["value"]
@@ -547,7 +548,7 @@ async def test_slack_approval_card_advances_through_multiple_approvals() -> None
         approvals={first.id: True},
     )
     assert ink.updates[0][0:3] == ("C1", "111.222", "Octomate needs 2 approvals")
-    assert ink.updates[0][3][0]["elements"][0]["text"] == (":lock: *Approvals 2 of 2*")
+    assert ink.updates[0][3][0]["subtitle"]["text"] == "Approvals 2 of 2"
 
     deny_value = ink.updates[0][3][-1]["elements"][1]["value"]
     await channel.on_approval_action(
@@ -571,7 +572,7 @@ async def test_slack_approval_card_advances_through_multiple_approvals() -> None
         approvals={second.id: False},
     )
     assert ink.updates[1][0:3] == ("C1", "111.222", "Approvals handled")
-    summary = ink.updates[1][3][0]["text"]["text"]
+    summary = ink.updates[1][3][0]["body"]["text"]
     assert "Approved" in summary
     assert "Denied" in summary
 
@@ -619,7 +620,7 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
         responder_id="U2",
         answers={question.id: "Kelp Forest"},
     )
-    submitted_text = ink.updates[0][3][0]["text"]["text"]
+    submitted_text = ink.updates[0][3][0]["body"]["text"]
     assert "Ocean zone?" in submitted_text
     assert "Kelp Forest" in submitted_text
 
@@ -666,7 +667,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
     )
 
     page_block = ink.updates[0][3][0]
-    assert page_block["elements"][0]["text"] == ":memo: *Questions 2 of 2*"
+    assert page_block["subtitle"]["text"] == "Questions 2 of 2"
     back_button = ink.updates[0][3][-1]["elements"][0]
     await channel.on_question_nav(
         _ack,
@@ -753,7 +754,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
         responder_id="U2",
         answers={first.id: "Coral Reef", second.id: "I like reefs"},
     )
-    submitted_text = ink.updates[3][3][0]["text"]["text"]
+    submitted_text = ink.updates[3][3][0]["body"]["text"]
     assert "Ocean zone?" in submitted_text
     assert "Coral Reef" in submitted_text
     assert "Why?" in submitted_text
