@@ -26,6 +26,7 @@ from octomate.tentacles.channel.slack.feelers import (
     approval_resolution_blocks,
     ask_question_blocks,
     collect_current_answer,
+    question_title,
     submitted_blocks,
 )
 from octomate.tentacles.channel.slack.ink import SlackInk
@@ -218,7 +219,8 @@ class SlackTentacle(ChannelTentacle):
         elif action_id == SlackBlockAction.ASK_QUESTION_NEXT:
             page += 1
         elif action_id.startswith(SlackBlockAction.ASK_QUESTION_CHOICE.value):
-            pass
+            if page < len(actions) - 1:
+                page += 1
         else:
             await self.octomate.kick(
                 DeferredActionBatchResponse(
@@ -234,13 +236,13 @@ class SlackTentacle(ChannelTentacle):
                 action_body["channel"]["id"],
                 action_body["message"]["ts"],
                 text="Answers submitted",
-                blocks=submitted_blocks(actions),
+                blocks=submitted_blocks(actions, answers),
             )
             return
         await self.ink.update_message(
             action_body["channel"]["id"],
             action_body["message"]["ts"],
-            text="Questions needed",
+            text=question_title(actions),
             blocks=ask_question_blocks(
                 actions,
                 page=page,

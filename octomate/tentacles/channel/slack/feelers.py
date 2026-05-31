@@ -199,7 +199,7 @@ def ask_question_blocks(
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "Questions Needed"},
+            "text": {"type": "plain_text", "text": question_heading(actions)},
         },
         {
             "type": "context",
@@ -242,9 +242,11 @@ def ask_question_blocks(
         "multiline": not bool(choices),
         "placeholder": {
             "type": "plain_text",
-            "text": "Optional details" if choices else "Type an answer",
+            "text": "Optional note or other answer" if choices else "Type an answer",
         },
     }
+    if choices:
+        input_element["max_length"] = 160
     if saved and saved not in choices:
         input_element["initial_value"] = saved
     blocks.append(
@@ -255,7 +257,7 @@ def ask_question_blocks(
             "element": input_element,
             "label": {
                 "type": "plain_text",
-                "text": "Other / details" if choices else "Answer",
+                "text": "Details" if choices else "Answer",
             },
         }
     )
@@ -296,15 +298,26 @@ def ask_question_blocks(
     return blocks
 
 
-def submitted_blocks(actions: list[DeferredQuestion]) -> list[dict[str, Any]]:
+def submitted_blocks(
+    actions: list[DeferredQuestion],
+    answers: dict[UUID, str] | None = None,
+) -> list[dict[str, Any]]:
     count = len(actions)
     noun = "question" if count == 1 else "questions"
+    answers = answers or {}
+    summary = "\n\n".join(
+        (
+            f"*{index}. {action.args['question']}*\n"
+            f"{answers.get(action.id) or '[No answer provided]'}"
+        )
+        for index, action in enumerate(actions, start=1)
+    )
     return [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"Answers submitted for *{count} {noun}*.",
+                "text": f"Answers submitted for *{count} {noun}*:\n\n{summary}",
             },
         }
     ]
@@ -410,3 +423,7 @@ def question_title(actions: list[DeferredQuestion]) -> str:
     count = len(actions)
     noun = "question" if count == 1 else "questions"
     return f"Octomate needs {count} {noun} answered"
+
+
+def question_heading(actions: list[DeferredQuestion]) -> str:
+    return "Question" if len(actions) == 1 else "Questions"

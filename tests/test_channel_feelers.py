@@ -332,8 +332,9 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     choice_state = json.loads(choice_blocks[0]["elements"][1]["value"])
     assert choice_state["answers"][str(actions[0].id)] == "green"
     input_block = next(block for block in first_page if block["type"] == "input")
-    assert input_block["label"]["text"] == "Other / details"
+    assert input_block["label"]["text"] == "Details"
     assert input_block["element"]["multiline"] is False
+    assert input_block["element"]["max_length"] == 160
     next_state = json.loads(first_page[-1]["elements"][0]["value"])
     restored = SlackQuestionActionsAdapter.validate_python(next_state["questions"])
     assert restored[0].args["question"] == "Color?"
@@ -483,7 +484,11 @@ async def test_slack_choice_buttons_update_and_submit_selected_answer() -> None:
     )
 
     assert octomate.kicks == []
-    assert ink.updates[0][0:3] == ("C1", "333.444", "Questions needed")
+    assert ink.updates[0][0:3] == (
+        "C1",
+        "333.444",
+        "Octomate needs 1 question answered",
+    )
     selected_block = next(
         block
         for block in ink.updates[0][3]
@@ -516,6 +521,136 @@ async def test_slack_choice_buttons_update_and_submit_selected_answer() -> None:
         responder_id="U2",
         answers={question.id: "Kelp Forest"},
     )
+    submitted_text = ink.updates[1][3][0]["text"]["text"]
+    assert "Ocean zone?" in submitted_text
+    assert "Kelp Forest" in submitted_text
+
+
+async def test_slack_choice_buttons_advance_and_allow_backtracking() -> None:
+    ink = FakeSlackInk()
+    octomate = FakeOctomate()
+    channel = object.__new__(SlackTentacle)
+    channel.id = "slack"
+    channel.ink = cast(Any, ink)
+    channel.octomate = cast(Any, octomate)
+    first = _question(
+        question="Ocean zone?",
+        choices=["Coral Reef", "Kelp Forest"],
+    )
+    second = _question(
+        batch_id=first.batch_id,
+        question="Why?",
+        position=1,
+    )
+
+    blocks = ask_question_blocks([first, second])
+    choice_block = next(
+        block
+        for block in blocks
+        if block["type"] == "actions"
+        and block["elements"][0]["action_id"].startswith(
+            SlackBlockAction.ASK_QUESTION_CHOICE.value
+        )
+    )
+    await channel.on_question_nav(
+        _ack,
+        {
+            "actions": [
+                {
+                    "action_id": choice_block["elements"][1]["action_id"],
+                    "value": choice_block["elements"][1]["value"],
+                }
+            ],
+            "state": {"values": {}},
+            "user": {"id": "U2"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "333.444"},
+        },
+    )
+
+    page_block = ink.updates[0][3][1]
+    assert page_block["elements"][0]["text"] == "Question 2 of 2"
+    back_button = ink.updates[0][3][-1]["elements"][0]
+    await channel.on_question_nav(
+        _ack,
+        {
+            "actions": [
+                {
+                    "action_id": SlackBlockAction.ASK_QUESTION_BACK.value,
+                    "value": back_button["value"],
+                }
+            ],
+            "state": {"values": {}},
+            "user": {"id": "U2"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "333.444"},
+        },
+    )
+
+    selected_block = next(
+        block
+        for block in ink.updates[1][3]
+        if block["type"] == "actions"
+        and block["elements"][0]["action_id"].startswith(
+            SlackBlockAction.ASK_QUESTION_CHOICE.value
+        )
+    )
+    assert selected_block["elements"][1]["style"] == "primary"
+    await channel.on_question_nav(
+        _ack,
+        {
+            "actions": [
+                {
+                    "action_id": selected_block["elements"][0]["action_id"],
+                    "value": selected_block["elements"][0]["value"],
+                }
+            ],
+            "state": {"values": {}},
+            "user": {"id": "U2"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "333.444"},
+        },
+    )
+
+    submit_button = next(
+        button
+        for button in ink.updates[2][3][-1]["elements"]
+        if button["action_id"] == SlackBlockAction.ASK_QUESTION_SUBMIT.value
+    )
+    await channel.on_question_nav(
+        _ack,
+        {
+            "actions": [
+                {
+                    "action_id": SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+                    "value": submit_button["value"],
+                }
+            ],
+            "state": {
+                "values": {
+                    "answer_block": {
+                        SlackBlockAction.ASK_QUESTION_ANSWER.value: {
+                            "value": "I like reefs"
+                        }
+                    }
+                }
+            },
+            "user": {"id": "U2"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "333.444"},
+        },
+    )
+
+    assert octomate.kicks[0] == DeferredActionBatchResponse(
+        batch_id=first.batch_id,
+        responder_id="U2",
+        answers={first.id: "Coral Reef", second.id: "I like reefs"},
+    )
+    submitted_text = ink.updates[3][3][0]["text"]["text"]
+    assert "Ocean zone?" in submitted_text
+    assert "Coral Reef" in submitted_text
+    assert "Why?" in submitted_text
+    assert "I like reefs" in submitted_text
 
 
 async def test_slack_question_submit_ignores_invalid_batch_id() -> None:

@@ -268,7 +268,10 @@ def ask_question_card_data(
     elements.extend(buttons)
     return {
         "header": {
-            "title": {"tag": "plain_text", "content": "Questions Needed"},
+            "title": {
+                "tag": "plain_text",
+                "content": "Question" if len(actions) == 1 else "Questions",
+            },
             "template": "blue",
         },
         "elements": [
