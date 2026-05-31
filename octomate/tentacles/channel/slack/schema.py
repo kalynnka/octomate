@@ -8,7 +8,7 @@ from pydantic import Field, Json
 from typing_extensions import NotRequired, TypedDict
 
 from octomate.schemas.conversation import UserProfile
-from octomate.schemas.deferred import DeferredQuestion
+from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 
@@ -70,9 +70,9 @@ class SlackActionMessage(TypedDict):
 
 class SlackApprovalActionValue(TypedDict):
     batch_id: UUID
-    action_id: UUID
-    approved: bool
-    tool_name: NotRequired[str]
+    approvals: Annotated[list[DeferredApproval], Field(min_length=1)]
+    page: int
+    decisions: dict[UUID, bool]
 
 
 class SlackQuestionActionValue(TypedDict):

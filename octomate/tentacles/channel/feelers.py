@@ -32,8 +32,8 @@ class ApprovalFeeler(ABC):
     async def present(
         self,
         key: ConversationKey,
-        action: DeferredApproval,
-    ) -> str | None: ...
+        actions: list[DeferredApproval],
+    ) -> dict[UUID, str | None]: ...
 
 
 class AskQuestionFeeler(ABC):
@@ -77,11 +77,12 @@ class Feelers:
             decision=decision,
             requests=requests,
         )
-        for action in batch.approvals:
-            platform_message_id = await self.approvals.present(target_key, action)
+        approvals = list(batch.approvals)
+        approval_message_ids = await self.approvals.present(target_key, approvals)
+        for action in approvals:
             await action_manager.mark_action_presented(
                 action.id,
-                platform_message_id,
+                approval_message_ids.get(action.id),
             )
 
         questions = list(batch.questions)
@@ -102,17 +103,18 @@ class PlainTextApprovalFeeler(ApprovalFeeler):
     async def present(
         self,
         key: ConversationKey,
-        action: DeferredApproval,
-    ) -> str | None:
-        await self.respond_text(
-            key,
-            (
-                f"Octomate needs approval for `{action.tool_name}` "
-                f"({action.id}). This channel can show the request, but does "
-                "not support interactive approval cards yet."
-            ),
-        )
-        return None
+        actions: list[DeferredApproval],
+    ) -> dict[UUID, str | None]:
+        for action in actions:
+            await self.respond_text(
+                key,
+                (
+                    f"Octomate needs approval for `{action.tool_name}` "
+                    f"({action.id}). This channel can show the request, but does "
+                    "not support interactive approval cards yet."
+                ),
+            )
+        return {action.id: None for action in actions}
 
 
 class PlainTextAskQuestionFeeler(AskQuestionFeeler):

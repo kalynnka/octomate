@@ -18,12 +18,16 @@ from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
 from octomate.tentacles.channel.feelers import Feelers
 from octomate.tentacles.channel.slack.chromo import SlackChromo
-from octomate.tentacles.channel.slack.feelers import (
-    SlackBlockAction,
+from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
+from octomate.tentacles.channel.slack.feelers.approvals import (
     SlackApprovalFeeler,
+    approval_blocks,
+    approval_submitted_blocks,
+    approval_title,
+)
+from octomate.tentacles.channel.slack.feelers.questions import (
     SlackAskQuestionFeeler,
     SlackQuestionActionValueAdapter,
-    approval_resolution_blocks,
     ask_question_blocks,
     collect_current_answer,
     question_title,
@@ -85,12 +89,8 @@ class SlackTentacle(ChannelTentacle):
             self.on_approval_action
         )
         self.app.action(SlackBlockAction.APPROVAL_DENY.value)(self.on_approval_action)
-        self.app.action(SlackBlockAction.ASK_QUESTION_BACK.value)(
-            self.on_question_nav
-        )
-        self.app.action(SlackBlockAction.ASK_QUESTION_NEXT.value)(
-            self.on_question_nav
-        )
+        self.app.action(SlackBlockAction.ASK_QUESTION_BACK.value)(self.on_question_nav)
+        self.app.action(SlackBlockAction.ASK_QUESTION_NEXT.value)(self.on_question_nav)
         self.app.action(SlackBlockAction.ASK_QUESTION_SUBMIT.value)(
             self.on_question_nav
         )
@@ -159,27 +159,48 @@ class SlackTentacle(ChannelTentacle):
                 ),
             )
             return
+        action = action_body["actions"][0]
         action_value = action_body["actions"][0]["value"]
         responder_id = action_body["user"]["id"]
-        approved = action_value["approved"]
+        approved = action["action_id"] == SlackBlockAction.APPROVAL_APPROVE.value
         channel = action_body["channel"]["id"]
         message_ts = action_body["message"]["ts"]
-        tool_name = action_value.get("tool_name", "Tool call")
+        actions = action_value["approvals"]
+        page = max(0, min(action_value["page"], len(actions) - 1))
+        approved_action = actions[page]
+        decisions = dict(action_value["decisions"])
+        decisions[approved_action.id] = approved
+        next_page = next(
+            (
+                index
+                for index, candidate in enumerate(actions)
+                if candidate.id not in decisions
+            ),
+            None,
+        )
         await self.ink.update_message(
             channel,
             message_ts,
-            text=f"{tool_name} - {'Approved' if approved else 'Denied'}",
-            blocks=approval_resolution_blocks(
-                tool_name=tool_name,
-                approved=approved,
-                responder_id=responder_id,
+            text=(
+                approval_title(actions)
+                if next_page is not None
+                else "Approvals handled"
+            ),
+            blocks=(
+                approval_blocks(actions, page=next_page, decisions=decisions)
+                if next_page is not None
+                else approval_submitted_blocks(
+                    actions,
+                    decisions,
+                    responder_id=responder_id,
+                )
             ),
         )
         await self.octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=action_value["batch_id"],
                 responder_id=responder_id,
-                approvals={action_value["action_id"]: approved},
+                approvals={approved_action.id: approved},
             )
         )
 
@@ -259,8 +280,7 @@ class SlackTentacle(ChannelTentacle):
                     batch_id=action_value["batch_id"],
                     responder_id=action_body["user"]["id"],
                     answers={
-                        action.id: str(answers.get(action.id, ""))
-                        for action in actions
+                        action.id: str(answers.get(action.id, "")) for action in actions
                     },
                 )
             )
@@ -275,7 +295,6 @@ class SlackTentacle(ChannelTentacle):
                 answers=answers,
             ),
         )
-
 
     async def ensure_assistant_thread(
         self,

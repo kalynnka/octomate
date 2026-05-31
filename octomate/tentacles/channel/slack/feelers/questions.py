@@ -1,22 +1,15 @@
 from __future__ import annotations
 
 import json
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import TypeAdapter
 
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.deferred import (
-    DeferredActionVariantAdapter,
-    DeferredApproval,
-    DeferredQuestion,
-)
-from octomate.tentacles.channel.feelers import (
-    ApprovalFeeler,
-    AskQuestionFeeler,
-)
+from octomate.schemas.deferred import DeferredQuestion
+from octomate.tentacles.channel.feelers import AskQuestionFeeler
+from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.channel.slack.schema import (
     SlackOutboundMessage,
     SlackQuestionActionValue,
@@ -27,8 +20,6 @@ if TYPE_CHECKING:
     from octomate.tentacles.channel.slack.ink import SlackInk
 
 
-ACTION_CARD_FIELDS = {"kind", "tool_name", "args"}
-ACTION_CARD_JSON_LIMIT = 2000
 MAX_QUESTION_CHOICES = 3
 QUESTION_STATE_FIELDS = {
     "id",
@@ -41,40 +32,6 @@ QUESTION_STATE_FIELDS = {
 }
 SlackQuestionActionsAdapter = TypeAdapter(list[DeferredQuestion])
 SlackQuestionActionValueAdapter = TypeAdapter(SlackQuestionActionValue)
-
-
-class SlackBlockAction(StrEnum):
-    APPROVAL_APPROVE = "octomate_approval_approve"
-    APPROVAL_DENY = "octomate_approval_deny"
-    ASK_QUESTION_BACK = "octomate_question_back"
-    ASK_QUESTION_NEXT = "octomate_question_next"
-    ASK_QUESTION_SUBMIT = "octomate_question_submit"
-    ASK_QUESTION_CHOICE = "octomate_question_choice"
-    ASK_QUESTION_ANSWER = "octomate_question_answer"
-
-
-class SlackApprovalFeeler(ApprovalFeeler):
-    def __init__(self, ink: SlackInk) -> None:
-        self.ink = ink
-
-    async def present(
-        self,
-        key: ConversationKey,
-        action: DeferredApproval,
-    ) -> str | None:
-        text = f"Permission required: {action.tool_name}"
-        return await self.ink.send_message(
-            key.chat_id or key.user_id,
-            key.chat_type,
-            [
-                SlackOutboundMessage(
-                    text=text,
-                    markdown_text=text,
-                    blocks=approval_blocks(action),
-                )
-            ],
-            key.thread_id or None,
-        )
 
 
 class SlackAskQuestionFeeler(AskQuestionFeeler):
@@ -104,84 +61,6 @@ class SlackAskQuestionFeeler(AskQuestionFeeler):
         return {action.id: message_id for action in actions}
 
 
-def approval_blocks(action: DeferredApproval) -> list[dict[str, Any]]:
-    request_json = DeferredActionVariantAdapter.dump_json(
-        action,
-        indent=2,
-        ensure_ascii=False,
-        include=ACTION_CARD_FIELDS,
-        exclude_defaults=True,
-        exclude_none=True,
-    ).decode()
-    if len(request_json) > ACTION_CARD_JSON_LIMIT:
-        request_json = request_json[:ACTION_CARD_JSON_LIMIT] + "\n... (truncated)"
-    return [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": "Permission Required"},
-        },
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*Tool:* `{action.tool_name}`\n*Request:*\n```{request_json}```"
-                ),
-            },
-        },
-        {"type": "divider"},
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Approve"},
-                    "style": "primary",
-                    "action_id": SlackBlockAction.APPROVAL_APPROVE.value,
-                    "value": json.dumps(
-                        {
-                            "batch_id": str(action.batch_id),
-                            "action_id": str(action.id),
-                            "tool_name": action.tool_name,
-                            "approved": True,
-                        }
-                    ),
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Deny"},
-                    "style": "danger",
-                    "action_id": SlackBlockAction.APPROVAL_DENY.value,
-                    "value": json.dumps(
-                        {
-                            "batch_id": str(action.batch_id),
-                            "action_id": str(action.id),
-                            "tool_name": action.tool_name,
-                            "approved": False,
-                        }
-                    ),
-                },
-            ],
-        },
-    ]
-
-
-def approval_resolution_blocks(
-    *,
-    tool_name: str,
-    approved: bool,
-    responder_id: str,
-) -> list[dict[str, Any]]:
-    status = "Approved" if approved else "Denied"
-    byline = f"\n*By:* <@{responder_id}>" if responder_id else ""
-    return [
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{tool_name}* - {status}{byline}"},
-        }
-    ]
-
-
 def ask_question_blocks(
     actions: list[DeferredQuestion],
     *,
@@ -196,10 +75,13 @@ def ask_question_blocks(
     choices = list(action.args.get("choices") or [])[:MAX_QUESTION_CHOICES]
     hint = action.args.get("hint") or ""
     saved = answers.get(action.id, "")
+    question_text = f"*{action.args['question']}*"
+    if len(actions) == 1:
+        question_text = f":memo: {question_text}"
     blocks: list[dict[str, Any]] = [
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*{action.args['question']}*"},
+            "text": {"type": "mrkdwn", "text": question_text},
         },
     ]
     if len(actions) > 1:
@@ -210,7 +92,7 @@ def ask_question_blocks(
                 "elements": [
                     {
                         "type": "mrkdwn",
-                        "text": f"Questions {page + 1} of {len(actions)}",
+                        "text": f":memo: *Questions {page + 1} of {len(actions)}*",
                     }
                 ],
             },

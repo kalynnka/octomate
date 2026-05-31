@@ -26,11 +26,13 @@ from octomate.tentacles.channel.lark.chromo import (
     LARK_STREAM_ELEMENT_ID,
     LarkChromo,
 )
-from octomate.tentacles.channel.lark.feelers import (
+from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
+from octomate.tentacles.channel.lark.feelers.approvals import (
     LarkApprovalFeeler,
-    LarkAskQuestionFeeler,
-    LarkCardAction,
     approval_resolution_card_data,
+)
+from octomate.tentacles.channel.lark.feelers.questions import (
+    LarkAskQuestionFeeler,
     ask_question_card_data,
     collect_answer,
     submitted_card_data,
@@ -327,9 +329,7 @@ class LarkTentacle(ChannelTentacle):
                     )
                 )
             )
-            task.add_done_callback(
-                lambda task: log_card_action_result(self.id, task)
-            )
+            task.add_done_callback(lambda task: log_card_action_result(self.id, task))
             return P2CardActionTriggerResponse(
                 {
                     "toast": {

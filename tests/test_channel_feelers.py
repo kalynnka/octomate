@@ -28,22 +28,28 @@ from octomate.tentacles.channel.feelers import (
     PlainTextAskQuestionFeeler,
 )
 from octomate.tentacles.channel.lark.base import LarkTentacle
-from octomate.tentacles.channel.lark.feelers import (
+from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
+from octomate.tentacles.channel.lark.feelers.approvals import (
     LarkApprovalFeeler,
-    LarkAskQuestionFeeler,
-    LarkCardAction,
-    LarkQuestionActionValueAdapter,
     approval_card_data,
+)
+from octomate.tentacles.channel.lark.feelers.questions import (
+    LarkAskQuestionFeeler,
+    LarkQuestionActionValueAdapter,
     ask_question_card,
     ask_question_card_data,
     collect_answer,
 )
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.tentacles.channel.slack.base import SlackTentacle
-from octomate.tentacles.channel.slack.feelers import (
+from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
+from octomate.tentacles.channel.slack.feelers.approvals import (
+    SlackApprovalActionsAdapter,
     SlackApprovalFeeler,
+    approval_blocks,
+)
+from octomate.tentacles.channel.slack.feelers.questions import (
     SlackAskQuestionFeeler,
-    SlackBlockAction,
     SlackQuestionActionsAdapter,
     ask_question_blocks,
     collect_current_answer,
@@ -113,17 +119,22 @@ async def test_plain_text_feelers_present_approval_and_questions() -> None:
     key = _key()
     approval = _approval()
     questions = [
-        _question(question="Pick a deploy window", choices=["now", "later"], hint="UTC"),
+        _question(
+            question="Pick a deploy window", choices=["now", "later"], hint="UTC"
+        ),
         _question(question="Who approves?", position=1),
     ]
 
-    approval_id = await PlainTextApprovalFeeler(respond_text).present(key, approval)
+    approval_ids = await PlainTextApprovalFeeler(respond_text).present(
+        key,
+        [approval],
+    )
     question_ids = await PlainTextAskQuestionFeeler(respond_text).present(
         key,
         questions,
     )
 
-    assert approval_id is None
+    assert approval_ids == {approval.id: None}
     assert question_ids == {questions[0].id: None, questions[1].id: None}
     assert sent[0] == (
         key,
@@ -141,17 +152,17 @@ async def test_plain_text_feelers_present_approval_and_questions() -> None:
 
 @dataclass
 class RecordingApprovalFeeler(ApprovalFeeler):
-    presented: list[tuple[ConversationKey, DeferredApproval]] = field(
+    presented: list[tuple[ConversationKey, list[DeferredApproval]]] = field(
         default_factory=list
     )
 
     async def present(
         self,
         key: ConversationKey,
-        action: DeferredApproval,
-    ) -> str | None:
-        self.presented.append((key, action))
-        return "approval-message"
+        actions: list[DeferredApproval],
+    ) -> dict[uuid.UUID, str | None]:
+        self.presented.append((key, actions))
+        return {action.id: "approval-message" for action in actions}
 
 
 @dataclass
@@ -242,7 +253,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
     assert manager.create_calls[0]["conversation"] is conversation
     assert manager.create_calls[0]["source_key"] == source_key
     assert manager.create_calls[0]["target_key"] == target_key
-    assert approvals.presented == [(target_key, approval)]
+    assert approvals.presented == [(target_key, [approval])]
     assert ask_questions.presented == [(target_key, [first, second])]
     assert manager.presented == [
         (approval.id, "approval-message"),
@@ -253,9 +264,9 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
 
 @dataclass
 class FakeSlackInk:
-    sent: list[
-        tuple[str, str, list[SlackOutboundMessage], str | None]
-    ] = field(default_factory=list)
+    sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
+        default_factory=list
+    )
     updates: list[tuple[str, str, str, list[dict[str, Any]]]] = field(
         default_factory=list
     )
@@ -288,30 +299,44 @@ async def test_slack_feelers_send_approval_and_question_cards() -> None:
     ink = FakeSlackInk()
     key = _key("slack")
     approval = _approval()
+    second_approval = _approval(batch_id=_batch_id(approval))
     questions = [
         _question(question="Region?", choices=["us", "eu"], hint="Nearest region"),
         _question(question="Ticket?", position=1),
     ]
 
-    approval_message_id = await SlackApprovalFeeler(cast(Any, ink)).present(
+    approval_message_ids = await SlackApprovalFeeler(cast(Any, ink)).present(
         key,
-        approval,
+        [approval, second_approval],
     )
     question_message_ids = await SlackAskQuestionFeeler(cast(Any, ink)).present(
         key,
         questions,
     )
 
-    assert approval_message_id == "slack-1"
-    assert question_message_ids == {questions[0].id: "slack-2", questions[1].id: "slack-2"}
+    assert approval_message_ids == {
+        approval.id: "slack-1",
+        second_approval.id: "slack-1",
+    }
+    assert question_message_ids == {
+        questions[0].id: "slack-2",
+        questions[1].id: "slack-2",
+    }
     approval_msg = ink.sent[0][2][0]
-    assert approval_msg.text == "Permission required: shell"
+    assert approval_msg.text == "Octomate needs 2 approvals"
     assert approval_msg.blocks is not None
+    assert approval_msg.blocks[0]["elements"][0]["text"] == ":lock: *Approvals 1 of 2*"
     approval_value = json.loads(approval_msg.blocks[-1]["elements"][0]["value"])
     assert approval_msg.blocks[-1]["elements"][0]["action_id"] == (
         SlackBlockAction.APPROVAL_APPROVE.value
     )
-    assert approval_value["action_id"] == str(approval.id)
+    restored_approvals = SlackApprovalActionsAdapter.validate_python(
+        approval_value["approvals"]
+    )
+    assert [action.id for action in restored_approvals] == [
+        approval.id,
+        second_approval.id,
+    ]
     question_msg = ink.sent[1][2][0]
     assert question_msg.text == "Octomate needs 2 questions answered"
     assert question_msg.blocks is not None
@@ -327,7 +352,7 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     ]
 
     first_page = ask_question_blocks(actions)
-    assert first_page[0]["elements"][0]["text"] == "Questions 1 of 2"
+    assert first_page[0]["elements"][0]["text"] == ":memo: *Questions 1 of 2*"
     assert first_page[1]["text"]["text"] == "*Color?*"
     assert first_page[-1]["elements"][0]["action_id"] == (
         SlackBlockAction.ASK_QUESTION_NEXT.value
@@ -374,9 +399,7 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
                     }
                 },
                 "answer_block": {
-                    SlackBlockAction.ASK_QUESTION_ANSWER.value: {
-                        "value": "typed blue"
-                    },
+                    SlackBlockAction.ASK_QUESTION_ANSWER.value: {"value": "typed blue"},
                 },
             }
         },
@@ -396,7 +419,7 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     )
     assert restored_choice["element"]["initial_option"]["value"] == "green"
     only_page = ask_question_blocks([actions[0]])
-    assert only_page[0]["text"]["text"] == "*Color?*"
+    assert only_page[0]["text"]["text"] == ":memo: *Color?*"
     assert all(
         block.get("elements", [{}])[0].get("text") != "Questions 1 of 1"
         for block in only_page
@@ -433,6 +456,7 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
     channel.octomate = cast(Any, octomate)
     approval = _approval()
     questions = [_question(batch_id=_batch_id(approval), question="Ship it?")]
+    approve_value = approval_blocks([approval])[-1]["elements"][0]["value"]
 
     await channel.on_approval_action(
         _ack,
@@ -440,14 +464,7 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
             "actions": [
                 {
                     "action_id": SlackBlockAction.APPROVAL_APPROVE.value,
-                    "value": json.dumps(
-                        {
-                            "batch_id": str(approval.batch_id),
-                            "action_id": str(approval.id),
-                            "tool_name": approval.tool_name,
-                            "approved": True,
-                        }
-                    )
+                    "value": approve_value,
                 }
             ],
             "user": {"id": "U1"},
@@ -461,7 +478,8 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
         responder_id="U1",
         approvals={approval.id: True},
     )
-    assert ink.updates[0][0:3] == ("C1", "111.222", "shell - Approved")
+    assert ink.updates[0][0:3] == ("C1", "111.222", "Approvals handled")
+    assert "shell" in ink.updates[0][3][0]["text"]["text"]
 
     submit_state = json.loads(
         ask_question_blocks(questions)[-1]["elements"][0]["value"]
@@ -495,6 +513,67 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
     )
     assert ink.updates[1][0:3] == ("C1", "333.444", "Answers submitted")
     assert events[-2:] == ["update", "kick"]
+
+
+async def test_slack_approval_card_advances_through_multiple_approvals() -> None:
+    ink = FakeSlackInk()
+    octomate = FakeOctomate()
+    channel = object.__new__(SlackTentacle)
+    channel.id = "slack"
+    channel.ink = cast(Any, ink)
+    channel.octomate = cast(Any, octomate)
+    first = _approval()
+    second = _approval(batch_id=_batch_id(first))
+
+    first_value = approval_blocks([first, second])[-1]["elements"][0]["value"]
+    await channel.on_approval_action(
+        _ack,
+        {
+            "actions": [
+                {
+                    "action_id": SlackBlockAction.APPROVAL_APPROVE.value,
+                    "value": first_value,
+                }
+            ],
+            "user": {"id": "U1"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "111.222"},
+        },
+    )
+
+    assert octomate.kicks[0] == DeferredActionBatchResponse(
+        batch_id=_batch_id(first),
+        responder_id="U1",
+        approvals={first.id: True},
+    )
+    assert ink.updates[0][0:3] == ("C1", "111.222", "Octomate needs 2 approvals")
+    assert ink.updates[0][3][0]["elements"][0]["text"] == (":lock: *Approvals 2 of 2*")
+
+    deny_value = ink.updates[0][3][-1]["elements"][1]["value"]
+    await channel.on_approval_action(
+        _ack,
+        {
+            "actions": [
+                {
+                    "action_id": SlackBlockAction.APPROVAL_DENY.value,
+                    "value": deny_value,
+                }
+            ],
+            "user": {"id": "U1"},
+            "channel": {"id": "C1"},
+            "message": {"ts": "111.222"},
+        },
+    )
+
+    assert octomate.kicks[1] == DeferredActionBatchResponse(
+        batch_id=_batch_id(first),
+        responder_id="U1",
+        approvals={second.id: False},
+    )
+    assert ink.updates[1][0:3] == ("C1", "111.222", "Approvals handled")
+    summary = ink.updates[1][3][0]["text"]["text"]
+    assert "Approved" in summary
+    assert "Denied" in summary
 
 
 async def test_slack_radio_choice_submits_selected_answer() -> None:
@@ -587,7 +666,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
     )
 
     page_block = ink.updates[0][3][0]
-    assert page_block["elements"][0]["text"] == "Questions 2 of 2"
+    assert page_block["elements"][0]["text"] == ":memo: *Questions 2 of 2*"
     back_button = ink.updates[0][3][-1]["elements"][0]
     await channel.on_question_nav(
         _ack,
@@ -716,9 +795,9 @@ async def test_slack_question_submit_ignores_invalid_batch_id() -> None:
 
 @dataclass
 class FakeLarkInk:
-    sent: list[
-        tuple[str, str, list[LarkOutboundMessage], str | None, bool]
-    ] = field(default_factory=list)
+    sent: list[tuple[str, str, list[LarkOutboundMessage], str | None, bool]] = field(
+        default_factory=list
+    )
 
     async def send_message(
         self,
@@ -745,16 +824,16 @@ async def test_lark_feelers_send_approval_and_question_cards() -> None:
     approval = _approval()
     questions = [_question(question="Environment?", choices=["prod", "stage"])]
 
-    approval_message_id = await LarkApprovalFeeler(cast(Any, ink)).present(
+    approval_message_ids = await LarkApprovalFeeler(cast(Any, ink)).present(
         key,
-        approval,
+        [approval],
     )
     question_message_ids = await LarkAskQuestionFeeler(cast(Any, ink)).present(
         key,
         questions,
     )
 
-    assert approval_message_id == "lark-1"
+    assert approval_message_ids == {approval.id: "lark-1"}
     assert question_message_ids == {questions[0].id: "lark-2"}
     assert ink.sent[0][3:] == ("om_parent", True)
     approval_content = json.loads(ink.sent[0][2][0].content)
