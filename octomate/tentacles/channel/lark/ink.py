@@ -26,7 +26,8 @@ from pydantic import SecretStr
 from uuid_utils import uuid7
 
 from octomate.schemas.segments import ImageSegment
-from octomate.tentacles.channel.base import DownloadedImage
+from octomate.tentacles.channel.base import DownloadedImage, Ink
+from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.lark.schema import (
     LarkOutboundMessage,
     LarkStreamCard,
@@ -36,7 +37,7 @@ from octomate.tentacles.channel.lark.schema import (
 logger = logging.getLogger(__name__)
 
 
-class LarkInk:
+class LarkInk(Ink[LarkOutboundMessage]):
     app_id: str
     app_secret: SecretStr
     client: lark.Client
@@ -177,13 +178,13 @@ class LarkInk:
         messages: list[LarkOutboundMessage],
         reply_to: str | None = None,
         reply_in_thread: bool = False,
-    ) -> str | None:
+    ) -> IMMessageID | None:
         receive_id_type = "chat_id" if chat_type == "group" else "open_id"
-        first_msg_id: str | None = None
+        first_msg_id: IMMessageID | None = None
         for msg in messages:
             try:
                 if reply_to:
-                    msg_id = await self._reply_message(
+                    msg_id = await self.reply_message(
                         reply_to,
                         msg.msg_type,
                         msg.content,
@@ -243,7 +244,7 @@ class LarkInk:
         *,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
-    ) -> str | None:
+    ) -> IMMessageID | None:
         msg = LarkOutboundMessage(
             msg_type="interactive",
             content=json.dumps(
@@ -299,7 +300,7 @@ class LarkInk:
         receive_id_type: str,
         msg_type: str,
         content: str,
-    ) -> str | None:
+    ) -> IMMessageID | None:
         request = (
             CreateMessageRequest.builder()
             .receive_id_type(receive_id_type)
@@ -318,14 +319,14 @@ class LarkInk:
             return None
         return resp.data.message_id if resp.data else None
 
-    async def _reply_message(
+    async def reply_message(
         self,
         message_id: str,
         msg_type: str,
         content: str,
         *,
         reply_in_thread: bool = False,
-    ) -> str | None:
+    ) -> IMMessageID | None:
         request = (
             ReplyMessageRequest.builder()
             .message_id(message_id)

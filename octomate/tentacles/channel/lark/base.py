@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import lark_oapi
 import lark_oapi.ws.client as ws_mod
@@ -14,18 +13,17 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTriggerResponse,
 )
 from pydantic import TypeAdapter, ValidationError
-from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
-from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config import LarkChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
-from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
-from octomate.tentacles.channel.feelers import Feelers
-from octomate.tentacles.channel.lark.chromo import (
-    LARK_STREAM_ELEMENT_ID,
-    LarkChromo,
+from octomate.tentacles.channel.base import (
+    ChannelOutput,
+    ChannelTentacle,
+    ThreadStrategy,
 )
+from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.lark.chromo import LarkChromo
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.feelers.approvals import (
     LarkApprovalFeeler,
@@ -38,17 +36,16 @@ from octomate.tentacles.channel.lark.feelers.questions import (
     submitted_card_data,
 )
 from octomate.tentacles.channel.lark.ink import LarkInk
+from octomate.tentacles.channel.lark.output import (
+    LarkEventStreamFeeler,
+    LarkMarkdownFeeler,
+    LarkMarkdownStreamFeeler,
+)
 from octomate.tentacles.channel.lark.schema import (
     LarkApprovalActionValue,
     LarkOutboundMessage,
     LarkQuestionActionValue,
     LarkQuestionFormValue,
-    LarkStreamCard,
-)
-from octomate.tentacles.channel.stream import (
-    BatchedTextUpdate,
-    TextStreamBatcher,
-    render_text_stream_delta,
 )
 
 if TYPE_CHECKING:
@@ -72,9 +69,12 @@ def log_card_action_result(channel_id: str, task: asyncio.Task[None]) -> None:
         )
 
 
-class LarkTentacle(ChannelTentacle):
+class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     octomate: Octomate
+    ink: LarkInk
+    chromo: LarkChromo
+    feelers: Feelers[ChannelOutput]
 
     ws_client: lark_oapi.ws.Client
     stop_event: asyncio.Event | None
@@ -89,8 +89,8 @@ class LarkTentacle(ChannelTentacle):
     ) -> None:
         if octomate is None:
             raise ValueError(f"channel {id!r} requires an attached Octomate")
-        self.ink = LarkInk(config.app_id, config.app_secret)
-        self.chromo = LarkChromo()
+        self.ink = LarkInk(config.app_id, config.app_secret)  # pyright: ignore[reportIncompatibleVariableOverride]
+        self.chromo = LarkChromo()  # pyright: ignore[reportIncompatibleVariableOverride]
 
         event_handler = (
             lark_oapi.EventDispatcherHandler.builder("", "")
@@ -113,7 +113,21 @@ class LarkTentacle(ChannelTentacle):
             chromo=self.chromo,
             config=config,
         )
+        markdown_feeler = LarkMarkdownFeeler(ink=self.ink, chromo=self.chromo)
         self.feelers = Feelers(
+            markdown=markdown_feeler,
+            markdown_stream=LarkMarkdownStreamFeeler[ChannelOutput](
+                ink=self.ink,
+                chromo=self.chromo,
+                stream_config=self.config.stream,
+                markdown_feeler=markdown_feeler,
+                channel_id=self.id,
+            ),
+            event_stream=LarkEventStreamFeeler[ChannelOutput](
+                ink=self.ink,
+                markdown_feeler=markdown_feeler,
+                channel_id=self.id,
+            ),
             approvals=LarkApprovalFeeler(self.ink),
             ask_questions=LarkAskQuestionFeeler(self.ink),
         )
@@ -136,133 +150,6 @@ class LarkTentacle(ChannelTentacle):
         if self.stop_event is not None:
             self.stop_event.set()
         await self._disconnect()
-
-    async def respond(
-        self,
-        key: ConversationKey,
-        result: AgentRunResult[Any],
-    ) -> None:
-        chat_id = key.chat_id or key.user_id
-        reply_to = key.thread_id if key.thread_id.startswith("om_") else None
-        reply_in_thread = reply_to is not None
-        messages = self.chromo.squirt(result)
-        if messages:
-            await self.ink.send_message(
-                chat_id,
-                key.chat_type,
-                messages,
-                reply_to,
-                reply_in_thread=reply_in_thread,
-            )
-
-    async def stream_respond(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-    ) -> None:
-        chat_id = key.chat_id or key.user_id
-        reply_to = key.thread_id if key.thread_id.startswith("om_") else None
-        reply_in_thread = reply_to is not None
-        batcher = TextStreamBatcher(
-            flush_interval=self.config.stream.flush_interval,
-            min_chars=self.config.stream.min_chars,
-            max_chars=self.config.stream.max_chars,
-            fold_threshold=self.config.stream.fold_threshold,
-        )
-        card: LarkStreamCard | None = None
-        stream_started = False
-        final_messages: list[LarkOutboundMessage] = []
-        result_event: AgentRunResultEvent[Any] | None = None
-
-        async def apply_update(update: BatchedTextUpdate) -> None:
-            nonlocal card, stream_started
-            if card is None:
-                card_data = self.chromo.make_stream_card_data(
-                    "",
-                    element_id=LARK_STREAM_ELEMENT_ID,
-                )
-                card = await self.ink.create_stream_card(
-                    card_data,
-                    element_id=LARK_STREAM_ELEMENT_ID,
-                )
-                if card is None:
-                    raise RuntimeError("failed to create Lark stream card")
-                msg_id = await self.ink.send_stream_card(
-                    chat_id,
-                    key.chat_type,
-                    card,
-                    reply_to=reply_to,
-                    reply_in_thread=reply_in_thread,
-                )
-                if msg_id is None:
-                    raise RuntimeError("failed to send Lark stream card")
-                stream_started = True
-
-            if not await self.ink.update_stream_card(
-                card,
-                content=update.full_text,
-                sequence=update.sequence,
-            ):
-                raise RuntimeError("failed to update Lark stream card")
-
-        try:
-            async for event in events:
-                if result_event is not None:
-                    continue
-
-                delta = render_text_stream_delta(event)
-                if delta:
-                    for update in batcher.push_text(delta):
-                        await apply_update(update)
-
-                if isinstance(event, AgentRunResultEvent):
-                    result_event = event
-
-            is_deferred_result = result_event is not None and isinstance(
-                result_event.result.output,
-                DeferredToolRequests,
-            )
-            if result_event is not None and not is_deferred_result:
-                final_messages = self.chromo.squirt(result_event.result)
-            for update in batcher.finish_all():
-                await apply_update(update)
-            if (
-                result_event is not None
-                and not is_deferred_result
-                and final_messages
-                and not stream_started
-            ):
-                await self.ink.send_message(
-                    chat_id,
-                    key.chat_type,
-                    final_messages,
-                    reply_to,
-                    reply_in_thread=reply_in_thread,
-                )
-        except Exception:
-            logger.warning(
-                "Channel %s: failed to stream Lark response",
-                self.id,
-                exc_info=True,
-            )
-            if final_messages:
-                await self.ink.send_message(
-                    chat_id,
-                    key.chat_type,
-                    final_messages,
-                    reply_to,
-                    reply_in_thread=reply_in_thread,
-                )
-                return
-            fallback_text = batcher.full_text()
-            if fallback_text:
-                await self.ink.send_message(
-                    chat_id,
-                    key.chat_type,
-                    [self.chromo.make_markdown_message(fallback_text)],
-                    reply_to,
-                    reply_in_thread=reply_in_thread,
-                )
 
     async def start_sub_thread(
         self,

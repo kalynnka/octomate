@@ -7,7 +7,8 @@ import httpx
 from pydantic import SecretStr
 
 from octomate.schemas.segments import ImageSegment
-from octomate.tentacles.channel.base import DownloadedImage
+from octomate.tentacles.channel.base import DownloadedImage, Ink
+from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.napcat.schema import (
     NapcatOutboundMessage,
     NapcatUserProfile,
@@ -16,7 +17,7 @@ from octomate.tentacles.channel.napcat.schema import (
 logger = logging.getLogger(__name__)
 
 
-class NapcatInk:
+class NapcatInk(Ink[NapcatOutboundMessage]):
     http_url: str
     access_token: SecretStr | None
     httpx: httpx.AsyncClient
@@ -101,8 +102,8 @@ class NapcatInk:
         messages: list[NapcatOutboundMessage],
         reply_to: str | None = None,
         reply_in_thread: bool = False,
-    ) -> str | None:
-        first_msg_id: str | None = None
+    ) -> IMMessageID | None:
+        first_msg_id: IMMessageID | None = None
         endpoint = "/send_group_msg" if chat_type == "group" else "/send_private_msg"
         id_field = "group_id" if chat_type == "group" else "user_id"
         for message in messages:

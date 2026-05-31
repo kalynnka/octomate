@@ -6,40 +6,114 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
-from typing import cast
+from typing import Any, Generic, TypeVar, cast
 
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import BaseModel, SecretStr
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     AgentStreamEvent,
-    PartDeltaEvent,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
     PartStartEvent,
     TextPart,
-    TextPartDelta,
+    ThinkingPart,
     ToolCallPart,
+    ToolReturnPart,
 )
+from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
+from slack_sdk.models.messages.chunk import TaskUpdateChunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
 
 from octomate.config import ChannelConfig, ChannelStreamConfig
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.segments import AtSegment, ImageSegment, ReplySegment, TextSegment
-from octomate.tentacles.channel.markdown import MarkdownChunker
+from octomate.tentacles.channel.base import DownloadedImage, Ink
+from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.feelers.output import (
+    DefaultMarkdownFeeler,
+    MarkdownChunker,
+)
 from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
+from octomate.tentacles.channel.lark.feelers.approvals import LarkApprovalFeeler
+from octomate.tentacles.channel.lark.feelers.questions import LarkAskQuestionFeeler
+from octomate.tentacles.channel.lark.output import (
+    LARK_EVENT_ANSWER_ELEMENT_ID,
+    LARK_EVENT_DETAILS_ELEMENT_ID,
+    LarkEventStreamFeeler,
+    LarkMarkdownFeeler,
+    LarkMarkdownStreamFeeler,
+)
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
 from octomate.tentacles.channel.napcat import NapcatChromo, NapcatInk, NapcatTentacle
 from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
 from octomate.tentacles.channel.slack import SlackChromo, SlackInk, SlackTentacle
+from octomate.tentacles.channel.slack.feelers.approvals import SlackApprovalFeeler
+from octomate.tentacles.channel.slack.feelers.questions import SlackAskQuestionFeeler
 from octomate.tentacles.channel.slack.ink import (
     SLACK_MARKDOWN_TEXT_LIMIT,
 )
 from octomate.tentacles.channel.slack.ink import SlackInk as SlackInkType
+from octomate.tentacles.channel.slack.output import (
+    SlackEventStreamFeeler,
+    SlackMarkdownStreamFeeler,
+)
 from octomate.tentacles.channel.slack.schema import SlackOutboundMessage
 
-SlackEvent = AgentStreamEvent | AgentRunResultEvent[str]
+StreamOutputT = TypeVar("StreamOutputT", bound=str | DeferredToolRequests | None)
+
+
+@dataclass
+class FakeStreamedRunResult(Generic[StreamOutputT]):
+    output: StreamOutputT
+    text_deltas: list[str] = field(default_factory=list)
+    fail_text_stream: bool = False
+
+    async def stream_text(
+        self,
+        *,
+        delta: bool = False,
+        debounce_by: float | None = 0.1,
+    ) -> AsyncIterator[str]:
+        if self.fail_text_stream or not isinstance(self.output, str):
+            raise RuntimeError("text stream unavailable")
+        for text in self.text_deltas or [self.output]:
+            yield text
+
+    async def stream_output(
+        self,
+        *,
+        debounce_by: float | None = 0.1,
+    ) -> AsyncIterator[StreamOutputT]:
+        if self.fail_text_stream:
+            raise RuntimeError("output stream unavailable")
+        if isinstance(self.output, str):
+            content = ""
+            for text in self.text_deltas or [self.output]:
+                content += text
+                yield cast(StreamOutputT, content)
+            return
+        yield self.output
+
+    async def get_output(self) -> StreamOutputT:
+        return self.output
+
+
+def streamed_result(
+    output: StreamOutputT,
+    *text_deltas: str,
+    fail_text_stream: bool = False,
+) -> StreamedRunResult[None, StreamOutputT]:
+    return cast(
+        StreamedRunResult[None, StreamOutputT],
+        FakeStreamedRunResult(
+            output=output,
+            text_deltas=list(text_deltas),
+            fail_text_stream=fail_text_stream,
+        ),
+    )
 
 
 def test_channel_thread_strategies_are_declared() -> None:
@@ -329,7 +403,7 @@ def _lark_raw(
                 ),
                 sender=SimpleNamespace(sender_id=SimpleNamespace(open_id=sender_id)),
             )
-        )
+        ),
     )
 
 
@@ -530,7 +604,7 @@ class FakeLarkInk(LarkInk):
         self.created.append((receive_id, receive_id_type, msg_type, content))
         return f"created-{len(self.created)}"
 
-    async def _reply_message(
+    async def reply_message(
         self,
         message_id: str,
         msg_type: str,
@@ -641,14 +715,39 @@ def _lark_channel(ink: FakeLarkInk) -> LarkTentacle:
         type="lark",
         stream=ChannelStreamConfig(flush_interval=0.2, min_chars=1),
     )
+    _compose_lark_feelers(channel)
     return channel
 
 
 def _enable_lark_stream(channel: LarkTentacle, *, interval: float = 0.2) -> None:
     channel.config.stream = ChannelStreamConfig(flush_interval=interval, min_chars=1)
+    _compose_lark_feelers(channel)
 
 
-async def test_lark_tentacle_replies_to_key_thread_id_when_it_is_open_message_id() -> None:
+def _compose_lark_feelers(channel: LarkTentacle) -> None:
+    markdown_feeler = LarkMarkdownFeeler(ink=channel.ink, chromo=channel.chromo)
+    channel.feelers = Feelers(
+        markdown=markdown_feeler,
+        markdown_stream=LarkMarkdownStreamFeeler(
+            ink=channel.ink,
+            chromo=channel.chromo,
+            stream_config=channel.config.stream,
+            markdown_feeler=markdown_feeler,
+            channel_id=channel.id,
+        ),
+        event_stream=LarkEventStreamFeeler(
+            ink=channel.ink,
+            markdown_feeler=markdown_feeler,
+            channel_id=channel.id,
+        ),
+        approvals=LarkApprovalFeeler(channel.ink),
+        ask_questions=LarkAskQuestionFeeler(channel.ink),
+    )
+
+
+async def test_lark_tentacle_replies_to_key_thread_id_when_it_is_open_message_id() -> (
+    None
+):
     ink = FakeLarkInk()
     channel = _lark_channel(ink)
     key = ConversationKey(
@@ -659,7 +758,7 @@ async def test_lark_tentacle_replies_to_key_thread_id_when_it_is_open_message_id
         thread_id="om_child_message",
     )
 
-    await channel.respond(key, AgentRunResult("thread reply"))
+    await channel.feelers.markdown.present(key, "thread reply")
 
     assert ink.created == []
     assert len(ink.replies) == 1
@@ -681,7 +780,7 @@ async def test_lark_tentacle_private_thread_uses_reply_in_thread() -> None:
         thread_id="om_private_anchor",
     )
 
-    await channel.respond(key, AgentRunResult("private thread reply"))
+    await channel.feelers.markdown.present(key, "private thread reply")
 
     assert ink.created == []
     assert len(ink.replies) == 1
@@ -703,7 +802,7 @@ async def test_lark_tentacle_ignores_thread_id_as_reply_target() -> None:
         thread_id="omt_19766a1bf00edb8e",
     )
 
-    await channel.respond(key, AgentRunResult("new message"))
+    await channel.feelers.markdown.present(key, "new message")
 
     assert ink.replies == []
     assert ink.created[0][:2] == ("oc_group", "chat_id")
@@ -720,17 +819,10 @@ async def test_lark_tentacle_streams_batched_card_updates_in_reply_thread() -> N
         user_id="ou_user",
         thread_id="om_parent",
     )
-    drained: list[str] = []
-
-    async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
-        yield PartStartEvent(index=0, part=TextPart(content="he"))
-        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="llo"))
-        yield AgentRunResultEvent(AgentRunResult("hello"))
-        assert ink.stream_updates == []
-        drained.append("after-final")
-        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" ignored"))
-
-    await channel.stream_respond(key, events())
+    await channel.feelers.markdown_stream.present(
+        key,
+        streamed_result("hello", "he", "llo"),
+    )
 
     assert len(ink.stream_cards) == 1
     assert json.loads(ink.stream_cards[0][0])["config"]["streaming_mode"] is True
@@ -750,7 +842,6 @@ async def test_lark_tentacle_streams_batched_card_updates_in_reply_thread() -> N
             1,
         )
     ]
-    assert drained == ["after-final"]
     assert ink.created == []
     assert ink.replies == []
 
@@ -766,12 +857,10 @@ async def test_lark_tentacle_can_stream_immediate_updates_when_configured() -> N
         user_id="ou_user",
     )
 
-    async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
-        yield PartStartEvent(index=0, part=TextPart(content="he"))
-        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="llo"))
-        yield AgentRunResultEvent(AgentRunResult("hello"))
-
-    await channel.stream_respond(key, events())
+    await channel.feelers.markdown_stream.present(
+        key,
+        streamed_result("hello", "he", "llo"),
+    )
 
     assert [(content, sequence) for _, content, sequence in ink.stream_updates] == [
         ("he", 1),
@@ -791,11 +880,10 @@ async def test_lark_tentacle_falls_back_to_final_message_on_stream_failure() -> 
         user_id="ou_user",
     )
 
-    async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
-        yield PartStartEvent(index=0, part=TextPart(content="hello"))
-        yield AgentRunResultEvent(AgentRunResult("hello"))
-
-    await channel.stream_respond(key, events())
+    await channel.feelers.markdown_stream.present(
+        key,
+        streamed_result("hello", "hello"),
+    )
 
     assert ink.stream_messages == []
     assert ink.created[0][:3] == ("ou_user", "open_id", "interactive")
@@ -812,36 +900,83 @@ async def test_lark_tentacle_stops_stream_on_deferred_result() -> None:
         chat_id="ou_user",
         user_id="ou_user",
     )
-    drained: list[str] = []
-
-    async def events() -> AsyncIterator[
-        AgentStreamEvent | AgentRunResultEvent[DeferredToolRequests]
-    ]:
-        yield PartStartEvent(index=0, part=TextPart(content="partial"))
-        yield AgentRunResultEvent(
-            AgentRunResult(
-                DeferredToolRequests(
-                    calls=[
-                        ToolCallPart(
-                            tool_name="ask_user",
-                            args={"question": "Continue?"},
-                            tool_call_id="call_1",
-                        )
-                    ]
-                )
+    await channel.feelers.markdown_stream.present(
+        key,
+        streamed_result(
+            DeferredToolRequests(
+                calls=[
+                    ToolCallPart(
+                        tool_name="ask_user",
+                        args={"question": "Continue?"},
+                        tool_call_id="call_1",
+                    )
+                ]
             )
-        )
-        drained.append("after-deferred")
-        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" ignored"))
+        ),
+    )
 
-    await channel.stream_respond(key, events())
-
-    assert [(content, sequence) for _, content, sequence in ink.stream_updates] == [
-        ("partial", 1)
-    ]
-    assert drained == ["after-deferred"]
+    assert ink.stream_updates == []
     assert ink.created == []
     assert ink.replies == []
+
+
+async def test_lark_event_stream_feeler_updates_answer_and_detail_elements() -> None:
+    ink = FakeLarkInk()
+    chromo = LarkChromo()
+    feeler = LarkEventStreamFeeler(
+        ink=ink,
+        markdown_feeler=LarkMarkdownFeeler(ink=ink, chromo=chromo),
+        channel_id="lark",
+    )
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="group",
+        chat_id="oc_group",
+        user_id="ou_user",
+        thread_id="om_parent",
+    )
+
+    async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
+        yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        yield FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="lookup",
+                args={"token": "secret", "query": "octomate"},
+                tool_call_id="call_1",
+            )
+        )
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="lookup",
+                content={"ok": True},
+                tool_call_id="call_1",
+            )
+        )
+        yield PartStartEvent(index=1, part=TextPart(content="done"))
+        yield AgentRunResultEvent(AgentRunResult("done"))
+
+    message_id = await feeler.present(key, events())
+
+    assert message_id == "stream-1"
+    assert len(ink.stream_cards) == 1
+    card_payload = json.loads(ink.stream_cards[0][0])
+    elements = card_payload["body"]["elements"]
+    assert elements[0]["element_id"] == LARK_EVENT_ANSWER_ELEMENT_ID
+    assert elements[1]["tag"] == "collapsible_panel"
+    assert elements[1]["elements"][0]["element_id"] == LARK_EVENT_DETAILS_ELEMENT_ID
+    assert any(
+        card.element_id == LARK_EVENT_ANSWER_ELEMENT_ID and content == "done"
+        for card, content, _ in ink.stream_updates
+    )
+    detail_updates = [
+        content
+        for card, content, _ in ink.stream_updates
+        if card.element_id == LARK_EVENT_DETAILS_ELEMENT_ID
+    ]
+    assert detail_updates
+    assert "Thinking" in detail_updates[-1]
+    assert "Tool call: lookup" in detail_updates[-1]
+    assert "secret" in detail_updates[-1]
 
 
 async def test_lark_tentacle_message_callback_invokes_ingest() -> None:
@@ -946,14 +1081,36 @@ async def test_slack_chromo_renders_deferred_requests_as_markdown() -> None:
 
 
 @dataclass
-class FakeSlackInk:
+class FakeSlackStream:
+    pass
+
+
+@dataclass
+class FakeSlackInk(Ink[SlackOutboundMessage]):
     streams: list[dict[str, str | None]] = field(default_factory=list)
     appends: list[str] = field(default_factory=list)
+    stream_chunks: list[list[TaskUpdateChunk]] = field(default_factory=list)
     stops: list[str | None] = field(default_factory=list)
     finals: list[dict[str, str | None]] = field(default_factory=list)
     sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
         default_factory=list
     )
+
+    def inspect(self) -> UserProfile:
+        return UserProfile(user_id="bot", name="Bot")
+
+    async def get_user_profile(self, user_id: str) -> UserProfile:
+        return UserProfile(user_id=user_id, name=user_id)
+
+    async def upload_media(self, data: bytes) -> str | None:
+        return None
+
+    async def download_image(
+        self,
+        seg: ImageSegment,
+        message_id: str,
+    ) -> DownloadedImage | None:
+        return None
 
     async def start_stream(
         self,
@@ -962,16 +1119,18 @@ class FakeSlackInk:
         *,
         recipient_user_id: str | None = None,
         recipient_team_id: str | None = None,
-    ) -> object:
-        self.streams.append(
-            {
-                "channel": channel,
-                "thread_ts": thread_ts,
-                "recipient_user_id": recipient_user_id,
-                "recipient_team_id": recipient_team_id,
-            }
-        )
-        return object()
+        task_display_mode: str | None = None,
+    ) -> FakeSlackStream:
+        stream = {
+            "channel": channel,
+            "thread_ts": thread_ts,
+            "recipient_user_id": recipient_user_id,
+            "recipient_team_id": recipient_team_id,
+        }
+        if task_display_mode is not None:
+            stream["task_display_mode"] = task_display_mode
+        self.streams.append(stream)
+        return FakeSlackStream()
 
     @asynccontextmanager
     async def open_stream(
@@ -981,24 +1140,33 @@ class FakeSlackInk:
         *,
         recipient_user_id: str | None = None,
         recipient_team_id: str | None = None,
-    ) -> AsyncIterator[object]:
+        task_display_mode: str | None = None,
+    ) -> AsyncIterator[FakeSlackStream]:
         stream = await self.start_stream(
             channel,
             thread_ts,
             recipient_user_id=recipient_user_id,
             recipient_team_id=recipient_team_id,
+            task_display_mode=task_display_mode,
         )
         try:
             yield stream
         finally:
             await self.stop_stream(stream)
 
-    async def append_stream(self, stream: object, markdown_text: str) -> None:
+    async def append_stream(self, stream: FakeSlackStream, markdown_text: str) -> None:
         self.appends.append(markdown_text)
+
+    async def append_stream_chunks(
+        self,
+        stream: FakeSlackStream,
+        chunks: list[TaskUpdateChunk],
+    ) -> None:
+        self.stream_chunks.append(chunks)
 
     async def stop_stream(
         self,
-        stream: object,
+        stream: FakeSlackStream,
         *,
         markdown_text: str | None = None,
     ) -> str:
@@ -1031,6 +1199,7 @@ class FakeSlackInk:
         chat_type: str,
         messages: list[SlackOutboundMessage],
         reply_to: str | None = None,
+        reply_in_thread: bool = False,
     ) -> str:
         self.sent.append((chat_id, chat_type, messages, reply_to))
         return "fallback-ts"
@@ -1045,7 +1214,30 @@ def _slack_channel(ink: FakeSlackInk) -> SlackTentacle:
         type="slack",
         stream=ChannelStreamConfig(flush_interval=0),
     )
+    _compose_slack_feelers(channel)
     return channel
+
+
+def _compose_slack_feelers(channel: SlackTentacle) -> None:
+    markdown_feeler = DefaultMarkdownFeeler(ink=channel.ink, chromo=channel.chromo)
+    channel.feelers = Feelers(
+        markdown=markdown_feeler,
+        markdown_stream=SlackMarkdownStreamFeeler(
+            ink=channel.ink,
+            chromo=channel.chromo,
+            stream_config=channel.config.stream,
+            markdown_feeler=markdown_feeler,
+            channel_id=channel.id,
+        ),
+        event_stream=SlackEventStreamFeeler(
+            ink=channel.ink,
+            chromo=channel.chromo,
+            markdown_feeler=markdown_feeler,
+            channel_id=channel.id,
+        ),
+        approvals=SlackApprovalFeeler(channel.ink),
+        ask_questions=SlackAskQuestionFeeler(channel.ink),
+    )
 
 
 def _slack_key() -> ConversationKey:
@@ -1061,16 +1253,11 @@ def _slack_key() -> ConversationKey:
 async def test_slack_tentacle_streams_text_deltas_in_source_thread() -> None:
     ink = FakeSlackInk()
     channel = _slack_channel(ink)
-    drained: list[str] = []
 
-    async def events() -> AsyncIterator[SlackEvent]:
-        yield PartStartEvent(index=0, part=TextPart(content="# Hello\n"))
-        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="**world**"))
-        yield AgentRunResultEvent(AgentRunResult("# Hello\n**world**"))
-        drained.append("after-final")
-        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" ignored"))
-
-    await channel.stream_respond(_slack_key(), events())
+    await channel.feelers.markdown_stream.present(
+        _slack_key(),
+        streamed_result("# Hello\n**world**", "# Hello\n", "**world**"),
+    )
 
     assert ink.streams == [
         {
@@ -1083,25 +1270,19 @@ async def test_slack_tentacle_streams_text_deltas_in_source_thread() -> None:
     assert ink.appends == ["# Hello\n", "**world**"]
     assert ink.stops == [None]
     assert ink.finals == []
-    assert drained == ["after-final"]
 
 
 async def test_slack_tentacle_can_batch_stream_deltas_when_configured() -> None:
     ink = FakeSlackInk()
     channel = _slack_channel(ink)
     channel.config.stream = ChannelStreamConfig(flush_interval=999, min_chars=100)
-    drained: list[str] = []
+    _compose_slack_feelers(channel)
 
-    async def events() -> AsyncIterator[SlackEvent]:
-        yield PartStartEvent(index=0, part=TextPart(content="# Hello\n"))
-        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="**world**"))
-        yield AgentRunResultEvent(AgentRunResult("# Hello\n**world**"))
-        assert ink.appends == []
-        drained.append("after-final")
+    await channel.feelers.markdown_stream.present(
+        _slack_key(),
+        streamed_result("# Hello\n**world**", "# Hello\n", "**world**"),
+    )
 
-    await channel.stream_respond(_slack_key(), events())
-
-    assert drained == ["after-final"]
     assert ink.appends == ["# Hello\n**world**"]
     assert ink.stops == [None]
 
@@ -1109,43 +1290,88 @@ async def test_slack_tentacle_can_batch_stream_deltas_when_configured() -> None:
 async def test_slack_tentacle_stops_stream_on_deferred_result() -> None:
     ink = FakeSlackInk()
     channel = _slack_channel(ink)
-    drained: list[str] = []
 
-    async def events() -> AsyncIterator[
-        AgentStreamEvent | AgentRunResultEvent[DeferredToolRequests]
-    ]:
-        yield PartStartEvent(index=0, part=TextPart(content="partial"))
-        yield AgentRunResultEvent(
-            AgentRunResult(
-                DeferredToolRequests(
-                    calls=[
-                        ToolCallPart(
-                            tool_name="ask_user",
-                            args={"question": "Continue?"},
-                            tool_call_id="call_1",
-                        )
-                    ]
-                )
+    await channel.feelers.markdown_stream.present(
+        _slack_key(),
+        streamed_result(
+            DeferredToolRequests(
+                calls=[
+                    ToolCallPart(
+                        tool_name="ask_user",
+                        args={"question": "Continue?"},
+                        tool_call_id="call_1",
+                    )
+                ]
+            )
+        ),
+    )
+
+    assert ink.appends == []
+    assert ink.sent == []
+
+
+async def test_slack_event_stream_feeler_emits_task_updates() -> None:
+    ink = FakeSlackInk()
+    chromo = SlackChromo()
+    feeler = SlackEventStreamFeeler(
+        ink=cast(SlackInkType, ink),
+        chromo=chromo,
+        markdown_feeler=DefaultMarkdownFeeler(ink=ink, chromo=chromo),
+        channel_id="slack",
+    )
+
+    async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
+        yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        yield FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="lookup",
+                args={"token": "secret", "query": "octomate"},
+                tool_call_id="call_1",
             )
         )
-        drained.append("after-deferred")
-        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" ignored"))
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="lookup",
+                content={"ok": True},
+                tool_call_id="call_1",
+            )
+        )
+        yield PartStartEvent(index=1, part=TextPart(content="done"))
+        yield AgentRunResultEvent(AgentRunResult("done"))
 
-    await channel.stream_respond(_slack_key(), events())
+    message_id = await feeler.present(_slack_key(), events())
 
-    assert ink.appends == ["partial"]
-    assert ink.sent == []
-    assert drained == ["after-deferred"]
+    assert message_id == "stream-ts"
+    assert ink.streams == [
+        {
+            "channel": "C1",
+            "thread_ts": "1710000000.000100",
+            "recipient_user_id": "U1",
+            "recipient_team_id": None,
+            "task_display_mode": "timeline",
+        }
+    ]
+    chunks = [chunk for group in ink.stream_chunks for chunk in group]
+    assert [chunk.title for chunk in chunks] == [
+        "Thinking",
+        "Tool call: lookup",
+        "Tool result: lookup",
+        "Answer",
+    ]
+    assert chunks[-1].output == "done"
+    tool_call = chunks[1]
+    assert tool_call.details is not None
+    assert "secret" in tool_call.details
 
 
 async def test_slack_tentacle_streams_final_only_result_once() -> None:
     ink = FakeSlackInk()
     channel = _slack_channel(ink)
 
-    async def events() -> AsyncIterator[SlackEvent]:
-        yield AgentRunResultEvent(AgentRunResult("final **markdown**"))
-
-    await channel.stream_respond(_slack_key(), events())
+    await channel.feelers.markdown_stream.present(
+        _slack_key(),
+        streamed_result("final **markdown**"),
+    )
 
     assert len(ink.streams) == 1
     assert ink.appends == ["final **markdown**"]
@@ -1155,17 +1381,21 @@ async def test_slack_tentacle_streams_final_only_result_once() -> None:
 
 async def test_slack_tentacle_closes_open_stream_on_append_error() -> None:
     class RaisingSlackInk(FakeSlackInk):
-        async def append_stream(self, stream: object, markdown_text: str) -> None:
+        async def append_stream(
+            self,
+            stream: FakeSlackStream,
+            markdown_text: str,
+        ) -> None:
             await super().append_stream(stream, markdown_text)
             raise RuntimeError("append failed")
 
     ink = RaisingSlackInk()
     channel = _slack_channel(ink)
 
-    async def events() -> AsyncIterator[SlackEvent]:
-        yield PartStartEvent(index=0, part=TextPart(content="hello"))
-
-    await channel.stream_respond(_slack_key(), events())
+    await channel.feelers.markdown_stream.present(
+        _slack_key(),
+        streamed_result("hello"),
+    )
 
     assert ink.appends == ["hello"]
     assert ink.stops == [None]

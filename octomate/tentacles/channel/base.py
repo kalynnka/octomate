@@ -1,14 +1,23 @@
+"""Shared channel primitives.
+
+Type variables:
+- RawT: native inbound platform payload accepted by a channel and its chromo.
+- MessageT: native outbound platform message payload sent by an ink.
+- ResultT: agent-side result output rendered by ``Chromo.squirt``.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeAlias, TypeVar
 
 import anyio
-from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import AgentRunResult
+from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils import uuid7
 
 from octomate.config import ChannelConfig
@@ -17,10 +26,16 @@ from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.base import Tentacle
-from octomate.tentacles.channel.feelers import (
-    Feelers,
+from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
+)
+from octomate.tentacles.channel.feelers.output import (
+    DefaultEventStreamFeeler,
+    DefaultMarkdownFeeler,
+    DefaultMarkdownStreamFeeler,
+    IMMessageID,
 )
 from octomate.utils import guess_image_ext
 
@@ -30,6 +45,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ThreadStrategy = Literal["main_only", "flat_thread", "nested_thread"]
+ChannelOutput: TypeAlias = str | DeferredToolRequests | None
+MessageT = TypeVar("MessageT")
+ResultT = TypeVar("ResultT")
+RawT = TypeVar("RawT", contravariant=True)
 
 
 @dataclass(frozen=True)
@@ -40,31 +59,38 @@ class DownloadedImage:
     url: str | None = None
 
 
-@runtime_checkable
-class Chromo(Protocol):
+class Chromo(
+    ABC,
+    Generic[RawT, MessageT],
+):
     """Two-way translation between platform-native wire data and core schemas."""
 
-    async def sip(self, raw: Any) -> MessageEvent | None: ...
+    @abstractmethod
+    async def sip(self, raw: RawT) -> MessageEvent | None: ...
 
+    @abstractmethod
     def squirt(
         self,
-        result: AgentRunResult[Any],
+        result: AgentRunResult[ResultT],
         *,
         reply_to: str | None = None,
-    ) -> list[Any]: ...
+    ) -> list[MessageT]: ...
 
 
-@runtime_checkable
-class Ink(Protocol):
-    """Structural protocol for platform API clients."""
+class Ink(ABC, Generic[MessageT]):
+    """Base class for platform API clients."""
 
+    @abstractmethod
     def inspect(self) -> UserProfile: ...
 
+    @abstractmethod
     async def get_user_profile(self, user_id: str) -> UserProfile: ...
 
+    @abstractmethod
     async def upload_media(self, data: bytes) -> str | None:
         """Upload media bytes and return a platform key or URL."""
 
+    @abstractmethod
     async def download_image(
         self,
         seg: ImageSegment,
@@ -72,18 +98,19 @@ class Ink(Protocol):
     ) -> DownloadedImage | None:
         """Download an inbound image segment."""
 
+    @abstractmethod
     async def send_message(
         self,
         chat_id: str,
         chat_type: str,
-        messages: list[Any],
+        messages: list[MessageT],
         reply_to: str | None = None,
         reply_in_thread: bool = False,
-    ) -> str | None:
+    ) -> IMMessageID | None:
         """Send platform-native message payloads."""
 
 
-class ChannelTentacle(Tentacle):
+class ChannelTentacle(Tentacle, Generic[RawT, MessageT]):
     """Base class for IM channels.
 
     A channel receives native platform events, converts them to MessageEvents,
@@ -94,17 +121,19 @@ class ChannelTentacle(Tentacle):
     FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
     thread_strategy: ClassVar[ThreadStrategy] = "main_only"
 
-    octomate: Octomate
+    octomate: Octomate  # type: ignore[reportIncompatibleVariableOverride]
     profile: UserProfile
-    feelers: Feelers
+    feelers: Feelers[ChannelOutput]
+    ink: Ink[MessageT]
+    chromo: Chromo[RawT, MessageT]
 
     def __init__(
         self,
         id: str,
         octomate: Octomate | None,
         *,
-        ink: Ink,
-        chromo: Chromo,
+        ink: Ink[MessageT],
+        chromo: Chromo[RawT, MessageT],
         config: ChannelConfig,
     ) -> None:
         if octomate is None:
@@ -115,9 +144,30 @@ class ChannelTentacle(Tentacle):
         self.chromo = chromo
         self.agent_id = config.agent_id
         self.user_profiles: dict[str, UserProfile] = {}
-        self.feelers = Feelers(
-            approvals=PlainTextApprovalFeeler(self.respond_text),
-            ask_questions=PlainTextAskQuestionFeeler(self.respond_text),
+        markdown_feeler = DefaultMarkdownFeeler(
+            ink=self.ink,
+            chromo=self.chromo,
+        )
+        self.feelers = Feelers[ChannelOutput](
+            markdown=markdown_feeler,
+            markdown_stream=DefaultMarkdownStreamFeeler[
+                RawT,
+                MessageT,
+                ChannelOutput,
+            ](
+                ink=self.ink,
+                chromo=self.chromo,
+            ),
+            event_stream=DefaultEventStreamFeeler[
+                RawT,
+                MessageT,
+                ChannelOutput,
+            ](
+                ink=self.ink,
+                chromo=self.chromo,
+            ),
+            approvals=PlainTextApprovalFeeler(markdown_feeler),
+            ask_questions=PlainTextAskQuestionFeeler(markdown_feeler),
         )
 
         self.profile = self.ink.inspect()
@@ -132,7 +182,7 @@ class ChannelTentacle(Tentacle):
     def name(self) -> str:
         return self.profile.name
 
-    async def ingest(self, raw: Any) -> None:
+    async def ingest(self, raw: RawT) -> None:
         """Inbound pipeline: decode, enrich sender, resolve media, dispatch."""
         try:
             event = await self.chromo.sip(raw)
@@ -164,49 +214,6 @@ class ChannelTentacle(Tentacle):
         except Exception:
             logger.exception("Channel %s: error in ingest", self.id)
 
-    async def respond(
-        self,
-        key: ConversationKey,
-        result: AgentRunResult[Any],
-    ) -> None:
-        """Send a final, non-streaming response for a conversation."""
-        chat_id = key.chat_id or key.user_id
-        chat_type = key.chat_type
-        reply_to: str | None = key.thread_id or None
-
-        for message in self.chromo.squirt(result, reply_to=reply_to):
-            await self.ink.send_message(
-                chat_id,
-                chat_type,
-                [message],
-                reply_to,
-            )
-
-    async def stream_respond(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-    ) -> None:
-        logger.warning(
-            "Channel %s does not support streaming responses; falling back to final response",
-            self.id,
-        )
-        result_event: AgentRunResultEvent[Any] | None = None
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                result_event = event
-        if result_event is not None:
-            await self.respond(key, result_event.result)
-
-    async def respond_text(
-        self,
-        key: ConversationKey,
-        text: str,
-    ) -> None:
-        """Respond with synthetic text through the normal channel adapter."""
-
-        await self.respond(key, AgentRunResult(text))
-
     async def start_sub_thread(
         self,
         key: ConversationKey,
@@ -216,7 +223,7 @@ class ChannelTentacle(Tentacle):
             "Channel %s does not support sub-thread startup; using main target",
             self.id,
         )
-        await self.respond_text(key, hint_text)
+        await self.feelers.markdown.present(key, hint_text)
         return key
 
     async def get_user_profile(self, user_id: str) -> UserProfile:

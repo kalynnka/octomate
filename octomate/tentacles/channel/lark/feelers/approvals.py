@@ -9,7 +9,8 @@ from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
     DeferredApproval,
 )
-from octomate.tentacles.channel.feelers import ApprovalFeeler
+from octomate.tentacles.channel.feelers.deferred import ApprovalFeeler
+from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 
@@ -29,11 +30,11 @@ class LarkApprovalFeeler(ApprovalFeeler):
         self,
         key: ConversationKey,
         actions: list[DeferredApproval],
-    ) -> dict[UUID, str | None]:
+    ) -> dict[UUID, IMMessageID | None]:
         if not actions:
             return {}
         reply_to = key.thread_id if key.thread_id.startswith("om_") else None
-        message_ids: dict[UUID, str | None] = {}
+        message_ids: dict[UUID, IMMessageID | None] = {}
         for action in actions:
             message_ids[action.id] = await self.ink.send_message(
                 key.chat_id or key.user_id,

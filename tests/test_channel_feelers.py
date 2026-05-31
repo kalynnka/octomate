@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
 
+from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
@@ -20,12 +23,12 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.triage import TriageDecision
-from octomate.tentacles.channel.feelers import (
+from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.feelers.deferred import (
     ApprovalFeeler,
-    AskQuestionFeeler,
-    Feelers,
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
+    QuestionFeeler,
 )
 from octomate.tentacles.channel.lark.base import LarkTentacle
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
@@ -54,7 +57,16 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     ask_question_blocks,
     collect_current_answer,
 )
-from octomate.tentacles.channel.slack.schema import SlackOutboundMessage
+from octomate.tentacles.channel.slack.schema import (
+    SlackActionMessage,
+    SlackApprovalActionBody,
+    SlackApprovalActionValue,
+    SlackOutboundMessage,
+    SlackQuestionActionBody,
+    SlackQuestionActionValue,
+    SlackQuestionBlockAction,
+    SlackQuestionState,
+)
 
 
 def _key(channel: str = "im") -> ConversationKey:
@@ -113,10 +125,18 @@ def _batch_id(action: DeferredQuestion | DeferredApproval) -> uuid.UUID:
 async def test_plain_text_feelers_present_approval_and_questions() -> None:
     sent: list[tuple[ConversationKey, str]] = []
 
-    async def respond_text(key: ConversationKey, text: str) -> None:
-        sent.append((key, text))
+    @dataclass
+    class MarkdownRecorder:
+        async def present(
+            self,
+            key: ConversationKey,
+            markdown: str,
+        ) -> str | None:
+            sent.append((key, markdown))
+            return None
 
     key = _key()
+    markdown = MarkdownRecorder()
     approval = _approval()
     questions = [
         _question(
@@ -125,11 +145,11 @@ async def test_plain_text_feelers_present_approval_and_questions() -> None:
         _question(question="Who approves?", position=1),
     ]
 
-    approval_ids = await PlainTextApprovalFeeler(respond_text).present(
+    approval_ids = await PlainTextApprovalFeeler(markdown).present(
         key,
         [approval],
     )
-    question_ids = await PlainTextAskQuestionFeeler(respond_text).present(
+    question_ids = await PlainTextAskQuestionFeeler(markdown).present(
         key,
         questions,
     )
@@ -166,7 +186,7 @@ class RecordingApprovalFeeler(ApprovalFeeler):
 
 
 @dataclass
-class RecordingAskQuestionFeeler(AskQuestionFeeler):
+class RecordingQuestionFeeler(QuestionFeeler):
     presented: list[tuple[ConversationKey, list[DeferredQuestion]]] = field(
         default_factory=list
     )
@@ -178,6 +198,34 @@ class RecordingAskQuestionFeeler(AskQuestionFeeler):
     ) -> dict[uuid.UUID, str | None]:
         self.presented.append((key, actions))
         return {action.id: f"question-{index}" for index, action in enumerate(actions)}
+
+
+@dataclass
+class RecordingMarkdownFeeler:
+    async def present(
+        self,
+        key: ConversationKey,
+        markdown: str,
+    ) -> str | None:
+        return None
+
+
+class NoopMarkdownStreamFeeler:
+    async def present(
+        self,
+        key: ConversationKey,
+        stream: StreamedRunResult[None, str],
+    ) -> str | None:
+        return None
+
+
+class NoopEventStreamFeeler:
+    async def present(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]],
+    ) -> str | None:
+        return None
 
 
 @dataclass
@@ -209,7 +257,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
     first = _question(question="First?")
     second = _question(question="Second?", position=1)
     approvals = RecordingApprovalFeeler()
-    ask_questions = RecordingAskQuestionFeeler()
+    ask_questions = RecordingQuestionFeeler()
     manager = FakeActionManager(FakeActionContext([first, second], [approval]))
     source_key = _key("source")
     target_key = _key("target")
@@ -237,7 +285,13 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         channel_tentacle_id="source",
     )
 
-    context = await Feelers(approvals, ask_questions).present_actions(
+    context = await Feelers(
+        markdown=RecordingMarkdownFeeler(),
+        markdown_stream=NoopMarkdownStreamFeeler(),
+        event_stream=NoopEventStreamFeeler(),
+        approvals=approvals,
+        ask_questions=ask_questions,
+    ).present_actions(
         action_manager=cast(Any, manager),
         conversation=conversation,
         agent_tentacle_id="inkling",
@@ -445,6 +499,41 @@ async def _ack() -> None:
     return None
 
 
+def _slack_approval_body(
+    *,
+    action_id: str,
+    value: str,
+    message: SlackActionMessage | None = None,
+) -> SlackApprovalActionBody:
+    return {
+        "actions": (
+            {"action_id": action_id, "value": cast(SlackApprovalActionValue, value)},
+        ),
+        "user": {"id": "U1"},
+        "channel": {"id": "C1"},
+        "message": message or {"ts": "111.222"},
+    }
+
+
+def _slack_question_body(
+    *,
+    action_id: str,
+    state: SlackQuestionState,
+    value: str | None = None,
+    message: SlackActionMessage | None = None,
+) -> SlackQuestionActionBody:
+    action: SlackQuestionBlockAction = {"action_id": action_id}
+    if value is not None:
+        action["value"] = cast(SlackQuestionActionValue, value)
+    return {
+        "actions": (action,),
+        "state": state,
+        "user": {"id": "U2"},
+        "channel": {"id": "C1"},
+        "message": message or {"ts": "333.444"},
+    }
+
+
 async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> None:
     ink = FakeSlackInk()
     octomate = FakeOctomate()
@@ -461,17 +550,10 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
 
     await channel.on_approval_action(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.APPROVAL_APPROVE.value,
-                    "value": approve_value,
-                }
-            ],
-            "user": {"id": "U1"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "111.222"},
-        },
+        _slack_approval_body(
+            action_id=SlackBlockAction.APPROVAL_APPROVE.value,
+            value=approve_value,
+        ),
     )
 
     assert octomate.kicks[0] == DeferredActionBatchResponse(
@@ -487,24 +569,17 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
     )
     await channel.on_question_nav(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.ASK_QUESTION_SUBMIT.value,
-                    "value": json.dumps(submit_state),
-                }
-            ],
-            "state": {
+        _slack_question_body(
+            action_id=SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+            value=json.dumps(submit_state),
+            state={
                 "values": {
                     "answer_block": {
                         SlackBlockAction.ASK_QUESTION_ANSWER.value: {"value": "yes"}
                     }
                 }
             },
-            "user": {"id": "U2"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "333.444"},
-        },
+        ),
     )
 
     assert octomate.kicks[1] == DeferredActionBatchResponse(
@@ -529,17 +604,10 @@ async def test_slack_approval_card_advances_through_multiple_approvals() -> None
     first_value = approval_blocks([first, second])[-1]["elements"][0]["value"]
     await channel.on_approval_action(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.APPROVAL_APPROVE.value,
-                    "value": first_value,
-                }
-            ],
-            "user": {"id": "U1"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "111.222"},
-        },
+        _slack_approval_body(
+            action_id=SlackBlockAction.APPROVAL_APPROVE.value,
+            value=first_value,
+        ),
     )
 
     assert octomate.kicks[0] == DeferredActionBatchResponse(
@@ -553,17 +621,10 @@ async def test_slack_approval_card_advances_through_multiple_approvals() -> None
     deny_value = ink.updates[0][3][-1]["elements"][1]["value"]
     await channel.on_approval_action(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.APPROVAL_DENY.value,
-                    "value": deny_value,
-                }
-            ],
-            "user": {"id": "U1"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "111.222"},
-        },
+        _slack_approval_body(
+            action_id=SlackBlockAction.APPROVAL_DENY.value,
+            value=deny_value,
+        ),
     )
 
     assert octomate.kicks[1] == DeferredActionBatchResponse(
@@ -593,14 +654,10 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
     submit_state = json.loads(blocks[-1]["elements"][0]["value"])
     await channel.on_question_nav(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.ASK_QUESTION_SUBMIT.value,
-                    "value": json.dumps(submit_state),
-                }
-            ],
-            "state": {
+        _slack_question_body(
+            action_id=SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+            value=json.dumps(submit_state),
+            state={
                 "values": {
                     "choice_block": {
                         SlackBlockAction.ASK_QUESTION_CHOICE.value: {
@@ -609,10 +666,7 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
                     }
                 }
             },
-            "user": {"id": "U2"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "333.444"},
-        },
+        ),
     )
 
     assert octomate.kicks[0] == DeferredActionBatchResponse(
@@ -645,13 +699,9 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
     blocks = ask_question_blocks([first, second])
     await channel.on_question_nav(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.ASK_QUESTION_CHOICE.value,
-                }
-            ],
-            "state": {
+        _slack_question_body(
+            action_id=SlackBlockAction.ASK_QUESTION_CHOICE.value,
+            state={
                 "values": {
                     "choice_block": {
                         SlackBlockAction.ASK_QUESTION_CHOICE.value: {
@@ -660,10 +710,8 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
                     }
                 }
             },
-            "user": {"id": "U2"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "333.444", "blocks": blocks},
-        },
+            message={"ts": "333.444", "blocks": blocks},
+        ),
     )
 
     page_block = ink.updates[0][3][0]
@@ -671,14 +719,10 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
     back_button = ink.updates[0][3][-1]["elements"][0]
     await channel.on_question_nav(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.ASK_QUESTION_BACK.value,
-                    "value": back_button["value"],
-                }
-            ],
-            "state": {
+        _slack_question_body(
+            action_id=SlackBlockAction.ASK_QUESTION_BACK.value,
+            value=back_button["value"],
+            state={
                 "values": {
                     "answer_block": {
                         SlackBlockAction.ASK_QUESTION_ANSWER.value: {
@@ -687,10 +731,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
                     }
                 }
             },
-            "user": {"id": "U2"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "333.444"},
-        },
+        ),
     )
 
     choice_block = next(
@@ -699,13 +740,9 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
     assert choice_block["element"]["initial_option"]["value"] == "Kelp Forest"
     await channel.on_question_nav(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.ASK_QUESTION_CHOICE.value,
-                }
-            ],
-            "state": {
+        _slack_question_body(
+            action_id=SlackBlockAction.ASK_QUESTION_CHOICE.value,
+            state={
                 "values": {
                     "choice_block": {
                         SlackBlockAction.ASK_QUESTION_CHOICE.value: {
@@ -714,10 +751,8 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
                     }
                 }
             },
-            "user": {"id": "U2"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "333.444", "blocks": ink.updates[1][3]},
-        },
+            message={"ts": "333.444", "blocks": ink.updates[1][3]},
+        ),
     )
 
     submit_button = next(
@@ -727,14 +762,10 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
     )
     await channel.on_question_nav(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.ASK_QUESTION_SUBMIT.value,
-                    "value": submit_button["value"],
-                }
-            ],
-            "state": {
+        _slack_question_body(
+            action_id=SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+            value=submit_button["value"],
+            state={
                 "values": {
                     "answer_block": {
                         SlackBlockAction.ASK_QUESTION_ANSWER.value: {
@@ -743,10 +774,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
                     }
                 }
             },
-            "user": {"id": "U2"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "333.444"},
-        },
+        ),
     )
 
     assert octomate.kicks[0] == DeferredActionBatchResponse(
@@ -776,18 +804,11 @@ async def test_slack_question_submit_ignores_invalid_batch_id() -> None:
 
     await channel.on_question_nav(
         _ack,
-        {
-            "actions": [
-                {
-                    "action_id": SlackBlockAction.ASK_QUESTION_SUBMIT.value,
-                    "value": json.dumps(submit_state),
-                }
-            ],
-            "state": {"values": {}},
-            "user": {"id": "U2"},
-            "channel": {"id": "C1"},
-            "message": {"ts": "333.444"},
-        },
+        _slack_question_body(
+            action_id=SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+            value=json.dumps(submit_state),
+            state={"values": {}},
+        ),
     )
 
     assert octomate.kicks == []

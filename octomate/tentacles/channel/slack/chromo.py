@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time
-from typing import Any
+from typing import TypeVar
 
 from pydantic_core import to_json
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
@@ -27,6 +27,7 @@ from octomate.schemas.segments import (
     ReplySegment,
     TextSegment,
 )
+from octomate.tentacles.channel.base import Chromo
 from octomate.tentacles.channel.slack.schema import (
     SlackMessageEvent,
     SlackOutboundMessage,
@@ -34,11 +35,12 @@ from octomate.tentacles.channel.slack.schema import (
 )
 
 logger = logging.getLogger(__name__)
+OutputT = TypeVar("OutputT")
 
 AT_RE = re.compile(r"<@(U[A-Z0-9]+)>")
 
 
-class SlackChromo:
+class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
     async def sip(self, raw: SlackMessageEvent) -> MessageEvent | None:
         try:
             channel_type = raw.get("channel_type", "")
@@ -100,7 +102,7 @@ class SlackChromo:
 
     def squirt(
         self,
-        result: AgentRunResult[Any],
+        result: AgentRunResult[OutputT],
         *,
         reply_to: str | None = None,
     ) -> list[SlackOutboundMessage]:
@@ -140,7 +142,7 @@ class SlackChromo:
 
     def render_stream_delta(
         self,
-        event: AgentStreamEvent | AgentRunResultEvent[Any],
+        event: AgentStreamEvent | AgentRunResultEvent[OutputT],
     ) -> str:
         if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
             return event.part.content

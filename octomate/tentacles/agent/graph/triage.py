@@ -4,7 +4,6 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any
 
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import ModelMessage, UserContent
@@ -20,7 +19,12 @@ from octomate.schemas.awakes import (
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
+from octomate.tentacles.channel.base import (
+    ChannelOutput,
+    ChannelTentacle,
+    ThreadStrategy,
+)
+from octomate.tentacles.channel.feelers.output import markdown_from_output
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +65,7 @@ class ResponseTarget:
 class TriageGraphResult:
     decision: TriageDecision
     target: ResponseTarget
-    result: AgentRunResult[Any] | None = None
+    result: AgentRunResult[ChannelOutput] | None = None
 
 
 @dataclass
@@ -260,9 +264,10 @@ class AnswerDirect(
         target_channel = ctx.deps.channel_for(self.target)
         if self.target.key is None:
             raise ValueError(f"target {self.target.channel_id!r} has no resolved key")
-        await target_channel.respond_text(
+        markdown = self.decision.answer or self.decision.reason
+        await target_channel.feelers.markdown.present(
             self.target.key,
-            self.decision.answer or self.decision.reason,
+            markdown,
         )
         return End(TriageGraphResult(decision=self.decision, target=self.target))
 
@@ -344,7 +349,7 @@ class RunReception(
     message_history: list[ModelMessage] | None = None
     deferred_tool_results: DeferredToolResults | None = None
     deferred_batch_id: uuid.UUID | None = None
-    result: AgentRunResult[Any] | None = None
+    result: AgentRunResult[ChannelOutput] | None = None
 
     async def run(
         self,
@@ -363,7 +368,7 @@ class RunReception(
         if target_channel.config.stream.enabled:
 
             async def stream_events() -> AsyncIterator[
-                AgentStreamEvent | AgentRunResultEvent[Any]
+                AgentStreamEvent | AgentRunResultEvent[ChannelOutput]
             ]:
                 async with self.agent.run_stream_events(
                     self.user_prompt,
@@ -377,10 +382,14 @@ class RunReception(
                             self.result = event.result
                         yield event
 
-            await target_channel.stream_respond(
+            await target_channel.feelers.event_stream.present(
                 self.target_key,
                 stream_events(),
             )
+            if self.result is None:
+                raise RuntimeError(
+                    f"reception stream for {self.target_key} completed without a result"
+                )
         else:
             self.result = await self.agent.run(
                 self.user_prompt,
@@ -391,22 +400,25 @@ class RunReception(
             )
 
             if not isinstance(self.result.output, DeferredToolRequests):
-                await target_channel.respond(
-                    self.target_key,
-                    self.result,
+                markdown = markdown_from_output(self.result.output)
+                if markdown is not None:
+                    await target_channel.feelers.markdown.present(
+                        self.target_key,
+                        markdown,
+                    )
+            if self.result is None:
+                raise RuntimeError(
+                    f"reception run for {self.target_key} completed without a result"
                 )
 
-        if self.deferred_batch_id is not None and self.result is not None:
+        if self.deferred_batch_id is not None:
             await ctx.deps.action_manager.mark_batch(
                 self.deferred_batch_id,
                 "completed",
                 completed=True,
             )
 
-        if self.result is not None and isinstance(
-            self.result.output,
-            DeferredToolRequests,
-        ):
+        if isinstance(self.result.output, DeferredToolRequests):
             return RequestDeferredActions(
                 agent=self.agent,
                 source_key=self.source_key,

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TypeVar
 
 from pydantic_core import to_json
 from pydantic_ai import AgentRunResult
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.events import MessageEvent
+from octomate.tentacles.channel.base import Chromo
 from octomate.tentacles.channel.napcat.schema import (
     ActionResponse,
     NapcatMessageEvent,
@@ -18,9 +19,10 @@ from octomate.tentacles.channel.napcat.schema import (
 from octomate.utils import strip_markdown
 
 logger = logging.getLogger(__name__)
+OutputT = TypeVar("OutputT")
 
 
-class NapcatChromo:
+class NapcatChromo(Chromo[str | bytes, NapcatOutboundMessage]):
     async def sip(self, raw: str | bytes) -> MessageEvent | None:
         try:
             frame = inbound_adapter.validate_json(raw)
@@ -36,7 +38,7 @@ class NapcatChromo:
 
     def squirt(
         self,
-        result: AgentRunResult[Any],
+        result: AgentRunResult[OutputT],
         *,
         reply_to: str | None = None,
     ) -> list[NapcatOutboundMessage]:

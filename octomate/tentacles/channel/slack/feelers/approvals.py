@@ -11,7 +11,8 @@ from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
     DeferredApproval,
 )
-from octomate.tentacles.channel.feelers import ApprovalFeeler
+from octomate.tentacles.channel.feelers.deferred import ApprovalFeeler
+from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.channel.slack.feelers.cards import (
     APPROVAL_CARD_ICON,
@@ -49,7 +50,7 @@ class SlackApprovalFeeler(ApprovalFeeler):
         self,
         key: ConversationKey,
         actions: list[DeferredApproval],
-    ) -> dict[UUID, str | None]:
+    ) -> dict[UUID, IMMessageID | None]:
         if not actions:
             return {}
         text = approval_title(actions)

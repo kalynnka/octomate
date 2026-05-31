@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import TypeAdapter, ValidationError
-from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
-from pydantic_ai.tools import DeferredToolRequests
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
@@ -15,8 +12,12 @@ from octomate.config import SlackChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
-from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
-from octomate.tentacles.channel.feelers import Feelers
+from octomate.tentacles.channel.base import (
+    ChannelOutput,
+    ChannelTentacle,
+    ThreadStrategy,
+)
+from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.channel.slack.feelers.approvals import (
@@ -34,6 +35,10 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     submitted_blocks,
 )
 from octomate.tentacles.channel.slack.ink import SlackInk
+from octomate.tentacles.channel.slack.output import (
+    SlackEventStreamFeeler,
+    SlackMarkdownStreamFeeler,
+)
 from octomate.tentacles.channel.slack.schema import (
     SlackApprovalActionBody,
     SlackAssistantThreadEvent,
@@ -41,7 +46,6 @@ from octomate.tentacles.channel.slack.schema import (
     SlackOutboundMessage,
     SlackQuestionActionBody,
 )
-from octomate.tentacles.channel.stream import TextStreamBatcher
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -63,9 +67,12 @@ IGNORED_SUBTYPES = frozenset(
 )
 
 
-class SlackTentacle(ChannelTentacle):
+class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     octomate: Octomate
+    ink: SlackInk
+    chromo: SlackChromo
+    feelers: Feelers[ChannelOutput]
 
     def __init__(
         self,
@@ -106,7 +113,22 @@ class SlackTentacle(ChannelTentacle):
             chromo=self.chromo,
             config=config,
         )
+        markdown_feeler = self.feelers.markdown
         self.feelers = Feelers(
+            markdown=markdown_feeler,
+            markdown_stream=SlackMarkdownStreamFeeler[ChannelOutput](
+                ink=self.ink,
+                chromo=self.chromo,
+                stream_config=self.config.stream,
+                markdown_feeler=markdown_feeler,
+                channel_id=self.id,
+            ),
+            event_stream=SlackEventStreamFeeler[ChannelOutput](
+                ink=self.ink,
+                chromo=self.chromo,
+                markdown_feeler=markdown_feeler,
+                channel_id=self.id,
+            ),
             approvals=SlackApprovalFeeler(self.ink),
             ask_questions=SlackAskQuestionFeeler(self.ink),
         )
@@ -144,7 +166,7 @@ class SlackTentacle(ChannelTentacle):
     ) -> None:
         await self.ensure_assistant_thread(event)
 
-    async def on_approval_action(self, ack, body: object) -> None:
+    async def on_approval_action(self, ack, body: SlackApprovalActionBody) -> None:
         await ack()
         try:
             action_body = SlackApprovalActionBodyAdapter.validate_python(body)
@@ -204,7 +226,7 @@ class SlackTentacle(ChannelTentacle):
             )
         )
 
-    async def on_question_nav(self, ack, body: object) -> None:
+    async def on_question_nav(self, ack, body: SlackQuestionActionBody) -> None:
         await ack()
         try:
             action_body = SlackQuestionActionBodyAdapter.validate_python(body)
@@ -325,98 +347,6 @@ class SlackTentacle(ChannelTentacle):
                 agent_tentacle_id=self.agent_id,
             )
         logger.info("Channel %s: ensured Slack assistant thread %s", self.id, key)
-
-    async def stream_respond(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]],
-    ) -> None:
-        context = self.chromo.thread_context(key)
-        channel = key.chat_id or key.user_id
-        final_messages: list[SlackOutboundMessage] = []
-        result_event: AgentRunResultEvent[Any] | None = None
-        batcher = TextStreamBatcher(
-            flush_interval=self.config.stream.flush_interval,
-            min_chars=self.config.stream.min_chars,
-            max_chars=self.config.stream.max_chars,
-            fold_threshold=self.config.stream.fold_threshold,
-        )
-
-        try:
-            async with self.ink.open_stream(
-                channel,
-                context.thread_ts,
-                recipient_user_id=context.recipient_user_id,
-                recipient_team_id=context.recipient_team_id,
-            ) as stream:
-                appended = False
-                async for event in events:
-                    if result_event is not None:
-                        continue
-
-                    delta = self.chromo.render_stream_delta(event)
-                    if delta:
-                        for update in batcher.push_text(delta):
-                            logger.debug(
-                                "Channel %s: streaming Slack delta chars=%d sequence=%d",
-                                self.id,
-                                len(update.delta_text),
-                                update.sequence,
-                            )
-                            await self.ink.append_stream(stream, update.delta_text)
-                            appended = True
-
-                    if isinstance(event, AgentRunResultEvent):
-                        result_event = event
-
-                is_deferred_result = result_event is not None and isinstance(
-                    result_event.result.output,
-                    DeferredToolRequests,
-                )
-                if result_event is not None and not is_deferred_result:
-                    final_messages = self.chromo.squirt(result_event.result)
-                    final_text = "\n".join(
-                        message.markdown_text or message.text
-                        for message in final_messages
-                    )
-                    logger.debug(
-                        "Channel %s: Slack stream result chars=%d",
-                        self.id,
-                        len(final_text),
-                    )
-                for update in batcher.finish_all():
-                    logger.debug(
-                        "Channel %s: streaming Slack delta chars=%d sequence=%d",
-                        self.id,
-                        len(update.delta_text),
-                        update.sequence,
-                    )
-                    await self.ink.append_stream(stream, update.delta_text)
-                    appended = True
-                if (
-                    result_event is not None
-                    and not is_deferred_result
-                    and final_messages
-                    and not appended
-                ):
-                    for message in final_messages:
-                        await self.ink.append_stream(
-                            stream,
-                            message.markdown_text or message.text,
-                        )
-        except Exception:
-            logger.warning(
-                "Channel %s: failed to stream Slack response",
-                self.id,
-                exc_info=True,
-            )
-            if final_messages:
-                await self.ink.send_message(
-                    channel,
-                    key.chat_type,
-                    final_messages,
-                    context.thread_ts,
-                )
 
     async def start_sub_thread(
         self,

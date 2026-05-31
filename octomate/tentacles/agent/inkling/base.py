@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -136,7 +135,6 @@ class InklingTentacle(AgentTentacle):
             raise RuntimeError("react graph completed without an AgentRunResult")
         return result
 
-    @asynccontextmanager
     async def run_stream(
         self,
         user_prompt: str | Sequence[UserContent] | None = None,

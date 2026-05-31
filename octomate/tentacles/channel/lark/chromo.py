@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from typing import Any, Literal
+from typing import TypeVar
 
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic_core import to_json
@@ -20,14 +21,16 @@ from octomate.schemas.segments import (
     ReplySegment,
     TextSegment,
 )
+from octomate.tentacles.channel.base import Chromo
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 
 logger = logging.getLogger(__name__)
+OutputT = TypeVar("OutputT")
 
 LARK_STREAM_ELEMENT_ID = "octomate_answer"
 
 
-class LarkChromo:
+class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
     async def sip(self, raw: P2ImMessageReceiveV1) -> MessageEvent | None:
         try:
             event = raw.event
@@ -77,7 +80,7 @@ class LarkChromo:
 
     def squirt(
         self,
-        result: AgentRunResult[Any],
+        result: AgentRunResult[OutputT],
         *,
         reply_to: str | None = None,
     ) -> list[LarkOutboundMessage]:

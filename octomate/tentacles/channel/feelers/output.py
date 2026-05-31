@@ -1,0 +1,495 @@
+from __future__ import annotations
+
+import re
+import time
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    ClassVar,
+    Generic,
+    Literal,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    cast,
+)
+
+from pydantic import JsonValue
+from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    OutputToolCallEvent,
+    OutputToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    RetryPromptPart,
+    TextPart,
+    TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
+    ToolReturnPart,
+)
+from pydantic_ai.result import StreamedRunResult
+from pydantic_ai.tools import DeferredToolRequests
+from pydantic_core import to_json
+
+from octomate.schemas.conversation import ConversationKey
+
+if TYPE_CHECKING:
+    from octomate.tentacles.channel.base import Chromo, Ink
+
+IMMessageID: TypeAlias = str
+MessageT = TypeVar("MessageT")
+OutputT = TypeVar("OutputT", bound=JsonValue | DeferredToolRequests)
+OutputContraT = TypeVar(
+    "OutputContraT",
+    bound=JsonValue | DeferredToolRequests,
+    contravariant=True,
+)
+RawT = TypeVar("RawT")
+
+
+@dataclass(frozen=True)
+class MarkdownChunker:
+    DEFAULT_LIMIT: ClassVar[int] = 12_000
+
+    limit: int = DEFAULT_LIMIT
+    natural_min_size: int | None = None
+
+    @property
+    def effective_natural_min_size(self) -> int:
+        if self.natural_min_size is not None:
+            return self.natural_min_size
+        return self.limit // 2
+
+    def chunk(self, text: str) -> list[str]:
+        if not text:
+            return [""]
+
+        chunks: list[str] = []
+        remaining = text
+        while len(remaining) > self.limit:
+            split_at = self.split_index(remaining)
+            chunks.append(remaining[:split_at])
+            remaining = remaining[split_at:]
+        if remaining:
+            chunks.append(remaining)
+        return chunks
+
+    def split_index(self, text: str) -> int:
+        for boundary in (
+            self.last_separator_boundary(text, "\n\n"),
+            self.last_separator_boundary(text, "\n"),
+            self.last_sentence_boundary(text),
+            self.last_whitespace_boundary(text),
+        ):
+            if boundary >= self.effective_natural_min_size:
+                return boundary
+
+        return self.last_whitespace_boundary(text) or self.limit
+
+    def last_separator_boundary(self, text: str, separator: str) -> int:
+        boundary = 0
+        start = 0
+        while True:
+            index = text.find(separator, start, self.limit)
+            if index < 0:
+                return boundary
+            candidate = index + len(separator)
+            if candidate <= self.limit:
+                boundary = candidate
+            start = index + len(separator)
+
+    def last_sentence_boundary(self, text: str) -> int:
+        boundary = 0
+        for match in re.finditer(r'[.!?][)"\']?\s+', text[: self.limit]):
+            boundary = match.end()
+        return boundary
+
+    def last_whitespace_boundary(self, text: str) -> int:
+        boundary = 0
+        for match in re.finditer(r"\s+", text[: self.limit]):
+            boundary = match.end()
+        return boundary
+
+
+StreamBlockType = Literal["answer", "thinking", "tool_call", "tool_result", "subagent"]
+StreamBlockStatus = Literal["streaming", "done", "error"]
+
+
+@dataclass(frozen=True)
+class StreamBlock:
+    id: str
+    type: StreamBlockType = "answer"
+    title: str = ""
+    foldable: bool = False
+    status: StreamBlockStatus = "streaming"
+
+
+@dataclass(frozen=True)
+class BatchedTextUpdate:
+    block_id: str
+    block_type: StreamBlockType
+    title: str
+    delta_text: str
+    full_text: str
+    sequence: int
+    is_final: bool = False
+    foldable: bool = False
+    status: StreamBlockStatus = "streaming"
+
+
+@dataclass(frozen=True)
+class StreamEventDelta:
+    block: StreamBlock
+    text: str
+
+
+@dataclass
+class TextStreamBuffer:
+    block: StreamBlock
+    full_text: str = ""
+    pending_delta: str = ""
+    sequence: int = 0
+    last_flush_at: float = 0.0
+
+
+class TextStreamBatcher:
+    def __init__(
+        self,
+        *,
+        flush_interval: float = 0.5,
+        min_chars: int = 120,
+        max_chars: int = 1000,
+        fold_threshold: int = 1500,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.flush_interval = max(flush_interval, 0.0)
+        self.min_chars = max(min_chars, 0)
+        self.max_chars = max(max_chars, 1)
+        self.fold_threshold = max(fold_threshold, 1)
+        self.clock = clock
+        self.buffers: dict[str, TextStreamBuffer] = {}
+        self.active_block_id: str | None = None
+
+    def push_text(
+        self,
+        text: str,
+        *,
+        block: StreamBlock | None = None,
+    ) -> list[BatchedTextUpdate]:
+        if not text:
+            return []
+        block = block or StreamBlock(id="answer")
+        updates: list[BatchedTextUpdate] = []
+        if self.active_block_id and self.active_block_id != block.id:
+            previous = self.flush_block(self.active_block_id)
+            if previous is not None:
+                updates.append(previous)
+
+        self.active_block_id = block.id
+        buffer = self.buffers.get(block.id)
+        if buffer is None:
+            buffer = TextStreamBuffer(block=block, last_flush_at=self.clock())
+            self.buffers[block.id] = buffer
+        else:
+            buffer.block = block
+
+        buffer.full_text += text
+        buffer.pending_delta += text
+        if self.should_flush(buffer):
+            update = self.flush_block(block.id)
+            if update is not None:
+                updates.append(update)
+        return updates
+
+    def flush_block(
+        self,
+        block_id: str,
+        *,
+        is_final: bool = False,
+    ) -> BatchedTextUpdate | None:
+        buffer = self.buffers.get(block_id)
+        if buffer is None or not buffer.pending_delta:
+            return None
+        buffer.sequence += 1
+        update = BatchedTextUpdate(
+            block_id=buffer.block.id,
+            block_type=buffer.block.type,
+            title=buffer.block.title,
+            delta_text=buffer.pending_delta,
+            full_text=buffer.full_text,
+            sequence=buffer.sequence,
+            is_final=is_final,
+            foldable=buffer.block.foldable
+            or len(buffer.full_text) >= self.fold_threshold,
+            status="done" if is_final else buffer.block.status,
+        )
+        buffer.pending_delta = ""
+        buffer.last_flush_at = self.clock()
+        return update
+
+    def finish_all(self) -> list[BatchedTextUpdate]:
+        updates: list[BatchedTextUpdate] = []
+        if self.active_block_id:
+            update = self.flush_block(self.active_block_id, is_final=True)
+            if update is not None:
+                updates.append(update)
+        for block_id in list(self.buffers):
+            if block_id == self.active_block_id:
+                continue
+            update = self.flush_block(block_id, is_final=True)
+            if update is not None:
+                updates.append(update)
+        return updates
+
+    def full_text(self, block_id: str = "answer") -> str:
+        buffer = self.buffers.get(block_id)
+        return buffer.full_text if buffer is not None else ""
+
+    def should_flush(self, buffer: TextStreamBuffer) -> bool:
+        if self.flush_interval <= 0:
+            return True
+        if len(buffer.pending_delta) >= self.max_chars:
+            return True
+        if len(buffer.pending_delta) < self.min_chars:
+            return False
+        return self.clock() - buffer.last_flush_at >= self.flush_interval
+
+
+def render_stream_event_delta(
+    event: AgentStreamEvent | AgentRunResultEvent[OutputT],
+) -> StreamEventDelta | None:
+    if isinstance(event, PartStartEvent):
+        if isinstance(event.part, TextPart):
+            return StreamEventDelta(
+                block=StreamBlock(id=f"answer-{event.index}", type="answer"),
+                text=event.part.content,
+            )
+        if isinstance(event.part, ThinkingPart):
+            return StreamEventDelta(
+                block=StreamBlock(
+                    id=f"thinking-{event.index}",
+                    type="thinking",
+                    title="Thinking",
+                    foldable=True,
+                ),
+                text=event.part.content,
+            )
+    if isinstance(event, PartDeltaEvent):
+        if isinstance(event.delta, TextPartDelta):
+            return StreamEventDelta(
+                block=StreamBlock(id=f"answer-{event.index}", type="answer"),
+                text=event.delta.content_delta,
+            )
+        if isinstance(event.delta, ThinkingPartDelta):
+            return StreamEventDelta(
+                block=StreamBlock(
+                    id=f"thinking-{event.index}",
+                    type="thinking",
+                    title="Thinking",
+                    foldable=True,
+                ),
+                text=event.delta.content_delta or "",
+            )
+    if isinstance(event, FunctionToolCallEvent | OutputToolCallEvent):
+        tool = event.part
+        title = f"Tool call: {tool.tool_name}"
+        if isinstance(event, OutputToolCallEvent):
+            title = f"Output tool: {tool.tool_name}"
+        return StreamEventDelta(
+            block=StreamBlock(
+                id=f"tool-call-{tool.tool_call_id}",
+                type="tool_call",
+                title=title,
+                foldable=True,
+                status="done",
+            ),
+            text=format_stream_value(cast(JsonValue, tool.args_as_dict())),
+        )
+    if isinstance(event, FunctionToolResultEvent | OutputToolResultEvent):
+        part = event.part
+        tool_name = part.tool_name or "output"
+        title = f"Tool result: {tool_name}"
+        if isinstance(event, OutputToolResultEvent):
+            title = f"Output result: {tool_name}"
+        return StreamEventDelta(
+            block=StreamBlock(
+                id=f"tool-result-{part.tool_call_id}",
+                type="tool_result",
+                title=title,
+                foldable=True,
+                status="done",
+            ),
+            text=format_stream_value(tool_result_text(part)),
+        )
+    return None
+
+
+def tool_result_text(part: ToolReturnPart | RetryPromptPart) -> str:
+    if isinstance(part, ToolReturnPart):
+        return part.model_response_str()
+    return part.model_response()
+
+
+def format_stream_value(value: JsonValue, *, max_chars: int = 2000) -> str:
+    if isinstance(value, str):
+        text = value
+    else:
+        text = to_json(
+            value,
+            indent=2,
+            ensure_ascii=False,
+            fallback=str,
+        ).decode()
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars].rstrip()}\n\n...[truncated]"
+
+
+class MarkdownFeeler(Protocol):
+    """Presents markdown to IM and returns platform message metadata only.
+
+    Return ``IMMessageID`` values for IM bookkeeping, such as a message id,
+    timestamp, or card id. Feelers must not return agent/runtime results.
+    """
+
+    async def present(
+        self,
+        key: ConversationKey,
+        markdown: str,
+    ) -> IMMessageID | None: ...
+
+
+class MarkdownStreamFeeler(Protocol[OutputContraT]):
+    """Presents streamed markdown to IM and returns platform message metadata only."""
+
+    async def present(
+        self,
+        key: ConversationKey,
+        stream: StreamedRunResult[None, OutputContraT],
+    ) -> IMMessageID | None: ...
+
+
+class EventStreamFeeler(Protocol[OutputContraT]):
+    """Presents agent events to IM and returns platform message metadata only."""
+
+    async def present(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputContraT]],
+    ) -> IMMessageID | None: ...
+
+
+async def final_stream_result(
+    events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputT]],
+) -> AgentRunResult[OutputT] | None:
+    result: AgentRunResult[OutputT] | None = None
+    async for event in events:
+        if isinstance(event, AgentRunResultEvent):
+            result = event.result
+    return result
+
+
+def markdown_from_output(output: JsonValue | DeferredToolRequests) -> str | None:
+    if output is None or isinstance(output, DeferredToolRequests):
+        return None
+    if isinstance(output, str):
+        return output
+    return f"```json\n{format_stream_value(output)}\n```"
+
+
+async def present_markdown(
+    *,
+    ink: Ink[MessageT],
+    chromo: Chromo[RawT, MessageT],
+    key: ConversationKey,
+    markdown: str,
+) -> IMMessageID | None:
+    chat_id = key.chat_id or key.user_id
+    chat_type = key.chat_type
+    reply_to: str | None = key.thread_id or None
+    first_message_id: IMMessageID | None = None
+    result = AgentRunResult(markdown)
+    for message in chromo.squirt(result, reply_to=reply_to):
+        message_id = await ink.send_message(
+            chat_id,
+            chat_type,
+            [message],
+            reply_to,
+        )
+        first_message_id = first_message_id or message_id
+    return first_message_id
+
+
+class DefaultMarkdownFeeler(Generic[RawT, MessageT]):
+    def __init__(
+        self,
+        *,
+        ink: Ink[MessageT],
+        chromo: Chromo[RawT, MessageT],
+    ) -> None:
+        self.ink = ink
+        self.chromo = chromo
+
+    async def present(
+        self,
+        key: ConversationKey,
+        markdown: str,
+    ) -> IMMessageID | None:
+        return await present_markdown(
+            ink=self.ink,
+            chromo=self.chromo,
+            key=key,
+            markdown=markdown,
+        )
+
+
+class DefaultMarkdownStreamFeeler(Generic[RawT, MessageT, OutputT]):
+    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
+        self.ink = ink
+        self.chromo = chromo
+
+    async def present(
+        self,
+        key: ConversationKey,
+        stream: StreamedRunResult[None, OutputT],
+    ) -> IMMessageID | None:
+        outputs: list[OutputT] = []
+        async for output in stream.stream_output(debounce_by=None):
+            outputs.append(output)
+        final_output = outputs[-1] if outputs else await stream.get_output()
+        markdown = markdown_from_output(final_output)
+        if markdown is not None:
+            return await present_markdown(
+                ink=self.ink,
+                chromo=self.chromo,
+                key=key,
+                markdown=markdown,
+            )
+        return None
+
+
+class DefaultEventStreamFeeler(Generic[RawT, MessageT, OutputT]):
+    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
+        self.ink = ink
+        self.chromo = chromo
+
+    async def present(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputT]],
+    ) -> IMMessageID | None:
+        result = await final_stream_result(events)
+        markdown = markdown_from_output(result.output) if result is not None else None
+        if markdown is not None:
+            return await present_markdown(
+                ink=self.ink,
+                chromo=self.chromo,
+                key=key,
+                markdown=markdown,
+            )
+        return None

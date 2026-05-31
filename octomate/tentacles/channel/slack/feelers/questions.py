@@ -8,7 +8,8 @@ from pydantic import TypeAdapter
 
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import DeferredQuestion
-from octomate.tentacles.channel.feelers import AskQuestionFeeler
+from octomate.tentacles.channel.feelers.deferred import QuestionFeeler
+from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.channel.slack.feelers.cards import (
     QUESTION_CARD_ICON,
@@ -38,7 +39,7 @@ SlackQuestionActionsAdapter = TypeAdapter(list[DeferredQuestion])
 SlackQuestionActionValueAdapter = TypeAdapter(SlackQuestionActionValue)
 
 
-class SlackAskQuestionFeeler(AskQuestionFeeler):
+class SlackAskQuestionFeeler(QuestionFeeler):
     def __init__(self, ink: SlackInk) -> None:
         self.ink = ink
 
@@ -46,7 +47,7 @@ class SlackAskQuestionFeeler(AskQuestionFeeler):
         self,
         key: ConversationKey,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, str | None]:
+    ) -> dict[UUID, IMMessageID | None]:
         if not actions:
             return {}
         text = question_title(actions)

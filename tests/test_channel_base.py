@@ -1,12 +1,23 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import cast
 
 import pytest
-from pydantic_ai import AgentRunResult, AgentRunResultEvent
-from pydantic_ai.messages import AgentStreamEvent
+from pydantic_ai import AgentRunResult
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
+    ToolCallPart,
+    ToolReturnPart,
+)
+from pydantic_ai.result import StreamedRunResult
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
@@ -26,15 +37,13 @@ from octomate.tentacles.channel.base import (
     DownloadedImage,
     Ink,
 )
-from octomate.tentacles.channel.stream import (
+from octomate.tentacles.channel.feelers.output import (
     StreamBlock,
     TextStreamBatcher,
+    render_stream_event_delta,
 )
 
 NativeMessage = dict[str, str]
-ChannelEvent = AgentStreamEvent | AgentRunResultEvent[str]
-
-
 @dataclass
 class FakeOctomate:
     kicks: list[AwakeSignal] = field(default_factory=list)
@@ -211,7 +220,7 @@ async def test_group_mention_filter_ignores_unmentioned_events() -> None:
     assert octomate.kicks == []
 
 
-async def test_respond_encodes_final_agent_result_and_sends_native_messages(
+async def test_markdown_feeler_encodes_final_agent_result_and_sends_native_messages(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -221,7 +230,7 @@ async def test_respond_encodes_final_agent_result_and_sends_native_messages(
         user_id="alice",
     )
 
-    await channel.respond(key, AgentRunResult("hi alice"))
+    await channel.feelers.markdown.present(key, "hi alice")
 
     assert len(channel.sent) == 1
     chat_id, chat_type, messages, reply_to, _ = channel.sent[0]
@@ -231,7 +240,7 @@ async def test_respond_encodes_final_agent_result_and_sends_native_messages(
     assert reply_to is None
 
 
-async def test_respond_uses_conversation_thread_as_reply_target(
+async def test_markdown_feeler_uses_conversation_thread_as_reply_target(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -242,14 +251,14 @@ async def test_respond_uses_conversation_thread_as_reply_target(
         thread_id="m1",
     )
 
-    await channel.respond(key, AgentRunResult("after reply"))
+    await channel.feelers.markdown.present(key, "after reply")
 
     assert len(channel.sent) == 1
     assert channel.sent[0][3] == "m1"
     assert channel.sent[0][2][0]["text"] == "after reply"
 
 
-async def test_stream_respond_default_warns_and_falls_back_to_final_response(
+async def test_markdown_stream_feeler_default_sends_final_result(
     channel: FakeChannelTentacle,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -260,18 +269,18 @@ async def test_stream_respond_default_warns_and_falls_back_to_final_response(
         user_id="alice",
     )
 
-    async def events() -> AsyncIterator[ChannelEvent]:
-        yield AgentRunResultEvent(AgentRunResult("stream me"))
-
     with caplog.at_level("WARNING"):
-        await channel.stream_respond(key, events())
+        await channel.feelers.markdown_stream.present(
+            key,
+            StreamedRunResult([], 0, run_result=AgentRunResult("stream me")),
+        )
 
-    assert "does not support streaming responses" in caplog.text
+    assert "does not support streaming responses" not in caplog.text
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "stream me"
 
 
-async def test_respond_text_uses_normal_adapter(
+async def test_markdown_feeler_uses_normal_adapter(
     channel: FakeChannelTentacle,
 ) -> None:
     key = ConversationKey(
@@ -281,7 +290,7 @@ async def test_respond_text_uses_normal_adapter(
         user_id="alice",
     )
 
-    await channel.respond_text(key, "fallback")
+    await channel.feelers.markdown.present(key, "fallback")
 
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "fallback"
@@ -373,3 +382,53 @@ def test_text_stream_batcher_marks_large_blocks_foldable() -> None:
 
     assert len(updates) == 1
     assert updates[0].foldable is True
+
+
+def test_render_stream_event_delta_maps_agent_details() -> None:
+    answer = render_stream_event_delta(
+        PartStartEvent(index=0, part=TextPart(content="hello"))
+    )
+    answer_delta = render_stream_event_delta(
+        PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" world"))
+    )
+    thinking = render_stream_event_delta(
+        PartStartEvent(index=1, part=ThinkingPart(content="checking"))
+    )
+    thinking_delta = render_stream_event_delta(
+        PartDeltaEvent(index=1, delta=ThinkingPartDelta(content_delta=" docs"))
+    )
+    tool_call = render_stream_event_delta(
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="lookup",
+                args={"token": "secret", "query": "octomate"},
+                tool_call_id="call_1",
+            )
+        )
+    )
+    tool_result = render_stream_event_delta(
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="lookup",
+                content={"ok": True},
+                tool_call_id="call_1",
+            )
+        )
+    )
+
+    assert answer is not None
+    assert answer.block.type == "answer"
+    assert answer.text == "hello"
+    assert answer_delta is not None
+    assert answer_delta.text == " world"
+    assert thinking is not None
+    assert thinking.block.type == "thinking"
+    assert thinking.text == "checking"
+    assert thinking_delta is not None
+    assert thinking_delta.text == " docs"
+    assert tool_call is not None
+    assert tool_call.block.type == "tool_call"
+    assert "secret" in tool_call.text
+    assert tool_result is not None
+    assert tool_result.block.type == "tool_result"
+    assert '"ok":true' in tool_result.text.replace(" ", "")

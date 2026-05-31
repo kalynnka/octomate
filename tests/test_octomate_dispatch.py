@@ -3,11 +3,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import cast
 
 import pytest
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.output import OutputSpec
+from pydantic_ai.result import StreamedRunResult
+from pydantic_ai.tools import DeferredToolResults
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -26,6 +29,15 @@ from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.graph import TriageDecision
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
+from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.feelers.deferred import (
+    PlainTextApprovalFeeler,
+    PlainTextAskQuestionFeeler,
+)
+
+
+FakeRunOutput = TriageDecision | str
+FakeStreamEvent = AgentStreamEvent | AgentRunResultEvent[str]
 
 
 @pytest.fixture(autouse=True)
@@ -84,9 +96,11 @@ class FakeAgent:
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
+        output_type: OutputSpec[TriageDecision] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
-        **kwargs: Any,
-    ) -> AgentRunResult[Any]:
+        deferred_tool_results: DeferredToolResults | None = None,
+        instructions: str | None = None,
+    ) -> AgentRunResult[FakeRunOutput]:
         self.turns.append(
             (user_prompt, list(message_history or []), conversation_key, run_name)
         )
@@ -102,18 +116,82 @@ class FakeAgent:
         conversation_key: ConversationKey,
         run_name: str | None = None,
         message_history: Sequence[ModelMessage] | None = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]]]:
+        deferred_tool_results: DeferredToolResults | None = None,
+    ) -> AsyncIterator[AsyncIterator[FakeStreamEvent]]:
         self.streams.append(
             (user_prompt, list(message_history or []), conversation_key, run_name)
         )
 
-        async def events() -> AsyncIterator[
-            AgentStreamEvent | AgentRunResultEvent[Any]
-        ]:
+        async def events() -> AsyncIterator[FakeStreamEvent]:
             yield AgentRunResultEvent(AgentRunResult(self.reception_output))
 
         yield events()
+
+    async def run_stream(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        conversation_key: ConversationKey,
+        run_name: str | None = None,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+    ) -> AsyncIterator[StreamedRunResult[None, str]]:
+        self.streams.append(
+            (user_prompt, list(message_history or []), conversation_key, run_name)
+        )
+        yield StreamedRunResult([], 0, run_result=AgentRunResult(self.reception_output))
+
+
+@dataclass
+class RecordingMarkdownStreamFeeler:
+    stream_sent: list[tuple[ConversationKey, list[str]]]
+
+    async def present(
+        self,
+        key: ConversationKey,
+        stream: StreamedRunResult[None, str],
+    ) -> str | None:
+        output = await stream.get_output()
+        outputs = [output]
+        self.stream_sent.append((key, outputs))
+        return "stream-message"
+
+
+class NoopMarkdownStreamFeeler:
+    async def present(
+        self,
+        key: ConversationKey,
+        stream: StreamedRunResult[None, str],
+    ) -> str | None:
+        return None
+
+
+class NoopEventStreamFeeler:
+    async def present(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[FakeStreamEvent],
+    ) -> str | None:
+        async for _event in events:
+            pass
+        return None
+
+
+@dataclass
+class RecordingEventStreamFeeler:
+    stream_sent: list[tuple[ConversationKey, list[str]]]
+
+    async def present(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[FakeStreamEvent],
+    ) -> str | None:
+        outputs: list[str] = []
+        async for event in events:
+            if isinstance(event, AgentRunResultEvent):
+                outputs.append(str(event.result.output))
+        self.stream_sent.append((key, outputs))
+        return "event-message"
 
 
 @dataclass
@@ -128,36 +206,36 @@ class FakeChannel:
     stream_sent: list[tuple[ConversationKey, list[str]]] = field(default_factory=list)
     sub_threads: list[tuple[ConversationKey, str]] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        self.feelers = Feelers[str](
+            markdown=self,
+            markdown_stream=(
+                RecordingMarkdownStreamFeeler(self.stream_sent)
+                if self.config.stream.enabled
+                else NoopMarkdownStreamFeeler()
+            ),
+            event_stream=(
+                RecordingEventStreamFeeler(self.stream_sent)
+                if self.config.stream.enabled
+                else NoopEventStreamFeeler()
+            ),
+            approvals=PlainTextApprovalFeeler(self),
+            ask_questions=PlainTextAskQuestionFeeler(self),
+        )
+
     async def activate(self) -> None:
         pass
 
     async def deactivate(self) -> None:
         pass
 
-    async def respond(
+    async def present(
         self,
         key: ConversationKey,
-        result: AgentRunResult[str],
-    ) -> None:
-        self.sent.append((key, [result.output]))
-
-    async def stream_respond(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]],
-    ) -> None:
-        outputs: list[str] = []
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                outputs.append(event.result.output)
-        self.stream_sent.append((key, outputs))
-
-    async def respond_text(
-        self,
-        key: ConversationKey,
-        text: str,
-    ) -> None:
-        self.sent.append((key, [text]))
+        markdown: str,
+    ) -> str | None:
+        self.sent.append((key, [markdown]))
+        return None
 
     async def start_sub_thread(
         self,
@@ -181,12 +259,6 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     octomate.register_agent("inkling", cast(AgentTentacle, agent))
     octomate.connect_channel("im", cast(ChannelTentacle, channel))
 
-    key = ConversationKey(
-        channel_tentacle_id="im",
-        chat_type="private",
-        chat_id="alice",
-        user_id="alice",
-    )
     event = MessageEvent(
         tentacle_id="im",
         message_id="m1",
@@ -194,6 +266,12 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
         chat_id="alice",
         user_id="alice",
         segments=[TextSegment(data={"text": "hi"})],
+    )
+    key = ConversationKey(
+        channel_tentacle_id="im",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
     )
 
     await octomate.kick(UserMessageSignal([event]))
@@ -227,12 +305,6 @@ async def test_octomate_kick_streams_reception_result_when_enabled() -> None:
     octomate.register_agent("inkling", cast(AgentTentacle, agent))
     octomate.connect_channel("im", cast(ChannelTentacle, channel))
 
-    key = ConversationKey(
-        channel_tentacle_id="im",
-        chat_type="private",
-        chat_id="alice",
-        user_id="alice",
-    )
     event = MessageEvent(
         tentacle_id="im",
         message_id="m1",
@@ -322,12 +394,6 @@ async def test_octomate_kick_routes_reception_to_attached_channel_sub_thread() -
     octomate.connect_channel("im", cast(ChannelTentacle, source))
     octomate.connect_channel("ops", cast(ChannelTentacle, ops))
 
-    key = ConversationKey(
-        channel_tentacle_id="im",
-        chat_type="private",
-        chat_id="alice",
-        user_id="alice",
-    )
     event = MessageEvent(
         tentacle_id="im",
         message_id="m1",

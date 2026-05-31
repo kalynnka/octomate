@@ -12,6 +12,7 @@ from octomate.config import NapcatChannelConfig
 from octomate.tentacles.channel.base import ChannelTentacle
 from octomate.tentacles.channel.napcat.chromo import NapcatChromo
 from octomate.tentacles.channel.napcat.ink import NapcatInk
+from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -19,8 +20,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class NapcatTentacle(ChannelTentacle):
+class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
     octomate: Octomate
+    ink: NapcatInk
+    chromo: NapcatChromo
 
     ws_url: str
     ws_client: ClientConnection | None

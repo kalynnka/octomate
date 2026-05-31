@@ -8,7 +8,8 @@ from pydantic import TypeAdapter
 
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import DeferredQuestion
-from octomate.tentacles.channel.feelers import AskQuestionFeeler
+from octomate.tentacles.channel.feelers.deferred import QuestionFeeler
+from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.schema import (
     LarkOutboundMessage,
@@ -33,7 +34,7 @@ LarkQuestionActionsAdapter = TypeAdapter(list[DeferredQuestion])
 LarkQuestionActionValueAdapter = TypeAdapter(LarkQuestionActionValue)
 
 
-class LarkAskQuestionFeeler(AskQuestionFeeler):
+class LarkAskQuestionFeeler(QuestionFeeler):
     def __init__(self, ink: LarkInk) -> None:
         self.ink = ink
 
@@ -41,7 +42,7 @@ class LarkAskQuestionFeeler(AskQuestionFeeler):
         self,
         key: ConversationKey,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, str | None]:
+    ) -> dict[UUID, IMMessageID | None]:
         if not actions:
             return {}
         reply_to = key.thread_id if key.thread_id.startswith("om_") else None

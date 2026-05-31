@@ -7,13 +7,14 @@ from typing import Any
 
 import httpx
 from pydantic import SecretStr
+from slack_sdk.models.messages.chunk import Chunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.client import WebClient
 
 from octomate.schemas.segments import ImageSegment
-from octomate.tentacles.channel.base import DownloadedImage
-from octomate.tentacles.channel.markdown import MarkdownChunker
+from octomate.tentacles.channel.base import DownloadedImage, Ink
+from octomate.tentacles.channel.feelers.output import IMMessageID, MarkdownChunker
 from octomate.tentacles.channel.slack.schema import (
     SlackOutboundMessage,
     SlackPostMessageKwargs,
@@ -33,7 +34,7 @@ SLACK_MARKDOWN_TEXT_LIMIT = 12_000
 SLACK_MARKDOWN_CHUNKER = MarkdownChunker(limit=SLACK_MARKDOWN_TEXT_LIMIT)
 
 
-class SlackInk:
+class SlackInk(Ink[SlackOutboundMessage]):
     def __init__(self, bot_token: SecretStr) -> None:
         self.bot_token = bot_token
         token = bot_token.get_secret_value()
@@ -121,8 +122,8 @@ class SlackInk:
         messages: list[SlackOutboundMessage],
         reply_to: str | None = None,
         reply_in_thread: bool = False,
-    ) -> str | None:
-        first_msg_id: str | None = None
+    ) -> IMMessageID | None:
+        first_msg_id: IMMessageID | None = None
         thread_ts = reply_to
         for msg in messages:
             try:
@@ -158,6 +159,7 @@ class SlackInk:
         *,
         recipient_user_id: str | None = None,
         recipient_team_id: str | None = None,
+        task_display_mode: str | None = None,
     ) -> AsyncChatStream:
         return await self.client.chat_stream(
             buffer_size=STREAM_BUFFER_SIZE,
@@ -165,6 +167,7 @@ class SlackInk:
             thread_ts=thread_ts,
             recipient_user_id=recipient_user_id,
             recipient_team_id=recipient_team_id,
+            task_display_mode=task_display_mode,
         )
 
     async def append_stream(
@@ -176,6 +179,13 @@ class SlackInk:
             # `chunks=()` forces slack-sdk to flush its internal text buffer.
             await stream.append(markdown_text=chunk, chunks=())
 
+    async def append_stream_chunks(
+        self,
+        stream: AsyncChatStream,
+        chunks: list[Chunk],
+    ) -> None:
+        await stream.append(chunks=chunks)
+
     @asynccontextmanager
     async def open_stream(
         self,
@@ -184,12 +194,14 @@ class SlackInk:
         *,
         recipient_user_id: str | None = None,
         recipient_team_id: str | None = None,
+        task_display_mode: str | None = None,
     ) -> AsyncIterator[AsyncChatStream]:
         stream = await self.start_stream(
             channel,
             thread_ts,
             recipient_user_id=recipient_user_id,
             recipient_team_id=recipient_team_id,
+            task_display_mode=task_display_mode,
         )
         try:
             yield stream
@@ -204,7 +216,7 @@ class SlackInk:
         stream: AsyncChatStream,
         *,
         markdown_text: str | None = None,
-    ) -> str | None:
+    ) -> IMMessageID | None:
         if markdown_text and len(markdown_text) > SLACK_MARKDOWN_TEXT_LIMIT:
             await self.append_stream(stream, markdown_text)
             markdown_text = None
@@ -219,7 +231,7 @@ class SlackInk:
         *,
         recipient_user_id: str | None = None,
         recipient_team_id: str | None = None,
-    ) -> str | None:
+    ) -> IMMessageID | None:
         if len(markdown_text) > SLACK_MARKDOWN_TEXT_LIMIT:
             return await self.upload_markdown_file(
                 channel=channel,
@@ -241,7 +253,7 @@ class SlackInk:
         markdown_text: str,
         thread_ts: str | None = None,
         filename: str = LONG_MARKDOWN_FILENAME,
-    ) -> str | None:
+    ) -> IMMessageID | None:
         resp = await self.client.files_upload_v2(
             channel=channel,
             content=markdown_text,
