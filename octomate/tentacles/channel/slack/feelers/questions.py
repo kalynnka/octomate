@@ -11,10 +11,6 @@ from octomate.schemas.deferred import DeferredQuestion
 from octomate.tentacles.channel.feelers.deferred import QuestionFeeler
 from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
-from octomate.tentacles.channel.slack.feelers.cards import (
-    QUESTION_CARD_ICON,
-    card_block,
-)
 from octomate.tentacles.channel.slack.schema import (
     SlackBlock,
     SlackOutboundMessage,
@@ -81,26 +77,20 @@ def ask_question_blocks(
     choices = list(action.args.get("choices") or [])[:MAX_QUESTION_CHOICES]
     hint = action.args.get("hint") or ""
     saved = answers.get(action.id, "")
-    blocks: list[SlackBlock] = [
-        card_block(
-            title=f"*{action.args['question']}*",
-            icon=QUESTION_CARD_ICON,
-            subtitle=(
-                f"Questions {page + 1} of {len(actions)}" if len(actions) > 1 else ""
-            ),
-            body=f"*Hint:* {hint}" if hint else "",
-        )
-    ]
+    progress = f"Questions {page + 1} of {len(actions)}" if len(actions) > 1 else ""
+    question_label = question_input_label(action.args["question"])
+    blocks: list[SlackBlock] = []
+    if progress:
+        blocks.append(question_progress_block(progress))
     if choices:
         blocks.append(
-            {
-                "type": "input",
-                "block_id": "choice_block",
-                "dispatch_action": True,
-                "optional": True,
-                "element": choice_radio_buttons(choices, saved),
-                "label": {"type": "plain_text", "text": "Choose one"},
-            }
+            question_input_block(
+                block_id=question_choice_block_id(action),
+                label=question_label,
+                element=choice_radio_buttons(choices, saved),
+                hint=hint,
+                dispatch_action=True,
+            )
         )
     input_element: SlackBlock = {
         "type": "plain_text_input",
@@ -116,16 +106,12 @@ def ask_question_blocks(
     if saved and saved not in choices:
         input_element["initial_value"] = saved
     blocks.append(
-        {
-            "type": "input",
-            "block_id": "answer_block",
-            "optional": True,
-            "element": input_element,
-            "label": {
-                "type": "plain_text",
-                "text": "Other" if choices else "Answer",
-            },
-        }
+        question_input_block(
+            block_id=question_answer_block_id(action),
+            label="Other" if choices else question_label,
+            element=input_element,
+            hint="" if choices else hint,
+        )
     )
     nav: list[SlackBlock] = []
     if page > 0:
@@ -166,6 +152,39 @@ def ask_question_blocks(
     return blocks
 
 
+def question_progress_block(progress: str) -> SlackBlock:
+    return {
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": f"*{progress}*"},
+    }
+
+
+def question_input_label(question: object) -> str:
+    return str(question)
+
+
+def question_input_block(
+    *,
+    block_id: str,
+    label: str,
+    element: SlackBlock,
+    hint: object = "",
+    dispatch_action: bool = False,
+) -> SlackBlock:
+    block: SlackBlock = {
+        "type": "input",
+        "block_id": block_id,
+        "optional": True,
+        "element": element,
+        "label": {"type": "plain_text", "text": label},
+    }
+    if dispatch_action:
+        block["dispatch_action"] = True
+    if hint:
+        block["hint"] = {"type": "plain_text", "text": str(hint)}
+    return block
+
+
 def submitted_blocks(
     actions: list[DeferredQuestion],
     answers: dict[UUID, str] | None = None,
@@ -181,13 +200,22 @@ def submitted_blocks(
         for index, action in enumerate(actions, start=1)
     )
     return [
-        card_block(
-            title="Answers submitted",
-            icon=QUESTION_CARD_ICON,
-            subtitle=f"{count} {noun}",
-            body=summary,
-        )
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Answers submitted*\n_{count} {noun}_\n\n{summary}",
+            },
+        }
     ]
+
+
+def question_choice_block_id(action: DeferredQuestion) -> str:
+    return f"choice_block:{action.id}"
+
+
+def question_answer_block_id(action: DeferredQuestion) -> str:
+    return f"answer_block:{action.id}"
 
 
 def collect_current_answer(

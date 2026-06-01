@@ -62,6 +62,8 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     SlackQuestionActionsAdapter,
     ask_question_blocks,
     collect_current_answer,
+    question_answer_block_id,
+    question_choice_block_id,
 )
 from octomate.tentacles.channel.slack.schema import (
     SlackActionMessage,
@@ -479,17 +481,18 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     ]
 
     first_page = ask_question_blocks(actions)
-    assert first_page[0]["type"] == "card"
-    assert _json_object(first_page[0]["slack_icon"])["name"] == "comment"
-    assert _json_object(first_page[0]["title"])["text"] == "*Color?*"
-    assert _json_object(first_page[0]["subtitle"])["text"] == "Questions 1 of 2"
+    assert first_page[0]["type"] == "section"
+    assert _json_object(first_page[0]["text"])["text"] == "*Questions 1 of 2*"
     first_nav = _json_objects(first_page[-1]["elements"])
     assert first_nav[0]["action_id"] == (
         SlackBlockAction.ASK_QUESTION_NEXT.value
     )
     choice_block = next(
-        block for block in first_page if block.get("block_id") == "choice_block"
+        block
+        for block in first_page
+        if block.get("block_id") == question_choice_block_id(actions[0])
     )
+    assert _json_object(choice_block["label"])["text"] == "Color?"
     choice_element = _json_object(choice_block["element"])
     choice_options = _json_objects(choice_element["options"])
     assert [
@@ -498,7 +501,9 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     assert choice_block["dispatch_action"] is True
     assert choice_element["type"] == "radio_buttons"
     input_block = next(
-        block for block in first_page if block.get("block_id") == "answer_block"
+        block
+        for block in first_page
+        if block.get("block_id") == question_answer_block_id(actions[0])
     )
     assert _json_object(input_block["label"])["text"] == "Other"
     input_element = _json_object(input_block["element"])
@@ -511,7 +516,7 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     radio_answers = collect_current_answer(
         {
             "values": {
-                "choice_block": {
+                question_choice_block_id(actions[0]): {
                     SlackBlockAction.ASK_QUESTION_CHOICE.value: {
                         "selected_option": {"value": "green"}
                     }
@@ -526,12 +531,12 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     answers = collect_current_answer(
         {
             "values": {
-                "choice_block": {
+                question_choice_block_id(actions[0]): {
                     SlackBlockAction.ASK_QUESTION_CHOICE.value: {
                         "selected_option": {"value": "green"}
                     }
                 },
-                "answer_block": {
+                question_answer_block_id(actions[0]): {
                     SlackBlockAction.ASK_QUESTION_ANSWER.value: {"value": "typed blue"},
                 },
             }
@@ -542,6 +547,7 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     )
     assert answers == {actions[0].id: "typed blue"}
     second_page = ask_question_blocks(restored, page=1, answers=answers)
+    assert _json_object(second_page[0]["text"])["text"] == "*Questions 2 of 2*"
     second_nav = _json_objects(second_page[-1]["elements"])
     assert [button["action_id"] for button in second_nav] == [
         SlackBlockAction.ASK_QUESTION_BACK.value,
@@ -549,17 +555,73 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     ]
     restored_page = ask_question_blocks(restored, answers={actions[0].id: "green"})
     restored_choice = next(
-        block for block in restored_page if block.get("block_id") == "choice_block"
+        block
+        for block in restored_page
+        if block.get("block_id") == question_choice_block_id(actions[0])
     )
     restored_element = _json_object(restored_choice["element"])
     assert _json_object(restored_element["initial_option"])["value"] == "green"
     only_page = ask_question_blocks([actions[0]])
-    assert _json_object(only_page[0]["title"])["text"] == "*Color?*"
-    assert "subtitle" not in only_page[0]
+    assert _json_object(only_page[0]["label"])["text"] == "Color?"
     only_nav = _json_objects(only_page[-1]["elements"])
     assert [button["action_id"] for button in only_nav] == [
         SlackBlockAction.ASK_QUESTION_SUBMIT.value
     ]
+
+
+def test_slack_question_pages_use_distinct_input_blocks() -> None:
+    first = _question(question="Snack?", choices=["chips", "cookies"])
+    second = _question(
+        batch_id=_batch_id(first),
+        question="Ocean mood?",
+        choices=["Calm Coral Reef", "Exciting Open Ocean"],
+        position=1,
+    )
+
+    first_page = ask_question_blocks([first, second], answers={first.id: "chips"})
+    second_page = ask_question_blocks(
+        [first, second],
+        page=1,
+        answers={first.id: "chips"},
+    )
+
+    assert {
+        block.get("block_id")
+        for block in first_page[:-1]
+        if block.get("type") == "input"
+    } == {
+        question_choice_block_id(first),
+        question_answer_block_id(first),
+    }
+    assert {
+        block.get("block_id")
+        for block in second_page[:-1]
+        if block.get("type") == "input"
+    } == {
+        question_choice_block_id(second),
+        question_answer_block_id(second),
+    }
+    assert all(block.get("type") != "card" for block in first_page)
+    assert all("slack_icon" not in block for block in first_page)
+    second_choice = next(
+        block
+        for block in second_page
+        if block.get("block_id") == question_choice_block_id(second)
+    )
+    second_answer = next(
+        block
+        for block in second_page
+        if block.get("block_id") == question_answer_block_id(second)
+    )
+    second_label = _json_object(second_choice["label"])["text"]
+    assert _json_object(second_page[0]["text"])["text"] == "*Questions 2 of 2*"
+    assert second_label == "Ocean mood?"
+    second_options = _json_objects(_json_object(second_choice["element"])["options"])
+    assert [
+        _json_object(option["text"])["text"] for option in second_options
+    ] == ["Calm Coral Reef", "Exciting Open Ocean"]
+    assert "initial_option" not in _json_object(second_choice["element"])
+    assert "initial_value" not in _json_object(second_answer["element"])
 
 
 @dataclass
@@ -654,7 +716,7 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
             value=json.dumps(submit_state),
             state={
                 "values": {
-                    "answer_block": {
+                    question_answer_block_id(questions[0]): {
                         SlackBlockAction.ASK_QUESTION_ANSWER.value: {"value": "yes"}
                     }
                 }
@@ -745,7 +807,7 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
             value=json.dumps(submit_state),
             state={
                 "values": {
-                    "choice_block": {
+                    question_choice_block_id(question): {
                         SlackBlockAction.ASK_QUESTION_CHOICE.value: {
                             "selected_option": {"value": "Kelp Forest"}
                         }
@@ -760,7 +822,7 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
         responder_id="U2",
         answers={question.id: "Kelp Forest"},
     )
-    submitted_text = _json_object(ink.updates[0][3][0]["body"])["text"]
+    submitted_text = _json_object(ink.updates[0][3][0]["text"])["text"]
     assert isinstance(submitted_text, str)
     assert "Ocean zone?" in submitted_text
     assert "Kelp Forest" in submitted_text
@@ -790,7 +852,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
             action_id=SlackBlockAction.ASK_QUESTION_CHOICE.value,
             state={
                 "values": {
-                    "choice_block": {
+                    question_choice_block_id(first): {
                         SlackBlockAction.ASK_QUESTION_CHOICE.value: {
                             "selected_option": {"value": "Kelp Forest"}
                         }
@@ -802,7 +864,13 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
     )
 
     page_block = ink.updates[0][3][0]
-    assert _json_object(page_block["subtitle"])["text"] == "Questions 2 of 2"
+    assert _json_object(page_block["text"])["text"] == "*Questions 2 of 2*"
+    page_answer = next(
+        block
+        for block in ink.updates[0][3]
+        if block.get("block_id") == question_answer_block_id(second)
+    )
+    assert _json_object(page_answer["label"])["text"] == "Why?"
     page_buttons = _json_objects(ink.updates[0][3][-1]["elements"])
     back_button = page_buttons[0]
     await channel.on_question_nav(
@@ -812,7 +880,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
             value=_json_string(back_button["value"]),
             state={
                 "values": {
-                    "answer_block": {
+                    question_answer_block_id(second): {
                         SlackBlockAction.ASK_QUESTION_ANSWER.value: {
                             "value": "I like kelp"
                         }
@@ -823,7 +891,9 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
     )
 
     choice_block = next(
-        block for block in ink.updates[1][3] if block.get("block_id") == "choice_block"
+        block
+        for block in ink.updates[1][3]
+        if block.get("block_id") == question_choice_block_id(first)
     )
     choice_element = _json_object(choice_block["element"])
     assert _json_object(choice_element["initial_option"])["value"] == "Kelp Forest"
@@ -833,7 +903,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
             action_id=SlackBlockAction.ASK_QUESTION_CHOICE.value,
             state={
                 "values": {
-                    "choice_block": {
+                    question_choice_block_id(first): {
                         SlackBlockAction.ASK_QUESTION_CHOICE.value: {
                             "selected_option": {"value": "Coral Reef"}
                         }
@@ -856,7 +926,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
             value=_json_string(submit_button["value"]),
             state={
                 "values": {
-                    "answer_block": {
+                    question_answer_block_id(second): {
                         SlackBlockAction.ASK_QUESTION_ANSWER.value: {
                             "value": "I like reefs"
                         }
@@ -871,7 +941,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
         responder_id="U2",
         answers={first.id: "Coral Reef", second.id: "I like reefs"},
     )
-    submitted_text = _json_object(ink.updates[3][3][0]["body"])["text"]
+    submitted_text = _json_object(ink.updates[3][3][0]["text"])["text"]
     assert isinstance(submitted_text, str)
     assert "Ocean zone?" in submitted_text
     assert "Coral Reef" in submitted_text
