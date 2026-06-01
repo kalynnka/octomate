@@ -41,10 +41,12 @@ class ChannelStreamConfig(BaseModel):
 
 
 class SlackStreamConfig(ChannelStreamConfig):
+    enabled: bool = True
     flush_interval: float = 0.0
 
 
 class LarkStreamConfig(ChannelStreamConfig):
+    enabled: bool = True
     flush_interval: float = 0.2
     min_chars: int = 1
 

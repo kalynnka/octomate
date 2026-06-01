@@ -14,10 +14,6 @@ from octomate.schemas.deferred import (
 from octomate.tentacles.channel.feelers.deferred import ApprovalFeeler
 from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
-from octomate.tentacles.channel.slack.feelers.cards import (
-    APPROVAL_CARD_ICON,
-    card_block,
-)
 from octomate.tentacles.channel.slack.schema import (
     SlackApprovalActionValue,
     SlackBlock,
@@ -28,8 +24,8 @@ if TYPE_CHECKING:
     from octomate.tentacles.channel.slack.ink import SlackInk
 
 
-ACTION_CARD_FIELDS = {"kind", "tool_name", "args"}
-ACTION_CARD_JSON_LIMIT = 2000
+ACTION_REQUEST_FIELDS = {"kind", "tool_name", "args"}
+ACTION_REQUEST_JSON_LIMIT = 2000
 APPROVAL_STATE_FIELDS = {
     "id",
     "batch_id",
@@ -85,12 +81,12 @@ def approval_blocks(
         action,
         indent=2,
         ensure_ascii=False,
-        include=ACTION_CARD_FIELDS,
+        include=ACTION_REQUEST_FIELDS,
         exclude_defaults=True,
         exclude_none=True,
     ).decode()
-    if len(request_json) > ACTION_CARD_JSON_LIMIT:
-        request_json = request_json[:ACTION_CARD_JSON_LIMIT] + "\n... (truncated)"
+    if len(request_json) > ACTION_REQUEST_JSON_LIMIT:
+        request_json = request_json[:ACTION_REQUEST_JSON_LIMIT] + "\n... (truncated)"
     title = action.args.title or "Permission Required"
     description = action.args.description
     progress = (
@@ -102,12 +98,8 @@ def approval_blocks(
         else f"*Request:*\n```{request_json}```"
     )
     return [
-        card_block(
-            title=f"*{title}: `{action.tool_name}`*",
-            icon=APPROVAL_CARD_ICON,
-            subtitle=progress,
-            body=body,
-        ),
+        approval_progress_block(progress),
+        approval_request_block(title, action.tool_name, body),
         {"type": "divider"},
         {
             "type": "actions",
@@ -142,7 +134,9 @@ def approval_submitted_blocks(
     count = len(actions)
     noun = "approval" if count == 1 else "approvals"
     decisions = decisions or {}
-    byline = f"\n*By:* <@{responder_id}>" if responder_id else ""
+    metadata = f"_{count} {noun}_"
+    if responder_id:
+        metadata = f"{metadata}\n*By:* <@{responder_id}>"
     summary = "\n".join(
         (
             f"*{index}. `{action.tool_name}`* - "
@@ -152,13 +146,31 @@ def approval_submitted_blocks(
         if action.id in decisions
     )
     return [
-        card_block(
-            title="Approvals handled",
-            icon=APPROVAL_CARD_ICON,
-            subtitle=f"{count} {noun}{byline}",
-            body=summary,
-        )
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Approvals handled*\n{metadata}\n\n{summary}",
+            },
+        }
     ]
+
+
+def approval_progress_block(progress: str) -> SlackBlock:
+    return {
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": f"*{progress}*"},
+    }
+
+
+def approval_request_block(title: str, tool_name: str, body: str) -> SlackBlock:
+    return {
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": f"*{title}: `{tool_name}`*\n\n{body}",
+        },
+    }
 
 
 def approval_button(

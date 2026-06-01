@@ -419,7 +419,7 @@ class FakeSlackInk:
             self.events.append("update")
 
 
-async def test_slack_feelers_send_approval_and_question_cards() -> None:
+async def test_slack_feelers_send_approval_and_question_blocks() -> None:
     ink = FakeSlackInk()
     key = _key("slack")
     approval = _approval()
@@ -449,10 +449,14 @@ async def test_slack_feelers_send_approval_and_question_cards() -> None:
     approval_msg = ink.sent[0][2][0]
     assert approval_msg.text == "Octomate needs 2 approvals"
     assert approval_msg.blocks is not None
-    approval_card = approval_msg.blocks[0]
-    assert approval_card["type"] == "card"
-    assert _json_object(approval_card["slack_icon"])["name"] == "check"
-    assert _json_object(approval_card["subtitle"])["text"] == "Approvals 1 of 2"
+    assert all(block.get("type") != "card" for block in approval_msg.blocks)
+    assert all("slack_icon" not in block for block in approval_msg.blocks)
+    approval_progress = _json_object(approval_msg.blocks[0]["text"])["text"]
+    assert approval_progress == "*Approvals 1 of 2*"
+    approval_request = _json_object(approval_msg.blocks[1]["text"])["text"]
+    assert isinstance(approval_request, str)
+    assert "*Permission Required: `shell`*" in approval_request
+    assert "*Request:*" in approval_request
     approval_buttons = _json_objects(approval_msg.blocks[-1]["elements"])
     approval_value = _loaded_json_object(_json_string(approval_buttons[0]["value"]))
     assert approval_buttons[0]["action_id"] == (
@@ -703,9 +707,10 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
         approvals={approval.id: True},
     )
     assert ink.updates[0][0:3] == ("C1", "111.222", "Approvals handled")
-    approval_summary = _json_object(ink.updates[0][3][0]["body"])["text"]
+    approval_summary = _json_object(ink.updates[0][3][0]["text"])["text"]
     assert isinstance(approval_summary, str)
     assert "shell" in approval_summary
+    assert "*By:* <@U1>" in approval_summary
 
     question_buttons = _json_objects(ask_question_blocks(questions)[-1]["elements"])
     submit_state = _loaded_json_object(_json_string(question_buttons[0]["value"]))
@@ -733,7 +738,7 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
     assert events[-2:] == ["update", "kick"]
 
 
-async def test_slack_approval_card_advances_through_multiple_approvals() -> None:
+async def test_slack_approval_blocks_advance_through_multiple_approvals() -> None:
     ink = FakeSlackInk()
     octomate = FakeOctomate()
     channel = object.__new__(SlackTentacle)
@@ -759,8 +764,9 @@ async def test_slack_approval_card_advances_through_multiple_approvals() -> None
         approvals={first.id: True},
     )
     assert ink.updates[0][0:3] == ("C1", "111.222", "Octomate needs 2 approvals")
-    assert _json_object(ink.updates[0][3][0]["subtitle"])["text"] == (
-        "Approvals 2 of 2"
+    assert (
+        _json_object(ink.updates[0][3][0]["text"])["text"]
+        == "*Approvals 2 of 2*"
     )
 
     deny_buttons = _json_objects(ink.updates[0][3][-1]["elements"])
@@ -779,7 +785,7 @@ async def test_slack_approval_card_advances_through_multiple_approvals() -> None
         approvals={second.id: False},
     )
     assert ink.updates[1][0:3] == ("C1", "111.222", "Approvals handled")
-    summary = _json_object(ink.updates[1][3][0]["body"])["text"]
+    summary = _json_object(ink.updates[1][3][0]["text"])["text"]
     assert isinstance(summary, str)
     assert "Approved" in summary
     assert "Denied" in summary
