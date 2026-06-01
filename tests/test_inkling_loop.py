@@ -12,7 +12,7 @@ import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 
-from pydantic_ai import Agent, AgentRunResultEvent
+from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     AgentStreamEvent,
     ModelMessage,
@@ -26,17 +26,24 @@ from pydantic_ai.models.function import (
     FunctionModel,
 )
 from pydantic_ai.tools import DeferredToolRequests
+from pydantic_graph import Graph
 
+from octomate import Octomate
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.tentacles.agent.graph import (
     ReactDeps,
     ReactState,
-    react_graph,
 )
-from octomate.tentacles.agent.graph.react import StartTurn
+from octomate.tentacles.agent.graph.react import (
+    ResolveDeferred,
+    ResumeTurn,
+    RunAgent,
+    StartTurn,
+)
 from octomate.tentacles.agent.inkling import InklingTentacle, inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
+from octomate.types.json import JsonObject
 
 InklingTestOutput = str | DeferredToolRequests
 InklingTestEvent = AgentStreamEvent | AgentRunResultEvent[InklingTestOutput]
@@ -47,7 +54,7 @@ class ScriptedTurn:
     """One turn of the conversation: one tool call to emit as a streamed delta."""
 
     tool_name: str
-    args: dict[str, object]
+    args: JsonObject
     tool_call_id: str
 
 
@@ -184,7 +191,12 @@ async def test_inkling_loop_emits_deferred_question_batch() -> None:
 
     captured_events: list[InklingTestEvent] = []
     conversations = FakeConversationManager()
-    tentacle = InklingTentacle(agent=agent, conversation_manager=conversations)
+    tentacle = InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=agent,
+        conversation_manager=conversations,
+    )
     async with tentacle.run_stream_events(
         "hi octomate",
         conversation_key=_test_conversation_key(),
@@ -217,9 +229,12 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
             "all done!",
         ]
     )
+    conversations = FakeConversationManager()
     tentacle = InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
         agent=agent,
-        conversation_manager=FakeConversationManager(),
+        conversation_manager=conversations,
     )
 
     captured_events: list[InklingTestEvent] = []
@@ -243,12 +258,21 @@ async def test_inkling_loop_handles_immediate_final_response() -> None:
 
     agent = _build_non_stream_agent()
 
-    deps = ReactDeps(
+    deps = ReactDeps[InklingTestOutput, None](
         agent=agent,
         conversation_manager=FakeConversationManager(),
+        agent_deps=None,
+    )
+    graph: Graph[
+        ReactState,
+        ReactDeps[InklingTestOutput, None],
+        AgentRunResult[InklingTestOutput],
+    ] = Graph(
+        nodes=[StartTurn, ResumeTurn, RunAgent, ResolveDeferred],
+        name="react",
     )
 
-    result = await react_graph.run(
+    result = await graph.run(
         StartTurn(user_prompt="just say done"),
         state=ReactState(conversation=_test_conversation()),
         deps=deps,

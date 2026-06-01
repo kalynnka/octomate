@@ -6,10 +6,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Generic, TypeVar, cast
+from types import TracebackType
+from typing import Generic, TypeVar, cast
 
+import httpx
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     AgentStreamEvent,
@@ -26,9 +28,16 @@ from pydantic_ai.tools import DeferredToolRequests
 from slack_sdk.models.messages.chunk import TaskUpdateChunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
+from websockets.asyncio.client import ClientConnection
 
-from octomate.config import ChannelConfig, ChannelStreamConfig
-from octomate.schemas.conversation import ConversationKey, UserProfile
+from octomate import Octomate
+from octomate.config import (
+    LarkChannelConfig,
+    LarkStreamConfig,
+    SlackChannelConfig,
+    SlackStreamConfig,
+)
+from octomate.schemas.conversation import Conversation, ConversationKey, UserProfile
 from octomate.schemas.segments import AtSegment, ImageSegment, ReplySegment, TextSegment
 from octomate.tentacles.channel.base import DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
@@ -61,8 +70,10 @@ from octomate.tentacles.channel.slack.output import (
     SlackMarkdownStreamFeeler,
 )
 from octomate.tentacles.channel.slack.schema import SlackOutboundMessage
+from octomate.types.json import JsonObject
 
 StreamOutputT = TypeVar("StreamOutputT", bound=str | DeferredToolRequests | None)
+JsonObjectAdapter = TypeAdapter(JsonObject)
 
 
 @dataclass
@@ -114,6 +125,10 @@ def streamed_result(
             fail_text_stream=fail_text_stream,
         ),
     )
+
+
+def _loaded_json_object(value: str) -> JsonObject:
+    return JsonObjectAdapter.validate_json(value)
 
 
 def test_channel_thread_strategies_are_declared() -> None:
@@ -233,7 +248,10 @@ async def test_napcat_chromo_renders_structured_output_as_plain_json() -> None:
     chromo = NapcatChromo()
 
     messages = chromo.squirt(AgentRunResult(Answer(ok=True, count=2)))
-    text = messages[0].segments[0]["data"]["text"]
+    data = messages[0].segments[0]["data"]
+    assert isinstance(data, dict)
+    text = data["text"]
+    assert isinstance(text, str)
 
     assert text.startswith("{")
     assert '"ok": true' in text
@@ -256,28 +274,31 @@ async def test_napcat_chromo_renders_deferred_requests_as_plain_text() -> None:
             )
         )
     )
-    text = messages[0].segments[0]["data"]["text"]
+    data = messages[0].segments[0]["data"]
+    assert isinstance(data, dict)
+    text = data["text"]
+    assert isinstance(text, str)
 
     assert "ask_user needs input" in text
     assert "call_1" in text
 
 
 class FakeNapcatResponse:
-    def __init__(self, data: dict[str, object] | None = None) -> None:
+    def __init__(self, data: JsonObject | None = None) -> None:
         self._data = data or {"data": {"message_id": "msg-1"}}
 
     def raise_for_status(self) -> None:
         return None
 
-    def json(self) -> dict[str, object]:
+    def json(self) -> JsonObject:
         return self._data
 
 
 class FakeNapcatHTTP:
     def __init__(self) -> None:
-        self.posts: list[tuple[str, dict[str, object]]] = []
+        self.posts: list[tuple[str, JsonObject]] = []
 
-    async def post(self, endpoint: str, json: dict[str, object]) -> FakeNapcatResponse:
+    async def post(self, endpoint: str, json: JsonObject) -> FakeNapcatResponse:
         self.posts.append((endpoint, json))
         return FakeNapcatResponse()
 
@@ -285,7 +306,7 @@ class FakeNapcatHTTP:
 async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
     http = FakeNapcatHTTP()
     ink = object.__new__(NapcatInk)
-    cast(Any, ink).httpx = http
+    ink.httpx = cast(httpx.AsyncClient, http)
     message = NapcatOutboundMessage(
         segments=[{"type": "text", "data": {"text": "hello"}}]
     )
@@ -313,9 +334,9 @@ async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
 
 async def test_napcat_tentacle_sense_invokes_ingest() -> None:
     channel = object.__new__(NapcatTentacle)
-    calls: list[object] = []
+    calls: list[str | bytes] = []
 
-    async def ingest(raw: object) -> None:
+    async def ingest(raw: str | bytes) -> None:
         calls.append(raw)
 
     class FakeWS:
@@ -326,15 +347,15 @@ async def test_napcat_tentacle_sense_invokes_ingest() -> None:
             yield "event-1"
             yield "event-2"
 
-    cast(Any, channel).ingest = ingest
+    channel.ingest = ingest
 
-    await channel.sense(cast(Any, FakeWS()))
+    await channel.sense(cast(ClientConnection, FakeWS()))
 
     assert calls == ["event-1", "event-2"]
 
 
 async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
-    calls: list[dict[str, object]] = []
+    calls: list[tuple[str, dict[str, str] | None]] = []
     channel = object.__new__(NapcatTentacle)
     channel.id = "napcat"
     channel.ws_url = "ws://napcat"
@@ -347,15 +368,20 @@ async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
 
     class FakeConnect:
         def __init__(self, url: str, additional_headers: dict[str, str] | None) -> None:
-            calls.append({"url": url, "additional_headers": additional_headers})
+            calls.append((url, additional_headers))
 
-        async def __aenter__(self) -> object:
-            return object()
+        async def __aenter__(self) -> ClientConnection:
+            return cast(ClientConnection, SimpleNamespace())
 
-        async def __aexit__(self, *args: object) -> None:
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
             return None
 
-    async def sense(ws: object) -> None:
+    async def sense(ws: ClientConnection) -> None:
         assert channel.stop_event is not None
         channel.stop_event.set()
 
@@ -368,10 +394,7 @@ async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
     await channel.activate()
 
     assert calls == [
-        {
-            "url": "ws://napcat",
-            "additional_headers": {"Authorization": "Bearer token"},
-        }
+        ("ws://napcat", {"Authorization": "Bearer token"}),
     ]
 
 
@@ -379,31 +402,30 @@ def _lark_raw(
     *,
     message_type: str,
     chat_type: str,
-    content: dict[str, Any],
-    mentions: list[Any] | None = None,
+    content: JsonObject,
+    mentions: list[JsonObject] | None = None,
     chat_id: str = "oc_group",
     sender_id: str = "ou_sender",
     message_id: str = "om_message",
     thread_id: str = "",
     parent_id: str = "",
 ) -> P2ImMessageReceiveV1:
-    return cast(
-        P2ImMessageReceiveV1,
-        SimpleNamespace(
-            event=SimpleNamespace(
-                message=SimpleNamespace(
-                    message_type=message_type,
-                    chat_type=chat_type,
-                    content=json.dumps(content),
-                    mentions=mentions,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    thread_id=thread_id,
-                    parent_id=parent_id,
-                ),
-                sender=SimpleNamespace(sender_id=SimpleNamespace(open_id=sender_id)),
-            )
-        ),
+    return P2ImMessageReceiveV1(
+        {
+            "event": {
+                "message": {
+                    "message_type": message_type,
+                    "chat_type": chat_type,
+                    "content": json.dumps(content),
+                    "mentions": mentions,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "thread_id": thread_id,
+                    "parent_id": parent_id,
+                },
+                "sender": {"sender_id": {"open_id": sender_id}},
+            }
+        }
     )
 
 
@@ -414,11 +436,11 @@ async def test_lark_chromo_decodes_text_mentions_and_reply_metadata() -> None:
         chat_type="group",
         content={"text": "hello @user world"},
         mentions=[
-            SimpleNamespace(
-                key="@user",
-                id=SimpleNamespace(open_id="ou_mentioned"),
-                name="Mentioned User",
-            )
+            {
+                "key": "@user",
+                "id": {"open_id": "ou_mentioned"},
+                "name": "Mentioned User",
+            }
         ],
         thread_id="omt_thread",
         parent_id="om_parent",
@@ -507,6 +529,18 @@ async def test_lark_chromo_decodes_post_content() -> None:
     assert image_seg.data.file == "img_post"
 
 
+def test_lark_chromo_treats_invalid_or_non_object_content_as_text() -> None:
+    chromo = LarkChromo()
+
+    for content_json in ("{bad json", '["not", "an", "object"]'):
+        segments = chromo.parse_segments("text", content_json, None)
+
+        assert len(segments) == 1
+        text_segment = segments[0]
+        assert isinstance(text_segment, TextSegment)
+        assert text_segment.data["text"] == content_json
+
+
 async def test_lark_chromo_renders_final_text_as_interactive_markdown() -> None:
     chromo = LarkChromo()
 
@@ -514,7 +548,7 @@ async def test_lark_chromo_renders_final_text_as_interactive_markdown() -> None:
 
     assert len(messages) == 1
     assert messages[0].msg_type == "interactive"
-    content = json.loads(messages[0].content)
+    content = _loaded_json_object(messages[0].content)
     assert content["body"]["elements"] == [
         {"tag": "markdown", "content": "hello **lark**"}
     ]
@@ -523,13 +557,21 @@ async def test_lark_chromo_renders_final_text_as_interactive_markdown() -> None:
 async def test_lark_chromo_builds_streaming_card_payload() -> None:
     chromo = LarkChromo()
 
-    data = json.loads(chromo.make_stream_card_data("hello"))
+    data = _loaded_json_object(chromo.make_stream_card_data("hello"))
     message = chromo.make_stream_card_message("card-1")
 
     assert data["schema"] == "2.0"
-    assert data["config"]["streaming_mode"] is True
-    assert data["config"]["streaming_config"]["print_frequency_ms"]["default"] == 20
-    assert data["config"]["streaming_config"]["print_step"]["default"] == 12
+    config = data["config"]
+    assert isinstance(config, dict)
+    assert config["streaming_mode"] is True
+    streaming_config = config["streaming_config"]
+    assert isinstance(streaming_config, dict)
+    print_frequency = streaming_config["print_frequency_ms"]
+    assert isinstance(print_frequency, dict)
+    print_step = streaming_config["print_step"]
+    assert isinstance(print_step, dict)
+    assert print_frequency["default"] == 20
+    assert print_step["default"] == 12
     assert data["body"]["elements"] == [
         {
             "tag": "markdown",
@@ -537,7 +579,7 @@ async def test_lark_chromo_builds_streaming_card_payload() -> None:
             "element_id": "octomate_answer",
         }
     ]
-    assert json.loads(message.content) == {
+    assert _loaded_json_object(message.content) == {
         "type": "card",
         "data": {"card_id": "card-1"},
     }
@@ -551,8 +593,15 @@ async def test_lark_chromo_renders_structured_output_as_json_card() -> None:
     chromo = LarkChromo()
 
     messages = chromo.squirt(AgentRunResult(Answer(ok=True, count=2)))
-    content = json.loads(messages[0].content)
-    markdown = content["body"]["elements"][0]["content"]
+    content = _loaded_json_object(messages[0].content)
+    body = content["body"]
+    assert isinstance(body, dict)
+    elements = body["elements"]
+    assert isinstance(elements, list)
+    first_element = elements[0]
+    assert isinstance(first_element, dict)
+    markdown = first_element["content"]
+    assert isinstance(markdown, str)
 
     assert markdown.startswith("```json")
     assert '"ok": true' in markdown
@@ -575,8 +624,15 @@ async def test_lark_chromo_renders_deferred_requests_as_markdown_card() -> None:
             )
         )
     )
-    content = json.loads(messages[0].content)
-    markdown = content["body"]["elements"][0]["content"]
+    content = _loaded_json_object(messages[0].content)
+    body = content["body"]
+    assert isinstance(body, dict)
+    elements = body["elements"]
+    assert isinstance(elements, list)
+    first_element = elements[0]
+    assert isinstance(first_element, dict)
+    markdown = first_element["content"]
+    assert isinstance(markdown, str)
 
     assert "`ask_user` needs input" in markdown
     assert "`call_1`" in markdown
@@ -711,37 +767,40 @@ def _lark_channel(ink: FakeLarkInk) -> LarkTentacle:
     channel.id = "lark"
     channel.ink = ink
     channel.chromo = LarkChromo()
-    channel.config = ChannelConfig(
-        type="lark",
-        stream=ChannelStreamConfig(flush_interval=0.2, min_chars=1),
+    channel.config = LarkChannelConfig(
+        app_id="cli-test",
+        app_secret=SecretStr("secret"),
+        stream=LarkStreamConfig(flush_interval=0.2, min_chars=1),
     )
     _compose_lark_feelers(channel)
     return channel
 
 
 def _enable_lark_stream(channel: LarkTentacle, *, interval: float = 0.2) -> None:
-    channel.config.stream = ChannelStreamConfig(flush_interval=interval, min_chars=1)
+    channel.config.stream = LarkStreamConfig(flush_interval=interval, min_chars=1)
     _compose_lark_feelers(channel)
 
 
 def _compose_lark_feelers(channel: LarkTentacle) -> None:
-    markdown_feeler = LarkMarkdownFeeler(ink=channel.ink, chromo=channel.chromo)
+    ink = channel.ink
+    chromo = channel.chromo
+    markdown_feeler = LarkMarkdownFeeler(ink=ink, chromo=chromo)
     channel.feelers = Feelers(
         markdown=markdown_feeler,
         markdown_stream=LarkMarkdownStreamFeeler(
-            ink=channel.ink,
-            chromo=channel.chromo,
+            ink=ink,
+            chromo=chromo,
             stream_config=channel.config.stream,
             markdown_feeler=markdown_feeler,
             channel_id=channel.id,
         ),
         event_stream=LarkEventStreamFeeler(
-            ink=channel.ink,
+            ink=ink,
             markdown_feeler=markdown_feeler,
             channel_id=channel.id,
         ),
-        approvals=LarkApprovalFeeler(channel.ink),
-        ask_questions=LarkAskQuestionFeeler(channel.ink),
+        approvals=LarkApprovalFeeler(ink),
+        ask_questions=LarkAskQuestionFeeler(ink),
     )
 
 
@@ -825,7 +884,10 @@ async def test_lark_tentacle_streams_batched_card_updates_in_reply_thread() -> N
     )
 
     assert len(ink.stream_cards) == 1
-    assert json.loads(ink.stream_cards[0][0])["config"]["streaming_mode"] is True
+    stream_data = _loaded_json_object(ink.stream_cards[0][0])
+    stream_config = stream_data["config"]
+    assert isinstance(stream_config, dict)
+    assert stream_config["streaming_mode"] is True
     assert ink.stream_messages == [
         (
             "oc_group",
@@ -959,8 +1021,11 @@ async def test_lark_event_stream_feeler_updates_answer_and_detail_elements() -> 
 
     assert message_id == "stream-1"
     assert len(ink.stream_cards) == 1
-    card_payload = json.loads(ink.stream_cards[0][0])
-    elements = card_payload["body"]["elements"]
+    card_payload = _loaded_json_object(ink.stream_cards[0][0])
+    body = card_payload["body"]
+    assert isinstance(body, dict)
+    elements = body["elements"]
+    assert isinstance(elements, list)
     assert elements[0]["element_id"] == LARK_EVENT_ANSWER_ELEMENT_ID
     assert elements[1]["tag"] == "collapsible_panel"
     assert elements[1]["elements"][0]["element_id"] == LARK_EVENT_DETAILS_ELEMENT_ID
@@ -981,17 +1046,17 @@ async def test_lark_event_stream_feeler_updates_answer_and_detail_elements() -> 
 
 async def test_lark_tentacle_message_callback_invokes_ingest() -> None:
     channel = object.__new__(LarkTentacle)
-    raw = object()
-    calls: list[object] = []
+    raw = P2ImMessageReceiveV1()
+    calls: list[P2ImMessageReceiveV1] = []
     done = asyncio.Event()
 
-    async def ingest(raw: object) -> None:
+    async def ingest(raw: P2ImMessageReceiveV1) -> None:
         calls.append(raw)
         done.set()
 
     channel.ingest = ingest
 
-    channel.sense(cast(Any, raw))
+    channel.sense(raw)
     await asyncio.wait_for(done.wait(), timeout=1)
 
     assert calls == [raw]
@@ -1210,33 +1275,37 @@ def _slack_channel(ink: FakeSlackInk) -> SlackTentacle:
     channel.id = "slack"
     channel.ink = cast(SlackInkType, ink)
     channel.chromo = SlackChromo()
-    channel.config = ChannelConfig(
-        type="slack",
-        stream=ChannelStreamConfig(flush_interval=0),
+    channel.config = SlackChannelConfig(
+        app_id="A-test",
+        bot_token=SecretStr("xoxb-test"),
+        app_token=SecretStr("xapp-test"),
+        stream=SlackStreamConfig(flush_interval=0),
     )
     _compose_slack_feelers(channel)
     return channel
 
 
 def _compose_slack_feelers(channel: SlackTentacle) -> None:
-    markdown_feeler = DefaultMarkdownFeeler(ink=channel.ink, chromo=channel.chromo)
+    ink = cast(SlackInkType, channel.ink)
+    chromo = cast(SlackChromo, channel.chromo)
+    markdown_feeler = DefaultMarkdownFeeler(ink=ink, chromo=chromo)
     channel.feelers = Feelers(
         markdown=markdown_feeler,
         markdown_stream=SlackMarkdownStreamFeeler(
-            ink=channel.ink,
-            chromo=channel.chromo,
+            ink=ink,
+            chromo=chromo,
             stream_config=channel.config.stream,
             markdown_feeler=markdown_feeler,
             channel_id=channel.id,
         ),
         event_stream=SlackEventStreamFeeler(
-            ink=channel.ink,
-            chromo=channel.chromo,
+            ink=ink,
+            chromo=chromo,
             markdown_feeler=markdown_feeler,
             channel_id=channel.id,
         ),
-        approvals=SlackApprovalFeeler(channel.ink),
-        ask_questions=SlackAskQuestionFeeler(channel.ink),
+        approvals=SlackApprovalFeeler(ink),
+        ask_questions=SlackAskQuestionFeeler(ink),
     )
 
 
@@ -1275,7 +1344,7 @@ async def test_slack_tentacle_streams_text_deltas_in_source_thread() -> None:
 async def test_slack_tentacle_can_batch_stream_deltas_when_configured() -> None:
     ink = FakeSlackInk()
     channel = _slack_channel(ink)
-    channel.config.stream = ChannelStreamConfig(flush_interval=999, min_chars=100)
+    channel.config.stream = SlackStreamConfig(flush_interval=999, min_chars=100)
     _compose_slack_feelers(channel)
 
     await channel.feelers.markdown_stream.present(
@@ -1403,15 +1472,53 @@ async def test_slack_tentacle_closes_open_stream_on_append_error() -> None:
 
 class FakeSlackClient:
     def __init__(self) -> None:
-        self.streams: list[dict[str, object]] = []
-        self.uploads: list[dict[str, object]] = []
+        self.streams: list[JsonObject] = []
+        self.uploads: list[JsonObject] = []
 
-    async def chat_stream(self, **kwargs: object) -> object:
-        self.streams.append(kwargs)
-        return object()
+    async def chat_stream(
+        self,
+        *,
+        buffer_size: int,
+        channel: str,
+        thread_ts: str,
+        recipient_user_id: str | None = None,
+        recipient_team_id: str | None = None,
+        task_display_mode: str | None = None,
+    ) -> AsyncChatStream:
+        self.streams.append(
+            {
+                "buffer_size": buffer_size,
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "recipient_user_id": recipient_user_id,
+                "recipient_team_id": recipient_team_id,
+                "task_display_mode": task_display_mode,
+            }
+        )
+        return cast(AsyncChatStream, SimpleNamespace())
 
-    async def files_upload_v2(self, **kwargs: object) -> dict[str, object]:
-        self.uploads.append(kwargs)
+    async def files_upload_v2(
+        self,
+        *,
+        channel: str,
+        content: str,
+        filename: str,
+        title: str,
+        snippet_type: str,
+        initial_comment: str,
+        thread_ts: str | None = None,
+    ) -> JsonObject:
+        self.uploads.append(
+            {
+                "channel": channel,
+                "content": content,
+                "filename": filename,
+                "title": title,
+                "snippet_type": snippet_type,
+                "initial_comment": initial_comment,
+                "thread_ts": thread_ts,
+            }
+        )
         return {"file": {"permalink": "https://slack/files/1"}}
 
 
@@ -1433,10 +1540,15 @@ async def test_slack_ink_uploads_long_markdown_instead_of_truncating() -> None:
 async def test_slack_ink_flushes_each_stream_append() -> None:
     class FakeSlackStream:
         def __init__(self) -> None:
-            self.appends: list[dict[str, object]] = []
+            self.appends: list[dict[str, str | tuple[()]]] = []
 
-        async def append(self, **kwargs: object) -> None:
-            self.appends.append(kwargs)
+        async def append(
+            self,
+            *,
+            markdown_text: str,
+            chunks: tuple[()] = (),
+        ) -> None:
+            self.appends.append({"markdown_text": markdown_text, "chunks": chunks})
 
     ink = object.__new__(SlackInk)
     stream = FakeSlackStream()
@@ -1456,13 +1568,13 @@ async def test_slack_tentacle_ensures_assistant_thread_conversation() -> None:
             key: ConversationKey,
             *,
             agent_tentacle_id: str | None = None,
-        ) -> object:
+        ) -> Conversation:
             self.calls.append((key, agent_tentacle_id))
-            return object()
+            return cast(Conversation, SimpleNamespace())
 
     conversations = FakeConversations()
     channel = _slack_channel(FakeSlackInk())
-    cast(Any, channel).octomate = SimpleNamespace(conversations=conversations)
+    channel.octomate = cast(Octomate, SimpleNamespace(conversations=conversations))
     channel.agent_id = "inkling"
 
     await channel.on_assistant_thread_started(

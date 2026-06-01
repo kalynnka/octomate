@@ -200,7 +200,10 @@ class FakeChannel:
     octomate: Octomate | None = None
     thread_strategy: ThreadStrategy = "flat_thread"
     config: ChannelConfig = field(
-        default_factory=lambda: ChannelConfig(type="fake")
+        default_factory=lambda: ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(),
+        )
     )
     sent: list[tuple[ConversationKey, list[str]]] = field(default_factory=list)
     stream_sent: list[tuple[ConversationKey, list[str]]] = field(default_factory=list)
@@ -209,11 +212,7 @@ class FakeChannel:
     def __post_init__(self) -> None:
         self.feelers = Feelers[str](
             markdown=self,
-            markdown_stream=(
-                RecordingMarkdownStreamFeeler(self.stream_sent)
-                if self.config.stream.enabled
-                else NoopMarkdownStreamFeeler()
-            ),
+            markdown_stream=RecordingMarkdownStreamFeeler(self.stream_sent),
             event_stream=(
                 RecordingEventStreamFeeler(self.stream_sent)
                 if self.config.stream.enabled
@@ -280,8 +279,7 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     assert agent.turns[0][0] == str(event)
     assert agent.turns[0][2] == key
     assert agent.turns[0][3] == "triage"
-    assert len(channel.sent) == 1
-    assert channel.sent[0][1] == ["handled"]
+    assert channel.sent == [(key, ["handled"])]
     assert channel.stream_sent == []
     assert agent.streams == []
 

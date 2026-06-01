@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import cast
+from typing_extensions import NotRequired, TypedDict
 
 import pytest
 from pydantic_ai import AgentRunResult
@@ -20,9 +20,10 @@ from pydantic_ai.messages import (
 from pydantic_ai.result import StreamedRunResult
 
 from octomate import Octomate
-from octomate.config import ChannelConfig
+from octomate.config import ChannelConfig, ChannelStreamConfig
+from octomate.managers.conversations import ConversationManager
 from octomate.schemas.awakes import AwakeSignal, UserMessageSignal
-from octomate.schemas.conversation import ConversationKey, UserProfile
+from octomate.schemas.conversation import ChatType, ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AtData,
@@ -36,6 +37,7 @@ from octomate.tentacles.channel.base import (
     Chromo,
     DownloadedImage,
     Ink,
+    ResultT,
 )
 from octomate.tentacles.channel.feelers.output import (
     StreamBlock,
@@ -44,8 +46,19 @@ from octomate.tentacles.channel.feelers.output import (
 )
 
 NativeMessage = dict[str, str]
+
+
+class RawMessage(TypedDict, total=False):
+    message_id: str
+    user_id: str
+    chat_id: str
+    chat_type: ChatType
+    segments: NotRequired[list[MessageSegment]]
+
+
 @dataclass
-class FakeOctomate:
+class FakeOctomate(Octomate):
+    conversations: ConversationManager = field(default_factory=ConversationManager)
     kicks: list[AwakeSignal] = field(default_factory=list)
 
     async def kick(
@@ -56,7 +69,7 @@ class FakeOctomate:
 
 
 @dataclass
-class FakeInk:
+class FakeInk(Ink[NativeMessage]):
     self_profile: UserProfile = field(
         default_factory=lambda: UserProfile(user_id="bot", name="Bot")
     )
@@ -97,29 +110,24 @@ class FakeInk:
 
 
 @dataclass
-class FakeChromo:
-    sip_calls: list[object] = field(default_factory=list)
+class FakeChromo(Chromo[RawMessage, NativeMessage]):
+    sip_calls: list[RawMessage] = field(default_factory=list)
     squirt_calls: list[str | None] = field(default_factory=list)
 
-    async def sip(self, raw: object) -> MessageEvent | None:
+    async def sip(self, raw: RawMessage) -> MessageEvent | None:
         self.sip_calls.append(raw)
-        if not isinstance(raw, dict):
-            return None
-        data = cast(dict[str, object], raw)
-        chat_type = data.get("chat_type", "private")
-        if chat_type not in ("private", "group"):
-            chat_type = "private"
+        chat_type = raw.get("chat_type", "private")
         return MessageEvent(
-            message_id=str(data.get("message_id", "m1")),
-            user_id=str(data.get("user_id", "u1")),
-            chat_id=str(data.get("chat_id", "c1")),
+            message_id=raw.get("message_id", "m1"),
+            user_id=raw.get("user_id", "u1"),
+            chat_id=raw.get("chat_id", "c1"),
             chat_type=chat_type,
-            segments=cast(list[MessageSegment], data.get("segments", [])),
+            segments=raw.get("segments", []),
         )
 
     def squirt(
         self,
-        result: AgentRunResult[str],
+        result: AgentRunResult[ResultT],
         *,
         reply_to: str | None = None,
     ) -> list[NativeMessage]:
@@ -127,7 +135,7 @@ class FakeChromo:
         return [{"text": str(result.output)}]
 
 
-class FakeChannelTentacle(ChannelTentacle):
+class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     sent: list[tuple[str, str, list[NativeMessage], str | None, bool]]
 
     def __init__(
@@ -141,13 +149,14 @@ class FakeChannelTentacle(ChannelTentacle):
     ) -> None:
         super().__init__(
             id=id,
-            octomate=cast(Octomate, octomate),
-            ink=cast(Ink, ink),
-            chromo=cast(Chromo, chromo),
+            octomate=octomate,
+            ink=ink,
+            chromo=chromo,
             config=ChannelConfig(
                 type="fake",
                 agent_id="inkling",
                 mention_only=mention_only,
+                stream=ChannelStreamConfig(),
             ),
         )
         self.sent = ink.sent
@@ -166,7 +175,7 @@ def channel() -> FakeChannelTentacle:
 async def test_ingest_dispatches_event_to_octomate(
     channel: FakeChannelTentacle,
 ) -> None:
-    raw = {
+    raw: RawMessage = {
         "message_id": "m42",
         "user_id": "alice",
         "chat_id": "lobby",

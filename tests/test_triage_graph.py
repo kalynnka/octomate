@@ -366,8 +366,8 @@ async def test_triage_graph_uses_markdown_feeler_for_direct_answer() -> None:
     ).output
 
     assert result.decision.answer == "hello"
-    assert stream_feeler.calls == []
     assert markdown_feeler.calls == [(key, "hello")]
+    assert stream_feeler.calls == []
     assert im.sent == []
 
 
