@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, cast
 
 from arcanus.base import TransmuterProxiedMixin
+from pydantic import JsonValue
 from pydantic_core import to_jsonable_python
 from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 from uuid_utils.compat import uuid7
@@ -18,21 +20,28 @@ if TYPE_CHECKING:
 
 
 class PydanticJSON(TypeDecorator):
-    """JSON column whose binds are normalized via pydantic so that
-    datetime / dataclass / enum values inside the payload survive
-    ``json.dumps`` without a custom engine-level ``json_serializer``.
+    """JSON column that serializes Pydantic-friendly values without validating shape.
+
+    Arcanus/Pydantic schemas own validation; the ORM only prepares values for
+    the database JSON serializer.
     """
 
     impl = JSON
     cache_ok = True
 
-    def process_bind_param(self, value: Any, dialect: Any) -> Any:
-        return None if value is None else to_jsonable_python(value)
+    def process_bind_param(
+        self,
+        value: JsonValue | None,
+        dialect: Dialect,
+    ) -> JsonValue | None:
+        if value is None:
+            return None
+        return cast(JsonValue, to_jsonable_python(value))
 
 
 class ModelMessage(Base, TransmuterProxiedMixin):
     __tablename__ = "model_messages"
-    __mapper_args__: ClassVar[dict[str, Any]] = {
+    __mapper_args__ = {
         "polymorphic_on": "kind",
         "polymorphic_abstract": True,
     }
@@ -46,23 +55,23 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     )
 
     kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    parts: Mapped[list[dict[str, Any]]] = mapped_column(PydanticJSON, nullable=False)
+    parts: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
     timestamp: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, index=True
     )
     # `metadata` is reserved by SQLAlchemy's DeclarativeBase for the table
     # MetaData; expose the column as `meta` on Python and `metadata` in the DB.
-    meta: Mapped[dict[str, Any] | None] = mapped_column(
+    meta: Mapped[JsonValue] = mapped_column(
         "metadata", PydanticJSON, nullable=True
     )
 
     instructions: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    usage: Mapped[dict[str, Any] | None] = mapped_column(PydanticJSON, nullable=True)
+    usage: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=True)
     model_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     provider_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     provider_url: Mapped[str | None] = mapped_column(String, nullable=True)
-    provider_details: Mapped[dict[str, Any] | None] = mapped_column(
+    provider_details: Mapped[JsonValue] = mapped_column(
         PydanticJSON, nullable=True
     )
     provider_response_id: Mapped[str | None] = mapped_column(
@@ -83,8 +92,8 @@ class ModelMessage(Base, TransmuterProxiedMixin):
 
 
 class ModelRequest(ModelMessage):
-    __mapper_args__: ClassVar[dict[str, Any]] = {"polymorphic_identity": "request"}
+    __mapper_args__ = {"polymorphic_identity": "request"}
 
 
 class ModelResponse(ModelMessage):
-    __mapper_args__: ClassVar[dict[str, Any]] = {"polymorphic_identity": "response"}
+    __mapper_args__ = {"polymorphic_identity": "response"}

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.conversation import ConversationKey
+from octomate.types.json import JsonObject
 
 
 class AgentMessage(BaseModel):
@@ -22,7 +23,7 @@ class ConfirmAction(BaseModel):
     conversation_key: ConversationKey
     tool_name: str
     tool_call_id: str
-    args: dict[str, Any]
+    args: JsonObject
     title: str = ""
     description: str = ""
     skill: str = ""

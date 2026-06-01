@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
 
 import httpx
 from pydantic import SecretStr
@@ -16,8 +15,10 @@ from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.channel.base import DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.output import IMMessageID, MarkdownChunker
 from octomate.tentacles.channel.slack.schema import (
+    SlackBlock,
     SlackOutboundMessage,
     SlackPostMessageKwargs,
+    SlackUpdateMessageKwargs,
     SlackUserProfile,
 )
 
@@ -83,7 +84,6 @@ class SlackInk(Ink[SlackOutboundMessage]):
     async def download_media(
         self,
         resource_id: str,
-        **kwargs: Any,
     ) -> tuple[bytes, str] | None:
         try:
             async with httpx.AsyncClient() as http:
@@ -275,10 +275,10 @@ class SlackInk(Ink[SlackOutboundMessage]):
         channel: str,
         message_id: str,
         text: str = "",
-        blocks: list[dict[str, Any]] | None = None,
+        blocks: list[SlackBlock] | None = None,
     ) -> bool:
         try:
-            kwargs: dict[str, Any] = {
+            kwargs: SlackUpdateMessageKwargs = {
                 "channel": channel,
                 "ts": message_id,
                 "text": text,

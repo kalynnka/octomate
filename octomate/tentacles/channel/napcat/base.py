@@ -21,10 +21,6 @@ logger = logging.getLogger(__name__)
 
 
 class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
-    octomate: Octomate
-    ink: NapcatInk
-    chromo: NapcatChromo
-
     ws_url: str
     ws_client: ClientConnection | None
     stop_event: asyncio.Event | None
@@ -33,32 +29,34 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
     backoff_base: float
     backoff_max: float
     backoff_factor: float
+    ink: NapcatInk
+    chromo: NapcatChromo
 
     def __init__(
         self,
         id: str,
-        octomate: Octomate | None,
+        octomate: Octomate,
         *,
         config: NapcatChannelConfig,
     ) -> None:
-        if octomate is None:
-            raise ValueError(f"channel {id!r} requires an attached Octomate")
+        ink = NapcatInk(config.http_url, config.access_token)
+        chromo = NapcatChromo()
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            ink=ink,
+            chromo=chromo,
+            config=config,
+        )
+        self.ink = ink
+        self.chromo = chromo
         self.ws_url = config.ws_url
         self.access_token = config.access_token
-        self.ink = NapcatInk(config.http_url, config.access_token)
-        self.chromo = NapcatChromo()
         self.backoff_base = config.backoff_base
         self.backoff_max = config.backoff_max
         self.backoff_factor = config.backoff_factor
         self.ws_client = None
         self.stop_event = None
-        super().__init__(
-            id=id,
-            octomate=octomate,
-            ink=self.ink,
-            chromo=self.chromo,
-            config=config,
-        )
 
     async def activate(self) -> None:
         logger.info("Channel %s: connecting to Napcat at %s", self.id, self.ws_url)

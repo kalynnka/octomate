@@ -71,10 +71,9 @@ def log_card_action_result(channel_id: str, task: asyncio.Task[None]) -> None:
 
 class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
-    octomate: Octomate
+    feelers: Feelers[ChannelOutput]
     ink: LarkInk
     chromo: LarkChromo
-    feelers: Feelers[ChannelOutput]
 
     ws_client: lark_oapi.ws.Client
     stop_event: asyncio.Event | None
@@ -83,14 +82,17 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
     def __init__(
         self,
         id: str,
-        octomate: Octomate | None,
+        octomate: Octomate,
         *,
         config: LarkChannelConfig,
     ) -> None:
-        if octomate is None:
-            raise ValueError(f"channel {id!r} requires an attached Octomate")
-        self.ink = LarkInk(config.app_id, config.app_secret)  # pyright: ignore[reportIncompatibleVariableOverride]
-        self.chromo = LarkChromo()  # pyright: ignore[reportIncompatibleVariableOverride]
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            ink=LarkInk(config.app_id, config.app_secret),
+            chromo=LarkChromo(),
+            config=config,
+        )
 
         event_handler = (
             lark_oapi.EventDispatcherHandler.builder("", "")
@@ -106,13 +108,6 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
         )
         self.stop_event = None
         self.ping_task = None
-        super().__init__(
-            id=id,
-            octomate=octomate,
-            ink=self.ink,
-            chromo=self.chromo,
-            config=config,
-        )
         markdown_feeler = LarkMarkdownFeeler(ink=self.ink, chromo=self.chromo)
         self.feelers = Feelers(
             markdown=markdown_feeler,
@@ -197,7 +192,6 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             responder_id = (
                 data.event.operator.open_id or data.event.operator.user_id or ""
             )
-
         if action in {
             LarkCardAction.APPROVAL_APPROVE,
             LarkCardAction.APPROVAL_DENY,

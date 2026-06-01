@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pydantic import TypeAdapter
@@ -20,6 +20,7 @@ from octomate.tentacles.channel.slack.feelers.cards import (
 )
 from octomate.tentacles.channel.slack.schema import (
     SlackApprovalActionValue,
+    SlackBlock,
     SlackOutboundMessage,
 )
 
@@ -74,7 +75,7 @@ def approval_blocks(
     *,
     page: int = 0,
     decisions: dict[UUID, bool] | None = None,
-) -> list[dict[str, Any]]:
+) -> list[SlackBlock]:
     if not actions:
         return []
     decisions = decisions or {}
@@ -137,7 +138,7 @@ def approval_submitted_blocks(
     decisions: dict[UUID, bool] | None = None,
     *,
     responder_id: str = "",
-) -> list[dict[str, Any]]:
+) -> list[SlackBlock]:
     count = len(actions)
     noun = "approval" if count == 1 else "approvals"
     decisions = decisions or {}
@@ -168,7 +169,7 @@ def approval_button(
     decisions: dict[UUID, bool],
     *,
     style: str,
-) -> dict[str, Any]:
+) -> SlackBlock:
     batch_id = actions[0].batch_id
     if batch_id is None:
         raise ValueError("approval buttons require a batch id")

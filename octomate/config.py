@@ -28,8 +28,8 @@ class LoggingConfig(BaseModel):
 
     @field_validator("level", mode="before")
     @classmethod
-    def normalize_level(cls, value: object) -> object:
-        return value.upper() if isinstance(value, str) else value
+    def normalize_level(cls, value: str) -> str:
+        return value.upper()
 
 
 class ChannelStreamConfig(BaseModel):
@@ -58,7 +58,7 @@ class ChannelConfig(BaseModel):
     agent_id: str = "inkling"
     mention_only: bool = True
     enabled: bool = True
-    stream: ChannelStreamConfig = Field(default=ChannelStreamConfig())
+    stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)
 
 
 class SlackChannelConfig(ChannelConfig):
@@ -66,19 +66,19 @@ class SlackChannelConfig(ChannelConfig):
     app_id: str
     bot_token: SecretStr
     app_token: SecretStr
-    stream: SlackStreamConfig = Field(default=SlackStreamConfig())
+    stream: SlackStreamConfig = Field(default_factory=SlackStreamConfig)
 
 
 class LarkChannelConfig(ChannelConfig):
     type: Literal["lark"] = "lark"
     app_id: str
     app_secret: SecretStr
-    stream: LarkStreamConfig = Field(default=LarkStreamConfig())
+    stream: LarkStreamConfig = Field(default_factory=LarkStreamConfig)
 
 
 class NapcatChannelConfig(ChannelConfig):
     type: Literal["napcat"] = "napcat"
-    stream: NapcatStreamConfig = Field(default=NapcatStreamConfig())
+    stream: NapcatStreamConfig = Field(default_factory=NapcatStreamConfig)
     ws_url: str
     http_url: str
     access_token: SecretStr | None = None

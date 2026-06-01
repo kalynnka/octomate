@@ -19,18 +19,20 @@
 
 1. Class attributes should be explicitly defined with proper type hints. Use `ClassVar` for class variables.
 2. Do not leave Python type hint warnings or type checker errors. Always satisfy the configured type checker.
-3. Do not use `typing.Any` or `object` in type hints. Use precise concrete types, `TypeVar` generics, discriminated unions, `TypedDict`, or narrow `Protocol` contracts. Validate external payloads into typed data before passing them deeper.
+3. Do not use `typing.Any` or `object` in type hints. Use precise concrete types, `TypeVar` generics, discriminated unions, `TypedDict`, or narrow `Protocol` contracts. Validate external payloads at clear boundaries before passing them deeper.
 4. Prefer precise collection types in annotations when the runtime shape is known (`list[T]` or `tuple[...]`) instead of broad abstractions like `Sequence[T]`; this also keeps Pydantic validation cheaper and clearer.
 5. Prefer `TypedDict` for simple structured tool arguments and request payloads when a full model adds no behavior. Use `TypedDict` plus `**payload` unpacking to pass structured payloads through typed call sites instead of building ad hoc dict wrappers.
 6. Do not duplicate the same payload shape as both a model and a `TypedDict` without a concrete reason.
+7. Do not use `cast`, `type: ignore`, or pyright suppressions merely to satisfy the type checker. Fix the annotation, model the optional/variant shape honestly, or move validation to the correct boundary. Use casts only at true dynamic boundaries where the runtime type has already been established and cannot be expressed otherwise.
 
 ## Data Modeling
 
 1. Model real domain concepts directly instead of hiding them in loose metadata dictionaries. If two cases have different fields, statuses, or behavior, represent them as separate typed variants.
 2. Prefer discriminated unions plus `TypeAdapter` at dynamic boundaries. Validate external or serialized payloads once into typed variants, then pass those typed objects through the rest of the code.
-3. Keep batch/action ownership clear: batches group actions; each action represents exactly one user-facing approval or one user-facing question. Do not wrap multiple logical actions inside one action's metadata.
-4. Use polymorphic ORM/schema mappings when persisted variants share a table but have distinct types. The ORM inheritance, schema classes, and status types should line up with the domain variants.
-5. Preserve platform callback state as typed action data where practical. Cards and blocks may serialize ids and fields, but callback handlers should rehydrate typed actions before applying business logic.
+3. When prepared data is ultimately passed to a Pydantic model, schema, or `TypeAdapter`, let that final Pydantic boundary perform validation. Do not eagerly instantiate or validate each nested item first unless the intermediate code must inspect typed fields, branch on the validated shape, or produce a deliberately earlier error.
+4. Keep batch/action ownership clear: batches group actions; each action represents exactly one user-facing approval or one user-facing question. Do not wrap multiple logical actions inside one action's metadata.
+5. Use polymorphic ORM/schema mappings when persisted variants share a table but have distinct types. The ORM inheritance, schema classes, and status types should line up with the domain variants.
+6. Preserve platform callback state as typed action data where practical. Cards and blocks may serialize ids and fields, but callback handlers should rehydrate typed actions before applying business logic.
 
 ## Persistence
 

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Discriminator, field_validator
 from pydantic_ai import BinaryContent
 from pydantic_ai.messages import UserContent
 from typing_extensions import NotRequired, TypedDict
+
+from octomate.types.json import JsonObject
 
 
 class TextData(TypedDict):
@@ -34,10 +36,10 @@ class ImageData(BaseModel):
 
     @field_validator("file", mode="before")
     @classmethod
-    def _coerce_path(cls, v: Any) -> str:
-        if isinstance(v, Path):
-            return str(v.resolve())
-        return v
+    def _coerce_path(cls, value: str | Path) -> str:
+        if isinstance(value, Path):
+            return str(value.resolve())
+        return value
 
     @property
     def path(self) -> Path:
@@ -60,7 +62,7 @@ class FileData(BaseModel):
 
 
 class CardData(BaseModel):
-    payload: dict[str, Any]
+    payload: JsonObject
 
 
 class Segment(BaseModel):

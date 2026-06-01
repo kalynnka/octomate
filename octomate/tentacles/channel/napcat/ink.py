@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import httpx
-from pydantic import SecretStr
+from pydantic import JsonValue, SecretStr
 
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.channel.base import DownloadedImage, Ink
@@ -13,6 +12,7 @@ from octomate.tentacles.channel.napcat.schema import (
     NapcatOutboundMessage,
     NapcatUserProfile,
 )
+from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +107,10 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         endpoint = "/send_group_msg" if chat_type == "group" else "/send_private_msg"
         id_field = "group_id" if chat_type == "group" else "user_id"
         for message in messages:
-            payload: dict[str, Any] = {
+            segments: list[JsonValue] = [*message.segments]
+            payload: JsonObject = {
                 id_field: chat_id,
-                "message": message.segments,
+                "message": segments,
             }
             if reply_to:
                 payload["reply"] = reply_to

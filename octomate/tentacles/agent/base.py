@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
-from typing import Any
+from typing import TypeAlias, TypeVar
 
+from pydantic import BaseModel, JsonValue
 from pydantic_ai import (
     AgentBuiltinTool,
     AgentCapability,
@@ -14,19 +15,29 @@ from pydantic_ai import (
     RunUsage,
     UsageLimits,
 )
-from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata, EventStreamHandler
+from pydantic_ai.agent.abstract import (
+    AgentInstructions,
+    AgentMetadata,
+    EventStreamHandler,
+)
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.result import StreamedRunResult
-from pydantic_ai.tools import DeferredToolResults
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.base import Tentacle
+from octomate.types.json import JsonObject
+
+AgentOutput: TypeAlias = JsonValue | BaseModel | DeferredToolRequests
+AgentOutputT = TypeVar("AgentOutputT", bound=AgentOutput)
+AgentDepsT = TypeVar("AgentDepsT")
+AgentSpecInput: TypeAlias = JsonObject | AgentSpec
 
 
-class AgentTentacle(Tentacle, ABC):
+class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     """Base class for Octomate agents wrapping pydantic-ai run entrypoints."""
 
     @abstractmethod
@@ -36,24 +47,24 @@ class AgentTentacle(Tentacle, ABC):
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
-        output_type: OutputSpec[Any] | None = None,
+        output_type: OutputSpec[AgentOutputT] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         model: Model | KnownModelName | str | None = None,
-        instructions: AgentInstructions[Any] = None,
-        deps: Any = None,
-        model_settings: AgentModelSettings[Any] | None = None,
+        instructions: AgentInstructions[AgentDepsT] = None,
+        deps: AgentDepsT = None,
+        model_settings: AgentModelSettings[AgentDepsT] | None = None,
         usage_limits: UsageLimits | None = None,
         usage: RunUsage | None = None,
-        metadata: AgentMetadata[Any] | None = None,
+        metadata: AgentMetadata[AgentDepsT] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
-        toolsets: Sequence[AbstractToolset[Any]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[Any]] | None = None,
-        event_stream_handler: EventStreamHandler[Any] | None = None,
-        capabilities: Sequence[AgentCapability[Any]] | None = None,
-        spec: dict[str, Any] | AgentSpec | None = None,
-    ) -> AgentRunResult[Any]:
+        toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        event_stream_handler: EventStreamHandler[AgentDepsT] | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+        spec: AgentSpecInput | None = None,
+    ) -> AgentRunResult[AgentOutputT]:
         """Run the agent for an Octomate conversation."""
 
     @abstractmethod
@@ -63,24 +74,24 @@ class AgentTentacle(Tentacle, ABC):
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
-        output_type: OutputSpec[Any] | None = None,
+        output_type: OutputSpec[AgentOutputT] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         model: Model | KnownModelName | str | None = None,
-        instructions: AgentInstructions[Any] = None,
-        deps: Any = None,
-        model_settings: AgentModelSettings[Any] | None = None,
+        instructions: AgentInstructions[AgentDepsT] = None,
+        deps: AgentDepsT = None,
+        model_settings: AgentModelSettings[AgentDepsT] | None = None,
         usage_limits: UsageLimits | None = None,
         usage: RunUsage | None = None,
-        metadata: AgentMetadata[Any] | None = None,
+        metadata: AgentMetadata[AgentDepsT] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
-        toolsets: Sequence[AbstractToolset[Any]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[Any]] | None = None,
-        event_stream_handler: EventStreamHandler[Any] | None = None,
-        capabilities: Sequence[AgentCapability[Any]] | None = None,
-        spec: dict[str, Any] | AgentSpec | None = None,
-    ) -> AsyncIterator[StreamedRunResult[Any, Any]]:
+        toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        event_stream_handler: EventStreamHandler[AgentDepsT] | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+        spec: AgentSpecInput | None = None,
+    ) -> AsyncIterator[StreamedRunResult[AgentDepsT, AgentOutputT]]:
         """Stream the agent output for an Octomate conversation."""
 
     @abstractmethod
@@ -90,21 +101,21 @@ class AgentTentacle(Tentacle, ABC):
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
-        output_type: OutputSpec[Any] | None = None,
+        output_type: OutputSpec[AgentOutputT] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         model: Model | KnownModelName | str | None = None,
-        instructions: AgentInstructions[Any] = None,
-        deps: Any = None,
-        model_settings: AgentModelSettings[Any] | None = None,
+        instructions: AgentInstructions[AgentDepsT] = None,
+        deps: AgentDepsT = None,
+        model_settings: AgentModelSettings[AgentDepsT] | None = None,
         usage_limits: UsageLimits | None = None,
         usage: RunUsage | None = None,
-        metadata: AgentMetadata[Any] | None = None,
+        metadata: AgentMetadata[AgentDepsT] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
-        toolsets: Sequence[AbstractToolset[Any]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[Any]] | None = None,
-        capabilities: Sequence[AgentCapability[Any]] | None = None,
-        spec: dict[str, Any] | AgentSpec | None = None,
-    ) -> AgentEventStream[Any]:
+        toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+        spec: AgentSpecInput | None = None,
+    ) -> AgentEventStream[AgentOutputT]:
         """Stream raw agent events for an Octomate conversation."""

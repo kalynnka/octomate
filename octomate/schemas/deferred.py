@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Literal, NotRequired, TypeAlias, TypedDict, cast
+from typing import (
+    Annotated,
+    Literal,
+    NotRequired,
+    TypeAlias,
+    TypedDict,
+    cast,
+)
 
 from arcanus import (
     BaseTransmuter,
@@ -18,7 +25,6 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
-    JsonValue,
     TypeAdapter,
 )
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
@@ -31,10 +37,9 @@ from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import (
     DeferredActionKind,
     DeferredActionStatus,
-    DeferredApprovalStatus,
     DeferredBatchStatus,
-    DeferredQuestionStatus,
 )
+from octomate.types.json import JsonObject
 
 
 class QuestionRequest(TypedDict):
@@ -55,9 +60,39 @@ class QuestionRequest(TypedDict):
 
 class ApprovalRequest(BaseModel):
     tool_name: str
-    args: dict[str, JsonValue] = Field(default_factory=dict)
+    args: JsonObject = Field(default_factory=dict)
     title: str = "Permission Required"
     description: str = ""
+
+
+class ApprovalRequestPayload(TypedDict):
+    tool_name: str
+    args: JsonObject
+
+
+class DeferredQuestionPayload(TypedDict):
+    kind: Literal["question"]
+    tool_name: str
+    tool_call_id: str
+    position: int
+    args: QuestionRequest
+    metadata: JsonObject
+
+
+class DeferredApprovalPayload(TypedDict):
+    kind: Literal["approval"]
+    tool_name: str
+    tool_call_id: str
+    args: ApprovalRequest | ApprovalRequestPayload
+    metadata: JsonObject
+
+
+DeferredActionPayload: TypeAlias = DeferredQuestionPayload | DeferredApprovalPayload
+DeferredActionCollectionInput: TypeAlias = (
+    DeferredToolRequests | list[DeferredActionPayload | JsonObject]
+)
+DeferredQuestionResult: TypeAlias = str | None
+DeferredApprovalResult: TypeAlias = bool | None
 
 
 @sqlalchemy_materia.bless(deferred_models.DeferredAction)
@@ -74,12 +109,12 @@ class DeferredAction(BaseTransmuter):
     tool_name: str
     tool_call_id: str
     position: int = 0
-    args: dict[str, JsonValue]
-    metadata: dict[str, JsonValue] = Field(
+    args: QuestionRequest | ApprovalRequest
+    metadata: JsonObject = Field(
         default_factory=dict,
         validation_alias=AliasChoices("meta", "metadata"),
     )
-    result: JsonValue = None
+    result: DeferredQuestionResult | DeferredApprovalResult = None
     platform_message_id: str | None = None
     responder_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -95,10 +130,11 @@ class DeferredAction(BaseTransmuter):
 
 @sqlalchemy_materia.bless(deferred_models.DeferredQuestionAction)
 class DeferredQuestion(DeferredAction):
-    kind: Literal["question"] = "question"
-    args: QuestionRequest
-    status: DeferredQuestionStatus = "pending"
-    result: str | None = None
+    # Pydantic's direct discriminator requires literal branch values. Arcanus
+    # cannot use a generic transmuter base, so Pyright needs this narrow-field
+    # override suppressed for the concrete variant.
+    kind: Literal["question"] = "question"  # type: ignore[reportIncompatibleVariableOverride]
+    args: QuestionRequest  # type: ignore[reportIncompatibleVariableOverride]
 
     def __lt__(self, other: DeferredQuestion) -> bool:
         return self.position < other.position
@@ -109,10 +145,11 @@ class DeferredQuestion(DeferredAction):
 
 @sqlalchemy_materia.bless(deferred_models.DeferredApprovalAction)
 class DeferredApproval(DeferredAction):
-    kind: Literal["approval"] = "approval"
-    args: ApprovalRequest
-    status: DeferredApprovalStatus = "pending"
-    result: bool | None = None
+    # Pydantic's direct discriminator requires literal branch values. Arcanus
+    # cannot use a generic transmuter base, so Pyright needs this narrow-field
+    # override suppressed for the concrete variant.
+    kind: Literal["approval"] = "approval"  # type: ignore[reportIncompatibleVariableOverride]
+    args: ApprovalRequest  # type: ignore[reportIncompatibleVariableOverride]
 
 
 DeferredActionVariant: TypeAlias = Annotated[
@@ -122,38 +159,43 @@ DeferredActionVariant: TypeAlias = Annotated[
 DeferredActionVariantAdapter = TypeAdapter(DeferredActionVariant)
 
 
-def from_deferred_requests(request: object) -> object:
+def from_deferred_requests(
+    request: DeferredActionCollectionInput,
+) -> DeferredActionCollectionInput:
     if not isinstance(request, DeferredToolRequests):
         return request
-    action_payloads: list[object] = []
+    action_payloads: list[DeferredActionPayload | JsonObject] = []
     for call in request.calls:
-        metadata = request.metadata.get(call.tool_call_id, {})
-        args = call.args_as_dict()
-        questions = cast(list[QuestionRequest], args.get("questions") or [])
+        metadata = cast(JsonObject, request.metadata.get(call.tool_call_id, {}) or {})
+        args = cast(JsonObject, call.args_as_dict())
+        questions_value = args.get("questions") or []
+        if not isinstance(questions_value, list):
+            raise ValueError(f"deferred call {call.tool_call_id!r} has no questions")
+        questions = cast(list[QuestionRequest], questions_value)
         if not questions:
             raise ValueError(f"deferred call {call.tool_call_id!r} has no questions")
         action_payloads.extend(
-            {
-                "kind": "question",
-                "tool_name": call.tool_name,
-                "tool_call_id": call.tool_call_id,
-                "position": position,
-                "args": question,
-                "metadata": dict(metadata or {}),
-            }
+            DeferredQuestionPayload(
+                kind="question",
+                tool_name=call.tool_name,
+                tool_call_id=call.tool_call_id,
+                position=position,
+                args=question,
+                metadata=metadata,
+            )
             for position, question in enumerate(questions)
         )
     action_payloads.extend(
-        {
-            "kind": "approval",
-            "tool_name": call.tool_name,
-            "tool_call_id": call.tool_call_id,
-            "args": {
-                "tool_name": call.tool_name,
-                "args": call.args_as_dict(),
-            },
-            "metadata": dict(request.metadata.get(call.tool_call_id, {}) or {}),
-        }
+        DeferredApprovalPayload(
+            kind="approval",
+            tool_name=call.tool_name,
+            tool_call_id=call.tool_call_id,
+            args=ApprovalRequestPayload(
+                tool_name=call.tool_name,
+                args=cast(JsonObject, call.args_as_dict()),
+            ),
+            metadata=cast(JsonObject, request.metadata.get(call.tool_call_id, {}) or {}),
+        )
         for call in request.approvals
     )
     return action_payloads

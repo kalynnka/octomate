@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from pydantic import TypeAdapter
+from pydantic import JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import DeferredQuestion
@@ -16,6 +16,7 @@ from octomate.tentacles.channel.slack.feelers.cards import (
     card_block,
 )
 from octomate.tentacles.channel.slack.schema import (
+    SlackBlock,
     SlackOutboundMessage,
     SlackQuestionActionValue,
     SlackQuestionState,
@@ -71,7 +72,7 @@ def ask_question_blocks(
     *,
     page: int = 0,
     answers: dict[UUID, str] | None = None,
-) -> list[dict[str, Any]]:
+) -> list[SlackBlock]:
     if not actions:
         return []
     answers = answers or {}
@@ -80,7 +81,7 @@ def ask_question_blocks(
     choices = list(action.args.get("choices") or [])[:MAX_QUESTION_CHOICES]
     hint = action.args.get("hint") or ""
     saved = answers.get(action.id, "")
-    blocks: list[dict[str, Any]] = [
+    blocks: list[SlackBlock] = [
         card_block(
             title=f"*{action.args['question']}*",
             icon=QUESTION_CARD_ICON,
@@ -101,7 +102,7 @@ def ask_question_blocks(
                 "label": {"type": "plain_text", "text": "Choose one"},
             }
         )
-    input_element: dict[str, Any] = {
+    input_element: SlackBlock = {
         "type": "plain_text_input",
         "action_id": SlackBlockAction.ASK_QUESTION_ANSWER.value,
         "multiline": not bool(choices),
@@ -126,7 +127,7 @@ def ask_question_blocks(
             },
         }
     )
-    nav: list[dict[str, Any]] = []
+    nav: list[SlackBlock] = []
     if page > 0:
         nav.append(
             question_button(
@@ -159,14 +160,16 @@ def ask_question_blocks(
                 style="primary",
             )
         )
-    blocks.append({"type": "actions", "elements": nav})
+    nav_elements: list[JsonValue] = [*nav]
+    actions_block: SlackBlock = {"type": "actions", "elements": nav_elements}
+    blocks.append(actions_block)
     return blocks
 
 
 def submitted_blocks(
     actions: list[DeferredQuestion],
     answers: dict[UUID, str] | None = None,
-) -> list[dict[str, Any]]:
+) -> list[SlackBlock]:
     count = len(actions)
     noun = "question" if count == 1 else "questions"
     answers = answers or {}
@@ -218,25 +221,24 @@ def collect_current_answer(
 
 
 def choice_radio_buttons(
-    choices: list[Any],
+    choices: list[str],
     saved: str,
-) -> dict[str, Any]:
-    options = [
-        {
+) -> SlackBlock:
+    options: list[JsonValue] = []
+    initial_option: SlackBlock | None = None
+    for choice in choices:
+        option: SlackBlock = {
             "text": {"type": "plain_text", "text": str(choice)},
             "value": str(choice),
         }
-        for choice in choices
-    ]
-    element: dict[str, Any] = {
+        options.append(option)
+        if option["value"] == saved:
+            initial_option = option
+    element: SlackBlock = {
         "type": "radio_buttons",
         "action_id": SlackBlockAction.ASK_QUESTION_CHOICE.value,
         "options": options,
     }
-    initial_option = next(
-        (option for option in options if option["value"] == saved),
-        None,
-    )
     if initial_option is not None:
         element["initial_option"] = initial_option
     return element
@@ -250,7 +252,7 @@ def question_button(
     answers: dict[UUID, str],
     *,
     style: str | None = None,
-) -> dict[str, Any]:
+) -> SlackBlock:
     batch_id = actions[0].batch_id
     if batch_id is None:
         raise ValueError("question buttons require a batch id")
@@ -260,7 +262,7 @@ def question_button(
         "page": page,
         "answers": answers,
     }
-    button: dict[str, Any] = {
+    button: SlackBlock = {
         "type": "button",
         "text": {"type": "plain_text", "text": text},
         "action_id": action.value if isinstance(action, SlackBlockAction) else action,

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
-from pydantic import TypeAdapter
+from pydantic import JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import DeferredQuestion
@@ -16,6 +16,7 @@ from octomate.tentacles.channel.lark.schema import (
     LarkQuestionActionValue,
     LarkQuestionFormValue,
 )
+from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
     from octomate.tentacles.channel.lark.ink import LarkInk
@@ -82,7 +83,7 @@ def ask_question_card_data(
     actions: list[DeferredQuestion],
     page: int = 0,
     answers: dict[UUID, str] | None = None,
-) -> dict[str, Any]:
+) -> JsonObject:
     answers = answers or {}
     page = max(0, min(page, len(actions) - 1))
     action = actions[page]
@@ -92,7 +93,7 @@ def ask_question_card_data(
     if hint:
         text = f"{text}\n\n_Hint: {hint}_"
     saved = answers.get(action.id, "")
-    elements: list[dict[str, Any]] = []
+    elements: list[JsonValue] = []
     if choices:
         elements.append(
             {
@@ -108,7 +109,7 @@ def ask_question_card_data(
                 ],
             }
         )
-    input_element: dict[str, Any] = {
+    input_element: JsonObject = {
         "tag": "input",
         "name": "answer",
         "placeholder": {"tag": "plain_text", "content": "Type your answer"},
@@ -117,7 +118,7 @@ def ask_question_card_data(
         input_element["default_value"] = saved
     elements.append(input_element)
 
-    buttons: list[dict[str, Any]] = []
+    buttons: list[JsonValue] = []
     if page > 0:
         buttons.append(
             nav_button(
@@ -151,7 +152,7 @@ def ask_question_card_data(
             )
         )
     elements.extend(buttons)
-    return {
+    card: JsonObject = {
         "header": {
             "title": {
                 "tag": "plain_text",
@@ -172,9 +173,10 @@ def ask_question_card_data(
             },
         ],
     }
+    return card
 
 
-def submitted_card_data(actions: list[DeferredQuestion]) -> dict[str, Any]:
+def submitted_card_data(actions: list[DeferredQuestion]) -> JsonObject:
     count = len(actions)
     noun = "question" if count == 1 else "questions"
     return {
@@ -214,7 +216,7 @@ def nav_button(
     answers: dict[UUID, str],
     *,
     button_type: str = "default",
-) -> dict[str, Any]:
+) -> JsonObject:
     batch_id = actions[0].batch_id
     if batch_id is None:
         raise ValueError("question buttons require a batch id")
@@ -225,7 +227,7 @@ def nav_button(
         "page": page,
         "answers": answers,
     }
-    return {
+    button: JsonObject = {
         "tag": "button",
         "text": {"tag": "plain_text", "content": text},
         "type": button_type,
@@ -245,3 +247,4 @@ def nav_button(
             exclude_none=True,
         ),
     }
+    return button

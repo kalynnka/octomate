@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
+from pydantic import JsonValue
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid, and_
 from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 from uuid_utils.compat import uuid7
@@ -40,11 +41,11 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
         nullable=False,
         default="pending",
     )
-    source_key: Mapped[dict[str, Any]] = mapped_column(PydanticJSON, nullable=False)
-    target_key: Mapped[dict[str, Any]] = mapped_column(PydanticJSON, nullable=False)
+    source_key: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
+    target_key: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
     target_mode: Mapped[str] = mapped_column(String, nullable=False, default="main")
-    decision: Mapped[dict[str, Any] | None] = mapped_column(PydanticJSON, nullable=True)
-    requests: Mapped[dict[str, Any]] = mapped_column(PydanticJSON, nullable=False)
+    decision: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=True)
+    requests: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
@@ -93,7 +94,7 @@ class DeferredAction(Base, TransmuterProxiedMixin):
     """One user-visible pending action inside a deferred batch."""
 
     __tablename__ = "deferred_actions"
-    __mapper_args__: ClassVar[dict[str, Any]] = {
+    __mapper_args__ = {
         "polymorphic_on": "kind",
         "polymorphic_abstract": True,
     }
@@ -118,13 +119,13 @@ class DeferredAction(Base, TransmuterProxiedMixin):
     tool_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
     tool_call_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    args: Mapped[dict[str, Any]] = mapped_column(PydanticJSON, nullable=False)
-    meta: Mapped[dict[str, Any]] = mapped_column(
+    args: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
+    meta: Mapped[JsonValue] = mapped_column(
         "metadata",
         PydanticJSON,
         nullable=False,
     )
-    result: Mapped[Any | None] = mapped_column(PydanticJSON, nullable=True)
+    result: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=True)
     platform_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
     responder_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -153,12 +154,12 @@ class DeferredAction(Base, TransmuterProxiedMixin):
 
 
 class DeferredQuestionAction(DeferredAction):
-    __mapper_args__: ClassVar[dict[str, Any]] = {
+    __mapper_args__ = {
         "polymorphic_identity": "question",
     }
 
 
 class DeferredApprovalAction(DeferredAction):
-    __mapper_args__: ClassVar[dict[str, Any]] = {
+    __mapper_args__ = {
         "polymorphic_identity": "approval",
     }

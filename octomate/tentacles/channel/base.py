@@ -48,7 +48,7 @@ ThreadStrategy = Literal["main_only", "flat_thread", "nested_thread"]
 ChannelOutput: TypeAlias = str | DeferredToolRequests | None
 MessageT = TypeVar("MessageT")
 ResultT = TypeVar("ResultT")
-RawT = TypeVar("RawT", contravariant=True)
+RawT = TypeVar("RawT")
 
 
 @dataclass(frozen=True)
@@ -110,7 +110,9 @@ class Ink(ABC, Generic[MessageT]):
         """Send platform-native message payloads."""
 
 
-class ChannelTentacle(Tentacle, Generic[RawT, MessageT]):
+class ChannelTentacle(
+    Tentacle[RawT, MessageT],
+):
     """Base class for IM channels.
 
     A channel receives native platform events, converts them to MessageEvents,
@@ -121,23 +123,21 @@ class ChannelTentacle(Tentacle, Generic[RawT, MessageT]):
     FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
     thread_strategy: ClassVar[ThreadStrategy] = "main_only"
 
-    octomate: Octomate  # type: ignore[reportIncompatibleVariableOverride]
     profile: UserProfile
     feelers: Feelers[ChannelOutput]
     ink: Ink[MessageT]
     chromo: Chromo[RawT, MessageT]
+    config: ChannelConfig
 
     def __init__(
         self,
         id: str,
-        octomate: Octomate | None,
+        octomate: Octomate,
         *,
         ink: Ink[MessageT],
         chromo: Chromo[RawT, MessageT],
         config: ChannelConfig,
     ) -> None:
-        if octomate is None:
-            raise ValueError(f"channel {id!r} requires an attached Octomate")
         super().__init__(id=id, octomate=octomate)
         self.config = config
         self.ink = ink

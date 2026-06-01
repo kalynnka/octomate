@@ -69,23 +69,27 @@ IGNORED_SUBTYPES = frozenset(
 
 class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
-    octomate: Octomate
+    feelers: Feelers[ChannelOutput]
     ink: SlackInk
     chromo: SlackChromo
-    feelers: Feelers[ChannelOutput]
 
     def __init__(
         self,
         id: str,
-        octomate: Octomate | None,
+        octomate: Octomate,
         *,
         config: SlackChannelConfig,
     ) -> None:
-        if octomate is None:
-            raise ValueError(f"channel {id!r} requires an attached Octomate")
+        ink = SlackInk(config.bot_token)
+        chromo = SlackChromo()
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            ink=ink,
+            chromo=chromo,
+            config=config,
+        )
         self.app_id = config.app_id
-        self.ink = SlackInk(config.bot_token)
-        self.chromo = SlackChromo()
         self.app = AsyncApp(token=config.bot_token.get_secret_value())
         self.app.event("message")(self.on_message)
         self.app.event("assistant_thread_started")(self.on_assistant_thread_started)
@@ -106,13 +110,6 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
         )
         self.app_token = config.app_token
         self.handler: AsyncSocketModeHandler | None = None
-        super().__init__(
-            id=id,
-            octomate=octomate,
-            ink=self.ink,
-            chromo=self.chromo,
-            config=config,
-        )
         markdown_feeler = self.feelers.markdown
         self.feelers = Feelers(
             markdown=markdown_feeler,
@@ -247,14 +244,19 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             for block in reversed(action_body["message"].get("blocks", [])):
                 if block.get("type") != "actions":
                     continue
-                for element in block.get("elements", []):
-                    if element.get("action_id") not in {
+                elements = block.get("elements", [])
+                if not isinstance(elements, list):
+                    continue
+                for raw_element in elements:
+                    if not isinstance(raw_element, dict):
+                        continue
+                    if raw_element.get("action_id") not in {
                         SlackBlockAction.ASK_QUESTION_BACK.value,
                         SlackBlockAction.ASK_QUESTION_NEXT.value,
                         SlackBlockAction.ASK_QUESTION_SUBMIT.value,
                     }:
                         continue
-                    value = element.get("value")
+                    value = raw_element.get("value")
                     if not isinstance(value, str):
                         continue
                     try:

@@ -23,6 +23,7 @@ octomate.register_agent(
     "inkling",
     InklingTentacle(
         "inkling",
+        octomate,
         agent=build_inkling_agent(config.agents.inkling.model),
         conversation_manager=octomate.conversations,
     ),

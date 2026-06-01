@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from octomate.schemas.conversation import ConversationKey
@@ -13,6 +13,7 @@ from octomate.tentacles.channel.feelers.deferred import ApprovalFeeler
 from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
+from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
     from octomate.tentacles.channel.lark.ink import LarkInk
@@ -55,7 +56,7 @@ def approval_card(action: DeferredApproval) -> str:
     return json.dumps(approval_card_data(action), ensure_ascii=False)
 
 
-def approval_card_data(action: DeferredApproval) -> dict[str, Any]:
+def approval_card_data(action: DeferredApproval) -> JsonObject:
     request_json = DeferredActionVariantAdapter.dump_json(
         action,
         indent=2,
@@ -115,7 +116,7 @@ def approval_resolution_card_data(
     *,
     tool_name: str,
     approved: bool,
-) -> dict[str, Any]:
+) -> JsonObject:
     status = "Approved" if approved else "Denied"
     return {
         "header": {

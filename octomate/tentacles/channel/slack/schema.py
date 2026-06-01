@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal, TypeAlias
 from uuid import UUID
 
 from pydantic import Field, Json
@@ -9,8 +9,10 @@ from typing_extensions import NotRequired, TypedDict
 
 from octomate.schemas.conversation import UserProfile
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.types.json import JsonObject
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
+SlackBlock: TypeAlias = JsonObject
 
 
 class SlackFileInfo(TypedDict, total=False):
@@ -39,7 +41,7 @@ class SlackAssistantThread(TypedDict, total=False):
     user_id: str
     channel_id: str
     thread_ts: str
-    context: dict[str, Any]
+    context: JsonObject
 
 
 class SlackAssistantThreadEvent(TypedDict, total=False):
@@ -51,8 +53,15 @@ class SlackAssistantThreadEvent(TypedDict, total=False):
 class SlackPostMessageKwargs(TypedDict):
     channel: str
     text: str
-    blocks: NotRequired[list[dict[str, Any]]]
+    blocks: NotRequired[list[SlackBlock]]
     thread_ts: NotRequired[str]
+
+
+class SlackUpdateMessageKwargs(TypedDict):
+    channel: str
+    ts: str
+    text: str
+    blocks: NotRequired[list[SlackBlock]]
 
 
 class SlackActionUser(TypedDict):
@@ -65,7 +74,7 @@ class SlackActionChannel(TypedDict):
 
 class SlackActionMessage(TypedDict):
     ts: NonEmptyStr
-    blocks: NotRequired[list[dict[str, Any]]]
+    blocks: NotRequired[list[SlackBlock]]
 
 
 class SlackApprovalActionValue(TypedDict):
@@ -132,7 +141,7 @@ class SlackQuestionActionBody(TypedDict):
 class SlackOutboundMessage:
     text: str
     markdown_text: str | None = None
-    blocks: list[dict[str, Any]] | None = None
+    blocks: list[SlackBlock] | None = None
 
 
 @dataclass(frozen=True)

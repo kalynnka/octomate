@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Generic
+from typing import Generic, TypeAlias, TypeVar
 
 import anyio
 from anyio.abc import ObjectSendStream
+from pydantic import BaseModel, JsonValue
 from pydantic_ai import (
     Agent,
     AgentBuiltinTool,
@@ -14,7 +15,6 @@ from pydantic_ai import (
     AgentModelSettings,
     AgentRunResult,
     AgentRunResultEvent,
-    AgentSpec,
     AgentStreamEvent,
     RunUsage,
     UsageLimits,
@@ -26,7 +26,7 @@ from pydantic_ai.messages import (
     UserContent,
 )
 from pydantic_ai.models import KnownModelName, Model
-from pydantic_ai.output import OutputDataT, OutputSpec
+from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
@@ -34,9 +34,13 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelResponse
+from octomate.tentacles.agent.base import AgentOutput, AgentSpecInput
 from octomate.tentacles.agent.graph.resolver import DeferredResolver
 
 logger = logging.getLogger(__name__)
+ReactOutput: TypeAlias = JsonValue | BaseModel | DeferredToolRequests
+ReactOutputT = TypeVar("ReactOutputT", bound=AgentOutput)
+ReactDepsT = TypeVar("ReactDepsT")
 
 
 @dataclass
@@ -46,44 +50,44 @@ class ReactState:
 
 
 @dataclass
-class ReactDeps:
-    agent: Agent[None, Any]
+class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
+    agent: Agent[ReactDepsT, ReactOutputT]
     conversation_manager: ConversationManager
+    agent_deps: ReactDepsT
     event_send_stream: (
-        ObjectSendStream[AgentStreamEvent | AgentRunResultEvent[Any]] | None
+        ObjectSendStream[AgentStreamEvent | AgentRunResultEvent[ReactOutputT]] | None
     ) = None
     resolver: DeferredResolver | None = None
-    output_type: OutputSpec[Any] | None = None
+    output_type: OutputSpec[ReactOutputT] | None = None
     run_name: str = "react"
     model: Model | KnownModelName | str | None = None
-    instructions: AgentInstructions[None] = None
-    agent_deps: None = None
-    model_settings: AgentModelSettings[None] | None = None
+    instructions: AgentInstructions[ReactDepsT] = None
+    model_settings: AgentModelSettings[ReactDepsT] | None = None
     usage_limits: UsageLimits | None = None
     usage: RunUsage | None = None
-    metadata: AgentMetadata[None] | None = None
+    metadata: AgentMetadata[ReactDepsT] | None = None
     output_retries: int | None = None
     infer_name: bool = True
-    toolsets: Sequence[AbstractToolset[None]] | None = None
-    builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None
-    capabilities: Sequence[AgentCapability[None]] | None = None
-    spec: dict[str, Any] | AgentSpec | None = None
+    toolsets: Sequence[AbstractToolset[ReactDepsT]] | None = None
+    builtin_tools: Sequence[AgentBuiltinTool[ReactDepsT]] | None = None
+    capabilities: Sequence[AgentCapability[ReactDepsT]] | None = None
+    spec: AgentSpecInput | None = None
 
 
 @dataclass
 class StartTurn(
     BaseNode[
         ReactState,
-        ReactDeps,
-        AgentRunResult[OutputDataT],
+        ReactDeps[ReactOutputT, ReactDepsT],
+        AgentRunResult[ReactOutputT],
     ],
-    Generic[OutputDataT],
+    Generic[ReactOutputT, ReactDepsT],
 ):
     user_prompt: str | Sequence[UserContent] | None
 
     async def run(
-        self, ctx: GraphRunContext[ReactState, ReactDeps]
-    ) -> RunAgent[OutputDataT]:
+        self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
+    ) -> RunAgent[ReactOutputT, ReactDepsT]:
         if (
             self.user_prompt is not None
             and (abandoned := drop_trailing_deferral(ctx.state.message_history))
@@ -101,16 +105,16 @@ class StartTurn(
 class ResumeTurn(
     BaseNode[
         ReactState,
-        ReactDeps,
-        AgentRunResult[OutputDataT],
+        ReactDeps[ReactOutputT, ReactDepsT],
+        AgentRunResult[ReactOutputT],
     ],
-    Generic[OutputDataT],
+    Generic[ReactOutputT, ReactDepsT],
 ):
     deferred_results: DeferredToolResults
 
     async def run(
-        self, ctx: GraphRunContext[ReactState, ReactDeps]
-    ) -> RunAgent[OutputDataT]:
+        self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
+    ) -> RunAgent[ReactOutputT, ReactDepsT]:
         if not self.deferred_results.calls and not self.deferred_results.approvals:
             raise ValueError(
                 "ResumeTurn requires at least one resolved call or approval"
@@ -122,17 +126,17 @@ class ResumeTurn(
 class RunAgent(
     BaseNode[
         ReactState,
-        ReactDeps,
-        AgentRunResult[OutputDataT],
+        ReactDeps[ReactOutputT, ReactDepsT],
+        AgentRunResult[ReactOutputT],
     ],
-    Generic[OutputDataT],
+    Generic[ReactOutputT, ReactDepsT],
 ):
     user_prompt: str | Sequence[UserContent] | None = None
     deferred_results: DeferredToolResults | None = None
 
     async def run(
-        self, ctx: GraphRunContext[ReactState, ReactDeps]
-    ) -> ResolveDeferred[OutputDataT] | End[AgentRunResult[OutputDataT]]:
+        self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
+    ) -> ResolveDeferred[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
         if ctx.deps.event_send_stream is None:
             result = await ctx.deps.agent.run(
                 self.user_prompt,
@@ -156,7 +160,7 @@ class RunAgent(
             )
             return await self.next_node(ctx, result)
 
-        result: AgentRunResult[OutputDataT] | None = None
+        result: AgentRunResult[ReactOutputT] | None = None
         async with ctx.deps.agent.run_stream_events(
             user_prompt=self.user_prompt,
             output_type=ctx.deps.output_type,
@@ -191,9 +195,9 @@ class RunAgent(
 
     async def next_node(
         self,
-        ctx: GraphRunContext[ReactState, ReactDeps],
-        result: AgentRunResult[OutputDataT],
-    ) -> ResolveDeferred[OutputDataT] | End[AgentRunResult[OutputDataT]]:
+        ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]],
+        result: AgentRunResult[ReactOutputT],
+    ) -> ResolveDeferred[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
         ctx.state.message_history = list(result.all_messages())
 
         if new_messages := result.new_messages():
@@ -215,16 +219,16 @@ class RunAgent(
 class ResolveDeferred(
     BaseNode[
         ReactState,
-        ReactDeps,
-        AgentRunResult[OutputDataT],
+        ReactDeps[ReactOutputT, ReactDepsT],
+        AgentRunResult[ReactOutputT],
     ],
-    Generic[OutputDataT],
+    Generic[ReactOutputT, ReactDepsT],
 ):
     requests: DeferredToolRequests
 
     async def run(
-        self, ctx: GraphRunContext[ReactState, ReactDeps]
-    ) -> RunAgent[OutputDataT]:
+        self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
+    ) -> RunAgent[ReactOutputT, ReactDepsT]:
         if ctx.deps.resolver is None:
             raise RuntimeError("ResolveDeferred requires a ReactDeps.resolver")
         return RunAgent(deferred_results=await ctx.deps.resolver.resolve(self.requests))
@@ -242,23 +246,42 @@ def drop_trailing_deferral(history: list[ModelMessage]) -> ModelResponse | None:
     return last
 
 
+react_graph: Graph[
+    ReactState,
+    ReactDeps[ReactOutput, object],
+    AgentRunResult[ReactOutput],
+] = Graph(
+    nodes=[StartTurn, ResumeTurn, RunAgent, ResolveDeferred],
+    name="react",
+)
+
+
 async def iter_react_graph_events(
-    start_node: StartTurn[OutputDataT] | ResumeTurn[OutputDataT],
+    start_node: StartTurn[ReactOutputT, ReactDepsT]
+    | ResumeTurn[ReactOutputT, ReactDepsT],
     *,
     state: ReactState,
-    deps: ReactDeps,
+    deps: ReactDeps[ReactOutputT, ReactDepsT],
 ) -> AsyncGenerator[
-    AgentStreamEvent | AgentRunResultEvent[OutputDataT],
+    AgentStreamEvent | AgentRunResultEvent[ReactOutputT],
     None,
 ]:
     send_stream, receive_stream = anyio.create_memory_object_stream[
-        AgentStreamEvent | AgentRunResultEvent[OutputDataT]
+        AgentStreamEvent | AgentRunResultEvent[ReactOutputT]
     ](100)
     graph_deps = replace(deps, event_send_stream=send_stream)
 
     async def run_graph() -> None:
+        graph: Graph[
+            ReactState,
+            ReactDeps[ReactOutputT, ReactDepsT],
+            AgentRunResult[ReactOutputT],
+        ] = Graph(
+            nodes=[StartTurn, ResumeTurn, RunAgent, ResolveDeferred],
+            name="react",
+        )
         async with send_stream:
-            await react_graph.run(
+            await graph.run(
                 start_node,
                 state=state,
                 deps=graph_deps,
@@ -269,13 +292,3 @@ async def iter_react_graph_events(
             tg.start_soon(run_graph)
             async for event in receive_stream:
                 yield event
-
-
-react_graph = Graph[
-    ReactState,
-    ReactDeps,
-    AgentRunResult[Any],
-](
-    nodes=[StartTurn, ResumeTurn, RunAgent, ResolveDeferred],
-    name="react",
-)

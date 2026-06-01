@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic_ai import Agent
 from pydantic_ai.models import infer_model
+from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.ui._web.app import _get_ui_html
 from pydantic_ai.ui.vercel_ai.request_types import RequestData
 
@@ -34,7 +35,7 @@ def build_dev_ui_router(
 
     adapter = GraphAdapter(
         channel_id=channel_id,
-        agent=cast(Agent[None, Any], graph_agent),
+        agent=cast(Agent[None, str | DeferredToolRequests], graph_agent),
         conversations=octomate.conversations,
         agent_id=agent_id,
     )

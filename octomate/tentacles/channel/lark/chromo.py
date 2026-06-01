@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Literal
-from typing import TypeVar
+from typing import Literal, TypeVar
 
+from lark_oapi.api.im.v1.model.mention_event import MentionEvent
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
-from pydantic_core import to_json
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import AgentRunResult
 from pydantic_ai.tools import DeferredToolRequests
+from pydantic_core import to_json
 
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
@@ -23,11 +24,13 @@ from octomate.schemas.segments import (
 )
 from octomate.tentacles.channel.base import Chromo
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
+from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
 OutputT = TypeVar("OutputT")
 
 LARK_STREAM_ELEMENT_ID = "octomate_answer"
+JsonObjectAdapter = TypeAdapter(JsonObject)
 
 
 class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
@@ -43,7 +46,7 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
             if not msg_type or not chat_type:
                 return None
 
-            segments = self._parse_segments(msg_type, message.content, message.mentions)
+            segments = self.parse_segments(msg_type, message.content, message.mentions)
 
             reply_id = message.parent_id or ""
             if reply_id:
@@ -105,7 +108,12 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
         elif output is None:
             return []
         else:
-            payload = to_json(output, indent=2, ensure_ascii=False, fallback=str).decode()
+            payload = to_json(
+                output,
+                indent=2,
+                ensure_ascii=False,
+                fallback=str,
+            ).decode()
             text = f"```json\n{payload}\n```"
         return [self.make_markdown_message(text)] if text else []
 
@@ -162,23 +170,24 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
             content=json.dumps(content, ensure_ascii=False, separators=(",", ":")),
         )
 
-    def _parse_segments(
+    def parse_segments(
         self,
         msg_type: str,
         content_json: str | None,
-        mentions: list[Any] | None,
+        mentions: list[MentionEvent] | None,
     ) -> list[MessageSegment]:
         if not content_json:
             return []
 
         try:
-            content: dict[str, Any] = json.loads(content_json)
-        except (json.JSONDecodeError, TypeError):
+            content = JsonObjectAdapter.validate_json(content_json)
+        except (ValidationError, TypeError):
             return [TextSegment(data={"text": content_json})]
 
         segments: list[MessageSegment] = []
         if msg_type == "text":
-            text = content.get("text", "")
+            raw_text = content.get("text", "")
+            text = raw_text if isinstance(raw_text, str) else ""
             if mentions:
                 for mention in mentions:
                     placeholder = mention.key
@@ -188,47 +197,72 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
                     if before:
                         segments.append(TextSegment(data={"text": before}))
                     mention_id = mention.id
-                    user_id = (mention_id.open_id if mention_id else None) or placeholder
+                    user_id = (
+                        mention_id.open_id if mention_id else None
+                    ) or placeholder
                     segments.append(
-                        AtSegment(
-                            data=AtData(user_id=user_id, name=mention.name or "")
-                        )
+                        AtSegment(data=AtData(user_id=user_id, name=mention.name or ""))
                     )
                     text = after
             if text:
                 segments.append(TextSegment(data={"text": text}))
         elif msg_type == "image":
-            image_key = content.get("image_key", "")
-            segments.append(ImageSegment(data=ImageData(file=image_key, name=image_key)))
+            raw_image_key = content.get("image_key", "")
+            image_key = raw_image_key if isinstance(raw_image_key, str) else ""
+            segments.append(
+                ImageSegment(data=ImageData(file=image_key, name=image_key))
+            )
         elif msg_type == "post":
-            title = content.get("title", "")
+            raw_title = content.get("title", "")
+            title = raw_title if isinstance(raw_title, str) else ""
             if title:
                 segments.append(TextSegment(data={"text": f"[{title}]\n"}))
             for lang_content in content.values():
                 if not isinstance(lang_content, list):
                     continue
                 for line in lang_content:
+                    if not isinstance(line, list):
+                        continue
                     for element in line:
+                        if not isinstance(element, dict):
+                            continue
                         tag = element.get("tag", "")
                         if tag == "text":
+                            text = element.get("text", "")
                             segments.append(
-                                TextSegment(data={"text": element.get("text", "")})
+                                TextSegment(
+                                    data={"text": text if isinstance(text, str) else ""}
+                                )
                             )
                         elif tag == "a":
+                            href = element.get("href", "")
                             segments.append(
-                                TextSegment(data={"text": element.get("href", "")})
+                                TextSegment(
+                                    data={"text": href if isinstance(href, str) else ""}
+                                )
                             )
                         elif tag == "at":
+                            user_id = element.get("user_id", "")
+                            user_name = element.get("user_name", "")
                             segments.append(
                                 AtSegment(
                                     data=AtData(
-                                        user_id=element.get("user_id", ""),
-                                        name=element.get("user_name", ""),
+                                        user_id=(
+                                            user_id if isinstance(user_id, str) else ""
+                                        ),
+                                        name=(
+                                            user_name
+                                            if isinstance(user_name, str)
+                                            else ""
+                                        ),
                                     )
                                 )
                             )
                         elif tag == "img":
-                            image_key = element.get("image_key", "")
+                            raw_image_key = element.get("image_key", "")
+                            image_key = (
+                                raw_image_key if isinstance(raw_image_key, str) else ""
+                            )
                             segments.append(
                                 ImageSegment(
                                     data=ImageData(file=image_key, name=image_key)

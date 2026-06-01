@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from octomate.tentacles.channel.slack.schema import SlackBlock
 
 
 APPROVAL_CARD_ICON = "check"
@@ -13,8 +13,8 @@ def card_block(
     icon: str,
     subtitle: str = "",
     body: str = "",
-) -> dict[str, Any]:
-    block: dict[str, Any] = {
+) -> SlackBlock:
+    block: SlackBlock = {
         "type": "card",
         "slack_icon": {"type": "icon", "name": icon},
         "title": {"type": "mrkdwn", "text": title, "verbatim": False},

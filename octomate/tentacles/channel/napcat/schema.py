@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import (
     AliasGenerator,
@@ -27,11 +27,12 @@ from octomate.schemas.segments import (
     Segment,
     TextSegment,
 )
+from octomate.types.json import JsonObject
 
 
 @dataclass(frozen=True)
 class NapcatOutboundMessage:
-    segments: list[dict[str, Any]]
+    segments: list[JsonObject]
 
 
 class ActionResponse(BaseModel):
@@ -39,7 +40,7 @@ class ActionResponse(BaseModel):
 
     status: str = ""
     retcode: int = 0
-    data: dict[str, Any] | None = None
+    data: JsonObject | None = None
     echo: str | None = None
     message: str | None = None
     wording: str | None = None
@@ -67,7 +68,7 @@ class NapcatUserProfile(UserProfile):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize(cls, data: Any) -> Any:
+    def normalize(cls, data: JsonObject) -> JsonObject:
         if isinstance(data, dict):
             data.setdefault("user_id", data.get("user_id") or data.get("uin") or "")
             if not data.get("nick") and not data.get("name"):
@@ -91,7 +92,7 @@ class NapcatSender(UserProfile):
 
     @model_validator(mode="before")
     @classmethod
-    def normalize(cls, data: Any) -> Any:
+    def normalize(cls, data: JsonObject) -> JsonObject:
         if isinstance(data, dict):
             if not data.get("name"):
                 data["name"] = data.get("card") or data.get("nickname") or ""
@@ -104,9 +105,12 @@ class NapcatAtData(AtData):
     user_id: str = Field(validation_alias="qq")
 
 
-class NapcatAtSegment(AtSegment):
+class NapcatAtSegment(Segment):
     type: Literal["at"] = "at"
     data: NapcatAtData
+
+    def __str__(self) -> str:
+        return f"@{self.data.name or self.data.user_id}"
 
 
 class FaceData(TypedDict):
@@ -125,7 +129,7 @@ class VideoData(TypedDict):
 
 class GenericSegment(Segment):
     type: str
-    data: dict[str, Any] = Field(default_factory=dict)
+    data: JsonObject = Field(default_factory=dict)
 
 
 class FaceSegment(Segment):
@@ -143,7 +147,7 @@ class VideoSegment(Segment):
     data: VideoData
 
 
-def _segment_discriminator(raw: Any) -> str:
+def segment_discriminator(raw: JsonObject | Segment) -> str:
     if isinstance(raw, dict):
         segment_type = raw.get("type", "")
     else:
@@ -162,7 +166,7 @@ NapcatMessageSegment = Annotated[
     | Annotated[RecordSegment, Tag("record")]
     | Annotated[VideoSegment, Tag("video")]
     | Annotated[GenericSegment, Tag("__generic__")],
-    Discriminator(_segment_discriminator),
+    Discriminator(segment_discriminator),
 ]
 
 
@@ -181,7 +185,7 @@ class NapcatMessageEvent(BaseModel):
     raw_message: str = ""
 
 
-def _inbound_discriminator(raw: Any) -> str:
+def _inbound_discriminator(raw: JsonObject) -> str:
     if isinstance(raw, dict) and raw.get("post_type") == "message":
         return "message"
     return "response"

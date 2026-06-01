@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import ClassVar, Literal
 
 from fastapi.responses import StreamingResponse
 from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
@@ -29,7 +29,7 @@ from octomate.tentacles.agent.graph import (
     ReactState,
     iter_react_graph_events,
 )
-from octomate.tentacles.agent.graph.react import ResumeTurn, StartTurn
+from octomate.tentacles.agent.graph.react import ReactOutput, ResumeTurn, StartTurn
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class GraphAdapter:
     SDK_VERSION: ClassVar[Literal[6]] = 6
 
     channel_id: str
-    agent: Agent[None, Any]
+    agent: Agent[None, str | DeferredToolRequests]
     conversations: ConversationManager
     agent_id: str = "Inkling"
 
@@ -91,7 +91,7 @@ class GraphAdapter:
         history: Sequence[ModelMessage],
         user_prompt: str | Sequence[UserContent] | None,
         deferred: DeferredToolResults | None,
-    ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[Any]]:
+    ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[ReactOutput]]:
         try:
             async for event in iter_react_graph_events(
                 self.start_node(user_prompt=user_prompt, deferred=deferred),
@@ -102,6 +102,7 @@ class GraphAdapter:
                 deps=ReactDeps(
                     agent=self.agent,
                     conversation_manager=self.conversations,
+                    agent_deps=None,
                 ),
             ):
                 yield event
@@ -147,7 +148,7 @@ class GraphAdapter:
 
     @staticmethod
     async def complete_chunks(
-        result: AgentRunResult[Any],
+        result: AgentRunResult[ReactOutput],
     ) -> AsyncIterator[BaseChunk]:
         if not isinstance(result.output, DeferredToolRequests):
             return
