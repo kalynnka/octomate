@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import cast
+
+import pytest
 
 from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -19,6 +21,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
     TextPart,
+    ToolCallPart,
 )
 from pydantic_ai.models.function import (
     AgentInfo,
@@ -28,8 +31,8 @@ from pydantic_ai.models.function import (
 )
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.profiles.google import google_model_profile
-from pydantic_ai.tools import DeferredToolRequests
-from pydantic_graph import Graph
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_graph import End, Graph, GraphRunContext
 
 from octomate import Octomate
 from octomate.managers.conversations import ConversationManager
@@ -52,9 +55,6 @@ from octomate.tentacles.agent.inkling import (
 )
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.json import JsonObject
-
-if TYPE_CHECKING:
-    import pytest
 
 InklingTestOutput = str | DeferredToolRequests
 InklingTestEvent = AgentStreamEvent | AgentRunResultEvent[InklingTestOutput]
@@ -254,6 +254,43 @@ async def test_inkling_loop_emits_deferred_question_batch() -> None:
     assert all(run[1].startswith("react:") for run in conversations.runs)
 
 
+async def test_inkling_tentacle_invokes_suspender_on_deferred_request() -> None:
+    """The real InklingTentacle -> react graph must invoke a supplied suspender
+    when the run yields DeferredToolRequests (the persist+present contract)."""
+
+    agent, _ = _build_test_agent(
+        [
+            ScriptedTurn(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "what's your name?"}]},
+                tool_call_id="call_ask_1",
+            ),
+        ]
+    )
+    conversations = FakeConversationManager()
+    tentacle = InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=agent,
+        conversation_manager=conversations,
+    )
+    suspender = _StubSuspender()
+
+    outputs: list[object] = []
+    async with tentacle.run_stream_events(
+        "hi octomate",
+        conversation_key=_test_conversation_key(),
+        deferred_suspender=suspender,
+    ) as stream:
+        async for event in stream:
+            if isinstance(event, AgentRunResultEvent):
+                outputs.append(event.result.output)
+
+    assert len(suspender.suspended) == 1
+    assert isinstance(suspender.suspended[0], DeferredToolRequests)
+    assert suspender.suspended[0] is outputs[-1]
+
+
 async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
     agent, script = _build_test_agent(
         [
@@ -310,3 +347,96 @@ async def test_inkling_loop_handles_immediate_final_response() -> None:
     )
 
     assert result.output.output == "all done!"
+
+
+@dataclass
+class _StubResolver:
+    results: DeferredToolResults
+    calls: int = 0
+
+    async def resolve(self, requests: DeferredToolRequests) -> DeferredToolResults:
+        self.calls += 1
+        return self.results
+
+
+@dataclass
+class _StubSuspender:
+    suspended: list[DeferredToolRequests] = field(default_factory=list)
+
+    async def suspend(self, requests: DeferredToolRequests) -> None:
+        self.suspended.append(requests)
+
+
+def _deferred_requests() -> DeferredToolRequests:
+    return DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "?"}]},
+                tool_call_id="call_ask_1",
+            )
+        ]
+    )
+
+
+def _react_deps(
+    *,
+    resolver: object | None = None,
+    suspender: object | None = None,
+) -> ReactDeps[InklingTestOutput, None]:
+    return ReactDeps(
+        agent=cast("Agent[None, InklingTestOutput]", object()),
+        conversation_manager=FakeConversationManager(),
+        agent_deps=None,
+        resolver=cast("None", resolver),
+        suspender=cast("None", suspender),
+    )
+
+
+def _ctx(
+    deps: ReactDeps[InklingTestOutput, None],
+) -> GraphRunContext[ReactState, ReactDeps[InklingTestOutput, None]]:
+    return GraphRunContext(
+        state=ReactState(conversation=_test_conversation()),
+        deps=deps,
+    )
+
+
+async def test_resolve_deferred_resolves_in_process_when_resolver_set() -> None:
+    requests = _deferred_requests()
+    results = DeferredToolResults()
+    results.calls["call_ask_1"] = ["Ada"]
+    resolver = _StubResolver(results)
+
+    node: ResolveDeferred[InklingTestOutput, None] = ResolveDeferred(
+        requests=requests, result=AgentRunResult(requests)
+    )
+    nxt = await node.run(_ctx(_react_deps(resolver=resolver)))
+
+    assert isinstance(nxt, RunAgent)
+    assert nxt.deferred_results is results
+    assert resolver.calls == 1
+
+
+async def test_resolve_deferred_suspends_when_only_suspender_set() -> None:
+    requests = _deferred_requests()
+    suspender = _StubSuspender()
+    run_result = AgentRunResult(requests)
+
+    node: ResolveDeferred[InklingTestOutput, None] = ResolveDeferred(
+        requests=requests, result=run_result
+    )
+    nxt = await node.run(_ctx(_react_deps(suspender=suspender)))
+
+    assert isinstance(nxt, End)
+    assert nxt.data is run_result
+    assert suspender.suspended == [requests]
+
+
+async def test_resolve_deferred_requires_a_hook() -> None:
+    requests = _deferred_requests()
+    node: ResolveDeferred[InklingTestOutput, None] = ResolveDeferred(
+        requests=requests, result=AgentRunResult(requests)
+    )
+    with pytest.raises(RuntimeError, match="resolver or suspender"):
+        await node.run(_ctx(_react_deps()))

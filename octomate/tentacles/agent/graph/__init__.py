@@ -5,6 +5,10 @@ from octomate.tentacles.agent.graph.react import (
     react_graph,
 )
 from octomate.tentacles.agent.graph.resolver import DeferredResolver
+from octomate.tentacles.agent.graph.suspender import (
+    DeferredSuspender,
+    HumanReviewSuspender,
+)
 from octomate.tentacles.agent.graph.triage import (
     Awake,
     DeferredResult,
@@ -22,6 +26,8 @@ __all__ = [
     "ReactDeps",
     "ReactState",
     "DeferredResolver",
+    "DeferredSuspender",
+    "HumanReviewSuspender",
     "ResponseTarget",
     "ResponseTargetMode",
     "DeferredResult",

@@ -36,6 +36,7 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelResponse
 from octomate.tentacles.agent.base import AgentOutput, AgentSpecInput
 from octomate.tentacles.agent.graph.resolver import DeferredResolver
+from octomate.tentacles.agent.graph.suspender import DeferredSuspender
 
 logger = logging.getLogger(__name__)
 ReactOutput: TypeAlias = JsonValue | BaseModel | DeferredToolRequests
@@ -58,6 +59,7 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
         ObjectSendStream[AgentStreamEvent | AgentRunResultEvent[ReactOutputT]] | None
     ) = None
     resolver: DeferredResolver | None = None
+    suspender: DeferredSuspender | None = None
     output_type: OutputSpec[ReactOutputT] | None = None
     run_name: str = "react"
     model: Model | KnownModelName | str | None = None
@@ -209,9 +211,9 @@ class RunAgent(
             )
 
         if isinstance(result.output, DeferredToolRequests) and (
-            ctx.deps.resolver is not None
+            ctx.deps.resolver is not None or ctx.deps.suspender is not None
         ):
-            return ResolveDeferred(requests=result.output)
+            return ResolveDeferred(requests=result.output, result=result)
         return End(result)
 
 
@@ -225,13 +227,21 @@ class ResolveDeferred(
     Generic[ReactOutputT, ReactDepsT],
 ):
     requests: DeferredToolRequests
+    result: AgentRunResult[ReactOutputT]
 
     async def run(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
-    ) -> RunAgent[ReactOutputT, ReactDepsT]:
-        if ctx.deps.resolver is None:
-            raise RuntimeError("ResolveDeferred requires a ReactDeps.resolver")
-        return RunAgent(deferred_results=await ctx.deps.resolver.resolve(self.requests))
+    ) -> RunAgent[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
+        if ctx.deps.resolver is not None:
+            return RunAgent(
+                deferred_results=await ctx.deps.resolver.resolve(self.requests)
+            )
+        if ctx.deps.suspender is not None:
+            await ctx.deps.suspender.suspend(self.requests)
+            return End(self.result)
+        raise RuntimeError(
+            "ResolveDeferred requires a react graph resolver or suspender"
+        )
 
 
 def drop_trailing_deferral(history: list[ModelMessage]) -> ModelResponse | None:
@@ -246,14 +256,13 @@ def drop_trailing_deferral(history: list[ModelMessage]) -> ModelResponse | None:
     return last
 
 
+REACT_NODES = [StartTurn, ResumeTurn, RunAgent, ResolveDeferred]
+
 react_graph: Graph[
     ReactState,
     ReactDeps[ReactOutput, object],
     AgentRunResult[ReactOutput],
-] = Graph(
-    nodes=[StartTurn, ResumeTurn, RunAgent, ResolveDeferred],
-    name="react",
-)
+] = Graph(nodes=REACT_NODES, name="react")
 
 
 async def iter_react_graph_events(
@@ -276,10 +285,7 @@ async def iter_react_graph_events(
             ReactState,
             ReactDeps[ReactOutputT, ReactDepsT],
             AgentRunResult[ReactOutputT],
-        ] = Graph(
-            nodes=[StartTurn, ResumeTurn, RunAgent, ResolveDeferred],
-            name="react",
-        )
+        ] = Graph(nodes=REACT_NODES, name="react")
         async with send_stream:
             await graph.run(
                 start_node,

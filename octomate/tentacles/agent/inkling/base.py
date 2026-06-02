@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeAlias, overload
 
@@ -23,7 +23,6 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.providers.google import GoogleProvider
-from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
@@ -41,6 +40,7 @@ from octomate.tentacles.agent.graph import (
     iter_react_graph_events,
 )
 from octomate.tentacles.agent.graph.react import ResumeTurn, StartTurn
+from octomate.tentacles.agent.graph.suspender import DeferredSuspender
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.agent.inkling.tools import inkling_toolset
 
@@ -100,6 +100,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_type: None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -126,6 +127,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_type: OutputSpec[AgentOutput],
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -151,6 +153,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_type: OutputSpec[AgentOutput] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -174,6 +177,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             output_type=output_type,
             message_history=message_history,
             deferred_tool_results=deferred_tool_results,
+            deferred_suspender=deferred_suspender,
             model=model,
             instructions=instructions,
             deps=deps,
@@ -195,111 +199,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         return result
 
     @overload
-    def run_stream(
-        self,
-        user_prompt: str | Sequence[UserContent] | None = None,
-        *,
-        conversation_key: ConversationKey,
-        run_name: str | None = None,
-        output_type: None = None,
-        message_history: Sequence[ModelMessage] | None = None,
-        deferred_tool_results: DeferredToolResults | None = None,
-        model: Model | KnownModelName | str | None = None,
-        instructions: AgentInstructions[None] = None,
-        deps: None = None,
-        model_settings: AgentModelSettings[None] | None = None,
-        usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
-        metadata: AgentMetadata[None] | None = None,
-        output_retries: int | None = None,
-        infer_name: bool = True,
-        toolsets: Sequence[AbstractToolset[None]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
-        event_stream_handler: EventStreamHandler[None] | None = None,
-        capabilities: Sequence[AgentCapability[None]] | None = None,
-        spec: AgentSpecInput | None = None,
-    ) -> AsyncIterator[StreamedRunResult[None, InklingOutput]]: ...
-
-    @overload
-    def run_stream(
-        self,
-        user_prompt: str | Sequence[UserContent] | None = None,
-        *,
-        conversation_key: ConversationKey,
-        run_name: str | None = None,
-        output_type: OutputSpec[AgentOutput],
-        message_history: Sequence[ModelMessage] | None = None,
-        deferred_tool_results: DeferredToolResults | None = None,
-        model: Model | KnownModelName | str | None = None,
-        instructions: AgentInstructions[None] = None,
-        deps: None = None,
-        model_settings: AgentModelSettings[None] | None = None,
-        usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
-        metadata: AgentMetadata[None] | None = None,
-        output_retries: int | None = None,
-        infer_name: bool = True,
-        toolsets: Sequence[AbstractToolset[None]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
-        event_stream_handler: EventStreamHandler[None] | None = None,
-        capabilities: Sequence[AgentCapability[None]] | None = None,
-        spec: AgentSpecInput | None = None,
-    ) -> AsyncIterator[StreamedRunResult[None, AgentOutput]]: ...
-
-    async def run_stream(
-        self,
-        user_prompt: str | Sequence[UserContent] | None = None,
-        *,
-        conversation_key: ConversationKey,
-        run_name: str | None = None,
-        output_type: OutputSpec[AgentOutput] | None = None,
-        message_history: Sequence[ModelMessage] | None = None,
-        deferred_tool_results: DeferredToolResults | None = None,
-        model: Model | KnownModelName | str | None = None,
-        instructions: AgentInstructions[None] = None,
-        deps: None = None,
-        model_settings: AgentModelSettings[None] | None = None,
-        usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
-        metadata: AgentMetadata[None] | None = None,
-        output_retries: int | None = None,
-        infer_name: bool = True,
-        toolsets: Sequence[AbstractToolset[None]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
-        event_stream_handler: EventStreamHandler[None] | None = None,
-        capabilities: Sequence[AgentCapability[None]] | None = None,
-        spec: AgentSpecInput | None = None,
-    ) -> AsyncIterator[
-        StreamedRunResult[None, InklingOutput] | StreamedRunResult[None, AgentOutput]
-    ]:
-        conversation = await self.conversation_manager.ensure(
-            conversation_key,
-            agent_tentacle_id=self.id,
-        )
-        async with self.agent.run_stream(
-            user_prompt=user_prompt,
-            output_type=output_type,
-            message_history=message_history,
-            deferred_tool_results=deferred_tool_results,
-            conversation_id=str(conversation.id),
-            model=model,
-            instructions=instructions,
-            deps=deps,
-            model_settings=model_settings,
-            usage_limits=usage_limits,
-            usage=usage,
-            metadata=metadata,
-            output_retries=output_retries,
-            infer_name=infer_name,
-            toolsets=toolsets,
-            builtin_tools=builtin_tools,
-            event_stream_handler=event_stream_handler,
-            capabilities=capabilities,
-            spec=spec,
-        ) as stream:
-            yield stream
-
-    @overload
     def run_stream_events(
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
@@ -309,6 +208,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_type: None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -334,6 +234,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_type: OutputSpec[AgentOutput],
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -358,6 +259,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_type: OutputSpec[AgentOutput] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -380,6 +282,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 output_type=output_type,
                 message_history=message_history,
                 deferred_tool_results=deferred_tool_results,
+                deferred_suspender=deferred_suspender,
                 model=model,
                 instructions=instructions,
                 deps=deps,
@@ -405,6 +308,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_type: OutputSpec[AgentOutput] | None,
         message_history: Sequence[ModelMessage] | None,
         deferred_tool_results: DeferredToolResults | None,
+        deferred_suspender: DeferredSuspender | None,
         model: Model | KnownModelName | str | None,
         instructions: AgentInstructions[None],
         deps: None,
@@ -431,6 +335,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             conversation_manager=self.conversation_manager,
             agent_deps=deps,
             resolver=self.deferred_resolver,
+            suspender=deferred_suspender,
             output_type=react_output_type,
             run_name=resolved_run_name,
             model=model,

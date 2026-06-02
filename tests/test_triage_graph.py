@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-import uuid
 from typing import cast
 
 import pytest
@@ -22,6 +22,7 @@ from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.graph import (
     DeferredResult,
+    DeferredSuspender,
     ResponseTarget,
     ResponseTargetMode,
     TriageDecision,
@@ -29,7 +30,7 @@ from octomate.tentacles.agent.graph import (
     TriageState,
     triage_graph,
 )
-from octomate.tentacles.agent.graph.triage import ResumeDeferredActions, RunTriage
+from octomate.tentacles.agent.graph.triage import ResumeDeferred, RunTriage
 from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
@@ -70,6 +71,11 @@ class FakeConversationManager:
 
 @dataclass
 class FakeAgent:
+    """Stands in for an AgentTentacle. Because the react graph is short-circuited
+    here, the fake itself honors the AgentTentacle contract: when its output is a
+    DeferredToolRequests it invokes the supplied suspender, exactly as react would.
+    """
+
     decision: TriageDecision | DeferredToolRequests
     id: str = "inkling"
     reception_output: str = "done"
@@ -95,6 +101,7 @@ class FakeAgent:
         output_type: OutputSpec[FakeRunOutput] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
         instructions: str | None = None,
     ) -> AgentRunResult[FakeRunOutput]:
         self.runs.append(run_name)
@@ -103,8 +110,12 @@ class FakeAgent:
         if run_name == "reception":
             if not self.allow_reception_run:
                 raise AssertionError("reception should use run_stream_events")
-            return AgentRunResult(self.reception_output)
-        return AgentRunResult(self.decision)
+            output: FakeRunOutput = self.reception_output
+        else:
+            output = self.decision
+        if isinstance(output, DeferredToolRequests) and deferred_suspender is not None:
+            await deferred_suspender.suspend(output)
+        return AgentRunResult(output)
 
     @asynccontextmanager
     async def run_stream_events(
@@ -115,6 +126,7 @@ class FakeAgent:
         run_name: str | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncIterator[AsyncIterator[FakeStreamEvent]]:
         self.streams.append(
             (user_prompt, list(message_history or []), conversation_key, run_name)
@@ -125,35 +137,6 @@ class FakeAgent:
 
         yield events()
 
-    async def run_stream(
-        self,
-        user_prompt: str | Sequence[UserContent] | None = None,
-        *,
-        conversation_key: ConversationKey,
-        run_name: str | None = None,
-        message_history: Sequence[ModelMessage] | None = None,
-        deferred_tool_results: DeferredToolResults | None = None,
-    ) -> AsyncIterator[StreamedRunResult[None, str]]:
-        self.streams.append(
-            (user_prompt, list(message_history or []), conversation_key, run_name)
-        )
-        yield StreamedRunResult([], 0, run_result=AgentRunResult(self.reception_output))
-
-
-@dataclass
-class RecordingMarkdownStreamRecorder:
-    stream_sent: list[tuple[ConversationKey, list[str]]]
-
-    async def present(
-        self,
-        key: ConversationKey,
-        stream: StreamedRunResult[None, str],
-    ) -> str | None:
-        output = await stream.get_output()
-        outputs = [output]
-        self.stream_sent.append((key, outputs))
-        return "stream-message"
-
 
 class NoopMarkdownStreamFeeler:
     async def present(
@@ -161,17 +144,6 @@ class NoopMarkdownStreamFeeler:
         key: ConversationKey,
         stream: StreamedRunResult[None, str],
     ) -> str | None:
-        return None
-
-
-class NoopEventStreamFeeler:
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[FakeStreamEvent],
-    ) -> str | None:
-        async for _event in events:
-            pass
         return None
 
 
@@ -208,16 +180,8 @@ class FakeChannel:
     def __post_init__(self) -> None:
         self.feelers = Feelers[str](
             markdown=self,
-            markdown_stream=(
-                RecordingMarkdownStreamRecorder(self.stream_sent)
-                if self.config.stream.enabled
-                else NoopMarkdownStreamFeeler()
-            ),
-            event_stream=(
-                RecordingEventStreamRecorder(self.stream_sent)
-                if self.config.stream.enabled
-                else NoopEventStreamFeeler()
-            ),
+            markdown_stream=NoopMarkdownStreamFeeler(),
+            event_stream=RecordingEventStreamRecorder(self.stream_sent),
             approvals=PlainTextApprovalFeeler(self),
             ask_questions=PlainTextAskQuestionFeeler(self),
         )
@@ -259,20 +223,6 @@ class RecordingMarkdownFeeler:
 
 
 @dataclass
-class RecordingMarkdownStreamFeeler:
-    calls: list[tuple[ConversationKey, str]] = field(default_factory=list)
-
-    async def present(
-        self,
-        key: ConversationKey,
-        stream: StreamedRunResult[None, str],
-    ) -> str | None:
-        output = await stream.get_output()
-        self.calls.append((key, str(output)))
-        return "stream-message"
-
-
-@dataclass
 class RecordingEventStreamFeeler:
     calls: list[tuple[ConversationKey, str]] = field(default_factory=list)
 
@@ -296,12 +246,13 @@ class DroppingEventStreamFeeler:
         return None
 
 
-def _key() -> ConversationKey:
+def _key(thread_id: str = "") -> ConversationKey:
     return ConversationKey(
         channel_tentacle_id="im",
         chat_type="private",
         chat_id="alice",
         user_id="alice",
+        thread_id=thread_id,
     )
 
 
@@ -311,6 +262,33 @@ def _source_target(key: ConversationKey) -> ResponseTarget:
         key=key,
         thread_strategy="flat_thread",
         mode="main",
+    )
+
+
+def _state(
+    key: ConversationKey,
+    *,
+    user_prompt: str | None = "hi",
+) -> TriageState:
+    return TriageState(
+        source_target=_source_target(key),
+        agent_id="inkling",
+        user_prompt=user_prompt,
+    )
+
+
+def _deps(
+    *,
+    conversations: FakeConversationManager,
+    channels: dict[str, FakeChannel],
+    agent: FakeAgent,
+    action_manager: FakeActionManager | None = None,
+) -> TriageDeps:
+    return TriageDeps(
+        channels={cid: cast(ChannelTentacle, c) for cid, c in channels.items()},
+        agents={agent.id: cast(AgentTentacle, agent)},
+        conversation_manager=cast(ConversationManager, conversations),
+        action_manager=cast(DeferredActionManager, action_manager or FakeActionManager()),
     )
 
 
@@ -346,6 +324,7 @@ class CreateBatchCall:
 
 @dataclass
 class FakePresentedBatch:
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
     questions: list[DeferredQuestion] = field(default_factory=list)
     approvals: list[DeferredApproval] = field(default_factory=list)
 
@@ -434,19 +413,13 @@ async def test_triage_graph_emits_direct_route() -> None:
     ops = FakeChannel()
 
     result = (
-            await triage_graph.run(
-                RunTriage(
-                    agent=cast(AgentTentacle, agent),
-                    source_target=_source_target(key),
-                    user_prompt="hi",
-                ),
-                state=TriageState(),
-                deps=TriageDeps(
-                    conversation_manager=cast(ConversationManager, conversations),
-                    channels={
-                        "im": cast(ChannelTentacle, im),
-                        "ops": cast(ChannelTentacle, ops),
-                },
+        await triage_graph.run(
+            RunTriage(),
+            state=_state(key),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im, "ops": ops},
+                agent=agent,
             ),
         )
     ).output
@@ -472,16 +445,13 @@ async def test_triage_graph_returns_deferred_result_when_triage_requests_input()
 
     result = (
         await triage_graph.run(
-            RunTriage(
-                agent=cast(AgentTentacle, agent),
-                source_target=_source_target(key),
-                user_prompt="hi",
-            ),
-            state=TriageState(),
-            deps=TriageDeps(
-                conversation_manager=cast(ConversationManager, conversations),
-                action_manager=cast(DeferredActionManager, action_manager),
-                channels={"im": cast(ChannelTentacle, im)},
+            RunTriage(),
+            state=_state(key),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                action_manager=action_manager,
             ),
         )
     ).output
@@ -521,16 +491,13 @@ async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
 
     result = (
         await triage_graph.run(
-            ResumeDeferredActions(
-                awake=DeferredActionBatchResponse(batch_id=batch.id),
-                agent=cast(AgentTentacle, agent),
-                source_target=_source_target(key),
-            ),
+            ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
             state=TriageState(),
-            deps=TriageDeps(
-                conversation_manager=cast(ConversationManager, conversations),
-                action_manager=cast(DeferredActionManager, action_manager),
-                channels={"im": cast(ChannelTentacle, im)},
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                action_manager=action_manager,
             ),
         )
     ).output
@@ -566,16 +533,13 @@ async def test_triage_graph_keeps_incomplete_triage_batch_deferred() -> None:
 
     result = (
         await triage_graph.run(
-            ResumeDeferredActions(
-                awake=DeferredActionBatchResponse(batch_id=batch.id),
-                agent=cast(AgentTentacle, agent),
-                source_target=_source_target(key),
-            ),
+            ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
             state=TriageState(),
-            deps=TriageDeps(
-                conversation_manager=cast(ConversationManager, conversations),
-                action_manager=cast(DeferredActionManager, action_manager),
-                channels={"im": cast(ChannelTentacle, im)},
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                action_manager=action_manager,
             ),
         )
     ).output
@@ -595,29 +559,23 @@ async def test_triage_graph_uses_markdown_feeler_for_direct_answer() -> None:
     agent = FakeAgent(TriageDecision(action="answer", answer="hello"))
     conversations = FakeConversationManager()
     im = FakeChannel()
-    stream_feeler = RecordingMarkdownStreamFeeler()
     markdown_feeler = RecordingMarkdownFeeler()
-    im.feelers.markdown_stream = stream_feeler
     im.feelers.markdown = markdown_feeler
 
     result = (
         await triage_graph.run(
-            RunTriage(
-                agent=cast(AgentTentacle, agent),
-                source_target=_source_target(key),
-                user_prompt="hi",
-            ),
-            state=TriageState(),
-            deps=TriageDeps(
-                conversation_manager=cast(ConversationManager, conversations),
-                channels={"im": cast(ChannelTentacle, im)},
+            RunTriage(),
+            state=_state(key),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
             ),
         )
     ).output
 
     assert result.decision.answer == "hello"
     assert markdown_feeler.calls == [(key, "hello")]
-    assert stream_feeler.calls == []
     assert im.sent == []
 
 
@@ -637,19 +595,13 @@ async def test_triage_graph_emits_reception_after_route() -> None:
     ops = FakeChannel()
 
     result = (
-            await triage_graph.run(
-                RunTriage(
-                    agent=cast(AgentTentacle, agent),
-                    source_target=_source_target(key),
-                    user_prompt="debug this",
-                ),
-                state=TriageState(),
-                deps=TriageDeps(
-                    conversation_manager=cast(ConversationManager, conversations),
-                    channels={
-                        "im": cast(ChannelTentacle, im),
-                        "ops": cast(ChannelTentacle, ops),
-                },
+        await triage_graph.run(
+            RunTriage(),
+            state=_state(key, user_prompt="debug this"),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im, "ops": ops},
+                agent=agent,
             ),
         )
     ).output
@@ -688,18 +640,12 @@ async def test_triage_graph_uses_event_stream_feeler_for_reception() -> None:
 
     result = (
         await triage_graph.run(
-            RunTriage(
-                agent=cast(AgentTentacle, agent),
-                source_target=_source_target(key),
-                user_prompt="debug this",
-            ),
-            state=TriageState(),
-            deps=TriageDeps(
-                conversation_manager=cast(ConversationManager, conversations),
-                channels={
-                    "im": cast(ChannelTentacle, im),
-                    "ops": cast(ChannelTentacle, ops),
-                },
+            RunTriage(),
+            state=_state(key, user_prompt="debug this"),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im, "ops": ops},
+                agent=agent,
             ),
         )
     ).output
@@ -731,18 +677,12 @@ async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
 
     with pytest.raises(RuntimeError, match="completed without a result"):
         await triage_graph.run(
-            RunTriage(
-                agent=cast(AgentTentacle, agent),
-                source_target=_source_target(key),
-                user_prompt="debug this",
-            ),
-            state=TriageState(),
-            deps=TriageDeps(
-                conversation_manager=cast(ConversationManager, conversations),
-                channels={
-                    "im": cast(ChannelTentacle, im),
-                    "ops": cast(ChannelTentacle, ops),
-                },
+            RunTriage(),
+            state=_state(key, user_prompt="debug this"),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im, "ops": ops},
+                agent=agent,
             ),
         )
 
@@ -769,18 +709,15 @@ async def test_triage_graph_runs_final_reception_without_stream_when_disabled() 
     )
 
     result = (
-            await triage_graph.run(
-                RunTriage(
-                    agent=cast(AgentTentacle, agent),
-                    source_target=_source_target(key),
-                    user_prompt="debug this",
-                ),
-                state=TriageState(),
-                deps=TriageDeps(
-                    conversation_manager=cast(ConversationManager, conversations),
-                    channels={"im": cast(ChannelTentacle, im)},
-                ),
-            )
+        await triage_graph.run(
+            RunTriage(),
+            state=_state(key, user_prompt="debug this"),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+            ),
+        )
     ).output
 
     assert result.result is not None
@@ -790,3 +727,36 @@ async def test_triage_graph_runs_final_reception_without_stream_when_disabled() 
     assert im.sub_threads[0][1] == "needs work"
     assert im.sent[0][0].thread_id == "hint-thread"
     assert im.sent[0][1] == ["done"]
+
+
+async def test_triage_graph_skips_triage_inside_flat_thread() -> None:
+    key = _key(thread_id="existing-thread")
+    agent = FakeAgent(TriageDecision(action="answer", answer="unused"))
+    conversations = FakeConversationManager()
+    im = FakeChannel()
+
+    from octomate.tentacles.agent.graph.triage import Route
+
+    result = (
+        await triage_graph.run(
+            Route(),
+            state=_state(key, user_prompt="continue"),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+            ),
+        )
+    ).output
+
+    assert result.target.channel_id == "im"
+    assert result.target.mode == "sub"
+    assert result.result is not None
+    assert result.result.output == "done"
+    assert agent.runs == []
+    assert agent.streams[0][2] == key
+    assert agent.streams[0][3] == "reception"
+    assert agent.streams[0][0] == "continue"
+    assert im.sub_threads == []
+    assert im.stream_sent[0][0] == key
+    assert im.stream_sent[0][1] == ["done"]

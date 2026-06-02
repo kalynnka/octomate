@@ -99,6 +99,7 @@ class FakeAgent:
         output_type: OutputSpec[FakeRunOutput] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: object | None = None,
         instructions: str | None = None,
     ) -> AgentRunResult[FakeRunOutput]:
         self.turns.append(
@@ -117,6 +118,7 @@ class FakeAgent:
         run_name: str | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: object | None = None,
     ) -> AsyncIterator[AsyncIterator[FakeStreamEvent]]:
         self.streams.append(
             (user_prompt, list(message_history or []), conversation_key, run_name)
@@ -135,6 +137,7 @@ class FakeAgent:
         run_name: str | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: object | None = None,
     ) -> AsyncIterator[StreamedRunResult[None, str]]:
         self.streams.append(
             (user_prompt, list(message_history or []), conversation_key, run_name)
