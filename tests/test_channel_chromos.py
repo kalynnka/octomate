@@ -25,7 +25,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
-from slack_sdk.models.messages.chunk import TaskUpdateChunk
+from slack_sdk.models.messages.chunk import Chunk, PlanUpdateChunk, TaskUpdateChunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
 from websockets.asyncio.client import ClientConnection
@@ -1154,7 +1154,7 @@ class FakeSlackStream:
 class FakeSlackInk(Ink[SlackOutboundMessage]):
     streams: list[dict[str, str | None]] = field(default_factory=list)
     appends: list[str] = field(default_factory=list)
-    stream_chunks: list[list[TaskUpdateChunk]] = field(default_factory=list)
+    stream_chunks: list[list[Chunk]] = field(default_factory=list)
     stops: list[str | None] = field(default_factory=list)
     finals: list[dict[str, str | None]] = field(default_factory=list)
     sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
@@ -1225,7 +1225,7 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
     async def append_stream_chunks(
         self,
         stream: FakeSlackStream,
-        chunks: list[TaskUpdateChunk],
+        chunks: list[Chunk],
     ) -> None:
         self.stream_chunks.append(chunks)
 
@@ -1393,15 +1393,41 @@ async def test_slack_event_stream_feeler_emits_task_updates() -> None:
         yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
         yield FunctionToolCallEvent(
             ToolCallPart(
+                tool_name="ask_questions",
+                args={
+                    "questions": [
+                        {
+                            "hint": "Water hobbies",
+                            "question": "Which water hobby sounds fun?",
+                            "choices": ["Scuba diving", "Surfing", "Sailing"],
+                        }
+                    ]
+                },
+                tool_call_id="call_question",
+            )
+        )
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="ask_questions",
+                content={"ok": True},
+                tool_call_id="call_question",
+            )
+        )
+        yield FunctionToolCallEvent(
+            ToolCallPart(
                 tool_name="lookup",
-                args={"token": "secret", "query": "octomate"},
+                args={
+                    "query": "water hobbies",
+                    "limit": 3,
+                    "filters": {"kind": "water"},
+                },
                 tool_call_id="call_1",
             )
         )
         yield FunctionToolResultEvent(
             ToolReturnPart(
                 tool_name="lookup",
-                content={"ok": True},
+                content={"ok": True, "count": 1},
                 tool_call_id="call_1",
             )
         )
@@ -1421,16 +1447,161 @@ async def test_slack_event_stream_feeler_emits_task_updates() -> None:
         }
     ]
     chunks = [chunk for group in ink.stream_chunks for chunk in group]
-    assert [chunk.title for chunk in chunks] == [
-        "Thinking",
-        "Tool call: lookup",
-        "Tool result: lookup",
-        "Answer",
+    plan_chunks = [chunk for chunk in chunks if isinstance(chunk, PlanUpdateChunk)]
+    task_chunks = [chunk for chunk in chunks if isinstance(chunk, TaskUpdateChunk)]
+    details = "\n\n".join(chunk.details or "" for chunk in task_chunks)
+    assert [chunk.title for chunk in plan_chunks] == ["Working on request"]
+    assert {chunk.id for chunk in task_chunks} == {"round-1"}
+    assert task_chunks[-1].status == "complete"
+    assert "Thinking" in details
+    assert "Tool call: lookup" in details
+    assert "*Query:* water hobbies" in details
+    assert "*Limit:* 3" in details
+    assert "*Filters:*" in details
+    assert "*Kind:* water" in details
+    assert "Tool result: lookup" in details
+    assert "*Ok:* true" in details
+    assert "*Count:* 1" in details
+    assert "ask_questions" not in details
+    assert "Which water hobby sounds fun?" not in details
+    assert '"query"' not in details
+    assert "{" not in details
+    assert ink.appends == ["done"]
+    assert all(chunk.title != "Answer" for chunk in task_chunks)
+
+
+async def test_slack_event_stream_feeler_skips_ask_questions_tool_events() -> None:
+    ink = FakeSlackInk()
+    feeler = SlackEventStreamFeeler(
+        ink=cast(SlackInkType, ink),
+        chromo=SlackChromo(),
+        markdown_feeler=DefaultMarkdownFeeler(ink=ink, chromo=SlackChromo()),
+        channel_id="slack",
+    )
+    question_call = ToolCallPart(
+        tool_name="ask_questions",
+        args={
+            "questions": [
+                {
+                    "hint": "Water hobbies",
+                    "question": "Which water hobby sounds fun?",
+                    "choices": ["Scuba diving", "Surfing", "Sailing"],
+                }
+            ]
+        },
+        tool_call_id="call_question",
+    )
+
+    async def events() -> AsyncIterator[
+        AgentStreamEvent | AgentRunResultEvent[DeferredToolRequests]
+    ]:
+        yield FunctionToolCallEvent(question_call)
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="ask_questions",
+                content={"ok": True},
+                tool_call_id="call_question",
+            )
+        )
+        yield AgentRunResultEvent(AgentRunResult(DeferredToolRequests(calls=[question_call])))
+
+    await feeler.present(_slack_key(), events())
+
+    assert ink.stream_chunks == []
+    assert ink.appends == []
+
+
+async def test_slack_event_stream_feeler_keeps_multiple_rounds() -> None:
+    ink = FakeSlackInk()
+    feeler = SlackEventStreamFeeler(
+        ink=cast(SlackInkType, ink),
+        chromo=SlackChromo(),
+        markdown_feeler=DefaultMarkdownFeeler(ink=ink, chromo=SlackChromo()),
+        channel_id="slack",
+    )
+
+    async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
+        yield PartStartEvent(index=0, part=ThinkingPart(content="first pass"))
+        yield FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="lookup",
+                args={"query": "one"},
+                tool_call_id="call_1",
+            )
+        )
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="lookup",
+                content={"ok": True},
+                tool_call_id="call_1",
+            )
+        )
+        yield AgentRunResultEvent(AgentRunResult("intermediate"))
+        yield PartStartEvent(index=0, part=ThinkingPart(content="second pass"))
+        yield FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="search",
+                args={"query": "two"},
+                tool_call_id="call_2",
+            )
+        )
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="search",
+                content={"ok": True},
+                tool_call_id="call_2",
+            )
+        )
+        yield PartStartEvent(index=1, part=TextPart(content="done"))
+        yield AgentRunResultEvent(AgentRunResult("done"))
+
+    await feeler.present(_slack_key(), events())
+
+    chunks = [chunk for group in ink.stream_chunks for chunk in group]
+    task_chunks = [chunk for chunk in chunks if isinstance(chunk, TaskUpdateChunk)]
+    assert {chunk.id for chunk in task_chunks} == {"round-1", "round-2"}
+    assert [chunk.id for chunk in task_chunks if chunk.status == "complete"] == [
+        "round-1",
+        "round-2",
     ]
-    assert chunks[-1].output == "done"
-    tool_call = chunks[1]
-    assert tool_call.details is not None
-    assert "secret" in tool_call.details
+    assert ink.appends == ["done"]
+
+
+async def test_slack_event_stream_feeler_direct_answer_uses_markdown_stream() -> None:
+    ink = FakeSlackInk()
+    feeler = SlackEventStreamFeeler(
+        ink=cast(SlackInkType, ink),
+        chromo=SlackChromo(),
+        markdown_feeler=DefaultMarkdownFeeler(ink=ink, chromo=SlackChromo()),
+        channel_id="slack",
+    )
+
+    async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
+        yield PartStartEvent(index=0, part=TextPart(content="hello"))
+        yield AgentRunResultEvent(AgentRunResult("hello"))
+
+    await feeler.present(_slack_key(), events())
+
+    assert ink.stream_chunks == []
+    assert ink.appends == ["hello"]
+
+
+async def test_slack_event_stream_feeler_appends_final_output_without_text_events() -> None:
+    ink = FakeSlackInk()
+    feeler = SlackEventStreamFeeler(
+        ink=cast(SlackInkType, ink),
+        chromo=SlackChromo(),
+        markdown_feeler=DefaultMarkdownFeeler(ink=ink, chromo=SlackChromo()),
+        channel_id="slack",
+    )
+
+    async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
+        yield AgentRunResultEvent(AgentRunResult("fallback answer"))
+
+    await feeler.present(_slack_key(), events())
+
+    assert ink.stream_chunks == []
+    assert ink.appends == ["fallback answer"]
 
 
 async def test_slack_tentacle_streams_final_only_result_once() -> None:
