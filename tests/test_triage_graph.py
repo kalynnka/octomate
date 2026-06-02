@@ -3,27 +3,33 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+import uuid
 from typing import cast
 
 import pytest
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
-from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.messages import ModelMessage, ToolCallPart, UserContent
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.result import StreamedRunResult
-from pydantic_ai.tools import DeferredToolResults
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.conversations import ConversationManager
+from octomate.managers.deferred import DeferredActionManager
+from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.graph import (
+    DeferredResult,
     ResponseTarget,
+    ResponseTargetMode,
     TriageDecision,
     TriageDeps,
     TriageState,
     triage_graph,
 )
-from octomate.tentacles.agent.graph.triage import RunTriage
+from octomate.tentacles.agent.graph.triage import ResumeDeferredActions, RunTriage
 from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
@@ -32,7 +38,7 @@ from octomate.tentacles.channel.feelers.deferred import (
 )
 
 
-FakeRunOutput = TriageDecision | str
+FakeRunOutput = TriageDecision | str | DeferredToolRequests
 FakeStreamEvent = AgentStreamEvent | AgentRunResultEvent[str]
 
 
@@ -64,11 +70,13 @@ class FakeConversationManager:
 
 @dataclass
 class FakeAgent:
-    decision: TriageDecision
+    decision: TriageDecision | DeferredToolRequests
     id: str = "inkling"
     reception_output: str = "done"
     allow_reception_run: bool = False
     runs: list[str | None] = field(default_factory=list)
+    run_prompts: list[str | Sequence[UserContent] | None] = field(default_factory=list)
+    deferred_results: list[DeferredToolResults | None] = field(default_factory=list)
     streams: list[
         tuple[
             str | Sequence[UserContent] | None,
@@ -84,12 +92,14 @@ class FakeAgent:
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
-        output_type: OutputSpec[TriageDecision] | None = None,
+        output_type: OutputSpec[FakeRunOutput] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         instructions: str | None = None,
     ) -> AgentRunResult[FakeRunOutput]:
         self.runs.append(run_name)
+        self.run_prompts.append(user_prompt)
+        self.deferred_results.append(deferred_tool_results)
         if run_name == "reception":
             if not self.allow_reception_run:
                 raise AssertionError("reception should use run_stream_events")
@@ -304,6 +314,118 @@ def _source_target(key: ConversationKey) -> ResponseTarget:
     )
 
 
+def _requests() -> DeferredToolRequests:
+    return DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "What should I clarify?"}]},
+                tool_call_id="call_question",
+            )
+        ]
+    )
+
+
+def _deferred_results() -> DeferredToolResults:
+    results = DeferredToolResults()
+    results.calls["call_question"] = ["please answer directly"]
+    return results
+
+
+@dataclass
+class CreateBatchCall:
+    conversation: FakeConversation
+    agent_tentacle_id: str
+    run_name: str | None
+    source_key: ConversationKey
+    target_key: ConversationKey
+    target_mode: ResponseTargetMode
+    decision: TriageDecision | None
+    requests: DeferredToolRequests
+
+
+@dataclass
+class FakePresentedBatch:
+    questions: list[DeferredQuestion] = field(default_factory=list)
+    approvals: list[DeferredApproval] = field(default_factory=list)
+
+
+@dataclass
+class FakeDeferredBatch:
+    source_key: ConversationKey
+    target_key: ConversationKey
+    requests: DeferredToolRequests
+    deferred_results: DeferredToolResults
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    agent_tentacle_id: str = "inkling"
+    run_name: str | None = "triage"
+    target_mode: ResponseTargetMode = "main"
+    decision: TriageDecision | None = None
+    status: str = "resolved"
+    completed: bool = True
+
+    def build_results(self) -> DeferredToolResults:
+        return self.deferred_results
+
+
+@dataclass
+class FakeActionManager:
+    batch: FakeDeferredBatch | None = None
+    create_calls: list[CreateBatchCall] = field(default_factory=list)
+    presented: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
+    marked: list[tuple[uuid.UUID, str, bool]] = field(default_factory=list)
+
+    async def create_batch(
+        self,
+        *,
+        conversation: FakeConversation,
+        agent_tentacle_id: str,
+        run_name: str | None,
+        source_key: ConversationKey,
+        target_key: ConversationKey,
+        target_mode: ResponseTargetMode,
+        decision: TriageDecision | None,
+        requests: DeferredToolRequests,
+    ) -> FakePresentedBatch:
+        self.create_calls.append(
+            CreateBatchCall(
+                conversation=conversation,
+                agent_tentacle_id=agent_tentacle_id,
+                run_name=run_name,
+                source_key=source_key,
+                target_key=target_key,
+                target_mode=target_mode,
+                decision=decision,
+                requests=requests,
+            )
+        )
+        return FakePresentedBatch()
+
+    async def mark_action_presented(
+        self,
+        action_id: uuid.UUID,
+        platform_message_id: str | None,
+    ) -> None:
+        self.presented.append((action_id, platform_message_id))
+
+    async def resolve_batch(
+        self,
+        awake: DeferredActionBatchResponse,
+    ) -> FakeDeferredBatch:
+        if self.batch is None:
+            raise ValueError(f"unknown deferred action batch {awake.batch_id}")
+        return self.batch
+
+    async def mark_batch(
+        self,
+        batch_id: uuid.UUID,
+        status: str,
+        *,
+        completed: bool = False,
+    ) -> None:
+        self.marked.append((batch_id, status, completed))
+
+
 async def test_triage_graph_emits_direct_route() -> None:
     key = _key()
     agent = FakeAgent(TriageDecision(action="answer", answer="hello"))
@@ -338,6 +460,134 @@ async def test_triage_graph_emits_direct_route() -> None:
     assert im.sent[0][1] == ["hello"]
     assert im.stream_sent == []
     assert ops.sent == []
+
+
+async def test_triage_graph_returns_deferred_result_when_triage_requests_input() -> None:
+    key = _key()
+    requests = _requests()
+    agent = FakeAgent(requests)
+    conversations = FakeConversationManager()
+    action_manager = FakeActionManager()
+    im = FakeChannel()
+
+    result = (
+        await triage_graph.run(
+            RunTriage(
+                agent=cast(AgentTentacle, agent),
+                source_target=_source_target(key),
+                user_prompt="hi",
+            ),
+            state=TriageState(),
+            deps=TriageDeps(
+                conversation_manager=cast(ConversationManager, conversations),
+                action_manager=cast(DeferredActionManager, action_manager),
+                channels={"im": cast(ChannelTentacle, im)},
+            ),
+        )
+    ).output
+
+    assert isinstance(result, DeferredResult)
+    assert result.requests is requests
+    assert result.result.output is requests
+    assert result.run_name == "triage"
+    assert result.target == _source_target(key)
+    assert len(action_manager.create_calls) == 1
+    create_call = action_manager.create_calls[0]
+    assert create_call.run_name == "triage"
+    assert create_call.source_key == key
+    assert create_call.target_key == key
+    assert create_call.target_mode == "main"
+    assert create_call.decision is None
+    assert create_call.requests is requests
+    assert agent.runs == ["triage"]
+    assert agent.run_prompts == ["hi"]
+    assert conversations.ensured == [key]
+    assert im.sub_threads == []
+
+
+async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
+    key = _key()
+    deferred_results = _deferred_results()
+    batch = FakeDeferredBatch(
+        source_key=key,
+        target_key=key,
+        requests=_requests(),
+        deferred_results=deferred_results,
+    )
+    agent = FakeAgent(TriageDecision(action="answer", answer="hello"))
+    conversations = FakeConversationManager()
+    action_manager = FakeActionManager(batch=batch)
+    im = FakeChannel()
+
+    result = (
+        await triage_graph.run(
+            ResumeDeferredActions(
+                awake=DeferredActionBatchResponse(batch_id=batch.id),
+                agent=cast(AgentTentacle, agent),
+                source_target=_source_target(key),
+            ),
+            state=TriageState(),
+            deps=TriageDeps(
+                conversation_manager=cast(ConversationManager, conversations),
+                action_manager=cast(DeferredActionManager, action_manager),
+                channels={"im": cast(ChannelTentacle, im)},
+            ),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert result.decision.answer == "hello"
+    assert result.target == _source_target(key)
+    assert agent.runs == ["triage"]
+    assert agent.run_prompts == [None]
+    assert agent.deferred_results == [deferred_results]
+    assert conversations.ensured == [key]
+    assert action_manager.marked == [
+        (batch.id, "resuming", False),
+        (batch.id, "completed", True),
+    ]
+    assert im.sent == [(key, ["hello"])]
+
+
+async def test_triage_graph_keeps_incomplete_triage_batch_deferred() -> None:
+    key = _key()
+    batch = FakeDeferredBatch(
+        source_key=key,
+        target_key=key,
+        requests=_requests(),
+        deferred_results=_deferred_results(),
+        status="pending",
+        completed=False,
+    )
+    agent = FakeAgent(TriageDecision(action="answer", answer="hello"))
+    conversations = FakeConversationManager()
+    action_manager = FakeActionManager(batch=batch)
+    im = FakeChannel()
+
+    result = (
+        await triage_graph.run(
+            ResumeDeferredActions(
+                awake=DeferredActionBatchResponse(batch_id=batch.id),
+                agent=cast(AgentTentacle, agent),
+                source_target=_source_target(key),
+            ),
+            state=TriageState(),
+            deps=TriageDeps(
+                conversation_manager=cast(ConversationManager, conversations),
+                action_manager=cast(DeferredActionManager, action_manager),
+                channels={"im": cast(ChannelTentacle, im)},
+            ),
+        )
+    ).output
+
+    assert isinstance(result, DeferredResult)
+    assert result.requests is batch.requests
+    assert result.result.output is batch.requests
+    assert result.run_name == "triage"
+    assert agent.runs == []
+    assert conversations.ensured == []
+    assert action_manager.marked == []
+    assert im.sent == []
 
 
 async def test_triage_graph_uses_markdown_feeler_for_direct_answer() -> None:

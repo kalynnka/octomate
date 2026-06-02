@@ -10,7 +10,7 @@ from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import ModelMessage, UserContent
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.result import StreamedRunResult
-from pydantic_ai.tools import DeferredToolResults
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -36,7 +36,7 @@ from octomate.tentacles.channel.feelers.deferred import (
 )
 
 
-FakeRunOutput = TriageDecision | str
+FakeRunOutput = TriageDecision | str | DeferredToolRequests
 FakeStreamEvent = AgentStreamEvent | AgentRunResultEvent[str]
 
 
@@ -96,7 +96,7 @@ class FakeAgent:
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
-        output_type: OutputSpec[TriageDecision] | None = None,
+        output_type: OutputSpec[FakeRunOutput] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         instructions: str | None = None,

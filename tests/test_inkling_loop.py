@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -25,6 +26,8 @@ from pydantic_ai.models.function import (
     DeltaToolCalls,
     FunctionModel,
 )
+from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.profiles.google import google_model_profile
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import Graph
 
@@ -41,12 +44,40 @@ from octomate.tentacles.agent.graph.react import (
     RunAgent,
     StartTurn,
 )
-from octomate.tentacles.agent.inkling import InklingTentacle, inkling_toolset
+from octomate.tentacles.agent.inkling import base as inkling_base
+from octomate.tentacles.agent.inkling import (
+    InklingTentacle,
+    build_inkling_agent,
+    inkling_toolset,
+)
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.json import JsonObject
 
+if TYPE_CHECKING:
+    import pytest
+
 InklingTestOutput = str | DeferredToolRequests
 InklingTestEvent = AgentStreamEvent | AgentRunResultEvent[InklingTestOutput]
+
+
+def test_build_inkling_agent_enables_google_thinking(
+    monkeypatch: "pytest.MonkeyPatch",
+) -> None:
+    @dataclass
+    class FakeGoogleProvider:
+        model_profile: ModelProfile | None = field(
+            default_factory=lambda: google_model_profile("gemini-3-flash-preview")
+        )
+
+    monkeypatch.setattr(
+        inkling_base,
+        "GoogleProvider",
+        lambda *, location: FakeGoogleProvider(),
+    )
+
+    agent = build_inkling_agent()
+
+    assert agent.model_settings == {"thinking": True}
 
 
 @dataclass
