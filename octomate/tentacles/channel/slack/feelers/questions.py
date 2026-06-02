@@ -8,7 +8,7 @@ from pydantic import JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import DeferredQuestion
-from octomate.tentacles.channel.feelers.deferred import QuestionFeeler
+from octomate.tentacles.channel.feelers.deferred import QuestionFeeler, question_text
 from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.channel.slack.schema import (
@@ -78,7 +78,7 @@ def ask_question_blocks(
     hint = action.args.get("hint") or ""
     saved = answers.get(action.id, "")
     progress = f"Questions {page + 1} of {len(actions)}" if len(actions) > 1 else ""
-    question_label = question_input_label(action.args["question"])
+    question_label = question_input_label(question_text(action))
     blocks: list[SlackBlock] = []
     if progress:
         blocks.append(question_progress_block(progress))
@@ -194,7 +194,7 @@ def submitted_blocks(
     answers = answers or {}
     summary = "\n\n".join(
         (
-            f"*{index}. {action.args['question']}*\n"
+            f"*{index}. {question_text(action)}*\n"
             f"{answers.get(action.id) or '[No answer provided]'}"
         )
         for index, action in enumerate(actions, start=1)

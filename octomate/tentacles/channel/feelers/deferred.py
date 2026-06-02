@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from uuid import UUID
 
@@ -11,6 +12,17 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.tentacles.channel.feelers.output import IMMessageID, MarkdownFeeler
+
+QUESTION_PROGRESS_SUFFIX = re.compile(
+    r"\s*\(?\s*Question\s+\d+\s+of\s+\d+\s*\)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def question_text(action: DeferredQuestion) -> str:
+    text = str(action.args["question"]).strip()
+    cleaned = QUESTION_PROGRESS_SUFFIX.sub("", text).strip()
+    return cleaned or text
 
 
 class ApprovalFeeler(ABC):
@@ -78,7 +90,7 @@ class PlainTextAskQuestionFeeler(QuestionFeeler):
             message_ids[action.id] = await self.markdown.present(
                 key,
                 (
-                    f"Octomate needs an answer: {action.args['question']}"
+                    f"Octomate needs an answer: {question_text(action)}"
                     f"{hint_text}{choices_text}\nDeferred action: `{action.id}`"
                 ),
             )

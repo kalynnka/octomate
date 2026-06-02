@@ -590,7 +590,7 @@ def test_slack_question_pages_use_distinct_input_blocks() -> None:
     )
 
     assert {
-        block.get("block_id")
+        cast(str, block.get("block_id"))
         for block in first_page[:-1]
         if block.get("type") == "input"
     } == {
@@ -598,7 +598,7 @@ def test_slack_question_pages_use_distinct_input_blocks() -> None:
         question_answer_block_id(first),
     }
     assert {
-        block.get("block_id")
+        cast(str, block.get("block_id"))
         for block in second_page[:-1]
         if block.get("type") == "input"
     } == {
@@ -832,6 +832,48 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
     assert isinstance(submitted_text, str)
     assert "Ocean zone?" in submitted_text
     assert "Kelp Forest" in submitted_text
+
+
+async def test_slack_submitted_question_summary_strips_stale_progress_suffix() -> None:
+    ink = FakeSlackInk()
+    octomate = FakeOctomate()
+    channel = object.__new__(SlackTentacle)
+    channel.id = "slack"
+    channel.ink = cast(SlackInk, ink)
+    channel.octomate = cast(Octomate, octomate)
+    question = _question(
+        question=(
+            "If you could have any animal as a sidekick, which one would it be? "
+            "(Question 3 of 3)"
+        ),
+        choices=["A mysterious cat :cat2:"],
+    )
+
+    blocks = ask_question_blocks([question])
+    submit_buttons = _json_objects(blocks[-1]["elements"])
+    submit_state = _loaded_json_object(_json_string(submit_buttons[0]["value"]))
+    await channel.on_question_nav(
+        _ack,
+        _slack_question_body(
+            action_id=SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+            value=json.dumps(submit_state),
+            state={
+                "values": {
+                    question_choice_block_id(question): {
+                        SlackBlockAction.ASK_QUESTION_CHOICE.value: {
+                            "selected_option": {"value": "A mysterious cat :cat2:"}
+                        }
+                    }
+                }
+            },
+        ),
+    )
+
+    submitted_text = _json_object(ink.updates[0][3][0]["text"])["text"]
+    assert isinstance(submitted_text, str)
+    assert "1 question" in submitted_text
+    assert "Question 3 of 3" not in submitted_text
+    assert "A mysterious cat :cat2:" in submitted_text
 
 
 async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
