@@ -7,6 +7,10 @@ from octomate.tentacles.channel.slack.feelers.approvals import (
     approval_submitted_blocks,
     approval_title,
 )
+from octomate.tentacles.channel.slack.feelers.output import (
+    SlackEventStreamFeeler,
+    SlackMarkdownStreamFeeler,
+)
 from octomate.tentacles.channel.slack.feelers.questions import (
     SlackAskQuestionFeeler,
     SlackQuestionActionsAdapter,
@@ -23,6 +27,8 @@ __all__ = [
     "SlackApprovalFeeler",
     "SlackAskQuestionFeeler",
     "SlackBlockAction",
+    "SlackEventStreamFeeler",
+    "SlackMarkdownStreamFeeler",
     "SlackQuestionActionsAdapter",
     "SlackQuestionActionValueAdapter",
     "approval_blocks",

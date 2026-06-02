@@ -34,11 +34,11 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     question_title,
     submitted_blocks,
 )
-from octomate.tentacles.channel.slack.ink import SlackInk
-from octomate.tentacles.channel.slack.output import (
+from octomate.tentacles.channel.slack.feelers.output import (
     SlackEventStreamFeeler,
     SlackMarkdownStreamFeeler,
 )
+from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
     SlackApprovalActionBody,
     SlackAssistantThreadEvent,

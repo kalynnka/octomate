@@ -65,7 +65,7 @@ from octomate.tentacles.channel.slack.ink import (
     SLACK_MARKDOWN_TEXT_LIMIT,
 )
 from octomate.tentacles.channel.slack.ink import SlackInk as SlackInkType
-from octomate.tentacles.channel.slack.output import (
+from octomate.tentacles.channel.slack.feelers.output import (
     SlackEventStreamFeeler,
     SlackMarkdownStreamFeeler,
 )
@@ -1157,6 +1157,7 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
     stream_chunks: list[list[Chunk]] = field(default_factory=list)
     stops: list[str | None] = field(default_factory=list)
     finals: list[dict[str, str | None]] = field(default_factory=list)
+    statuses: list[str] = field(default_factory=list)
     sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
         default_factory=list
     )
@@ -1237,6 +1238,14 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
     ) -> str:
         self.stops.append(markdown_text)
         return "stream-ts"
+
+    async def set_assistant_status(
+        self,
+        channel: str,
+        thread_ts: str,
+        status: str,
+    ) -> None:
+        self.statuses.append(status)
 
     async def stream_markdown(
         self,
@@ -1451,15 +1460,17 @@ async def test_slack_event_stream_feeler_emits_task_updates() -> None:
     task_chunks = [chunk for chunk in chunks if isinstance(chunk, TaskUpdateChunk)]
     details = "\n\n".join(chunk.details or "" for chunk in task_chunks)
     assert [chunk.title for chunk in plan_chunks] == ["Working on request"]
-    assert {chunk.id for chunk in task_chunks} == {"round-1"}
+    assert {chunk.id for chunk in task_chunks} == {"thinking-1", "call_1"}
     assert task_chunks[-1].status == "complete"
-    assert "Thinking" in details
-    assert "Tool call: lookup" in details
+    assert any(chunk.title == "Thinking" for chunk in task_chunks)
+    assert any(chunk.title == "Lookup" for chunk in task_chunks)
+    assert "checking" in details
+    assert "*Arguments*" in details
     assert "*Query:* water hobbies" in details
     assert "*Limit:* 3" in details
     assert "*Filters:*" in details
     assert "*Kind:* water" in details
-    assert "Tool result: lookup" in details
+    assert "*Result*" in details
     assert "*Ok:* true" in details
     assert "*Count:* 1" in details
     assert "ask_questions" not in details
@@ -1468,6 +1479,10 @@ async def test_slack_event_stream_feeler_emits_task_updates() -> None:
     assert "{" not in details
     assert ink.appends == ["done"]
     assert all(chunk.title != "Answer" for chunk in task_chunks)
+    assert ink.statuses[0] == "Thinking…"
+    assert "Lookup…" in ink.statuses
+    assert "Writing the response…" in ink.statuses
+    assert ink.statuses[-1] == ""
 
 
 async def test_slack_event_stream_feeler_skips_ask_questions_tool_events() -> None:
@@ -1509,6 +1524,7 @@ async def test_slack_event_stream_feeler_skips_ask_questions_tool_events() -> No
 
     assert ink.stream_chunks == []
     assert ink.appends == []
+    assert ink.statuses == ["Thinking…", ""]
 
 
 async def test_slack_event_stream_feeler_keeps_multiple_rounds() -> None:
@@ -1559,12 +1575,20 @@ async def test_slack_event_stream_feeler_keeps_multiple_rounds() -> None:
 
     chunks = [chunk for group in ink.stream_chunks for chunk in group]
     task_chunks = [chunk for chunk in chunks if isinstance(chunk, TaskUpdateChunk)]
-    assert {chunk.id for chunk in task_chunks} == {"round-1", "round-2"}
+    assert {chunk.id for chunk in task_chunks} == {
+        "thinking-1",
+        "call_1",
+        "thinking-2",
+        "call_2",
+    }
     assert [chunk.id for chunk in task_chunks if chunk.status == "complete"] == [
-        "round-1",
-        "round-2",
+        "thinking-1",
+        "call_1",
+        "thinking-2",
+        "call_2",
     ]
     assert ink.appends == ["done"]
+    assert ink.statuses[-1] == ""
 
 
 async def test_slack_event_stream_feeler_direct_answer_uses_markdown_stream() -> None:
@@ -1584,6 +1608,7 @@ async def test_slack_event_stream_feeler_direct_answer_uses_markdown_stream() ->
 
     assert ink.stream_chunks == []
     assert ink.appends == ["hello"]
+    assert ink.statuses == ["Thinking…", "Writing the response…", ""]
 
 
 async def test_slack_event_stream_feeler_appends_final_output_without_text_events() -> None:
@@ -1602,6 +1627,7 @@ async def test_slack_event_stream_feeler_appends_final_output_without_text_event
 
     assert ink.stream_chunks == []
     assert ink.appends == ["fallback answer"]
+    assert ink.statuses == ["Thinking…", ""]
 
 
 async def test_slack_tentacle_streams_final_only_result_once() -> None:

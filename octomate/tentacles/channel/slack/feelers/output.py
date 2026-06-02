@@ -27,7 +27,6 @@ from slack_sdk.models.messages.chunk import PlanUpdateChunk, TaskUpdateChunk
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.feelers.output import (
-    BatchedTextUpdate,
     IMMessageID,
     JsonValue,
     MarkdownFeeler,
@@ -43,79 +42,61 @@ PLAN_TITLE = "Working on request"
 MAX_TASK_DETAIL_CHARS = 2000
 SKIPPED_PLAN_TOOL_NAMES = frozenset({"ask_questions"})
 
-
-TASK_TITLES = {
-    "answer": "Answer",
-    "thinking": "Thinking",
-    "tool_call": "Tool call",
-    "tool_result": "Tool result",
-    "subagent": "Agent run",
-}
+THINKING_TITLE = "Thinking"
+STATUS_THINKING = "Thinking…"
+STATUS_WRITING = "Writing the response…"
 
 
 @dataclass
-class SlackPlanTask:
-    index: int
+class SlackStep:
+    """One timeline entry: a single thinking block or a single tool call."""
+
+    id: str
+    title: str
     sections: list[str] = field(default_factory=list)
-    tool_names: list[str] = field(default_factory=list)
-    saw_tool_result: bool = False
-
-    @property
-    def id(self) -> str:
-        return f"round-{self.index}"
-
-    @property
-    def title(self) -> str:
-        if not self.tool_names:
-            return f"Work round {self.index}"
-        if len(self.tool_names) == 1:
-            return f"Work round {self.index}: {self.tool_names[0]}"
-        shown = ", ".join(self.tool_names[:2])
-        if len(self.tool_names) > 2:
-            shown += f", +{len(self.tool_names) - 2}"
-        return f"Work round {self.index}: {shown}"
+    status: str = "in_progress"
 
     @property
     def details(self) -> str | None:
-        if not self.sections:
-            return None
-        return "\n\n".join(self.sections)
+        body = "\n\n".join(section for section in self.sections if section)
+        return body or None
 
-    def append_section(self, title: str, text: str) -> str | None:
-        if not text:
-            return None
-        section = f"*{title}*\n{text}"
-        self.sections.append(section)
-        return section
+    def append_section(self, title: str, text: str) -> None:
+        if text:
+            self.sections.append(f"*{title}*\n{text}")
 
-    def add_tool_name(self, tool_name: str) -> None:
-        if tool_name not in self.tool_names:
-            self.tool_names.append(tool_name)
-
-    def chunk(
-        self,
-        *,
-        status: str = "in_progress",
-        details: str | None = None,
-    ) -> TaskUpdateChunk:
+    def chunk(self, *, status: str | None = None) -> TaskUpdateChunk:
         return TaskUpdateChunk(
             id=self.id,
             title=self.title,
-            status=status,
-            details=details,
+            status=status or self.status,
+            details=self.details,
         )
 
 
 @dataclass
-class SlackPlanStreamState:
+class SlackTimelineState:
+    """Drives a Slack ``timeline`` stream: one task per thinking block / tool call,
+    plus a live ``assistant.threads.setStatus`` hint for the current agent activity."""
+
     ink: SlackInk
     stream: Any
+    channel: str
+    thread_ts: str
     answer_batcher: TextStreamBatcher
     plan_started: bool = False
-    active_task: SlackPlanTask | None = None
-    task_index: int = 0
     saw_answer: bool = False
+    thinking_seq: int = 0
+    active_thinking: SlackStep | None = None
+    tool_steps: dict[str, SlackStep] = field(default_factory=dict)
     skipped_tool_call_ids: set[str] = field(default_factory=set)
+    last_status: str | None = None
+
+    async def set_status(self, status: str) -> None:
+        if status == self.last_status:
+            return
+        self.last_status = status
+        await self.ink.set_assistant_status(self.channel, self.thread_ts, status)
 
     async def ensure_plan_started(self) -> None:
         if self.plan_started:
@@ -126,37 +107,85 @@ class SlackPlanStreamState:
         )
         self.plan_started = True
 
-    async def finish_active_task(self) -> None:
-        if self.active_task is None:
-            return
+    async def emit(self, step: SlackStep, *, status: str | None = None) -> None:
         await self.ensure_plan_started()
-        await self.ink.append_stream_chunks(
-            self.stream,
-            [self.active_task.chunk(status="complete")],
-        )
-        self.active_task = None
+        await self.ink.append_stream_chunks(self.stream, [step.chunk(status=status)])
 
-    async def current_task(self) -> SlackPlanTask:
-        if self.active_task is None:
-            self.task_index += 1
-            self.active_task = SlackPlanTask(index=self.task_index)
-        await self.ensure_plan_started()
-        return self.active_task
-
-    async def append_task_section(self, title: str, text: str) -> None:
-        task = await self.current_task()
-        section = task.append_section(title, text)
-        if section is None:
+    async def complete_active_thinking(self) -> None:
+        step = self.active_thinking
+        if step is None:
             return
-        await self.ink.append_stream_chunks(
-            self.stream,
-            [task.chunk(details=section)],
-        )
+        self.active_thinking = None
+        step.status = "complete"
+        await self.emit(step, status="complete")
+
+    async def start_thinking(self, text: str) -> None:
+        await self.complete_active_thinking()
+        self.thinking_seq += 1
+        step = SlackStep(id=f"thinking-{self.thinking_seq}", title=THINKING_TITLE)
+        if text:
+            step.sections.append(text)
+        self.active_thinking = step
+        await self.set_status(STATUS_THINKING)
+        await self.emit(step)
+
+    async def append_thinking_delta(self, text: str) -> None:
+        if self.active_thinking is None:
+            await self.start_thinking(text)
+            return
+        if not text:
+            return
+        if self.active_thinking.sections:
+            self.active_thinking.sections[-1] += text
+        else:
+            self.active_thinking.sections.append(text)
+
+    async def start_tool(
+        self,
+        tool_call_id: str | None,
+        title: str,
+        args_text: str | None,
+        status: str,
+    ) -> None:
+        await self.complete_active_thinking()
+        step = SlackStep(id=tool_call_id or f"tool-{len(self.tool_steps)}", title=title)
+        if args_text:
+            step.append_section("Arguments", args_text)
+        self.tool_steps[step.id] = step
+        await self.set_status(status)
+        await self.emit(step)
+
+    async def finish_tool(
+        self,
+        tool_call_id: str | None,
+        tool_name: str,
+        result_text: str,
+        *,
+        error: bool,
+    ) -> None:
+        step = self.tool_steps.get(tool_call_id or "")
+        if step is None:
+            step = SlackStep(
+                id=tool_call_id or f"tool-{len(self.tool_steps)}",
+                title=humanize_tool_name(tool_name),
+            )
+            self.tool_steps[step.id] = step
+        step.append_section("Result", result_text)
+        step.status = "error" if error else "complete"
+        await self.emit(step, status=step.status)
+
+    async def complete_pending(self) -> None:
+        await self.complete_active_thinking()
+        for step in self.tool_steps.values():
+            if step.status == "in_progress":
+                step.status = "complete"
+                await self.emit(step, status="complete")
 
     async def append_answer_text(self, text: str) -> None:
         if not text:
             return
-        await self.finish_active_task()
+        await self.complete_active_thinking()
+        await self.set_status(STATUS_WRITING)
         self.saw_answer = True
         for update in self.answer_batcher.push_text(text):
             await self.ink.append_stream(self.stream, update.delta_text)
@@ -322,45 +351,34 @@ class SlackEventStreamFeeler(Generic[OutputT]):
                 recipient_team_id=context.recipient_team_id,
                 task_display_mode="timeline",
             )
-            state = SlackPlanStreamState(
+            state = SlackTimelineState(
                 ink=self.ink,
                 stream=stream,
+                channel=channel,
+                thread_ts=context.thread_ts,
                 answer_batcher=answer_batcher,
             )
+            await state.set_status(STATUS_THINKING)
             try:
                 async for event in events:
                     if isinstance(event, AgentRunResultEvent):
                         result_event = event
-                        await state.finish_active_task()
+                        await state.complete_pending()
                         continue
 
                     if isinstance(event, PartStartEvent):
                         if isinstance(event.part, TextPart):
                             await state.append_answer_text(event.part.content)
                         elif isinstance(event.part, ThinkingPart):
-                            if (
-                                state.active_task is not None
-                                and state.active_task.saw_tool_result
-                            ):
-                                await state.finish_active_task()
-                            await state.append_task_section(
-                                "Thinking",
-                                event.part.content,
-                            )
+                            await state.start_thinking(event.part.content)
                         continue
 
                     if isinstance(event, PartDeltaEvent):
                         if isinstance(event.delta, TextPartDelta):
                             await state.append_answer_text(event.delta.content_delta)
                         elif isinstance(event.delta, ThinkingPartDelta):
-                            if (
-                                state.active_task is not None
-                                and state.active_task.saw_tool_result
-                            ):
-                                await state.finish_active_task()
-                            await state.append_task_section(
-                                "Thinking",
-                                event.delta.content_delta or "",
+                            await state.append_thinking_delta(
+                                event.delta.content_delta or ""
                             )
                         continue
 
@@ -371,27 +389,17 @@ class SlackEventStreamFeeler(Generic[OutputT]):
                             tool.tool_call_id,
                         ):
                             continue
-                        if (
-                            state.active_task is not None
-                            and state.active_task.saw_tool_result
-                        ):
-                            await state.finish_active_task()
-                        task = await state.current_task()
-                        title = (
-                            f"Output tool: {tool.tool_name}"
-                            if isinstance(event, OutputToolCallEvent)
-                            else f"Tool call: {tool.tool_name}"
-                        )
-                        task.add_tool_name(tool.tool_name)
-                        section = task.append_section(
+                        title = humanize_tool_name(tool.tool_name)
+                        if isinstance(event, OutputToolCallEvent):
+                            title = f"Output: {title}"
+                        args = tool.args_as_dict()
+                        await state.start_tool(
+                            tool.tool_call_id,
                             title,
-                            format_tool_arguments(tool.tool_name, tool.args_as_dict()),
-                        )
-                        if section is None:
-                            continue
-                        await self.ink.append_stream_chunks(
-                            stream,
-                            [task.chunk(details=section)],
+                            format_tool_arguments(tool.tool_name, args)
+                            if args
+                            else None,
+                            status_hint(tool.tool_name),
                         )
                         continue
 
@@ -406,26 +414,14 @@ class SlackEventStreamFeeler(Generic[OutputT]):
                             getattr(part, "tool_call_id", None),
                         ):
                             continue
-                        task = await state.current_task()
-                        title = (
-                            f"Output result: {tool_name}"
-                            if isinstance(event, OutputToolResultEvent)
-                            else f"Tool result: {tool_name}"
-                        )
-                        task.add_tool_name(tool_name)
-                        task.saw_tool_result = True
-                        section = task.append_section(
-                            title,
+                        await state.finish_tool(
+                            getattr(part, "tool_call_id", None),
+                            tool_name,
                             format_tool_result(part),
-                        )
-                        if section is None:
-                            continue
-                        await self.ink.append_stream_chunks(
-                            stream,
-                            [task.chunk(details=section)],
+                            error=isinstance(part, RetryPromptPart),
                         )
 
-                await state.finish_active_task()
+                await state.complete_pending()
                 await state.finish_answer()
 
                 if (
@@ -435,8 +431,10 @@ class SlackEventStreamFeeler(Generic[OutputT]):
                 ):
                     await self.ink.append_stream(stream, result_event.result.output)
                 message_id = await self.ink.stop_stream(stream)
+                await state.set_status("")
             except Exception:
                 try:
+                    await state.set_status("")
                     message_id = await self.ink.stop_stream(stream)
                 finally:
                     raise
@@ -458,22 +456,13 @@ class SlackEventStreamFeeler(Generic[OutputT]):
         return message_id
 
 
-def task_update_chunk(update: BatchedTextUpdate) -> TaskUpdateChunk:
-    title = update.title or TASK_TITLES[update.block_type]
-    status = slack_task_status(update.status)
-    if update.block_type == "answer":
-        return TaskUpdateChunk(
-            id=update.block_id,
-            title=title,
-            status=status,
-            output=update.full_text,
-        )
-    return TaskUpdateChunk(
-        id=update.block_id,
-        title=title,
-        status=status,
-        details=update.full_text,
-    )
+def humanize_tool_name(tool_name: str) -> str:
+    name = tool_name.rsplit("__", 1)[-1].replace("-", " ")
+    return format_field_name(name)
+
+
+def status_hint(tool_name: str) -> str:
+    return f"{humanize_tool_name(tool_name)}…"
 
 
 def format_tool_arguments(_tool_name: str, args: dict[str, Any]) -> str:
@@ -509,8 +498,10 @@ def format_mapping_lines(value: dict[str, Any], *, indent: int = 0) -> list[str]
         if isinstance(item, dict):
             lines.append(f"{pad}*{label}:*")
             lines.extend(format_mapping_lines(item, indent=indent + 1))
-        elif isinstance(item, list) and item and any(
-            isinstance(entry, (dict, list)) for entry in item
+        elif (
+            isinstance(item, list)
+            and item
+            and any(isinstance(entry, (dict, list)) for entry in item)
         ):
             lines.append(f"{pad}*{label}:*")
             lines.extend(format_list_lines(item, indent=indent + 1))
@@ -563,11 +554,3 @@ def truncate_task_detail(
     if len(text) <= max_chars:
         return text
     return f"{text[: max_chars - 16].rstrip()}\n...[truncated]"
-
-
-def slack_task_status(status: str) -> str:
-    if status == "done":
-        return "complete"
-    if status == "error":
-        return "error"
-    return "in_progress"
