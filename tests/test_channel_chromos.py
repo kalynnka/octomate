@@ -17,8 +17,10 @@ from pydantic_ai.messages import (
     AgentStreamEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    PartDeltaEvent,
     PartStartEvent,
     TextPart,
+    TextPartDelta,
     ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
@@ -48,9 +50,10 @@ from octomate.tentacles.channel.feelers.output import (
 from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
 from octomate.tentacles.channel.lark.feelers.approvals import LarkApprovalFeeler
 from octomate.tentacles.channel.lark.feelers.questions import LarkAskQuestionFeeler
-from octomate.tentacles.channel.lark.output import (
+from octomate.tentacles.channel.lark.feelers.output import (
     LARK_EVENT_ANSWER_ELEMENT_ID,
-    LARK_EVENT_DETAILS_ELEMENT_ID,
+    LARK_EVENT_STATUS_ELEMENT_ID,
+    LARK_EVENT_TIMELINE_ELEMENT_ID,
     LarkEventStreamFeeler,
     LarkMarkdownFeeler,
     LarkMarkdownStreamFeeler,
@@ -647,6 +650,7 @@ class FakeLarkInk(LarkInk):
             tuple[str, str, LarkStreamCard, str | None, bool]
         ] = []
         self.stream_updates: list[tuple[LarkStreamCard, str, int]] = []
+        self.finalized: list[tuple[LarkStreamCard, int]] = []
         self.fail_stream_create = False
         self.fail_stream_update = False
 
@@ -676,10 +680,10 @@ class FakeLarkInk(LarkInk):
         card_data: str,
         *,
         element_id: str,
-    ) -> LarkStreamCard | None:
+    ) -> LarkStreamCard:
         self.stream_cards.append((card_data, element_id))
         if self.fail_stream_create:
-            return None
+            raise RuntimeError("Lark create stream card failed: simulated")
         return LarkStreamCard(
             card_id=f"card-{len(self.stream_cards)}",
             element_id=element_id,
@@ -708,6 +712,15 @@ class FakeLarkInk(LarkInk):
     ) -> bool:
         self.stream_updates.append((card, content, sequence))
         return not self.fail_stream_update
+
+    async def finish_stream_card(
+        self,
+        card: LarkStreamCard,
+        *,
+        sequence: int,
+    ) -> bool:
+        self.finalized.append((card, sequence))
+        return True
 
 
 async def test_lark_ink_selects_group_and_private_targets() -> None:
@@ -796,6 +809,7 @@ def _compose_lark_feelers(channel: LarkTentacle) -> None:
         ),
         event_stream=LarkEventStreamFeeler(
             ink=ink,
+            stream_config=channel.config.stream,
             markdown_feeler=markdown_feeler,
             channel_id=channel.id,
         ),
@@ -982,11 +996,12 @@ async def test_lark_tentacle_stops_stream_on_deferred_result() -> None:
     assert ink.replies == []
 
 
-async def test_lark_event_stream_feeler_updates_answer_and_detail_elements() -> None:
+async def test_lark_event_stream_feeler_renders_timeline_and_finalizes() -> None:
     ink = FakeLarkInk()
     chromo = LarkChromo()
     feeler = LarkEventStreamFeeler(
         ink=ink,
+        stream_config=LarkStreamConfig(flush_interval=0, min_chars=1),
         markdown_feeler=LarkMarkdownFeeler(ink=ink, chromo=chromo),
         channel_id="lark",
     )
@@ -1000,6 +1015,21 @@ async def test_lark_event_stream_feeler_updates_answer_and_detail_elements() -> 
 
     async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
         yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        # ask_questions deferral must not appear as a timeline step.
+        yield FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "which?"}]},
+                tool_call_id="call_q",
+            )
+        )
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="ask_questions",
+                content={"ok": True},
+                tool_call_id="call_q",
+            )
+        )
         yield FunctionToolCallEvent(
             ToolCallPart(
                 tool_name="lookup",
@@ -1026,22 +1056,79 @@ async def test_lark_event_stream_feeler_updates_answer_and_detail_elements() -> 
     assert isinstance(body, dict)
     elements = body["elements"]
     assert isinstance(elements, list)
-    assert elements[0]["element_id"] == LARK_EVENT_ANSWER_ELEMENT_ID
-    assert elements[1]["tag"] == "collapsible_panel"
-    assert elements[1]["elements"][0]["element_id"] == LARK_EVENT_DETAILS_ELEMENT_ID
+    assert elements[0]["element_id"] == LARK_EVENT_STATUS_ELEMENT_ID
+    assert elements[1]["element_id"] == LARK_EVENT_ANSWER_ELEMENT_ID
+    assert elements[2]["element_id"] == LARK_EVENT_TIMELINE_ELEMENT_ID
+
     assert any(
         card.element_id == LARK_EVENT_ANSWER_ELEMENT_ID and content == "done"
         for card, content, _ in ink.stream_updates
     )
-    detail_updates = [
+
+    timeline = [
         content
         for card, content, _ in ink.stream_updates
-        if card.element_id == LARK_EVENT_DETAILS_ELEMENT_ID
+        if card.element_id == LARK_EVENT_TIMELINE_ELEMENT_ID
     ]
-    assert detail_updates
-    assert "Thinking" in detail_updates[-1]
-    assert "Tool call: lookup" in detail_updates[-1]
-    assert "secret" in detail_updates[-1]
+    assert timeline
+    final_timeline = timeline[-1]
+    assert "Thinking" in final_timeline
+    assert "✅ **Lookup**" in final_timeline
+    assert "**Arguments**" in final_timeline
+    assert "secret" in final_timeline
+    assert "**Result**" in final_timeline
+    assert "ask_questions" not in final_timeline
+
+    statuses = [
+        content
+        for card, content, _ in ink.stream_updates
+        if card.element_id == LARK_EVENT_STATUS_ELEMENT_ID
+    ]
+    assert any("Thinking" in status for status in statuses)
+    assert any("Lookup" in status for status in statuses)
+    assert any("Writing" in status for status in statuses)
+
+    assert len(ink.finalized) == 1
+    assert ink.finalized[0][0].card_id == "card-1"
+
+    sequences = [seq for _, _, seq in ink.stream_updates] + [ink.finalized[0][1]]
+    assert sequences == sorted(sequences)
+    assert len(sequences) == len(set(sequences))
+
+
+async def test_lark_event_stream_feeler_batches_answer_updates() -> None:
+    ink = FakeLarkInk()
+    chromo = LarkChromo()
+    feeler = LarkEventStreamFeeler(
+        ink=ink,
+        stream_config=LarkStreamConfig(flush_interval=100.0, min_chars=1000),
+        markdown_feeler=LarkMarkdownFeeler(ink=ink, chromo=chromo),
+        channel_id="lark",
+    )
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="ou_user",
+        user_id="ou_user",
+    )
+
+    async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
+        yield PartStartEvent(index=0, part=TextPart(content="x"))
+        for _ in range(19):
+            yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="x"))
+        yield AgentRunResultEvent(AgentRunResult("x" * 20))
+
+    await feeler.present(key, events())
+
+    answer_updates = [
+        content
+        for card, content, _ in ink.stream_updates
+        if card.element_id == LARK_EVENT_ANSWER_ELEMENT_ID
+    ]
+    # 20 tiny deltas coalesce into a single flush at finish (vs one-per-delta
+    # if the answer batcher ignored Lark's per-card rate limit).
+    assert answer_updates == ["x" * 20]
+    assert len(ink.finalized) == 1
 
 
 async def test_lark_tentacle_message_callback_invokes_ingest() -> None:

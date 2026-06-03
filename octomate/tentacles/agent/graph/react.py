@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Generic, TypeAlias, TypeVar
 
 import anyio
@@ -20,11 +20,7 @@ from pydantic_ai import (
     UsageLimits,
 )
 from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata
-from pydantic_ai.messages import (
-    ModelMessage,
-    ToolCallPart,
-    UserContent,
-)
+from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
@@ -32,8 +28,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.managers.conversations import ConversationManager
-from octomate.schemas.conversation import Conversation
-from octomate.schemas.messages import ModelResponse
+from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.tentacles.agent.base import AgentOutput, AgentSpecInput
 from octomate.tentacles.agent.graph.resolver import DeferredResolver
 from octomate.tentacles.agent.graph.suspender import DeferredSuspender
@@ -46,8 +41,12 @@ ReactDepsT = TypeVar("ReactDepsT")
 
 @dataclass
 class ReactState:
-    conversation: Conversation
-    message_history: list[ModelMessage] = field(default_factory=list)
+    """The react graph holds no history of its own — only the identity needed to
+    fetch the live conversation from the ConversationManager (the cache + source
+    of truth). Every node `ensure()`s the conversation and reads its messages."""
+
+    conversation_key: ConversationKey
+    agent_tentacle_id: str
 
 
 @dataclass
@@ -90,16 +89,19 @@ class StartTurn(
     async def run(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
     ) -> RunAgent[ReactOutputT, ReactDepsT]:
-        if (
-            self.user_prompt is not None
-            and (abandoned := drop_trailing_deferral(ctx.state.message_history))
-            is not None
-        ):
-            await ctx.deps.conversation_manager.discard_message(abandoned)
-            logger.info(
-                "StartTurn dropped a trailing deferred ModelResponse; the "
-                "new user prompt supersedes the abandoned tool-call request"
+        if self.user_prompt is not None:
+            conversation = await ctx.deps.conversation_manager.ensure(
+                ctx.state.conversation_key,
+                agent_tentacle_id=ctx.state.agent_tentacle_id,
             )
+            abandoned = await ctx.deps.conversation_manager.drop_trailing_deferral(
+                conversation
+            )
+            if abandoned is not None:
+                logger.info(
+                    "StartTurn dropped a trailing deferred ModelResponse; the "
+                    "new user prompt supersedes the abandoned tool-call request"
+                )
         return RunAgent(user_prompt=self.user_prompt)
 
 
@@ -139,13 +141,17 @@ class RunAgent(
     async def run(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
     ) -> ResolveDeferred[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
+        conversation = await ctx.deps.conversation_manager.ensure(
+            ctx.state.conversation_key,
+            agent_tentacle_id=ctx.state.agent_tentacle_id,
+        )
         if ctx.deps.event_send_stream is None:
             result = await ctx.deps.agent.run(
                 self.user_prompt,
                 output_type=ctx.deps.output_type,
-                message_history=ctx.state.message_history or None,
+                message_history=conversation.messages or None,
                 deferred_tool_results=self.deferred_results,
-                conversation_id=str(ctx.state.conversation.id),
+                conversation_id=str(conversation.id),
                 model=ctx.deps.model,
                 instructions=ctx.deps.instructions,
                 deps=ctx.deps.agent_deps,
@@ -160,15 +166,15 @@ class RunAgent(
                 capabilities=ctx.deps.capabilities,
                 spec=ctx.deps.spec,
             )
-            return await self.next_node(ctx, result)
+            return await self.next_node(ctx, result, conversation)
 
         result: AgentRunResult[ReactOutputT] | None = None
         async with ctx.deps.agent.run_stream_events(
             user_prompt=self.user_prompt,
             output_type=ctx.deps.output_type,
-            message_history=ctx.state.message_history or None,
+            message_history=conversation.messages or None,
             deferred_tool_results=self.deferred_results,
-            conversation_id=str(ctx.state.conversation.id),
+            conversation_id=str(conversation.id),
             model=ctx.deps.model,
             instructions=ctx.deps.instructions,
             deps=ctx.deps.agent_deps,
@@ -193,18 +199,19 @@ class RunAgent(
             raise RuntimeError(
                 "agent.run_stream_events did not yield AgentRunResultEvent"
             )
-        return await self.next_node(ctx, result)
+        return await self.next_node(ctx, result, conversation)
 
     async def next_node(
         self,
         ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]],
         result: AgentRunResult[ReactOutputT],
+        conversation: Conversation,
     ) -> ResolveDeferred[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
-        ctx.state.message_history = list(result.all_messages())
-
+        # Recording refreshes the cached conversation, so the next RunAgent's
+        # ensure() picks up this turn from the manager — no copy in state.
         if new_messages := result.new_messages():
             await ctx.deps.conversation_manager.record_agent_run(
-                ctx.state.conversation,
+                conversation,
                 run_id=result.run_id,
                 messages=new_messages,
                 name=ctx.deps.run_name,
@@ -242,18 +249,6 @@ class ResolveDeferred(
         raise RuntimeError(
             "ResolveDeferred requires a react graph resolver or suspender"
         )
-
-
-def drop_trailing_deferral(history: list[ModelMessage]) -> ModelResponse | None:
-    if not history:
-        return None
-    last = history[-1]
-    if not isinstance(last, ModelResponse):
-        return None
-    if not any(isinstance(part, ToolCallPart) for part in last.parts):
-        return None
-    history.pop()
-    return last
 
 
 REACT_NODES = [StartTurn, ResumeTurn, RunAgent, ResolveDeferred]

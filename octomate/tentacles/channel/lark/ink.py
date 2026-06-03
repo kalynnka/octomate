@@ -11,6 +11,8 @@ from lark_oapi.api.cardkit.v1 import (
     ContentCardElementRequestBody,
     CreateCardRequest,
     CreateCardRequestBody,
+    SettingsCardRequest,
+    SettingsCardRequestBody,
 )
 from lark_oapi.api.contact.v3 import GetUserRequest
 from lark_oapi.api.im.v1 import (
@@ -209,7 +211,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
         card_data: str,
         *,
         element_id: str,
-    ) -> LarkStreamCard | None:
+    ) -> LarkStreamCard:
         request = (
             CreateCardRequest.builder()
             .request_body(
@@ -220,21 +222,13 @@ class LarkInk(Ink[LarkOutboundMessage]):
             )
             .build()
         )
-        try:
-            resp = await self.client.cardkit.v1.card.acreate(request)  # type: ignore[union-attr]
-            if resp.success() and resp.data and resp.data.card_id:
-                return LarkStreamCard(
-                    card_id=resp.data.card_id,
-                    element_id=element_id,
-                )
-            logger.warning(
-                "LarkInk: create stream card failed: %s %s",
-                resp.code,
-                resp.msg,
-            )
-        except Exception:
-            logger.warning("LarkInk: create stream card failed", exc_info=True)
-        return None
+        # Let both the SDK exception and the API error reason surface to the
+        # caller — swallowing them to None hid the real cause behind a generic
+        # "failed to create card" upstream.
+        resp = await self.client.cardkit.v1.card.acreate(request)  # type: ignore[union-attr]
+        if resp.success() and resp.data and resp.data.card_id:
+            return LarkStreamCard(card_id=resp.data.card_id, element_id=element_id)
+        raise RuntimeError(f"Lark create stream card failed: {resp.code} {resp.msg}")
 
     async def send_stream_card(
         self,
@@ -292,6 +286,45 @@ class LarkInk(Ink[LarkOutboundMessage]):
             )
         except Exception:
             logger.warning("LarkInk: update stream card failed", exc_info=True)
+        return False
+
+    async def finish_stream_card(
+        self,
+        card: LarkStreamCard,
+        *,
+        sequence: int,
+    ) -> bool:
+        """Disable streaming_mode so the card settles (typewriter stops, the
+        card becomes interactive). Best-effort: a failure only leaves the card
+        locked until Lark's ~10 minute auto-timeout."""
+        settings = json.dumps(
+            {"config": {"streaming_mode": False}},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        request = (
+            SettingsCardRequest.builder()
+            .card_id(card.card_id)
+            .request_body(
+                SettingsCardRequestBody.builder()
+                .settings(settings)
+                .uuid(str(uuid7()))
+                .sequence(sequence)
+                .build()
+            )
+            .build()
+        )
+        try:
+            resp = await self.client.cardkit.v1.card.asettings(request)  # type: ignore[union-attr]
+            if resp.success():
+                return True
+            logger.warning(
+                "LarkInk: finish stream card failed: %s %s",
+                resp.code,
+                resp.msg,
+            )
+        except Exception:
+            logger.warning("LarkInk: finish stream card failed", exc_info=True)
         return False
 
     async def _create_message(

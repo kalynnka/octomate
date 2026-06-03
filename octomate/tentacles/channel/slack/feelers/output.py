@@ -31,7 +31,12 @@ from octomate.tentacles.channel.feelers.output import (
     JsonValue,
     MarkdownFeeler,
     TextStreamBatcher,
+    format_fields,
+    humanize_tool_name,
     markdown_from_output,
+    should_skip_plan_tool,
+    status_hint,
+    truncate_task_detail,
 )
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
@@ -39,8 +44,6 @@ from octomate.tentacles.channel.slack.ink import SlackInk
 logger = logging.getLogger(__name__)
 OutputT = TypeVar("OutputT", bound=JsonValue | DeferredToolRequests)
 PLAN_TITLE = "Working on request"
-MAX_TASK_DETAIL_CHARS = 2000
-SKIPPED_PLAN_TOOL_NAMES = frozenset({"ask_questions"})
 
 THINKING_TITLE = "Thinking"
 STATUS_THINKING = "Thinking…"
@@ -456,19 +459,10 @@ class SlackEventStreamFeeler(Generic[OutputT]):
         return message_id
 
 
-def humanize_tool_name(tool_name: str) -> str:
-    name = tool_name.rsplit("__", 1)[-1].replace("-", " ")
-    return format_field_name(name)
-
-
-def status_hint(tool_name: str) -> str:
-    return f"{humanize_tool_name(tool_name)}…"
-
-
 def format_tool_arguments(_tool_name: str, args: dict[str, Any]) -> str:
     if not args:
         return "_No arguments_"
-    return format_slack_fields(args)
+    return format_fields(args)
 
 
 def format_tool_result(part: ToolReturnPart | RetryPromptPart) -> str:
@@ -478,79 +472,4 @@ def format_tool_result(part: ToolReturnPart | RetryPromptPart) -> str:
     value = part.model_response_object()
     if not value:
         return "_No result_"
-    return format_slack_fields(value)
-
-
-def format_slack_fields(value: dict[str, Any]) -> str:
-    lines = format_mapping_lines(value)
-    return truncate_task_detail("\n".join(lines) if lines else "_No details_")
-
-
-def should_skip_plan_tool(tool_name: str) -> bool:
-    return tool_name in SKIPPED_PLAN_TOOL_NAMES
-
-
-def format_mapping_lines(value: dict[str, Any], *, indent: int = 0) -> list[str]:
-    lines: list[str] = []
-    pad = "   " * indent
-    for key, item in value.items():
-        label = format_field_name(key)
-        if isinstance(item, dict):
-            lines.append(f"{pad}*{label}:*")
-            lines.extend(format_mapping_lines(item, indent=indent + 1))
-        elif (
-            isinstance(item, list)
-            and item
-            and any(isinstance(entry, (dict, list)) for entry in item)
-        ):
-            lines.append(f"{pad}*{label}:*")
-            lines.extend(format_list_lines(item, indent=indent + 1))
-        else:
-            lines.append(f"{pad}*{label}:* {format_inline_value(item)}")
-    return lines
-
-
-def format_list_lines(value: list[Any], *, indent: int = 0) -> list[str]:
-    lines: list[str] = []
-    pad = "   " * indent
-    for index, item in enumerate(value, start=1):
-        if isinstance(item, dict):
-            lines.append(f"{pad}{index}.")
-            lines.extend(format_mapping_lines(item, indent=indent + 1))
-        elif isinstance(item, list):
-            lines.append(f"{pad}{index}. {format_inline_value(item)}")
-        else:
-            lines.append(f"{pad}{index}. {format_inline_value(item)}")
-    return lines
-
-
-def format_field_name(value: object) -> str:
-    text = str(value).replace("_", " ").strip()
-    return text[:1].upper() + text[1:] if text else "Value"
-
-
-def format_inline_value(value: Any) -> str:
-    if value is None:
-        return "_None_"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, list):
-        if not value:
-            return "_None_"
-        return ", ".join(format_inline_value(item) for item in value)
-    if isinstance(value, dict):
-        return "; ".join(
-            f"{format_field_name(key)}: {format_inline_value(item)}"
-            for key, item in value.items()
-        )
-    return truncate_task_detail(str(value), max_chars=500)
-
-
-def truncate_task_detail(
-    text: str,
-    *,
-    max_chars: int = MAX_TASK_DETAIL_CHARS,
-) -> str:
-    if len(text) <= max_chars:
-        return text
-    return f"{text[: max_chars - 16].rstrip()}\n...[truncated]"
+    return format_fields(value)

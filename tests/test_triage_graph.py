@@ -83,6 +83,8 @@ class FakeAgent:
     runs: list[str | None] = field(default_factory=list)
     run_prompts: list[str | Sequence[UserContent] | None] = field(default_factory=list)
     deferred_results: list[DeferredToolResults | None] = field(default_factory=list)
+    stream_deferred: list[DeferredToolResults | None] = field(default_factory=list)
+    message_histories: list[list[ModelMessage]] = field(default_factory=list)
     streams: list[
         tuple[
             str | Sequence[UserContent] | None,
@@ -107,6 +109,7 @@ class FakeAgent:
         self.runs.append(run_name)
         self.run_prompts.append(user_prompt)
         self.deferred_results.append(deferred_tool_results)
+        self.message_histories.append(list(message_history or []))
         if run_name == "reception":
             if not self.allow_reception_run:
                 raise AssertionError("reception should use run_stream_events")
@@ -131,6 +134,7 @@ class FakeAgent:
         self.streams.append(
             (user_prompt, list(message_history or []), conversation_key, run_name)
         )
+        self.stream_deferred.append(deferred_tool_results)
 
         async def events() -> AsyncIterator[FakeStreamEvent]:
             yield AgentRunResultEvent(AgentRunResult(self.reception_output))
@@ -395,6 +399,11 @@ class FakeActionManager:
             raise ValueError(f"unknown deferred action batch {awake.batch_id}")
         return self.batch
 
+    async def get_batch(self, batch_id: uuid.UUID) -> FakeDeferredBatch:
+        if self.batch is None:
+            raise ValueError(f"unknown deferred action batch {batch_id}")
+        return self.batch
+
     async def mark_batch(
         self,
         batch_id: uuid.UUID,
@@ -508,7 +517,13 @@ async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
     assert agent.runs == ["triage"]
     assert agent.run_prompts == [None]
     assert agent.deferred_results == [deferred_results]
-    assert conversations.ensured == [key]
+    # RunTriage no longer threads history through the graph — react loads it
+    # from the conversation (which carries the deferred turn the create run
+    # recorded), so the agent is called with no explicit history.
+    assert agent.message_histories == [[]]
+    # ResumeDeferred no longer touches the conversation; history is loaded by
+    # react when it runs, which the fake agent here bypasses.
+    assert conversations.ensured == []
     assert action_manager.marked == [
         (batch.id, "resuming", False),
         (batch.id, "completed", True),
@@ -614,11 +629,59 @@ async def test_triage_graph_emits_reception_after_route() -> None:
     assert agent.streams[0][2].thread_id == "hint-thread"
     assert agent.streams[0][3] == "reception"
     assert agent.streams[0][0] == "Please debug this in reception."
-    assert conversations.ensured == [agent.streams[0][2]]
+    # The triage graph no longer ensures conversations for runs; react loads
+    # history from the (sub-thread) conversation itself.
+    assert conversations.ensured == []
     assert im.sent == []
     assert ops.sub_threads[0][1] == "Working on it"
     assert ops.stream_sent[0][0].thread_id == "hint-thread"
     assert ops.stream_sent[0][1] == ["done"]
+
+
+async def test_triage_resume_does_not_leak_deferred_results_into_reception() -> None:
+    # A triage-phase question is answered, and the triage run then decides to
+    # open a reception. The triage answer must NOT leak into that fresh
+    # sub-thread run — it would resume an empty conversation and raise
+    # "Tool call results were provided, but the message history is empty."
+    key = _key()
+    deferred_results = _deferred_results()
+    batch = FakeDeferredBatch(
+        source_key=key,
+        target_key=key,
+        requests=_requests(),
+        deferred_results=deferred_results,
+    )
+    agent = FakeAgent(
+        TriageDecision(
+            action="reception",
+            target_id="ops",
+            reason="needs work",
+            hint="Working on it",
+            handoff="Please debug this in reception.",
+        )
+    )
+    conversations = FakeConversationManager()
+    action_manager = FakeActionManager(batch=batch)
+    im = FakeChannel()
+    ops = FakeChannel()
+
+    await triage_graph.run(
+        ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
+        state=TriageState(),
+        deps=_deps(
+            conversations=conversations,
+            channels={"im": im, "ops": ops},
+            agent=agent,
+            action_manager=action_manager,
+        ),
+    )
+
+    # The triage run consumed the deferred answer ...
+    assert agent.runs == ["triage"]
+    assert agent.deferred_results == [deferred_results]
+    # ... and the following reception ran fresh, WITHOUT the leaked answer.
+    assert agent.streams[0][3] == "reception"
+    assert agent.stream_deferred == [None]
 
 
 async def test_triage_graph_uses_event_stream_feeler_for_reception() -> None:

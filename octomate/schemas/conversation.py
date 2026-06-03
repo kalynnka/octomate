@@ -61,7 +61,7 @@ class Conversation(BaseTransmuter):
     user_id: str = Field(frozen=True)
 
     channel_tentacle_id: str = Field(frozen=True)
-    agent_tentacle_id: str | None = None
+    agent_tentacle_id: str
 
     name: str | None = None
     status: str = "active"

@@ -20,7 +20,7 @@ from pydantic_ai.agent.abstract import (
     AgentMetadata,
     EventStreamHandler,
 )
-from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
@@ -50,7 +50,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: None = None,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -77,7 +76,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: OutputSpec[AgentOutput],
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -104,7 +102,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: OutputSpec[AgentOutput] | None = None,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -132,7 +129,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: None = None,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -158,7 +154,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: OutputSpec[AgentOutput],
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -184,7 +179,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: OutputSpec[AgentOutput] | None = None,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,

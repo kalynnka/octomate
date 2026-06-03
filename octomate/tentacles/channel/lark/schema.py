@@ -36,6 +36,7 @@ class LarkQuestionActionValue(TypedDict):
     questions: Annotated[list[DeferredQuestion], Field(min_length=1)]
     page: int
     answers: dict[UUID, str]
+    choice: NotRequired[str]
 
 
 class LarkQuestionFormValue(TypedDict, total=False):

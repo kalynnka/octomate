@@ -8,8 +8,9 @@ from pydantic import JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import DeferredQuestion
-from octomate.tentacles.channel.feelers.deferred import QuestionFeeler
+from octomate.tentacles.channel.feelers.deferred import QuestionFeeler, question_text
 from octomate.tentacles.channel.feelers.output import IMMessageID
+from octomate.tentacles.channel.lark.feelers import cards
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.schema import (
     LarkOutboundMessage,
@@ -93,35 +94,38 @@ def ask_question_card_data(
     if hint:
         text = f"{text}\n\n_Hint: {hint}_"
     saved = answers.get(action.id, "")
-    elements: list[JsonValue] = []
-    if choices:
-        elements.append(
-            {
-                "tag": "select_static",
-                "name": "choice",
-                "placeholder": {"tag": "plain_text", "content": "Select an option"},
-                "options": [
-                    {
-                        "text": {"tag": "plain_text", "content": str(choice)},
-                        "value": str(choice),
-                    }
-                    for choice in choices
-                ],
-            }
+    # clicking one records it and advances to the next question (or
+    # submits on the last). Free-text answers use the input + Next/Submit.
+    elements: list[JsonValue] = [
+        question_button(
+            choice,
+            LarkCardAction.ASK_QUESTION_CHOICE,
+            actions,
+            page,
+            answers,
+            button_type="primary" if choice == saved else "default",
+            choice=choice,
+            name=f"{LarkCardAction.ASK_QUESTION_CHOICE.value}_{index}",
         )
+        for index, choice in enumerate(choices)
+    ]
     input_element: JsonObject = {
         "tag": "input",
         "name": "answer",
-        "placeholder": {"tag": "plain_text", "content": "Type your answer"},
+        "placeholder": {
+            "tag": "plain_text",
+            "content": "Or type another answer" if choices else "Type your answer",
+        },
     }
     if saved and saved not in choices:
         input_element["default_value"] = saved
     elements.append(input_element)
 
-    buttons: list[JsonValue] = []
+    # Back and Next/Submit share one horizontal action row.
+    nav: list[JsonValue] = []
     if page > 0:
-        buttons.append(
-            nav_button(
+        nav.append(
+            question_button(
                 "Back",
                 LarkCardAction.ASK_QUESTION_BACK,
                 actions,
@@ -130,8 +134,8 @@ def ask_question_card_data(
             )
         )
     if page < len(actions) - 1:
-        buttons.append(
-            nav_button(
+        nav.append(
+            question_button(
                 "Next",
                 LarkCardAction.ASK_QUESTION_NEXT,
                 actions,
@@ -141,8 +145,8 @@ def ask_question_card_data(
             )
         )
     else:
-        buttons.append(
-            nav_button(
+        nav.append(
+            question_button(
                 "Submit",
                 LarkCardAction.ASK_QUESTION_SUBMIT,
                 actions,
@@ -151,43 +155,50 @@ def ask_question_card_data(
                 button_type="primary",
             )
         )
-    elements.extend(buttons)
-    card: JsonObject = {
-        "header": {
-            "title": {
-                "tag": "plain_text",
-                "content": "Question" if len(actions) == 1 else "Questions",
-            },
-            "template": "blue",
-        },
-        "elements": [
-            {
-                "tag": "markdown",
-                "content": f"**Question {page + 1} of {len(actions)}**\n\n{text}",
-            },
-            {"tag": "hr"},
+    # A `column_set` lays the nav buttons in one row; an `action` container drops
+    # form_submit buttons, so each button gets its own column instead.
+    elements.append(
+        {
+            "tag": "column_set",
+            "columns": [{"tag": "column", "elements": [button]} for button in nav],
+        }
+    )
+    return cards.simple_card(
+        [
+            cards.markdown(f"**Question {page + 1} of {len(actions)}**\n\n{text}"),
+            cards.divider(),
             {
                 "tag": "form",
                 "name": f"question_{action.id}",
                 "elements": elements,
             },
         ],
-    }
-    return card
+        header=cards.header(
+            "Question" if len(actions) == 1 else "Questions",
+            template="blue",
+        ),
+    )
 
 
-def submitted_card_data(actions: list[DeferredQuestion]) -> JsonObject:
+def submitted_card_data(
+    actions: list[DeferredQuestion],
+    answers: dict[UUID, str] | None = None,
+) -> JsonObject:
+    answers = answers or {}
     count = len(actions)
     noun = "question" if count == 1 else "questions"
-    return {
-        "header": {
-            "title": {"tag": "plain_text", "content": "Answers Submitted"},
-            "template": "green",
-        },
-        "elements": [
-            {"tag": "markdown", "content": f"Answers submitted for **{count} {noun}**."}
-        ],
-    }
+    summary = "\n\n".join(
+        f"**{index}. {question_text(action)}**\n"
+        f"{answers.get(action.id) or '_No answer provided_'}"
+        for index, action in enumerate(actions, start=1)
+    )
+    content = f"Answers submitted for **{count} {noun}**."
+    if summary:
+        content = f"{content}\n\n{summary}"
+    return cards.simple_card(
+        [cards.markdown(content)],
+        header=cards.header("Answers Submitted", template="green"),
+    )
 
 
 def collect_answer(
@@ -201,14 +212,15 @@ def collect_answer(
         return collected
     page = max(0, min(page, len(actions) - 1))
     action_id = actions[page].id
+    # Choices are recorded via the choice buttons (kept in ``answers``); the
+    # text input only overrides when the user actually typed something.
     answer = str(form_value.get("answer") or "").strip()
-    if not answer:
-        answer = str(form_value.get("choice") or "").strip()
-    collected[action_id] = answer
+    if answer:
+        collected[action_id] = answer
     return collected
 
 
-def nav_button(
+def question_button(
     text: str,
     action: LarkCardAction,
     actions: list[DeferredQuestion],
@@ -216,6 +228,8 @@ def nav_button(
     answers: dict[UUID, str],
     *,
     button_type: str = "default",
+    choice: str | None = None,
+    name: str | None = None,
 ) -> JsonObject:
     batch_id = actions[0].batch_id
     if batch_id is None:
@@ -227,12 +241,16 @@ def nav_button(
         "page": page,
         "answers": answers,
     }
-    button: JsonObject = {
+    if choice is not None:
+        value["choice"] = choice
+    return {
         "tag": "button",
         "text": {"tag": "plain_text", "content": text},
         "type": button_type,
         "action_type": "form_submit",
-        "name": action.value,
+        # Lark requires every element in a form to have a unique ``name``;
+        # choice buttons share the same action, so callers pass a distinct name.
+        "name": name or action.value,
         "value": LarkQuestionActionValueAdapter.dump_python(
             value,
             mode="json",
@@ -242,9 +260,9 @@ def nav_button(
                 "questions": {"__all__": QUESTION_STATE_FIELDS},
                 "page": True,
                 "answers": True,
+                "choice": True,
             },
             exclude_defaults=True,
             exclude_none=True,
         ),
     }
-    return button

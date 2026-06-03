@@ -1,41 +1,15 @@
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
-from octomate.tentacles.channel.slack.feelers.approvals import (
-    SlackApprovalActionsAdapter,
-    SlackApprovalActionValueAdapter,
-    SlackApprovalFeeler,
-    approval_blocks,
-    approval_submitted_blocks,
-    approval_title,
-)
+from octomate.tentacles.channel.slack.feelers.approvals import SlackApprovalFeeler
 from octomate.tentacles.channel.slack.feelers.output import (
     SlackEventStreamFeeler,
     SlackMarkdownStreamFeeler,
 )
-from octomate.tentacles.channel.slack.feelers.questions import (
-    SlackAskQuestionFeeler,
-    SlackQuestionActionsAdapter,
-    SlackQuestionActionValueAdapter,
-    ask_question_blocks,
-    collect_current_answer,
-    question_title,
-    submitted_blocks,
-)
+from octomate.tentacles.channel.slack.feelers.questions import SlackAskQuestionFeeler
 
 __all__ = [
-    "SlackApprovalActionsAdapter",
-    "SlackApprovalActionValueAdapter",
     "SlackApprovalFeeler",
     "SlackAskQuestionFeeler",
     "SlackBlockAction",
     "SlackEventStreamFeeler",
     "SlackMarkdownStreamFeeler",
-    "SlackQuestionActionsAdapter",
-    "SlackQuestionActionValueAdapter",
-    "approval_blocks",
-    "approval_submitted_blocks",
-    "approval_title",
-    "ask_question_blocks",
-    "collect_current_answer",
-    "question_title",
-    "submitted_blocks",
 ]

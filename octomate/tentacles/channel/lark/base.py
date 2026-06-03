@@ -35,12 +35,12 @@ from octomate.tentacles.channel.lark.feelers.questions import (
     collect_answer,
     submitted_card_data,
 )
-from octomate.tentacles.channel.lark.ink import LarkInk
-from octomate.tentacles.channel.lark.output import (
+from octomate.tentacles.channel.lark.feelers.output import (
     LarkEventStreamFeeler,
     LarkMarkdownFeeler,
     LarkMarkdownStreamFeeler,
 )
+from octomate.tentacles.channel.lark.ink import LarkInk
 from octomate.tentacles.channel.lark.schema import (
     LarkApprovalActionValue,
     LarkOutboundMessage,
@@ -120,6 +120,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             ),
             event_stream=LarkEventStreamFeeler[ChannelOutput](
                 ink=self.ink,
+                stream_config=self.config.stream,
                 markdown_feeler=markdown_feeler,
                 channel_id=self.id,
             ),
@@ -231,6 +232,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             LarkCardAction.ASK_QUESTION_BACK,
             LarkCardAction.ASK_QUESTION_NEXT,
             LarkCardAction.ASK_QUESTION_SUBMIT,
+            LarkCardAction.ASK_QUESTION_CHOICE,
         }:
             try:
                 action_value = LarkQuestionActionValueAdapter.validate_python(value)
@@ -241,17 +243,34 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 return P2CardActionTriggerResponse({})
             question_actions = action_value["questions"]
             page = action_value["page"]
-            answers = collect_answer(
-                question_actions,
-                page,
-                form_value,
-                action_value["answers"],
-            )
-            if action == LarkCardAction.ASK_QUESTION_BACK:
-                page -= 1
-            elif action == LarkCardAction.ASK_QUESTION_NEXT:
-                page += 1
+            last_page = len(question_actions) - 1
+            submit = False
+            if action == LarkCardAction.ASK_QUESTION_CHOICE:
+                answers = dict(action_value["answers"])
+                if 0 <= page <= last_page:
+                    answers[question_actions[page].id] = str(
+                        action_value.get("choice") or ""
+                    )
+                # Picking a choice acts like a radio: record and advance to the
+                # next question, or submit when it was the last one.
+                if page < last_page:
+                    page += 1
+                else:
+                    submit = True
             else:
+                answers = collect_answer(
+                    question_actions,
+                    page,
+                    form_value,
+                    action_value["answers"],
+                )
+                if action == LarkCardAction.ASK_QUESTION_BACK:
+                    page -= 1
+                elif action == LarkCardAction.ASK_QUESTION_NEXT:
+                    page += 1
+                else:
+                    submit = True
+            if submit:
                 task = asyncio.create_task(
                     self.octomate.kick(
                         DeferredActionBatchResponse(
@@ -269,10 +288,16 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 )
                 return P2CardActionTriggerResponse(
                     {
-                        "toast": {"type": "success", "content": "Answers submitted"},
+                        "toast": {
+                            "type": "success",
+                            "content": "Answers submitted",
+                        },
                         "card": {
                             "type": "raw",
-                            "data": submitted_card_data(question_actions),
+                            "data": submitted_card_data(
+                                question_actions,
+                                answers,
+                            ),
                         },
                     }
                 )

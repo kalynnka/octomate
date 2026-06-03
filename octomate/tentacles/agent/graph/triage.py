@@ -7,8 +7,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypeAlias
 
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
-from pydantic_ai.messages import ModelMessage, UserContent
-from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.messages import UserContent
+from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.managers.conversations import ConversationManager
@@ -94,10 +94,6 @@ class TriageState:
     agent_id: str | None = None
     decision: TriageDecision | None = None
     user_prompt: str | Sequence[UserContent] | None = None
-    message_history: list[ModelMessage] = field(default_factory=list)
-    reception_history: list[ModelMessage] | None = None
-    deferred_tool_results: DeferredToolResults | None = None
-    resume_batch_id: uuid.UUID | None = None
     run_name: Literal["triage", "reception"] = "triage"
 
 
@@ -152,14 +148,12 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         if channel is None:
             raise ValueError(f"unknown channel {key.channel_tentacle_id!r}")
 
-        conversation = await ctx.deps.conversation_manager.ensure(
-            key,
-            agent_tentacle_id=channel.config.agent_id,
-        )
-        resolved_agent_id = channel.config.agent_id or conversation.agent_tentacle_id
-        if not resolved_agent_id:
-            raise ValueError(f"conversation {key} has no agent assigned")
+        resolved_agent_id = channel.config.agent_id
         ctx.deps.agent_for(resolved_agent_id)
+        await ctx.deps.conversation_manager.ensure(
+            key,
+            agent_tentacle_id=resolved_agent_id,
+        )
 
         source_target = ResponseTarget(
             channel_id=key.channel_tentacle_id,
@@ -169,7 +163,6 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         )
         ctx.state.source_target = source_target
         ctx.state.agent_id = resolved_agent_id
-        ctx.state.message_history = list(conversation.messages)
 
         user_prompt = "\n\n".join(str(event) for event in self.signal.messages).strip()
         ctx.state.user_prompt = user_prompt
@@ -207,13 +200,14 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             )
             state.target = replace(source_target, mode="sub")
             state.run_name = "reception"
-            state.reception_history = None
             return RunReception()
         return RunTriage()
 
 
 @dataclass
 class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
+    resume_batch_id: uuid.UUID | None = None
+
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
@@ -248,21 +242,24 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             target_mode="main",
             decision=None,
         )
+        deferred_results = None
+        if self.resume_batch_id is not None:
+            batch = await ctx.deps.action_manager.get_batch(self.resume_batch_id)
+            deferred_results = batch.build_results()
         result = await agent.run(
             state.user_prompt,
             conversation_key=source_key,
             run_name="triage",
             output_type=[TriageDecision, DeferredToolRequests],
-            message_history=state.message_history,
-            deferred_tool_results=state.deferred_tool_results,
+            deferred_tool_results=deferred_results,
             deferred_suspender=suspender,
             instructions=TRIAGE_INSTRUCTIONS.format(
                 targets="\n".join(str(target) for target in candidates.values())
             ),
         )
-        if state.resume_batch_id is not None:
+        if self.resume_batch_id is not None:
             await ctx.deps.action_manager.mark_batch(
-                state.resume_batch_id,
+                self.resume_batch_id,
                 "completed",
                 completed=True,
             )
@@ -359,15 +356,13 @@ class PrepareReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             target = replace(target, key=target_key)
 
         state.target = target
-        if target.key == source_key and target.mode == "main":
-            state.reception_history = list(state.message_history)
-        else:
-            state.reception_history = None
         return RunReception()
 
 
 @dataclass
 class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
+    resume_batch_id: uuid.UUID | None = None
+
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
@@ -391,16 +386,11 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         agent = ctx.deps.agent_for(agent_id)
         target_channel = ctx.deps.channel_for(target)
 
-        if state.reception_history is not None:
-            message_history = state.reception_history
-        else:
-            conversation = await ctx.deps.conversation_manager.ensure(
-                target_key,
-                agent_tentacle_id=agent.id,
-            )
-            message_history = list(conversation.messages)
-
-        if state.deferred_tool_results is not None:
+        deferred_results = None
+        if self.resume_batch_id is not None:
+            batch = await ctx.deps.action_manager.get_batch(self.resume_batch_id)
+            deferred_results = batch.build_results()
+        if deferred_results is not None:
             user_prompt: str | Sequence[UserContent] | None = None
         else:
             user_prompt = decision.handoff or str(state.user_prompt or "")
@@ -428,8 +418,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     user_prompt,
                     conversation_key=target_key,
                     run_name="reception",
-                    message_history=message_history,
-                    deferred_tool_results=state.deferred_tool_results,
+                    deferred_tool_results=deferred_results,
                     deferred_suspender=suspender,
                 ) as stream:
                     async for event in stream:
@@ -450,8 +439,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 user_prompt,
                 conversation_key=target_key,
                 run_name="reception",
-                message_history=message_history,
-                deferred_tool_results=state.deferred_tool_results,
+                deferred_tool_results=deferred_results,
                 deferred_suspender=suspender,
             )
             if not isinstance(result.output, DeferredToolRequests):
@@ -462,9 +450,9 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                         markdown,
                     )
 
-        if state.resume_batch_id is not None:
+        if self.resume_batch_id is not None:
             await ctx.deps.action_manager.mark_batch(
-                state.resume_batch_id,
+                self.resume_batch_id,
                 "completed",
                 completed=True,
             )
@@ -503,7 +491,7 @@ class ResumeDeferred(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             raise ValueError(
                 f"unknown channel {batch.target_key.channel_tentacle_id!r}"
             )
-        agent = ctx.deps.agent_for(batch.agent_tentacle_id)
+        ctx.deps.agent_for(batch.agent_tentacle_id)
         target = ResponseTarget(
             channel_id=batch.target_key.channel_tentacle_id,
             key=batch.target_key,
@@ -537,16 +525,9 @@ class ResumeDeferred(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 )
 
             await ctx.deps.action_manager.mark_batch(batch.id, "resuming")
-            conversation = await ctx.deps.conversation_manager.ensure(
-                batch.target_key,
-                agent_tentacle_id=agent.id,
-            )
             state.user_prompt = None
-            state.message_history = list(conversation.messages)
-            state.deferred_tool_results = batch.build_results()
-            state.resume_batch_id = batch.id
             state.run_name = "triage"
-            return RunTriage()
+            return RunTriage(resume_batch_id=batch.id)
 
         if isinstance(batch.decision, TriageDecision):
             decision = batch.decision
@@ -574,11 +555,8 @@ class ResumeDeferred(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 
         await ctx.deps.action_manager.mark_batch(batch.id, "resuming")
         state.user_prompt = None
-        state.deferred_tool_results = batch.build_results()
-        state.resume_batch_id = batch.id
         state.run_name = "reception"
-        state.reception_history = None
-        return RunReception()
+        return RunReception(resume_batch_id=batch.id)
 
 
 triage_graph = Graph[TriageState, TriageDeps, TriageGraphResult](

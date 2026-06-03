@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
+    Any,
     Callable,
     ClassVar,
     Generic,
@@ -348,6 +349,90 @@ def format_stream_value(value: JsonValue, *, max_chars: int = 2000) -> str:
     if len(text) <= max_chars:
         return text
     return f"{text[:max_chars].rstrip()}\n\n...[truncated]"
+
+
+SKIPPED_PLAN_TOOL_NAMES = frozenset({"ask_questions"})
+MAX_TASK_DETAIL_CHARS = 2000
+
+
+def should_skip_plan_tool(tool_name: str) -> bool:
+    return tool_name in SKIPPED_PLAN_TOOL_NAMES
+
+
+def format_field_name(value: object) -> str:
+    text = str(value).replace("_", " ").strip()
+    return text[:1].upper() + text[1:] if text else "Value"
+
+
+def humanize_tool_name(tool_name: str) -> str:
+    name = tool_name.rsplit("__", 1)[-1].replace("-", " ")
+    return format_field_name(name)
+
+
+def status_hint(tool_name: str) -> str:
+    return f"{humanize_tool_name(tool_name)}…"
+
+
+def truncate_task_detail(text: str, *, max_chars: int = MAX_TASK_DETAIL_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 16].rstrip()}\n...[truncated]"
+
+
+def format_inline_value(value: Any) -> str:
+    if value is None:
+        return "_None_"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, list):
+        if not value:
+            return "_None_"
+        return ", ".join(format_inline_value(item) for item in value)
+    if isinstance(value, dict):
+        return "; ".join(
+            f"{format_field_name(key)}: {format_inline_value(item)}"
+            for key, item in value.items()
+        )
+    return truncate_task_detail(str(value), max_chars=500)
+
+
+def format_mapping_lines(
+    value: dict[str, Any], *, indent: int = 0, bold: str = "*"
+) -> list[str]:
+    lines: list[str] = []
+    pad = "   " * indent
+    for key, item in value.items():
+        label = format_field_name(key)
+        if isinstance(item, dict):
+            lines.append(f"{pad}{bold}{label}:{bold}")
+            lines.extend(format_mapping_lines(item, indent=indent + 1, bold=bold))
+        elif (
+            isinstance(item, list)
+            and item
+            and any(isinstance(entry, (dict, list)) for entry in item)
+        ):
+            lines.append(f"{pad}{bold}{label}:{bold}")
+            lines.extend(format_list_lines(item, indent=indent + 1, bold=bold))
+        else:
+            lines.append(f"{pad}{bold}{label}:{bold} {format_inline_value(item)}")
+    return lines
+
+
+def format_list_lines(value: list[Any], *, indent: int = 0, bold: str = "*") -> list[str]:
+    lines: list[str] = []
+    pad = "   " * indent
+    for index, item in enumerate(value, start=1):
+        if isinstance(item, dict):
+            lines.append(f"{pad}{index}.")
+            lines.extend(format_mapping_lines(item, indent=indent + 1, bold=bold))
+        else:
+            lines.append(f"{pad}{index}. {format_inline_value(item)}")
+    return lines
+
+
+def format_fields(value: dict[str, Any], *, bold: str = "*") -> str:
+    lines = format_mapping_lines(value, bold=bold)
+    return truncate_task_detail("\n".join(lines) if lines else "_No details_")
 
 
 class MarkdownFeeler(Protocol):

@@ -47,6 +47,7 @@ from octomate.tentacles.channel.lark.feelers.questions import (
     ask_question_card,
     ask_question_card_data,
     collect_answer,
+    submitted_card_data,
 )
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.tentacles.channel.lark.ink import LarkInk
@@ -152,6 +153,12 @@ def _json_objects(value: JsonValue) -> list[JsonObject]:
 def _json_string(value: JsonValue) -> str:
     assert isinstance(value, str)
     return value
+
+
+def _nav_buttons(form_elements: list[JsonObject]) -> list[JsonObject]:
+    """The nav row is the trailing column_set; one button per column."""
+    columns = _json_objects(form_elements[-1]["columns"])
+    return [_json_objects(column["elements"])[0] for column in columns]
 
 
 def _loaded_json_object(value: str) -> JsonObject:
@@ -353,6 +360,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         chat_id="alice",
         user_id="alice",
         channel_tentacle_id="source",
+        agent_tentacle_id="inkling",
     )
 
     context = await Feelers(
@@ -1077,7 +1085,8 @@ async def test_lark_feelers_send_approval_and_question_cards() -> None:
     form = question_elements[2]
     assert form["tag"] == "form"
     form_elements = _json_objects(form["elements"])
-    form_value = _json_object(form_elements[-1]["value"])
+    nav_buttons = _nav_buttons(form_elements)
+    form_value = _json_object(nav_buttons[-1]["value"])
     assert form_value["action"] == (
         LarkCardAction.ASK_QUESTION_SUBMIT.value
     )
@@ -1105,20 +1114,45 @@ def test_lark_card_data_and_answer_collection() -> None:
     assert first_content.startswith("**Question 1 of 1**")
     form = card_elements[2]
     form_elements = _json_objects(form["elements"])
-    submit = form_elements[-1]
+    # Back and Next/Submit share one horizontal column_set row at the end.
+    nav_buttons = _nav_buttons(form_elements)
+    # Lark rejects a form with duplicate element names (ErrCode 11310), so every
+    # button/input must be uniquely named.
+    names = [
+        str(el["name"])
+        for el in [*form_elements[:-1], *nav_buttons]
+        if "name" in el
+    ]
+    assert len(names) == len(set(names))
+    # choices render as selectable buttons (radio-like), not a dropdown
+    first_choice = form_elements[0]
+    assert _json_object(first_choice["text"])["content"] == "morning"
+    first_choice_value = _json_object(first_choice["value"])
+    assert first_choice_value["action"] == LarkCardAction.ASK_QUESTION_CHOICE.value
+    assert first_choice_value["choice"] == "morning"
+    submit = nav_buttons[-1]
     submit_value = LarkQuestionActionValueAdapter.validate_python(
         submit["value"]
     )
     restored = submit_value["questions"]
     assert restored[0].id == action.id
     assert restored[0].args == action.args
+    # the text input only overrides when something was typed; a recorded choice
+    # (set when its button is clicked) is preserved through an empty input
     answers = collect_answer(
         restored,
         submit_value["page"],
-        {"choice": "night", "answer": ""},
+        {"answer": "night"},
         submit_value["answers"],
     )
     assert answers == {action.id: "night"}
+    kept = collect_answer(
+        restored,
+        submit_value["page"],
+        {"answer": ""},
+        {action.id: "morning"},
+    )
+    assert kept == {action.id: "morning"}
 
 
 async def test_lark_card_callbacks_emit_deferred_responses() -> None:
@@ -1158,7 +1192,8 @@ async def test_lark_card_callbacks_emit_deferred_responses() -> None:
     question_data = ask_question_card_data(actions=[question])
     question_elements = _json_objects(question_data["elements"])
     form_elements = _json_objects(question_elements[2]["elements"])
-    submit_value = _json_object(form_elements[-1]["value"])
+    nav_buttons = _nav_buttons(form_elements)
+    submit_value = _json_object(nav_buttons[-1]["value"])
     submit_response = channel.on_card_action(
         cast(
             P2CardActionTrigger,
@@ -1183,3 +1218,104 @@ async def test_lark_card_callbacks_emit_deferred_responses() -> None:
         responder_id="ou_user",
         answers={question.id: "yes"},
     )
+
+
+def test_lark_submitted_card_includes_answers() -> None:
+    region = _question(question="Region?")
+    confirm = _question(question="Confirm?")
+
+    data = submitted_card_data(
+        [region, confirm],
+        {region.id: "us-east", confirm.id: "yes"},
+    )
+    content = _json_objects(data["elements"])[0]["content"]
+    assert isinstance(content, str)
+    assert "Region?" in content and "us-east" in content
+    assert "Confirm?" in content and "yes" in content
+
+    missing = submitted_card_data([region], {})
+    missing_content = _json_objects(missing["elements"])[0]["content"]
+    assert isinstance(missing_content, str)
+    assert "No answer provided" in missing_content
+
+
+async def test_lark_question_choice_click_advances_to_next_question() -> None:
+    octomate = FakeOctomate()
+    channel = object.__new__(LarkTentacle)
+    channel.id = "lark"
+    channel.octomate = cast(Octomate, octomate)
+    first = _question(question="Q1", choices=["a", "b"])
+    second = _question(batch_id=_batch_id(first), question="Q2", choices=["x", "y"])
+
+    card = ask_question_card_data(actions=[first, second])
+    form_elements = _json_objects(_json_objects(card["elements"])[2]["elements"])
+    choice_value = _json_object(form_elements[0]["value"])
+    assert choice_value["choice"] == "a"
+
+    response = channel.on_card_action(
+        cast(
+            P2CardActionTrigger,
+            SimpleNamespace(
+                event=SimpleNamespace(
+                    action=SimpleNamespace(value=choice_value, form_value={}),
+                    operator=SimpleNamespace(open_id="ou_user", user_id=""),
+                )
+            ),
+        )
+    )
+    await asyncio.sleep(0)
+
+    # Clicking a choice records it and jumps to the next question — no submit.
+    assert octomate.kicks == []
+    toast = response.toast
+    assert toast is not None
+    assert toast.content == "Received"
+    assert response.card is not None
+    rerendered = response.card.data
+    assert rerendered is not None
+    heading = _json_objects(rerendered["elements"])[0]["content"]
+    assert isinstance(heading, str)
+    assert "Question 2 of 2" in heading
+    next_choice = _json_object(
+        _json_objects(_json_objects(rerendered["elements"])[2]["elements"])[0]["value"]
+    )
+    assert next_choice["page"] == 1
+    assert next_choice["answers"] == {str(first.id): "a"}
+
+
+async def test_lark_question_choice_click_on_last_question_submits() -> None:
+    octomate = FakeOctomate()
+    channel = object.__new__(LarkTentacle)
+    channel.id = "lark"
+    channel.octomate = cast(Octomate, octomate)
+    question = _question(question="Pick", choices=["a", "b"])
+
+    card = ask_question_card_data(actions=[question])
+    form_elements = _json_objects(_json_objects(card["elements"])[2]["elements"])
+    choice_value = _json_object(form_elements[0]["value"])
+    assert choice_value["choice"] == "a"
+
+    response = channel.on_card_action(
+        cast(
+            P2CardActionTrigger,
+            SimpleNamespace(
+                event=SimpleNamespace(
+                    action=SimpleNamespace(value=choice_value, form_value={}),
+                    operator=SimpleNamespace(open_id="ou_user", user_id=""),
+                )
+            ),
+        )
+    )
+    await asyncio.sleep(0)
+
+    # The only/last question: clicking a choice submits straight away.
+    toast = response.toast
+    assert toast is not None
+    assert toast.content == "Answers submitted"
+    assert octomate.kicks == [
+        DeferredActionBatchResponse(
+            batch_id=_batch_id(question),
+            responder_id="ou_user",
+            answers={question.id: "a"},
+        )
+    ]

@@ -23,7 +23,7 @@ from pydantic_ai.ui.vercel_ai.response_types import (
 )
 
 from octomate.managers.conversations import ConversationManager
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.agent.graph import (
     ReactDeps,
     ReactState,
@@ -52,15 +52,12 @@ class GraphAdapter:
             sdk_version=self.SDK_VERSION,
         )
 
-        conversation = await self.conversations.ensure(
-            ConversationKey(
-                channel_tentacle_id=self.channel_id,
-                chat_type="private",
-                chat_id=body.id,
-                user_id="dev",
-                thread_id="",
-            ),
-            agent_tentacle_id=self.agent_id,
+        key = ConversationKey(
+            channel_tentacle_id=self.channel_id,
+            chat_type="private",
+            chat_id=body.id,
+            user_id="dev",
+            thread_id="",
         )
         deferred = adapter.deferred_tool_results
         client_messages = adapter.sanitize_messages(
@@ -75,8 +72,7 @@ class GraphAdapter:
         return event_stream.streaming_response(
             event_stream.transform_stream(
                 self.native_events(
-                    conversation=conversation,
-                    history=list(conversation.messages),
+                    conversation_key=key,
                     user_prompt=self.latest_user_prompt(client_messages),
                     deferred=deferred,
                 ),
@@ -87,8 +83,7 @@ class GraphAdapter:
     async def native_events(
         self,
         *,
-        conversation: Conversation,
-        history: Sequence[ModelMessage],
+        conversation_key: ConversationKey,
         user_prompt: str | Sequence[UserContent] | None,
         deferred: DeferredToolResults | None,
     ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[ReactOutput]]:
@@ -96,8 +91,8 @@ class GraphAdapter:
             async for event in iter_react_graph_events(
                 self.start_node(user_prompt=user_prompt, deferred=deferred),
                 state=ReactState(
-                    conversation=conversation,
-                    message_history=list(history),
+                    conversation_key=conversation_key,
+                    agent_tentacle_id=self.agent_id,
                 ),
                 deps=ReactDeps(
                     agent=self.agent,

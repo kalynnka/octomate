@@ -18,7 +18,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.agent import EventStreamHandler
 from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata
-from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
 from pydantic_ai.output import OutputSpec
@@ -98,7 +98,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: None = None,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -125,7 +124,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: OutputSpec[AgentOutput],
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -151,7 +149,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: OutputSpec[AgentOutput] | None = None,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -175,7 +172,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             conversation_key=conversation_key,
             run_name=run_name,
             output_type=output_type,
-            message_history=message_history,
             deferred_tool_results=deferred_tool_results,
             deferred_suspender=deferred_suspender,
             model=model,
@@ -206,7 +202,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: None = None,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -232,7 +227,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: OutputSpec[AgentOutput],
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -257,7 +251,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_key: ConversationKey,
         run_name: str | None = None,
         output_type: OutputSpec[AgentOutput] | None = None,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -280,7 +273,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 conversation_key=conversation_key,
                 run_name=run_name,
                 output_type=output_type,
-                message_history=message_history,
                 deferred_tool_results=deferred_tool_results,
                 deferred_suspender=deferred_suspender,
                 model=model,
@@ -306,7 +298,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_key: ConversationKey,
         run_name: str | None,
         output_type: OutputSpec[AgentOutput] | None,
-        message_history: Sequence[ModelMessage] | None,
         deferred_tool_results: DeferredToolResults | None,
         deferred_suspender: DeferredSuspender | None,
         model: Model | KnownModelName | str | None,
@@ -351,12 +342,12 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             capabilities=capabilities,
             spec=spec,
         )
+        # The react graph carries only the key + agent id; each node fetches the
+        # live conversation (and its history) from the ConversationManager, the
+        # single source of truth — no message-history copy is threaded here.
         state = ReactState(
-            conversation=await self.conversation_manager.ensure(
-                conversation_key,
-                agent_tentacle_id=self.id,
-            ),
-            message_history=list(message_history or []),
+            conversation_key=conversation_key,
+            agent_tentacle_id=self.id,
         )
         start_node = (
             ResumeTurn(deferred_results=deferred_tool_results)

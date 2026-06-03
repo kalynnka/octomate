@@ -11,6 +11,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.tentacles.channel.feelers.deferred import ApprovalFeeler
 from octomate.tentacles.channel.feelers.output import IMMessageID
+from octomate.tentacles.channel.lark.feelers import cards
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.types.json import JsonObject
@@ -67,49 +68,40 @@ def approval_card_data(action: DeferredApproval) -> JsonObject:
     ).decode()
     if len(request_json) > ACTION_CARD_JSON_LIMIT:
         request_json = request_json[:ACTION_CARD_JSON_LIMIT] + "\n... (truncated)"
-    return {
-        "header": {
-            "title": {"tag": "plain_text", "content": "Permission Required"},
-            "template": "orange",
-        },
-        "elements": [
-            {
-                "tag": "markdown",
-                "content": (
-                    f"**Tool:** `{action.tool_name}`\n"
-                    f"**Request:**\n```json\n{request_json}\n```"
-                ),
-            },
-            {"tag": "hr"},
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "Approve"},
-                        "type": "primary",
-                        "value": {
+    return cards.simple_card(
+        [
+            cards.markdown(
+                f"**Tool:** `{action.tool_name}`\n"
+                f"**Request:**\n```json\n{request_json}\n```"
+            ),
+            cards.divider(),
+            cards.action(
+                [
+                    cards.button(
+                        "Approve",
+                        button_type="primary",
+                        value={
                             "action": LarkCardAction.APPROVAL_APPROVE.value,
                             "batch_id": str(action.batch_id),
                             "action_id": str(action.id),
                             "tool_name": action.tool_name,
                         },
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "Deny"},
-                        "type": "danger",
-                        "value": {
+                    ),
+                    cards.button(
+                        "Deny",
+                        button_type="danger",
+                        value={
                             "action": LarkCardAction.APPROVAL_DENY.value,
                             "batch_id": str(action.batch_id),
                             "action_id": str(action.id),
                             "tool_name": action.tool_name,
                         },
-                    },
-                ],
-            },
+                    ),
+                ]
+            ),
         ],
-    }
+        header=cards.header("Permission Required", template="orange"),
+    )
 
 
 def approval_resolution_card_data(
@@ -118,10 +110,7 @@ def approval_resolution_card_data(
     approved: bool,
 ) -> JsonObject:
     status = "Approved" if approved else "Denied"
-    return {
-        "header": {
-            "title": {"tag": "plain_text", "content": status},
-            "template": "green" if approved else "red",
-        },
-        "elements": [{"tag": "markdown", "content": f"**{tool_name}**\n\n{status}"}],
-    }
+    return cards.simple_card(
+        [cards.markdown(f"**{tool_name}**\n\n{status}")],
+        header=cards.header(status, template="green" if approved else "red"),
+    )

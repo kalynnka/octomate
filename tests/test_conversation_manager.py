@@ -12,7 +12,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.messages import (
     ModelResponse as RawModelResponse,
 )
-from pydantic_ai.messages import TextPart, UserPromptPart
+from pydantic_ai.messages import TextPart, ToolCallPart, UserPromptPart
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -61,36 +61,35 @@ def _key(chat_id: str = "alice") -> ConversationKey:
 
 async def test_ensure_is_idempotent() -> None:
     service = ConversationManager()
-    a = await service.ensure(_key())
-    b = await service.ensure(_key())
+    a = await service.ensure(_key(), agent_tentacle_id="inkling")
+    b = await service.ensure(_key(), agent_tentacle_id="inkling")
     assert a.id == b.id
 
 
 async def test_ensure_loads_existing_conversation() -> None:
     first = ConversationManager()
-    created = await first.ensure(_key())
+    created = await first.ensure(_key(), agent_tentacle_id="inkling")
 
     fresh = ConversationManager()
-    fetched = await fresh.ensure(_key())
+    fetched = await fresh.ensure(_key(), agent_tentacle_id="inkling")
     assert fetched.id == created.id
 
 
-async def test_ensure_backfills_missing_agent_tentacle_id() -> None:
+async def test_ensure_sets_agent_at_creation_and_keeps_it() -> None:
     service = ConversationManager()
-    created = await service.ensure(_key())
-    assert created.agent_tentacle_id is None
+    created = await service.ensure(_key(), agent_tentacle_id="inkling")
+    assert created.agent_tentacle_id == "inkling"
 
-    updated = await service.ensure(_key(), agent_tentacle_id="inkling")
-    assert updated.id == created.id
-    assert updated.agent_tentacle_id == "inkling"
-
-    reloaded = await ConversationManager().ensure(_key())
-    assert reloaded.agent_tentacle_id == "inkling"
+    # The owning agent is set once at creation; a later ensure with a different
+    # agent does not change it.
+    again = await ConversationManager().ensure(_key(), agent_tentacle_id="other")
+    assert again.id == created.id
+    assert again.agent_tentacle_id == "inkling"
 
 
 async def test_record_run_creates_run_and_persists_messages() -> None:
     service = ConversationManager()
-    conversation = await service.ensure(_key())
+    conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
 
     run_id = "run-1"
     raw = [
@@ -109,7 +108,7 @@ async def test_record_run_creates_run_and_persists_messages() -> None:
     await service.record_agent_run(conversation, run_id=run_id, messages=raw)
 
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_key())
+    reloaded = await fresh.ensure(_key(), agent_tentacle_id="inkling")
     runs = list(reloaded.runs)
     assert len(runs) == 1
     assert runs[0].id == run_id
@@ -124,7 +123,7 @@ async def test_record_run_creates_run_and_persists_messages() -> None:
 async def test_record_run_preserves_finish_reason() -> None:
     """The blessed ModelResponse round-trips pydantic-ai's finish_reason."""
     service = ConversationManager()
-    conversation = await service.ensure(_key())
+    conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
     run_id = "run-fr"
 
     await service.record_agent_run(
@@ -141,7 +140,7 @@ async def test_record_run_preserves_finish_reason() -> None:
     )
 
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_key())
+    reloaded = await fresh.ensure(_key(), agent_tentacle_id="inkling")
     msgs = list(reloaded.messages)
     assert len(msgs) == 1
     assert msgs[0].finish_reason == "tool_call"
@@ -149,7 +148,7 @@ async def test_record_run_preserves_finish_reason() -> None:
 
 async def test_record_run_persists_name() -> None:
     service = ConversationManager()
-    conversation = await service.ensure(_key())
+    conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
 
     await service.record_agent_run(
         conversation,
@@ -166,7 +165,7 @@ async def test_record_run_persists_name() -> None:
     )
 
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_key())
+    reloaded = await fresh.ensure(_key(), agent_tentacle_id="inkling")
     runs = list(reloaded.runs)
     assert len(runs) == 1
     assert runs[0].name == "triage"
@@ -174,8 +173,79 @@ async def test_record_run_persists_name() -> None:
 
 async def test_record_run_no_op_for_empty_list() -> None:
     service = ConversationManager()
-    conversation = await service.ensure(_key())
+    conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
     await service.record_agent_run(conversation, run_id="empty", messages=[])
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_key())
+    reloaded = await fresh.ensure(_key(), agent_tentacle_id="inkling")
     assert list(reloaded.runs) == []
+
+
+async def test_record_run_refreshes_cached_history() -> None:
+    service = ConversationManager()
+    conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
+    assert list(conversation.messages) == []
+
+    await service.record_agent_run(
+        conversation,
+        run_id="run-1",
+        messages=[
+            RawModelRequest(
+                parts=[UserPromptPart(content="hi")],
+                run_id="run-1",
+                timestamp=datetime.now(timezone.utc),
+            ),
+            RawModelResponse(
+                parts=[TextPart(content="hello")],
+                run_id="run-1",
+                timestamp=datetime.now(timezone.utc),
+                finish_reason="stop",
+            ),
+        ],
+    )
+
+    # record_agent_run refreshes the cached conversation from the DB; a hot
+    # ensure() (cache hit, no cold reload) reflects the new run.
+    hot = await service.ensure(_key(), agent_tentacle_id="inkling")
+    assert len(list(hot.messages)) == 2
+
+
+async def test_drop_trailing_deferral_removes_from_cache_and_db() -> None:
+    service = ConversationManager()
+    conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
+    await service.record_agent_run(
+        conversation,
+        run_id="run-defer",
+        messages=[
+            RawModelRequest(
+                parts=[UserPromptPart(content="do it")],
+                run_id="run-defer",
+                timestamp=datetime.now(timezone.utc),
+            ),
+            RawModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="ask_questions",
+                        args={"questions": [{"question": "?"}]},
+                        tool_call_id="call_1",
+                    )
+                ],
+                run_id="run-defer",
+                timestamp=datetime.now(timezone.utc),
+            ),
+        ],
+    )
+
+    # ensure() returns the conversation re-cached by record_agent_run's refresh.
+    conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
+    dropped = await service.drop_trailing_deferral(conversation)
+    assert dropped is not None
+
+    # The deferral is gone from the cache (hot) and the DB (cold reload).
+    hot = await service.ensure(_key(), agent_tentacle_id="inkling")
+    assert [type(m).__name__ for m in hot.messages] == ["ModelRequest"]
+    cold = await ConversationManager().ensure(_key(), agent_tentacle_id="inkling")
+    assert [type(m).__name__ for m in cold.messages] == ["ModelRequest"]
+
+    # The trailing message is now a request, not a deferral — nothing to drop.
+    conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
+    assert await service.drop_trailing_deferral(conversation) is None

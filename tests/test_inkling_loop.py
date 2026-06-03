@@ -108,21 +108,28 @@ class ScriptedStream:
 
 
 @dataclass
+class _FakeConversation:
+    """Stand-in whose `messages` is a plain list react can read + accumulate
+    into, since the real arcanus relation can't be appended to detached."""
+
+    id: str = "fake-conversation"
+    messages: list[ModelMessage] = field(default_factory=list)
+
+
+@dataclass
 class FakeConversationManager(ConversationManager):
-    conversation: Conversation = field(default_factory=lambda: _test_conversation())
+    conversation: _FakeConversation = field(default_factory=_FakeConversation)
     runs: list[tuple[Conversation, str, list[ModelMessage]]] = field(
         default_factory=list
     )
-    discarded: list[ModelResponse] = field(default_factory=list)
 
     async def ensure(
         self,
         key: ConversationKey,
         *,
-        agent_tentacle_id: str | None = None,
+        agent_tentacle_id: str,
     ) -> Conversation:
-        self.conversation.agent_tentacle_id = agent_tentacle_id
-        return self.conversation
+        return cast(Conversation, self.conversation)
 
     async def record_agent_run(
         self,
@@ -133,9 +140,13 @@ class FakeConversationManager(ConversationManager):
         name: str | None = None,
     ) -> None:
         self.runs.append((conversation, f"{name}:{run_id}", list(messages)))
+        self.conversation.messages.extend(messages)
 
-    async def discard_message(self, message: ModelResponse) -> None:
-        self.discarded.append(message)
+    async def drop_trailing_deferral(
+        self,
+        conversation: Conversation,
+    ) -> None:
+        return None
 
 
 async def _emit_scripted_turn(
@@ -180,15 +191,6 @@ def _build_non_stream_agent() -> Agent[None, InklingTestOutput]:
         output_type=[str, DeferredToolRequests],
         toolsets=[inkling_toolset],
         system_prompt=SYSTEM_PROMPT,
-    )
-
-
-def _test_conversation() -> Conversation:
-    return Conversation(
-        chat_type="private",
-        chat_id="test",
-        user_id="test",
-        channel_tentacle_id="test",
     )
 
 
@@ -342,7 +344,9 @@ async def test_inkling_loop_handles_immediate_final_response() -> None:
 
     result = await graph.run(
         StartTurn(user_prompt="just say done"),
-        state=ReactState(conversation=_test_conversation()),
+        state=ReactState(
+            conversation_key=_test_conversation_key(), agent_tentacle_id="inkling"
+        ),
         deps=deps,
     )
 
@@ -397,7 +401,9 @@ def _ctx(
     deps: ReactDeps[InklingTestOutput, None],
 ) -> GraphRunContext[ReactState, ReactDeps[InklingTestOutput, None]]:
     return GraphRunContext(
-        state=ReactState(conversation=_test_conversation()),
+        state=ReactState(
+            conversation_key=_test_conversation_key(), agent_tentacle_id="inkling"
+        ),
         deps=deps,
     )
 
