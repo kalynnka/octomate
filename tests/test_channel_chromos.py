@@ -51,9 +51,7 @@ from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
 from octomate.tentacles.channel.lark.feelers.approvals import LarkApprovalFeeler
 from octomate.tentacles.channel.lark.feelers.questions import LarkAskQuestionFeeler
 from octomate.tentacles.channel.lark.feelers.output import (
-    LARK_EVENT_ANSWER_ELEMENT_ID,
-    LARK_EVENT_STATUS_ELEMENT_ID,
-    LARK_EVENT_TIMELINE_ELEMENT_ID,
+    LARK_STREAM_ELEMENT_ID,
     LarkEventStreamFeeler,
     LarkMarkdownFeeler,
     LarkMarkdownStreamFeeler,
@@ -412,6 +410,7 @@ def _lark_raw(
     message_id: str = "om_message",
     thread_id: str = "",
     parent_id: str = "",
+    root_id: str = "",
 ) -> P2ImMessageReceiveV1:
     return P2ImMessageReceiveV1(
         {
@@ -425,6 +424,7 @@ def _lark_raw(
                     "message_id": message_id,
                     "thread_id": thread_id,
                     "parent_id": parent_id,
+                    "root_id": root_id,
                 },
                 "sender": {"sender_id": {"open_id": sender_id}},
             }
@@ -467,6 +467,44 @@ async def test_lark_chromo_decodes_text_mentions_and_reply_metadata() -> None:
     mention_seg = event.segments[2]
     assert isinstance(mention_seg, AtSegment)
     assert mention_seg.data.user_id == "ou_mentioned"
+
+
+async def test_lark_chromo_keys_threaded_reply_on_root_message() -> None:
+    # A reply inside a sub-thread carries the thread id ("omt_…") but must key
+    # on the thread's root message ("om_…") so it maps to the sub-thread
+    # conversation start_sub_thread created and the feeler can reply back in.
+    chromo = LarkChromo()
+    event = await chromo.sip(
+        _lark_raw(
+            message_type="text",
+            chat_type="group",
+            content={"text": "write another poem"},
+            thread_id="omt_1945915eed8e1b85",
+            root_id="om_x100b6d35d7b134b0c29324d97adc020",
+            parent_id="om_some_reply",
+        )
+    )
+
+    assert event is not None
+    assert event.thread_id == "om_x100b6d35d7b134b0c29324d97adc020"
+    assert event.reply_id == "om_some_reply"
+
+
+async def test_lark_chromo_ignores_thread_without_thread_id() -> None:
+    # A plain reply (root_id set, no Lark thread) is not a sub-thread.
+    chromo = LarkChromo()
+    event = await chromo.sip(
+        _lark_raw(
+            message_type="text",
+            chat_type="group",
+            content={"text": "hi"},
+            root_id="om_root",
+            parent_id="om_root",
+        )
+    )
+
+    assert event is not None
+    assert event.thread_id == ""
 
 
 async def test_lark_chromo_decodes_private_images() -> None:
@@ -552,7 +590,9 @@ async def test_lark_chromo_renders_final_text_as_interactive_markdown() -> None:
     assert len(messages) == 1
     assert messages[0].msg_type == "interactive"
     content = _loaded_json_object(messages[0].content)
-    assert content["body"]["elements"] == [
+    body = content["body"]
+    assert isinstance(body, dict)
+    assert body["elements"] == [
         {"tag": "markdown", "content": "hello **lark**"}
     ]
 
@@ -575,7 +615,9 @@ async def test_lark_chromo_builds_streaming_card_payload() -> None:
     assert isinstance(print_step, dict)
     assert print_frequency["default"] == 20
     assert print_step["default"] == 12
-    assert data["body"]["elements"] == [
+    body = data["body"]
+    assert isinstance(body, dict)
+    assert body["elements"] == [
         {
             "tag": "markdown",
             "content": "hello",
@@ -651,6 +693,7 @@ class FakeLarkInk(LarkInk):
         ] = []
         self.stream_updates: list[tuple[LarkStreamCard, str, int]] = []
         self.finalized: list[tuple[LarkStreamCard, int]] = []
+        self.patched: list[tuple[str, str]] = []
         self.fail_stream_create = False
         self.fail_stream_update = False
 
@@ -720,6 +763,10 @@ class FakeLarkInk(LarkInk):
         sequence: int,
     ) -> bool:
         self.finalized.append((card, sequence))
+        return True
+
+    async def patch_card(self, message_id: str, content: str) -> bool:
+        self.patched.append((message_id, content))
         return True
 
 
@@ -996,7 +1043,38 @@ async def test_lark_tentacle_stops_stream_on_deferred_result() -> None:
     assert ink.replies == []
 
 
-async def test_lark_event_stream_feeler_renders_timeline_and_finalizes() -> None:
+def _folded_panel(content: str) -> JsonObject:
+    card = _loaded_json_object(content)
+    body = card["body"]
+    assert isinstance(body, dict)
+    elements = body["elements"]
+    assert isinstance(elements, list)
+    panel = elements[0]
+    assert isinstance(panel, dict)
+    return panel
+
+
+def _panel_title(panel: JsonObject) -> str:
+    header = panel["header"]
+    assert isinstance(header, dict)
+    title = header["title"]
+    assert isinstance(title, dict)
+    content = title["content"]
+    assert isinstance(content, str)
+    return content
+
+
+def _panel_body(panel: JsonObject) -> str:
+    elements = panel["elements"]
+    assert isinstance(elements, list)
+    first = elements[0]
+    assert isinstance(first, dict)
+    content = first["content"]
+    assert isinstance(content, str)
+    return content
+
+
+async def test_lark_event_stream_feeler_posts_one_card_per_event() -> None:
     ink = FakeLarkInk()
     chromo = LarkChromo()
     feeler = LarkEventStreamFeeler(
@@ -1015,7 +1093,7 @@ async def test_lark_event_stream_feeler_renders_timeline_and_finalizes() -> None
 
     async def events() -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]]:
         yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
-        # ask_questions deferral must not appear as a timeline step.
+        # ask_questions deferral must not produce a card.
         yield FunctionToolCallEvent(
             ToolCallPart(
                 tool_name="ask_questions",
@@ -1049,47 +1127,42 @@ async def test_lark_event_stream_feeler_renders_timeline_and_finalizes() -> None
 
     message_id = await feeler.present(key, events())
 
+    # The answer streams in its own card and is finalized once.
     assert message_id == "stream-1"
     assert len(ink.stream_cards) == 1
-    card_payload = _loaded_json_object(ink.stream_cards[0][0])
-    body = card_payload["body"]
-    assert isinstance(body, dict)
-    elements = body["elements"]
-    assert isinstance(elements, list)
-    assert elements[0]["element_id"] == LARK_EVENT_STATUS_ELEMENT_ID
-    assert elements[1]["element_id"] == LARK_EVENT_ANSWER_ELEMENT_ID
-    assert elements[2]["element_id"] == LARK_EVENT_TIMELINE_ELEMENT_ID
-
-    assert any(
-        card.element_id == LARK_EVENT_ANSWER_ELEMENT_ID and content == "done"
-        for card, content, _ in ink.stream_updates
-    )
-
-    timeline = [
+    answer_updates = [
         content
         for card, content, _ in ink.stream_updates
-        if card.element_id == LARK_EVENT_TIMELINE_ELEMENT_ID
+        if card.element_id == LARK_STREAM_ELEMENT_ID
     ]
-    assert timeline
-    final_timeline = timeline[-1]
-    assert "Thinking" in final_timeline
-    assert "✅ **Lookup**" in final_timeline
-    assert "**Arguments**" in final_timeline
-    assert "secret" in final_timeline
-    assert "**Result**" in final_timeline
-    assert "ask_questions" not in final_timeline
-
-    statuses = [
-        content
-        for card, content, _ in ink.stream_updates
-        if card.element_id == LARK_EVENT_STATUS_ELEMENT_ID
-    ]
-    assert any("Thinking" in status for status in statuses)
-    assert any("Lookup" in status for status in statuses)
-    assert any("Writing" in status for status in statuses)
-
+    assert answer_updates[-1] == "done"
     assert len(ink.finalized) == 1
-    assert ink.finalized[0][0].card_id == "card-1"
+
+    # One start card per event (thinking + lookup), all replied into the thread;
+    # ask_questions produced none.
+    assert [target for target, *_ in ink.replies] == ["om_parent", "om_parent"]
+    assert all(reply_in_thread for *_, reply_in_thread in ink.replies)
+    starts = [content for _, _, content, _ in ink.replies]
+    assert "Thinking" in starts[0]
+    assert "Lookup" in starts[1] and "secret" in starts[1]
+    assert all("ask_questions" not in content for content in starts)
+
+    # Each start card is patched into a folded (collapsed) panel on finish.
+    assert [message_id for message_id, _ in ink.patched] == ["reply-1", "reply-2"]
+    thinking_panel = _folded_panel(ink.patched[0][1])
+    assert thinking_panel["tag"] == "collapsible_panel"
+    assert thinking_panel["expanded"] is False
+    assert "Thinking" in _panel_title(thinking_panel)
+    assert _panel_body(thinking_panel) == "checking"
+
+    tool_panel = _folded_panel(ink.patched[1][1])
+    assert tool_panel["tag"] == "collapsible_panel"
+    assert tool_panel["expanded"] is False
+    assert "Lookup" in _panel_title(tool_panel)
+    tool_body = _panel_body(tool_panel)
+    assert "**Arguments**" in tool_body and "secret" in tool_body
+    assert "**Result**" in tool_body
+    assert all("ask_questions" not in content for _, content in ink.patched)
 
     sequences = [seq for _, _, seq in ink.stream_updates] + [ink.finalized[0][1]]
     assert sequences == sorted(sequences)
@@ -1123,7 +1196,7 @@ async def test_lark_event_stream_feeler_batches_answer_updates() -> None:
     answer_updates = [
         content
         for card, content, _ in ink.stream_updates
-        if card.element_id == LARK_EVENT_ANSWER_ELEMENT_ID
+        if card.element_id == LARK_STREAM_ELEMENT_ID
     ]
     # 20 tiny deltas coalesce into a single flush at finish (vs one-per-delta
     # if the answer batcher ignored Lark's per-card rate limit).

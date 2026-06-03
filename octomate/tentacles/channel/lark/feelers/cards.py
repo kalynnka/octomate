@@ -59,6 +59,41 @@ def action(buttons: Sequence[JsonValue]) -> JsonObject:
     return {"tag": "action", "actions": list(buttons)}
 
 
+def collapsible_panel(
+    title: str,
+    elements: Sequence[JsonValue],
+    *,
+    expanded: bool = False,
+) -> JsonObject:
+    return {
+        "tag": "collapsible_panel",
+        "expanded": expanded,
+        "header": {
+            "title": {"tag": "markdown", "content": title},
+            # A right-aligned chevron that flips when open — the affordance that
+            # the panel is clickable to expand/collapse.
+            "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined"},
+            "icon_position": "right",
+            "icon_expanded_angle": -180,
+        },
+        "elements": list(elements),
+    }
+
+
+def card_v2(
+    elements: Sequence[JsonValue],
+    *,
+    header: JsonObject | None = None,  # noqa: A002 - card field name
+) -> JsonObject:
+    """A schema-2.0 card envelope — required for 2.0-only components like
+    `collapsible_panel` (the legacy ``{header, elements}`` form rejects them)."""
+    card: JsonObject = {"schema": "2.0"}
+    if header is not None:
+        card["header"] = header
+    card["body"] = {"elements": list(elements)}
+    return card
+
+
 def simple_card(
     elements: Sequence[JsonValue],
     *,

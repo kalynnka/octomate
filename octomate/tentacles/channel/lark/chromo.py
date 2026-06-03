@@ -52,6 +52,15 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
             if reply_id:
                 segments.insert(0, ReplySegment(data={"id": reply_id}))
 
+            # A reply inside a Lark thread arrives with thread_id set to the
+            # thread ("omt_…") while root_id points at the thread's root message
+            # ("om_…", what start_sub_thread keyed the sub-thread on). Key on the
+            # root so continuations map to the same conversation and the feeler
+            # can reply back into the thread; a non-threaded message has none.
+            thread_id = ""
+            if message.thread_id:
+                thread_id = message.root_id or message.thread_id
+
             sender_id_obj = event.sender.sender_id
             sender_id = (sender_id_obj.open_id or "") if sender_id_obj else ""
 
@@ -68,7 +77,7 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
 
             return MessageEvent(
                 message_id=message.message_id or "",
-                thread_id=message.thread_id or "",
+                thread_id=thread_id,
                 reply_id=reply_id,
                 timestamp=time.time(),
                 user_id=sender_id,

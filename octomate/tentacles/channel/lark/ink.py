@@ -21,6 +21,8 @@ from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
     GetMessageResourceRequest,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
@@ -325,6 +327,23 @@ class LarkInk(Ink[LarkOutboundMessage]):
             )
         except Exception:
             logger.warning("LarkInk: finish stream card failed", exc_info=True)
+        return False
+
+    async def patch_card(self, message_id: str, content: str) -> bool:
+        """Replace the card of an already-sent interactive message in place."""
+        request = (
+            PatchMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(PatchMessageRequestBody.builder().content(content).build())
+            .build()
+        )
+        try:
+            resp = await self.client.im.v1.message.apatch(request)  # type: ignore[union-attr]
+            if resp.success():
+                return True
+            logger.warning("LarkInk: patch card failed: %s %s", resp.code, resp.msg)
+        except Exception:
+            logger.warning("LarkInk: patch card failed", exc_info=True)
         return False
 
     async def _create_message(
