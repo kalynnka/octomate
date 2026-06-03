@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Generic, TypeAlias, TypeVar
 
 import anyio
+import logfire
 from anyio.abc import ObjectSendStream
 from pydantic import BaseModel, JsonValue
 from pydantic_ai import (
@@ -141,13 +142,43 @@ class RunAgent(
     async def run(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
     ) -> ResolveDeferred[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
-        conversation = await ctx.deps.conversation_manager.ensure(
-            ctx.state.conversation_key,
-            agent_tentacle_id=ctx.state.agent_tentacle_id,
-        )
-        if ctx.deps.event_send_stream is None:
-            result = await ctx.deps.agent.run(
-                self.user_prompt,
+        with logfire.span(
+            "react.agent_run",
+            run_name=ctx.deps.run_name,
+            streaming=ctx.deps.event_send_stream is not None,
+            conversation_key=str(ctx.state.conversation_key),
+            resumed=self.deferred_results is not None,
+        ) as span:
+            conversation = await ctx.deps.conversation_manager.ensure(
+                ctx.state.conversation_key,
+                agent_tentacle_id=ctx.state.agent_tentacle_id,
+            )
+            if ctx.deps.event_send_stream is None:
+                result = await ctx.deps.agent.run(
+                    self.user_prompt,
+                    output_type=ctx.deps.output_type,
+                    message_history=conversation.messages or None,
+                    deferred_tool_results=self.deferred_results,
+                    conversation_id=str(conversation.id),
+                    model=ctx.deps.model,
+                    instructions=ctx.deps.instructions,
+                    deps=ctx.deps.agent_deps,
+                    model_settings=ctx.deps.model_settings,
+                    usage_limits=ctx.deps.usage_limits,
+                    usage=ctx.deps.usage,
+                    metadata=ctx.deps.metadata,
+                    output_retries=ctx.deps.output_retries,
+                    infer_name=ctx.deps.infer_name,
+                    toolsets=ctx.deps.toolsets,
+                    builtin_tools=ctx.deps.builtin_tools,
+                    capabilities=ctx.deps.capabilities,
+                    spec=ctx.deps.spec,
+                )
+                return await self.next_node(ctx, result, conversation, span)
+
+            result: AgentRunResult[ReactOutputT] | None = None
+            async with ctx.deps.agent.run_stream_events(
+                user_prompt=self.user_prompt,
                 output_type=ctx.deps.output_type,
                 message_history=conversation.messages or None,
                 deferred_tool_results=self.deferred_results,
@@ -165,51 +196,35 @@ class RunAgent(
                 builtin_tools=ctx.deps.builtin_tools,
                 capabilities=ctx.deps.capabilities,
                 spec=ctx.deps.spec,
-            )
-            return await self.next_node(ctx, result, conversation)
+            ) as stream:
+                async for event in stream:
+                    if ctx.deps.event_send_stream is not None:
+                        await ctx.deps.event_send_stream.send(event)
+                    if isinstance(event, AgentRunResultEvent):
+                        result = event.result
 
-        result: AgentRunResult[ReactOutputT] | None = None
-        async with ctx.deps.agent.run_stream_events(
-            user_prompt=self.user_prompt,
-            output_type=ctx.deps.output_type,
-            message_history=conversation.messages or None,
-            deferred_tool_results=self.deferred_results,
-            conversation_id=str(conversation.id),
-            model=ctx.deps.model,
-            instructions=ctx.deps.instructions,
-            deps=ctx.deps.agent_deps,
-            model_settings=ctx.deps.model_settings,
-            usage_limits=ctx.deps.usage_limits,
-            usage=ctx.deps.usage,
-            metadata=ctx.deps.metadata,
-            output_retries=ctx.deps.output_retries,
-            infer_name=ctx.deps.infer_name,
-            toolsets=ctx.deps.toolsets,
-            builtin_tools=ctx.deps.builtin_tools,
-            capabilities=ctx.deps.capabilities,
-            spec=ctx.deps.spec,
-        ) as stream:
-            async for event in stream:
-                if ctx.deps.event_send_stream is not None:
-                    await ctx.deps.event_send_stream.send(event)
-                if isinstance(event, AgentRunResultEvent):
-                    result = event.result
-
-        if result is None:
-            raise RuntimeError(
-                "agent.run_stream_events did not yield AgentRunResultEvent"
-            )
-        return await self.next_node(ctx, result, conversation)
+            if result is None:
+                raise RuntimeError(
+                    "agent.run_stream_events did not yield AgentRunResultEvent"
+                )
+            return await self.next_node(ctx, result, conversation, span)
 
     async def next_node(
         self,
         ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]],
         result: AgentRunResult[ReactOutputT],
         conversation: Conversation,
+        span: logfire.LogfireSpan,
     ) -> ResolveDeferred[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
+        new_messages = result.new_messages()
+        span.set_attribute("react.run_id", result.run_id)
+        span.set_attribute(
+            "react.deferred", isinstance(result.output, DeferredToolRequests)
+        )
+        span.set_attribute("react.new_messages", len(new_messages))
         # Recording refreshes the cached conversation, so the next RunAgent's
         # ensure() picks up this turn from the manager — no copy in state.
-        if new_messages := result.new_messages():
+        if new_messages:
             await ctx.deps.conversation_manager.record_agent_run(
                 conversation,
                 run_id=result.run_id,
@@ -220,6 +235,7 @@ class RunAgent(
         if isinstance(result.output, DeferredToolRequests) and (
             ctx.deps.resolver is not None or ctx.deps.suspender is not None
         ):
+            logfire.info("react run deferred", run_id=result.run_id)
             return ResolveDeferred(requests=result.output, result=result)
         return End(result)
 
@@ -240,10 +256,12 @@ class ResolveDeferred(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
     ) -> RunAgent[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
         if ctx.deps.resolver is not None:
+            logfire.info("deferred resolved in-process, looping back to RunAgent")
             return RunAgent(
                 deferred_results=await ctx.deps.resolver.resolve(self.requests)
             )
         if ctx.deps.suspender is not None:
+            logfire.info("deferred suspended, ending run")
             await ctx.deps.suspender.suspend(self.requests)
             return End(self.result)
         raise RuntimeError(
@@ -274,22 +292,33 @@ async def iter_react_graph_events(
         AgentStreamEvent | AgentRunResultEvent[ReactOutputT]
     ](100)
     graph_deps = replace(deps, event_send_stream=send_stream)
+    captured: list[Exception] = []
 
     async def run_graph() -> None:
+        # Capture the graph error instead of letting it escape: a raising child
+        # task trips the task group's cancel scope and cancels the consumer
+        # mid-event (e.g. blocked on a channel send), which masks the real error
+        # and leaves spans unclosed. Closing send_stream ends the consumer loop
+        # cleanly; we re-raise below, in the consumer's own frame.
         graph: Graph[
             ReactState,
             ReactDeps[ReactOutputT, ReactDepsT],
             AgentRunResult[ReactOutputT],
         ] = Graph(nodes=REACT_NODES, name="react")
-        async with send_stream:
-            await graph.run(
-                start_node,
-                state=state,
-                deps=graph_deps,
-            )
+        try:
+            async with send_stream:
+                await graph.run(
+                    start_node,
+                    state=state,
+                    deps=graph_deps,
+                )
+        except Exception as exc:
+            captured.append(exc)
 
     async with receive_stream:
         async with anyio.create_task_group() as tg:
             tg.start_soon(run_graph)
             async for event in receive_stream:
                 yield event
+    for error in captured:
+        raise error

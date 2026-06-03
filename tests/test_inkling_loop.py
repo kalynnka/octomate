@@ -323,6 +323,73 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
     assert script.cursor == 1
 
 
+async def test_inkling_loop_propagates_graph_error_streaming() -> None:
+    """A model/graph error during a streamed run must surface to the caller
+    rather than be swallowed by the background graph task (which would otherwise
+    cancel the consumer mid-event and mask the real error)."""
+
+    async def boom(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        raise RuntimeError("model boom")
+        yield ""  # pragma: no cover - marks this an async generator
+
+    agent: Agent[None, InklingTestOutput] = Agent(
+        FunctionModel(stream_function=boom, model_name="scripted"),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        toolsets=[inkling_toolset],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    conversations = FakeConversationManager()
+    tentacle = InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=agent,
+        conversation_manager=conversations,
+    )
+
+    with pytest.raises(RuntimeError, match="model boom"):
+        async with tentacle.run_stream_events(
+            "hi octomate",
+            conversation_key=_test_conversation_key(),
+        ) as stream:
+            async for _ in stream:
+                pass
+
+
+async def test_inkling_loop_propagates_graph_error_collected_run() -> None:
+    """`run` collects graph events internally; a graph error must still surface
+    to the caller rather than be lost in the background task."""
+
+    async def boom(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        raise RuntimeError("model boom")
+        yield ""  # pragma: no cover - marks this an async generator
+
+    agent: Agent[None, InklingTestOutput] = Agent(
+        FunctionModel(stream_function=boom, model_name="scripted"),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        toolsets=[inkling_toolset],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    conversations = FakeConversationManager()
+    tentacle = InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=agent,
+        conversation_manager=conversations,
+    )
+
+    with pytest.raises(RuntimeError, match="model boom"):
+        await tentacle.run(
+            "hi octomate",
+            conversation_key=_test_conversation_key(),
+        )
+
+
 async def test_inkling_loop_handles_immediate_final_response() -> None:
     """If the model finalizes immediately, the loop ends after one RunAgent step."""
 

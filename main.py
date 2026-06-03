@@ -2,22 +2,50 @@ from __future__ import annotations
 
 import logging
 
+import logfire
 import uvicorn
 
-from octomate import Octomate
 from octomate.config import OctomateConfig
+
+config = OctomateConfig()
+logfire.configure(
+    service_name=config.logfire.service_name,
+    environment=config.logfire.environment,
+    send_to_logfire="if-token-present" if config.logfire.send_to_logfire else False,
+    console=logfire.ConsoleOptions() if config.logfire.console else False,
+    scrubbing=logfire.ScrubbingOptions(
+        extra_patterns=[
+            "conversation_key",
+            "source_key",
+            "target_key",
+            "user_id",
+            "chat_id",
+            "responder_id",
+            "message_id",
+        ]
+    )
+    if config.logfire.scrub
+    else False,
+)
+logfire.instrument_pydantic_ai()
+logfire.instrument_httpx()
+logfire.instrument_sqlalchemy()
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(config.logging.format))
+logging.basicConfig(
+    level=config.logging.level,
+    handlers=[console_handler, logfire.LogfireLoggingHandler()],
+    force=True,
+)
+
+from octomate import Octomate
 from octomate.tentacles.agent.inkling import InklingTentacle, build_inkling_agent
 from octomate.tentacles.channel.lark import LarkTentacle
 from octomate.tentacles.channel.napcat import NapcatTentacle
 from octomate.tentacles.channel.slack import SlackTentacle
 from octomate.web.dev_ui import build_dev_ui_router
 
-config = OctomateConfig()
-logging.basicConfig(
-    level=config.logging.level,
-    format=config.logging.format,
-    force=True,
-)
 octomate = Octomate()
 octomate.register_agent(
     "inkling",

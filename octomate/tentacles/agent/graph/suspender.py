@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
+import logfire
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.managers.conversations import ConversationManager
@@ -44,19 +45,27 @@ class HumanReviewSuspender:
     suspended_batch_id: uuid.UUID | None = field(default=None, init=False)
 
     async def suspend(self, requests: DeferredToolRequests) -> None:
-        conversation = await self.conversation_manager.ensure(
-            self.target_key,
-            agent_tentacle_id=self.agent_tentacle_id,
-        )
-        batch = await self.channel.feelers.present_actions(
-            action_manager=self.action_manager,
-            conversation=conversation,
-            agent_tentacle_id=self.agent_tentacle_id,
+        with logfire.span(
+            "suspend_for_review",
             run_name=self.run_name,
-            source_key=self.source_key,
-            target_key=self.target_key,
-            target_mode=self.target_mode,
-            decision=self.decision,
-            requests=requests,
-        )
-        self.suspended_batch_id = batch.id
+            agent_id=self.agent_tentacle_id,
+            target_key=str(self.target_key),
+            source_key=str(self.source_key),
+        ) as span:
+            conversation = await self.conversation_manager.ensure(
+                self.target_key,
+                agent_tentacle_id=self.agent_tentacle_id,
+            )
+            batch = await self.channel.feelers.present_actions(
+                action_manager=self.action_manager,
+                conversation=conversation,
+                agent_tentacle_id=self.agent_tentacle_id,
+                run_name=self.run_name,
+                source_key=self.source_key,
+                target_key=self.target_key,
+                target_mode=self.target_mode,
+                decision=self.decision,
+                requests=requests,
+            )
+            self.suspended_batch_id = batch.id
+            span.set_attribute("batch_id", str(batch.id))

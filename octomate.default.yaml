@@ -7,6 +7,16 @@ octomate:
     level: INFO
     format: "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 
+  # Observability. send_to_logfire is opt-in: it only ships when true AND a
+  # LOGFIRE_TOKEN is present. scrub redacts identifier attributes (conversation
+  # key, user/chat/message ids) in the backend while keeping channel/run labels.
+  logfire:
+    service_name: octomate
+    environment: development
+    send_to_logfire: false
+    console: false
+    scrub: true
+
   # Runtime IM channels. Keep disabled examples here and put real secrets in
   # octomate.yaml or environment variables.
   channels: {}

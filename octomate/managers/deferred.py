@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+import logfire
 from arcanus import RelationCollection
 from pydantic_ai.tools import DeferredToolRequests
 
@@ -33,33 +34,39 @@ class DeferredActionManager:
         decision: TriageDecision | None,
         requests: DeferredToolRequests,
     ) -> DeferredActionBatch:
-        actions = DeferredActionCollection.validate_python(requests)
-        questions = [
-            action for action in actions if isinstance(action, DeferredQuestion)
-        ]
-        approvals = [
-            action for action in actions if isinstance(action, DeferredApproval)
-        ]
-        batch = DeferredActionBatch(
-            conversation_id=conversation.id,
-            agent_tentacle_id=agent_tentacle_id,
-            run_name=run_name,
-            source_key=source_key,
-            target_key=target_key,
-            target_mode=target_mode,
-            decision=decision,
-            requests=requests,
-            questions=RelationCollection(questions),
-            approvals=RelationCollection(approvals),
-        )
+        with logfire.span("deferred.create_batch", run_name=run_name) as span:
+            actions = DeferredActionCollection.validate_python(requests)
+            questions = [
+                action for action in actions if isinstance(action, DeferredQuestion)
+            ]
+            approvals = [
+                action for action in actions if isinstance(action, DeferredApproval)
+            ]
+            batch = DeferredActionBatch(
+                conversation_id=conversation.id,
+                agent_tentacle_id=agent_tentacle_id,
+                run_name=run_name,
+                source_key=source_key,
+                target_key=target_key,
+                target_mode=target_mode,
+                decision=decision,
+                requests=requests,
+                questions=RelationCollection(questions),
+                approvals=RelationCollection(approvals),
+            )
 
-        async with async_session() as session:
-            session.add(batch)
-            await session.commit()
-            await batch.questions
-            await batch.approvals
-            batch.revalidate()
-            return batch
+            span.set_attribute("batch_id", str(batch.id))
+            span.set_attribute("questions", len(questions))
+            span.set_attribute("approvals", len(approvals))
+
+            async with async_session() as session:
+                session.add(batch)
+                await session.commit()
+                await batch.questions
+                await batch.approvals
+
+            async with async_session() as session:
+                return await session.one(DeferredActionBatch, id=batch.id)
 
     async def get_batch(
         self,
@@ -77,55 +84,67 @@ class DeferredActionManager:
         self,
         awake: DeferredActionBatchResponse,
     ) -> DeferredActionBatch:
-        async with async_session() as session:
-            batch = await session.get(DeferredActionBatch, awake.batch_id)
-            if batch is None:
-                raise ValueError(f"unknown deferred action batch {awake.batch_id}")
-            await batch.questions
-            await batch.approvals
-            if batch.status in {"completed", "resuming"}:
+        with logfire.span(
+            "deferred.resolve_batch",
+            batch_id=str(awake.batch_id),
+            answers=len(awake.answers),
+            approvals=len(awake.approvals),
+        ) as span:
+            async with async_session() as session:
+                batch = await session.get(DeferredActionBatch, awake.batch_id)
+                if batch is None:
+                    raise ValueError(f"unknown deferred action batch {awake.batch_id}")
+                await batch.questions
+                await batch.approvals
+                if batch.status in {"completed", "resuming"}:
+                    span.set_attribute("batch.status", batch.status)
+                    span.set_attribute("batch.completed", batch.completed)
+                    return batch
+                questions_by_id = {action.id: action for action in batch.questions}
+                approvals_by_id = {action.id: action for action in batch.approvals}
+                now = datetime.now(timezone.utc)
+
+                for action_id, answer in awake.answers.items():
+                    action = questions_by_id.get(action_id)
+                    if action is None:
+                        raise ValueError(
+                            f"unknown deferred action {action_id} in batch "
+                            f"{awake.batch_id}"
+                        )
+                    if action.status != "pending":
+                        continue
+                    action.status = "answered"
+                    action.result = answer
+                    action.responder_id = awake.responder_id or None
+                    action.resolved_at = now
+                    action.updated_at = now
+
+                for action_id, approved in awake.approvals.items():
+                    action = approvals_by_id.get(action_id)
+                    if action is None:
+                        raise ValueError(
+                            f"unknown deferred action {action_id} in batch "
+                            f"{awake.batch_id}"
+                        )
+                    if action.status != "pending":
+                        continue
+                    action.status = "approved" if approved else "denied"
+                    action.result = approved
+                    action.metadata = {
+                        **action.metadata,
+                        "allow_session": awake.allow_session,
+                    }
+                    action.responder_id = awake.responder_id or None
+                    action.resolved_at = now
+                    action.updated_at = now
+
+                if batch.completed:
+                    batch.status = "resolved"
+                batch.updated_at = now
+                await session.commit()
+                span.set_attribute("batch.status", batch.status)
+                span.set_attribute("batch.completed", batch.completed)
                 return batch
-            questions_by_id = {action.id: action for action in batch.questions}
-            approvals_by_id = {action.id: action for action in batch.approvals}
-            now = datetime.now(timezone.utc)
-
-            for action_id, answer in awake.answers.items():
-                action = questions_by_id.get(action_id)
-                if action is None:
-                    raise ValueError(
-                        f"unknown deferred action {action_id} in batch {awake.batch_id}"
-                    )
-                if action.status != "pending":
-                    continue
-                action.status = "answered"
-                action.result = answer
-                action.responder_id = awake.responder_id or None
-                action.resolved_at = now
-                action.updated_at = now
-
-            for action_id, approved in awake.approvals.items():
-                action = approvals_by_id.get(action_id)
-                if action is None:
-                    raise ValueError(
-                        f"unknown deferred action {action_id} in batch {awake.batch_id}"
-                    )
-                if action.status != "pending":
-                    continue
-                action.status = "approved" if approved else "denied"
-                action.result = approved
-                action.metadata = {
-                    **action.metadata,
-                    "allow_session": awake.allow_session,
-                }
-                action.responder_id = awake.responder_id or None
-                action.resolved_at = now
-                action.updated_at = now
-
-            if batch.completed:
-                batch.status = "resolved"
-            batch.updated_at = now
-            await session.commit()
-            return batch
 
     async def mark_action_presented(
         self,

@@ -32,6 +32,7 @@ dependencies = [
     "google-genai>=1.55.0",
     "uvicorn>=0.34",
     "rapidfuzz>=3",
+    "logfire[httpx,sqlalchemy]>=4.29.0",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -48,3 +49,8 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.logfire]
+# Instrumented code paths (e.g. ChannelTentacle.ingest) run in tests and other
+# entrypoints that never call logfire.configure(); silence the per-call warning.
+ignore_no_config = true

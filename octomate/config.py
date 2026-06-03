@@ -32,6 +32,14 @@ class LoggingConfig(BaseModel):
         return value.upper()
 
 
+class LogfireConfig(BaseModel):
+    service_name: str = "octomate"
+    environment: str = "development"
+    send_to_logfire: bool = False
+    console: bool = False
+    scrub: bool = True
+
+
 class ChannelStreamConfig(BaseModel):
     enabled: bool = False
     flush_interval: float = 0.5
@@ -109,6 +117,7 @@ class OctomateConfig(BaseSettings):
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    logfire: LogfireConfig = Field(default_factory=LogfireConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
 
     @classmethod

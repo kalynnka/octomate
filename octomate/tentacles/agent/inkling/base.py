@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeAlias, overload
 
+import logfire
 from pydantic_ai import (
     Agent,
     AgentBuiltinTool,
@@ -354,9 +355,15 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             if deferred_tool_results is not None
             else StartTurn(user_prompt=user_prompt)
         )
-        async for event in iter_react_graph_events(
-            start_node,
-            state=state,
-            deps=graph_deps,
+        with logfire.span(
+            "AgentTentacle {agent_id} {run_name} [{conversation_key}]",
+            agent_id=self.id,
+            run_name=resolved_run_name,
+            conversation_key=str(conversation_key),
         ):
-            yield event
+            async for event in iter_react_graph_events(
+                start_node,
+                state=state,
+                deps=graph_deps,
+            ):
+                yield event

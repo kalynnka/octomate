@@ -17,6 +17,7 @@ from typing import (
     cast,
 )
 
+import logfire
 from pydantic import JsonValue
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
@@ -498,16 +499,23 @@ async def present_markdown(
     chat_type = key.chat_type
     reply_to: str | None = key.thread_id or None
     first_message_id: IMMessageID | None = None
-    result = AgentRunResult(markdown)
-    for message in chromo.squirt(result, reply_to=reply_to):
-        message_id = await ink.send_message(
-            chat_id,
-            chat_type,
-            [message],
-            reply_to,
-        )
-        first_message_id = first_message_id or message_id
-    return first_message_id
+    with logfire.span(
+        "present_markdown",
+        channel_id=key.channel_tentacle_id,
+        chat_type=chat_type,
+        markdown_len=len(markdown),
+    ) as span:
+        result = AgentRunResult(markdown)
+        for message in chromo.squirt(result, reply_to=reply_to):
+            message_id = await ink.send_message(
+                chat_id,
+                chat_type,
+                [message],
+                reply_to,
+            )
+            first_message_id = first_message_id or message_id
+        span.set_attribute("message_id", str(first_message_id))
+        return first_message_id
 
 
 class DefaultMarkdownFeeler(Generic[RawT, MessageT]):

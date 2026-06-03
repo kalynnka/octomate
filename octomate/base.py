@@ -6,11 +6,16 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 import anyio
+import logfire
 from fastapi import APIRouter, FastAPI, Request, Response
 
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.awakes import AwakeSignal
+from octomate.schemas.awakes import (
+    AwakeSignal,
+    DeferredActionBatchResponse,
+    UserMessageSignal,
+)
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.graph import (
@@ -61,17 +66,26 @@ class Octomate:
         signal: AwakeSignal,
     ) -> None:
         """Trigger the agent graph from a user message turn or deferred response."""
-        with sqlalchemy_materia():
-            await triage_graph.run(
-                Awake(signal=signal),
-                state=TriageState(),
-                deps=TriageDeps(
-                    agents=self.agents,
-                    channels=self.channels,
-                    conversation_manager=self.conversations,
-                    action_manager=self.deferred_actions,
-                ),
-            )
+        with logfire.span(
+            "kick {signal_type}", signal_type=type(signal).__name__
+        ) as span:
+            if isinstance(signal, UserMessageSignal) and signal:
+                key = signal.key
+                span.set_attribute("channel_id", key.channel_tentacle_id)
+                span.set_attribute("conversation_key", str(key))
+            elif isinstance(signal, DeferredActionBatchResponse):
+                span.set_attribute("batch_id", str(signal.batch_id))
+            with sqlalchemy_materia():
+                await triage_graph.run(
+                    Awake(signal=signal),
+                    state=TriageState(),
+                    deps=TriageDeps(
+                        agents=self.agents,
+                        channels=self.channels,
+                        conversation_manager=self.conversations,
+                        action_manager=self.deferred_actions,
+                    ),
+                )
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
         @asynccontextmanager

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeAlias, TypeVar
 
 import anyio
+import logfire
 from pydantic_ai import AgentRunResult
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils import uuid7
@@ -182,6 +183,7 @@ class ChannelTentacle(
     def name(self) -> str:
         return self.profile.name
 
+    @logfire.instrument("ChannelTentacle {self.id} ingest")
     async def ingest(self, raw: RawT) -> None:
         """Inbound pipeline: decode, enrich sender, resolve media, dispatch."""
         try:
@@ -198,6 +200,12 @@ class ChannelTentacle(
                 chat_id=event.chat_id,
                 user_id=event.user_id,
                 thread_id=event.thread_id,
+            )
+            logfire.info(
+                "ingest decoded message",
+                channel_id=self.id,
+                conversation_key=str(key),
+                message_id=str(event.message_id),
             )
             if (
                 self.config.mention_only
