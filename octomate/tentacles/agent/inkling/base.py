@@ -52,6 +52,7 @@ InklingOutput: TypeAlias = str | DeferredToolRequests
 
 
 def build_inkling_agent(
+    name: str = "octomate-inkling",
     model_name: str = "gemini-3-flash-preview",
 ) -> Agent[None, InklingOutput]:
     model_settings: GoogleModelSettings = {"thinking": True}
@@ -62,6 +63,7 @@ def build_inkling_agent(
     return Agent(
         model,
         deps_type=type(None),
+        name=name,
         output_type=[str, DeferredToolRequests],
         model_settings=model_settings,
         toolsets=[inkling_toolset],
@@ -167,7 +169,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> AgentRunResult[InklingOutput] | AgentRunResult[AgentOutput]:
-        result: AgentRunResult[InklingOutput] | AgentRunResult[AgentOutput] | None = None
+        result: AgentRunResult[InklingOutput] | AgentRunResult[AgentOutput] | None = (
+            None
+        )
         async for event in self.iter_graph_events(
             user_prompt=user_prompt,
             conversation_key=conversation_key,
