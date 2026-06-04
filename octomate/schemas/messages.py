@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from arcanus import Transmuter
 from arcanus.dataclass import dataclass as arcanus_dataclass
-from pydantic import ConfigDict, Discriminator, Field, TypeAdapter
+from pydantic import (
+    AfterValidator,
+    ConfigDict,
+    Discriminator,
+    Field,
+    TypeAdapter,
+)
+from pydantic_ai._utils import now_utc
 from pydantic_ai.messages import ModelRequest as PydanticModelRequest
 from pydantic_ai.messages import ModelResponse as PydanticModelResponse
 
@@ -24,15 +32,25 @@ dataclass_config = ConfigDict(
 )
 
 
+def native_utc(value: datetime | None) -> datetime | None:
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
 @sqlalchemy_materia.bless(ModelRequestModel)
 @arcanus_dataclass(config=dataclass_config)
 class ModelRequest(Transmuter, PydanticModelRequest):
+    timestamp: Annotated[datetime, AfterValidator(native_utc)] | None = None
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
 
 
 @sqlalchemy_materia.bless(ModelResponseModel)
 @arcanus_dataclass(config=dataclass_config)
 class ModelResponse(Transmuter, PydanticModelResponse):
+    timestamp: Annotated[datetime, AfterValidator(native_utc)] = Field(
+        default_factory=now_utc
+    )
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
 
 

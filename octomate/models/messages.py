@@ -57,13 +57,11 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
     parts: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
     timestamp: Mapped[datetime | None] = mapped_column(
-        DateTime, nullable=True, index=True
+        DateTime(timezone=True), nullable=True, index=True
     )
     # `metadata` is reserved by SQLAlchemy's DeclarativeBase for the table
     # MetaData; expose the column as `meta` on Python and `metadata` in the DB.
-    meta: Mapped[JsonValue] = mapped_column(
-        "metadata", PydanticJSON, nullable=True
-    )
+    meta: Mapped[JsonValue] = mapped_column("metadata", PydanticJSON, nullable=True)
 
     instructions: Mapped[str | None] = mapped_column(String, nullable=True)
 
@@ -71,9 +69,7 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     model_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     provider_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     provider_url: Mapped[str | None] = mapped_column(String, nullable=True)
-    provider_details: Mapped[JsonValue] = mapped_column(
-        PydanticJSON, nullable=True
-    )
+    provider_details: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=True)
     provider_response_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )
