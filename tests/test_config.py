@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
 
 from octomate.config import (
@@ -24,13 +26,19 @@ class DefaultYamlOnlyConfig(OctomateConfig):
     )
 
 
-def test_default_config_loads_yaml_section() -> None:
-    config = DefaultYamlOnlyConfig()
-    assert config.agents.inkling.model == "gemini-3-flash-preview"
-    assert isinstance(config.channels, ChannelsConfig)
-    assert config.channels.slack is None
-    assert config.channels.lark is None
-    assert config.channels.napcat is None
+def test_default_yaml_placeholders_fail_without_override() -> None:
+    # octomate.default.yaml ships `~` placeholders that must be overridden in
+    # octomate.yaml or via env; loading the defaults file alone fails fast with
+    # clear validation errors rather than silently falling back to code defaults.
+    with pytest.raises(ValidationError):
+        DefaultYamlOnlyConfig()
+
+
+def test_channels_default_to_none() -> None:
+    channels = ChannelsConfig()
+    assert channels.slack is None
+    assert channels.lark is None
+    assert channels.napcat is None
 
 
 def test_channel_config_parses_supported_channels() -> None:

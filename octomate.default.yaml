@@ -1,21 +1,29 @@
+# `~` (null) is a placeholder: the key falls back to its built-in default. Set a
+# real value here or in octomate.yaml / env to override.
 octomate:
   agents:
     inkling:
-      model: gemini-3-flash-preview
+      # provider + model id. Default: vertex / gemini-3-flash-preview.
+      model:
+        provider: ~
+        name: ~
+        # pydantic-ai model settings (thinking, caching, temperature, ...).
+        settings:
+          thinking: ~  # default: medium  (false|minimal|low|medium|high|xhigh)
 
   logging:
-    level: INFO
-    format: "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    level: ~   # default: INFO
+    format: ~
 
   # Observability. send_to_logfire is opt-in: it only ships when true AND a
   # LOGFIRE_TOKEN is present. scrub redacts identifier attributes (conversation
   # key, user/chat/message ids) in the backend while keeping channel/run labels.
   logfire:
-    service_name: octomate
-    environment: development
-    send_to_logfire: false
-    console: false
-    scrub: true
+    service_name: ~     # default: octomate
+    environment: ~      # default: development
+    send_to_logfire: ~  # default: false
+    console: ~          # default: false
+    scrub: ~            # default: true
 
   # Runtime IM channels. Keep disabled examples here and put real secrets in
   # octomate.yaml or environment variables.
@@ -41,3 +49,29 @@ octomate:
   #       enabled: false
   #     ws_url: ws://127.0.0.1:3001
   #     http_url: http://127.0.0.1:3000
+
+  # LLM providers. Every block is optional; an omitted block falls back to the
+  # provider's native env vars (OPENAI_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY,
+  # ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, AWS_* ...). Put real secrets in
+  # octomate.yaml or environment variables.
+  providers: {}
+  # providers:
+  #   openai:
+  #     api_key: sk-...
+  #     base_url: https://api.openai.com/v1
+  #   deepseek:
+  #     api_key: sk-...
+  #   gemini:              # Google AI Studio (Developer API)
+  #     api_key: AIza...
+  #   vertex:              # Gemini via Vertex AI
+  #     project: my-gcp-project
+  #     location: global
+  #     credentials_file: /secrets/sa.json   # omit => Application Default Credentials
+  #   anthropic:
+  #     api_key: sk-ant-...
+  #   bedrock:
+  #     region_name: us-east-1
+  #     aws_access_key_id: AKIA...
+  #     aws_secret_access_key: ...
+  #     # or: profile_name: my-profile
+  #     # or: api_key: <AWS_BEARER_TOKEN_BEDROCK>

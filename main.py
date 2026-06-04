@@ -40,6 +40,7 @@ logging.basicConfig(
 )
 
 from octomate import Octomate
+from octomate.providers import ProviderRegistry
 from octomate.tentacles.agent.inkling import InklingTentacle, build_inkling_agent
 from octomate.tentacles.channel.lark import LarkTentacle
 from octomate.tentacles.channel.napcat import NapcatTentacle
@@ -47,12 +48,13 @@ from octomate.tentacles.channel.slack import SlackTentacle
 from octomate.web.dev_ui import build_dev_ui_router
 
 octomate = Octomate()
+registry = ProviderRegistry(config.providers)
 octomate.register_agent(
     "inkling",
     InklingTentacle(
         "inkling",
         octomate,
-        agent=build_inkling_agent(config.agents.inkling.model),
+        agent=build_inkling_agent(registry, config.agents.inkling.model),
         conversation_manager=octomate.conversations,
     ),
 )

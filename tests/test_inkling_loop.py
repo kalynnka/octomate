@@ -29,8 +29,7 @@ from pydantic_ai.models.function import (
     DeltaToolCalls,
     FunctionModel,
 )
-from pydantic_ai.profiles import ModelProfile
-from pydantic_ai.profiles.google import google_model_profile
+from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import End, Graph, GraphRunContext
 
@@ -47,7 +46,8 @@ from octomate.tentacles.agent.graph.react import (
     RunAgent,
     StartTurn,
 )
-from octomate.tentacles.agent.inkling import base as inkling_base
+from octomate.config import ModelConfig
+from octomate.providers import ProviderRegistry
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
     build_inkling_agent,
@@ -60,24 +60,34 @@ InklingTestOutput = str | DeferredToolRequests
 InklingTestEvent = AgentStreamEvent | AgentRunResultEvent[InklingTestOutput]
 
 
-def test_build_inkling_agent_enables_google_thinking(
-    monkeypatch: "pytest.MonkeyPatch",
-) -> None:
-    @dataclass
-    class FakeGoogleProvider:
-        model_profile: ModelProfile | None = field(
-            default_factory=lambda: google_model_profile("gemini-3-flash-preview")
-        )
+class StubRegistry:
+    """Returns a credential-free TestModel so build_inkling_agent runs without
+    constructing a real provider client (Vertex/etc. would need credentials)."""
 
-    monkeypatch.setattr(
-        inkling_base,
-        "GoogleProvider",
-        lambda *, location: FakeGoogleProvider(),
+    def build_model(
+        self, model: ModelConfig, settings: object | None = None
+    ) -> TestModel:
+        return TestModel()
+
+
+def test_build_inkling_agent_passes_model_settings_through() -> None:
+    agent = build_inkling_agent(
+        cast(ProviderRegistry, StubRegistry()),
+        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
+        model_settings={"temperature": 0.2},
     )
+    assert agent.name == "octomate-inkling"
+    assert agent.model_settings == {"temperature": 0.2}
 
-    agent = build_inkling_agent()
 
-    assert agent.model_settings == {"thinking": True}
+def test_build_inkling_agent_defaults_model_settings_to_none() -> None:
+    # Per-model settings (incl. thinking) live in model.settings, applied by the
+    # registry; the agent adds nothing of its own by default.
+    agent = build_inkling_agent(
+        cast(ProviderRegistry, StubRegistry()),
+        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
+    )
+    assert agent.model_settings is None
 
 
 @dataclass

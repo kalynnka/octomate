@@ -21,13 +21,14 @@ from pydantic_ai.agent import EventStreamHandler
 from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
-from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
+from octomate.config import ModelConfig
 from octomate.managers.conversations import ConversationManager
+from octomate.providers import ProviderRegistry
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.agent.base import (
     AgentOutput,
@@ -52,16 +53,14 @@ InklingOutput: TypeAlias = str | DeferredToolRequests
 
 
 def build_inkling_agent(
+    registry: ProviderRegistry,
+    model: ModelConfig,
+    *,
     name: str = "octomate-inkling",
-    model_name: str = "gemini-3-flash-preview",
+    model_settings: ModelSettings | None = None,
 ) -> Agent[None, InklingOutput]:
-    model_settings: GoogleModelSettings = {"thinking": True}
-    model = GoogleModel(
-        model_name,
-        provider=GoogleProvider(location="global"),
-    )
     return Agent(
-        model,
+        registry.build_model(model),
         deps_type=type(None),
         name=name,
         output_type=[str, DeferredToolRequests],
