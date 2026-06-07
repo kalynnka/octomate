@@ -30,9 +30,8 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
 from octomate.tentacles.agent.base import AgentOutput, AgentSpecInput
-from octomate.tentacles.agent.graph.resolver import DeferredResolver
-from octomate.tentacles.agent.graph.suspender import DeferredSuspender
 
 logger = logging.getLogger(__name__)
 ReactOutput: TypeAlias = JsonValue | BaseModel | DeferredToolRequests

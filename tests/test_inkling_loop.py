@@ -36,11 +36,9 @@ from pydantic_graph import End, Graph, GraphRunContext
 from octomate import Octomate
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
-from octomate.tentacles.agent.graph import (
+from octomate.capabilities.react import (
     ReactDeps,
     ReactState,
-)
-from octomate.tentacles.agent.graph.react import (
     ResolveDeferred,
     ResumeTurn,
     RunAgent,

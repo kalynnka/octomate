@@ -35,14 +35,14 @@ from octomate.tentacles.agent.base import (
     AgentSpecInput,
     AgentTentacle,
 )
-from octomate.tentacles.agent.graph import (
-    DeferredResolver,
+from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
+from octomate.capabilities.react import (
     ReactDeps,
     ReactState,
+    ResumeTurn,
+    StartTurn,
     iter_react_graph_events,
 )
-from octomate.tentacles.agent.graph.react import ResumeTurn, StartTurn
-from octomate.tentacles.agent.graph.suspender import DeferredSuspender
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.agent.inkling.tools import inkling_toolset
 

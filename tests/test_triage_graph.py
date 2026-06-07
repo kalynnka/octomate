@@ -20,9 +20,9 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.tentacles.agent.base import AgentTentacle
+from octomate.capabilities.deferred import DeferredSuspender
 from octomate.tentacles.agent.graph import (
     DeferredResult,
-    DeferredSuspender,
     ResponseTarget,
     ResponseTargetMode,
     TriageDecision,

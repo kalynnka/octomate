@@ -24,12 +24,14 @@ from pydantic_ai.ui.vercel_ai.response_types import (
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import ConversationKey
-from octomate.tentacles.agent.graph import (
+from octomate.capabilities.react import (
     ReactDeps,
+    ReactOutput,
     ReactState,
+    ResumeTurn,
+    StartTurn,
     iter_react_graph_events,
 )
-from octomate.tentacles.agent.graph.react import ReactOutput, ResumeTurn, StartTurn
 
 logger = logging.getLogger(__name__)
 

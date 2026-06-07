@@ -31,7 +31,7 @@ from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
-    from octomate.tentacles.agent.graph.suspender import DeferredSuspender
+    from octomate.capabilities.deferred import DeferredSuspender
 
 AgentOutput: TypeAlias = JsonValue | BaseModel | DeferredToolRequests
 AgentOutputT = TypeVar("AgentOutputT", bound=AgentOutput)

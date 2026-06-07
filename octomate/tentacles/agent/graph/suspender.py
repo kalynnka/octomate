@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Literal
 
 import logfire
 from pydantic_ai.tools import DeferredToolRequests
@@ -12,17 +12,6 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.tentacles.channel.base import ChannelTentacle
-
-
-class DeferredSuspender(Protocol):
-    """Human-in-the-loop hook for deferred tool calls the agent cannot resolve
-    in process. Unlike `DeferredResolver`, which returns results and lets the
-    react loop continue, a suspender persists + presents the requests for an
-    out-of-band response and the run ends; it is resumed later by feeding the
-    collected `DeferredToolResults` back through a fresh agent run.
-    """
-
-    async def suspend(self, requests: DeferredToolRequests) -> None: ...
 
 
 @dataclass
