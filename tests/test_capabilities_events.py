@@ -6,16 +6,32 @@ has no catalog test here. Pure type-level tests — no agent run, no channels.
 
 from __future__ import annotations
 
+from uuid_utils.compat import uuid7
+
 from octomate.schemas.deferred import ApprovalRequest
+from octomate.schemas.todos import Todo
 from octomate.capabilities.events import (
     ActionRequestEvent,
     ApprovalRequestEvent,
     AskQuestionEvent,
     DisplayEvent,
     OutputDeltaEvent,
-    TodoItem,
-    TodoListEvent,
+    TodoCompletedEvent,
+    TodoCreatedEvent,
+    TodoDeletedEvent,
+    TodoStatusChangedEvent,
+    TodoUpdatedEvent,
 )
+
+
+def _todo(**overrides: object) -> Todo:
+    return Todo(
+        conversation_id=uuid7(),
+        ref="a1b2c3d4",
+        content="ship it",
+        active_form="shipping it",
+        **overrides,  # pyright: ignore[reportArgumentType]
+    )
 
 
 def test_output_delta_carries_the_typed_output() -> None:
@@ -24,11 +40,18 @@ def test_output_delta_carries_the_typed_output() -> None:
     assert event.output == [1, 2]
 
 
-def test_todo_list_is_a_display_event() -> None:
-    todo = TodoListEvent(items=[TodoItem(content="ship", status="in_progress")])
-    assert isinstance(todo, DisplayEvent)
-    assert todo.event_kind == "todo_list"
-    assert todo.items[0].status == "in_progress"
+def test_todo_events_are_display_events_carrying_the_todo() -> None:
+    created = TodoCreatedEvent(todo=_todo(status="in_progress"))
+    assert isinstance(created, DisplayEvent)
+    assert created.event_kind == "todo_created"
+    assert created.todo.status == "in_progress"
+
+    changed = TodoStatusChangedEvent(
+        todo=_todo(status="completed"), previous=_todo(status="in_progress")
+    )
+    assert changed.event_kind == "todo_status_changed"
+    assert changed.previous is not None
+    assert changed.previous.status == "in_progress"
 
 
 def test_action_events_are_grouped_and_carry_correlation_ids() -> None:
@@ -49,7 +72,11 @@ def test_action_events_are_grouped_and_carry_correlation_ids() -> None:
 def test_event_kinds_are_unique() -> None:
     kinds = [
         OutputDeltaEvent(output=None).event_kind,
-        TodoListEvent(items=[]).event_kind,
+        TodoCreatedEvent(todo=_todo()).event_kind,
+        TodoUpdatedEvent(todo=_todo()).event_kind,
+        TodoStatusChangedEvent(todo=_todo()).event_kind,
+        TodoCompletedEvent(todo=_todo()).event_kind,
+        TodoDeletedEvent(todo=_todo()).event_kind,
         AskQuestionEvent(action_id="a", batch_id="b", question={"question": "?"}).event_kind,
         ApprovalRequestEvent(
             action_id="a", batch_id="b", approval=ApprovalRequest(tool_name="t")

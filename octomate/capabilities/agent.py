@@ -8,6 +8,9 @@ gives validated partial output but not thinking/tool events. `stream_events` dri
 - the reply is emitted as `OutputDeltaEvent[OutputT]` (partial, validated with
   `allow_partial=True`) then Pydantic AI's own `FinalResult[OutputT]` as the final
   value, generic over the run's output type,
+- capability-injected events (e.g. todo events) flow through: each node's stream is
+  wrapped with the run's capabilities' `wrap_run_event_stream`, which the manual
+  `iter()` path would otherwise bypass (pydantic-ai applies it only inside `run()`),
 - a terminal `AgentRunResultEvent` closes the stream (run-complete / deferred).
 
 The two `output_type` overloads carry the output type into the event stream, so
@@ -30,6 +33,11 @@ from pydantic_ai.output import OutputDataT, OutputSpec
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import AgentDepsT, DeferredToolResults
 
+# Pydantic AI applies capability wrap_run_event_stream only inside run()'s hooked
+# path; stream_events drives iter() directly, so we replicate the wrap per node.
+# build_run_context is private — no public RunContext-from-AgentRun exists in 1.93.0.
+from pydantic_ai._agent_graph import build_run_context
+
 from octomate.capabilities.events import OutputDeltaEvent, StreamEvents
 
 NO_OUTPUT = object()
@@ -46,6 +54,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         output_type: None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        conversation_id: str | None = None,
         deps: AgentDepsT = None,
         model: Model | KnownModelName | str | None = None,
     ) -> AsyncIterator[
@@ -60,6 +69,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         output_type: OutputSpec[RunOutputDataT],
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        conversation_id: str | None = None,
         deps: AgentDepsT = None,
         model: Model | KnownModelName | str | None = None,
     ) -> AsyncIterator[
@@ -73,6 +83,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         output_type: OutputSpec[Any] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
+        conversation_id: str | None = None,
         deps: AgentDepsT = None,
         model: Model | KnownModelName | str | None = None,
     ) -> AsyncIterator[StreamEvents[Any] | AgentRunResultEvent[Any]]:
@@ -81,6 +92,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
             output_type=output_type,
             message_history=message_history,
             deferred_tool_results=deferred_tool_results,
+            conversation_id=conversation_id,
             deps=deps,
             model=model,
         ) as run:
@@ -89,9 +101,15 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                     # The model node streams the reply: passthrough thinking/pre-output
                     # events, then map the output (after FinalResultEvent) to Output events.
                     async with node.stream(run.ctx) as stream:
+                        wrapped = run.ctx.deps.root_capability.wrap_run_event_stream(
+                            build_run_context(run.ctx), stream=stream
+                        )
                         final_event: FinalResultEvent | None = None
                         last: object = NO_OUTPUT
-                        async for event in stream:
+                        # A capability injecting a non-AgentStreamEvent before the
+                        # FinalResultEvent passes through here; injecting after it is
+                        # not supported (todo events inject on the tools node).
+                        async for event in wrapped:
                             if isinstance(event, FinalResultEvent):
                                 final_event = event
                                 continue
@@ -120,9 +138,14 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                                 tool_call_id=final_event.tool_call_id,
                             )
                 elif self.is_call_tools_node(node):
-                    # The tools node streams tool call/result events — pass them through.
+                    # The tools node streams tool call/result events. Wrapping with the
+                    # run's capabilities lets capability-injected events (e.g. todo
+                    # events stashed on a ToolReturn) reach the consumer.
                     async with node.stream(run.ctx) as tool_stream:
-                        async for tool_event in tool_stream:
+                        wrapped = run.ctx.deps.root_capability.wrap_run_event_stream(
+                            build_run_context(run.ctx), stream=tool_stream
+                        )
+                        async for tool_event in wrapped:
                             yield tool_event
             if run.result is not None:
                 yield AgentRunResultEvent(run.result)

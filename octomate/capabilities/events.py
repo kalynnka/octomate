@@ -8,7 +8,9 @@ One stream, with these event families:
   the reply streams, then Pydantic AI's own `FinalResult[OutputT]` as the final
   value — no wrapper of our own. Rendering the output (segments → IM message, rows
   → table, …) is a *consumer* concern; the event just carries the typed value.
-- **Display events** (`DisplayEvent`) — fire-and-forget, e.g. `TodoListEvent`.
+- **Display events** (`DisplayEvent`) — fire-and-forget, e.g. the granular todo
+  events (`TodoCreatedEvent`/`TodoUpdatedEvent`/`TodoStatusChangedEvent`/
+  `TodoCompletedEvent`/`TodoDeletedEvent`), each carrying the affected `Todo`.
 - **Action requests** (`ActionRequestEvent`) — need a user reply; the run suspends.
   `action_id`/`batch_id` correlate the reply through the deferred-action machinery.
 
@@ -24,7 +26,7 @@ fits — that belongs with the consumer/transport layer when dev_ui adopts this.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Generic, Literal, TypeVar
+from typing import Generic, Literal, TypeAlias, TypeVar
 
 from pydantic import BaseModel
 from pydantic_ai import AgentStreamEvent
@@ -32,6 +34,7 @@ from pydantic_ai.result import FinalResult
 from typing_extensions import TypeAliasType
 
 from octomate.schemas.deferred import ApprovalRequest, QuestionRequest
+from octomate.schemas.todos import Todo
 
 OutputT = TypeVar("OutputT")
 
@@ -44,18 +47,45 @@ class OutputDeltaEvent(Generic[OutputT]):
     event_kind: Literal["output_delta"] = "output_delta"
 
 
-class TodoItem(BaseModel):
-    content: str
-    status: Literal["pending", "in_progress", "completed"] = "pending"
-
-
 class DisplayEvent(BaseModel):
     """Fire-and-forget outbound event; the run continues after it is emitted."""
 
 
-class TodoListEvent(DisplayEvent):
-    event_kind: Literal["todo_list"] = "todo_list"
-    items: list[TodoItem]
+class TodoCreatedEvent(DisplayEvent):
+    event_kind: Literal["todo_created"] = "todo_created"
+    todo: Todo
+
+
+class TodoUpdatedEvent(DisplayEvent):
+    event_kind: Literal["todo_updated"] = "todo_updated"
+    todo: Todo
+    previous: Todo | None = None
+
+
+class TodoStatusChangedEvent(DisplayEvent):
+    event_kind: Literal["todo_status_changed"] = "todo_status_changed"
+    todo: Todo
+    previous: Todo | None = None
+
+
+class TodoCompletedEvent(DisplayEvent):
+    event_kind: Literal["todo_completed"] = "todo_completed"
+    todo: Todo
+
+
+class TodoDeletedEvent(DisplayEvent):
+    event_kind: Literal["todo_deleted"] = "todo_deleted"
+    todo: Todo
+
+
+# The granular todo events a capability emits as the agent mutates its todo list.
+TodoEvent: TypeAlias = (
+    TodoCreatedEvent
+    | TodoUpdatedEvent
+    | TodoStatusChangedEvent
+    | TodoCompletedEvent
+    | TodoDeletedEvent
+)
 
 
 class ActionRequestEvent(BaseModel):
@@ -86,7 +116,7 @@ StreamEvents = TypeAliasType(
     AgentStreamEvent
     | OutputDeltaEvent[OutputT]
     | FinalResult[OutputT]
-    | TodoListEvent
+    | TodoEvent
     | AskQuestionEvent
     | ApprovalRequestEvent,
     type_params=(OutputT,),

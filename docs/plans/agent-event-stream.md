@@ -1,7 +1,32 @@
 # Plan: Decouple the agent run into a typed event stream that channels consume
 
-> **Status:** proposed · **Owner:** @luhui · **Created:** 2026-06-07
+> **Status:** in progress · **Owner:** @luhui · **Created:** 2026-06-07 · **Updated:** 2026-06-08
 > **Scope:** the boundary between the agent run (triage/react graphs) and IM channels (Slack/Lark/NapCat) + the dev web UI.
+
+> **Drift log — read this first.** UoW-1 and UoW-3 have landed, and the implementation
+> diverged from this doc's original vocabulary. The four-layer vision (produce →
+> normalize → consume → render) is unchanged; the names/paths below are corrected
+> in place, but the key deltas are:
+>
+> - **`Say` lifecycle trio → `OutputDeltaEvent[OutputT]` + Pydantic AI's own
+>   `FinalResult[OutputT]`.** Streaming a structured reply surfaces partial validated
+>   snapshots as `OutputDeltaEvent` then the final typed value as `FinalResult` (no
+>   octomate wrapper). Rendering output → segments is a *consumer* concern.
+> - **`octo_stream()` (free fn) → `Agent.stream_events` (method)** on the `Agent`
+>   subclass. It also applies each capability's `wrap_run_event_stream` per node so
+>   capability-injected events flow (the manual `iter()` path otherwise bypasses it).
+> - **New `octomate.capabilities` package** holds the harness: `events.py` (was
+>   `schemas/stream.py`), `agent.py` (the normalizer), `deferred.py` (the
+>   `DeferredResolver`/`DeferredSuspender` protocols; `graph/resolver.py` deleted),
+>   and `react.py` (was `tentacles/agent/graph/react.py`).
+> - **`OctoStreamEvent` (Annotated discriminated union + `TypeAdapter`) →
+>   `StreamEvents` (generic `TypeAliasType`, isinstance-matched).** A single
+>   discriminated `TypeAdapter` no longer fits generics; serialization is deferred to
+>   the transport layer (dev_ui / UoW-12).
+> - **UoW-4 grew** from "first display capability" into a persisted, conversation-scoped
+>   **todo subsystem** (Arcanus `todos` table + `TodoManager`, the 8-tool
+>   `pydantic-ai-todo`-style toolset with subtasks/dependencies, and **granular** todo
+>   events). See the UoW-4 row.
 
 ---
 
@@ -9,7 +34,7 @@
 
 Today the **triage graph pushes rendered output into channel feelers mid-run** — agent-run logic is coupled to IM delivery. We will invert this:
 
-- The **agent run becomes a pure producer** of a single, precisely-typed event stream (`OctoStreamEvent`).
+- The **agent run becomes a pure producer** of a single, precisely-typed event stream (`StreamEvents[OutputT]`).
 - **Channels subscribe** to that stream and render it themselves — exactly like the web UI already does via `iter_react_graph_events`.
 - **Feelers become pure SSR-style renderers**: one typed event in → one platform payload out. No agent knowledge.
 - **New event types are capabilities**: an agent that has capability *X* can emit event *X* (questions, todo lists, images, …). Adding a type = adding a capability + a renderer, with the compiler enforcing exhaustiveness.
@@ -28,7 +53,7 @@ flowchart LR
         RG --> CAP
     end
     subgraph Normalize["② NORMALIZE — one boundary"]
-        NORM["octo_stream()<br/>raw PAI events + emissions<br/>→ OctoStreamEvent"]
+        NORM["Agent.stream_events<br/>raw PAI events + capability emissions<br/>→ StreamEvents[OutputT]"]
     end
     subgraph Consume["③ CONSUME — per channel (the subscriber)"]
         CONS["channel.consume(key, stream)<br/>match event: → renderer"]
@@ -61,10 +86,10 @@ flowchart TB
     end
 
     subgraph TARGET["TARGET — decoupled"]
-        P["agent run → octo_stream()"] --> ST["AsyncIterator OctoStreamEvent"]
+        P["agent run → Agent.stream_events"] --> ST["AsyncIterator StreamEvents[OutputT]"]
         ST --> C["target_channel.consume(key, stream)"]
-        C -->|match Say*| R1["message renderer"]
-        C -->|match TodoListEvent| R2["todo renderer"]
+        C -->|"match OutputDeltaEvent / FinalResult"| R1["output renderer"]
+        C -->|match Todo*Event| R2["todo renderer"]
         C -->|match AskQuestionEvent| R3["question renderer<br/>+ mark_action_presented"]
         R1 & R2 & R3 --> INK["ink.send_message"]
     end
@@ -77,7 +102,7 @@ flowchart TB
 | Who drives the stream loop | triage (`stream_events()` inside `RunReception`) | the **channel consumer** |
 | What triage does after deciding target | renders inline via `feelers.*.present()` | hands the stream to `channel.consume()` |
 | Questions/approvals | rendered off-stream via `present_actions()` | rendered **on-stream** as `ActionRequestEvent`; persistence unchanged |
-| Output content | `markdown_from_output()` at end of `RunReception` | `AgentRunResultEvent.result.output` / `stream_output()` **normalized** into the `Say` trio |
+| Output content | `markdown_from_output()` at end of `RunReception` | `OutputDeltaEvent[OutputT]` (partial) + `FinalResult[OutputT]` (final) from `Agent.stream_events`; rendering output → segments is a *consumer* concern |
 | Feeler role | consume *and* render | **render only** (one event → one payload) |
 
 ---
@@ -86,11 +111,11 @@ flowchart TB
 
 | Term | What it is | Anchor in code |
 |---|---|---|
-| **Producer** | the pure agent run that yields raw `AgentStreamEvent \| AgentRunResultEvent` | `iter_react_graph_events` ([react.py:281](../../octomate/tentacles/agent/graph/react.py#L281)) |
-| **`OctoStreamEvent`** | our closed discriminated union the rest of the system speaks | *new* `schemas/stream.py` |
-| **`DisplayEvent`** | fire-and-forget, mid-run; run continues (message, todo, image, progress) | *new* |
-| **`ActionRequestEvent`** | needs a user reply; run suspends; carries `action_id`/`batch_id` | *new*, embeds `DeferredQuestion`/`DeferredApproval` ([schemas/deferred.py:132](../../octomate/schemas/deferred.py#L132)) |
-| **Normalizer** | maps every PAI source + capability emission into `OctoStreamEvent` | *new* `octo_stream()` |
+| **Producer** | the pure agent run that yields raw `AgentStreamEvent \| AgentRunResultEvent` | `iter_react_graph_events` ([capabilities/react.py](../../octomate/capabilities/react.py)) |
+| **`StreamEvents[OutputT]`** | the typed event stream the system speaks; a generic `TypeAliasType` union (not one discriminated `TypeAdapter`), matched by `isinstance` | [capabilities/events.py](../../octomate/capabilities/events.py) |
+| **`DisplayEvent`** | fire-and-forget, mid-run; run continues (message, todo, image, progress) | [capabilities/events.py](../../octomate/capabilities/events.py) |
+| **`ActionRequestEvent`** | needs a user reply; run suspends; carries `action_id`/`batch_id` | embeds `QuestionRequest`/`ApprovalRequest` ([capabilities/events.py](../../octomate/capabilities/events.py)) |
+| **Normalizer** | maps every PAI source + capability emission into `StreamEvents` | `Agent.stream_events` ([capabilities/agent.py](../../octomate/capabilities/agent.py)) |
 | **Consumer** | per-channel loop that `match`es each event to a renderer | *new* `ChannelTentacle.consume()` |
 | **Feeler** | SSR renderer: one typed event → one platform payload | refactor of [feelers/output.py](../../octomate/tentacles/channel/feelers/output.py) |
 | **Capability = event type** | `AbstractCapability` bundling a tool + instructions + `wrap_run_event_stream` | `pydantic_ai.capabilities.AbstractCapability` |
@@ -98,32 +123,34 @@ flowchart TB
 
 ---
 
-## 4. The `OctoStreamEvent` model
+## 4. The `StreamEvents` model
 
-Separate variants under a discriminated union — display vs round-trip is a **compile-time fact**, never a runtime flag.
+Variants are distinct types, matched by `isinstance` — display vs round-trip is a **compile-time fact**, never a runtime flag. The union is a generic `TypeAliasType` (over the run's `OutputT`); a single discriminated `TypeAdapter` no longer fits the generic output events.
 
 ```mermaid
 classDiagram
-    class OctoStreamEvent { <<union discriminated by event_kind>> }
-    class DisplayEvent { <<group run continues>> }
+    class StreamEvents { <<generic union over OutputT; isinstance-matched>> }
+    class DisplayEvent { <<group: run continues>> }
     class ActionRequestEvent {
-        <<group run suspends>>
+        <<group: run suspends>>
         +str action_id
         +str batch_id
     }
     class PassthroughEvent { <<PAI native: text/thinking/tool events>> }
-    class SayEvent { <<base: streams start→chunk→end>> +str message_id }
-    class TodoListEvent { +List~TodoItem~ items }
+    class OutputDeltaEvent~OutputT~ { +OutputT output }
+    class FinalResult~OutputT~ { <<PAI native: final typed reply>> +OutputT output }
 
-    OctoStreamEvent <|-- DisplayEvent
-    OctoStreamEvent <|-- ActionRequestEvent
-    OctoStreamEvent <|-- PassthroughEvent
+    StreamEvents <|-- DisplayEvent
+    StreamEvents <|-- ActionRequestEvent
+    StreamEvents <|-- PassthroughEvent
+    StreamEvents <|-- OutputDeltaEvent
+    StreamEvents <|-- FinalResult
 
-    DisplayEvent <|-- SayEvent
-    DisplayEvent <|-- TodoListEvent
-    SayEvent <|-- SayStartEvent
-    SayEvent <|-- SayChunkEvent
-    SayEvent <|-- SayEndEvent
+    DisplayEvent <|-- TodoCreatedEvent
+    DisplayEvent <|-- TodoUpdatedEvent
+    DisplayEvent <|-- TodoStatusChangedEvent
+    DisplayEvent <|-- TodoCompletedEvent
+    DisplayEvent <|-- TodoDeletedEvent
 
     ActionRequestEvent <|-- AskQuestionEvent
     ActionRequestEvent <|-- ApprovalRequestEvent
@@ -132,31 +159,30 @@ classDiagram
     ApprovalRequestEvent --> ApprovalRequest : embeds
 ```
 
-> **Naming / streaming decisions (UoW-1, landed in [schemas/stream.py](../../octomate/schemas/stream.py)):**
-> - The inbound `MessageEvent` already exists, so the outbound message is the **`Say`** family.
-> - An outbound message **streams as a lifecycle trio** — `SayStartEvent` → `SayChunkEvent`(s) → `SayEndEvent`, sharing `message_id`. A single terminal blob can't represent a streaming structured reply: `run_stream_events` only surfaces raw arg-deltas + the final object, while partial *validated* snapshots come from `run_stream().stream_output()` (the stream-whales pattern). The trio carries those snapshots so a channel can create-then-edit one platform message.
-> - **One union only:** `OctoStreamEvent` is the single discriminated union (PAI passthrough + octomate events); there is no separate "emitted" union. Adapters: `OctoStreamEventAdapter` and `OctoStreamEventListAdapter`.
+> **Output & streaming decisions (UoW-1/UoW-3, landed in [capabilities/events.py](../../octomate/capabilities/events.py) + [capabilities/agent.py](../../octomate/capabilities/agent.py)):**
+> - The outbound reply is **not** wrapped: streaming surfaces partial *validated* snapshots as `OutputDeltaEvent[OutputT]`, then the final typed value as Pydantic AI's own `FinalResult[OutputT]`. `run_stream_events` alone only exposes raw arg-deltas + the final object, so `Agent.stream_events` drives `iter()` and validates per node (the stream-whales pattern).
+> - **One union, generic:** `StreamEvents[OutputT]` is a `TypeAliasType` union of PAI passthrough + octomate events, matched by `isinstance`. A single discriminated `TypeAdapter` no longer fits; serialization is deferred to the transport layer (dev_ui / UoW-12).
+> - Display/action events (todo, questions, approvals) are emitted by **capabilities** via `wrap_run_event_stream`, which `Agent.stream_events` applies per node so the events reach the consumer.
 
 ```python
-# schemas/stream.py
+# octomate/capabilities/events.py  (abridged)
 from pydantic_ai import AgentStreamEvent
-from octomate.schemas.segments import MessageSegment
+from pydantic_ai.result import FinalResult
 from octomate.schemas.deferred import QuestionRequest, ApprovalRequest   # reuse args payloads
+from octomate.schemas.todos import Todo
 
-class DisplayEvent(BaseModel): ...                 # run continues
-class SayEvent(DisplayEvent):               # base; cf. inbound MessageEvent
-    message_id: str
-class SayStartEvent(SayEvent):
-    event_kind: Literal['say_start'] = 'say_start'
-class SayChunkEvent(SayEvent):
-    event_kind: Literal['say_chunk'] = 'say_chunk'
-    segments: list[MessageSegment]                 # cumulative partial snapshot
-class SayEndEvent(SayEvent):
-    event_kind: Literal['say_end'] = 'say_end'
-    segments: list[MessageSegment]                 # authoritative final
-class TodoListEvent(DisplayEvent):
-    event_kind: Literal['todo_list'] = 'todo_list'
-    items: list[TodoItem]
+@dataclass
+class OutputDeltaEvent(Generic[OutputT]):          # partial validated reply snapshot
+    output: OutputT
+    event_kind: Literal['output_delta'] = 'output_delta'
+
+class DisplayEvent(BaseModel): ...                 # fire-and-forget; run continues
+
+class TodoCreatedEvent(DisplayEvent):
+    event_kind: Literal['todo_created'] = 'todo_created'
+    todo: Todo
+# … TodoUpdatedEvent / TodoStatusChangedEvent / TodoCompletedEvent / TodoDeletedEvent
+#    (the status-bearing ones also carry `previous: Todo | None`); TodoEvent unions them.
 
 class ActionRequestEvent(BaseModel):               # run suspends; reply needed
     action_id: str
@@ -168,53 +194,52 @@ class ApprovalRequestEvent(ActionRequestEvent):
     event_kind: Literal['approval_request'] = 'approval_request'
     approval: ApprovalRequest
 
-OctoStreamEvent = Annotated[                         # the one union
+StreamEvents = TypeAliasType(                        # generic union; isinstance-matched
+    "StreamEvents",
     AgentStreamEvent                                # PAI passthrough: text/thinking/tool calls
-    | SayStartEvent | SayChunkEvent | SayEndEvent
-    | TodoListEvent | AskQuestionEvent | ApprovalRequestEvent,
-    Discriminator('event_kind'),
-]
-OctoStreamEventAdapter = TypeAdapter(OctoStreamEvent)
-OctoStreamEventListAdapter = TypeAdapter(list[OctoStreamEvent])
+    | OutputDeltaEvent[OutputT] | FinalResult[OutputT]
+    | TodoEvent | AskQuestionEvent | ApprovalRequestEvent,
+    type_params=(OutputT,),
+)
 ```
 
-The consumer is then exhaustively typed:
+The consumer matches by type:
 
 ```python
 match event:
-    case SayStartEvent():  await feelers.message.start(key, event)
-    case SayChunkEvent():  await feelers.message.update(key, event)   # edit-in-place
-    case SayEndEvent():    await feelers.message.finish(key, event)
-    case TodoListEvent():         await feelers.todo.render(key, event)
+    case OutputDeltaEvent():      await feelers.output.update(key, event)   # partial reply
+    case FinalResult():           await feelers.output.finish(key, event)   # final typed value
+    case TodoCreatedEvent() | TodoUpdatedEvent() | TodoStatusChangedEvent() \
+        | TodoCompletedEvent() | TodoDeletedEvent():
+                                  await feelers.todo.render(key, event)
     case AskQuestionEvent():      await feelers.question.render(key, event); await mark_presented(...)
     case ApprovalRequestEvent():  await feelers.approval.render(key, event); await mark_presented(...)
-    case PartDeltaEvent():        await feelers.message.append(key, event)   # PAI passthrough text
-    case _:                       assert_never(event)   # new variant ⇒ type error until handled
+    case PartDeltaEvent():        await feelers.message.append(key, event)  # PAI passthrough text
+    case _:                       ...   # remaining PAI passthrough events
 ```
+
+(The union mixes our events with PAI's open `AgentStreamEvent` family, so the catch-all handles passthrough rather than an `assert_never`.)
 
 ---
 
 ## 5. Output unwrap (the "output is already on the stream" insight)
 
-`run_stream_events` always ends with `AgentRunResultEvent(result=...)`; `result.output` is the **validated, typed** object. For a non-streamed reply the normalizer emits a single `SayEndEvent` from it. To **stream** a structured reply (stream-whales), the producer uses `run_stream().stream_output()` partial snapshots → `SayStartEvent` + `SayChunkEvent`(s) + `SayEndEvent` (verified: `run_stream_events` alone only exposes raw arg-deltas + the final object, *not* partial validated snapshots). Either way there is no separate output render path.
+`Agent.stream_events` drives `iter()` and ends with `AgentRunResultEvent(result=...)`; `result.output` is the **validated, typed** object. While the model node streams, it emits `OutputDeltaEvent[OutputT]` for each partial *validated* snapshot, then Pydantic AI's own `FinalResult[OutputT]` as the final value (verified: `run_stream_events` alone only exposes raw arg-deltas + the final object, *not* partial validated snapshots). There is no separate output render path and no octomate wrapper — `FinalResult` is emitted directly.
 
 ```mermaid
 sequenceDiagram
     participant M as Model
-    participant R as react run
-    participant N as octo_stream (normalizer)
+    participant SE as Agent.stream_events
     participant C as channel.consume
 
-    M->>R: streams structured output (partial → grows → final)
-    Note over N: raw output-tool arg-deltas skipped as noise
-    R-->>N: stream_output() partial validated snapshot
-    N-->>C: SayStartEvent, then SayChunkEvent(snapshot)…
-    R-->>N: AgentRunResultEvent(result.output = final)
-    N-->>C: SayEndEvent(final segments)
-    C->>C: create message → edit on each chunk → finalize on end
+    M->>SE: streams structured output (partial → grows → final)
+    Note over SE: raw output-tool arg-deltas skipped as noise
+    SE-->>C: OutputDeltaEvent(snapshot), then OutputDeltaEvent(snapshot)…
+    SE-->>C: FinalResult(output = final)
+    C->>C: create message → edit on each delta → finalize on FinalResult
 ```
 
-> **Caveat (decided):** `output` is terminal, so a streamed structured reply still completes at end-of-run, never interleaved with a mid-run question. For agents that need to talk *while* working, use **emission tools** (mid-run `Say` trios) instead; the two compose. `output_type` is kept only where a *code* caller (sub-agent/eval) consumes a typed result.
+> **Caveat (decided):** `output` is terminal, so a streamed structured reply still completes at end-of-run, never interleaved with a mid-run question. For agents that need to talk *while* working, use **emission tools** (mid-run capability events) instead; the two compose. `output_type` is kept only where a *code* caller (sub-agent/eval) consumes a typed result.
 
 ---
 
@@ -227,7 +252,7 @@ sequenceDiagram
     participant Run as react RunAgent
     participant RD as ResolveDeferred
     participant SUS as suspender (persist)
-    participant N as octo_stream
+    participant N as Agent.stream_events
     participant C as channel.consume
     participant FE as question feeler
     participant AM as action manager
@@ -258,18 +283,18 @@ Designed to **land incrementally and keep the system working** at every step: bu
 
 ```mermaid
 flowchart TD
-    U1["UoW-1<br/>OctoStreamEvent union + types"]
+    U1["UoW-1 ✅<br/>StreamEvents union + types"]
     U2["UoW-2<br/>outbound content vocab<br/>(MessageSegment + Chromo.squirt(content))"]
-    U3["UoW-3<br/>normalizer octo_stream()<br/>+ output unwrap"]
-    U4["UoW-4<br/>capability scaffold<br/>+ TodoListCapability (display, no round-trip)"]
+    U3["UoW-3 ✅<br/>Agent.stream_events<br/>+ output unwrap"]
+    U4["UoW-4 ✅<br/>todo subsystem<br/>(persisted toolset + granular events)"]
     U5["UoW-5<br/>channel.consume() dispatcher<br/>(delegates to existing feelers)"]
     U6["UoW-6<br/>feelers → per-event renderers (Default)"]
     U7["UoW-7<br/>per-platform renderers (Slack, then Lark)"]
     U8["UoW-8<br/>round-trip on-stream<br/>(suspender emits ActionRequestEvent)"]
     U9["UoW-9<br/>flip RunReception → consume()"]
-    U10["UoW-10<br/>flip RunTriage answer → Say"]
+    U10["UoW-10<br/>flip RunTriage answer → output events"]
     U11["UoW-11<br/>inkling output_type = list[content]"]
-    U12["UoW-12<br/>dev_ui consumes OctoStreamEvent"]
+    U12["UoW-12<br/>dev_ui consumes StreamEvents"]
     U13["UoW-13<br/>delete dead push paths"]
     U14["UoW-14 (future)<br/>emission tools (emit_image/card)"]
 
@@ -301,18 +326,18 @@ flowchart TD
 
 | UoW | Title | Depends on | Deliverable / acceptance | Risk |
 |---|---|---|---|---|
-| **1** | `OctoStreamEvent` union + variants | — | New `schemas/stream.py`; `DisplayEvent`/`ActionRequestEvent`/`Message`/`Todo`/`Ask`/`Approval`; embeds `DeferredQuestion`/`DeferredApproval`. **Pure types, zero wiring.** `assert_never` exhaustiveness test. | 🟢 low |
+| **1** ✅ | `StreamEvents` union + variants | — | **Landed** in [capabilities/events.py](../../octomate/capabilities/events.py): `OutputDeltaEvent`, `DisplayEvent`, granular `Todo*Event`s, `Ask`/`Approval`; embeds `QuestionRequest`/`ApprovalRequest`; generic `TypeAliasType` (no `TypeAdapter`). **Pure types, zero wiring.** | 🟢 low |
 | **2** | Outbound content vocabulary | — | Confirm `MessageSegment` covers Markdown/Image/Url/Card; add `Url` if missing. Evolve `Chromo.squirt` to render a `MessageSegment`/content (today it takes `AgentRunResult`). Inbound `sip` ↔ outbound `squirt` symmetry. | 🟡 med (touches every Chromo) |
-| **3** | Normalizer `octo_stream()` | 1 | `octo_stream(raw) -> AsyncIterator[OctoStreamEvent]`: text/thinking passthrough; drop output-tool noise; **`AgentRunResultEvent.output` → `SayEndEvent`**; `DeferredToolRequests` left for the suspender (UoW-8). Streamed structured output (trio via `stream_output`) lands with UoW-11. Unit-tested against synthetic event lists. | 🟢 low (pure fn) |
-| **4** | Capability scaffold + first display capability | 1, 3 | `EventEmittingCapability` pattern (tool + instructions + `wrap_run_event_stream`). Ship `TodoListCapability` (no round-trip). Test: TestModel run → `TodoListEvent` in normalized stream. | 🟢 low |
+| **3** ✅ | Normalizer `Agent.stream_events` | 1 | **Landed** in [capabilities/agent.py](../../octomate/capabilities/agent.py): an `Agent` subclass method (not a free `octo_stream()`) that drives `iter()` — text/thinking passthrough, drop output-tool noise, emit `OutputDeltaEvent[OutputT]` (partials) + `FinalResult[OutputT]` (final), apply each capability's `wrap_run_event_stream` per node; `DeferredToolRequests` left for the suspender (UoW-8). Tested via `TestModel`. | 🟢 low |
+| **4** ✅ | Persisted todo subsystem (first capabilities) | 1, 3 | **Landed**: Arcanus `todos` table + `TodoManager` (conversation-scoped, keyed on a short hex `ref`); a `pydantic-ai-todo`-style `TodoCapability` (8 tools incl. subtasks/dependencies) that persists and stashes **granular** todo events on `ToolReturn.metadata`; `Agent.stream_events` gains `conversation_id` and forwards capability events. Concrete capability, **no `EventEmittingCapability` base** (premature). Not yet wired into inkling or rendered (UoW-6/7/9). Tested: manager CRUD + `TestModel` create-path + wrap injection. | 🟡 med |
 | **5** | `channel.consume()` dispatcher | 1, 3 | `ChannelTentacle.consume(key, stream)`: `match` → renderer. Initially **delegates to existing feelers** so behaviour is unchanged. | 🟢 low |
 | **6** | Feelers → per-event renderers (Default) | 2, 5 | Refactor `DefaultEventStreamFeeler` into per-variant `render()` methods; reuse `render_stream_event_delta` ([output.py:265](../../octomate/tentacles/channel/feelers/output.py#L265)) + `TextStreamBatcher`. | 🟡 med |
 | **7** | Per-platform renderers | 6 | Slack renderers for `Message`/`Todo`/`Ask`/`Approval` (reuse `slack/feelers/*`), then Lark, then NapCat. **One PR per platform.** | 🟡 med |
 | **8** | Round-trip on-stream | 3, 7 | Suspender persists batch then **emits `ActionRequestEvent`** (instead of `present_actions`); consumer renders + `mark_action_presented`. Keep batch/resume intact. *(See §6 ordering note.)* | 🔴 high |
-| **9** | Flip `RunReception` to `consume()` | 3, 5, 6/7, 8 | Replace [triage.py:469](../../octomate/tentacles/agent/graph/triage.py#L469) `feelers.event_stream.present(...)` and the non-stream `markdown_from_output` branch with `await target_channel.consume(key, octo_stream(...))`. Parity-verify on one platform behind `config.stream`. | 🔴 high |
-| **10** | Flip `RunTriage` answer path | 9 | Replace [triage.py:325](../../octomate/tentacles/agent/graph/triage.py#L325) `feelers.markdown.present(...)` with a one-shot `Say` (start+end) through `consume()`. | 🟡 med |
-| **11** | Inkling rich output | 2, 3 | Set inkling `output_type = list[MessageSegment-content]` (or keep `str` + emission). Normalizer unwrap (UoW-3) fans it into messages. Realizes rich-media output. | 🟡 med |
-| **12** | dev_ui on `OctoStreamEvent` | 3 | Either an octomate `UIEventStream` subclass mapping `OctoStreamEvent`→Vercel chunks, or have dev_ui consume `octo_stream()`. Prevents stock Vercel adapter from dropping custom events. | 🟡 med |
+| **9** | Flip `RunReception` to `consume()` | 3, 5, 6/7, 8 | Replace [triage.py:469](../../octomate/tentacles/agent/graph/triage.py#L469) `feelers.event_stream.present(...)` and the non-stream `markdown_from_output` branch with `await target_channel.consume(key, agent.stream_events(...))`. Parity-verify on one platform behind `config.stream`. *(Wires `TodoCapability` into inkling here.)* | 🔴 high |
+| **10** | Flip `RunTriage` answer path | 9 | Replace [triage.py:325](../../octomate/tentacles/agent/graph/triage.py#L325) `feelers.markdown.present(...)` with the output events (`OutputDeltaEvent`/`FinalResult`) through `consume()`. | 🟡 med |
+| **11** | Inkling rich output | 2, 3 | Set inkling `output_type = list[MessageSegment-content]` (or keep `str` + emission). Output unwrap (UoW-3) fans it into messages. Realizes rich-media output. | 🟡 med |
+| **12** | dev_ui on `StreamEvents` | 3 | Either an octomate `UIEventStream` subclass mapping `StreamEvents[...]`→Vercel chunks, or have dev_ui consume `Agent.stream_events(...)`. Prevents stock Vercel adapter from dropping custom events. | 🟡 med |
 | **13** | Delete dead push paths | 9, 10, 8 | Remove `EventStreamFeeler`/`MarkdownStreamFeeler` push usage, inline `markdown_from_output` in triage, `present_actions` rendering. Triage = routing only. | 🟢 low (after flips) |
 | **14** | Emission tools (future) | 4, 11 | `emit_image`/`emit_card`/… capabilities for mid-run, interleaved media. | 🟢 low (additive) |
 | **15** | Outbound targeting | 5, 9 | Add `target` to outbound events; channel dispatcher routes to the chosen channel/conversation. Agent picks from a **system-resolved** target set (authz + cross-channel identity owned by the system). See §8 decision. | 🔴 high |
@@ -332,7 +357,7 @@ flowchart TD
 ## 8. Risks & open decisions
 
 - **🔴 Deferred ordering (UoW-8).** Batch-before-emit, present-then-mark. Recommended: give the suspender the stream handle so it emits `ActionRequestEvent`s carrying real `action_id`s; consumer calls `mark_action_presented` with the renderer's returned message id. Don't move persistence out of the action manager.
-- **🟡 Typed boundary for custom events.** `wrap_run_event_stream` is typed `AsyncIterable[AgentStreamEvent]`; yielding `OctoStreamEvent` members needs our own union and one cast at that single seam. Pydantic AI does **not** runtime-validate the stream, and `wrap_run_event_stream` does **not** touch message history — so this is safe (history is rebuilt from response *parts*, independent of the stream).
+- **🟡 Typed boundary for custom events.** `wrap_run_event_stream` is typed `AsyncIterable[AgentStreamEvent]`; yielding our display events (e.g. `Todo*Event`) needs one `cast` at that single seam (done in [capabilities/todos.py](../../octomate/capabilities/todos.py)). Pydantic AI does **not** runtime-validate the stream, and `wrap_run_event_stream` does **not** touch message history — so this is safe (history is rebuilt from response *parts*, independent of the stream).
 - **🟡 dev_ui drop.** Pydantic AI's stock `VercelAIEventStream.handle_event` ignores unknown events (`case _: pass`) — UoW-12 must add explicit handling or dev_ui silently loses custom events.
 - **🟡 Two graphs.** `react_graph` (producer, already streaming) vs `triage_graph` (router, currently coupling). Keep the split; triage hands streams to channels, it does not render. Preserve the **DeferredResolver + DeferredSuspender two-hook** design — do not merge them.
 - **Decision — emission vs output for media.** Default to **terminal-output unwrap** (UoW-11) for "produce the reply" turns; reach for **emission tools** (UoW-14) only when the agent must message mid-run. Gut-check with the team that "model tool-calls to send rich content" is acceptable (it is how Claude Code's own tools work).
@@ -344,17 +369,18 @@ flowchart TD
 
 | Area | File | Change |
 |---|---|---|
-| Producer | [react.py](../../octomate/tentacles/agent/graph/react.py) | unchanged (already streams); possibly expose stream handle to suspender for UoW-8 |
+| Producer | [capabilities/react.py](../../octomate/capabilities/react.py) ✅ | moved here from `tentacles/agent/graph/react.py`; unchanged behaviour (already streams); possibly expose stream handle to suspender for UoW-8 |
 | Router | [triage.py](../../octomate/tentacles/agent/graph/triage.py) | remove `feelers.*.present` pushes (UoW-9/10); route stream to `channel.consume` |
-| Suspender | [suspender.py](../../octomate/tentacles/agent/graph/suspender.py) | persist + emit `ActionRequestEvent` instead of `present_actions` (UoW-8) |
-| Stream types | `schemas/stream.py` *(new)* | `OctoStreamEvent` union + variants (UoW-1) |
-| Normalizer | `tentacles/agent/stream.py` *(new)* | `octo_stream()` + output unwrap (UoW-3) |
+| Suspender | [suspender.py](../../octomate/tentacles/agent/graph/suspender.py) | persist + emit `ActionRequestEvent` instead of `present_actions` (UoW-8); `DeferredResolver`/`DeferredSuspender` protocols moved to [capabilities/deferred.py](../../octomate/capabilities/deferred.py) ✅ (`graph/resolver.py` deleted) |
+| Stream types | [capabilities/events.py](../../octomate/capabilities/events.py) ✅ | `StreamEvents` union + variants (UoW-1); was the planned `schemas/stream.py` |
+| Normalizer | [capabilities/agent.py](../../octomate/capabilities/agent.py) ✅ | `Agent.stream_events` + output unwrap + capability wrap (UoW-3); was the planned free `tentacles/agent/stream.py` |
 | Consumer | [channel/base.py](../../octomate/tentacles/channel/base.py) | `consume()` dispatcher; drop feeler-as-consumer (UoW-5) |
 | Renderers | [feelers/output.py](../../octomate/tentacles/channel/feelers/output.py), `slack/feelers/*`, `lark/feelers/*` | per-event `render()` (UoW-6/7) |
 | Content | [schemas/segments.py](../../octomate/schemas/segments.py), [channel/base.py](../../octomate/tentacles/channel/base.py) Chromo | outbound vocab + `squirt(content)` (UoW-2) |
-| Actions | [schemas/deferred.py](../../octomate/schemas/deferred.py) | reuse `DeferredQuestion`/`DeferredApproval` in events (UoW-1/8) |
-| Web | [web/dev_ui/adapter.py](../../octomate/web/dev_ui/adapter.py) | consume `OctoStreamEvent` (UoW-12) |
-| Capabilities | `tentacles/agent/inkling/*` *(new caps module)* | `EventEmittingCapability` + concrete caps (UoW-4/14) |
+| Todo persistence | [models/todos.py](../../octomate/models/todos.py), [schemas/todos.py](../../octomate/schemas/todos.py), [managers/todos.py](../../octomate/managers/todos.py) ✅ | conversation-scoped `todos` table + `TodoManager` (UoW-4) + alembic migration |
+| Actions | [schemas/deferred.py](../../octomate/schemas/deferred.py) | reuse `QuestionRequest`/`ApprovalRequest` in events (UoW-1/8) |
+| Web | [web/dev_ui/adapter.py](../../octomate/web/dev_ui/adapter.py) | consume `StreamEvents` (UoW-12) |
+| Capabilities | [capabilities/todos.py](../../octomate/capabilities/todos.py) ✅ | `TodoCapability` (UoW-4); future `emit_image`/`emit_card` (UoW-14) |
 
 ### Pydantic AI 1.93.0 facts this plan relies on
 
