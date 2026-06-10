@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing_extensions import NotRequired, TypedDict
 
 import pytest
-from pydantic_ai import AgentRunResult
+from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -34,7 +34,7 @@ from octomate.schemas.segments import (
     MessageSegment,
     TextSegment,
 )
-from octomate.capabilities.events import ResultTextDeltaEvent
+from octomate.capabilities.events import ResultTextDeltaEvent, StreamEvents
 from octomate.tentacles.channel.base import (
     ChannelOutput,
     ChannelTentacle,
@@ -310,6 +310,36 @@ async def test_markdown_stream_feeler_present_output_sends_final(
     # The Default stream feeler has no streaming transport, so it warns and sends
     # the reply as a single message.
     assert "no streaming transport" in caplog.text
+
+
+async def test_consume_renders_answer_and_drains_stream(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+    drained = False
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        nonlocal drained
+        # A non-output passthrough event hits the deferred catch-all branch.
+        yield PartStartEvent(index=0, part=TextPart(content="thinking"))
+        yield ResultTextDeltaEvent(delta="strea")
+        yield FinalResult[ChannelOutput](output="stream me")
+        # Reached only if consume() drains the whole stream past FinalResult.
+        drained = True
+
+    message_id = await channel.consume(key, events())
+
+    assert message_id is not None
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "stream me"
+    assert drained
 
 
 async def test_markdown_feeler_uses_normal_adapter(

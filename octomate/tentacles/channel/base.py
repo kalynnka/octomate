@@ -10,15 +10,30 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeAlias, TypeVar
 
 import anyio
 import logfire
+from pydantic_ai import AgentRunResultEvent
+from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils import uuid7
 
+from octomate.capabilities.events import (
+    ApprovalRequestEvent,
+    AskQuestionEvent,
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+    StreamEvents,
+    TodoCompletedEvent,
+    TodoCreatedEvent,
+    TodoDeletedEvent,
+    TodoStatusChangedEvent,
+    TodoUpdatedEvent,
+)
 from octomate.config import ChannelConfig
 from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ConversationKey, UserProfile
@@ -208,6 +223,43 @@ class ChannelTentacle(
             await self.octomate.kick(UserMessageSignal([event]))
         except Exception:
             logger.exception("Channel %s: error in ingest", self.id)
+
+    async def consume(
+        self,
+        key: ConversationKey,
+        stream: AsyncIterator[
+            StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+        ],
+    ) -> IMMessageID | None:
+        """Drive a typed run stream to the channel's feelers.
+
+        The answer (text deltas / segments / final value) is rendered by the
+        markdown-stream feeler's typewriter; the rest of the stream is drained and
+        dispatched here. Draining is mandatory — abandoning the stream mid-run tears
+        down the agent task group from the wrong task.
+        """
+
+        async def reply_events() -> AsyncIterator[
+            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[ChannelOutput]
+        ]:
+            async for event in stream:
+                match event:
+                    case ResultTextDeltaEvent() | ResultSegmentEvent() | FinalResult():
+                        yield event
+                    case (
+                        TodoCreatedEvent()
+                        | TodoUpdatedEvent()
+                        | TodoStatusChangedEvent()
+                        | TodoCompletedEvent()
+                        | TodoDeletedEvent()
+                    ):
+                        pass  # todo cards
+                    case AskQuestionEvent() | ApprovalRequestEvent():
+                        pass  # on-stream round-trip (suspender handles these today)
+                    case _:
+                        pass  # thinking/tool timeline (AgentStreamEvent passthrough)
+
+        return await self.feelers.markdown_stream.present_output(key, reply_events())
 
     async def start_sub_thread(
         self,
