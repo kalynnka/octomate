@@ -25,6 +25,8 @@ from pydantic_ai.messages import (
     OutputToolResultEvent,
     PartDeltaEvent,
     PartStartEvent,
+    TextPart,
+    TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
 )
@@ -255,6 +257,8 @@ class ChannelTentacle(
         timeline = await self.feelers.timeline.open(key)
         skipped_tools: set[str] = set()
         failed = False
+        answered = False
+        final_output: ChannelOutput = None
         async for event in stream:
             if failed:
                 continue  # keep draining the stream even after a render failure
@@ -264,6 +268,12 @@ class ChannelTentacle(
                         await timeline.thinking_started(content or "")
                     case PartDeltaEvent(delta=ThinkingPartDelta(content_delta=delta)):
                         await timeline.thinking_delta(delta or "")
+                    case PartStartEvent(part=TextPart(content=content)):
+                        answered = True
+                        await timeline.answer_delta(content or "")
+                    case PartDeltaEvent(delta=TextPartDelta(content_delta=delta)):
+                        answered = answered or bool(delta)
+                        await timeline.answer_delta(delta or "")
                     case FunctionToolCallEvent() | OutputToolCallEvent():
                         if should_skip_plan_tool(event.part.tool_name):
                             if event.part.tool_call_id:
@@ -280,8 +290,10 @@ class ChannelTentacle(
                         else:
                             await timeline.tool_finished(event)
                     case ResultTextDeltaEvent():
+                        answered = True
                         await timeline.answer_delta(event.delta)
                     case ResultSegmentEvent():
+                        answered = True
                         await timeline.answer_delta(str(event.segment))
                     case (
                         TodoCreatedEvent()
@@ -310,13 +322,19 @@ class ChannelTentacle(
                                 await self.octomate.deferred_actions.mark_action_presented(
                                     action.id, message_ids.get(action.id)
                                 )
+                    case AgentRunResultEvent():
+                        final_output = event.result.output  # for the fallback below
                     case _:
-                        pass  # FinalResult / PartEnd / AgentRunResultEvent / passthrough
+                        pass  # FinalResult / PartEnd / passthrough
             except Exception:
                 logger.warning(
                     "Channel %s: timeline render failed", self.id, exc_info=True
                 )
                 failed = True
+        if not failed and not answered and isinstance(final_output, str) and final_output:
+            # The reply never streamed as text (e.g. a non-streamed final output);
+            # render it once so the turn isn't left blank.
+            await timeline.answer_delta(final_output)
         return await timeline.finalize()
 
     async def start_sub_thread(

@@ -220,6 +220,18 @@ class FakeChannel:
         self.sent.append((key, [markdown]))
         return None
 
+    async def consume(
+        self,
+        key: ConversationKey,
+        stream: AsyncIterator[FakeStreamEvent],
+    ) -> str | None:
+        outputs: list[str] = []
+        async for event in stream:
+            if isinstance(event, AgentRunResultEvent):
+                outputs.append(str(event.result.output))
+        self.stream_sent.append((key, outputs))
+        return "event-message"
+
     async def start_sub_thread(
         self,
         key: ConversationKey,
@@ -248,26 +260,14 @@ class RecordingMarkdownFeeler:
         return "markdown-message"
 
 
-@dataclass
-class RecordingEventStreamFeeler:
-    calls: list[tuple[ConversationKey, str]] = field(default_factory=list)
+class DroppingChannel(FakeChannel):
+    """A channel whose consumer abandons the reception stream without producing a
+    result (exercises the fail-fast guard)."""
 
-    async def present(
+    async def consume(
         self,
         key: ConversationKey,
-        events: AsyncIterator[FakeStreamEvent],
-    ) -> str | None:
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                self.calls.append((key, str(event.result.output)))
-        return "event-message"
-
-
-class DroppingEventStreamFeeler:
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[FakeStreamEvent],
+        stream: AsyncIterator[FakeStreamEvent],
     ) -> str | None:
         return None
 
@@ -706,7 +706,7 @@ async def test_triage_resume_does_not_leak_deferred_results_into_reception() -> 
     assert agent.stream_deferred == [None]
 
 
-async def test_triage_graph_uses_event_stream_feeler_for_reception() -> None:
+async def test_triage_graph_consumes_reception_stream() -> None:
     key = _key()
     agent = FakeAgent(
         TriageDecision(
@@ -720,8 +720,6 @@ async def test_triage_graph_uses_event_stream_feeler_for_reception() -> None:
     conversations = FakeConversationManager()
     im = FakeChannel()
     ops = FakeChannel()
-    event_feeler = RecordingEventStreamFeeler()
-    ops.feelers.event_stream = event_feeler
 
     result = (
         await triage_graph.run(
@@ -737,11 +735,13 @@ async def test_triage_graph_uses_event_stream_feeler_for_reception() -> None:
 
     assert result.result is not None
     assert result.result.output == "done"
-    assert len(event_feeler.calls) == 1
-    call_key, output = event_feeler.calls[0]
+    # Reception streamed through the target channel's consumer, not markdown.
+    assert len(ops.stream_sent) == 1
+    call_key, outputs = ops.stream_sent[0]
     assert call_key.thread_id == "hint-thread"
-    assert output == "done"
-    assert ops.stream_sent == []
+    assert outputs == ["done"]
+    assert ops.sent == []
+    assert im.stream_sent == []
 
 
 async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
@@ -757,8 +757,7 @@ async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
     )
     conversations = FakeConversationManager()
     im = FakeChannel()
-    ops = FakeChannel()
-    ops.feelers.event_stream = DroppingEventStreamFeeler()
+    ops = DroppingChannel()
 
     with pytest.raises(RuntimeError, match="completed without a result"):
         await triage_graph.run(

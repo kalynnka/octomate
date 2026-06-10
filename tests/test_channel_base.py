@@ -374,6 +374,52 @@ async def test_consume_renders_answer_and_drains_stream(
     assert drained
 
 
+async def test_consume_renders_raw_text_answer(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        # The react graph streams the reply as raw text parts (no normalizer).
+        yield PartStartEvent(index=0, part=TextPart(content="raw "))
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="answer"))
+        yield AgentRunResultEvent(AgentRunResult("raw answer"))
+
+    await channel.consume(key, events())
+
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "raw answer"
+
+
+async def test_consume_falls_back_to_final_output_when_no_text_streamed(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        # No streamed answer text — only the terminal result carries the reply.
+        yield AgentRunResultEvent(AgentRunResult("just the final"))
+
+    await channel.consume(key, events())
+
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "just the final"
+
+
 async def test_consume_renders_and_marks_action_batch(
     channel: FakeChannelTentacle,
 ) -> None:

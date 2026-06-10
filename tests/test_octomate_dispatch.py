@@ -261,6 +261,18 @@ class FakeChannel:
         self.sent.append((key, [markdown]))
         return None
 
+    async def consume(
+        self,
+        key: ConversationKey,
+        stream: AsyncIterator[FakeStreamEvent],
+    ) -> str | None:
+        outputs: list[str] = []
+        async for event in stream:
+            if isinstance(event, AgentRunResultEvent):
+                outputs.append(str(event.result.output))
+        self.stream_sent.append((key, outputs))
+        return "event-message"
+
     async def start_sub_thread(
         self,
         key: ConversationKey,
