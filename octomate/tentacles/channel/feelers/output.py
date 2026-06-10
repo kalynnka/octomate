@@ -39,7 +39,11 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_core import to_json
 from typing_extensions import TypeVar
 
-from octomate.capabilities.events import ResultSegmentEvent, ResultTextDeltaEvent
+from octomate.capabilities.events import (
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+    TodoEvent,
+)
 from octomate.schemas.conversation import ConversationKey
 
 if TYPE_CHECKING:
@@ -486,6 +490,30 @@ class EventStreamFeeler(Protocol[OutputContraT]):
     ) -> IMMessageID | None: ...
 
 
+class TimelineFeeler(Protocol):
+    """A per-run renderer the channel consumer drives event-by-event.
+
+    `Feelers.timeline` holds one unopened instance; `ChannelTentacle.consume`
+    calls `open(key)` to get a fresh per-run timeline, drives it with a method per
+    typed stream event, then `finalize()`s it (which returns the platform message
+    id of the rendered reply). Platform formatting/drawing lives in the
+    implementation.
+    """
+
+    async def open(self, key: ConversationKey) -> TimelineFeeler: ...
+    async def thinking_started(self, text: str) -> None: ...
+    async def thinking_delta(self, text: str) -> None: ...
+    async def tool_started(
+        self, event: FunctionToolCallEvent | OutputToolCallEvent
+    ) -> None: ...
+    async def tool_finished(
+        self, event: FunctionToolResultEvent | OutputToolResultEvent
+    ) -> None: ...
+    async def answer_delta(self, text: str) -> None: ...
+    async def todo(self, event: TodoEvent) -> None: ...
+    async def finalize(self) -> IMMessageID | None: ...
+
+
 async def final_stream_result(
     events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputT]],
 ) -> AgentRunResult[OutputT] | None:
@@ -547,6 +575,60 @@ class DefaultMarkdownFeeler(Generic[RawT, MessageT]):
             ink=self.ink,
             chromo=self.chromo,
             key=key,
+            markdown=markdown,
+        )
+
+
+class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
+    """Answer-only `Timeline` for platforms with no streaming transport (NapCat).
+
+    The unopened instance (``key=None``) is the `Feelers.timeline` member;
+    `open(key)` returns a fresh per-run timeline. Thinking/tool/todo are dropped;
+    the reply text is accumulated and sent as a single message on `finalize()`,
+    with a warning that streaming was unavailable.
+    """
+
+    def __init__(
+        self,
+        *,
+        ink: Ink[MessageT],
+        chromo: Chromo[RawT, MessageT],
+        key: ConversationKey | None = None,
+    ) -> None:
+        self.ink = ink
+        self.chromo = chromo
+        self.key = key
+        self.parts: list[str] = []
+
+    async def open(self, key: ConversationKey) -> DefaultTimelineFeeler[RawT, MessageT]:
+        return DefaultTimelineFeeler(ink=self.ink, chromo=self.chromo, key=key)
+
+    async def thinking_started(self, text: str) -> None: ...
+    async def thinking_delta(self, text: str) -> None: ...
+    async def tool_started(
+        self, event: FunctionToolCallEvent | OutputToolCallEvent
+    ) -> None: ...
+    async def tool_finished(
+        self, event: FunctionToolResultEvent | OutputToolResultEvent
+    ) -> None: ...
+    async def todo(self, event: TodoEvent) -> None: ...
+
+    async def answer_delta(self, text: str) -> None:
+        self.parts.append(text)
+
+    async def finalize(self) -> IMMessageID | None:
+        markdown = "".join(self.parts)
+        if self.key is None or not markdown:
+            return None
+        logger.warning(
+            "Channel %s: timeline has no streaming transport; "
+            "sending the reply as a single message",
+            self.key.channel_tentacle_id,
+        )
+        return await present_markdown(
+            ink=self.ink,
+            chromo=self.chromo,
+            key=self.key,
             markdown=markdown,
         )
 

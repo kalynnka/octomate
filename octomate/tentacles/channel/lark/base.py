@@ -23,22 +23,23 @@ from octomate.tentacles.channel.base import (
     ThreadStrategy,
 )
 from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.feelers.output import DefaultTimelineFeeler
 from octomate.tentacles.channel.lark.chromo import LarkChromo
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.feelers.approvals import (
     LarkApprovalFeeler,
     approval_resolution_card_data,
 )
+from octomate.tentacles.channel.lark.feelers.output import (
+    LarkEventStreamFeeler,
+    LarkMarkdownFeeler,
+    LarkMarkdownStreamFeeler,
+)
 from octomate.tentacles.channel.lark.feelers.questions import (
     LarkAskQuestionFeeler,
     ask_question_card_data,
     collect_answer,
     submitted_card_data,
-)
-from octomate.tentacles.channel.lark.feelers.output import (
-    LarkEventStreamFeeler,
-    LarkMarkdownFeeler,
-    LarkMarkdownStreamFeeler,
 )
 from octomate.tentacles.channel.lark.ink import LarkInk
 from octomate.tentacles.channel.lark.schema import (
@@ -124,6 +125,8 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 markdown_feeler=markdown_feeler,
                 channel_id=self.id,
             ),
+            # Rich Lark timeline renderer is a follow-up; Default (answer-only) until then.
+            timeline=DefaultTimelineFeeler(ink=self.ink, chromo=self.chromo),
             approvals=LarkApprovalFeeler(self.ink),
             ask_questions=LarkAskQuestionFeeler(self.ink),
         )

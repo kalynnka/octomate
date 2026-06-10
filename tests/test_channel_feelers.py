@@ -261,6 +261,27 @@ class NoopMarkdownStreamFeeler:
     ) -> str | None:
         return None
 
+    async def present_output(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[object],
+    ) -> str | None:
+        return None
+
+
+class NoopTimeline:
+    async def open(self, key: ConversationKey) -> NoopTimeline:
+        return self
+
+    async def thinking_started(self, text: str) -> None: ...
+    async def thinking_delta(self, text: str) -> None: ...
+    async def tool_started(self, event: object) -> None: ...
+    async def tool_finished(self, event: object) -> None: ...
+    async def answer_delta(self, text: str) -> None: ...
+    async def todo(self, event: object) -> None: ...
+    async def finalize(self) -> str | None:
+        return None
+
 
 class NoopEventStreamFeeler:
     async def present(
@@ -367,6 +388,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         markdown=RecordingMarkdownFeeler(),
         markdown_stream=NoopMarkdownStreamFeeler(),
         event_stream=NoopEventStreamFeeler(),
+        timeline=NoopTimeline(),
         approvals=approvals,
         ask_questions=ask_questions,
     ).present_actions(

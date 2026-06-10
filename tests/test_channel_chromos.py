@@ -5,8 +5,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from types import SimpleNamespace
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import Generic, TypeVar, cast
 
 import httpx
@@ -33,44 +32,46 @@ from slack_sdk.web.async_client import AsyncWebClient
 from websockets.asyncio.client import ClientConnection
 
 from octomate import Octomate
+from octomate.capabilities.events import ResultTextDeltaEvent, StreamEvents
 from octomate.config import (
     LarkChannelConfig,
     LarkStreamConfig,
     SlackChannelConfig,
     SlackStreamConfig,
 )
-from octomate.capabilities.events import ResultTextDeltaEvent
 from octomate.schemas.conversation import Conversation, ConversationKey, UserProfile
 from octomate.schemas.segments import AtSegment, ImageSegment, ReplySegment, TextSegment
 from octomate.tentacles.channel.base import ChannelOutput, DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
+    DefaultTimelineFeeler,
     MarkdownChunker,
 )
 from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
 from octomate.tentacles.channel.lark.feelers.approvals import LarkApprovalFeeler
-from octomate.tentacles.channel.lark.feelers.questions import LarkAskQuestionFeeler
 from octomate.tentacles.channel.lark.feelers.output import (
     LARK_STREAM_ELEMENT_ID,
     LarkEventStreamFeeler,
     LarkMarkdownFeeler,
     LarkMarkdownStreamFeeler,
 )
+from octomate.tentacles.channel.lark.feelers.questions import LarkAskQuestionFeeler
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
 from octomate.tentacles.channel.napcat import NapcatChromo, NapcatInk, NapcatTentacle
 from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
 from octomate.tentacles.channel.slack import SlackChromo, SlackInk, SlackTentacle
 from octomate.tentacles.channel.slack.feelers.approvals import SlackApprovalFeeler
+from octomate.tentacles.channel.slack.feelers.output import (
+    SlackEventStreamFeeler,
+    SlackMarkdownStreamFeeler,
+    SlackTimelineFeeler,
+)
 from octomate.tentacles.channel.slack.feelers.questions import SlackAskQuestionFeeler
 from octomate.tentacles.channel.slack.ink import (
     SLACK_MARKDOWN_TEXT_LIMIT,
 )
 from octomate.tentacles.channel.slack.ink import SlackInk as SlackInkType
-from octomate.tentacles.channel.slack.feelers.output import (
-    SlackEventStreamFeeler,
-    SlackMarkdownStreamFeeler,
-)
 from octomate.tentacles.channel.slack.schema import SlackOutboundMessage
 from octomate.types.json import JsonObject
 
@@ -562,9 +563,7 @@ def test_lark_chromo_renders_markdown_as_interactive_message() -> None:
     content = _loaded_json_object(messages[0].content)
     body = content["body"]
     assert isinstance(body, dict)
-    assert body["elements"] == [
-        {"tag": "markdown", "content": "hello **lark**"}
-    ]
+    assert body["elements"] == [{"tag": "markdown", "content": "hello **lark**"}]
 
 
 def test_lark_chromo_builds_streaming_card_payload() -> None:
@@ -777,6 +776,7 @@ def _compose_lark_feelers(channel: LarkTentacle) -> None:
             markdown_feeler=markdown_feeler,
             channel_id=channel.id,
         ),
+        timeline=DefaultTimelineFeeler(ink=ink, chromo=chromo),
         approvals=LarkApprovalFeeler(ink),
         ask_questions=LarkAskQuestionFeeler(ink),
     )
@@ -1375,6 +1375,7 @@ def _compose_slack_feelers(channel: SlackTentacle) -> None:
             markdown_feeler=markdown_feeler,
             channel_id=channel.id,
         ),
+        timeline=SlackTimelineFeeler(ink=ink, chromo=chromo),
         approvals=SlackApprovalFeeler(ink),
         ask_questions=SlackAskQuestionFeeler(ink),
     )
@@ -1553,6 +1554,52 @@ async def test_slack_event_stream_feeler_emits_task_updates() -> None:
     assert "{" not in details
     assert ink.appends == ["done"]
     assert all(chunk.title != "Answer" for chunk in task_chunks)
+
+
+async def test_slack_consume_renders_timeline_per_event() -> None:
+    ink = FakeSlackInk()
+    channel = _slack_channel(ink)
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        # ask_questions is skipped from the timeline (call + result).
+        yield FunctionToolCallEvent(
+            ToolCallPart(tool_name="ask_questions", args={}, tool_call_id="call_q")
+        )
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="ask_questions", content={"ok": True}, tool_call_id="call_q"
+            )
+        )
+        yield FunctionToolCallEvent(
+            ToolCallPart(tool_name="lookup", args={"query": "x"}, tool_call_id="call_1")
+        )
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="lookup", content={"ok": True}, tool_call_id="call_1"
+            )
+        )
+        # The answer streams as typed deltas, not raw text parts.
+        yield ResultTextDeltaEvent(delta="done")
+        yield FinalResult[ChannelOutput](output="done")
+        yield AgentRunResultEvent(AgentRunResult("done"))
+
+    message_id = await channel.consume(_slack_key(), events())
+
+    assert message_id == "stream-ts"
+    assert ink.streams and ink.streams[0]["task_display_mode"] == "timeline"
+    chunks = [chunk for group in ink.stream_chunks for chunk in group]
+    task_chunks = [chunk for chunk in chunks if isinstance(chunk, TaskUpdateChunk)]
+    # ask_questions skipped; thinking + lookup rendered.
+    assert {chunk.id for chunk in task_chunks} == {"thinking-1", "call_1"}
+    assert any(chunk.title == "Thinking" for chunk in task_chunks)
+    assert any(chunk.title == "Lookup" for chunk in task_chunks)
+    details = "\n\n".join(chunk.details or "" for chunk in task_chunks)
+    assert "ask_questions" not in details
+    assert ink.appends == ["done"]
+    assert ink.stops == ["stream-ts"] or ink.stops == [None]
     assert ink.statuses[0] == "Thinking…"
     assert "Lookup…" in ink.statuses
     assert "Writing the response…" in ink.statuses
@@ -1592,7 +1639,9 @@ async def test_slack_event_stream_feeler_skips_ask_questions_tool_events() -> No
                 tool_call_id="call_question",
             )
         )
-        yield AgentRunResultEvent(AgentRunResult(DeferredToolRequests(calls=[question_call])))
+        yield AgentRunResultEvent(
+            AgentRunResult(DeferredToolRequests(calls=[question_call]))
+        )
 
     await feeler.present(_slack_key(), events())
 
@@ -1685,7 +1734,9 @@ async def test_slack_event_stream_feeler_direct_answer_uses_markdown_stream() ->
     assert ink.statuses == ["Thinking…", "Writing the response…", ""]
 
 
-async def test_slack_event_stream_feeler_appends_final_output_without_text_events() -> None:
+async def test_slack_event_stream_feeler_appends_final_output_without_text_events() -> (
+    None
+):
     ink = FakeSlackInk()
     feeler = SlackEventStreamFeeler(
         ink=cast(SlackInkType, ink),

@@ -159,6 +159,13 @@ class RecordingMarkdownStreamFeeler:
         self.stream_sent.append((key, outputs))
         return "stream-message"
 
+    async def present_output(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[object],
+    ) -> str | None:
+        return None
+
 
 class NoopMarkdownStreamFeeler:
     async def present(
@@ -166,6 +173,20 @@ class NoopMarkdownStreamFeeler:
         key: ConversationKey,
         stream: StreamedRunResult[None, str],
     ) -> str | None:
+        return None
+
+
+class NoopTimeline:
+    async def open(self, key: ConversationKey) -> NoopTimeline:
+        return self
+
+    async def thinking_started(self, text: str) -> None: ...
+    async def thinking_delta(self, text: str) -> None: ...
+    async def tool_started(self, event: object) -> None: ...
+    async def tool_finished(self, event: object) -> None: ...
+    async def answer_delta(self, text: str) -> None: ...
+    async def todo(self, event: object) -> None: ...
+    async def finalize(self) -> str | None:
         return None
 
 
@@ -221,6 +242,7 @@ class FakeChannel:
                 if self.config.stream.enabled
                 else NoopEventStreamFeeler()
             ),
+            timeline=NoopTimeline(),
             approvals=PlainTextApprovalFeeler(self),
             ask_questions=PlainTextAskQuestionFeeler(self),
         )

@@ -314,6 +314,7 @@ async def test_markdown_stream_feeler_present_output_sends_final(
 
 async def test_consume_renders_answer_and_drains_stream(
     channel: FakeChannelTentacle,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     key = ConversationKey(
         channel_tentacle_id="chan1",
@@ -327,18 +328,25 @@ async def test_consume_renders_answer_and_drains_stream(
         AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
     ):
         nonlocal drained
-        # A non-output passthrough event hits the deferred catch-all branch.
-        yield PartStartEvent(index=0, part=TextPart(content="thinking"))
-        yield ResultTextDeltaEvent(delta="strea")
+        # Thinking + tool passthrough exercise the dispatch; the Default timeline
+        # (no streaming transport) drops them and only accumulates the answer text.
+        yield PartStartEvent(index=0, part=ThinkingPart(content="hmm"))
+        yield FunctionToolCallEvent(
+            part=ToolCallPart(tool_name="search", args={"q": "x"}, tool_call_id="t1")
+        )
+        yield ResultTextDeltaEvent(delta="stream ")
+        yield ResultTextDeltaEvent(delta="me")
         yield FinalResult[ChannelOutput](output="stream me")
         # Reached only if consume() drains the whole stream past FinalResult.
         drained = True
 
-    message_id = await channel.consume(key, events())
+    with caplog.at_level("WARNING"):
+        message_id = await channel.consume(key, events())
 
     assert message_id is not None
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "stream me"
+    assert "no streaming transport" in caplog.text
     assert drained
 
 

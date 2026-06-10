@@ -18,7 +18,16 @@ from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeAlias, TypeVar
 import anyio
 import logfire
 from pydantic_ai import AgentRunResultEvent
-from pydantic_ai.result import FinalResult
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    OutputToolCallEvent,
+    OutputToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    ThinkingPart,
+    ThinkingPartDelta,
+)
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils import uuid7
 
@@ -49,7 +58,9 @@ from octomate.tentacles.channel.feelers.output import (
     DefaultEventStreamFeeler,
     DefaultMarkdownFeeler,
     DefaultMarkdownStreamFeeler,
+    DefaultTimelineFeeler,
     IMMessageID,
+    should_skip_plan_tool,
 )
 from octomate.utils import guess_image_ext
 
@@ -169,6 +180,10 @@ class ChannelTentacle(
                 ink=self.ink,
                 chromo=self.chromo,
             ),
+            timeline=DefaultTimelineFeeler[RawT, MessageT](
+                ink=self.ink,
+                chromo=self.chromo,
+            ),
             approvals=PlainTextApprovalFeeler(markdown_feeler),
             ask_questions=PlainTextAskQuestionFeeler(markdown_feeler),
         )
@@ -231,21 +246,44 @@ class ChannelTentacle(
             StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
         ],
     ) -> IMMessageID | None:
-        """Drive a typed run stream to the channel's feelers.
+        """Drive a typed run stream to the channel's timeline renderer.
 
-        The answer (text deltas / segments / final value) is rendered by the
-        markdown-stream feeler's typewriter; the rest of the stream is drained and
-        dispatched here. Draining is mandatory — abandoning the stream mid-run tears
-        down the agent task group from the wrong task.
+        Owns the loop and the single event→render dispatch (the platform-agnostic
+        narrowing that each feeler used to duplicate); the per-platform `Timeline`
+        does the drawing. Draining the whole stream is mandatory — abandoning it
+        mid-run tears down the agent task group from the wrong task.
         """
-
-        async def reply_events() -> AsyncIterator[
-            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[ChannelOutput]
-        ]:
-            async for event in stream:
+        timeline = await self.feelers.timeline.open(key)
+        skipped_tools: set[str] = set()
+        failed = False
+        async for event in stream:
+            if failed:
+                continue  # keep draining the stream even after a render failure
+            try:
                 match event:
-                    case ResultTextDeltaEvent() | ResultSegmentEvent() | FinalResult():
-                        yield event
+                    case PartStartEvent(part=ThinkingPart(content=content)):
+                        await timeline.thinking_started(content or "")
+                    case PartDeltaEvent(delta=ThinkingPartDelta(content_delta=delta)):
+                        await timeline.thinking_delta(delta or "")
+                    case FunctionToolCallEvent() | OutputToolCallEvent():
+                        if should_skip_plan_tool(event.part.tool_name):
+                            if event.part.tool_call_id:
+                                skipped_tools.add(event.part.tool_call_id)
+                        else:
+                            await timeline.tool_started(event)
+                    case FunctionToolResultEvent() | OutputToolResultEvent():
+                        part = event.part
+                        tool_call_id = getattr(part, "tool_call_id", None)
+                        if should_skip_plan_tool(part.tool_name or "") or (
+                            tool_call_id is not None and tool_call_id in skipped_tools
+                        ):
+                            skipped_tools.discard(tool_call_id or "")
+                        else:
+                            await timeline.tool_finished(event)
+                    case ResultTextDeltaEvent():
+                        await timeline.answer_delta(event.delta)
+                    case ResultSegmentEvent():
+                        await timeline.answer_delta(str(event.segment))
                     case (
                         TodoCreatedEvent()
                         | TodoUpdatedEvent()
@@ -253,13 +291,17 @@ class ChannelTentacle(
                         | TodoCompletedEvent()
                         | TodoDeletedEvent()
                     ):
-                        pass  # todo cards
+                        await timeline.todo(event)
                     case AskQuestionEvent() | ApprovalRequestEvent():
-                        pass  # on-stream round-trip (suspender handles these today)
+                        pass  # on-stream round-trip lands with the suspender (UoW-8)
                     case _:
-                        pass  # thinking/tool timeline (AgentStreamEvent passthrough)
-
-        return await self.feelers.markdown_stream.present_output(key, reply_events())
+                        pass  # FinalResult / PartEnd / AgentRunResultEvent / passthrough
+            except Exception:
+                logger.warning(
+                    "Channel %s: timeline render failed", self.id, exc_info=True
+                )
+                failed = True
+        return await timeline.finalize()
 
     async def start_sub_thread(
         self,

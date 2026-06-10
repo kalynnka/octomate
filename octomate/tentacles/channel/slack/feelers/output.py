@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
@@ -24,7 +24,11 @@ from pydantic_ai.result import FinalResult, StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
 from slack_sdk.models.messages.chunk import PlanUpdateChunk, TaskUpdateChunk
 
-from octomate.capabilities.events import ResultSegmentEvent, ResultTextDeltaEvent
+from octomate.capabilities.events import (
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+    TodoEvent,
+)
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.feelers.output import (
@@ -32,6 +36,7 @@ from octomate.tentacles.channel.feelers.output import (
     JsonValue,
     MarkdownFeeler,
     TextStreamBatcher,
+    TimelineFeeler,
     format_fields,
     humanize_tool_name,
     markdown_from_output,
@@ -236,11 +241,90 @@ class SlackMarkdownStreamFeeler(Generic[OutputT]):
         key: ConversationKey,
         stream: StreamedRunResult[None, OutputT],
     ) -> IMMessageID | None:
-        return await self._present_snapshots(
-            key,
-            stream.stream_output(debounce_by=None),
-            final_output=stream.get_output,
+        context = self.chromo.thread_context(key)
+        channel = key.chat_id or key.user_id
+        output: OutputT | None = None
+        message_id: IMMessageID | None = None
+        batcher = TextStreamBatcher(
+            flush_interval=self.stream_config.flush_interval,
+            min_chars=self.stream_config.min_chars,
+            max_chars=self.stream_config.max_chars,
+            fold_threshold=self.stream_config.fold_threshold,
         )
+
+        try:
+            slack_stream = await self.ink.start_stream(
+                channel,
+                context.thread_ts,
+                recipient_user_id=context.recipient_user_id,
+                recipient_team_id=context.recipient_team_id,
+            )
+            try:
+                appended = False
+                previous_markdown = ""
+                try:
+                    async for snapshot in stream.stream_output(debounce_by=None):
+                        output = snapshot
+                        markdown = markdown_from_output(snapshot)
+                        if markdown is None:
+                            continue
+                        delta_text = (
+                            markdown[len(previous_markdown) :]
+                            if markdown.startswith(previous_markdown)
+                            else markdown
+                        )
+                        previous_markdown = markdown
+                        for update in batcher.push_text(delta_text):
+                            logger.debug(
+                                "Channel %s: streaming Slack delta chars=%d sequence=%d",
+                                self.channel_id,
+                                len(update.delta_text),
+                                update.sequence,
+                            )
+                            appended = True
+                            await self.ink.append_stream(
+                                slack_stream,
+                                update.delta_text,
+                            )
+                except Exception:
+                    output = await stream.get_output()
+
+                for update in batcher.finish_all():
+                    logger.debug(
+                        "Channel %s: streaming Slack delta chars=%d sequence=%d",
+                        self.channel_id,
+                        len(update.delta_text),
+                        update.sequence,
+                    )
+                    appended = True
+                    await self.ink.append_stream(slack_stream, update.delta_text)
+
+                markdown = markdown_from_output(output)
+                if markdown is not None and not appended:
+                    for message in self.chromo.outbound_markdown(markdown):
+                        await self.ink.append_stream(
+                            slack_stream,
+                            message.markdown_text or message.text,
+                        )
+                message_id = await self.ink.stop_stream(slack_stream)
+            except Exception:
+                try:
+                    message_id = await self.ink.stop_stream(slack_stream)
+                finally:
+                    raise
+        except Exception:
+            logger.warning(
+                "Channel %s: failed to stream Slack response",
+                self.channel_id,
+                exc_info=True,
+            )
+            if output is not None:
+                markdown = markdown_from_output(output)
+                if markdown is not None:
+                    await self.markdown_feeler.present(key, markdown)
+            elif fallback_text := batcher.full_text():
+                await self.markdown_feeler.present(key, fallback_text)
+        return message_id
 
     async def present_output(
         self,
@@ -287,99 +371,6 @@ class SlackMarkdownStreamFeeler(Generic[OutputT]):
                     await self.ink.append_stream(slack_stream, update.delta_text)
 
                 markdown = markdown_from_output(output) if output is not None else None
-                if markdown is not None and not appended:
-                    for message in self.chromo.outbound_markdown(markdown):
-                        await self.ink.append_stream(
-                            slack_stream,
-                            message.markdown_text or message.text,
-                        )
-                message_id = await self.ink.stop_stream(slack_stream)
-            except Exception:
-                try:
-                    message_id = await self.ink.stop_stream(slack_stream)
-                finally:
-                    raise
-        except Exception:
-            logger.warning(
-                "Channel %s: failed to stream Slack response",
-                self.channel_id,
-                exc_info=True,
-            )
-            if output is not None:
-                markdown = markdown_from_output(output)
-                if markdown is not None:
-                    await self.markdown_feeler.present(key, markdown)
-            elif fallback_text := batcher.full_text():
-                await self.markdown_feeler.present(key, fallback_text)
-        return message_id
-
-    async def _present_snapshots(
-        self,
-        key: ConversationKey,
-        snapshots: AsyncIterator[OutputT],
-        *,
-        final_output: Callable[[], Awaitable[OutputT | None]] | None,
-    ) -> IMMessageID | None:
-        context = self.chromo.thread_context(key)
-        channel = key.chat_id or key.user_id
-        output: OutputT | None = None
-        message_id: IMMessageID | None = None
-        batcher = TextStreamBatcher(
-            flush_interval=self.stream_config.flush_interval,
-            min_chars=self.stream_config.min_chars,
-            max_chars=self.stream_config.max_chars,
-            fold_threshold=self.stream_config.fold_threshold,
-        )
-
-        try:
-            slack_stream = await self.ink.start_stream(
-                channel,
-                context.thread_ts,
-                recipient_user_id=context.recipient_user_id,
-                recipient_team_id=context.recipient_team_id,
-            )
-            try:
-                appended = False
-                previous_markdown = ""
-                try:
-                    async for snapshot in snapshots:
-                        output = snapshot
-                        markdown = markdown_from_output(snapshot)
-                        if markdown is None:
-                            continue
-                        delta_text = (
-                            markdown[len(previous_markdown) :]
-                            if markdown.startswith(previous_markdown)
-                            else markdown
-                        )
-                        previous_markdown = markdown
-                        for update in batcher.push_text(delta_text):
-                            logger.debug(
-                                "Channel %s: streaming Slack delta chars=%d sequence=%d",
-                                self.channel_id,
-                                len(update.delta_text),
-                                update.sequence,
-                            )
-                            appended = True
-                            await self.ink.append_stream(
-                                slack_stream,
-                                update.delta_text,
-                            )
-                except Exception:
-                    if final_output is not None:
-                        output = await final_output()
-
-                for update in batcher.finish_all():
-                    logger.debug(
-                        "Channel %s: streaming Slack delta chars=%d sequence=%d",
-                        self.channel_id,
-                        len(update.delta_text),
-                        update.sequence,
-                    )
-                    appended = True
-                    await self.ink.append_stream(slack_stream, update.delta_text)
-
-                markdown = markdown_from_output(output)
                 if markdown is not None and not appended:
                     for message in self.chromo.outbound_markdown(markdown):
                         await self.ink.append_stream(
@@ -559,3 +550,96 @@ def format_tool_result(part: ToolReturnPart | RetryPromptPart) -> str:
     if not value:
         return "_No result_"
     return format_fields(value)
+
+
+class SlackTimelineFeeler(TimelineFeeler):
+    """Renders a run as a Slack `timeline` stream (thinking blocks + tool tasks +
+    inline answer), driven event-by-event by `ChannelTentacle.consume`.
+
+    The unopened instance (``state=None``) is the `Feelers.timeline` member;
+    `open(key)` starts the `timeline` stream and returns a fresh per-run timeline
+    wrapping a `SlackTimelineState` machine."""
+
+    def __init__(
+        self,
+        *,
+        ink: SlackInk,
+        chromo: SlackChromo,
+        state: SlackTimelineState | None = None,
+        stream: Any = None,
+    ) -> None:
+        self.ink = ink
+        self.chromo = chromo
+        self.state = state
+        self.stream = stream
+
+    async def open(self, key: ConversationKey) -> SlackTimelineFeeler:
+        context = self.chromo.thread_context(key)
+        channel = key.chat_id or key.user_id
+        stream = await self.ink.start_stream(
+            channel,
+            context.thread_ts,
+            recipient_user_id=context.recipient_user_id,
+            recipient_team_id=context.recipient_team_id,
+            task_display_mode="timeline",
+        )
+        state = SlackTimelineState(
+            ink=self.ink,
+            stream=stream,
+            channel=channel,
+            thread_ts=context.thread_ts,
+            answer_batcher=TextStreamBatcher(flush_interval=0, min_chars=0),
+        )
+        await state.set_status(STATUS_THINKING)
+        return SlackTimelineFeeler(
+            ink=self.ink, chromo=self.chromo, state=state, stream=stream
+        )
+
+    @property
+    def opened(self) -> SlackTimelineState:
+        assert self.state is not None, "SlackTimelineFeeler.open() must be called first"
+        return self.state
+
+    async def thinking_started(self, text: str) -> None:
+        await self.opened.start_thinking(text)
+
+    async def thinking_delta(self, text: str) -> None:
+        await self.opened.append_thinking_delta(text)
+
+    async def tool_started(
+        self, event: FunctionToolCallEvent | OutputToolCallEvent
+    ) -> None:
+        tool = event.part
+        title = humanize_tool_name(tool.tool_name)
+        if isinstance(event, OutputToolCallEvent):
+            title = f"Output: {title}"
+        args = tool.args_as_dict()
+        await self.opened.start_tool(
+            tool.tool_call_id,
+            title,
+            format_tool_arguments(tool.tool_name, args) if args else None,
+            status_hint(tool.tool_name),
+        )
+
+    async def tool_finished(
+        self, event: FunctionToolResultEvent | OutputToolResultEvent
+    ) -> None:
+        part = event.part
+        await self.opened.finish_tool(
+            getattr(part, "tool_call_id", None),
+            part.tool_name or "output",
+            format_tool_result(part),
+            error=isinstance(part, RetryPromptPart),
+        )
+
+    async def answer_delta(self, text: str) -> None:
+        await self.opened.append_answer_text(text)
+
+    async def todo(self, event: TodoEvent) -> None: ...  # follow-up: todo timeline tasks
+
+    async def finalize(self) -> IMMessageID | None:
+        await self.opened.complete_pending()
+        await self.opened.finish_answer()
+        message_id = await self.ink.stop_stream(self.stream)
+        await self.opened.set_status("")
+        return message_id
