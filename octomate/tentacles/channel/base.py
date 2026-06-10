@@ -2,8 +2,7 @@
 
 Type variables:
 - RawT: native inbound platform payload accepted by a channel and its chromo.
-- MessageT: native outbound platform message payload sent by an ink.
-- ResultT: agent-side result output rendered by ``Chromo.squirt``.
+- MessageT: native outbound platform message payload built and sent by an ink.
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeAlias, TypeVar
 
 import anyio
 import logfire
-from pydantic_ai import AgentRunResult
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils import uuid7
 
@@ -48,7 +46,6 @@ logger = logging.getLogger(__name__)
 ThreadStrategy = Literal["main_only", "flat_thread", "nested_thread"]
 ChannelOutput: TypeAlias = str | DeferredToolRequests | None
 MessageT = TypeVar("MessageT")
-ResultT = TypeVar("ResultT")
 RawT = TypeVar("RawT")
 
 
@@ -64,22 +61,23 @@ class Chromo(
     ABC,
     Generic[RawT, MessageT],
 ):
-    """Two-way translation between platform-native wire data and core schemas."""
+    """Two-way translation between platform-native wire data and core schemas.
+
+    `sip` converts inbound payloads to a `MessageEvent`; `outbound_markdown`
+    converts an outbound markdown reply to platform-native message payloads.
+    Translation only — the actual send/receive is the ink's job.
+    """
 
     @abstractmethod
     async def sip(self, raw: RawT) -> MessageEvent | None: ...
 
     @abstractmethod
-    def squirt(
-        self,
-        result: AgentRunResult[ResultT],
-        *,
-        reply_to: str | None = None,
-    ) -> list[MessageT]: ...
+    def outbound_markdown(self, text: str) -> list[MessageT]:
+        """Encode markdown text as platform-native outbound message payloads."""
 
 
 class Ink(ABC, Generic[MessageT]):
-    """Base class for platform API clients."""
+    """Base class for platform API clients (transport only)."""
 
     @abstractmethod
     def inspect(self) -> UserProfile: ...
@@ -145,25 +143,14 @@ class ChannelTentacle(
         self.chromo = chromo
         self.agent_id = config.agent_id
         self.user_profiles: dict[str, UserProfile] = {}
-        markdown_feeler = DefaultMarkdownFeeler(
-            ink=self.ink,
-            chromo=self.chromo,
-        )
+        markdown_feeler = DefaultMarkdownFeeler(ink=self.ink, chromo=self.chromo)
         self.feelers = Feelers[ChannelOutput](
             markdown=markdown_feeler,
-            markdown_stream=DefaultMarkdownStreamFeeler[
-                RawT,
-                MessageT,
-                ChannelOutput,
-            ](
+            markdown_stream=DefaultMarkdownStreamFeeler[RawT, MessageT, ChannelOutput](
                 ink=self.ink,
                 chromo=self.chromo,
             ),
-            event_stream=DefaultEventStreamFeeler[
-                RawT,
-                MessageT,
-                ChannelOutput,
-            ](
+            event_stream=DefaultEventStreamFeeler[RawT, MessageT, ChannelOutput](
                 ink=self.ink,
                 chromo=self.chromo,
             ),

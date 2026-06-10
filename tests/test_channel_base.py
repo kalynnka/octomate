@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing_extensions import NotRequired, TypedDict
 
 import pytest
 from pydantic_ai import AgentRunResult
+from pydantic_ai.result import FinalResult
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -32,12 +34,13 @@ from octomate.schemas.segments import (
     MessageSegment,
     TextSegment,
 )
+from octomate.capabilities.events import ResultTextDeltaEvent
 from octomate.tentacles.channel.base import (
+    ChannelOutput,
     ChannelTentacle,
     Chromo,
     DownloadedImage,
     Ink,
-    ResultT,
 )
 from octomate.tentacles.channel.feelers.output import (
     StreamBlock,
@@ -112,7 +115,6 @@ class FakeInk(Ink[NativeMessage]):
 @dataclass
 class FakeChromo(Chromo[RawMessage, NativeMessage]):
     sip_calls: list[RawMessage] = field(default_factory=list)
-    squirt_calls: list[str | None] = field(default_factory=list)
 
     async def sip(self, raw: RawMessage) -> MessageEvent | None:
         self.sip_calls.append(raw)
@@ -125,14 +127,8 @@ class FakeChromo(Chromo[RawMessage, NativeMessage]):
             segments=raw.get("segments", []),
         )
 
-    def squirt(
-        self,
-        result: AgentRunResult[ResultT],
-        *,
-        reply_to: str | None = None,
-    ) -> list[NativeMessage]:
-        self.squirt_calls.append(reply_to)
-        return [{"text": str(result.output)}]
+    def outbound_markdown(self, text: str) -> list[NativeMessage]:
+        return [{"text": text}] if text else []
 
 
 class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
@@ -287,6 +283,33 @@ async def test_markdown_stream_feeler_default_sends_final_result(
     assert "does not support streaming responses" not in caplog.text
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "stream me"
+
+
+async def test_markdown_stream_feeler_present_output_sends_final(
+    channel: FakeChannelTentacle,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+
+    async def events() -> (
+        AsyncIterator[ResultTextDeltaEvent | FinalResult[ChannelOutput]]
+    ):
+        yield ResultTextDeltaEvent(delta="strea")
+        yield FinalResult[ChannelOutput](output="stream me")
+
+    with caplog.at_level("WARNING"):
+        await channel.feelers.markdown_stream.present_output(key, events())
+
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "stream me"
+    # The Default stream feeler has no streaming transport, so it warns and sends
+    # the reply as a single message.
+    assert "no streaming transport" in caplog.text
 
 
 async def test_markdown_feeler_uses_normal_adapter(

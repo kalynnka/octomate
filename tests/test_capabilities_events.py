@@ -1,4 +1,5 @@
-"""Catalog types: OutputDelta (generic) + display/action events.
+"""Catalog types: the two output-streaming events (TextDelta/Segment) + display/
+action events.
 
 The final output is Pydantic AI's own `FinalResult`, not a wrapper of ours, so it
 has no catalog test here. Pure type-level tests — no agent run, no channels.
@@ -9,13 +10,15 @@ from __future__ import annotations
 from uuid_utils.compat import uuid7
 
 from octomate.schemas.deferred import ApprovalRequest
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.todos import Todo
 from octomate.capabilities.events import (
     ActionRequestEvent,
     ApprovalRequestEvent,
     AskQuestionEvent,
     DisplayEvent,
-    OutputDeltaEvent,
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,
@@ -34,10 +37,17 @@ def _todo(**overrides: object) -> Todo:
     )
 
 
-def test_output_delta_carries_the_typed_output() -> None:
-    event = OutputDeltaEvent(output=[1, 2])
-    assert event.event_kind == "output_delta"
-    assert event.output == [1, 2]
+def test_text_delta_carries_an_additive_chunk() -> None:
+    event = ResultTextDeltaEvent(delta="world!")
+    assert event.event_kind == "result_text_delta"
+    assert event.delta == "world!"
+
+
+def test_segment_event_carries_one_completed_segment() -> None:
+    segment = TextSegment(data={"text": "hello"})
+    event = ResultSegmentEvent(segment=segment)
+    assert event.event_kind == "result_segment"
+    assert event.segment is segment
 
 
 def test_todo_events_are_display_events_carrying_the_todo() -> None:
@@ -71,7 +81,8 @@ def test_action_events_are_grouped_and_carry_correlation_ids() -> None:
 
 def test_event_kinds_are_unique() -> None:
     kinds = [
-        OutputDeltaEvent(output=None).event_kind,
+        ResultTextDeltaEvent(delta="").event_kind,
+        ResultSegmentEvent(segment=TextSegment(data={"text": "x"})).event_kind,
         TodoCreatedEvent(todo=_todo()).event_kind,
         TodoUpdatedEvent(todo=_todo()).event_kind,
         TodoStatusChangedEvent(todo=_todo()).event_kind,

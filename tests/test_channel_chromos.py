@@ -11,7 +11,7 @@ from typing import Generic, TypeVar, cast
 
 import httpx
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
-from pydantic import BaseModel, SecretStr, TypeAdapter
+from pydantic import SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     AgentStreamEvent,
@@ -25,7 +25,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
-from pydantic_ai.result import StreamedRunResult
+from pydantic_ai.result import FinalResult, StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
 from slack_sdk.models.messages.chunk import Chunk, PlanUpdateChunk, TaskUpdateChunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
@@ -39,9 +39,10 @@ from octomate.config import (
     SlackChannelConfig,
     SlackStreamConfig,
 )
+from octomate.capabilities.events import ResultTextDeltaEvent
 from octomate.schemas.conversation import Conversation, ConversationKey, UserProfile
 from octomate.schemas.segments import AtSegment, ImageSegment, ReplySegment, TextSegment
-from octomate.tentacles.channel.base import DownloadedImage, Ink
+from octomate.tentacles.channel.base import ChannelOutput, DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
@@ -130,6 +131,18 @@ def streamed_result(
 
 def _loaded_json_object(value: str) -> JsonObject:
     return JsonObjectAdapter.validate_json(value)
+
+
+async def _output_events(
+    *deltas: str,
+) -> AsyncIterator[ResultTextDeltaEvent | FinalResult[ChannelOutput]]:
+    """A streamed text reply as the typed output event stream a feeler's
+    `present_output` consumes: each chunk as an additive `ResultTextDeltaEvent` (Pydantic
+    AI's typewriter), then the joined whole as `FinalResult`."""
+    for delta in deltas:
+        yield ResultTextDeltaEvent(delta=delta)
+    if deltas:
+        yield FinalResult[ChannelOutput](output="".join(deltas))
 
 
 def test_channel_thread_strategies_are_declared() -> None:
@@ -229,59 +242,16 @@ async def test_napcat_chromo_ignores_responses_and_non_message_events() -> None:
     assert notice is None
 
 
-async def test_napcat_chromo_renders_final_text_without_markdown() -> None:
+def test_napcat_chromo_renders_markdown_as_plain_text() -> None:
     chromo = NapcatChromo()
 
-    messages = chromo.squirt(AgentRunResult("hello **napcat**"))
+    messages = chromo.outbound_markdown("hello **napcat**")
 
     assert messages == [
         NapcatOutboundMessage(
             segments=[{"type": "text", "data": {"text": "hello napcat"}}]
         )
     ]
-
-
-async def test_napcat_chromo_renders_structured_output_as_plain_json() -> None:
-    class Answer(BaseModel):
-        ok: bool
-        count: int
-
-    chromo = NapcatChromo()
-
-    messages = chromo.squirt(AgentRunResult(Answer(ok=True, count=2)))
-    data = messages[0].segments[0]["data"]
-    assert isinstance(data, dict)
-    text = data["text"]
-    assert isinstance(text, str)
-
-    assert text.startswith("{")
-    assert '"ok": true' in text
-    assert '"count": 2' in text
-
-
-async def test_napcat_chromo_renders_deferred_requests_as_plain_text() -> None:
-    chromo = NapcatChromo()
-
-    messages = chromo.squirt(
-        AgentRunResult(
-            DeferredToolRequests(
-                calls=[
-                    ToolCallPart(
-                        tool_name="ask_user",
-                        args={"question": "Continue?"},
-                        tool_call_id="call_1",
-                    )
-                ]
-            )
-        )
-    )
-    data = messages[0].segments[0]["data"]
-    assert isinstance(data, dict)
-    text = data["text"]
-    assert isinstance(text, str)
-
-    assert "ask_user needs input" in text
-    assert "call_1" in text
 
 
 class FakeNapcatResponse:
@@ -582,10 +552,10 @@ def test_lark_chromo_treats_invalid_or_non_object_content_as_text() -> None:
         assert text_segment.data["text"] == content_json
 
 
-async def test_lark_chromo_renders_final_text_as_interactive_markdown() -> None:
+def test_lark_chromo_renders_markdown_as_interactive_message() -> None:
     chromo = LarkChromo()
 
-    messages = chromo.squirt(AgentRunResult("hello **lark**"))
+    messages = chromo.outbound_markdown("hello **lark**")
 
     assert len(messages) == 1
     assert messages[0].msg_type == "interactive"
@@ -597,7 +567,7 @@ async def test_lark_chromo_renders_final_text_as_interactive_markdown() -> None:
     ]
 
 
-async def test_lark_chromo_builds_streaming_card_payload() -> None:
+def test_lark_chromo_builds_streaming_card_payload() -> None:
     chromo = LarkChromo()
 
     data = _loaded_json_object(chromo.make_stream_card_data("hello"))
@@ -628,59 +598,6 @@ async def test_lark_chromo_builds_streaming_card_payload() -> None:
         "type": "card",
         "data": {"card_id": "card-1"},
     }
-
-
-async def test_lark_chromo_renders_structured_output_as_json_card() -> None:
-    class Answer(BaseModel):
-        ok: bool
-        count: int
-
-    chromo = LarkChromo()
-
-    messages = chromo.squirt(AgentRunResult(Answer(ok=True, count=2)))
-    content = _loaded_json_object(messages[0].content)
-    body = content["body"]
-    assert isinstance(body, dict)
-    elements = body["elements"]
-    assert isinstance(elements, list)
-    first_element = elements[0]
-    assert isinstance(first_element, dict)
-    markdown = first_element["content"]
-    assert isinstance(markdown, str)
-
-    assert markdown.startswith("```json")
-    assert '"ok": true' in markdown
-    assert '"count": 2' in markdown
-
-
-async def test_lark_chromo_renders_deferred_requests_as_markdown_card() -> None:
-    chromo = LarkChromo()
-
-    messages = chromo.squirt(
-        AgentRunResult(
-            DeferredToolRequests(
-                calls=[
-                    ToolCallPart(
-                        tool_name="ask_user",
-                        args={"question": "Continue?"},
-                        tool_call_id="call_1",
-                    )
-                ]
-            )
-        )
-    )
-    content = _loaded_json_object(messages[0].content)
-    body = content["body"]
-    assert isinstance(body, dict)
-    elements = body["elements"]
-    assert isinstance(elements, list)
-    first_element = elements[0]
-    assert isinstance(first_element, dict)
-    markdown = first_element["content"]
-    assert isinstance(markdown, str)
-
-    assert "`ask_user` needs input" in markdown
-    assert "`call_1`" in markdown
 
 
 class FakeLarkInk(LarkInk):
@@ -966,6 +883,32 @@ async def test_lark_tentacle_streams_batched_card_updates_in_reply_thread() -> N
         )
     ]
     assert ink.created == []
+
+
+async def test_lark_present_output_renders_card_updates() -> None:
+    ink = FakeLarkInk()
+    channel = _lark_channel(ink)
+    _enable_lark_stream(channel, interval=0.2)
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="group",
+        chat_id="oc_group",
+        user_id="ou_user",
+        thread_id="om_parent",
+    )
+
+    await channel.feelers.markdown_stream.present_output(
+        key,
+        _output_events("he", "llo"),
+    )
+
+    assert ink.stream_updates == [
+        (
+            LarkStreamCard(card_id="card-1", element_id="octomate_answer"),
+            "hello",
+            1,
+        )
+    ]
     assert ink.replies == []
 
 
@@ -1076,11 +1019,10 @@ def _panel_body(panel: JsonObject) -> str:
 
 async def test_lark_event_stream_feeler_posts_one_card_per_event() -> None:
     ink = FakeLarkInk()
-    chromo = LarkChromo()
     feeler = LarkEventStreamFeeler(
         ink=ink,
         stream_config=LarkStreamConfig(flush_interval=0, min_chars=1),
-        markdown_feeler=LarkMarkdownFeeler(ink=ink, chromo=chromo),
+        markdown_feeler=LarkMarkdownFeeler(ink=ink, chromo=LarkChromo()),
         channel_id="lark",
     )
     key = ConversationKey(
@@ -1171,11 +1113,10 @@ async def test_lark_event_stream_feeler_posts_one_card_per_event() -> None:
 
 async def test_lark_event_stream_feeler_batches_answer_updates() -> None:
     ink = FakeLarkInk()
-    chromo = LarkChromo()
     feeler = LarkEventStreamFeeler(
         ink=ink,
         stream_config=LarkStreamConfig(flush_interval=100.0, min_chars=1000),
-        markdown_feeler=LarkMarkdownFeeler(ink=ink, chromo=chromo),
+        markdown_feeler=LarkMarkdownFeeler(ink=ink, chromo=LarkChromo()),
         channel_id="lark",
     )
     key = ConversationKey(
@@ -1250,7 +1191,7 @@ async def test_slack_chromo_decodes_mentions_and_images() -> None:
     ]
 
 
-async def test_slack_chromo_renders_final_text_result() -> None:
+def test_slack_chromo_renders_markdown_result() -> None:
     chromo = SlackChromo()
     markdown = (
         "# Hello Slack\n\n"
@@ -1258,51 +1199,12 @@ async def test_slack_chromo_renders_final_text_result() -> None:
         "| a | b |\n| - | - |\n| 1 | 2 |"
     )
 
-    messages = chromo.squirt(AgentRunResult(markdown))
+    messages = chromo.outbound_markdown(markdown)
 
     assert len(messages) == 1
     assert messages[0].text == markdown
     assert messages[0].markdown_text == markdown
     assert messages[0].blocks is None
-
-
-async def test_slack_chromo_renders_structured_output_as_json() -> None:
-    class Answer(BaseModel):
-        ok: bool
-        count: int
-
-    chromo = SlackChromo()
-
-    messages = chromo.squirt(AgentRunResult(Answer(ok=True, count=2)))
-
-    assert len(messages) == 1
-    assert messages[0].text.startswith("```json")
-    assert messages[0].markdown_text == messages[0].text
-    assert '"ok": true' in messages[0].text
-    assert '"count": 2' in messages[0].text
-
-
-async def test_slack_chromo_renders_deferred_requests_as_markdown() -> None:
-    chromo = SlackChromo()
-
-    messages = chromo.squirt(
-        AgentRunResult(
-            DeferredToolRequests(
-                calls=[
-                    ToolCallPart(
-                        tool_name="ask_user",
-                        args={"question": "Continue?"},
-                        tool_call_id="call_1",
-                    )
-                ]
-            )
-        )
-    )
-
-    assert len(messages) == 1
-    assert messages[0].markdown_text is not None
-    assert "`ask_user` needs input" in messages[0].markdown_text
-    assert "`call_1`" in messages[0].markdown_text
 
 
 @dataclass
@@ -1510,6 +1412,19 @@ async def test_slack_tentacle_streams_text_deltas_in_source_thread() -> None:
     assert ink.finals == []
 
 
+async def test_slack_present_output_renders_output_event_deltas() -> None:
+    ink = FakeSlackInk()
+    channel = _slack_channel(ink)
+
+    await channel.feelers.markdown_stream.present_output(
+        _slack_key(),
+        _output_events("# Hello\n", "**world**"),
+    )
+
+    assert ink.appends == ["# Hello\n", "**world**"]
+    assert ink.stops == [None]
+
+
 async def test_slack_tentacle_can_batch_stream_deltas_when_configured() -> None:
     ink = FakeSlackInk()
     channel = _slack_channel(ink)
@@ -1550,11 +1465,10 @@ async def test_slack_tentacle_stops_stream_on_deferred_result() -> None:
 
 async def test_slack_event_stream_feeler_emits_task_updates() -> None:
     ink = FakeSlackInk()
-    chromo = SlackChromo()
     feeler = SlackEventStreamFeeler(
         ink=cast(SlackInkType, ink),
-        chromo=chromo,
-        markdown_feeler=DefaultMarkdownFeeler(ink=ink, chromo=chromo),
+        chromo=SlackChromo(),
+        markdown_feeler=DefaultMarkdownFeeler(ink=ink, chromo=SlackChromo()),
         channel_id="slack",
     )
 

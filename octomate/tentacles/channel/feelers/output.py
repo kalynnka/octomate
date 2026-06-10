@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
@@ -13,7 +14,6 @@ from typing import (
     Literal,
     Protocol,
     TypeAlias,
-    TypeVar,
     cast,
 )
 
@@ -34,24 +34,30 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
     ToolReturnPart,
 )
-from pydantic_ai.result import StreamedRunResult
+from pydantic_ai.result import FinalResult, StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_core import to_json
+from typing_extensions import TypeVar
 
+from octomate.capabilities.events import ResultSegmentEvent, ResultTextDeltaEvent
 from octomate.schemas.conversation import ConversationKey
 
 if TYPE_CHECKING:
     from octomate.tentacles.channel.base import Chromo, Ink
 
+logger = logging.getLogger(__name__)
+
 IMMessageID: TypeAlias = str
 MessageT = TypeVar("MessageT")
-OutputT = TypeVar("OutputT", bound=JsonValue | DeferredToolRequests)
+RawT = TypeVar("RawT")
+OutputT = TypeVar(
+    "OutputT", bound=JsonValue | DeferredToolRequests, infer_variance=True
+)
 OutputContraT = TypeVar(
     "OutputContraT",
     bound=JsonValue | DeferredToolRequests,
     contravariant=True,
 )
-RawT = TypeVar("RawT")
 
 
 @dataclass(frozen=True)
@@ -419,7 +425,9 @@ def format_mapping_lines(
     return lines
 
 
-def format_list_lines(value: list[Any], *, indent: int = 0, bold: str = "*") -> list[str]:
+def format_list_lines(
+    value: list[Any], *, indent: int = 0, bold: str = "*"
+) -> list[str]:
     lines: list[str] = []
     pad = "   " * indent
     for index, item in enumerate(value, start=1):
@@ -450,13 +458,21 @@ class MarkdownFeeler(Protocol):
     ) -> IMMessageID | None: ...
 
 
-class MarkdownStreamFeeler(Protocol[OutputContraT]):
+class MarkdownStreamFeeler(Protocol[OutputT]):
     """Presents streamed markdown to IM and returns platform message metadata only."""
 
     async def present(
         self,
         key: ConversationKey,
-        stream: StreamedRunResult[None, OutputContraT],
+        stream: StreamedRunResult[None, OutputT],
+    ) -> IMMessageID | None: ...
+
+    async def present_output(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[
+            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[OutputT]
+        ],
     ) -> IMMessageID | None: ...
 
 
@@ -505,8 +521,7 @@ async def present_markdown(
         chat_type=chat_type,
         markdown_len=len(markdown),
     ) as span:
-        result = AgentRunResult(markdown)
-        for message in chromo.squirt(result, reply_to=reply_to):
+        for message in chromo.outbound_markdown(markdown):
             message_id = await ink.send_message(
                 chat_id,
                 chat_type,
@@ -519,12 +534,7 @@ async def present_markdown(
 
 
 class DefaultMarkdownFeeler(Generic[RawT, MessageT]):
-    def __init__(
-        self,
-        *,
-        ink: Ink[MessageT],
-        chromo: Chromo[RawT, MessageT],
-    ) -> None:
+    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
         self.ink = ink
         self.chromo = chromo
 
@@ -551,11 +561,61 @@ class DefaultMarkdownStreamFeeler(Generic[RawT, MessageT, OutputT]):
         key: ConversationKey,
         stream: StreamedRunResult[None, OutputT],
     ) -> IMMessageID | None:
-        outputs: list[OutputT] = []
-        async for output in stream.stream_output(debounce_by=None):
-            outputs.append(output)
-        final_output = outputs[-1] if outputs else await stream.get_output()
-        markdown = markdown_from_output(final_output)
+        return await self.present_final(
+            key,
+            stream.stream_output(debounce_by=None),
+            final_output=stream.get_output,
+        )
+
+    async def present_output(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[
+            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[OutputT]
+        ],
+    ) -> IMMessageID | None:
+        # No streaming Ink (NapCat): consume the stream and send one final message.
+        final_output: OutputT | None = None
+        parts: list[str] = []
+        async for event in events:
+            if isinstance(event, FinalResult):
+                final_output = event.output
+            elif isinstance(event, ResultTextDeltaEvent):
+                parts.append(event.delta)
+            else:
+                parts.append(str(event.segment))
+        markdown = (
+            markdown_from_output(final_output) if final_output is not None else None
+        )
+        if markdown is None and parts:
+            markdown = "".join(parts)
+        if markdown is not None:
+            logger.warning(
+                "Channel %s: stream feeler has no streaming transport; "
+                "sending the reply as a single message",
+                key.channel_tentacle_id,
+            )
+            return await present_markdown(
+                ink=self.ink,
+                chromo=self.chromo,
+                key=key,
+                markdown=markdown,
+            )
+        return None
+
+    async def present_final(
+        self,
+        key: ConversationKey,
+        snapshots: AsyncIterator[OutputT],
+        *,
+        final_output: Callable[[], Awaitable[OutputT | None]] | None,
+    ) -> IMMessageID | None:
+        last: OutputT | None = None
+        async for snapshot in snapshots:
+            last = snapshot
+        if last is None and final_output is not None:
+            last = await final_output()
+        markdown = markdown_from_output(last) if last is not None else None
         if markdown is not None:
             return await present_markdown(
                 ink=self.ink,

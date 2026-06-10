@@ -3,11 +3,13 @@
 One stream, with these event families:
 
 - **Pydantic AI passthrough** (`AgentStreamEvent`) — thinking + tool-call events.
-- **Output events** — the agent's reply, generic over the run's output type:
-  `OutputDeltaEvent[OutputT]` (partial, validated with `allow_partial=True`) while
-  the reply streams, then Pydantic AI's own `FinalResult[OutputT]` as the final
-  value — no wrapper of our own. Rendering the output (segments → IM message, rows
-  → table, …) is a *consumer* concern; the event just carries the typed value.
+- **Output events** — the agent's reply, in one of two modes mirroring Pydantic AI's
+  own streaming: `ResultTextDeltaEvent` (an additive text chunk — PAI's `content_delta`
+  typewriter) while a *text* reply streams, or `ResultSegmentEvent` (one completed
+  `MessageSegment`) as a *`list[MessageSegment]`* reply is partially validated. Both
+  precede Pydantic AI's own `FinalResult[OutputT]`, emitted as the final value — no
+  wrapper of our own. Rendering (typing the text, sending a segment) is a *consumer*
+  concern; the event just carries the typed value.
 - **Display events** (`DisplayEvent`) — fire-and-forget, e.g. the granular todo
   events (`TodoCreatedEvent`/`TodoUpdatedEvent`/`TodoStatusChangedEvent`/
   `TodoCompletedEvent`/`TodoDeletedEvent`), each carrying the affected `Todo`.
@@ -26,7 +28,7 @@ fits — that belongs with the consumer/transport layer when dev_ui adopts this.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Generic, Literal, TypeAlias, TypeVar
+from typing import Literal, TypeAlias, TypeVar
 
 from pydantic import BaseModel
 from pydantic_ai import AgentStreamEvent
@@ -34,17 +36,28 @@ from pydantic_ai.result import FinalResult
 from typing_extensions import TypeAliasType
 
 from octomate.schemas.deferred import ApprovalRequest, QuestionRequest
+from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
 
 OutputT = TypeVar("OutputT")
 
 
 @dataclass
-class OutputDeltaEvent(Generic[OutputT]):
-    """A partial, validated snapshot of the agent's output as it streams."""
+class ResultTextDeltaEvent:
+    """An additive text chunk of a streamed text reply — Pydantic AI's typewriter
+    (the model's `content_delta`), not a re-derived diff."""
 
-    output: OutputT
-    event_kind: Literal["output_delta"] = "output_delta"
+    delta: str
+    event_kind: Literal["result_text_delta"] = "result_text_delta"
+
+
+@dataclass
+class ResultSegmentEvent:
+    """One completed message segment of a `list[MessageSegment]` reply, emitted as
+    partial validation reveals it."""
+
+    segment: MessageSegment
+    event_kind: Literal["result_segment"] = "result_segment"
 
 
 class DisplayEvent(BaseModel):
@@ -114,7 +127,8 @@ class ApprovalRequestEvent(ActionRequestEvent):
 StreamEvents = TypeAliasType(
     "StreamEvents",
     AgentStreamEvent
-    | OutputDeltaEvent[OutputT]
+    | ResultTextDeltaEvent
+    | ResultSegmentEvent
     | FinalResult[OutputT]
     | TodoEvent
     | AskQuestionEvent

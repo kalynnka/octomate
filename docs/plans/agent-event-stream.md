@@ -8,10 +8,13 @@
 > normalize → consume → render) is unchanged; the names/paths below are corrected
 > in place, but the key deltas are:
 >
-> - **`Say` lifecycle trio → `OutputDeltaEvent[OutputT]` + Pydantic AI's own
->   `FinalResult[OutputT]`.** Streaming a structured reply surfaces partial validated
->   snapshots as `OutputDeltaEvent` then the final typed value as `FinalResult` (no
->   octomate wrapper). Rendering output → segments is a *consumer* concern.
+> - **`Say` lifecycle trio → two output-streaming events + `FinalResult`.** A streamed
+>   reply surfaces in whichever of Pydantic AI's two modes fits the output:
+>   `ResultTextDeltaEvent` (additive token typewriter, for `str` output) or
+>   `ResultSegmentEvent` (one completed `MessageSegment`, for `list[MessageSegment]`
+>   output), then Pydantic AI's own `FinalResult[OutputT]` as the terminal value (no
+>   octomate wrapper). Rendering is a *consumer* concern. *(Refined from the earlier
+>   cumulative `OutputDeltaEvent`.)*
 > - **`octo_stream()` (free fn) → `Agent.stream_events` (method)** on the `Agent`
 >   subclass. It also applies each capability's `wrap_run_event_stream` per node so
 >   capability-injected events flow (the manual `iter()` path otherwise bypasses it).
@@ -27,6 +30,14 @@
 >   **todo subsystem** (Arcanus `todos` table + `TodoManager`, the 8-tool
 >   `pydantic-ai-todo`-style toolset with subtasks/dependencies, and **granular** todo
 >   events). See the UoW-4 row.
+> - **`Chromo` = two-way *conversion* layer; `Ink` = transport-only.** `Chromo` does pure
+>   format translation both ways — `sip` (raw → `MessageEvent`/segments) and
+>   `outbound_markdown` (markdown → platform `MessageT`), plus the Lark stream-card builders
+>   and Slack `thread_context`. The old agent-coupled `squirt(AgentRunResult)` is gone.
+>   `Ink` keeps only the IM API (send / upload / download / stream primitives). Feelers
+>   own outbound *orchestration*: convert via `chromo`, send via `ink`. *(Earlier drafts
+>   swung to "`Chromo` inbound-only, builders on the feelers/`Ink`"; reverted — pure
+>   conversion is `Chromo`'s job, the API client is not.)*
 
 ---
 
@@ -284,11 +295,11 @@ Designed to **land incrementally and keep the system working** at every step: bu
 ```mermaid
 flowchart TD
     U1["UoW-1 ✅<br/>StreamEvents union + types"]
-    U2["UoW-2<br/>outbound content vocab<br/>(MessageSegment + Chromo.squirt(content))"]
+    U2["UoW-2<br/>outbound content vocab<br/>(MessageSegment; rendering → UoW-6)"]
     U3["UoW-3 ✅<br/>Agent.stream_events<br/>+ output unwrap"]
     U4["UoW-4 ✅<br/>todo subsystem<br/>(persisted toolset + granular events)"]
     U5["UoW-5<br/>channel.consume() dispatcher<br/>(delegates to existing feelers)"]
-    U6["UoW-6<br/>feelers → per-event renderers (Default)"]
+    U6["UoW-6 ~<br/>output renderer (present_output) ✅<br/>+ Chromo=conversion / Ink=API"]
     U7["UoW-7<br/>per-platform renderers (Slack, then Lark)"]
     U8["UoW-8<br/>round-trip on-stream<br/>(suspender emits ActionRequestEvent)"]
     U9["UoW-9<br/>flip RunReception → consume()"]
@@ -327,11 +338,11 @@ flowchart TD
 | UoW | Title | Depends on | Deliverable / acceptance | Risk |
 |---|---|---|---|---|
 | **1** ✅ | `StreamEvents` union + variants | — | **Landed** in [capabilities/events.py](../../octomate/capabilities/events.py): `OutputDeltaEvent`, `DisplayEvent`, granular `Todo*Event`s, `Ask`/`Approval`; embeds `QuestionRequest`/`ApprovalRequest`; generic `TypeAliasType` (no `TypeAdapter`). **Pure types, zero wiring.** | 🟢 low |
-| **2** | Outbound content vocabulary | — | Confirm `MessageSegment` covers Markdown/Image/Url/Card; add `Url` if missing. Evolve `Chromo.squirt` to render a `MessageSegment`/content (today it takes `AgentRunResult`). Inbound `sip` ↔ outbound `squirt` symmetry. | 🟡 med (touches every Chromo) |
+| **2** | Outbound content vocabulary | — | The outbound content type is `MessageSegment` ([schemas/segments.py](../../octomate/schemas/segments.py)) — already defined and bidirectional; covers Markdown/Image/Card (no `Url` — `MarkdownSegment` embeds `[t](url)`). **Rendering segments → platform payload is a feeler responsibility (UoW-6), not `Chromo`** (which stays inbound-only). No `Chromo.squirt` change; effectively folded into UoW-6. *(An earlier attempt put `squirt(list[MessageSegment])` on `Chromo` — reverted; see drift log.)* | 🟢 low |
 | **3** ✅ | Normalizer `Agent.stream_events` | 1 | **Landed** in [capabilities/agent.py](../../octomate/capabilities/agent.py): an `Agent` subclass method (not a free `octo_stream()`) that drives `iter()` — text/thinking passthrough, drop output-tool noise, emit `OutputDeltaEvent[OutputT]` (partials) + `FinalResult[OutputT]` (final), apply each capability's `wrap_run_event_stream` per node; `DeferredToolRequests` left for the suspender (UoW-8). Tested via `TestModel`. | 🟢 low |
 | **4** ✅ | Persisted todo subsystem (first capabilities) | 1, 3 | **Landed**: Arcanus `todos` table + `TodoManager` (conversation-scoped, keyed on a short hex `ref`); a `pydantic-ai-todo`-style `TodoCapability` (8 tools incl. subtasks/dependencies) that persists and stashes **granular** todo events on `ToolReturn.metadata`; `Agent.stream_events` gains `conversation_id` and forwards capability events. Concrete capability, **no `EventEmittingCapability` base** (premature). Not yet wired into inkling or rendered (UoW-6/7/9). Tested: manager CRUD + `TestModel` create-path + wrap injection. | 🟡 med |
 | **5** | `channel.consume()` dispatcher | 1, 3 | `ChannelTentacle.consume(key, stream)`: `match` → renderer. Initially **delegates to existing feelers** so behaviour is unchanged. | 🟢 low |
-| **6** | Feelers → per-event renderers (Default) | 2, 5 | Refactor `DefaultEventStreamFeeler` into per-variant `render()` methods; reuse `render_stream_event_delta` ([output.py:265](../../octomate/tentacles/channel/feelers/output.py#L265)) + `TextStreamBatcher`. | 🟡 med |
+| **6** ~ | Output renderer; **`Chromo`=conversion / `Ink`=API** | 2, 3 | **Landed (uncommitted→committed):** (a) `Feelers.markdown_stream.present_output(events)` on Default/Slack/Lark — drives each platform's streaming lifecycle off the typed stream: `ResultTextDeltaEvent`→`batcher.push_text`, `ResultSegmentEvent`→`str(segment)` push, `FinalResult` finalizes; Default (NapCat, no streaming `Ink`) sends one message + warns. (b) **`Chromo`=2-way conversion** — `sip` + `outbound_markdown` (replaces agent-coupled `squirt`), plus Lark `make_stream_card_*` + Slack `thread_context`; **`Ink`=transport-only**; feelers convert via `chromo`, send via `ink`. (c) Lark event feeler narrowing fixes. **Not yet live** — `present_output` has no production caller until UoW-5/9. **Deferred:** rich per-segment outbound composition (Image/Card upload, not just `str(segment)` placeholders) + segment-output typewriter land with UoW-11. | 🟡 med |
 | **7** | Per-platform renderers | 6 | Slack renderers for `Message`/`Todo`/`Ask`/`Approval` (reuse `slack/feelers/*`), then Lark, then NapCat. **One PR per platform.** | 🟡 med |
 | **8** | Round-trip on-stream | 3, 7 | Suspender persists batch then **emits `ActionRequestEvent`** (instead of `present_actions`); consumer renders + `mark_action_presented`. Keep batch/resume intact. *(See §6 ordering note.)* | 🔴 high |
 | **9** | Flip `RunReception` to `consume()` | 3, 5, 6/7, 8 | Replace [triage.py:469](../../octomate/tentacles/agent/graph/triage.py#L469) `feelers.event_stream.present(...)` and the non-stream `markdown_from_output` branch with `await target_channel.consume(key, agent.stream_events(...))`. Parity-verify on one platform behind `config.stream`. *(Wires `TodoCapability` into inkling here.)* | 🔴 high |
@@ -376,7 +387,7 @@ flowchart TD
 | Normalizer | [capabilities/agent.py](../../octomate/capabilities/agent.py) ✅ | `Agent.stream_events` + output unwrap + capability wrap (UoW-3); was the planned free `tentacles/agent/stream.py` |
 | Consumer | [channel/base.py](../../octomate/tentacles/channel/base.py) | `consume()` dispatcher; drop feeler-as-consumer (UoW-5) |
 | Renderers | [feelers/output.py](../../octomate/tentacles/channel/feelers/output.py), `slack/feelers/*`, `lark/feelers/*` | per-event `render()` (UoW-6/7) |
-| Content | [schemas/segments.py](../../octomate/schemas/segments.py), [channel/base.py](../../octomate/tentacles/channel/base.py) Chromo | outbound vocab + `squirt(content)` (UoW-2) |
+| Content | [schemas/segments.py](../../octomate/schemas/segments.py) | `MessageSegment` is the outbound content vocab (already defined); segment → `MessageT` rendering lives in the feelers (UoW-6), not `Chromo` |
 | Todo persistence | [models/todos.py](../../octomate/models/todos.py), [schemas/todos.py](../../octomate/schemas/todos.py), [managers/todos.py](../../octomate/managers/todos.py) ✅ | conversation-scoped `todos` table + `TodoManager` (UoW-4) + alembic migration |
 | Actions | [schemas/deferred.py](../../octomate/schemas/deferred.py) | reuse `QuestionRequest`/`ApprovalRequest` in events (UoW-1/8) |
 | Web | [web/dev_ui/adapter.py](../../octomate/web/dev_ui/adapter.py) | consume `StreamEvents` (UoW-12) |

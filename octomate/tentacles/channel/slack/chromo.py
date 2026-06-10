@@ -4,17 +4,6 @@ import json
 import logging
 import re
 import time
-from typing import TypeVar
-
-from pydantic_core import to_json
-from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
-from pydantic_ai.messages import (
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-)
-from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
@@ -35,7 +24,6 @@ from octomate.tentacles.channel.slack.schema import (
 )
 
 logger = logging.getLogger(__name__)
-OutputT = TypeVar("OutputT")
 
 AT_RE = re.compile(r"<@(U[A-Z0-9]+)>")
 
@@ -100,55 +88,11 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
             logger.warning("SlackChromo: failed to decode event", exc_info=True)
             return None
 
-    def squirt(
-        self,
-        result: AgentRunResult[OutputT],
-        *,
-        reply_to: str | None = None,
-    ) -> list[SlackOutboundMessage]:
-        output = result.output
-        if isinstance(output, DeferredToolRequests):
-            lines: list[str] = ["Deferred tool requests:"]
-            for call in output.calls:
-                lines.append(
-                    f"- `{call.tool_name}` needs input "
-                    f"(`{call.tool_call_id}`): "
-                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
-                )
-            for call in output.approvals:
-                lines.append(
-                    f"- `{call.tool_name}` needs approval "
-                    f"(`{call.tool_call_id}`): "
-                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
-                )
-            text = "\n".join(lines)
-        elif isinstance(output, str):
-            text = output
-        elif output is None:
-            return []
-        else:
-            payload = to_json(output, indent=2, ensure_ascii=False, fallback=str).decode()
-            text = f"```json\n{payload}\n```"
+    def outbound_markdown(self, text: str) -> list[SlackOutboundMessage]:
         return [SlackOutboundMessage(text=text, markdown_text=text)] if text else []
 
-    def thread_context(
-        self,
-        key: ConversationKey,
-    ) -> SlackThreadContext:
+    def thread_context(self, key: ConversationKey) -> SlackThreadContext:
         return SlackThreadContext(
             thread_ts=key.thread_id,
             recipient_user_id=key.user_id or None,
         )
-
-    def render_stream_delta(
-        self,
-        event: AgentStreamEvent | AgentRunResultEvent[OutputT],
-    ) -> str:
-        if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
-            return event.part.content
-        if isinstance(event, PartDeltaEvent) and isinstance(
-            event.delta,
-            TextPartDelta,
-        ):
-            return event.delta.content_delta
-        return ""

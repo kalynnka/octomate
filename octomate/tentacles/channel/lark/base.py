@@ -155,7 +155,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
         message_id = await self.ink.send_message(
             key.chat_id or key.user_id,
             key.chat_type,
-            [self.chromo.make_markdown_message(hint_text)],
+            self.chromo.outbound_markdown(hint_text),
             None,
         )
         return replace(key, thread_id=message_id or key.thread_id)

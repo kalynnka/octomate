@@ -8,7 +8,8 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.result import FinalResult
 
 from octomate.capabilities.agent import Agent
-from octomate.capabilities.events import OutputDeltaEvent
+from octomate.capabilities.events import ResultSegmentEvent, ResultTextDeltaEvent
+from octomate.schemas.segments import MessageSegment
 
 
 class Row(BaseModel):
@@ -16,28 +17,43 @@ class Row(BaseModel):
     score: int
 
 
-async def test_str_output_streams_output_events_then_final() -> None:
-    agent = Agent(TestModel())
+async def test_str_output_streams_text_deltas_then_final() -> None:
+    agent = Agent(TestModel(custom_output_text="Hello there, world!"))
 
     events = [event async for event in agent.stream_events("hi")]
 
-    kinds = [type(e).__name__ for e in events]
-    assert "OutputDeltaEvent" in kinds
-    assert "FinalResult" in kinds
-    assert "AgentRunResultEvent" in kinds
+    deltas = [e.delta for e in events if isinstance(e, ResultTextDeltaEvent)]
     final = next(e for e in events if isinstance(e, FinalResult))
-    assert isinstance(final.output, str)
+    assert deltas, "expected TextDeltaEvents (the typewriter)"
+    assert "".join(deltas) == final.output == "Hello there, world!"
+    assert any(type(e).__name__ == "AgentRunResultEvent" for e in events)
 
 
-async def test_structured_output_streams_validated_rows() -> None:
+async def test_segment_output_streams_one_event_per_segment() -> None:
+    reply = [
+        {"type": "text", "data": {"text": "hello"}},
+        {"type": "markdown", "data": {"text": "**hi**"}},
+        {"type": "at", "data": {"user_id": "u1"}},
+    ]
+    agent = Agent(
+        TestModel(custom_output_args=reply), output_type=list[MessageSegment]
+    )
+
+    events = [event async for event in agent.stream_events("go")]
+
+    streamed = [e.segment for e in events if isinstance(e, ResultSegmentEvent)]
+    final = next(e for e in events if isinstance(e, FinalResult))
+    assert [segment.type for segment in streamed] == ["text", "markdown", "at"]
+    assert streamed == final.output
+
+
+async def test_non_segment_structured_output_surfaces_only_at_final() -> None:
     agent = Agent(TestModel(), output_type=list[Row])
 
     events = [event async for event in agent.stream_events("go")]
 
-    deltas = [e for e in events if isinstance(e, OutputDeltaEvent)]
+    assert not any(isinstance(e, (ResultTextDeltaEvent, ResultSegmentEvent)) for e in events)
     final = next(e for e in events if isinstance(e, FinalResult))
-    assert deltas, "expected at least one OutputDeltaEvent (partial rows)"
-    assert isinstance(deltas[-1].output, list)
     assert isinstance(final.output, list)
     assert all(isinstance(row, Row) for row in final.output)
 

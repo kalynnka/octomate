@@ -5,29 +5,39 @@ gives validated partial output but not thinking/tool events. `stream_events` dri
 `iter()` ourselves and emits BOTH from each node:
 
 - thinking + tool-call events pass through unchanged,
-- the reply is emitted as `OutputDeltaEvent[OutputT]` (partial, validated with
-  `allow_partial=True`) then Pydantic AI's own `FinalResult[OutputT]` as the final
-  value, generic over the run's output type,
+- the reply streams in whichever of Pydantic AI's two modes fits the output: a text
+  reply as additive `ResultTextDeltaEvent` (the model's `content_delta` typewriter), a
+  `list[MessageSegment]` reply as one `ResultSegmentEvent` per segment (as partial
+  validation reveals it); then Pydantic AI's own `FinalResult[OutputT]` as the final
+  value. Other structured outputs surface only at `FinalResult`.
 - capability-injected events (e.g. todo events) flow through: each node's stream is
   wrapped with the run's capabilities' `wrap_run_event_stream`, which the manual
   `iter()` path would otherwise bypass (pydantic-ai applies it only inside `run()`),
 - a terminal `AgentRunResultEvent` closes the stream (run-complete / deferred).
 
-The two `output_type` overloads carry the output type into the event stream, so
-`Agent[Deps, list[Row]].stream_events(...)` yields `OutputDeltaEvent[list[Row]]`.
+The two `output_type` overloads carry the output type into the event stream, so the
+final `Agent[Deps, list[Row]].stream_events(...)` value is a `FinalResult[list[Row]]`.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, overload
+from typing import Any, cast, overload
 
 from pydantic import ValidationError
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.agent.abstract import RunOutputDataT
 from pydantic_ai.exceptions import ModelRetry
-from pydantic_ai.messages import FinalResultEvent, ModelMessage, UserContent
+from pydantic_ai.messages import (
+    FinalResultEvent,
+    ModelMessage,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    UserContent,
+)
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputDataT, OutputSpec
 from pydantic_ai.result import FinalResult
@@ -38,9 +48,12 @@ from pydantic_ai.tools import AgentDepsT, DeferredToolResults
 # build_run_context is private — no public RunContext-from-AgentRun exists in 1.93.0.
 from pydantic_ai._agent_graph import build_run_context
 
-from octomate.capabilities.events import OutputDeltaEvent, StreamEvents
-
-NO_OUTPUT = object()
+from octomate.capabilities.events import (
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+    StreamEvents,
+)
+from octomate.schemas.segments import MessageSegment, Segment
 
 
 class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
@@ -105,7 +118,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                             build_run_context(run.ctx), stream=stream
                         )
                         final_event: FinalResultEvent | None = None
-                        last: object = NO_OUTPUT
+                        emitted_segments = 0
                         # A capability injecting a non-AgentStreamEvent before the
                         # FinalResultEvent passes through here; injecting after it is
                         # not supported (todo events inject on the tools node).
@@ -116,15 +129,39 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                             if final_event is None:
                                 yield event
                                 continue
+                            # After the final result is recognized, stream the reply in
+                            # whichever of Pydantic AI's two modes fits the output: a text
+                            # reply arrives as additive `content_delta` (the typewriter);
+                            # a structured reply's tool args validate into a growing
+                            # list[MessageSegment] that we surface one segment at a time.
+                            if isinstance(event, PartStartEvent) and isinstance(
+                                event.part, TextPart
+                            ):
+                                if event.part.content:
+                                    yield ResultTextDeltaEvent(delta=event.part.content)
+                                continue
+                            if isinstance(event, PartDeltaEvent) and isinstance(
+                                event.delta, TextPartDelta
+                            ):
+                                if event.delta.content_delta:
+                                    yield ResultTextDeltaEvent(delta=event.delta.content_delta)
+                                continue
                             try:
                                 partial = await stream.validate_response_output(
                                     stream.response, allow_partial=True
                                 )
                             except (ValidationError, ModelRetry):
                                 continue
-                            if last is NO_OUTPUT or partial != last:
-                                last = partial
-                                yield OutputDeltaEvent(output=partial)
+                            if isinstance(partial, list):
+                                for segment in partial[emitted_segments:]:
+                                    # A validated list[MessageSegment] element is a union
+                                    # member; the Annotated discriminated union can't be
+                                    # isinstance-narrowed, so guard on the base then cast.
+                                    if isinstance(segment, Segment):
+                                        yield ResultSegmentEvent(
+                                            segment=cast(MessageSegment, segment)
+                                        )
+                                emitted_segments = len(partial)
                         if final_event is not None:
                             try:
                                 final = await stream.validate_response_output(
