@@ -5,6 +5,8 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, replace
 from typing import Generic, TypeAlias, TypeVar
 
+from typing_extensions import TypeAliasType
+
 import anyio
 import logfire
 from anyio.abc import ObjectSendStream
@@ -31,12 +33,21 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
+from octomate.capabilities.events import ActionBatchEvent
 from octomate.tentacles.agent.base import AgentOutput, AgentSpecInput
 
 logger = logging.getLogger(__name__)
 ReactOutput: TypeAlias = JsonValue | BaseModel | DeferredToolRequests
 ReactOutputT = TypeVar("ReactOutputT", bound=AgentOutput)
 ReactDepsT = TypeVar("ReactDepsT")
+
+# The events a react run streams: Pydantic AI passthrough + the terminal result,
+# plus a suspended run's deferred-action batch.
+ReactStreamEvent = TypeAliasType(
+    "ReactStreamEvent",
+    AgentStreamEvent | AgentRunResultEvent[ReactOutputT] | ActionBatchEvent,
+    type_params=(ReactOutputT,),
+)
 
 
 @dataclass
@@ -54,9 +65,7 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     agent: Agent[ReactDepsT, ReactOutputT]
     conversation_manager: ConversationManager
     agent_deps: ReactDepsT
-    event_send_stream: (
-        ObjectSendStream[AgentStreamEvent | AgentRunResultEvent[ReactOutputT]] | None
-    ) = None
+    event_send_stream: ObjectSendStream[ReactStreamEvent[ReactOutputT]] | None = None
     resolver: DeferredResolver | None = None
     suspender: DeferredSuspender | None = None
     output_type: OutputSpec[ReactOutputT] | None = None
@@ -261,7 +270,9 @@ class ResolveDeferred(
             )
         if ctx.deps.suspender is not None:
             logfire.info("deferred suspended, ending run")
-            await ctx.deps.suspender.suspend(self.requests)
+            event = await ctx.deps.suspender.suspend(self.requests)
+            if event is not None and ctx.deps.event_send_stream is not None:
+                await ctx.deps.event_send_stream.send(event)
             return End(self.result)
         raise RuntimeError(
             "ResolveDeferred requires a react graph resolver or suspender"

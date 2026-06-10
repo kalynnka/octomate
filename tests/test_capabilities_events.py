@@ -9,13 +9,15 @@ from __future__ import annotations
 
 from uuid_utils.compat import uuid7
 
-from octomate.schemas.deferred import ApprovalRequest
+from octomate.schemas.deferred import (
+    ApprovalRequest,
+    DeferredApproval,
+    DeferredQuestion,
+)
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.todos import Todo
 from octomate.capabilities.events import (
-    ActionRequestEvent,
-    ApprovalRequestEvent,
-    AskQuestionEvent,
+    ActionBatchEvent,
     DisplayEvent,
     ResultSegmentEvent,
     ResultTextDeltaEvent,
@@ -64,19 +66,30 @@ def test_todo_events_are_display_events_carrying_the_todo() -> None:
     assert changed.previous.status == "in_progress"
 
 
-def test_action_events_are_grouped_and_carry_correlation_ids() -> None:
-    ask = AskQuestionEvent(
-        action_id="a1", batch_id="b1", question={"question": "Proceed?"}
-    )
-    approval = ApprovalRequestEvent(
-        action_id="a2", batch_id="b1", approval=ApprovalRequest(tool_name="delete_repo")
+def test_action_batch_event_carries_questions_and_approvals() -> None:
+    event = ActionBatchEvent(
+        batch_id="b1",
+        questions=[
+            DeferredQuestion(
+                tool_name="ask_questions",
+                tool_call_id="c1",
+                args={"question": "Proceed?"},
+            )
+        ],
+        approvals=[
+            DeferredApproval(
+                tool_name="delete_repo",
+                tool_call_id="c2",
+                args=ApprovalRequest(tool_name="delete_repo"),
+            )
+        ],
     )
 
-    for event in (ask, approval):
-        assert isinstance(event, ActionRequestEvent)
-        assert not isinstance(event, DisplayEvent)
-        assert event.batch_id == "b1"
-    assert (ask.event_kind, approval.event_kind) == ("ask_question", "approval_request")
+    assert not isinstance(event, DisplayEvent)
+    assert event.event_kind == "action_batch"
+    assert event.batch_id == "b1"
+    assert event.questions[0].args["question"] == "Proceed?"
+    assert event.approvals[0].args.tool_name == "delete_repo"
 
 
 def test_event_kinds_are_unique() -> None:
@@ -88,9 +101,6 @@ def test_event_kinds_are_unique() -> None:
         TodoStatusChangedEvent(todo=_todo()).event_kind,
         TodoCompletedEvent(todo=_todo()).event_kind,
         TodoDeletedEvent(todo=_todo()).event_kind,
-        AskQuestionEvent(action_id="a", batch_id="b", question={"question": "?"}).event_kind,
-        ApprovalRequestEvent(
-            action_id="a", batch_id="b", approval=ApprovalRequest(tool_name="t")
-        ).event_kind,
+        ActionBatchEvent(batch_id="b").event_kind,
     ]
     assert len(kinds) == len(set(kinds))

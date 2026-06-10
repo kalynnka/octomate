@@ -13,8 +13,9 @@ One stream, with these event families:
 - **Display events** (`DisplayEvent`) — fire-and-forget, e.g. the granular todo
   events (`TodoCreatedEvent`/`TodoUpdatedEvent`/`TodoStatusChangedEvent`/
   `TodoCompletedEvent`/`TodoDeletedEvent`), each carrying the affected `Todo`.
-- **Action requests** (`ActionRequestEvent`) — need a user reply; the run suspends.
-  `action_id`/`batch_id` correlate the reply through the deferred-action machinery.
+- **Action batch** (`ActionBatchEvent`) — a persisted batch of deferred actions
+  (questions + approvals) presented as one unit; the run suspends until the user
+  replies. `batch_id` correlates the reply through the deferred-action machinery.
 
 Display and action events are emitted by capabilities (a capability bundles a tool
 + instructions + `wrap_run_event_stream`); the output events are emitted by
@@ -30,12 +31,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypeAlias, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_ai import AgentStreamEvent
 from pydantic_ai.result import FinalResult
 from typing_extensions import TypeAliasType
 
-from octomate.schemas.deferred import ApprovalRequest, QuestionRequest
+from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
 
@@ -101,25 +102,19 @@ TodoEvent: TypeAlias = (
 )
 
 
-class ActionRequestEvent(BaseModel):
-    """Outbound event that needs a user reply; the run suspends until resolved.
+class ActionBatchEvent(BaseModel):
+    """A persisted batch of deferred actions presented as one unit; the run
+    suspends until the user replies.
 
-    `action_id`/`batch_id` reference the persisted `DeferredAction`/
-    `DeferredActionBatch` so the eventual reply resumes the right run.
+    Carries the batch's `questions` and `approvals` (the persisted actions) so the
+    consumer renders + marks them together, and `batch_id` to correlate the reply
+    back to the right run.
     """
 
-    action_id: str
+    event_kind: Literal["action_batch"] = "action_batch"
     batch_id: str
-
-
-class AskQuestionEvent(ActionRequestEvent):
-    event_kind: Literal["ask_question"] = "ask_question"
-    question: QuestionRequest
-
-
-class ApprovalRequestEvent(ActionRequestEvent):
-    event_kind: Literal["approval_request"] = "approval_request"
-    approval: ApprovalRequest
+    questions: list[DeferredQuestion] = Field(default_factory=list)
+    approvals: list[DeferredApproval] = Field(default_factory=list)
 
 
 # The stream a consumer matches on, generic over the run's output type.
@@ -131,7 +126,6 @@ StreamEvents = TypeAliasType(
     | ResultSegmentEvent
     | FinalResult[OutputT]
     | TodoEvent
-    | AskQuestionEvent
-    | ApprovalRequestEvent,
+    | ActionBatchEvent,
     type_params=(OutputT,),
 )

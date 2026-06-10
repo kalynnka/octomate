@@ -36,6 +36,7 @@ from pydantic_graph import End, Graph, GraphRunContext
 from octomate import Octomate
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.capabilities.events import ActionBatchEvent
 from octomate.capabilities.react import (
     ReactDeps,
     ReactState,
@@ -442,8 +443,11 @@ class _StubResolver:
 class _StubSuspender:
     suspended: list[DeferredToolRequests] = field(default_factory=list)
 
-    async def suspend(self, requests: DeferredToolRequests) -> None:
+    async def suspend(
+        self, requests: DeferredToolRequests
+    ) -> ActionBatchEvent | None:
         self.suspended.append(requests)
+        return None
 
 
 def _deferred_requests() -> DeferredToolRequests:

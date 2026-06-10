@@ -32,8 +32,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils import uuid7
 
 from octomate.capabilities.events import (
-    ApprovalRequestEvent,
-    AskQuestionEvent,
+    ActionBatchEvent,
     ResultSegmentEvent,
     ResultTextDeltaEvent,
     StreamEvents,
@@ -292,8 +291,25 @@ class ChannelTentacle(
                         | TodoDeletedEvent()
                     ):
                         await timeline.todo(event)
-                    case AskQuestionEvent() | ApprovalRequestEvent():
-                        pass  # on-stream round-trip lands with the suspender (UoW-8)
+                    case ActionBatchEvent():
+                        # Render the deferred-action batch as a unit, then record
+                        # each presented action's platform message id.
+                        if event.questions:
+                            message_ids = await self.feelers.ask_questions.present(
+                                key, event.questions
+                            )
+                            for action in event.questions:
+                                await self.octomate.deferred_actions.mark_action_presented(
+                                    action.id, message_ids.get(action.id)
+                                )
+                        if event.approvals:
+                            message_ids = await self.feelers.approvals.present(
+                                key, event.approvals
+                            )
+                            for action in event.approvals:
+                                await self.octomate.deferred_actions.mark_action_presented(
+                                    action.id, message_ids.get(action.id)
+                                )
                     case _:
                         pass  # FinalResult / PartEnd / AgentRunResultEvent / passthrough
             except Exception:

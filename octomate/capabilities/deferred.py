@@ -17,6 +17,8 @@ from typing import Protocol
 
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
+from octomate.capabilities.events import ActionBatchEvent
+
 
 class DeferredResolver(Protocol):
     """Resolve deferred tool calls in-process so the react loop can continue."""
@@ -30,6 +32,12 @@ class DeferredSuspender(Protocol):
     react loop continue, a suspender persists + presents the requests for an
     out-of-band response and the run ends; it is resumed later by feeding the
     collected `DeferredToolResults` back through a fresh agent run.
+
+    Returning an `ActionBatchEvent` asks the react loop to present the batch *on
+    the stream* (the consumer renders it); returning `None` means the suspender
+    presented it out-of-band itself.
     """
 
-    async def suspend(self, requests: DeferredToolRequests) -> None: ...
+    async def suspend(
+        self, requests: DeferredToolRequests
+    ) -> ActionBatchEvent | None: ...

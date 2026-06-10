@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from uuid import UUID
+
 from typing_extensions import NotRequired, TypedDict
 
 import pytest
@@ -24,8 +26,14 @@ from pydantic_ai.result import StreamedRunResult
 from octomate import Octomate
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.conversations import ConversationManager
+from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal, UserMessageSignal
 from octomate.schemas.conversation import ChatType, ConversationKey, UserProfile
+from octomate.schemas.deferred import (
+    ApprovalRequest,
+    DeferredApproval,
+    DeferredQuestion,
+)
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AtData,
@@ -34,7 +42,11 @@ from octomate.schemas.segments import (
     MessageSegment,
     TextSegment,
 )
-from octomate.capabilities.events import ResultTextDeltaEvent, StreamEvents
+from octomate.capabilities.events import (
+    ActionBatchEvent,
+    ResultTextDeltaEvent,
+    StreamEvents,
+)
 from octomate.tentacles.channel.base import (
     ChannelOutput,
     ChannelTentacle,
@@ -69,6 +81,18 @@ class FakeOctomate(Octomate):
         signal: AwakeSignal,
     ) -> None:
         self.kicks.append(signal)
+
+
+@dataclass
+class FakeDeferredActions(DeferredActionManager):
+    marked: list[tuple[UUID, str | None]] = field(default_factory=list)
+
+    async def mark_action_presented(
+        self,
+        action_id: UUID,
+        platform_message_id: str | None,
+    ) -> None:
+        self.marked.append((action_id, platform_message_id))
 
 
 @dataclass
@@ -348,6 +372,47 @@ async def test_consume_renders_answer_and_drains_stream(
     assert channel.sent[0][2][0]["text"] == "stream me"
     assert "no streaming transport" in caplog.text
     assert drained
+
+
+async def test_consume_renders_and_marks_action_batch(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+    question = DeferredQuestion(
+        tool_name="ask_questions",
+        tool_call_id="c1",
+        args={"question": "Pick one?"},
+    )
+    approval = DeferredApproval(
+        tool_name="do_thing",
+        tool_call_id="c2",
+        args=ApprovalRequest(tool_name="do_thing"),
+    )
+    actions = FakeDeferredActions()
+    channel.octomate.deferred_actions = actions
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        yield ActionBatchEvent(
+            batch_id="b1", questions=[question], approvals=[approval]
+        )
+
+    await channel.consume(key, events())
+
+    # The batch renders through the channel's (plaintext) question/approval feelers
+    # as a unit, and each presented action is marked with its message id.
+    assert len(channel.sent) == 2
+    assert "Pick one?" in channel.sent[0][2][0]["text"]
+    assert "do_thing" in channel.sent[1][2][0]["text"]
+    marked = {str(action_id): message_id for action_id, message_id in actions.marked}
+    assert marked[str(question.id)] == "sent-1"
+    assert marked[str(approval.id)] == "sent-2"
 
 
 async def test_markdown_feeler_uses_normal_adapter(
