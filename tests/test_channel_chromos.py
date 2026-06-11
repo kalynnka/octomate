@@ -45,7 +45,6 @@ from octomate.tentacles.channel.base import ChannelOutput, DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
-    DefaultTimelineFeeler,
     MarkdownChunker,
 )
 from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
@@ -55,6 +54,7 @@ from octomate.tentacles.channel.lark.feelers.output import (
     LarkEventStreamFeeler,
     LarkMarkdownFeeler,
     LarkMarkdownStreamFeeler,
+    LarkTimelineFeeler,
 )
 from octomate.tentacles.channel.lark.feelers.questions import LarkAskQuestionFeeler
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
@@ -776,7 +776,9 @@ def _compose_lark_feelers(channel: LarkTentacle) -> None:
             markdown_feeler=markdown_feeler,
             channel_id=channel.id,
         ),
-        timeline=DefaultTimelineFeeler(ink=ink, chromo=chromo),
+        timeline=LarkTimelineFeeler(
+            ink=ink, chromo=chromo, stream_config=channel.config.stream
+        ),
         approvals=LarkApprovalFeeler(ink),
         ask_questions=LarkAskQuestionFeeler(ink),
     )
@@ -1604,6 +1606,44 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
     assert "Lookup…" in ink.statuses
     assert "Writing the response…" in ink.statuses
     assert ink.statuses[-1] == ""
+
+
+async def test_lark_consume_renders_timeline_per_event() -> None:
+    ink = FakeLarkInk()
+    channel = _lark_channel(ink)
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="u1",
+        user_id="u1",
+    )
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        yield FunctionToolCallEvent(
+            ToolCallPart(tool_name="lookup", args={"query": "x"}, tool_call_id="call_1")
+        )
+        yield FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="lookup", content={"ok": True}, tool_call_id="call_1"
+            )
+        )
+        # The answer streams as raw text parts (the react graph, not the normalizer).
+        yield PartStartEvent(index=1, part=TextPart(content="done"))
+        yield AgentRunResultEvent(AgentRunResult("done"))
+
+    message_id = await channel.consume(key, events())
+
+    # Thinking + tool each posted as their own card (then folded via patch)...
+    assert len(ink.created) == 2
+    assert len(ink.patched) == 2
+    # ...and the answer streamed into its own stream card, then finalized.
+    assert ink.stream_cards
+    assert any("done" in content for _card, content, _seq in ink.stream_updates)
+    assert ink.finalized
+    assert message_id == "stream-1"
 
 
 async def test_slack_event_stream_feeler_skips_ask_questions_tool_events() -> None:

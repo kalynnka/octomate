@@ -26,15 +26,15 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.tentacles.agent.graph import TriageDecision
 from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agent.graph import TriageDecision
 from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
-
+from octomate.tentacles.channel.feelers.output import TimelineState
 
 FakeRunOutput = TriageDecision | str | DeferredToolRequests
 FakeStreamEvent = AgentStreamEvent | AgentRunResultEvent[str]
@@ -176,18 +176,10 @@ class NoopMarkdownStreamFeeler:
         return None
 
 
-class NoopTimeline:
-    async def open(self, key: ConversationKey) -> NoopTimeline:
-        return self
-
-    async def thinking_started(self, text: str) -> None: ...
-    async def thinking_delta(self, text: str) -> None: ...
-    async def tool_started(self, event: object) -> None: ...
-    async def tool_finished(self, event: object) -> None: ...
-    async def answer_delta(self, text: str) -> None: ...
-    async def todo(self, event: object) -> None: ...
-    async def finalize(self) -> str | None:
-        return None
+class NoopTimeline(TimelineState):
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncIterator[NoopTimeline]:
+        yield self
 
 
 class NoopEventStreamFeeler:

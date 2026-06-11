@@ -9,11 +9,13 @@ so the caller can report the suspended run.
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import cast
 
-from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import ActionBatchEvent
 from octomate.managers.conversations import ConversationManager
@@ -32,6 +34,7 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
+from octomate.tentacles.channel.feelers.output import TimelineState
 
 
 @dataclass
@@ -109,18 +112,10 @@ class FakeActionManager:
         return None
 
 
-class NoopTimeline:
-    async def open(self, key: ConversationKey) -> NoopTimeline:
-        return self
-
-    async def thinking_started(self, text: str) -> None: ...
-    async def thinking_delta(self, text: str) -> None: ...
-    async def tool_started(self, event: object) -> None: ...
-    async def tool_finished(self, event: object) -> None: ...
-    async def answer_delta(self, text: str) -> None: ...
-    async def todo(self, event: object) -> None: ...
-    async def finalize(self) -> str | None:
-        return None
+class NoopTimeline(TimelineState):
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncIterator[NoopTimeline]:
+        yield self
 
 
 @dataclass

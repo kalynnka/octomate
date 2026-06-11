@@ -13,6 +13,7 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
+from octomate.capabilities.deferred import DeferredSuspender
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
@@ -20,7 +21,6 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.capabilities.deferred import DeferredSuspender
 from octomate.tentacles.agent.graph import (
     DeferredResult,
     ResponseTarget,
@@ -37,7 +37,7 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
-
+from octomate.tentacles.channel.feelers.output import TimelineState
 
 FakeRunOutput = TriageDecision | str | DeferredToolRequests
 FakeStreamEvent = AgentStreamEvent | AgentRunResultEvent[str]
@@ -50,9 +50,7 @@ class FakeConversation:
 
 @dataclass
 class FakeConversationManager:
-    conversations: dict[ConversationKey, FakeConversation] = field(
-        default_factory=dict
-    )
+    conversations: dict[ConversationKey, FakeConversation] = field(default_factory=dict)
     ensured: list[ConversationKey] = field(default_factory=list)
 
     async def ensure(
@@ -175,18 +173,10 @@ class RecordingEventStreamRecorder:
         return "event-message"
 
 
-class NoopTimeline:
-    async def open(self, key: ConversationKey) -> NoopTimeline:
-        return self
-
-    async def thinking_started(self, text: str) -> None: ...
-    async def thinking_delta(self, text: str) -> None: ...
-    async def tool_started(self, event: object) -> None: ...
-    async def tool_finished(self, event: object) -> None: ...
-    async def answer_delta(self, text: str) -> None: ...
-    async def todo(self, event: object) -> None: ...
-    async def finalize(self) -> str | None:
-        return None
+class NoopTimeline(TimelineState):
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncIterator[NoopTimeline]:
+        yield self
 
 
 @dataclass
@@ -314,7 +304,9 @@ def _deps(
         channels={cid: cast(ChannelTentacle, c) for cid, c in channels.items()},
         agents={agent.id: cast(AgentTentacle, agent)},
         conversation_manager=cast(ConversationManager, conversations),
-        action_manager=cast(DeferredActionManager, action_manager or FakeActionManager()),
+        action_manager=cast(
+            DeferredActionManager, action_manager or FakeActionManager()
+        ),
     )
 
 
@@ -466,7 +458,9 @@ async def test_triage_graph_emits_direct_route() -> None:
     assert ops.sent == []
 
 
-async def test_triage_graph_returns_deferred_result_when_triage_requests_input() -> None:
+async def test_triage_graph_returns_deferred_result_when_triage_requests_input() -> (
+    None
+):
     key = _key()
     requests = _requests()
     agent = FakeAgent(requests)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
@@ -24,7 +25,10 @@ from pydantic_ai.messages import (
 from pydantic_ai.result import FinalResult, StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.events import ResultSegmentEvent, ResultTextDeltaEvent
+from octomate.capabilities.events import (
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+)
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.feelers.output import (
@@ -33,14 +37,16 @@ from octomate.tentacles.channel.feelers.output import (
     JsonValue,
     MarkdownFeeler,
     TextStreamBatcher,
+    TimelineFeeler,
+    TimelineState,
     format_fields,
     humanize_tool_name,
     markdown_from_output,
     should_skip_plan_tool,
     truncate_task_detail,
 )
-from octomate.tentacles.channel.lark.feelers import cards
 from octomate.tentacles.channel.lark.chromo import LARK_STREAM_ELEMENT_ID, LarkChromo
+from octomate.tentacles.channel.lark.feelers import cards
 from octomate.tentacles.channel.lark.ink import LarkInk
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
 from octomate.types.json import JsonObject
@@ -323,7 +329,7 @@ def answer_stream_card_data() -> str:
 
 
 @dataclass
-class LarkRunCards:
+class LarkRunStateCards(TimelineState):
     """The per-run cards for one agent run. Each thinking block and each tool call
     is its own card — sent on start, then patched into a folded collapsible panel
     once it finishes — and the answer streams into its own card."""
@@ -335,6 +341,7 @@ class LarkRunCards:
     reply_in_thread: bool
     answer_batcher: TextStreamBatcher
 
+    message_id: IMMessageID | None = None
     answer_card: LarkStreamCard | None = None
     answer_message_id: IMMessageID | None = None
     answer_sequence: int = 0
@@ -362,32 +369,32 @@ class LarkRunCards:
     async def handle(self, event: AgentStreamEvent) -> None:
         if isinstance(event, PartStartEvent):
             if isinstance(event.part, ThinkingPart):
-                await self.start_thinking(event.part.content or "")
+                await self.thinking_start()
+                await self.thinking_delta(event.part.content or "")
             elif isinstance(event.part, TextPart):
-                await self.add_answer(event.part.content)
+                await self.answer_delta(event.part.content)
         elif isinstance(event, PartDeltaEvent):
             if isinstance(event.delta, ThinkingPartDelta):
-                await self.append_thinking(event.delta.content_delta or "")
+                await self.thinking_delta(event.delta.content_delta or "")
             elif isinstance(event.delta, TextPartDelta):
-                await self.add_answer(event.delta.content_delta)
+                await self.answer_delta(event.delta.content_delta)
         elif isinstance(event, FunctionToolCallEvent | OutputToolCallEvent):
-            await self.start_tool(event)
+            await self.tool_start(event)
         elif isinstance(event, FunctionToolResultEvent | OutputToolResultEvent):
-            await self.finish_tool(event)
+            await self.tool_end(event)
 
-    async def start_thinking(self, initial: str) -> None:
+    async def thinking_start(self) -> None:
         await self.fold_thinking()
-        self.thinking_text = initial
+        self.thinking_text = ""
         self.thinking_card_id = await self.post(
             cards.card_v2([cards.markdown(f"⏳ **{THINKING_HEADER}…**")])
         )
 
-    async def append_thinking(self, text: str) -> None:
+    async def thinking_delta(self, text: str) -> None:
         if not text:
             return
         if self.thinking_card_id is None:
-            await self.start_thinking(text)
-            return
+            await self.thinking_start()
         self.thinking_text += text
 
     async def fold_thinking(self) -> None:
@@ -404,7 +411,7 @@ class LarkRunCards:
             card_id, json.dumps(folded, ensure_ascii=False, separators=(",", ":"))
         )
 
-    async def start_tool(
+    async def tool_start(
         self, event: FunctionToolCallEvent | OutputToolCallEvent
     ) -> None:
         await self.fold_thinking()
@@ -425,7 +432,7 @@ class LarkRunCards:
         slot = tool.tool_call_id or f"tool-{len(self.tool_cards)}"
         self.tool_cards[slot] = (message_id, title, args_text)
 
-    async def finish_tool(
+    async def tool_end(
         self, event: FunctionToolResultEvent | OutputToolResultEvent
     ) -> None:
         part = event.part
@@ -460,7 +467,7 @@ class LarkRunCards:
         else:
             await self.post(folded)
 
-    async def add_answer(self, text: str | None) -> None:
+    async def answer_delta(self, text: str | None) -> None:
         if not text:
             return
         await self.fold_thinking()
@@ -512,6 +519,49 @@ class LarkRunCards:
             )
 
 
+class LarkTimelineFeeler(TimelineFeeler):
+    """Renders a run as Lark cards (a card per thinking block / tool call + a
+    streaming answer card), driven event-by-event by `ChannelTentacle.consume`.
+
+    Stateless; `open(key)` builds a fresh per-run `LarkRunCards` machine (the same
+    one `LarkEventStreamFeeler` drives, until that path is retired) and yields it."""
+
+    def __init__(
+        self,
+        *,
+        ink: LarkInk,
+        chromo: LarkChromo,
+        stream_config: ChannelStreamConfig,
+    ) -> None:
+        self.ink = ink
+        self.chromo = chromo
+        self.stream_config = stream_config
+
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncIterator[LarkRunStateCards]:
+        reply_to = key.thread_id if key.thread_id.startswith("om_") else None
+        state = LarkRunStateCards(
+            ink=self.ink,
+            chat_id=key.chat_id or key.user_id,
+            chat_type=key.chat_type,
+            reply_to=reply_to,
+            reply_in_thread=reply_to is not None,
+            answer_batcher=TextStreamBatcher(
+                flush_interval=self.stream_config.flush_interval,
+                min_chars=self.stream_config.min_chars,
+                max_chars=self.stream_config.max_chars,
+                fold_threshold=self.stream_config.fold_threshold,
+            ),
+        )
+        try:
+            yield state
+        finally:
+            # consume() already fed any non-streamed final output via answer_delta,
+            # so the result-fallback arg is None here.
+            await state.finish(None)
+            state.message_id = state.answer_message_id
+
+
 class LarkEventStreamFeeler(Generic[OutputT]):
     """Posts an agent run as a sequence of cards in the thread: each thinking
     block and each tool call is its own card (sent on start, then patched and
@@ -537,7 +587,7 @@ class LarkEventStreamFeeler(Generic[OutputT]):
         events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputT]],
     ) -> IMMessageID | None:
         reply_to = key.thread_id if key.thread_id.startswith("om_") else None
-        cards_state = LarkRunCards(
+        cards_state = LarkRunStateCards(
             ink=self.ink,
             chat_id=key.chat_id or key.user_id,
             chat_type=key.chat_type,

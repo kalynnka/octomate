@@ -4,22 +4,22 @@ import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import cast
 
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger
-
 from pydantic import JsonValue, TypeAdapter
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
-from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate import Octomate
 from octomate.managers.deferred import DeferredActionManager
+from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -35,6 +35,7 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextAskQuestionFeeler,
     QuestionFeeler,
 )
+from octomate.tentacles.channel.feelers.output import TimelineState
 from octomate.tentacles.channel.lark.base import LarkTentacle
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.feelers.approvals import (
@@ -49,8 +50,8 @@ from octomate.tentacles.channel.lark.feelers.questions import (
     collect_answer,
     submitted_card_data,
 )
-from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.tentacles.channel.lark.ink import LarkInk
+from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.tentacles.channel.slack.base import SlackTentacle
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.channel.slack.feelers.approvals import (
@@ -66,18 +67,18 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     question_answer_block_id,
     question_choice_block_id,
 )
+from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
     SlackActionMessage,
     SlackApprovalActionBody,
     SlackApprovalActionValue,
+    SlackBlock,
     SlackOutboundMessage,
     SlackQuestionActionBody,
     SlackQuestionActionValue,
     SlackQuestionBlockAction,
     SlackQuestionState,
-    SlackBlock,
 )
-from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.types.json import JsonObject
 
 JsonObjectAdapter = TypeAdapter(JsonObject)
@@ -269,18 +270,10 @@ class NoopMarkdownStreamFeeler:
         return None
 
 
-class NoopTimeline:
-    async def open(self, key: ConversationKey) -> NoopTimeline:
-        return self
-
-    async def thinking_started(self, text: str) -> None: ...
-    async def thinking_delta(self, text: str) -> None: ...
-    async def tool_started(self, event: object) -> None: ...
-    async def tool_finished(self, event: object) -> None: ...
-    async def answer_delta(self, text: str) -> None: ...
-    async def todo(self, event: object) -> None: ...
-    async def finalize(self) -> str | None:
-        return None
+class NoopTimeline(TimelineState):
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncIterator[NoopTimeline]:
+        yield self
 
 
 class NoopEventStreamFeeler:
@@ -421,9 +414,7 @@ class FakeSlackInk:
     sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
         default_factory=list
     )
-    updates: list[tuple[str, str, str, list[SlackBlock]]] = field(
-        default_factory=list
-    )
+    updates: list[tuple[str, str, str, list[SlackBlock]]] = field(default_factory=list)
     events: list[str] | None = None
 
     async def send_message(
@@ -489,9 +480,7 @@ async def test_slack_feelers_send_approval_and_question_blocks() -> None:
     assert "*Request:*" in approval_request
     approval_buttons = _json_objects(approval_msg.blocks[-1]["elements"])
     approval_value = _loaded_json_object(_json_string(approval_buttons[0]["value"]))
-    assert approval_buttons[0]["action_id"] == (
-        SlackBlockAction.APPROVAL_APPROVE.value
-    )
+    assert approval_buttons[0]["action_id"] == (SlackBlockAction.APPROVAL_APPROVE.value)
     restored_approvals = SlackApprovalActionsAdapter.validate_python(
         approval_value["approvals"]
     )
@@ -518,9 +507,7 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     assert first_page[0]["type"] == "section"
     assert _json_object(first_page[0]["text"])["text"] == "*Questions 1 of 2*"
     first_nav = _json_objects(first_page[-1]["elements"])
-    assert first_nav[0]["action_id"] == (
-        SlackBlockAction.ASK_QUESTION_NEXT.value
-    )
+    assert first_nav[0]["action_id"] == (SlackBlockAction.ASK_QUESTION_NEXT.value)
     choice_block = next(
         block
         for block in first_page
@@ -529,9 +516,10 @@ def test_slack_question_blocks_collect_answer_and_restore_state() -> None:
     assert _json_object(choice_block["label"])["text"] == "Color?"
     choice_element = _json_object(choice_block["element"])
     choice_options = _json_objects(choice_element["options"])
-    assert [
-        _json_object(option["text"])["text"] for option in choice_options
-    ] == ["blue", "green"]
+    assert [_json_object(option["text"])["text"] for option in choice_options] == [
+        "blue",
+        "green",
+    ]
     assert choice_block["dispatch_action"] is True
     assert choice_element["type"] == "radio_buttons"
     input_block = next(
@@ -651,9 +639,10 @@ def test_slack_question_pages_use_distinct_input_blocks() -> None:
     assert _json_object(second_page[0]["text"])["text"] == "*Questions 2 of 2*"
     assert second_label == "Ocean mood?"
     second_options = _json_objects(_json_object(second_choice["element"])["options"])
-    assert [
-        _json_object(option["text"])["text"] for option in second_options
-    ] == ["Calm Coral Reef", "Exciting Open Ocean"]
+    assert [_json_object(option["text"])["text"] for option in second_options] == [
+        "Calm Coral Reef",
+        "Exciting Open Ocean",
+    ]
     assert "initial_option" not in _json_object(second_choice["element"])
     assert "initial_value" not in _json_object(second_answer["element"])
 
@@ -794,10 +783,7 @@ async def test_slack_approval_blocks_advance_through_multiple_approvals() -> Non
         approvals={first.id: True},
     )
     assert ink.updates[0][0:3] == ("C1", "111.222", "Octomate needs 2 approvals")
-    assert (
-        _json_object(ink.updates[0][3][0]["text"])["text"]
-        == "*Approvals 2 of 2*"
-    )
+    assert _json_object(ink.updates[0][3][0]["text"])["text"] == "*Approvals 2 of 2*"
 
     deny_buttons = _json_objects(ink.updates[0][3][-1]["elements"])
     deny_value = _json_string(deny_buttons[1]["value"])
@@ -1099,9 +1085,7 @@ async def test_lark_feelers_send_approval_and_question_cards() -> None:
     approval_elements = _json_objects(approval_content["elements"])
     approval_actions = _json_objects(approval_elements[2]["actions"])
     approval_value = _json_object(approval_actions[0]["value"])
-    assert approval_value["action"] == (
-        LarkCardAction.APPROVAL_APPROVE.value
-    )
+    assert approval_value["action"] == (LarkCardAction.APPROVAL_APPROVE.value)
     question_content = _loaded_json_object(ink.sent[1][2][0].content)
     question_elements = _json_objects(question_content["elements"])
     form = question_elements[2]
@@ -1109,9 +1093,7 @@ async def test_lark_feelers_send_approval_and_question_cards() -> None:
     form_elements = _json_objects(form["elements"])
     nav_buttons = _nav_buttons(form_elements)
     form_value = _json_object(nav_buttons[-1]["value"])
-    assert form_value["action"] == (
-        LarkCardAction.ASK_QUESTION_SUBMIT.value
-    )
+    assert form_value["action"] == (LarkCardAction.ASK_QUESTION_SUBMIT.value)
 
 
 def test_lark_card_data_and_answer_collection() -> None:
@@ -1125,9 +1107,7 @@ def test_lark_card_data_and_answer_collection() -> None:
     approval_elements = _json_objects(approval_data["elements"])
     approval_actions = _json_objects(approval_elements[2]["actions"])
     deny_value = _json_object(approval_actions[1]["value"])
-    assert deny_value["action"] == (
-        LarkCardAction.APPROVAL_DENY.value
-    )
+    assert deny_value["action"] == (LarkCardAction.APPROVAL_DENY.value)
 
     card = _loaded_json_object(ask_question_card([action]))
     card_elements = _json_objects(card["elements"])
@@ -1141,9 +1121,7 @@ def test_lark_card_data_and_answer_collection() -> None:
     # Lark rejects a form with duplicate element names (ErrCode 11310), so every
     # button/input must be uniquely named.
     names = [
-        str(el["name"])
-        for el in [*form_elements[:-1], *nav_buttons]
-        if "name" in el
+        str(el["name"]) for el in [*form_elements[:-1], *nav_buttons] if "name" in el
     ]
     assert len(names) == len(set(names))
     # choices render as selectable buttons (radio-like), not a dropdown
@@ -1153,9 +1131,7 @@ def test_lark_card_data_and_answer_collection() -> None:
     assert first_choice_value["action"] == LarkCardAction.ASK_QUESTION_CHOICE.value
     assert first_choice_value["choice"] == "morning"
     submit = nav_buttons[-1]
-    submit_value = LarkQuestionActionValueAdapter.validate_python(
-        submit["value"]
-    )
+    submit_value = LarkQuestionActionValueAdapter.validate_python(submit["value"])
     restored = submit_value["questions"]
     assert restored[0].id == action.id
     assert restored[0].args == action.args

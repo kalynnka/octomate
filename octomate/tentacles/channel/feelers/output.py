@@ -4,7 +4,8 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable
-from dataclasses import dataclass
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -490,28 +491,43 @@ class EventStreamFeeler(Protocol[OutputContraT]):
     ) -> IMMessageID | None: ...
 
 
-class TimelineFeeler(Protocol):
-    """A per-run renderer the channel consumer drives event-by-event.
+class TimelineState:
+    """Streaming render hook for one run. `ChannelTentacle.drive_timeline` calls these
+    lifecycle methods as it walks the event stream — one per real stream event:
+    `PartStart`/`PartDelta`/`PartEnd` of the thinking and answer parts map to
+    `*_start` / `*_delta` / `*_end`, and the tool call/result events to
+    `tool_start` / `tool_end`. Every method is a no-op; a per-run timeline subclasses
+    this and overrides only the lifecycle points it actually renders. `message_id`
+    carries the platform id of the rendered reply once the run's context closes."""
 
-    `Feelers.timeline` holds one unopened instance; `ChannelTentacle.consume`
-    calls `open(key)` to get a fresh per-run timeline, drives it with a method per
-    typed stream event, then `finalize()`s it (which returns the platform message
-    id of the rendered reply). Platform formatting/drawing lives in the
-    implementation.
-    """
+    message_id: IMMessageID | None = None
 
-    async def open(self, key: ConversationKey) -> TimelineFeeler: ...
-    async def thinking_started(self, text: str) -> None: ...
+    async def thinking_start(self) -> None: ...
     async def thinking_delta(self, text: str) -> None: ...
-    async def tool_started(
+    async def thinking_end(self) -> None: ...
+    async def answer_start(self) -> None: ...
+    async def answer_delta(self, text: str) -> None: ...
+    async def answer_end(self) -> None: ...
+    async def tool_start(
         self, event: FunctionToolCallEvent | OutputToolCallEvent
     ) -> None: ...
-    async def tool_finished(
+    async def tool_end(
         self, event: FunctionToolResultEvent | OutputToolResultEvent
     ) -> None: ...
-    async def answer_delta(self, text: str) -> None: ...
     async def todo(self, event: TodoEvent) -> None: ...
-    async def finalize(self) -> IMMessageID | None: ...
+
+
+class TimelineFeeler(Protocol):
+    """Opens a per-run `TimelineState` for a channel. The per-channel `Feelers.timeline`
+    is a single stateless instance: `ChannelTentacle.consume` does
+    `async with feelers.timeline.open(key) as state:` — entering acquires the platform
+    resource and yields the per-run hook (a card, a stream session, …), or the feeler
+    itself when there is nothing to set up; `drive_timeline` then renders each event onto
+    it; exiting releases the resource and sets `message_id`."""
+
+    def open(
+        self, key: ConversationKey
+    ) -> AbstractAsyncContextManager[TimelineState]: ...
 
 
 async def final_stream_result(
@@ -579,58 +595,46 @@ class DefaultMarkdownFeeler(Generic[RawT, MessageT]):
         )
 
 
-class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
-    """Answer-only `Timeline` for platforms with no streaming transport (NapCat).
-
-    The unopened instance (``key=None``) is the `Feelers.timeline` member;
-    `open(key)` returns a fresh per-run timeline. Thinking/tool/todo are dropped;
-    the reply text is accumulated and sent as a single message on `finalize()`,
-    with a warning that streaming was unavailable.
-    """
-
-    def __init__(
-        self,
-        *,
-        ink: Ink[MessageT],
-        chromo: Chromo[RawT, MessageT],
-        key: ConversationKey | None = None,
-    ) -> None:
-        self.ink = ink
-        self.chromo = chromo
-        self.key = key
-        self.parts: list[str] = []
-
-    async def open(self, key: ConversationKey) -> DefaultTimelineFeeler[RawT, MessageT]:
-        return DefaultTimelineFeeler(ink=self.ink, chromo=self.chromo, key=key)
-
-    async def thinking_started(self, text: str) -> None: ...
-    async def thinking_delta(self, text: str) -> None: ...
-    async def tool_started(
-        self, event: FunctionToolCallEvent | OutputToolCallEvent
-    ) -> None: ...
-    async def tool_finished(
-        self, event: FunctionToolResultEvent | OutputToolResultEvent
-    ) -> None: ...
-    async def todo(self, event: TodoEvent) -> None: ...
+@dataclass
+class DefaultTimelineState(TimelineState):
+    parts: list[str] = field(default_factory=list)
+    message_id: IMMessageID | None = None
 
     async def answer_delta(self, text: str) -> None:
         self.parts.append(text)
 
-    async def finalize(self) -> IMMessageID | None:
-        markdown = "".join(self.parts)
-        if self.key is None or not markdown:
-            return None
-        logger.warning(
-            "Channel %s: timeline has no streaming transport; "
-            "sending the reply as a single message",
-            self.key.channel_tentacle_id,
-        )
-        return await present_markdown(
-            ink=self.ink,
-            chromo=self.chromo,
-            key=self.key,
-            markdown=markdown,
-        )
+
+class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
+    """Answer-only timeline for platforms with no streaming transport (NapCat).
+
+    Stateless; `open(key)` yields a fresh `DefaultTimelineState`. Thinking/tool/todo
+    are inherited no-ops; the reply text is accumulated and sent as a single message on
+    exit, with a warning that streaming was unavailable.
+    """
+
+    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
+        self.ink = ink
+        self.chromo = chromo
+
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncIterator[DefaultTimelineState]:
+        state = DefaultTimelineState()
+        try:
+            yield state
+        finally:
+            markdown = "".join(state.parts)
+            if markdown:
+                logger.warning(
+                    "Channel %s: timeline has no streaming transport; "
+                    "sending the reply as a single message",
+                    key.channel_tentacle_id,
+                )
+                state.message_id = await present_markdown(
+                    ink=self.ink,
+                    chromo=self.chromo,
+                    key=key,
+                    markdown=markdown,
+                )
 
 
 class DefaultMarkdownStreamFeeler(Generic[RawT, MessageT, OutputT]):
