@@ -20,7 +20,7 @@ from typing import (
 
 import logfire
 from pydantic import JsonValue
-from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -57,11 +57,6 @@ MessageT = TypeVar("MessageT")
 RawT = TypeVar("RawT")
 OutputT = TypeVar(
     "OutputT", bound=JsonValue | DeferredToolRequests, infer_variance=True
-)
-OutputContraT = TypeVar(
-    "OutputContraT",
-    bound=JsonValue | DeferredToolRequests,
-    contravariant=True,
 )
 
 
@@ -481,16 +476,6 @@ class MarkdownStreamFeeler(Protocol[OutputT]):
     ) -> IMMessageID | None: ...
 
 
-class EventStreamFeeler(Protocol[OutputContraT]):
-    """Presents agent events to IM and returns platform message metadata only."""
-
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputContraT]],
-    ) -> IMMessageID | None: ...
-
-
 class TimelineState:
     """Streaming render hook for one run. `ChannelTentacle.drive_timeline` calls these
     lifecycle methods as it walks the event stream — one per real stream event:
@@ -528,16 +513,6 @@ class TimelineFeeler(Protocol):
     def open(
         self, key: ConversationKey
     ) -> AbstractAsyncContextManager[TimelineState]: ...
-
-
-async def final_stream_result(
-    events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputT]],
-) -> AgentRunResult[OutputT] | None:
-    result: AgentRunResult[OutputT] | None = None
-    async for event in events:
-        if isinstance(event, AgentRunResultEvent):
-            result = event.result
-    return result
 
 
 def markdown_from_output(output: JsonValue | DeferredToolRequests) -> str | None:
@@ -702,28 +677,6 @@ class DefaultMarkdownStreamFeeler(Generic[RawT, MessageT, OutputT]):
         if last is None and final_output is not None:
             last = await final_output()
         markdown = markdown_from_output(last) if last is not None else None
-        if markdown is not None:
-            return await present_markdown(
-                ink=self.ink,
-                chromo=self.chromo,
-                key=key,
-                markdown=markdown,
-            )
-        return None
-
-
-class DefaultEventStreamFeeler(Generic[RawT, MessageT, OutputT]):
-    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
-        self.ink = ink
-        self.chromo = chromo
-
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputT]],
-    ) -> IMMessageID | None:
-        result = await final_stream_result(events)
-        markdown = markdown_from_output(result.output) if result is not None else None
         if markdown is not None:
             return await present_markdown(
                 ink=self.ink,

@@ -16,7 +16,6 @@ from octomate.tentacles.channel.feelers.deferred import (
     QuestionFeeler,
 )
 from octomate.tentacles.channel.feelers.output import (
-    EventStreamFeeler,
     JsonValue,
     MarkdownFeeler,
     MarkdownStreamFeeler,
@@ -36,7 +35,6 @@ class Feelers(Generic[OutputT]):
 
     markdown: MarkdownFeeler
     markdown_stream: MarkdownStreamFeeler[OutputT]
-    event_stream: EventStreamFeeler[OutputT]
     timeline: TimelineFeeler
     approvals: ApprovalFeeler
     ask_questions: QuestionFeeler

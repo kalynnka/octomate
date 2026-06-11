@@ -30,7 +30,6 @@ from octomate.tentacles.channel.lark.feelers.approvals import (
     approval_resolution_card_data,
 )
 from octomate.tentacles.channel.lark.feelers.output import (
-    LarkEventStreamFeeler,
     LarkMarkdownFeeler,
     LarkMarkdownStreamFeeler,
     LarkTimelineFeeler,
@@ -115,12 +114,6 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             markdown_stream=LarkMarkdownStreamFeeler[ChannelOutput](
                 ink=self.ink,
                 chromo=self.chromo,
-                stream_config=self.config.stream,
-                markdown_feeler=markdown_feeler,
-                channel_id=self.id,
-            ),
-            event_stream=LarkEventStreamFeeler[ChannelOutput](
-                ink=self.ink,
                 stream_config=self.config.stream,
                 markdown_feeler=markdown_feeler,
                 channel_id=self.id,

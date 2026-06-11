@@ -35,7 +35,6 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     submitted_blocks,
 )
 from octomate.tentacles.channel.slack.feelers.output import (
-    SlackEventStreamFeeler,
     SlackMarkdownStreamFeeler,
     SlackTimelineFeeler,
 )
@@ -118,12 +117,6 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
                 ink=self.ink,
                 chromo=self.chromo,
                 stream_config=self.config.stream,
-                markdown_feeler=markdown_feeler,
-                channel_id=self.id,
-            ),
-            event_stream=SlackEventStreamFeeler[ChannelOutput](
-                ink=self.ink,
-                chromo=self.chromo,
                 markdown_feeler=markdown_feeler,
                 channel_id=self.id,
             ),

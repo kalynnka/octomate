@@ -11,7 +11,6 @@ from typing import cast
 
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger
 from pydantic import JsonValue, TypeAdapter
-from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
@@ -276,15 +275,6 @@ class NoopTimeline(TimelineState):
         yield self
 
 
-class NoopEventStreamFeeler:
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[str]],
-    ) -> str | None:
-        return None
-
-
 @dataclass
 class FakeActionContext:
     questions: list[DeferredQuestion]
@@ -380,7 +370,6 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
     context = await Feelers(
         markdown=RecordingMarkdownFeeler(),
         markdown_stream=NoopMarkdownStreamFeeler(),
-        event_stream=NoopEventStreamFeeler(),
         timeline=NoopTimeline(),
         approvals=approvals,
         ask_questions=ask_questions,

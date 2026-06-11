@@ -156,23 +156,6 @@ class NoopMarkdownStreamFeeler:
         return None
 
 
-@dataclass
-class RecordingEventStreamRecorder:
-    stream_sent: list[tuple[ConversationKey, list[str]]]
-
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[FakeStreamEvent],
-    ) -> str | None:
-        outputs: list[str] = []
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                outputs.append(str(event.result.output))
-        self.stream_sent.append((key, outputs))
-        return "event-message"
-
-
 class NoopTimeline(TimelineState):
     @asynccontextmanager
     async def open(self, key: ConversationKey) -> AsyncIterator[NoopTimeline]:
@@ -196,7 +179,6 @@ class FakeChannel:
         self.feelers = Feelers[str](
             markdown=self,
             markdown_stream=NoopMarkdownStreamFeeler(),
-            event_stream=RecordingEventStreamRecorder(self.stream_sent),
             timeline=NoopTimeline(),
             approvals=PlainTextApprovalFeeler(self),
             ask_questions=PlainTextAskQuestionFeeler(self),

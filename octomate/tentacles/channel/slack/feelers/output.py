@@ -6,19 +6,12 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     OutputToolCallEvent,
     OutputToolResultEvent,
-    PartDeltaEvent,
-    PartStartEvent,
     RetryPromptPart,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
     ToolReturnPart,
 )
 from pydantic_ai.result import FinalResult, StreamedRunResult
@@ -420,143 +413,6 @@ class SlackMarkdownStreamFeeler(Generic[OutputT]):
                 if markdown is not None:
                     await self.markdown_feeler.present(key, markdown)
             elif fallback_text := batcher.full_text():
-                await self.markdown_feeler.present(key, fallback_text)
-        return message_id
-
-
-class SlackEventStreamFeeler(Generic[OutputT]):
-    def __init__(
-        self,
-        *,
-        ink: SlackInk,
-        chromo: SlackChromo,
-        markdown_feeler: MarkdownFeeler,
-        channel_id: str,
-    ) -> None:
-        self.ink = ink
-        self.chromo = chromo
-        self.markdown_feeler = markdown_feeler
-        self.channel_id = channel_id
-
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputT]],
-    ) -> IMMessageID | None:
-        context = self.chromo.thread_context(key)
-        channel = key.chat_id or key.user_id
-        result_event: AgentRunResultEvent[OutputT] | None = None
-        answer_batcher = TextStreamBatcher(flush_interval=0, min_chars=0)
-        message_id: IMMessageID | None = None
-
-        try:
-            stream = await self.ink.start_stream(
-                channel,
-                context.thread_ts,
-                recipient_user_id=context.recipient_user_id,
-                recipient_team_id=context.recipient_team_id,
-                task_display_mode="timeline",
-            )
-            state = SlackTimelineState(
-                ink=self.ink,
-                stream=stream,
-                channel=channel,
-                thread_ts=context.thread_ts,
-                answer_batcher=answer_batcher,
-            )
-            await state.set_status(STATUS_THINKING)
-            try:
-                async for event in events:
-                    if isinstance(event, AgentRunResultEvent):
-                        result_event = event
-                        await state.complete_pending()
-                        continue
-
-                    if isinstance(event, PartStartEvent):
-                        if isinstance(event.part, TextPart):
-                            await state.answer_delta(event.part.content)
-                        elif isinstance(event.part, ThinkingPart):
-                            await state.thinking_start()
-                            await state.thinking_delta(event.part.content)
-                        continue
-
-                    if isinstance(event, PartDeltaEvent):
-                        if isinstance(event.delta, TextPartDelta):
-                            await state.answer_delta(event.delta.content_delta)
-                        elif isinstance(event.delta, ThinkingPartDelta):
-                            await state.thinking_delta(event.delta.content_delta or "")
-                        continue
-
-                    if isinstance(event, FunctionToolCallEvent | OutputToolCallEvent):
-                        tool = event.part
-                        if state.should_skip_tool_call(
-                            tool.tool_name,
-                            tool.tool_call_id,
-                        ):
-                            continue
-                        title = humanize_tool_name(tool.tool_name)
-                        if isinstance(event, OutputToolCallEvent):
-                            title = f"Output: {title}"
-                        args = tool.args_as_dict()
-                        await state.start_tool(
-                            tool.tool_call_id,
-                            title,
-                            format_tool_arguments(tool.tool_name, args)
-                            if args
-                            else None,
-                            status_hint(tool.tool_name),
-                        )
-                        continue
-
-                    if isinstance(
-                        event,
-                        FunctionToolResultEvent | OutputToolResultEvent,
-                    ):
-                        part = event.part
-                        tool_name = part.tool_name or "output"
-                        if state.should_skip_tool_result(
-                            tool_name,
-                            getattr(part, "tool_call_id", None),
-                        ):
-                            continue
-                        await state.finish_tool(
-                            getattr(part, "tool_call_id", None),
-                            tool_name,
-                            format_tool_result(part),
-                            error=isinstance(part, RetryPromptPart),
-                        )
-
-                await state.complete_pending()
-                await state.finish_answer()
-
-                if (
-                    result_event is not None
-                    and not state.saw_answer
-                    and isinstance(result_event.result.output, str)
-                ):
-                    await self.ink.append_stream(stream, result_event.result.output)
-                message_id = await self.ink.stop_stream(stream)
-                await state.set_status("")
-            except Exception:
-                try:
-                    await state.set_status("")
-                    message_id = await self.ink.stop_stream(stream)
-                finally:
-                    raise
-        except Exception:
-            logger.warning(
-                "Channel %s: failed to stream Slack event details",
-                self.channel_id,
-                exc_info=True,
-            )
-            if result_event is not None and not isinstance(
-                result_event.result.output,
-                DeferredToolRequests,
-            ):
-                markdown = markdown_from_output(result_event.result.output)
-                if markdown is not None:
-                    await self.markdown_feeler.present(key, markdown)
-            elif fallback_text := answer_batcher.full_text():
                 await self.markdown_feeler.present(key, fallback_text)
         return message_id
 

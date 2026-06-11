@@ -12,11 +12,11 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from octomate.capabilities.events import StreamEvents
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
-from octomate.capabilities.events import StreamEvents
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.graph.suspender import HumanReviewSuspender

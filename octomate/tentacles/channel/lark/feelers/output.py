@@ -7,19 +7,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     OutputToolCallEvent,
     OutputToolResultEvent,
-    PartDeltaEvent,
-    PartStartEvent,
     RetryPromptPart,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
     ToolReturnPart,
 )
 from pydantic_ai.result import FinalResult, StreamedRunResult
@@ -366,23 +360,6 @@ class LarkRunStateCards(TimelineState):
             reply_in_thread=self.reply_in_thread,
         )
 
-    async def handle(self, event: AgentStreamEvent) -> None:
-        if isinstance(event, PartStartEvent):
-            if isinstance(event.part, ThinkingPart):
-                await self.thinking_start()
-                await self.thinking_delta(event.part.content or "")
-            elif isinstance(event.part, TextPart):
-                await self.answer_delta(event.part.content)
-        elif isinstance(event, PartDeltaEvent):
-            if isinstance(event.delta, ThinkingPartDelta):
-                await self.thinking_delta(event.delta.content_delta or "")
-            elif isinstance(event.delta, TextPartDelta):
-                await self.answer_delta(event.delta.content_delta)
-        elif isinstance(event, FunctionToolCallEvent | OutputToolCallEvent):
-            await self.tool_start(event)
-        elif isinstance(event, FunctionToolResultEvent | OutputToolResultEvent):
-            await self.tool_end(event)
-
     async def thinking_start(self) -> None:
         await self.fold_thinking()
         self.thinking_text = ""
@@ -523,8 +500,8 @@ class LarkTimelineFeeler(TimelineFeeler):
     """Renders a run as Lark cards (a card per thinking block / tool call + a
     streaming answer card), driven event-by-event by `ChannelTentacle.consume`.
 
-    Stateless; `open(key)` builds a fresh per-run `LarkRunCards` machine (the same
-    one `LarkEventStreamFeeler` drives, until that path is retired) and yields it."""
+    Stateless; `open(key)` builds a fresh per-run `LarkRunStateCards` machine that
+    `drive_timeline` renders each event onto."""
 
     def __init__(
         self,
@@ -560,85 +537,3 @@ class LarkTimelineFeeler(TimelineFeeler):
             # so the result-fallback arg is None here.
             await state.finish(None)
             state.message_id = state.answer_message_id
-
-
-class LarkEventStreamFeeler(Generic[OutputT]):
-    """Posts an agent run as a sequence of cards in the thread: each thinking
-    block and each tool call is its own card (sent on start, then patched and
-    folded once it finishes), and the final answer streams with the typewriter
-    in its own card."""
-
-    def __init__(
-        self,
-        *,
-        ink: LarkInk,
-        stream_config: ChannelStreamConfig,
-        markdown_feeler: MarkdownFeeler,
-        channel_id: str,
-    ) -> None:
-        self.ink = ink
-        self.stream_config = stream_config
-        self.markdown_feeler = markdown_feeler
-        self.channel_id = channel_id
-
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputT]],
-    ) -> IMMessageID | None:
-        reply_to = key.thread_id if key.thread_id.startswith("om_") else None
-        cards_state = LarkRunStateCards(
-            ink=self.ink,
-            chat_id=key.chat_id or key.user_id,
-            chat_type=key.chat_type,
-            reply_to=reply_to,
-            reply_in_thread=reply_to is not None,
-            answer_batcher=TextStreamBatcher(
-                flush_interval=self.stream_config.flush_interval,
-                min_chars=self.stream_config.min_chars,
-                max_chars=self.stream_config.max_chars,
-                fold_threshold=self.stream_config.fold_threshold,
-            ),
-        )
-
-        result_event: AgentRunResultEvent[OutputT] | None = None
-        failed = False
-        # Always drain the event stream: abandoning it mid-run would tear down
-        # the agent task group from the wrong task. Per-event failures degrade
-        # the run and fall back to a plain message at the end.
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                result_event = event
-                continue
-            if failed:
-                continue
-            try:
-                await cards_state.handle(event)
-            except Exception:
-                logger.warning(
-                    "Channel %s: failed to render Lark event card",
-                    self.channel_id,
-                    exc_info=True,
-                )
-                failed = True
-
-        if not failed:
-            try:
-                await cards_state.finish(result_event)
-            except Exception:
-                logger.warning(
-                    "Channel %s: failed to finish Lark answer card",
-                    self.channel_id,
-                    exc_info=True,
-                )
-                failed = True
-
-        if failed or not cards_state.saw_answer:
-            fallback = None
-            if result_event is not None and not isinstance(
-                result_event.result.output, DeferredToolRequests
-            ):
-                fallback = markdown_from_output(result_event.result.output)
-            if fallback is not None:
-                await self.markdown_feeler.present(key, fallback)
-        return cards_state.answer_message_id

@@ -126,7 +126,6 @@ class FakeChannel:
         self.feelers = Feelers[str](
             markdown=self,
             markdown_stream=self,
-            event_stream=self,
             timeline=NoopTimeline(),
             approvals=PlainTextApprovalFeeler(self),
             ask_questions=PlainTextAskQuestionFeeler(self),

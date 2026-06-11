@@ -57,7 +57,6 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextAskQuestionFeeler,
 )
 from octomate.tentacles.channel.feelers.output import (
-    DefaultEventStreamFeeler,
     DefaultMarkdownFeeler,
     DefaultMarkdownStreamFeeler,
     DefaultTimelineFeeler,
@@ -176,10 +175,6 @@ class ChannelTentacle(
         self.feelers = Feelers[ChannelOutput](
             markdown=markdown_feeler,
             markdown_stream=DefaultMarkdownStreamFeeler[RawT, MessageT, ChannelOutput](
-                ink=self.ink,
-                chromo=self.chromo,
-            ),
-            event_stream=DefaultEventStreamFeeler[RawT, MessageT, ChannelOutput](
                 ink=self.ink,
                 chromo=self.chromo,
             ),
