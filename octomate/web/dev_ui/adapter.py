@@ -6,14 +6,19 @@ from dataclasses import dataclass
 from typing import ClassVar, Literal
 
 from fastapi.responses import StreamingResponse
-from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
+from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     AgentStreamEvent,
     ModelMessage,
     ModelRequest,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
     UserContent,
     UserPromptPart,
 )
+from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import RequestData
@@ -22,18 +27,29 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     DataChunk,
 )
 
-from octomate.managers.conversations import ConversationManager
-from octomate.schemas.conversation import ConversationKey
+from octomate.capabilities.agent import Agent
+from octomate.capabilities.events import (
+    ActionBatchEvent,
+    DisplayEvent,
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+)
 from octomate.capabilities.react import (
     ReactDeps,
-    ReactOutput,
     ReactState,
     ResumeTurn,
     StartTurn,
     iter_react_graph_events,
 )
+from octomate.managers.conversations import ConversationManager
+from octomate.schemas.conversation import ConversationKey
+from octomate.tentacles.agent.inkling.base import InklingOutput
 
 logger = logging.getLogger(__name__)
+
+# Synthetic part index for the re-materialized reply text; far above any real
+# part index so the Vercel stream keys it as its own part.
+REPLY_PART_INDEX = 1000
 
 
 @dataclass
@@ -43,7 +59,7 @@ class GraphAdapter:
     SDK_VERSION: ClassVar[Literal[6]] = 6
 
     channel_id: str
-    agent: Agent[None, str | DeferredToolRequests]
+    agent: Agent[None, InklingOutput]
     conversations: ConversationManager
     agent_id: str = "Inkling"
 
@@ -88,21 +104,49 @@ class GraphAdapter:
         conversation_key: ConversationKey,
         user_prompt: str | Sequence[UserContent] | None,
         deferred: DeferredToolResults | None,
-    ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[ReactOutput]]:
+    ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[InklingOutput]]:
+        # The react stream is normalized (the reply arrives as ResultTextDeltaEvent /
+        # ResultSegmentEvent, not raw text parts); the stock Vercel event stream only
+        # speaks native AgentStreamEvents, so re-materialize the reply as a synthetic
+        # text part and skip the octomate-only events it would silently drop. Proper
+        # StreamEvents handling in dev_ui is UoW-12.
+        events = iter_react_graph_events(
+            self.start_node(user_prompt=user_prompt, deferred=deferred),
+            state=ReactState(
+                conversation_key=conversation_key,
+                agent_tentacle_id=self.agent_id,
+            ),
+            deps=ReactDeps(
+                agent=self.agent,
+                conversation_manager=self.conversations,
+                agent_deps=None,
+            ),
+        )
+        reply_started = False
         try:
-            async for event in iter_react_graph_events(
-                self.start_node(user_prompt=user_prompt, deferred=deferred),
-                state=ReactState(
-                    conversation_key=conversation_key,
-                    agent_tentacle_id=self.agent_id,
-                ),
-                deps=ReactDeps(
-                    agent=self.agent,
-                    conversation_manager=self.conversations,
-                    agent_deps=None,
-                ),
-            ):
-                yield event
+            async for event in events:
+                match event:
+                    case ResultTextDeltaEvent():
+                        text = event.delta
+                    case ResultSegmentEvent():
+                        text = str(event.segment)
+                    case FinalResult() | DisplayEvent() | ActionBatchEvent():
+                        continue
+                    case _:
+                        yield event
+                        continue
+                if not text:
+                    continue
+                if reply_started:
+                    yield PartDeltaEvent(
+                        index=REPLY_PART_INDEX,
+                        delta=TextPartDelta(content_delta=text),
+                    )
+                else:
+                    reply_started = True
+                    yield PartStartEvent(
+                        index=REPLY_PART_INDEX, part=TextPart(content=text)
+                    )
         except Exception:
             logger.exception("DevUI graph stream failed")
             raise
@@ -145,7 +189,7 @@ class GraphAdapter:
 
     @staticmethod
     async def complete_chunks(
-        result: AgentRunResult[ReactOutput],
+        result: AgentRunResult[InklingOutput],
     ) -> AsyncIterator[BaseChunk]:
         if not isinstance(result.output, DeferredToolRequests):
             return

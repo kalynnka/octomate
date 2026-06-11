@@ -246,6 +246,28 @@ class SlackInk(Ink[SlackOutboundMessage]):
         )
         return await self.stop_stream(stream, markdown_text=markdown_text)
 
+    async def upload_image(
+        self,
+        *,
+        channel: str,
+        data: bytes,
+        filename: str,
+        thread_ts: str | None = None,
+    ) -> IMMessageID | None:
+        """Upload image bytes shared directly into the channel/thread."""
+        resp = await self.client.files_upload_v2(
+            channel=channel,
+            content=data,
+            filename=filename,
+            thread_ts=thread_ts,
+        )
+        file_info = resp.get("file", {})
+        return (
+            file_info.get("permalink")
+            or file_info.get("url_private")
+            or resp.get("file_id")
+        )
+
     async def upload_markdown_file(
         self,
         *,

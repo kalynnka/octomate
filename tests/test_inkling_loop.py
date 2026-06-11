@@ -11,13 +11,12 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
-from typing import cast
+from typing import TypeAlias, cast
 
 import pytest
 
-from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
+from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
-    AgentStreamEvent,
     ModelMessage,
     ModelResponse,
     TextPart,
@@ -36,10 +35,13 @@ from pydantic_graph import End, Graph, GraphRunContext
 from octomate import Octomate
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.segments import Segment
+from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import ActionBatchEvent
 from octomate.capabilities.react import (
     ReactDeps,
     ReactState,
+    ReactStreamEvent,
     ResolveDeferred,
     ResumeTurn,
     RunAgent,
@@ -52,11 +54,12 @@ from octomate.tentacles.agent.inkling import (
     build_inkling_agent,
     inkling_toolset,
 )
+from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.json import JsonObject
 
 InklingTestOutput = str | DeferredToolRequests
-InklingTestEvent = AgentStreamEvent | AgentRunResultEvent[InklingTestOutput]
+InklingTestEvent: TypeAlias = ReactStreamEvent[InklingTestOutput]
 
 
 class StubRegistry:
@@ -212,6 +215,24 @@ def _test_conversation_key() -> ConversationKey:
     )
 
 
+# The loop tests run str-output agents through the graph (they exercise loop
+# mechanics, not inkling's reply contract), so the calls below pin output_type
+# back to text explicitly.
+STR_OUTPUT: list[type[str] | type[DeferredToolRequests]] = [str, DeferredToolRequests]
+
+
+def _tentacle(
+    agent: Agent[None, InklingTestOutput],
+    conversations: FakeConversationManager,
+) -> InklingTentacle:
+    return InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=cast(Agent[None, InklingOutput], agent),
+        conversation_manager=conversations,
+    )
+
+
 async def test_inkling_loop_emits_deferred_question_batch() -> None:
     agent, script = _build_test_agent(
         [
@@ -233,15 +254,11 @@ async def test_inkling_loop_emits_deferred_question_batch() -> None:
 
     captured_events: list[InklingTestEvent] = []
     conversations = FakeConversationManager()
-    tentacle = InklingTentacle(
-        "inkling",
-        Octomate(conversations=conversations),
-        agent=agent,
-        conversation_manager=conversations,
-    )
+    tentacle = _tentacle(agent, conversations)
     async with tentacle.run_stream_events(
         "hi octomate",
         conversation_key=_test_conversation_key(),
+        output_type=STR_OUTPUT,
     ) as stream:
         async for event in stream:
             captured_events.append(event)
@@ -279,18 +296,14 @@ async def test_inkling_tentacle_invokes_suspender_on_deferred_request() -> None:
         ]
     )
     conversations = FakeConversationManager()
-    tentacle = InklingTentacle(
-        "inkling",
-        Octomate(conversations=conversations),
-        agent=agent,
-        conversation_manager=conversations,
-    )
+    tentacle = _tentacle(agent, conversations)
     suspender = _StubSuspender()
 
     outputs: list[object] = []
     async with tentacle.run_stream_events(
         "hi octomate",
         conversation_key=_test_conversation_key(),
+        output_type=STR_OUTPUT,
         deferred_suspender=suspender,
     ) as stream:
         async for event in stream:
@@ -309,17 +322,13 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
         ]
     )
     conversations = FakeConversationManager()
-    tentacle = InklingTentacle(
-        "inkling",
-        Octomate(conversations=conversations),
-        agent=agent,
-        conversation_manager=conversations,
-    )
+    tentacle = _tentacle(agent, conversations)
 
     captured_events: list[InklingTestEvent] = []
     async with tentacle.run_stream_events(
         "hi octomate",
         conversation_key=_test_conversation_key(),
+        output_type=STR_OUTPUT,
     ) as stream:
         async for event in stream:
             captured_events.append(event)
@@ -330,6 +339,38 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
     assert result_events
     assert result_events[-1].result.output == "all done!"
     assert script.cursor == 1
+
+
+async def test_inkling_default_output_is_segments() -> None:
+    """The real inkling contract: with no output_type override the reply is a
+    list of output segments (TestModel auto-generates from the segment schema)."""
+
+    agent = build_inkling_agent(
+        cast(ProviderRegistry, StubRegistry()),
+        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
+    )
+    conversations = FakeConversationManager()
+    tentacle = InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=agent,
+        conversation_manager=conversations,
+    )
+
+    result = await tentacle.run(
+        "hi octomate",
+        conversation_key=_test_conversation_key(),
+        model=TestModel(
+            call_tools=[],
+            custom_output_args=[
+                {"type": "markdown", "data": {"text": "hello from the reef"}}
+            ],
+        ),
+    )
+
+    assert isinstance(result.output, list)
+    assert all(isinstance(segment, Segment) for segment in result.output)
+    assert [str(segment) for segment in result.output] == ["hello from the reef"]
 
 
 async def test_inkling_loop_propagates_graph_error_streaming() -> None:
@@ -351,12 +392,7 @@ async def test_inkling_loop_propagates_graph_error_streaming() -> None:
         system_prompt=SYSTEM_PROMPT,
     )
     conversations = FakeConversationManager()
-    tentacle = InklingTentacle(
-        "inkling",
-        Octomate(conversations=conversations),
-        agent=agent,
-        conversation_manager=conversations,
-    )
+    tentacle = _tentacle(agent, conversations)
 
     with pytest.raises(RuntimeError, match="model boom"):
         async with tentacle.run_stream_events(
@@ -385,17 +421,13 @@ async def test_inkling_loop_propagates_graph_error_collected_run() -> None:
         system_prompt=SYSTEM_PROMPT,
     )
     conversations = FakeConversationManager()
-    tentacle = InklingTentacle(
-        "inkling",
-        Octomate(conversations=conversations),
-        agent=agent,
-        conversation_manager=conversations,
-    )
+    tentacle = _tentacle(agent, conversations)
 
     with pytest.raises(RuntimeError, match="model boom"):
         await tentacle.run(
             "hi octomate",
             conversation_key=_test_conversation_key(),
+            output_type=STR_OUTPUT,
         )
 
 

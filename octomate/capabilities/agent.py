@@ -26,8 +26,20 @@ from typing import Any, cast, overload
 
 from pydantic import ValidationError
 from pydantic_ai import Agent as PydanticAgent
-from pydantic_ai import AgentRunResultEvent
-from pydantic_ai.agent.abstract import RunOutputDataT
+from pydantic_ai import (
+    AgentBuiltinTool,
+    AgentCapability,
+    AgentModelSettings,
+    AgentRunResultEvent,
+    AgentSpec,
+    RunUsage,
+    UsageLimits,
+)
+from pydantic_ai.agent.abstract import (
+    AgentInstructions,
+    AgentMetadata,
+    RunOutputDataT,
+)
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import (
     FinalResultEvent,
@@ -42,6 +54,7 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputDataT, OutputSpec
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import AgentDepsT, DeferredToolResults
+from pydantic_ai.toolsets import AbstractToolset
 
 # Pydantic AI applies capability wrap_run_event_stream only inside run()'s hooked
 # path; stream_events drives iter() directly, so we replicate the wrap per node.
@@ -70,6 +83,17 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         conversation_id: str | None = None,
         deps: AgentDepsT = None,
         model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[AgentDepsT] = None,
+        model_settings: AgentModelSettings[AgentDepsT] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[AgentDepsT] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+        spec: dict[str, Any] | AgentSpec | None = None,
     ) -> AsyncIterator[
         StreamEvents[OutputDataT] | AgentRunResultEvent[OutputDataT]
     ]: ...
@@ -85,6 +109,17 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         conversation_id: str | None = None,
         deps: AgentDepsT = None,
         model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[AgentDepsT] = None,
+        model_settings: AgentModelSettings[AgentDepsT] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[AgentDepsT] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+        spec: dict[str, Any] | AgentSpec | None = None,
     ) -> AsyncIterator[
         StreamEvents[RunOutputDataT] | AgentRunResultEvent[RunOutputDataT]
     ]: ...
@@ -99,6 +134,17 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         conversation_id: str | None = None,
         deps: AgentDepsT = None,
         model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[AgentDepsT] = None,
+        model_settings: AgentModelSettings[AgentDepsT] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[AgentDepsT] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+        spec: dict[str, Any] | AgentSpec | None = None,
     ) -> AsyncIterator[StreamEvents[Any] | AgentRunResultEvent[Any]]:
         async with self.iter(
             user_prompt,
@@ -108,6 +154,17 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
             conversation_id=conversation_id,
             deps=deps,
             model=model,
+            instructions=instructions,
+            model_settings=model_settings,
+            usage_limits=usage_limits,
+            usage=usage,
+            metadata=metadata,
+            output_retries=output_retries,
+            infer_name=infer_name,
+            toolsets=toolsets,
+            builtin_tools=builtin_tools,
+            capabilities=capabilities,
+            spec=spec,
         ) as run:
             async for node in run:
                 if self.is_model_request_node(node):
@@ -153,7 +210,11 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                             except (ValidationError, ModelRetry):
                                 continue
                             if isinstance(partial, list):
-                                for segment in partial[emitted_segments:]:
+                                # The trailing element may still be growing under
+                                # partial validation — emit only the elements a later
+                                # one has sealed; the tail is emitted from the final
+                                # validated output below.
+                                for segment in partial[emitted_segments:-1]:
                                     # A validated list[MessageSegment] element is a union
                                     # member; the Annotated discriminated union can't be
                                     # isinstance-narrowed, so guard on the base then cast.
@@ -161,7 +222,9 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                                         yield ResultSegmentEvent(
                                             segment=cast(MessageSegment, segment)
                                         )
-                                emitted_segments = len(partial)
+                                emitted_segments = max(
+                                    emitted_segments, len(partial) - 1
+                                )
                         if final_event is not None:
                             try:
                                 final = await stream.validate_response_output(
@@ -169,6 +232,12 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                                 )
                             except (ValidationError, ModelRetry):
                                 final = None
+                            if isinstance(final, list):
+                                for segment in final[emitted_segments:]:
+                                    if isinstance(segment, Segment):
+                                        yield ResultSegmentEvent(
+                                            segment=cast(MessageSegment, segment)
+                                        )
                             yield FinalResult(
                                 output=final,
                                 tool_name=final_event.tool_name,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -24,6 +24,7 @@ from octomate.capabilities.events import (
 )
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.segments import CardSegment, ImageSegment, MessageSegment
 from octomate.tentacles.channel.feelers.output import (
     IMMessageID,
     JsonValue,
@@ -40,9 +41,12 @@ from octomate.tentacles.channel.feelers.output import (
 )
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
+from octomate.tentacles.channel.slack.schema import SlackBlock, SlackOutboundMessage
 
 logger = logging.getLogger(__name__)
-OutputT = TypeVar("OutputT", bound=JsonValue | DeferredToolRequests)
+OutputT = TypeVar(
+    "OutputT", bound=JsonValue | Sequence[MessageSegment] | DeferredToolRequests
+)
 PLAN_TITLE = "Working on request"
 
 THINKING_TITLE = "Thinking"
@@ -85,6 +89,7 @@ class SlackTimelineState(TimelineState):
     ink: SlackInk
     stream: Any
     channel: str
+    chat_type: str
     thread_ts: str
     answer_batcher: TextStreamBatcher
     message_id: IMMessageID | None = None
@@ -222,6 +227,35 @@ class SlackTimelineState(TimelineState):
         for update in self.answer_batcher.finish_all():
             self.saw_answer = True
             await self.ink.append_stream(self.stream, update.delta_text)
+
+    async def answer_segment(self, segment: MessageSegment) -> None:
+        match segment:
+            case ImageSegment():
+                await self.complete_active_thinking()
+                await self.ink.upload_image(
+                    channel=self.channel,
+                    data=segment.data.path.read_bytes(),
+                    filename=segment.data.name or segment.data.path.name,
+                    thread_ts=self.thread_ts,
+                )
+            case CardSegment():
+                await self.complete_active_thinking()
+                payload_blocks = segment.data.payload.get("blocks")
+                if not isinstance(payload_blocks, list):
+                    raise ValueError("Slack card payload requires a 'blocks' list")
+                blocks: list[SlackBlock] = []
+                for block in payload_blocks:
+                    if not isinstance(block, dict):
+                        raise ValueError("Slack card blocks must be objects")
+                    blocks.append(block)
+                await self.ink.send_message(
+                    self.channel,
+                    self.chat_type,
+                    [SlackOutboundMessage(text="[card]", blocks=blocks)],
+                    self.thread_ts,
+                )
+            case _:
+                await self.answer_delta(str(segment))
 
     def should_skip_tool_call(self, tool_name: str, tool_call_id: str | None) -> bool:
         if not should_skip_plan_tool(tool_name):
@@ -459,6 +493,7 @@ class SlackTimelineFeeler(TimelineFeeler):
             ink=self.ink,
             stream=stream,
             channel=channel,
+            chat_type=key.chat_type,
             thread_ts=context.thread_ts,
             answer_batcher=TextStreamBatcher(flush_interval=0, min_chars=0),
         )

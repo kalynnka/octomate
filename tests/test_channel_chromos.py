@@ -5,6 +5,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import Generic, TypeVar, cast
 
@@ -29,7 +30,11 @@ from slack_sdk.web.async_client import AsyncWebClient
 from websockets.asyncio.client import ClientConnection
 
 from octomate import Octomate
-from octomate.capabilities.events import ResultTextDeltaEvent, StreamEvents
+from octomate.capabilities.events import (
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+    StreamEvents,
+)
 from octomate.config import (
     LarkChannelConfig,
     LarkStreamConfig,
@@ -37,7 +42,16 @@ from octomate.config import (
     SlackStreamConfig,
 )
 from octomate.schemas.conversation import Conversation, ConversationKey, UserProfile
-from octomate.schemas.segments import AtSegment, ImageSegment, ReplySegment, TextSegment
+from octomate.schemas.segments import (
+    AtSegment,
+    CardData,
+    CardSegment,
+    ImageData,
+    ImageSegment,
+    MarkdownSegment,
+    ReplySegment,
+    TextSegment,
+)
 from octomate.tentacles.channel.base import ChannelOutput, DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.output import (
@@ -604,8 +618,13 @@ class FakeLarkInk(LarkInk):
         self.stream_updates: list[tuple[LarkStreamCard, str, int]] = []
         self.finalized: list[tuple[LarkStreamCard, int]] = []
         self.patched: list[tuple[str, str]] = []
+        self.uploaded: list[bytes] = []
         self.fail_stream_create = False
         self.fail_stream_update = False
+
+    async def upload_media(self, data: bytes) -> str | None:
+        self.uploaded.append(data)
+        return f"img-key-{len(self.uploaded)}"
 
     async def _create_message(
         self,
@@ -1054,6 +1073,7 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
     sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
         default_factory=list
     )
+    uploads: list[tuple[str, bytes, str, str | None]] = field(default_factory=list)
 
     def inspect(self) -> UserProfile:
         return UserProfile(user_id="bot", name="Bot")
@@ -1063,6 +1083,17 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
 
     async def upload_media(self, data: bytes) -> str | None:
         return None
+
+    async def upload_image(
+        self,
+        *,
+        channel: str,
+        data: bytes,
+        filename: str,
+        thread_ts: str | None = None,
+    ) -> str | None:
+        self.uploads.append((channel, data, filename, thread_ts))
+        return f"file-{len(self.uploads)}"
 
     async def download_image(
         self,
@@ -1375,6 +1406,78 @@ async def test_lark_consume_renders_timeline_per_event() -> None:
     assert any("done" in content for _card, content, _seq in ink.stream_updates)
     assert ink.finalized
     assert message_id == "stream-1"
+
+
+async def test_slack_consume_renders_image_and_card_segments(
+    tmp_path: Path,
+) -> None:
+    ink = FakeSlackInk()
+    channel = _slack_channel(ink)
+    image_path = tmp_path / "reef.png"
+    image_path.write_bytes(b"png-bytes")
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield ResultSegmentEvent(segment=MarkdownSegment(data={"text": "see:"}))
+        yield ResultSegmentEvent(
+            segment=ImageSegment(data=ImageData(file=str(image_path)))
+        )
+        yield ResultSegmentEvent(
+            segment=CardSegment(data=CardData(payload={"blocks": [{"type": "divider"}]}))
+        )
+
+    await channel.consume(_slack_key(), events())
+
+    # Markdown streams as answer text; the image uploads shared into the thread;
+    # the card posts as a blocks message.
+    assert ink.appends == ["see:"]
+    assert ink.uploads == [("C1", b"png-bytes", "reef.png", "1710000000.000100")]
+    sent_channel, _chat_type, messages, reply_to = ink.sent[0]
+    assert sent_channel == "C1"
+    assert reply_to == "1710000000.000100"
+    assert messages[0].blocks == [{"type": "divider"}]
+
+
+async def test_lark_consume_renders_image_and_card_segments(
+    tmp_path: Path,
+) -> None:
+    ink = FakeLarkInk()
+    channel = _lark_channel(ink)
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="u1",
+        user_id="u1",
+    )
+    image_path = tmp_path / "reef.png"
+    image_path.write_bytes(b"png-bytes")
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield ResultSegmentEvent(
+            segment=ImageSegment(data=ImageData(file=str(image_path)))
+        )
+        yield ResultSegmentEvent(
+            segment=CardSegment(data=CardData(payload={"header": {"title": "t"}}))
+        )
+
+    await channel.consume(key, events())
+
+    # The image uploads then sends as an image message; the card posts as an
+    # interactive message carrying the payload verbatim.
+    assert ink.uploaded == [b"png-bytes"]
+    image_contents = [
+        content for _, _, msg_type, content in ink.created if msg_type == "image"
+    ]
+    assert [json.loads(content) for content in image_contents] == [
+        {"image_key": "img-key-1"}
+    ]
+    interactive_contents = [
+        content for _, _, msg_type, content in ink.created if msg_type == "interactive"
+    ]
+    assert json.loads(interactive_contents[-1]) == {"header": {"title": "t"}}
 
 
 async def test_slack_tentacle_streams_final_only_result_once() -> None:

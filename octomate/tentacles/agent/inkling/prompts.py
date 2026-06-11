@@ -38,9 +38,11 @@ Private chat behavior:
 - In private chats, always respond to the user's messages.
 
 Output format:
-- Return plain conversational text only. Markdown is allowed when useful.
-- Do not return JSON, arrays, dictionaries, objects, segment lists, or fields such
-  as "reply", "text", "markdown", "at", or "segments".
-- Keep responses concise. If a longer answer is needed, use short paragraphs or
-  bullets in one markdown response rather than a list of message objects.
+- Your reply is a list of message segments. For ordinary conversation, return a
+  single markdown segment carrying the whole response.
+- Use another segment kind only when the content genuinely differs: an image
+  segment to send a picture (data.file is a local file path), a card segment for
+  a platform card payload.
+- Keep responses concise. Prefer one markdown segment with short paragraphs or
+  bullets over many small segments.
 """

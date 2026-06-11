@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeAlias, TypeVar
@@ -49,7 +49,7 @@ from octomate.config import ChannelConfig
 from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import ImageSegment
+from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
@@ -72,7 +72,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ThreadStrategy = Literal["main_only", "flat_thread", "nested_thread"]
-ChannelOutput: TypeAlias = str | DeferredToolRequests | None
+ChannelOutput: TypeAlias = str | Sequence[MessageSegment] | DeferredToolRequests | None
 MessageT = TypeVar("MessageT")
 RawT = TypeVar("RawT")
 
@@ -313,7 +313,7 @@ class ChannelTentacle(
                         await state.answer_delta(event.delta)
                     case ResultSegmentEvent():
                         answered = True
-                        await state.answer_delta(str(event.segment))
+                        await state.answer_segment(event.segment)
                     case (
                         TodoCreatedEvent()
                         | TodoUpdatedEvent()

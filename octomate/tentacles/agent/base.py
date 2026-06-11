@@ -4,11 +4,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, overload
 
-from pydantic import BaseModel, JsonValue
 from pydantic_ai import (
     AgentBuiltinTool,
     AgentCapability,
-    AgentEventStream,
     AgentModelSettings,
     AgentRunResult,
     AgentSpec,
@@ -19,13 +17,15 @@ from pydantic_ai.agent.abstract import (
     AgentInstructions,
     AgentMetadata,
     EventStreamHandler,
+    RunOutputDataT,
 )
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
+from octomate.capabilities.react import ReactEventStream
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
@@ -33,8 +33,10 @@ from octomate.types.json import JsonObject
 if TYPE_CHECKING:
     from octomate.capabilities.deferred import DeferredSuspender
 
-AgentOutput: TypeAlias = JsonValue | BaseModel | DeferredToolRequests
-AgentOutputT = TypeVar("AgentOutputT", bound=AgentOutput)
+# The tentacle's output type is whatever its builder's agent produces (a deferring
+# agent includes DeferredToolRequests in it); run-level output_type overrides are
+# generic over RunOutputDataT, mirroring pydantic-ai's own run signatures.
+AgentOutputT = TypeVar("AgentOutputT")
 AgentDepsT = TypeVar("AgentDepsT")
 AgentSpecInput: TypeAlias = JsonObject | AgentSpec
 
@@ -75,7 +77,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
-        output_type: OutputSpec[AgentOutput],
+        output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -92,7 +94,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         event_stream_handler: EventStreamHandler[AgentDepsT] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
-    ) -> AgentRunResult[AgentOutput]: ...
+    ) -> AgentRunResult[RunOutputDataT]: ...
 
     @abstractmethod
     async def run(
@@ -101,7 +103,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
-        output_type: OutputSpec[AgentOutput] | None = None,
+        output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -118,7 +120,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         event_stream_handler: EventStreamHandler[AgentDepsT] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
-    ) -> AgentRunResult[AgentOutputT] | AgentRunResult[AgentOutput]:
+    ) -> AgentRunResult[AgentOutputT | RunOutputDataT]:
         """Run the agent for an Octomate conversation."""
 
     @overload
@@ -144,7 +146,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
-    ) -> AgentEventStream[AgentOutputT]: ...
+    ) -> ReactEventStream[AgentOutputT]: ...
 
     @overload
     def run_stream_events(
@@ -153,7 +155,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
-        output_type: OutputSpec[AgentOutput],
+        output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -169,7 +171,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
-    ) -> AgentEventStream[AgentOutput]: ...
+    ) -> ReactEventStream[RunOutputDataT]: ...
 
     @abstractmethod
     def run_stream_events(
@@ -178,7 +180,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         *,
         conversation_key: ConversationKey,
         run_name: str | None = None,
-        output_type: OutputSpec[AgentOutput] | None = None,
+        output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -194,5 +196,5 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
-    ) -> AgentEventStream[AgentOutputT] | AgentEventStream[AgentOutput]:
+    ) -> ReactEventStream[AgentOutputT | RunOutputDataT]:
         """Stream raw agent events for an Octomate conversation."""

@@ -34,7 +34,11 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextAskQuestionFeeler,
     QuestionFeeler,
 )
-from octomate.tentacles.channel.feelers.output import TimelineState
+from octomate.schemas.segments import MarkdownSegment, TextSegment
+from octomate.tentacles.channel.feelers.output import (
+    TimelineState,
+    markdown_from_output,
+)
 from octomate.tentacles.channel.lark.base import LarkTentacle
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.feelers.approvals import (
@@ -163,6 +167,16 @@ def _nav_buttons(form_elements: list[JsonObject]) -> list[JsonObject]:
 
 def _loaded_json_object(value: str) -> JsonObject:
     return JsonObjectAdapter.validate_json(value)
+
+
+def test_markdown_from_output_renders_segments() -> None:
+    segments = [
+        MarkdownSegment(data={"text": "# hi"}),
+        TextSegment(data={"text": "plain"}),
+    ]
+    assert markdown_from_output(segments) == "# hi\n\nplain"
+    # An empty reply renders nothing (not an empty message).
+    assert markdown_from_output([]) is None
 
 
 async def test_plain_text_feelers_present_approval_and_questions() -> None:

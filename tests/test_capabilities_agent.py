@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from pydantic import BaseModel
-from pydantic_ai.messages import FunctionToolCallEvent
+from pydantic_ai.messages import FunctionToolCallEvent, ModelMessage
+from pydantic_ai.models.function import (
+    AgentInfo,
+    DeltaToolCall,
+    DeltaToolCalls,
+    FunctionModel,
+)
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.result import FinalResult
+from pydantic_ai.toolsets import FunctionToolset
 
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import ResultSegmentEvent, ResultTextDeltaEvent
@@ -47,6 +56,37 @@ async def test_segment_output_streams_one_event_per_segment() -> None:
     assert streamed == final.output
 
 
+async def test_segment_output_streams_each_segment_exactly_once() -> None:
+    """Multi-round partial validation: a segment streams only once a later one has
+    sealed it; the trailing segment arrives from the final validated output —
+    never truncated mid-growth, never duplicated."""
+
+    fragments = [
+        '{"response": [{"type": "text", "data": {"text": "one"}},',
+        ' {"type": "markdown", "data": {"text": "tw',
+        'o"}}]}',
+    ]
+
+    async def stream_args(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[DeltaToolCalls]:
+        yield {0: DeltaToolCall(name="final_result", json_args=fragments[0])}
+        for fragment in fragments[1:]:
+            yield {0: DeltaToolCall(json_args=fragment)}
+
+    agent = Agent(
+        FunctionModel(stream_function=stream_args, model_name="scripted"),
+        output_type=list[MessageSegment],
+    )
+
+    events = [event async for event in agent.stream_events("go")]
+
+    streamed = [e.segment for e in events if isinstance(e, ResultSegmentEvent)]
+    final = next(e for e in events if isinstance(e, FinalResult))
+    assert [str(segment) for segment in streamed] == ["one", "two"]
+    assert streamed == final.output
+
+
 async def test_non_segment_structured_output_surfaces_only_at_final() -> None:
     agent = Agent(TestModel(), output_type=list[Row])
 
@@ -69,3 +109,23 @@ async def test_tool_call_events_pass_through() -> None:
 
     assert any(isinstance(e, FunctionToolCallEvent) for e in events)
     assert any(isinstance(e, FinalResult) for e in events)
+
+
+async def test_call_time_run_params_are_forwarded() -> None:
+    """`stream_events` forwards the per-run kwargs to `iter()` — a call-time
+    toolset must reach the model (TestModel calls every tool it can see)."""
+
+    agent = Agent(TestModel())
+
+    def ping() -> str:
+        return "pong"
+
+    events = [
+        event
+        async for event in agent.stream_events(
+            "use ping", toolsets=[FunctionToolset(tools=[ping])]
+        )
+    ]
+
+    calls = [e for e in events if isinstance(e, FunctionToolCallEvent)]
+    assert any(e.part.tool_name == "ping" for e in calls)

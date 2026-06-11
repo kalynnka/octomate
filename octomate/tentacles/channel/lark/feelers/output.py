@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
@@ -25,6 +25,7 @@ from octomate.capabilities.events import (
 )
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.segments import CardSegment, ImageSegment, MessageSegment
 from octomate.tentacles.channel.feelers.output import (
     BatchedTextUpdate,
     IMMessageID,
@@ -46,7 +47,9 @@ from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStre
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
-OutputT = TypeVar("OutputT", bound=JsonValue | DeferredToolRequests)
+OutputT = TypeVar(
+    "OutputT", bound=JsonValue | Sequence[MessageSegment] | DeferredToolRequests
+)
 
 THINKING_HEADER = "🧠 Thinking"
 
@@ -450,6 +453,33 @@ class LarkRunStateCards(TimelineState):
         await self.fold_thinking()
         for update in self.answer_batcher.push_text(text):
             await self.push_answer(update.full_text)
+
+    async def answer_segment(self, segment: MessageSegment) -> None:
+        match segment:
+            case ImageSegment():
+                await self.fold_thinking()
+                image_key = await self.ink.upload_media(
+                    segment.data.path.read_bytes()
+                )
+                if image_key is None:
+                    raise RuntimeError("failed to upload Lark image")
+                await self.ink.send_message(
+                    self.chat_id,
+                    self.chat_type,
+                    [
+                        LarkOutboundMessage(
+                            msg_type="image",
+                            content=json.dumps({"image_key": image_key}),
+                        )
+                    ],
+                    self.reply_to,
+                    reply_in_thread=self.reply_in_thread,
+                )
+            case CardSegment():
+                await self.fold_thinking()
+                await self.post(segment.data.payload)
+            case _:
+                await self.answer_delta(str(segment))
 
     async def ensure_answer_card(self) -> LarkStreamCard:
         if self.answer_card is None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import (
@@ -46,6 +46,7 @@ from octomate.capabilities.events import (
     TodoEvent,
 )
 from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.segments import MessageSegment, Segment
 
 if TYPE_CHECKING:
     from octomate.tentacles.channel.base import Chromo, Ink
@@ -56,7 +57,9 @@ IMMessageID: TypeAlias = str
 MessageT = TypeVar("MessageT")
 RawT = TypeVar("RawT")
 OutputT = TypeVar(
-    "OutputT", bound=JsonValue | DeferredToolRequests, infer_variance=True
+    "OutputT",
+    bound=JsonValue | Sequence[MessageSegment] | DeferredToolRequests,
+    infer_variance=True,
 )
 
 
@@ -493,6 +496,13 @@ class TimelineState:
     async def answer_start(self) -> None: ...
     async def answer_delta(self, text: str) -> None: ...
     async def answer_end(self) -> None: ...
+
+    async def answer_segment(self, segment: MessageSegment) -> None:
+        """One completed segment of a `list[OutputSegment]` reply. Platforms with a
+        media transport override this to render images/cards natively; the default
+        renders the segment's text form."""
+        await self.answer_delta(str(segment))
+
     async def tool_start(
         self, event: FunctionToolCallEvent | OutputToolCallEvent
     ) -> None: ...
@@ -515,11 +525,17 @@ class TimelineFeeler(Protocol):
     ) -> AbstractAsyncContextManager[TimelineState]: ...
 
 
-def markdown_from_output(output: JsonValue | DeferredToolRequests) -> str | None:
+def markdown_from_output(
+    output: JsonValue | Sequence[MessageSegment] | DeferredToolRequests,
+) -> str | None:
     if output is None or isinstance(output, DeferredToolRequests):
         return None
     if isinstance(output, str):
         return output
+    if isinstance(output, Sequence):
+        if all(isinstance(item, Segment) for item in output):
+            return "\n\n".join(str(item) for item in output) or None
+        output = [item for item in output if not isinstance(item, Segment)]
     return f"```json\n{format_stream_value(output)}\n```"
 
 
