@@ -22,10 +22,13 @@ from pydantic_ai.tools import DeferredToolRequests
 from octomate.capabilities.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
+    TodoDeletedEvent,
+    TodoEvent,
 )
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.segments import CardSegment, ImageSegment, MessageSegment
+from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.feelers.output import (
     BatchedTextUpdate,
     IMMessageID,
@@ -37,6 +40,7 @@ from octomate.tentacles.channel.feelers.output import (
     format_fields,
     humanize_tool_name,
     markdown_from_output,
+    render_todo_lines,
     should_skip_plan_tool,
     truncate_task_detail,
 )
@@ -348,6 +352,8 @@ class LarkRunStateCards(TimelineState):
     thinking_text: str = ""
     tool_cards: dict[str, tuple[str | None, str, str]] = field(default_factory=dict)
     skipped: set[str] = field(default_factory=set)
+    todos: dict[str, Todo] = field(default_factory=dict)
+    todo_card_id: str | None = None
 
     async def post(self, card: JsonObject) -> str | None:
         return await self.ink.send_message(
@@ -480,6 +486,23 @@ class LarkRunStateCards(TimelineState):
                 await self.post(segment.data.payload)
             case _:
                 await self.answer_delta(str(segment))
+
+    async def todo(self, event: TodoEvent) -> None:
+        if isinstance(event, TodoDeletedEvent):
+            self.todos.pop(event.todo.ref, None)
+        else:
+            self.todos[event.todo.ref] = event.todo
+        if not self.todos and self.todo_card_id is None:
+            return
+        body = "**Tasks**\n" + "\n".join(render_todo_lines(self.todos.values()))
+        card = cards.card_v2([cards.markdown(body)])
+        if self.todo_card_id is None:
+            self.todo_card_id = await self.post(card)
+        else:
+            await self.ink.patch_card(
+                self.todo_card_id,
+                json.dumps(card, ensure_ascii=False, separators=(",", ":")),
+            )
 
     async def ensure_answer_card(self) -> LarkStreamCard:
         if self.answer_card is None:

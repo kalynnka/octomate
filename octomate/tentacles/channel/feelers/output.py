@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import (
@@ -43,10 +43,13 @@ from typing_extensions import TypeVar
 from octomate.capabilities.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
+    TodoDeletedEvent,
     TodoEvent,
 )
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.segments import MessageSegment, Segment
+from octomate.schemas.todos import Todo
+from octomate.types.todos import STATUS_MARKERS
 
 if TYPE_CHECKING:
     from octomate.tentacles.channel.base import Chromo, Ink
@@ -525,6 +528,21 @@ class TimelineFeeler(Protocol):
     ) -> AbstractAsyncContextManager[TimelineState]: ...
 
 
+def render_todo_lines(todos: Iterable[Todo]) -> list[str]:
+    """User-facing checklist lines (`- [x] …` task-list markdown, plaintext-safe):
+    an in-progress item shows its active form, subtasks indent under their parent."""
+    lines: list[str] = []
+    for todo in sorted(todos, key=lambda todo: (todo.position, todo.ref)):
+        label = (
+            todo.active_form
+            if todo.status == "in_progress" and todo.active_form
+            else todo.content
+        )
+        indent = "  " if todo.parent_ref else ""
+        lines.append(f"{indent}- {STATUS_MARKERS[todo.status]} {label}")
+    return lines
+
+
 def markdown_from_output(
     output: JsonValue | Sequence[MessageSegment] | DeferredToolRequests,
 ) -> str | None:
@@ -589,10 +607,19 @@ class DefaultMarkdownFeeler(Generic[RawT, MessageT]):
 @dataclass
 class DefaultTimelineState(TimelineState):
     parts: list[str] = field(default_factory=list)
+    todos: dict[str, Todo] = field(default_factory=dict)
     message_id: IMMessageID | None = None
 
     async def answer_delta(self, text: str) -> None:
         self.parts.append(text)
+
+    async def todo(self, event: TodoEvent) -> None:
+        # No live transport: keep the latest snapshot; the feeler appends it as a
+        # checklist under the final message.
+        if isinstance(event, TodoDeletedEvent):
+            self.todos.pop(event.todo.ref, None)
+        else:
+            self.todos[event.todo.ref] = event.todo
 
 
 class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
@@ -614,6 +641,11 @@ class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
             yield state
         finally:
             markdown = "".join(state.parts)
+            if state.todos:
+                todo_block = "Tasks:\n" + "\n".join(
+                    render_todo_lines(state.todos.values())
+                )
+                markdown = f"{markdown}\n\n{todo_block}" if markdown else todo_block
             if markdown:
                 logger.warning(
                     "Channel %s: timeline has no streaming transport; "

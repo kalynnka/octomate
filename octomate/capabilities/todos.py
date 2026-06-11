@@ -33,7 +33,7 @@ from octomate.capabilities.events import (
 )
 from octomate.managers.todos import TodoManager
 from octomate.schemas.todos import Todo, TodoWrite
-from octomate.types.todos import TodoStatus
+from octomate.types.todos import STATUS_MARKERS, TodoStatus
 
 TODO_TOOL_NAMES = frozenset(
     {
@@ -47,13 +47,6 @@ TODO_TOOL_NAMES = frozenset(
         "get_available_tasks",
     }
 )
-
-STATUS_MARKERS = {
-    "pending": "[ ]",
-    "in_progress": "[*]",
-    "completed": "[x]",
-    "blocked": "[!]",
-}
 
 TODO_INSTRUCTION = """\
 ## Task management

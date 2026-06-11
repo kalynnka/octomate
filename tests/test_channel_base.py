@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from typing_extensions import NotRequired, TypedDict
 
@@ -46,7 +46,9 @@ from octomate.capabilities.events import (
     ActionBatchEvent,
     ResultTextDeltaEvent,
     StreamEvents,
+    TodoCompletedEvent,
 )
+from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import (
     ChannelOutput,
     ChannelTentacle,
@@ -418,6 +420,39 @@ async def test_consume_falls_back_to_final_output_when_no_text_streamed(
 
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "just the final"
+
+
+async def test_consume_appends_todo_checklist_to_final_message(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+    todo = Todo(
+        conversation_id=uuid4(),
+        ref="T1",
+        content="Find the docs",
+        status="completed",
+    )
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        yield ResultTextDeltaEvent(delta="done")
+        yield TodoCompletedEvent(todo=todo)
+
+    await channel.consume(key, events())
+
+    # The answer-only timeline has no live transport: the latest todo snapshot
+    # rides under the final message as a checklist.
+    assert len(channel.sent) == 1
+    text = channel.sent[0][2][0]["text"]
+    assert text.startswith("done")
+    assert "Tasks:" in text
+    assert "- [x] Find the docs" in text
 
 
 async def test_consume_renders_and_marks_action_batch(

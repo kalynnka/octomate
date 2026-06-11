@@ -341,6 +341,31 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
     assert script.cursor == 1
 
 
+async def test_inkling_default_includes_todo_capability() -> None:
+    """The todo capability is on by default: its tools are offered to the model."""
+
+    agent = build_inkling_agent(
+        cast(ProviderRegistry, StubRegistry()),
+        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
+    )
+    seen_tools: list[str] = []
+
+    async def respond_stream(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        seen_tools.extend(tool.name for tool in info.function_tools)
+        yield "ok"
+
+    await agent.run(
+        "hi",
+        output_type=STR_OUTPUT,
+        model=FunctionModel(stream_function=respond_stream, model_name="probe"),
+    )
+
+    assert "write_todos" in seen_tools
+    assert "read_todos" in seen_tools
+
+
 async def test_inkling_default_output_is_segments() -> None:
     """The real inkling contract: with no output_type override the reply is a
     list of output segments (TestModel auto-generates from the segment schema)."""

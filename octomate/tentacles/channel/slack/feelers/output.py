@@ -21,6 +21,8 @@ from slack_sdk.models.messages.chunk import PlanUpdateChunk, TaskUpdateChunk
 from octomate.capabilities.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
+    TodoDeletedEvent,
+    TodoEvent,
 )
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
@@ -42,12 +44,22 @@ from octomate.tentacles.channel.feelers.output import (
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import SlackBlock, SlackOutboundMessage
+from octomate.types.todos import TodoStatus
 
 logger = logging.getLogger(__name__)
 OutputT = TypeVar(
     "OutputT", bound=JsonValue | Sequence[MessageSegment] | DeferredToolRequests
 )
 PLAN_TITLE = "Working on request"
+
+# Slack's task display speaks pending/in_progress/complete; blocked todos show as
+# pending (no native blocked state).
+SLACK_TODO_STATUS: dict[TodoStatus, str] = {
+    "pending": "pending",
+    "in_progress": "in_progress",
+    "completed": "complete",
+    "blocked": "pending",
+}
 
 THINKING_TITLE = "Thinking"
 STATUS_THINKING = "Thinking…"
@@ -98,6 +110,7 @@ class SlackTimelineState(TimelineState):
     thinking_seq: int = 0
     active_thinking: SlackStep | None = None
     tool_steps: dict[str, SlackStep] = field(default_factory=dict)
+    todo_steps: dict[str, SlackStep] = field(default_factory=dict)
     skipped_tool_call_ids: set[str] = field(default_factory=set)
     last_status: str | None = None
 
@@ -256,6 +269,27 @@ class SlackTimelineState(TimelineState):
                 )
             case _:
                 await self.answer_delta(str(segment))
+
+    async def todo(self, event: TodoEvent) -> None:
+        todo = event.todo
+        if isinstance(event, TodoDeletedEvent):
+            step = self.todo_steps.pop(todo.ref, None)
+            if step is not None:
+                step.status = "complete"
+                step.sections.append("Removed from the plan")
+                await self.emit(step)
+            return
+        step = self.todo_steps.get(todo.ref)
+        if step is None:
+            step = SlackStep(id=f"todo-{todo.ref}", title=todo.content)
+            self.todo_steps[todo.ref] = step
+        step.title = (
+            todo.active_form
+            if todo.status == "in_progress" and todo.active_form
+            else todo.content
+        )
+        step.status = SLACK_TODO_STATUS[todo.status]
+        await self.emit(step)
 
     def should_skip_tool_call(self, tool_name: str, tool_call_id: str | None) -> bool:
         if not should_skip_plan_tool(tool_name):

@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import uuid4
 from types import SimpleNamespace, TracebackType
 from typing import Generic, TypeVar, cast
 
@@ -34,6 +35,9 @@ from octomate.capabilities.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
     StreamEvents,
+    TodoCompletedEvent,
+    TodoCreatedEvent,
+    TodoStatusChangedEvent,
 )
 from octomate.config import (
     LarkChannelConfig,
@@ -52,6 +56,7 @@ from octomate.schemas.segments import (
     ReplySegment,
     TextSegment,
 )
+from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import ChannelOutput, DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.output import (
@@ -1478,6 +1483,70 @@ async def test_lark_consume_renders_image_and_card_segments(
         content for _, _, msg_type, content in ink.created if msg_type == "interactive"
     ]
     assert json.loads(interactive_contents[-1]) == {"header": {"title": "t"}}
+
+
+async def test_slack_consume_renders_todos_as_timeline_tasks() -> None:
+    ink = FakeSlackInk()
+    channel = _slack_channel(ink)
+    todo = Todo(conversation_id=uuid4(), ref="T1", content="Find the docs")
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield TodoCreatedEvent(todo=todo)
+        yield TodoStatusChangedEvent(
+            todo=todo.model_copy(
+                update={"status": "in_progress", "active_form": "Finding the docs"}
+            ),
+            previous=todo,
+        )
+        yield TodoCompletedEvent(todo=todo.model_copy(update={"status": "completed"}))
+
+    await channel.consume(_slack_key(), events())
+
+    chunks = [chunk for group in ink.stream_chunks for chunk in group]
+    todo_chunks = [
+        chunk
+        for chunk in chunks
+        if isinstance(chunk, TaskUpdateChunk) and chunk.id == "todo-T1"
+    ]
+    assert [chunk.status for chunk in todo_chunks] == [
+        "pending",
+        "in_progress",
+        "complete",
+    ]
+    # The spinner shows the active form; done shows the content again.
+    assert todo_chunks[1].title == "Finding the docs"
+    assert todo_chunks[2].title == "Find the docs"
+
+
+async def test_lark_consume_renders_todo_checklist_card() -> None:
+    ink = FakeLarkInk()
+    channel = _lark_channel(ink)
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="u1",
+        user_id="u1",
+    )
+    todo = Todo(conversation_id=uuid4(), ref="T1", content="Find the docs")
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield TodoCreatedEvent(todo=todo)
+        yield TodoCompletedEvent(todo=todo.model_copy(update={"status": "completed"}))
+
+    await channel.consume(key, events())
+
+    # First event posts the checklist card; later events patch it in place.
+    todo_cards = [
+        content for _, _, msg_type, content in ink.created if "Tasks" in content
+    ]
+    assert todo_cards
+    assert "- [ ] Find the docs" in todo_cards[0]
+    assert ink.patched
+    assert "- [x] Find the docs" in ink.patched[-1][1]
 
 
 async def test_slack_tentacle_streams_final_only_result_once() -> None:
