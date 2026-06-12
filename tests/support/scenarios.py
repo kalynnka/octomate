@@ -12,6 +12,8 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncGenerator, Sequence
 
+import anyio
+
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -59,8 +61,14 @@ SCENARIO_CONVERSATION_ID = uuid.UUID(int=0x0C70)
 
 async def play(
     events: Sequence[ReactStreamEvent[ChannelOutput]],
+    *,
+    delay: float = 0.0,
 ) -> AsyncGenerator[ReactStreamEvent[ChannelOutput]]:
+    """Play a script as the consume stream; `delay` paces the events so a live
+    replay actually streams instead of arriving as one burst."""
     for event in events:
+        if delay:
+            await anyio.sleep(delay)
         yield event
 
 
@@ -231,6 +239,83 @@ def plan_tool_noise(answer: str = "no plan rendered") -> ChannelScript:
             )
         ),
         *streamed_text(answer),
+    ]
+
+
+def agent_run() -> ChannelScript:
+    """A full mocked agent run as the react graph streams it: two rounds of
+    thinking and tool work with todo progress in between, then the reply as
+    streamed text deltas. The timeline scenario — exercises every lifecycle
+    hook a multi-step run drives."""
+    plan, docs = scenario_todos()
+    answer_deltas = (
+        "Looked through the docs",
+        " and the build logs — ",
+        "the flake comes from an unpinned dependency. ",
+        "Pinning it in the lockfile fixes the failure.",
+    )
+    answer = "".join(answer_deltas)
+    return [
+        PartStartEvent(index=0, part=ThinkingPart(content="The user asks about")),
+        PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" a flaky build.")),
+        PartDeltaEvent(
+            index=0,
+            delta=ThinkingPartDelta(content_delta=" I should plan and check the docs."),
+        ),
+        PartEndEvent(
+            index=0,
+            part=ThinkingPart(
+                content="The user asks about a flaky build. "
+                "I should plan and check the docs."
+            ),
+        ),
+        TodoCreatedEvent(todo=plan.model_copy(update={"status": "pending"})),
+        TodoCreatedEvent(todo=docs.model_copy(update={"status": "pending"})),
+        FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="lookup",
+                args={"query": "flaky build"},
+                tool_call_id="call_lookup_1",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="lookup",
+                content={"matches": 3, "best": "ci-troubleshooting.md"},
+                tool_call_id="call_lookup_1",
+            )
+        ),
+        TodoCompletedEvent(todo=plan),
+        TodoStatusChangedEvent(
+            todo=docs,
+            previous=docs.model_copy(update={"status": "pending"}),
+        ),
+        PartStartEvent(
+            index=1,
+            part=ThinkingPart(content="The docs point at the dependency lockfile."),
+        ),
+        PartEndEvent(
+            index=1,
+            part=ThinkingPart(content="The docs point at the dependency lockfile."),
+        ),
+        FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="read_logs",
+                args={"job": "build", "tail": 50},
+                tool_call_id="call_logs_1",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="read_logs",
+                content={"failed_step": "install", "hint": "unpinned dependency"},
+                tool_call_id="call_logs_1",
+            )
+        ),
+        TodoCompletedEvent(todo=docs.model_copy(update={"status": "completed"})),
+        *(ResultTextDeltaEvent(delta=delta) for delta in answer_deltas),
+        FinalResult[ChannelOutput](output=answer),
+        AgentRunResultEvent(AgentRunResult(answer)),
     ]
 
 

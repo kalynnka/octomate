@@ -3,10 +3,13 @@
 Each test replays a canonical scenario script through the real LarkTentacle
 into the chat configured under `trigger.lark` in octomate.yaml; pass/fail only
 checks that something was posted and no render failed — the human inspects the
-rendering in Lark."""
+rendering in Lark. Every test of one pytest run replies under the SAME root:
+a session fixture posts a fresh, visible run notice and threads the replays
+on its message id."""
 
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import pytest
@@ -17,9 +20,10 @@ from octomate.config import OctomateConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.lark import LarkTentacle
 
-from tests.trigger.conftest import TriggerTargets
+from tests.trigger.conftest import TriggerTargets, run_banner
 from tests.support.scenarios import (
     action_batch,
+    agent_run,
     batch_actions,
     play,
     showcase,
@@ -29,20 +33,47 @@ from tests.support.scenarios import (
 pytestmark = pytest.mark.trigger
 
 
-@pytest.fixture
-def lark_channel(
+@pytest.fixture(scope="session")
+def lark_run_thread(
     live_config: OctomateConfig,
     trigger_targets: TriggerTargets,
-    in_memory_engine: AsyncEngine,
 ) -> tuple[LarkTentacle, ConversationKey]:
+    """One tentacle and one run-notice root message, shared by the whole run."""
     config = live_config.channels.lark
     if config is None or not config.enabled or trigger_targets.lark is None:
         pytest.skip("lark credentials/trigger target not configured in octomate.yaml")
+    target = trigger_targets.lark
     channel = LarkTentacle("lark", Octomate(), config=config)
+    main_key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type=target.chat_type,
+        chat_id=target.chat_id,
+        user_id=target.user_id,
+    )
+    root_id = asyncio.run(
+        channel.feelers.markdown.present(
+            main_key,
+            run_banner("replays follow in this thread."),
+        )
+    )
+    if root_id is None:
+        pytest.fail("could not post the lark run notice (no message id returned)")
     key = ConversationKey(
-        channel_tentacle_id="lark", **trigger_targets.lark.model_dump()
+        channel_tentacle_id="lark",
+        chat_type=target.chat_type,
+        chat_id=target.chat_id,
+        user_id=target.user_id,
+        thread_id=root_id,
     )
     return channel, key
+
+
+@pytest.fixture
+def lark_channel(
+    lark_run_thread: tuple[LarkTentacle, ConversationKey],
+    in_memory_engine: AsyncEngine,
+) -> tuple[LarkTentacle, ConversationKey]:
+    return lark_run_thread
 
 
 async def test_lark_renders_showcase(
@@ -97,4 +128,18 @@ async def test_lark_presents_action_batch(
         # The batch is never answered: the run simply stays suspended.
         await channel.consume(key, play(script))
 
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_lark_renders_agent_run_timeline(
+    lark_channel: tuple[LarkTentacle, ConversationKey],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, key = lark_channel
+
+    with caplog.at_level("WARNING"):
+        # Paced playback so the timeline visibly streams in the client.
+        message_id = await channel.consume(key, play(agent_run(), delay=0.2))
+
+    assert message_id is not None
     assert "timeline render failed" not in caplog.text

@@ -11,7 +11,6 @@ replays at the bottom of the chat instead of buried in an old thread)."""
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 from uuid import uuid4
 
 import pytest
@@ -22,9 +21,10 @@ from octomate.config import OctomateConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.slack import SlackTentacle
 
-from tests.trigger.conftest import TriggerTargets
+from tests.trigger.conftest import TriggerTargets, run_banner
 from tests.support.scenarios import (
     action_batch,
+    agent_run,
     batch_actions,
     play,
     showcase,
@@ -51,11 +51,10 @@ def slack_run_thread(
         chat_id=target.chat_id,
         user_id=target.user_id,
     )
-    started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     thread_ts = asyncio.run(
         channel.feelers.markdown.present(
             main_key,
-            f":test_tube: Octomate trigger run {started} — replays follow in this thread.",
+            run_banner("replays follow in this thread."),
         )
     )
     if thread_ts is None:
@@ -130,4 +129,18 @@ async def test_slack_presents_action_batch(
         # The batch is never answered: the run simply stays suspended.
         await channel.consume(key, play(script))
 
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_slack_renders_agent_run_timeline(
+    slack_channel: tuple[SlackTentacle, ConversationKey],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, key = slack_channel
+
+    with caplog.at_level("WARNING"):
+        # Paced playback so the timeline visibly streams in the client.
+        message_id = await channel.consume(key, play(agent_run(), delay=0.2))
+
+    assert message_id is not None
     assert "timeline render failed" not in caplog.text

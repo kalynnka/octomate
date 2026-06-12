@@ -26,6 +26,7 @@ you click one) or selects the marker. So both of these fire live:
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -48,6 +49,12 @@ SCENARIO_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
     "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
+
+
+def run_banner(note: str) -> str:
+    """The visible per-run notice each channel posts before its replays."""
+    started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return f"🧪 Octomate trigger run {started} — {note}"
 
 
 class TriggerTarget(BaseModel):
