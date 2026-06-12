@@ -1,9 +1,10 @@
 # Plan: the send capability (`send_message` — messages / images / files)
 
 > **Status:** proposed · **Owner:** @luhui · **Created:** 2026-06-12
-> **Builds on:** [agent-event-stream.md](agent-event-stream.md) (segment renderers +
-> upload primitives from UoW-11; the `TodoCapability` pattern from UoW-4).
-> Supersedes that plan's "UoW-14 emission tools" sketch — this is its own plan.
+> **Builds on:** the landed agent-event-stream plan (UoW-1–13, merged 0e060ad;
+> doc removed — see git history): segment renderers + upload primitives from
+> UoW-11, the `TodoCapability` pattern from UoW-4. Supersedes that plan's
+> "UoW-14 emission tools" sketch — this is its own plan.
 > **Related:** [conversation-transcript.md](conversation-transcript.md) (the record
 > hop), [web-channel.md](web-channel.md) (makes web a real channel — uniform
 > delivery), [napcat-media-segments.md](napcat-media-segments.md) (native NapCat

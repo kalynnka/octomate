@@ -5,7 +5,8 @@
 > [conversation-transcript.md](conversation-transcript.md) (message handles),
 > [web-channel.md](web-channel.md) (web conversations as ordinary
 > reply/targeting surfaces) ·
-> **Absorbs:** [agent-event-stream.md](agent-event-stream.md) UoW-15 (outbound targeting).
+> **Absorbs:** the landed agent-event-stream plan's UoW-15 sketch (outbound
+> targeting; doc removed — see git history).
 
 Two related goals, parked here until the send capability has landed and proven
 itself. Deliberately *no* detailed solution yet — both need a design pass first.

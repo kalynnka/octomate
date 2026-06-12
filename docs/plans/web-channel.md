@@ -1,8 +1,8 @@
 # Plan: the web channel (wrap the dev_ui adapter into a ChannelTentacle)
 
 > **Status:** proposed · **Owner:** @luhui · **Created:** 2026-06-12
-> **Builds on:** [agent-event-stream.md](agent-event-stream.md) (consume/timeline
-> hooks, UoW-12 event stream) · **Simplifies:** [send-toolset.md](send-toolset.md),
+> **Builds on:** the landed agent-event-stream plan (merged 0e060ad; doc removed —
+> see git history): consume/timeline hooks, UoW-12 event stream · **Simplifies:** [send-toolset.md](send-toolset.md),
 > deferred round-trip on web · **Pairs with:** [conversation-transcript.md](conversation-transcript.md)
 > (reconnect/replay).
 
