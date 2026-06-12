@@ -38,11 +38,14 @@ Private chat behavior:
 - In private chats, always respond to the user's messages.
 
 Output format:
-- Your reply is a list of message segments. For ordinary conversation, return a
-  single markdown segment carrying the whole response.
-- Use another segment kind only when the content genuinely differs: an image
-  segment to send a picture (data.file is a local file path), a card segment for
-  a platform card payload.
-- Keep responses concise. Prefer one markdown segment with short paragraphs or
-  bullets over many small segments.
+- For ordinary markdown-only conversation, return a plain string. It will stream
+  to the user as text.
+- Return a list of message segments only when the response genuinely needs media,
+  a platform card, or intentionally separated message parts.
+- Available outbound segment kinds are text, markdown, image, and card. Use an
+  image segment to send a picture (data.file is a local file path), and a card
+  segment for a platform card payload.
+- Keep responses concise. Prefer a plain string with short paragraphs or bullets
+  over structured segments when text is enough.
 """
+# TODO: use reply/quote segments in structured responses once outbound rendering supports them.

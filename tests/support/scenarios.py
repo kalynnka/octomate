@@ -9,6 +9,7 @@ so the whole suite speaks one event dialect.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncGenerator, Sequence
 
@@ -23,7 +24,10 @@ from pydantic_ai.messages import (
     PartStartEvent,
     ThinkingPart,
     ThinkingPartDelta,
+    TextPart,
+    TextPartDelta,
     ToolCallPart,
+    ToolCallPartDelta,
     ToolReturnPart,
 )
 from pydantic_ai.result import FinalResult
@@ -32,7 +36,6 @@ from pydantic_ai.tools import DeferredToolRequests
 from octomate.capabilities.events import (
     ActionBatchEvent,
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoStatusChangedEvent,
@@ -53,6 +56,7 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import ChannelOutput
+from octomate.types.json import JsonObject
 
 ChannelScript = list[ReactStreamEvent[ChannelOutput]]
 
@@ -81,20 +85,62 @@ def streamed_text(*deltas: str) -> ChannelScript:
     deltas = deltas or ("hello ", "from octomate")
     full = "".join(deltas)
     return [
-        *(ResultTextDeltaEvent(delta=delta) for delta in deltas),
+        *text_part_events(*deltas),
         FinalResult[ChannelOutput](output=full),
         AgentRunResultEvent(AgentRunResult(full)),
     ]
 
 
-def reply_segments(*, image_file: str | None = "/tmp/octomate-scenario.png") -> list[MessageSegment]:
+def text_part_events(*deltas: str, index: int = 0) -> ChannelScript:
+    if not deltas:
+        return []
+    return [
+        PartStartEvent(index=index, part=TextPart(content=deltas[0])),
+        *(
+            PartDeltaEvent(index=index, delta=TextPartDelta(content_delta=delta))
+            for delta in deltas[1:]
+        ),
+    ]
+
+
+def scenario_card_payload() -> JsonObject:
+    return {
+        "schema": "2.0",
+        "header": {
+            "title": {"tag": "plain_text", "content": "Scenario card"},
+        },
+        "body": {
+            "elements": [{"tag": "markdown", "content": "card payload"}],
+        },
+    }
+
+
+def slack_card_payload() -> JsonObject:
+    return {
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Scenario card*\ncard payload",
+                },
+            }
+        ],
+    }
+
+
+def reply_segments(
+    *,
+    image_file: str | None = "/tmp/octomate-scenario.png",
+    card_payload: JsonObject | None = None,
+) -> list[MessageSegment]:
+    if card_payload is None:
+        card_payload = scenario_card_payload()
     segments: list[MessageSegment] = [
         MarkdownSegment(
             data={"text": "## Scenario\nA *markdown* reply segment."},
         ),
-        CardSegment(
-            data=CardData(payload={"title": "Scenario card", "body": "card payload"}),
-        ),
+        CardSegment(data=CardData(payload=card_payload)),
     ]
     if image_file is not None:
         segments.insert(
@@ -110,12 +156,55 @@ def reply_segments(*, image_file: str | None = "/tmp/octomate-scenario.png") -> 
     return segments
 
 
-def segments_reply(*, image_file: str | None = "/tmp/octomate-scenario.png") -> ChannelScript:
-    segments = reply_segments(image_file=image_file)
+def segments_reply(
+    *,
+    image_file: str | None = "/tmp/octomate-scenario.png",
+    card_payload: JsonObject | None = None,
+) -> ChannelScript:
+    segments = reply_segments(image_file=image_file, card_payload=card_payload)
     return [
-        *(ResultSegmentEvent(segment=segment) for segment in segments),
+        *segment_result_events(segments),
         FinalResult[ChannelOutput](output=segments),
         AgentRunResultEvent(AgentRunResult(segments)),
+    ]
+
+
+def segment_result_events(segments: list[MessageSegment], *, index: int = 0) -> ChannelScript:
+    payload = json.dumps(
+        {"response": [segment.model_dump(mode="json") for segment in segments]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    split_at = max(1, len(payload) // 2)
+    return [
+        PartStartEvent(
+            index=index,
+            part=ToolCallPart(
+                tool_name="final_result",
+                args=payload[:split_at],
+                tool_call_id=f"call_final_result_{index}",
+            ),
+        ),
+        PartDeltaEvent(
+            index=index,
+            delta=ToolCallPartDelta(args_delta=payload[split_at:]),
+        ),
+        *(ResultSegmentEvent(segment=segment) for segment in segments),
+    ]
+
+
+def plain_segments(
+    *,
+    image_file: str | None = "/tmp/octomate-scenario.png",
+    card_payload: JsonObject | None = None,
+) -> ChannelScript:
+    """Only the terminal result, carrying a list of message segments."""
+    return [
+        AgentRunResultEvent(
+            AgentRunResult(
+                reply_segments(image_file=image_file, card_payload=card_payload)
+            )
+        )
     ]
 
 
@@ -202,6 +291,11 @@ def batch_requests() -> DeferredToolRequests:
             ToolCallPart(tool_name="deploy", args={}, tool_call_id="call_deploy_1")
         ],
     )
+
+
+def plain_deferred_requests() -> ChannelScript:
+    """Only the terminal result, carrying deferred tool requests."""
+    return [AgentRunResultEvent(AgentRunResult(batch_requests()))]
 
 
 def action_batch(
@@ -313,7 +407,7 @@ def agent_run() -> ChannelScript:
             )
         ),
         TodoCompletedEvent(todo=docs.model_copy(update={"status": "completed"})),
-        *(ResultTextDeltaEvent(delta=delta) for delta in answer_deltas),
+        *text_part_events(*answer_deltas),
         FinalResult[ChannelOutput](output=answer),
         AgentRunResultEvent(AgentRunResult(answer)),
     ]
@@ -338,8 +432,11 @@ def mid_run_notice(
             )
         ),
         # The notice streams while lookup is still running.
-        ResultTextDeltaEvent(delta=notice[: len(notice) // 2]),
-        ResultTextDeltaEvent(delta=notice[len(notice) // 2 :]),
+        *text_part_events(
+            notice[: len(notice) // 2],
+            notice[len(notice) // 2 :],
+            index=1,
+        ),
         # A new round begins: consumers rotate to a fresh timeline; the
         # in-flight lookup still finishes into the previous one.
         PartStartEvent(
@@ -373,10 +470,14 @@ def mid_run_notice(
     ]
 
 
-def showcase(*, image_file: str | None = None) -> ChannelScript:
+def showcase(
+    *,
+    image_file: str | None = None,
+    card_payload: JsonObject | None = None,
+) -> ChannelScript:
     """Thinking + tools + todos + segment reply — the visual-inspection script."""
     plan, docs = scenario_todos()
-    segments = reply_segments(image_file=image_file)
+    segments = reply_segments(image_file=image_file, card_payload=card_payload)
     return [
         PartStartEvent(index=0, part=ThinkingPart(content="Planning the showcase")),
         PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" run.")),
@@ -402,7 +503,7 @@ def showcase(*, image_file: str | None = None) -> ChannelScript:
             previous=docs.model_copy(update={"status": "pending"}),
         ),
         TodoCompletedEvent(todo=plan),
-        *(ResultSegmentEvent(segment=segment) for segment in segments),
+        *segment_result_events(segments, index=1),
         FinalResult[ChannelOutput](output=segments),
         AgentRunResultEvent(AgentRunResult(segments)),
     ]

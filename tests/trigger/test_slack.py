@@ -28,7 +28,12 @@ from tests.support.scenarios import (
     batch_actions,
     mid_run_notice,
     play,
+    plain_answer,
+    plain_deferred_requests,
+    plain_segments,
+    segments_reply,
     showcase,
+    slack_card_payload,
     streamed_text,
 )
 
@@ -78,6 +83,94 @@ def slack_channel(
     return slack_run_thread
 
 
+async def test_slack_renders_normal_str_output(
+    slack_channel: tuple[SlackTentacle, ConversationKey],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, key = slack_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.consume(
+            key, play(plain_answer("Normal string output from the octomate test suite."))
+        )
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_slack_renders_normal_segments_output(
+    slack_channel: tuple[SlackTentacle, ConversationKey],
+    scenario_image: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, key = slack_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.consume(
+            key,
+            play(
+                plain_segments(
+                    image_file=scenario_image,
+                    card_payload=slack_card_payload(),
+                )
+            ),
+        )
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_slack_renders_normal_deferred_requests(
+    slack_channel: tuple[SlackTentacle, ConversationKey],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, key = slack_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.consume(key, play(plain_deferred_requests()))
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_slack_renders_streamed_str_output(
+    slack_channel: tuple[SlackTentacle, ConversationKey],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, key = slack_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.consume(
+            key,
+            play(streamed_text("String ", "output from the octomate test suite.")),
+        )
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_slack_renders_streamed_segments_output(
+    slack_channel: tuple[SlackTentacle, ConversationKey],
+    scenario_image: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, key = slack_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.consume(
+            key,
+            play(
+                segments_reply(
+                    image_file=scenario_image,
+                    card_payload=slack_card_payload(),
+                )
+            ),
+        )
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+
+
 async def test_slack_renders_showcase(
     slack_channel: tuple[SlackTentacle, ConversationKey],
     scenario_image: str,
@@ -87,7 +180,13 @@ async def test_slack_renders_showcase(
 
     with caplog.at_level("WARNING"):
         message_id = await channel.consume(
-            key, play(showcase(image_file=scenario_image))
+            key,
+            play(
+                showcase(
+                    image_file=scenario_image,
+                    card_payload=slack_card_payload(),
+                )
+            ),
         )
 
     assert message_id is not None
@@ -95,23 +194,7 @@ async def test_slack_renders_showcase(
     assert "timeline render failed" not in caplog.text
 
 
-async def test_slack_renders_streamed_text(
-    slack_channel: tuple[SlackTentacle, ConversationKey],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    channel, key = slack_channel
-
-    with caplog.at_level("WARNING"):
-        message_id = await channel.consume(
-            key,
-            play(streamed_text("Streaming ", "from the ", "octomate test suite.")),
-        )
-
-    assert message_id is not None
-    assert "timeline render failed" not in caplog.text
-
-
-async def test_slack_presents_action_batch(
+async def test_slack_renders_streamed_deferred_requests(
     slack_channel: tuple[SlackTentacle, ConversationKey],
     caplog: pytest.LogCaptureFixture,
 ) -> None:

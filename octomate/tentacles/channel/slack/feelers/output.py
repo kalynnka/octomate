@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
+from pydantic_ai import AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -20,7 +21,6 @@ from slack_sdk.models.messages.chunk import PlanUpdateChunk, TaskUpdateChunk
 
 from octomate.capabilities.events import (
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     TodoDeletedEvent,
     TodoEvent,
 )
@@ -37,6 +37,7 @@ from octomate.tentacles.channel.feelers.output import (
     format_fields,
     humanize_tool_name,
     markdown_from_output,
+    reply_text_from_event,
     should_skip_plan_tool,
     status_hint,
     truncate_task_detail,
@@ -469,7 +470,7 @@ class SlackMarkdownStreamFeeler(Generic[OutputT]):
         self,
         key: ConversationKey,
         events: AsyncIterator[
-            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[OutputT]
+            AgentStreamEvent | ResultSegmentEvent | FinalResult[OutputT]
         ],
     ) -> IMMessageID | None:
         context = self.chromo.thread_context(key)
@@ -496,12 +497,10 @@ class SlackMarkdownStreamFeeler(Generic[OutputT]):
                     if isinstance(event, FinalResult):
                         output = event.output
                         continue
-                    delta_text = (
-                        event.delta
-                        if isinstance(event, ResultTextDeltaEvent)
-                        else str(event.segment)
-                    )
-                    for update in batcher.push_text(delta_text):
+                    text = reply_text_from_event(event)
+                    if text is None:
+                        continue
+                    for update in batcher.push_text(text):
                         appended = True
                         await self.ink.append_stream(slack_stream, update.delta_text)
 

@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeAlias, TypeVar, cast
 
 import anyio
 import logfire
@@ -37,7 +37,6 @@ from uuid_utils import uuid7
 from octomate.capabilities.events import (
     ActionBatchEvent,
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     StreamEvents,
     TodoCompletedEvent,
     TodoCreatedEvent,
@@ -49,7 +48,7 @@ from octomate.config import ChannelConfig
 from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import ImageSegment, MessageSegment
+from octomate.schemas.segments import ImageSegment, MessageSegment, Segment
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
@@ -308,9 +307,6 @@ class ChannelTentacle(
                             skipped_tools.discard(tool_call_id or "")
                         else:
                             await state.tool_end(event)
-                    case ResultTextDeltaEvent():
-                        answered = True
-                        await state.answer_delta(event.delta)
                     case ResultSegmentEvent():
                         answered = True
                         await state.answer_segment(event.segment)
@@ -325,6 +321,7 @@ class ChannelTentacle(
                     case ActionBatchEvent():
                         # Render the deferred-action batch as a unit, then record
                         # each presented action's platform message id.
+                        answered = answered or bool(event.questions or event.approvals)
                         if event.questions:
                             message_ids = await self.feelers.ask_questions.present(
                                 key, event.questions
@@ -353,12 +350,15 @@ class ChannelTentacle(
         if (
             not failed
             and not answered
-            and isinstance(final_output, str)
-            and final_output
+            and isinstance(final_output, Sequence)
+            and all(isinstance(segment, Segment) for segment in final_output)
         ):
-            # The reply never streamed as text (e.g. a non-streamed final output);
-            # render it once so the turn isn't left blank.
-            await state.answer_delta(final_output)
+            for segment in final_output:
+                await state.answer_segment(cast(MessageSegment, segment))
+        elif not failed and not answered and final_output is not None:
+            # The reply never streamed; render the final output once so the turn
+            # is not left blank.
+            await state.answer_delta(str(final_output))
 
     async def start_sub_thread(
         self,

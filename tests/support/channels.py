@@ -16,11 +16,16 @@ from uuid import UUID
 
 from typing_extensions import TypeVar
 
+from pydantic_ai import AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     OutputToolCallEvent,
     OutputToolResultEvent,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
 )
 from pydantic_ai.result import FinalResult, StreamedRunResult
 from typing_extensions import NotRequired, TypedDict
@@ -28,7 +33,6 @@ from typing_extensions import NotRequired, TypedDict
 from octomate import Octomate
 from octomate.capabilities.events import (
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     TodoEvent,
 )
 from octomate.capabilities.react import ReactStreamEvent
@@ -304,7 +308,7 @@ class NoopMarkdownStreamFeeler:
         self,
         key: ConversationKey,
         events: AsyncIterator[
-            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[ChannelOutput]
+            AgentStreamEvent | ResultSegmentEvent | FinalResult[ChannelOutput]
         ],
     ) -> IMMessageID | None:
         return None
@@ -396,11 +400,12 @@ def streamed_result(
 
 async def output_events(
     *deltas: str,
-) -> AsyncIterator[ResultTextDeltaEvent | FinalResult[ChannelOutput]]:
-    """A streamed text reply as the typed output event stream a feeler's
-    `present_output` consumes: each chunk as an additive `ResultTextDeltaEvent`
-    (Pydantic AI's typewriter), then the joined whole as `FinalResult`."""
-    for delta in deltas:
-        yield ResultTextDeltaEvent(delta=delta)
+) -> AsyncIterator[AgentStreamEvent | FinalResult[ChannelOutput]]:
+    """A streamed text reply as native Pydantic text events, then the joined whole
+    as `FinalResult`."""
+    if deltas:
+        yield PartStartEvent(index=0, part=TextPart(content=deltas[0]))
+    for delta in deltas[1:]:
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=delta))
     if deltas:
         yield FinalResult[ChannelOutput](output="".join(deltas))

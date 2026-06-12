@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from pydantic_ai import AgentRunResultEvent
+from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -21,7 +21,6 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import (
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     TodoDeletedEvent,
     TodoEvent,
 )
@@ -40,6 +39,7 @@ from octomate.tentacles.channel.feelers.output import (
     format_fields,
     humanize_tool_name,
     markdown_from_output,
+    reply_text_from_event,
     render_todo_lines,
     should_skip_plan_tool,
     truncate_task_detail,
@@ -125,7 +125,7 @@ class LarkMarkdownStreamFeeler(Generic[OutputT]):
         self,
         key: ConversationKey,
         events: AsyncIterator[
-            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[OutputT]
+            AgentStreamEvent | ResultSegmentEvent | FinalResult[OutputT]
         ],
     ) -> IMMessageID | None:
         chat_id = key.chat_id or key.user_id
@@ -176,12 +176,10 @@ class LarkMarkdownStreamFeeler(Generic[OutputT]):
                 if isinstance(event, FinalResult):
                     output = event.output
                     continue
-                delta_text = (
-                    event.delta
-                    if isinstance(event, ResultTextDeltaEvent)
-                    else str(event.segment)
-                )
-                for update in batcher.push_text(delta_text):
+                text = reply_text_from_event(event)
+                if text is None:
+                    continue
+                for update in batcher.push_text(text):
                     await apply_update(update)
         except Exception:
             # A mid-stream failure still gets finalized below with what batched.

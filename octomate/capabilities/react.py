@@ -188,8 +188,8 @@ class RunAgent(
 
             result: AgentRunResult[ReactOutputT] | None = None
             # stream_events (the normalizer) instead of run_stream_events: thinking +
-            # tool events pass through raw, while the reply surfaces as typed output
-            # events (ResultTextDeltaEvent / ResultSegmentEvent) the consumer renders.
+            # tool/text events pass through raw, while structured segment replies
+            # surface as ResultSegmentEvent for the consumer to render.
             async for event in ctx.deps.agent.stream_events(
                 self.user_prompt,
                 output_type=ctx.deps.output_type,

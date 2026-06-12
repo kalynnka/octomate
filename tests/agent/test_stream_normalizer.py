@@ -12,8 +12,11 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     ModelMessage,
+    PartDeltaEvent,
     PartStartEvent,
     ThinkingPart,
+    TextPart,
+    TextPartDelta,
 )
 from pydantic_ai.models.function import (
     AgentInfo,
@@ -31,7 +34,6 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import (
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     TodoCreatedEvent,
 )
 from octomate.schemas.segments import MessageSegment
@@ -43,15 +45,28 @@ class Row(BaseModel):
     score: int
 
 
-async def test_str_output_streams_text_deltas_then_final() -> None:
-    agent = Agent(TestModel(custom_output_text="Hello there, world!"))
+async def test_str_output_streams_native_text_events_then_final() -> None:
+    async def stream_text(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        yield "Hello there, "
+        yield "world!"
+
+    agent = Agent(FunctionModel(stream_function=stream_text, model_name="scripted"))
 
     events = [event async for event in agent.stream_events("hi")]
 
-    deltas = [e.delta for e in events if isinstance(e, ResultTextDeltaEvent)]
+    deltas: list[str] = []
+    for event in events:
+        match event:
+            case PartStartEvent(part=TextPart(content=content)):
+                deltas.append(content)
+            case PartDeltaEvent(delta=TextPartDelta(content_delta=delta)):
+                deltas.append(delta)
     final = next(e for e in events if isinstance(e, FinalResult))
-    assert deltas, "expected TextDeltaEvents (the typewriter)"
-    assert "".join(deltas) == final.output == "Hello there, world!"
+    assert deltas, "expected native text events"
+    assert final.output == "Hello there, world!"
+    assert final.output.startswith("".join(deltas))
     assert any(type(e).__name__ == "AgentRunResultEvent" for e in events)
 
 
@@ -109,7 +124,7 @@ async def test_non_segment_structured_output_surfaces_only_at_final() -> None:
 
     events = [event async for event in agent.stream_events("go")]
 
-    assert not any(isinstance(e, (ResultTextDeltaEvent, ResultSegmentEvent)) for e in events)
+    assert not any(isinstance(e, ResultSegmentEvent) for e in events)
     final = next(e for e in events if isinstance(e, FinalResult))
     assert isinstance(final.output, list)
     assert all(isinstance(row, Row) for row in final.output)

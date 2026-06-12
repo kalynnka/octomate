@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from pydantic_ai import AgentRunResult, AgentRunResultEvent
+from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     PartDeltaEvent,
@@ -21,7 +21,6 @@ from pydantic_ai.result import FinalResult, StreamedRunResult
 
 from octomate.capabilities.events import (
     ActionBatchEvent,
-    ResultTextDeltaEvent,
     StreamEvents,
     TodoCompletedEvent,
 )
@@ -56,9 +55,13 @@ from tests.support.channels import (
     RecordingTimeline,
 )
 from tests.support.scenarios import (
+    action_batch,
     mid_run_notice,
     plan_tool_noise,
+    plain_deferred_requests,
+    plain_segments,
     play,
+    segments_reply,
     showcase,
     streamed_text,
 )
@@ -235,9 +238,9 @@ async def test_markdown_stream_feeler_present_output_sends_final(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     async def events() -> (
-        AsyncIterator[ResultTextDeltaEvent | FinalResult[ChannelOutput]]
+        AsyncIterator[AgentStreamEvent | FinalResult[ChannelOutput]]
     ):
-        yield ResultTextDeltaEvent(delta="strea")
+        yield PartStartEvent(index=0, part=TextPart(content="strea"))
         yield FinalResult[ChannelOutput](output="stream me")
 
     with caplog.at_level("WARNING"):
@@ -266,8 +269,8 @@ async def test_consume_renders_answer_and_drains_stream(
         yield FunctionToolCallEvent(
             part=ToolCallPart(tool_name="search", args={"q": "x"}, tool_call_id="t1")
         )
-        yield ResultTextDeltaEvent(delta="stream ")
-        yield ResultTextDeltaEvent(delta="me")
+        yield PartStartEvent(index=1, part=TextPart(content="stream "))
+        yield PartDeltaEvent(index=1, delta=TextPartDelta(content_delta="me"))
         yield FinalResult[ChannelOutput](output="stream me")
         # Reached only if consume() drains the whole stream past FinalResult.
         drained = True
@@ -314,6 +317,37 @@ async def test_consume_falls_back_to_final_output_when_no_text_streamed(
     assert channel.sent[0][2][0]["text"] == "just the final"
 
 
+async def test_consume_falls_back_to_stringified_final_output(
+    channel: FakeChannelTentacle,
+) -> None:
+    await channel.consume(_key(), play(plain_deferred_requests()))
+
+    assert len(channel.sent) == 1
+    assert "DeferredToolRequests" in channel.sent[0][2][0]["text"]
+
+
+async def test_consume_falls_back_to_final_segments_when_no_segments_streamed(
+    channel: FakeChannelTentacle,
+) -> None:
+    await channel.consume(_key(), play(plain_segments(image_file=None)))
+
+    assert len(channel.sent) == 1
+    text = channel.sent[0][2][0]["text"]
+    assert "## Scenario" in text
+    assert "[card]" in text
+
+
+async def test_consume_renders_streamed_segments(
+    channel: FakeChannelTentacle,
+) -> None:
+    await channel.consume(_key(), play(segments_reply(image_file=None)))
+
+    assert len(channel.sent) == 1
+    text = channel.sent[0][2][0]["text"]
+    assert "## Scenario" in text
+    assert "[card]" in text
+
+
 async def test_consume_appends_todo_checklist_to_final_message(
     channel: FakeChannelTentacle,
 ) -> None:
@@ -328,7 +362,7 @@ async def test_consume_appends_todo_checklist_to_final_message(
         AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
     ):
         yield TodoCompletedEvent(todo=todo)
-        yield ResultTextDeltaEvent(delta="done")
+        yield PartStartEvent(index=0, part=TextPart(content="done"))
 
     await channel.consume(_key(), events())
 
@@ -374,6 +408,33 @@ async def test_consume_renders_and_marks_action_batch(
     marked = {str(action_id): message_id for action_id, message_id in actions.marked}
     assert marked[str(question.id)] == "sent-1"
     assert marked[str(approval.id)] == "sent-2"
+
+
+async def test_consume_renders_streamed_deferred_requests_once(
+    channel: FakeChannelTentacle,
+) -> None:
+    question = DeferredQuestion(
+        tool_name="ask_questions",
+        tool_call_id="c1",
+        args={"question": "Pick one?"},
+    )
+    approval = DeferredApproval(
+        tool_name="do_thing",
+        tool_call_id="c2",
+        args=ApprovalRequest(tool_name="do_thing"),
+    )
+    actions = RecordingDeferredActions()
+    channel.octomate.deferred_actions = actions
+
+    await channel.consume(
+        _key(),
+        play(action_batch(batch_id="b1", questions=[question], approvals=[approval])),
+    )
+
+    assert len(channel.sent) == 2
+    assert "DeferredToolRequests" not in "\n".join(
+        message[2][0]["text"] for message in channel.sent
+    )
 
 
 async def test_consume_skips_plan_tool_events(
@@ -464,7 +525,7 @@ async def test_drive_timeline_keeps_draining_after_render_failure(
     assert drained
     assert "timeline render failed" in caplog.text
     # Everything after the failing event is skipped, including the fallback.
-    assert state.names() == []
+    assert state.names() == ["answer_start"]
 
 
 async def test_start_sub_thread_falls_back_to_main_target(

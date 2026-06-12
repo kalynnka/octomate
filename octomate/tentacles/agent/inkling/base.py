@@ -54,7 +54,7 @@ from octomate.tentacles.agent.inkling.tools import inkling_toolset
 if TYPE_CHECKING:
     from octomate.base import Octomate
 
-InklingOutput: TypeAlias = list[OutputSegment] | DeferredToolRequests
+InklingOutput: TypeAlias = str | list[OutputSegment] | DeferredToolRequests
 
 
 def build_inkling_agent(
@@ -68,7 +68,7 @@ def build_inkling_agent(
         registry.build_model(model),
         deps_type=type(None),
         name=name,
-        output_type=[list[OutputSegment], DeferredToolRequests],
+        output_type=[str, list[OutputSegment], DeferredToolRequests],
         model_settings=model_settings,
         toolsets=[inkling_toolset],
         capabilities=[TodoCapability()],
@@ -327,7 +327,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     ]:
         resolved_run_name = run_name or "react"
         react_output_type: OutputSpec[InklingOutput | RunOutputDataT] = (
-            [list[OutputSegment], DeferredToolRequests]
+            [str, list[OutputSegment], DeferredToolRequests]
             if output_type is None
             else output_type
         )

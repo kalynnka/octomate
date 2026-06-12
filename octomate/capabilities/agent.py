@@ -5,11 +5,11 @@ gives validated partial output but not thinking/tool events. `stream_events` dri
 `iter()` ourselves and emits BOTH from each node:
 
 - thinking + tool-call events pass through unchanged,
-- the reply streams in whichever of Pydantic AI's two modes fits the output: a text
-  reply as additive `ResultTextDeltaEvent` (the model's `content_delta` typewriter), a
-  `list[MessageSegment]` reply as one `ResultSegmentEvent` per segment (as partial
-  validation reveals it); then Pydantic AI's own `FinalResult[OutputT]` as the final
-  value. Other structured outputs surface only at `FinalResult`.
+- text replies stream as Pydantic AI's native text events; every validated output
+  type surfaces as Pydantic AI's own `FinalResult[OutputT]`; outputs that
+  validate to `list[MessageSegment]` also stream one `ResultSegmentEvent` per
+  segment as partial validation reveals them. Other structured outputs surface
+  only at `FinalResult`.
 - capability-injected events (e.g. todo events) flow through: each node's stream is
   wrapped with the run's capabilities' `wrap_run_event_stream`, which the manual
   `iter()` path would otherwise bypass (pydantic-ai applies it only inside `run()`),
@@ -35,6 +35,11 @@ from pydantic_ai import (
     RunUsage,
     UsageLimits,
 )
+
+# Pydantic AI applies capability wrap_run_event_stream only inside run()'s hooked
+# path; stream_events drives iter() directly, so we replicate the wrap per node.
+# build_run_context is private — no public RunContext-from-AgentRun exists in 1.93.0.
+from pydantic_ai._agent_graph import build_run_context
 from pydantic_ai.agent.abstract import (
     AgentInstructions,
     AgentMetadata,
@@ -44,10 +49,6 @@ from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import (
     FinalResultEvent,
     ModelMessage,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
     UserContent,
 )
 from pydantic_ai.models import KnownModelName, Model
@@ -56,14 +57,8 @@ from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import AgentDepsT, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-# Pydantic AI applies capability wrap_run_event_stream only inside run()'s hooked
-# path; stream_events drives iter() directly, so we replicate the wrap per node.
-# build_run_context is private — no public RunContext-from-AgentRun exists in 1.93.0.
-from pydantic_ai._agent_graph import build_run_context
-
 from octomate.capabilities.events import (
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     StreamEvents,
 )
 from octomate.schemas.segments import MessageSegment, Segment
@@ -168,8 +163,9 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         ) as run:
             async for node in run:
                 if self.is_model_request_node(node):
-                    # The model node streams the reply: passthrough thinking/pre-output
-                    # events, then map the output (after FinalResultEvent) to Output events.
+                    # The model node streams thinking/pre-output events unchanged.
+                    # After FinalResultEvent, segment-list outputs also surface as
+                    # ResultSegmentEvent; every output type still reaches FinalResult.
                     async with node.stream(run.ctx) as stream:
                         wrapped = run.ctx.deps.root_capability.wrap_run_event_stream(
                             build_run_context(run.ctx), stream=stream
@@ -186,37 +182,26 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                             if final_event is None:
                                 yield event
                                 continue
-                            # After the final result is recognized, stream the reply in
-                            # whichever of Pydantic AI's two modes fits the output: a text
-                            # reply arrives as additive `content_delta` (the typewriter);
-                            # a structured reply's tool args validate into a growing
-                            # list[MessageSegment] that we surface one segment at a time.
-                            if isinstance(event, PartStartEvent) and isinstance(
-                                event.part, TextPart
-                            ):
-                                if event.part.content:
-                                    yield ResultTextDeltaEvent(delta=event.part.content)
-                                continue
-                            if isinstance(event, PartDeltaEvent) and isinstance(
-                                event.delta, TextPartDelta
-                            ):
-                                if event.delta.content_delta:
-                                    yield ResultTextDeltaEvent(delta=event.delta.content_delta)
-                                continue
+                            # After the final result is recognized, outputs that
+                            # validate into a growing list of message segments are
+                            # surfaced one segment at a time. Other structured
+                            # outputs are intentionally left for FinalResult.
                             try:
                                 partial = await stream.validate_response_output(
                                     stream.response, allow_partial=True
                                 )
                             except (ValidationError, ModelRetry):
                                 continue
+                            # TODO: emit all the items from a iterable structured output
+                            # as they validate, not only lists of segments.
                             if isinstance(partial, list):
                                 # The trailing element may still be growing under
                                 # partial validation — emit only the elements a later
                                 # one has sealed; the tail is emitted from the final
                                 # validated output below.
                                 for segment in partial[emitted_segments:-1]:
-                                    # A validated list[MessageSegment] element is a union
-                                    # member; the Annotated discriminated union can't be
+                                    # A validated segment-list element is a union member;
+                                    # the Annotated discriminated union can't be
                                     # isinstance-narrowed, so guard on the base then cast.
                                     if isinstance(segment, Segment):
                                         yield ResultSegmentEvent(

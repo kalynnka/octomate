@@ -3,13 +3,13 @@
 One stream, with these event families:
 
 - **Pydantic AI passthrough** (`AgentStreamEvent`) — thinking + tool-call events.
-- **Output events** — the agent's reply, in one of two modes mirroring Pydantic AI's
-  own streaming: `ResultTextDeltaEvent` (an additive text chunk — PAI's `content_delta`
-  typewriter) while a *text* reply streams, or `ResultSegmentEvent` (one completed
-  `MessageSegment`) as a *`list[MessageSegment]`* reply is partially validated. Both
-  precede Pydantic AI's own `FinalResult[OutputT]`, emitted as the final value — no
-  wrapper of our own. Rendering (typing the text, sending a segment) is a *consumer*
-  concern; the event just carries the typed value.
+- **Output values** — text replies stream as Pydantic AI's native `TextPart`
+  events, every validated output type is emitted as Pydantic AI's own
+  `FinalResult[OutputT]`, and outputs that validate to `list[MessageSegment]`
+  additionally stream one `ResultSegmentEvent` per completed segment as partial
+  validation reveals it. Rendering (typing text, sending segments, or handling
+  any other structured value) is a *consumer* concern; the event just carries the
+  typed value.
 - **Display events** (`DisplayEvent`) — fire-and-forget, e.g. the granular todo
   events (`TodoCreatedEvent`/`TodoUpdatedEvent`/`TodoStatusChangedEvent`/
   `TodoCompletedEvent`/`TodoDeletedEvent`), each carrying the affected `Todo`.
@@ -44,18 +44,12 @@ OutputT = TypeVar("OutputT")
 
 
 @dataclass
-class ResultTextDeltaEvent:
-    """An additive text chunk of a streamed text reply — Pydantic AI's typewriter
-    (the model's `content_delta`), not a re-derived diff."""
-
-    delta: str
-    event_kind: Literal["result_text_delta"] = "result_text_delta"
-
-
-@dataclass
 class ResultSegmentEvent:
-    """One completed message segment of a `list[MessageSegment]` reply, emitted as
-    partial validation reveals it."""
+    """One completed message segment from a `list[MessageSegment]` output.
+
+    This is a convenience streaming event for channel renderers. The full typed
+    output, segment list or otherwise, still arrives as `FinalResult[OutputT]`.
+    """
 
     segment: MessageSegment
     event_kind: Literal["result_segment"] = "result_segment"
@@ -122,7 +116,6 @@ class ActionBatchEvent(BaseModel):
 StreamEvents = TypeAliasType(
     "StreamEvents",
     AgentStreamEvent
-    | ResultTextDeltaEvent
     | ResultSegmentEvent
     | FinalResult[OutputT]
     | TodoEvent

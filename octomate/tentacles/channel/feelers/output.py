@@ -42,7 +42,6 @@ from typing_extensions import TypeVar
 
 from octomate.capabilities.events import (
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     TodoDeletedEvent,
     TodoEvent,
 )
@@ -364,7 +363,7 @@ def format_stream_value(value: JsonValue, *, max_chars: int = 2000) -> str:
     return f"{text[:max_chars].rstrip()}\n\n...[truncated]"
 
 
-SKIPPED_PLAN_TOOL_NAMES = frozenset({"ask_questions"})
+SKIPPED_PLAN_TOOL_NAMES = frozenset({"ask_questions", "final_result"})
 MAX_TASK_DETAIL_CHARS = 2000
 
 
@@ -477,7 +476,7 @@ class MarkdownStreamFeeler(Protocol[OutputT]):
         self,
         key: ConversationKey,
         events: AsyncIterator[
-            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[OutputT]
+            AgentStreamEvent | ResultSegmentEvent | FinalResult[OutputT]
         ],
     ) -> IMMessageID | None: ...
 
@@ -528,9 +527,9 @@ class TimelineState:
     async def answer_end(self) -> None: ...
 
     async def answer_segment(self, segment: MessageSegment) -> None:
-        """One completed segment of a `list[OutputSegment]` reply. Platforms with a
-        media transport override this to render images/cards natively; the default
-        renders the segment's text form."""
+        """One completed message segment from a segment-list output. Platforms
+        with a media transport override this to render images/cards natively; the
+        default renders the segment's text form."""
         await self.answer_delta(str(segment))
 
     async def tool_start(
@@ -586,6 +585,18 @@ def markdown_from_output(
             return "\n\n".join(str(item) for item in output) or None
         output = [item for item in output if not isinstance(item, Segment)]
     return f"```json\n{format_stream_value(output)}\n```"
+
+
+def reply_text_from_event(event: AgentStreamEvent | ResultSegmentEvent) -> str | None:
+    match event:
+        case ResultSegmentEvent():
+            return str(event.segment)
+        case PartStartEvent(part=TextPart(content=content)):
+            return content
+        case PartDeltaEvent(delta=TextPartDelta(content_delta=delta)):
+            return delta
+        case _:
+            return None
 
 
 async def present_markdown(
@@ -727,7 +738,7 @@ class DefaultMarkdownStreamFeeler(Generic[RawT, MessageT, OutputT]):
         self,
         key: ConversationKey,
         events: AsyncIterator[
-            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[OutputT]
+            AgentStreamEvent | ResultSegmentEvent | FinalResult[OutputT]
         ],
     ) -> IMMessageID | None:
         # No streaming Ink (NapCat): consume the stream and send one final message.
@@ -736,10 +747,10 @@ class DefaultMarkdownStreamFeeler(Generic[RawT, MessageT, OutputT]):
         async for event in events:
             if isinstance(event, FinalResult):
                 final_output = event.output
-            elif isinstance(event, ResultTextDeltaEvent):
-                parts.append(event.delta)
             else:
-                parts.append(str(event.segment))
+                text = reply_text_from_event(event)
+                if text is not None:
+                    parts.append(text)
         markdown = (
             markdown_from_output(final_output) if final_output is not None else None
         )

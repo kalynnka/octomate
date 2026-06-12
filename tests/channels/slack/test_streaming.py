@@ -14,7 +14,10 @@ from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    PartDeltaEvent,
     PartStartEvent,
+    TextPart,
+    TextPartDelta,
     ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
@@ -26,7 +29,6 @@ from slack_sdk.models.messages.chunk import TaskUpdateChunk
 from octomate import Octomate
 from octomate.capabilities.events import (
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     StreamEvents,
     TodoCompletedEvent,
     TodoCreatedEvent,
@@ -176,8 +178,9 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
                 tool_name="lookup", content={"ok": True}, tool_call_id="call_1"
             )
         )
-        # The answer streams as typed deltas, not raw text parts.
-        yield ResultTextDeltaEvent(delta="done")
+        # The answer streams as native text parts.
+        yield PartStartEvent(index=1, part=TextPart(content="do"))
+        yield PartDeltaEvent(index=1, delta=TextPartDelta(content_delta="ne"))
         yield FinalResult[ChannelOutput](output="done")
         yield AgentRunResultEvent(AgentRunResult("done"))
 
@@ -194,7 +197,7 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
     assert any(chunk.title == "Lookup" for chunk in task_chunks)
     details = "\n\n".join(chunk.details or "" for chunk in task_chunks)
     assert "ask_questions" not in details
-    assert ink.appends == ["done"]
+    assert "".join(ink.appends) == "done"
     assert ink.stops == ["stream-ts"] or ink.stops == [None]
     assert ink.statuses[0] == "Thinking…"
     assert "Lookup…" in ink.statuses

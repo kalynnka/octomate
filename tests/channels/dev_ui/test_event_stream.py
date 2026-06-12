@@ -6,7 +6,13 @@ from collections.abc import AsyncIterator
 from typing import cast
 from uuid import uuid4
 
-from pydantic_ai.messages import PartStartEvent, ThinkingPart
+from pydantic_ai.messages import (
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ThinkingPart,
+)
 from pydantic_ai.result import FinalResult
 from pydantic_ai.ui import NativeEvent
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
@@ -15,14 +21,12 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     DataChunk,
     ReasoningStartChunk,
     TextDeltaChunk,
-    TextEndChunk,
     TextStartChunk,
 )
 
 from octomate.capabilities.events import (
     ActionBatchEvent,
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     TodoCreatedEvent,
 )
 from octomate.capabilities.react import ReactStreamEvent
@@ -50,41 +54,37 @@ async def _chunks(events: list[ReactStreamEvent[InklingOutput]]) -> list[BaseChu
 
 
 async def test_reply_deltas_stream_as_one_text_part() -> None:
-    output: InklingOutput = [MarkdownSegment(data={"text": "hello"})]
+    output: InklingOutput = "hello"
     chunks = await _chunks(
         [
-            ResultTextDeltaEvent(delta="hel"),
-            ResultTextDeltaEvent(delta="lo"),
+            PartStartEvent(index=0, part=TextPart(content="hel")),
+            PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="lo")),
             FinalResult(output=output, tool_name=None, tool_call_id=None),
         ]
     )
 
     starts = [chunk for chunk in chunks if isinstance(chunk, TextStartChunk)]
     deltas = [chunk for chunk in chunks if isinstance(chunk, TextDeltaChunk)]
-    ends = [chunk for chunk in chunks if isinstance(chunk, TextEndChunk)]
     assert len(starts) == 1
     assert [chunk.delta for chunk in deltas] == ["hel", "lo"]
-    assert len(ends) == 1
-    assert {chunk.id for chunk in deltas} == {starts[0].id} == {ends[0].id}
+    assert {chunk.id for chunk in deltas} == {starts[0].id}
 
 
 async def test_final_result_closes_open_text_part() -> None:
-    output: InklingOutput = [MarkdownSegment(data={"text": "hello"})]
+    output: InklingOutput = "hello"
     chunks = await _chunks(
         [
-            ResultTextDeltaEvent(delta="hel"),
-            ResultTextDeltaEvent(delta="lo"),
+            PartStartEvent(index=0, part=TextPart(content="hel")),
+            PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="lo")),
             FinalResult(output=output, tool_name=None, tool_call_id=None),
             ResultSegmentEvent(segment=MarkdownSegment(data={"text": "more"})),
         ]
     )
 
     starts = [chunk for chunk in chunks if isinstance(chunk, TextStartChunk)]
-    ends = [chunk for chunk in chunks if isinstance(chunk, TextEndChunk)]
     deltas = [chunk for chunk in chunks if isinstance(chunk, TextDeltaChunk)]
-    # FinalResult emits text-end for the open part and resets the reply state:
-    # the segment after it opens a fresh text part instead of joining with "\n\n".
-    assert ends and ends[0].id == starts[0].id
+    # Native text is handled by the stock Vercel stream; the segment after the
+    # final result opens a fresh custom text part instead of joining with "\n\n".
     assert len(starts) == 2
     assert starts[1].id != starts[0].id
     assert [chunk.delta for chunk in deltas] == ["hel", "lo", "more"]

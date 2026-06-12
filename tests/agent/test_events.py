@@ -1,5 +1,4 @@
-"""Catalog types: the two output-streaming events (TextDelta/Segment) + display/
-action events.
+"""Catalog types: segment output events + display/action events.
 
 The final output is Pydantic AI's own `FinalResult`, not a wrapper of ours, so it
 has no catalog test here. Pure type-level tests — no agent run, no channels.
@@ -20,7 +19,6 @@ from octomate.capabilities.events import (
     ActionBatchEvent,
     DisplayEvent,
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,
@@ -37,12 +35,6 @@ def _todo(**overrides: object) -> Todo:
         active_form="shipping it",
         **overrides,  # pyright: ignore[reportArgumentType]
     )
-
-
-def test_text_delta_carries_an_additive_chunk() -> None:
-    event = ResultTextDeltaEvent(delta="world!")
-    assert event.event_kind == "result_text_delta"
-    assert event.delta == "world!"
 
 
 def test_segment_event_carries_one_completed_segment() -> None:
@@ -94,7 +86,6 @@ def test_action_batch_event_carries_questions_and_approvals() -> None:
 
 def test_event_kinds_are_unique() -> None:
     kinds = [
-        ResultTextDeltaEvent(delta="").event_kind,
         ResultSegmentEvent(segment=TextSegment(data={"text": "x"})).event_kind,
         TodoCreatedEvent(todo=_todo()).event_kind,
         TodoUpdatedEvent(todo=_todo()).event_kind,

@@ -1,13 +1,13 @@
 """Vercel UI event stream that also speaks the octomate `StreamEvents`.
 
 The stock `VercelAIEventStream` silently drops events it does not know
-(`handle_event`'s catch-all). The react stream is normalized, so the reply
-arrives as `ResultTextDeltaEvent` / `ResultSegmentEvent` rather than raw text
-parts, and capabilities add display/action events — this subclass renders all
-of them onto the Vercel protocol:
+(`handle_event`'s catch-all). The react stream is normalized, so text replies
+arrive as native Pydantic events, segment replies arrive as `ResultSegmentEvent`,
+and capabilities add display/action events — this subclass renders the
+Octomate-specific ones onto the Vercel protocol:
 
-- the reply streams as one text part (`text-start` / `text-delta` / `text-end`,
-  closed by the normalizer's terminal `FinalResult`),
+- text replies pass through to the stock Vercel handler,
+- segment replies stream as one custom text part,
 - todo events surface as transient ``data-todo`` chunks,
 - a suspended run's deferred-action batch surfaces as a transient
   ``data-action-batch`` chunk,
@@ -34,7 +34,6 @@ from pydantic_ai.ui.vercel_ai.response_types import (
 from octomate.capabilities.events import (
     ActionBatchEvent,
     ResultSegmentEvent,
-    ResultTextDeltaEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,
@@ -53,9 +52,6 @@ class OctomateUIEventStream(VercelAIEventStream[None, InklingOutput]):
         self, event: NativeEvent | ReactStreamEvent[InklingOutput]
     ) -> AsyncIterator[BaseChunk]:
         match event:
-            case ResultTextDeltaEvent():
-                async for chunk in self.reply_delta(event.delta):
-                    yield chunk
             case ResultSegmentEvent():
                 # Completed segments join the reply text as separate blocks.
                 text = str(event.segment)
