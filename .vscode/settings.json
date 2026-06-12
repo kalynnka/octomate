@@ -3,6 +3,7 @@
     "python.analysis.autoFormatStrings": true,
     "python.languageServer": "Pylance",
     "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.extraPaths": ["."],
     "python.defaultInterpreterPath": "./.venv/bin/python",
     "python.analysis.indexing": true,
     "python.analysis.packageIndexDepths": [

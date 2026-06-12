@@ -68,6 +68,28 @@ async def test_reply_deltas_stream_as_one_text_part() -> None:
     assert {chunk.id for chunk in deltas} == {starts[0].id} == {ends[0].id}
 
 
+async def test_final_result_closes_open_text_part() -> None:
+    output: InklingOutput = [MarkdownSegment(data={"text": "hello"})]
+    chunks = await _chunks(
+        [
+            ResultTextDeltaEvent(delta="hel"),
+            ResultTextDeltaEvent(delta="lo"),
+            FinalResult(output=output, tool_name=None, tool_call_id=None),
+            ResultSegmentEvent(segment=MarkdownSegment(data={"text": "more"})),
+        ]
+    )
+
+    starts = [chunk for chunk in chunks if isinstance(chunk, TextStartChunk)]
+    ends = [chunk for chunk in chunks if isinstance(chunk, TextEndChunk)]
+    deltas = [chunk for chunk in chunks if isinstance(chunk, TextDeltaChunk)]
+    # FinalResult emits text-end for the open part and resets the reply state:
+    # the segment after it opens a fresh text part instead of joining with "\n\n".
+    assert ends and ends[0].id == starts[0].id
+    assert len(starts) == 2
+    assert starts[1].id != starts[0].id
+    assert [chunk.delta for chunk in deltas] == ["hel", "lo", "more"]
+
+
 async def test_segments_join_the_reply_as_blocks() -> None:
     chunks = await _chunks(
         [

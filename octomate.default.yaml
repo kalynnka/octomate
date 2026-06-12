@@ -75,3 +75,11 @@ octomate:
   #     aws_secret_access_key: ...
   #     # or: profile_name: my-profile
   #     # or: api_key: <AWS_BEARER_TOKEN_BEDROCK>
+
+# Live-replay test targets (`pytest tests/trigger/`).
+# This section sits OUTSIDE `octomate:` — the application never reads it.
+# Configure it in the gitignored octomate.yaml, next to the channel credentials:
+# trigger:
+#   slack: {chat_id: D0123, user_id: U0123, thread_id: "1234.5678"}  # slack needs a thread_ts
+#   lark: {chat_type: group, chat_id: oc_xxx, user_id: ou_xxx}
+#   napcat: {chat_id: "123456", user_id: "123456"}

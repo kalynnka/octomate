@@ -1,0 +1,159 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from types import SimpleNamespace, TracebackType
+from typing import cast
+
+import httpx
+from pydantic import SecretStr
+from websockets.asyncio.client import ClientConnection
+
+from octomate.schemas.conversation import ConversationKey
+from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.feelers.deferred import (
+    PlainTextApprovalFeeler,
+    PlainTextAskQuestionFeeler,
+)
+from octomate.tentacles.channel.feelers.output import (
+    DefaultMarkdownFeeler,
+    DefaultMarkdownStreamFeeler,
+    DefaultTimelineFeeler,
+)
+from octomate.tentacles.channel.napcat import NapcatChromo, NapcatInk, NapcatTentacle
+from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
+
+from tests.channels.napcat.fakes import FakeNapcatHTTP
+from tests.support.scenarios import plain_answer, play
+
+
+async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
+    http = FakeNapcatHTTP()
+    ink = object.__new__(NapcatInk)
+    ink.httpx = cast(httpx.AsyncClient, http)
+    message = NapcatOutboundMessage(
+        segments=[{"type": "text", "data": {"text": "hello"}}]
+    )
+
+    group_id = await ink.send_message("2002", "group", [message], reply_to="1001")
+    private_id = await ink.send_message("3003", "private", [message])
+
+    assert group_id == "msg-1"
+    assert private_id == "msg-1"
+    assert http.posts == [
+        (
+            "/send_group_msg",
+            {
+                "group_id": "2002",
+                "message": message.segments,
+                "reply": "1001",
+            },
+        ),
+        (
+            "/send_private_msg",
+            {"user_id": "3003", "message": message.segments},
+        ),
+    ]
+
+
+async def test_napcat_tentacle_sense_invokes_ingest() -> None:
+    channel = object.__new__(NapcatTentacle)
+    calls: list[str | bytes] = []
+
+    async def ingest(raw: str | bytes) -> None:
+        calls.append(raw)
+
+    class FakeWS:
+        def __aiter__(self) -> AsyncIterator[str]:
+            return self._events()
+
+        async def _events(self) -> AsyncIterator[str]:
+            yield "event-1"
+            yield "event-2"
+
+    channel.ingest = ingest
+
+    await channel.sense(cast(ClientConnection, FakeWS()))
+
+    assert calls == ["event-1", "event-2"]
+
+
+async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, str] | None]] = []
+    channel = object.__new__(NapcatTentacle)
+    channel.id = "napcat"
+    channel.ws_url = "ws://napcat"
+    channel.access_token = SecretStr("token")
+    channel.backoff_base = 0.01
+    channel.backoff_max = 0.01
+    channel.backoff_factor = 2.0
+    channel.ws_client = None
+    channel.stop_event = None
+
+    class FakeConnect:
+        def __init__(self, url: str, additional_headers: dict[str, str] | None) -> None:
+            calls.append((url, additional_headers))
+
+        async def __aenter__(self) -> ClientConnection:
+            return cast(ClientConnection, SimpleNamespace())
+
+        async def __aexit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            return None
+
+    async def sense(ws: ClientConnection) -> None:
+        assert channel.stop_event is not None
+        channel.stop_event.set()
+
+    channel.sense = sense
+    monkeypatch.setattr(
+        "octomate.tentacles.channel.napcat.base.connect",
+        FakeConnect,
+    )
+
+    await channel.activate()
+
+    assert calls == [
+        ("ws://napcat", {"Authorization": "Bearer token"}),
+    ]
+
+
+async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> None:
+    http = FakeNapcatHTTP()
+    ink = object.__new__(NapcatInk)
+    ink.httpx = cast(httpx.AsyncClient, http)
+    chromo = NapcatChromo()
+    channel = object.__new__(NapcatTentacle)
+    channel.id = "napcat"
+    channel.ink = ink
+    channel.chromo = chromo
+    markdown_feeler = DefaultMarkdownFeeler(ink=ink, chromo=chromo)
+    channel.feelers = Feelers(
+        markdown=markdown_feeler,
+        markdown_stream=DefaultMarkdownStreamFeeler(ink=ink, chromo=chromo),
+        timeline=DefaultTimelineFeeler(ink=ink, chromo=chromo),
+        approvals=PlainTextApprovalFeeler(markdown_feeler),
+        ask_questions=PlainTextAskQuestionFeeler(markdown_feeler),
+    )
+    key = ConversationKey(
+        channel_tentacle_id="napcat",
+        chat_type="private",
+        chat_id="3003",
+        user_id="3003",
+    )
+
+    message_id = await channel.consume(key, play(plain_answer("hello from octomate")))
+
+    assert message_id == "msg-1"
+    assert http.posts == [
+        (
+            "/send_private_msg",
+            {
+                "user_id": "3003",
+                "message": [{"type": "text", "data": {"text": "hello from octomate"}}],
+            },
+        )
+    ]

@@ -1,24 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from uuid import uuid4
 
 import pytest
 from arcanus import RelationCollection
 from pydantic import ValidationError
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-import octomate.database as database
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
-from octomate.models import Base
-from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import (
     DeferredActionBatch,
@@ -27,31 +21,6 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.schemas.triage import TriageDecision
-
-
-@pytest.fixture
-async def in_memory_engine(
-    monkeypatch: pytest.MonkeyPatch,
-) -> AsyncIterator[AsyncEngine]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-    maker = async_sessionmaker(
-        engine,
-        class_=database.AsyncSession,
-        expire_on_commit=False,
-    )
-
-    database.engine.cache_clear()
-    database.session_maker.cache_clear()
-    monkeypatch.setattr(database, "engine", lambda: engine)
-    monkeypatch.setattr(database, "session_maker", lambda: maker)
-
-    with sqlalchemy_materia:
-        yield engine
-
-    await engine.dispose()
 
 
 def _key() -> ConversationKey:
@@ -79,6 +48,21 @@ def _requests() -> DeferredToolRequests:
                 tool_call_id="call_approval",
             )
         ],
+    )
+
+
+async def _create_batch() -> DeferredActionBatch:
+    key = _key()
+    conversation = await ConversationManager().ensure(key, agent_tentacle_id="inkling")
+    return await DeferredActionManager().create_batch(
+        conversation=conversation,
+        agent_tentacle_id="inkling",
+        run_name="reception",
+        source_key=key,
+        target_key=key,
+        target_mode="main",
+        decision=TriageDecision(action="reception", reason="needs input"),
+        requests=_requests(),
     )
 
 
@@ -113,18 +97,7 @@ def test_deferred_action_batch_accepts_validated_actions() -> None:
 async def test_deferred_action_batch_relationships_filter_by_kind(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    key = _key()
-    conversation = await ConversationManager().ensure(key, agent_tentacle_id="inkling")
-    created = await DeferredActionManager().create_batch(
-        conversation=conversation,
-        agent_tentacle_id="inkling",
-        run_name="reception",
-        source_key=key,
-        target_key=key,
-        target_mode="main",
-        decision=TriageDecision(action="reception", reason="needs input"),
-        requests=_requests(),
-    )
+    created = await _create_batch()
 
     assert [action.batch_id for action in created.questions] == [created.id]
     assert [action.batch_id for action in created.approvals] == [created.id]
@@ -171,3 +144,48 @@ def test_deferred_question_choices_are_limited_to_three() -> None:
                 ],
             },
         )
+
+
+async def test_resolve_batch_applies_answers_and_approvals(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    created = await _create_batch()
+    question = list(created.questions)[0]
+    approval = list(created.approvals)[0]
+
+    resolved = await DeferredActionManager().resolve_batch(
+        DeferredActionBatchResponse(
+            batch_id=created.id,
+            answers={question.id: "tonight"},
+            approvals={approval.id: True},
+            responder_id="alice",
+        )
+    )
+
+    assert [action.status for action in resolved.questions] == ["answered"]
+    assert [action.status for action in resolved.approvals] == ["approved"]
+    assert [action.responder_id for action in resolved.questions] == ["alice"]
+    assert resolved.status == "resolved"
+
+    results = resolved.build_results()
+    assert results.calls["call_question"] == ["tonight"]
+    assert results.approvals["call_approval"] is True
+
+
+async def test_mark_batch_sets_status_and_completed_at(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    created = await _create_batch()
+    assert created.completed_at is None
+
+    await DeferredActionManager().mark_batch(created.id, "completed", completed=True)
+
+    reloaded = await DeferredActionManager().get_batch(created.id)
+    assert reloaded.status == "completed"
+    assert reloaded.completed_at is not None
+
+
+async def test_mark_action_presented_noops_for_unknown_action(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    await DeferredActionManager().mark_action_presented(uuid4(), "msg-1")

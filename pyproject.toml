@@ -49,6 +49,9 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "trigger: live replay against a real IM client (needs octomate.yaml credentials); auto-skipped unless explicitly targeted",
+]
 
 [tool.logfire]
 # Instrumented code paths (e.g. ChannelTentacle.ingest) run in tests and other

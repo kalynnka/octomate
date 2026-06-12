@@ -1,60 +1,24 @@
+"""Slack block-kit feelers: approval/question blocks, paging, and callbacks."""
+
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import cast
 
-from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger
 from pydantic import JsonValue, TypeAdapter
-from pydantic_ai.messages import ToolCallPart
-from pydantic_ai.result import StreamedRunResult
-from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
     DeferredQuestion,
     QuestionRequest,
 )
-from octomate.schemas.triage import ResponseTargetMode, TriageDecision
-from octomate.tentacles.channel.feelers.base import Feelers
-from octomate.tentacles.channel.feelers.deferred import (
-    ApprovalFeeler,
-    PlainTextApprovalFeeler,
-    PlainTextAskQuestionFeeler,
-    QuestionFeeler,
-)
-from octomate.schemas.segments import MarkdownSegment, TextSegment
-from octomate.tentacles.channel.feelers.output import (
-    TimelineState,
-    markdown_from_output,
-)
-from octomate.tentacles.channel.lark.base import LarkTentacle
-from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
-from octomate.tentacles.channel.lark.feelers.approvals import (
-    LarkApprovalFeeler,
-    approval_card_data,
-)
-from octomate.tentacles.channel.lark.feelers.questions import (
-    LarkAskQuestionFeeler,
-    LarkQuestionActionValueAdapter,
-    ask_question_card,
-    ask_question_card_data,
-    collect_answer,
-    submitted_card_data,
-)
-from octomate.tentacles.channel.lark.ink import LarkInk
-from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.tentacles.channel.slack.base import SlackTentacle
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.channel.slack.feelers.approvals import (
@@ -75,14 +39,14 @@ from octomate.tentacles.channel.slack.schema import (
     SlackActionMessage,
     SlackApprovalActionBody,
     SlackApprovalActionValue,
-    SlackBlock,
-    SlackOutboundMessage,
     SlackQuestionActionBody,
     SlackQuestionActionValue,
     SlackQuestionBlockAction,
     SlackQuestionState,
 )
 from octomate.types.json import JsonObject
+
+from tests.channels.slack.fakes import FakeSlackBlocksInk
 
 JsonObjectAdapter = TypeAdapter(JsonObject)
 
@@ -159,292 +123,62 @@ def _json_string(value: JsonValue) -> str:
     return value
 
 
-def _nav_buttons(form_elements: list[JsonObject]) -> list[JsonObject]:
-    """The nav row is the trailing column_set; one button per column."""
-    columns = _json_objects(form_elements[-1]["columns"])
-    return [_json_objects(column["elements"])[0] for column in columns]
-
-
 def _loaded_json_object(value: str) -> JsonObject:
     return JsonObjectAdapter.validate_json(value)
 
 
-def test_markdown_from_output_renders_segments() -> None:
-    segments = [
-        MarkdownSegment(data={"text": "# hi"}),
-        TextSegment(data={"text": "plain"}),
-    ]
-    assert markdown_from_output(segments) == "# hi\n\nplain"
-    # An empty reply renders nothing (not an empty message).
-    assert markdown_from_output([]) is None
-
-
-async def test_plain_text_feelers_present_approval_and_questions() -> None:
-    sent: list[tuple[ConversationKey, str]] = []
-
-    @dataclass
-    class MarkdownRecorder:
-        async def present(
-            self,
-            key: ConversationKey,
-            markdown: str,
-        ) -> str | None:
-            sent.append((key, markdown))
-            return None
-
-    key = _key()
-    markdown = MarkdownRecorder()
-    approval = _approval()
-    questions = [
-        _question(
-            question="Pick a deploy window", choices=["now", "later"], hint="UTC"
-        ),
-        _question(question="Who approves?", position=1),
-    ]
-
-    approval_ids = await PlainTextApprovalFeeler(markdown).present(
-        key,
-        [approval],
-    )
-    question_ids = await PlainTextAskQuestionFeeler(markdown).present(
-        key,
-        questions,
-    )
-
-    assert approval_ids == {approval.id: None}
-    assert question_ids == {questions[0].id: None, questions[1].id: None}
-    assert sent[0] == (
-        key,
-        (
-            f"Octomate needs approval for `shell` ({approval.id}). This channel "
-            "can show the request, but does not support interactive approval cards yet."
-        ),
-    )
-    assert "Pick a deploy window" in sent[1][1]
-    assert "Hint: UTC" in sent[1][1]
-    assert "- now" in sent[1][1]
-    assert str(questions[0].id) in sent[1][1]
-    assert "Who approves?" in sent[2][1]
-
-
 @dataclass
-class RecordingApprovalFeeler(ApprovalFeeler):
-    presented: list[tuple[ConversationKey, list[DeferredApproval]]] = field(
-        default_factory=list
-    )
-
-    async def present(
-        self,
-        key: ConversationKey,
-        actions: list[DeferredApproval],
-    ) -> dict[uuid.UUID, str | None]:
-        self.presented.append((key, actions))
-        return {action.id: "approval-message" for action in actions}
-
-
-@dataclass
-class RecordingQuestionFeeler(QuestionFeeler):
-    presented: list[tuple[ConversationKey, list[DeferredQuestion]]] = field(
-        default_factory=list
-    )
-
-    async def present(
-        self,
-        key: ConversationKey,
-        actions: list[DeferredQuestion],
-    ) -> dict[uuid.UUID, str | None]:
-        self.presented.append((key, actions))
-        return {action.id: f"question-{index}" for index, action in enumerate(actions)}
-
-
-@dataclass
-class RecordingMarkdownFeeler:
-    async def present(
-        self,
-        key: ConversationKey,
-        markdown: str,
-    ) -> str | None:
-        return None
-
-
-class NoopMarkdownStreamFeeler:
-    async def present(
-        self,
-        key: ConversationKey,
-        stream: StreamedRunResult[None, str],
-    ) -> str | None:
-        return None
-
-    async def present_output(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[object],
-    ) -> str | None:
-        return None
-
-
-class NoopTimeline(TimelineState):
-    @asynccontextmanager
-    async def open(self, key: ConversationKey) -> AsyncIterator[NoopTimeline]:
-        yield self
-
-
-@dataclass
-class FakeActionContext:
-    questions: list[DeferredQuestion]
-    approvals: list[DeferredApproval]
-
-
-@dataclass(frozen=True)
-class CreateBatchCall:
-    conversation: Conversation
-    agent_tentacle_id: str
-    run_name: str | None
-    source_key: ConversationKey
-    target_key: ConversationKey
-    target_mode: ResponseTargetMode
-    decision: TriageDecision | None
-    requests: DeferredToolRequests
-
-
-@dataclass
-class FakeActionManager:
-    context: FakeActionContext
-    create_calls: list[CreateBatchCall] = field(default_factory=list)
-    presented: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
-
-    async def create_batch(
-        self,
-        *,
-        conversation: Conversation,
-        agent_tentacle_id: str,
-        run_name: str | None,
-        source_key: ConversationKey,
-        target_key: ConversationKey,
-        target_mode: ResponseTargetMode,
-        decision: TriageDecision | None,
-        requests: DeferredToolRequests,
-    ) -> FakeActionContext:
-        self.create_calls.append(
-            CreateBatchCall(
-                conversation=conversation,
-                agent_tentacle_id=agent_tentacle_id,
-                run_name=run_name,
-                source_key=source_key,
-                target_key=target_key,
-                target_mode=target_mode,
-                decision=decision,
-                requests=requests,
-            )
-        )
-        return self.context
-
-    async def mark_action_presented(
-        self,
-        action_id: uuid.UUID,
-        platform_message_id: str | None,
-    ) -> None:
-        self.presented.append((action_id, platform_message_id))
-
-
-async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
-    approval = _approval()
-    first = _question(question="First?")
-    second = _question(question="Second?", position=1)
-    approvals = RecordingApprovalFeeler()
-    ask_questions = RecordingQuestionFeeler()
-    manager = FakeActionManager(FakeActionContext([first, second], [approval]))
-    source_key = _key("source")
-    target_key = _key("target")
-    decision = TriageDecision(action="reception", reason="needs input")
-    requests = DeferredToolRequests(
-        calls=[
-            ToolCallPart(
-                tool_name="ask_questions",
-                args={"questions": [{"question": "First?"}, {"question": "Second?"}]},
-                tool_call_id="call_questions",
-            )
-        ],
-        approvals=[
-            ToolCallPart(
-                tool_name="shell",
-                args={"cmd": "git status"},
-                tool_call_id="call_approval",
-            )
-        ],
-    )
-    conversation = Conversation(
-        chat_type="private",
-        chat_id="alice",
-        user_id="alice",
-        channel_tentacle_id="source",
-        agent_tentacle_id="inkling",
-    )
-
-    context = await Feelers(
-        markdown=RecordingMarkdownFeeler(),
-        markdown_stream=NoopMarkdownStreamFeeler(),
-        timeline=NoopTimeline(),
-        approvals=approvals,
-        ask_questions=ask_questions,
-    ).present_actions(
-        action_manager=cast(DeferredActionManager, manager),
-        conversation=conversation,
-        agent_tentacle_id="inkling",
-        run_name="reception",
-        source_key=source_key,
-        target_key=target_key,
-        target_mode="sub",
-        decision=decision,
-        requests=requests,
-    )
-
-    assert context is manager.context
-    assert manager.create_calls[0].conversation is conversation
-    assert manager.create_calls[0].source_key == source_key
-    assert manager.create_calls[0].target_key == target_key
-    assert approvals.presented == [(target_key, [approval])]
-    assert ask_questions.presented == [(target_key, [first, second])]
-    assert manager.presented == [
-        (approval.id, "approval-message"),
-        (first.id, "question-0"),
-        (second.id, "question-1"),
-    ]
-
-
-@dataclass
-class FakeSlackInk:
-    sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
-        default_factory=list
-    )
-    updates: list[tuple[str, str, str, list[SlackBlock]]] = field(default_factory=list)
+class FakeOctomate:
+    kicks: list[DeferredActionBatchResponse] = field(default_factory=list)
     events: list[str] | None = None
 
-    async def send_message(
-        self,
-        chat_id: str,
-        chat_type: str,
-        messages: list[SlackOutboundMessage],
-        reply_to: str | None = None,
-    ) -> str:
-        self.sent.append((chat_id, chat_type, messages, reply_to))
-        return f"slack-{len(self.sent)}"
-
-    async def update_message(
-        self,
-        channel: str,
-        message_ts: str,
-        *,
-        text: str,
-        blocks: list[SlackBlock],
-    ) -> None:
-        self.updates.append((channel, message_ts, text, blocks))
+    async def kick(self, signal: DeferredActionBatchResponse) -> None:
+        self.kicks.append(signal)
         if self.events is not None:
-            self.events.append("update")
+            self.events.append("kick")
+
+
+async def _ack() -> None:
+    return None
+
+
+def _slack_approval_body(
+    *,
+    action_id: str,
+    value: str,
+    message: SlackActionMessage | None = None,
+) -> SlackApprovalActionBody:
+    return {
+        "actions": (
+            {"action_id": action_id, "value": cast(SlackApprovalActionValue, value)},
+        ),
+        "user": {"id": "U1"},
+        "channel": {"id": "C1"},
+        "message": message or {"ts": "111.222"},
+    }
+
+
+def _slack_question_body(
+    *,
+    action_id: str,
+    state: SlackQuestionState,
+    value: str | None = None,
+    message: SlackActionMessage | None = None,
+) -> SlackQuestionActionBody:
+    action: SlackQuestionBlockAction = {"action_id": action_id}
+    if value is not None:
+        action["value"] = cast(SlackQuestionActionValue, value)
+    return {
+        "actions": (action,),
+        "state": state,
+        "user": {"id": "U2"},
+        "channel": {"id": "C1"},
+        "message": message or {"ts": "333.444"},
+    }
 
 
 async def test_slack_feelers_send_approval_and_question_blocks() -> None:
-    ink = FakeSlackInk()
+    ink = FakeSlackBlocksInk()
     key = _key("slack")
     approval = _approval()
     second_approval = _approval(batch_id=_batch_id(approval))
@@ -650,58 +384,8 @@ def test_slack_question_pages_use_distinct_input_blocks() -> None:
     assert "initial_value" not in _json_object(second_answer["element"])
 
 
-@dataclass
-class FakeOctomate:
-    kicks: list[DeferredActionBatchResponse] = field(default_factory=list)
-    events: list[str] | None = None
-
-    async def kick(self, signal: DeferredActionBatchResponse) -> None:
-        self.kicks.append(signal)
-        if self.events is not None:
-            self.events.append("kick")
-
-
-async def _ack() -> None:
-    return None
-
-
-def _slack_approval_body(
-    *,
-    action_id: str,
-    value: str,
-    message: SlackActionMessage | None = None,
-) -> SlackApprovalActionBody:
-    return {
-        "actions": (
-            {"action_id": action_id, "value": cast(SlackApprovalActionValue, value)},
-        ),
-        "user": {"id": "U1"},
-        "channel": {"id": "C1"},
-        "message": message or {"ts": "111.222"},
-    }
-
-
-def _slack_question_body(
-    *,
-    action_id: str,
-    state: SlackQuestionState,
-    value: str | None = None,
-    message: SlackActionMessage | None = None,
-) -> SlackQuestionActionBody:
-    action: SlackQuestionBlockAction = {"action_id": action_id}
-    if value is not None:
-        action["value"] = cast(SlackQuestionActionValue, value)
-    return {
-        "actions": (action,),
-        "state": state,
-        "user": {"id": "U2"},
-        "channel": {"id": "C1"},
-        "message": message or {"ts": "333.444"},
-    }
-
-
 async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> None:
-    ink = FakeSlackInk()
+    ink = FakeSlackBlocksInk()
     octomate = FakeOctomate()
     events: list[str] = []
     ink.events = events
@@ -761,7 +445,7 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
 
 
 async def test_slack_approval_blocks_advance_through_multiple_approvals() -> None:
-    ink = FakeSlackInk()
+    ink = FakeSlackBlocksInk()
     octomate = FakeOctomate()
     channel = object.__new__(SlackTentacle)
     channel.id = "slack"
@@ -811,7 +495,7 @@ async def test_slack_approval_blocks_advance_through_multiple_approvals() -> Non
 
 
 async def test_slack_radio_choice_submits_selected_answer() -> None:
-    ink = FakeSlackInk()
+    ink = FakeSlackBlocksInk()
     octomate = FakeOctomate()
     channel = object.__new__(SlackTentacle)
     channel.id = "slack"
@@ -854,7 +538,7 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
 
 
 async def test_slack_submitted_question_summary_strips_stale_progress_suffix() -> None:
-    ink = FakeSlackInk()
+    ink = FakeSlackBlocksInk()
     octomate = FakeOctomate()
     channel = object.__new__(SlackTentacle)
     channel.id = "slack"
@@ -896,7 +580,7 @@ async def test_slack_submitted_question_summary_strips_stale_progress_suffix() -
 
 
 async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
-    ink = FakeSlackInk()
+    ink = FakeSlackBlocksInk()
     octomate = FakeOctomate()
     channel = object.__new__(SlackTentacle)
     channel.id = "slack"
@@ -1017,7 +701,7 @@ async def test_slack_radio_choices_preserve_answers_when_backtracking() -> None:
 
 
 async def test_slack_question_submit_ignores_invalid_batch_id() -> None:
-    ink = FakeSlackInk()
+    ink = FakeSlackBlocksInk()
     octomate = FakeOctomate()
     channel = object.__new__(SlackTentacle)
     channel.id = "slack"
@@ -1039,284 +723,3 @@ async def test_slack_question_submit_ignores_invalid_batch_id() -> None:
 
     assert octomate.kicks == []
     assert ink.updates == []
-
-
-@dataclass
-class FakeLarkInk:
-    sent: list[tuple[str, str, list[LarkOutboundMessage], str | None, bool]] = field(
-        default_factory=list
-    )
-
-    async def send_message(
-        self,
-        chat_id: str,
-        chat_type: str,
-        messages: list[LarkOutboundMessage],
-        reply_to: str | None = None,
-        reply_in_thread: bool = False,
-    ) -> str:
-        self.sent.append((chat_id, chat_type, messages, reply_to, reply_in_thread))
-        return f"lark-{len(self.sent)}"
-
-
-async def test_lark_feelers_send_approval_and_question_cards() -> None:
-    ink = FakeLarkInk()
-    key = _key("lark")
-    key = ConversationKey(
-        channel_tentacle_id=key.channel_tentacle_id,
-        chat_type=key.chat_type,
-        chat_id=key.chat_id,
-        user_id=key.user_id,
-        thread_id="om_parent",
-    )
-    approval = _approval()
-    questions = [_question(question="Environment?", choices=["prod", "stage"])]
-
-    approval_message_ids = await LarkApprovalFeeler(cast(LarkInk, ink)).present(
-        key,
-        [approval],
-    )
-    question_message_ids = await LarkAskQuestionFeeler(cast(LarkInk, ink)).present(
-        key,
-        questions,
-    )
-
-    assert approval_message_ids == {approval.id: "lark-1"}
-    assert question_message_ids == {questions[0].id: "lark-2"}
-    assert ink.sent[0][3:] == ("om_parent", True)
-    approval_content = _loaded_json_object(ink.sent[0][2][0].content)
-    approval_elements = _json_objects(approval_content["elements"])
-    approval_actions = _json_objects(approval_elements[2]["actions"])
-    approval_value = _json_object(approval_actions[0]["value"])
-    assert approval_value["action"] == (LarkCardAction.APPROVAL_APPROVE.value)
-    question_content = _loaded_json_object(ink.sent[1][2][0].content)
-    question_elements = _json_objects(question_content["elements"])
-    form = question_elements[2]
-    assert form["tag"] == "form"
-    form_elements = _json_objects(form["elements"])
-    nav_buttons = _nav_buttons(form_elements)
-    form_value = _json_object(nav_buttons[-1]["value"])
-    assert form_value["action"] == (LarkCardAction.ASK_QUESTION_SUBMIT.value)
-
-
-def test_lark_card_data_and_answer_collection() -> None:
-    approval = _approval()
-    action = _question(question="Window?", choices=["morning", "night"], hint="UTC")
-
-    approval_data = approval_card_data(approval)
-    approval_header = _json_object(approval_data["header"])
-    approval_title = _json_object(approval_header["title"])
-    assert approval_title["content"] == "Permission Required"
-    approval_elements = _json_objects(approval_data["elements"])
-    approval_actions = _json_objects(approval_elements[2]["actions"])
-    deny_value = _json_object(approval_actions[1]["value"])
-    assert deny_value["action"] == (LarkCardAction.APPROVAL_DENY.value)
-
-    card = _loaded_json_object(ask_question_card([action]))
-    card_elements = _json_objects(card["elements"])
-    first_content = card_elements[0]["content"]
-    assert isinstance(first_content, str)
-    assert first_content.startswith("**Question 1 of 1**")
-    form = card_elements[2]
-    form_elements = _json_objects(form["elements"])
-    # Back and Next/Submit share one horizontal column_set row at the end.
-    nav_buttons = _nav_buttons(form_elements)
-    # Lark rejects a form with duplicate element names (ErrCode 11310), so every
-    # button/input must be uniquely named.
-    names = [
-        str(el["name"]) for el in [*form_elements[:-1], *nav_buttons] if "name" in el
-    ]
-    assert len(names) == len(set(names))
-    # choices render as selectable buttons (radio-like), not a dropdown
-    first_choice = form_elements[0]
-    assert _json_object(first_choice["text"])["content"] == "morning"
-    first_choice_value = _json_object(first_choice["value"])
-    assert first_choice_value["action"] == LarkCardAction.ASK_QUESTION_CHOICE.value
-    assert first_choice_value["choice"] == "morning"
-    submit = nav_buttons[-1]
-    submit_value = LarkQuestionActionValueAdapter.validate_python(submit["value"])
-    restored = submit_value["questions"]
-    assert restored[0].id == action.id
-    assert restored[0].args == action.args
-    # the text input only overrides when something was typed; a recorded choice
-    # (set when its button is clicked) is preserved through an empty input
-    answers = collect_answer(
-        restored,
-        submit_value["page"],
-        {"answer": "night"},
-        submit_value["answers"],
-    )
-    assert answers == {action.id: "night"}
-    kept = collect_answer(
-        restored,
-        submit_value["page"],
-        {"answer": ""},
-        {action.id: "morning"},
-    )
-    assert kept == {action.id: "morning"}
-
-
-async def test_lark_card_callbacks_emit_deferred_responses() -> None:
-    octomate = FakeOctomate()
-    channel = object.__new__(LarkTentacle)
-    channel.id = "lark"
-    channel.octomate = cast(Octomate, octomate)
-    approval = _approval()
-    question = _question(batch_id=_batch_id(approval), question="Proceed?")
-
-    approval_data = approval_card_data(approval)
-    approval_elements = _json_objects(approval_data["elements"])
-    approval_actions = _json_objects(approval_elements[2]["actions"])
-    approval_value = _json_object(approval_actions[0]["value"])
-    approval_response = channel.on_card_action(
-        cast(
-            P2CardActionTrigger,
-            SimpleNamespace(
-                event=SimpleNamespace(
-                    action=SimpleNamespace(value=approval_value, form_value={}),
-                    operator=SimpleNamespace(open_id="ou_user", user_id=""),
-                )
-            ),
-        )
-    )
-    await asyncio.sleep(0)
-
-    approval_toast = approval_response.toast
-    assert approval_toast is not None
-    assert approval_toast.content == "Approved"
-    assert octomate.kicks[0] == DeferredActionBatchResponse(
-        batch_id=_batch_id(approval),
-        responder_id="ou_user",
-        approvals={approval.id: True},
-    )
-
-    question_data = ask_question_card_data(actions=[question])
-    question_elements = _json_objects(question_data["elements"])
-    form_elements = _json_objects(question_elements[2]["elements"])
-    nav_buttons = _nav_buttons(form_elements)
-    submit_value = _json_object(nav_buttons[-1]["value"])
-    submit_response = channel.on_card_action(
-        cast(
-            P2CardActionTrigger,
-            SimpleNamespace(
-                event=SimpleNamespace(
-                    action=SimpleNamespace(
-                        value=submit_value,
-                        form_value={"answer": "yes"},
-                    ),
-                    operator=SimpleNamespace(open_id="ou_user", user_id=""),
-                )
-            ),
-        )
-    )
-    await asyncio.sleep(0)
-
-    submit_toast = submit_response.toast
-    assert submit_toast is not None
-    assert submit_toast.content == "Answers submitted"
-    assert octomate.kicks[1] == DeferredActionBatchResponse(
-        batch_id=_batch_id(question),
-        responder_id="ou_user",
-        answers={question.id: "yes"},
-    )
-
-
-def test_lark_submitted_card_includes_answers() -> None:
-    region = _question(question="Region?")
-    confirm = _question(question="Confirm?")
-
-    data = submitted_card_data(
-        [region, confirm],
-        {region.id: "us-east", confirm.id: "yes"},
-    )
-    content = _json_objects(data["elements"])[0]["content"]
-    assert isinstance(content, str)
-    assert "Region?" in content and "us-east" in content
-    assert "Confirm?" in content and "yes" in content
-
-    missing = submitted_card_data([region], {})
-    missing_content = _json_objects(missing["elements"])[0]["content"]
-    assert isinstance(missing_content, str)
-    assert "No answer provided" in missing_content
-
-
-async def test_lark_question_choice_click_advances_to_next_question() -> None:
-    octomate = FakeOctomate()
-    channel = object.__new__(LarkTentacle)
-    channel.id = "lark"
-    channel.octomate = cast(Octomate, octomate)
-    first = _question(question="Q1", choices=["a", "b"])
-    second = _question(batch_id=_batch_id(first), question="Q2", choices=["x", "y"])
-
-    card = ask_question_card_data(actions=[first, second])
-    form_elements = _json_objects(_json_objects(card["elements"])[2]["elements"])
-    choice_value = _json_object(form_elements[0]["value"])
-    assert choice_value["choice"] == "a"
-
-    response = channel.on_card_action(
-        cast(
-            P2CardActionTrigger,
-            SimpleNamespace(
-                event=SimpleNamespace(
-                    action=SimpleNamespace(value=choice_value, form_value={}),
-                    operator=SimpleNamespace(open_id="ou_user", user_id=""),
-                )
-            ),
-        )
-    )
-    await asyncio.sleep(0)
-
-    # Clicking a choice records it and jumps to the next question — no submit.
-    assert octomate.kicks == []
-    toast = response.toast
-    assert toast is not None
-    assert toast.content == "Received"
-    assert response.card is not None
-    rerendered = response.card.data
-    assert rerendered is not None
-    heading = _json_objects(rerendered["elements"])[0]["content"]
-    assert isinstance(heading, str)
-    assert "Question 2 of 2" in heading
-    next_choice = _json_object(
-        _json_objects(_json_objects(rerendered["elements"])[2]["elements"])[0]["value"]
-    )
-    assert next_choice["page"] == 1
-    assert next_choice["answers"] == {str(first.id): "a"}
-
-
-async def test_lark_question_choice_click_on_last_question_submits() -> None:
-    octomate = FakeOctomate()
-    channel = object.__new__(LarkTentacle)
-    channel.id = "lark"
-    channel.octomate = cast(Octomate, octomate)
-    question = _question(question="Pick", choices=["a", "b"])
-
-    card = ask_question_card_data(actions=[question])
-    form_elements = _json_objects(_json_objects(card["elements"])[2]["elements"])
-    choice_value = _json_object(form_elements[0]["value"])
-    assert choice_value["choice"] == "a"
-
-    response = channel.on_card_action(
-        cast(
-            P2CardActionTrigger,
-            SimpleNamespace(
-                event=SimpleNamespace(
-                    action=SimpleNamespace(value=choice_value, form_value={}),
-                    operator=SimpleNamespace(open_id="ou_user", user_id=""),
-                )
-            ),
-        )
-    )
-    await asyncio.sleep(0)
-
-    # The only/last question: clicking a choice submits straight away.
-    toast = response.toast
-    assert toast is not None
-    assert toast.content == "Answers submitted"
-    assert octomate.kicks == [
-        DeferredActionBatchResponse(
-            batch_id=_batch_id(question),
-            responder_id="ou_user",
-            answers={question.id: "a"},
-        )
-    ]

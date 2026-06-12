@@ -1,0 +1,358 @@
+"""InklingTentacle run entrypoints driving the real react graph against
+scripted FunctionModels (no real LLM call), plus `build_inkling_agent`."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import TypeAlias, cast
+
+import pytest
+from pydantic_ai import AgentRunResultEvent
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+
+from octomate import Octomate
+from octomate.capabilities.agent import Agent
+from octomate.capabilities.events import ActionBatchEvent
+from octomate.capabilities.react import ReactStreamEvent
+from octomate.config import ModelConfig
+from octomate.providers import ProviderRegistry
+from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.segments import Segment
+from octomate.tentacles.agent.inkling import (
+    InklingTentacle,
+    build_inkling_agent,
+    inkling_toolset,
+)
+from octomate.tentacles.agent.inkling.base import InklingOutput
+from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
+
+from tests.support.agents import (
+    ScriptedOutput,
+    ScriptedTurn,
+    build_scripted_agent,
+)
+from tests.support.managers import FakeConversationManager
+
+InklingTestEvent: TypeAlias = ReactStreamEvent[ScriptedOutput]
+
+
+class StubRegistry:
+    """Returns a credential-free TestModel so build_inkling_agent runs without
+    constructing a real provider client (Vertex/etc. would need credentials)."""
+
+    def build_model(
+        self, model: ModelConfig, settings: object | None = None
+    ) -> TestModel:
+        return TestModel()
+
+
+@dataclass
+class StubSuspender:
+    suspended: list[DeferredToolRequests] = field(default_factory=list)
+
+    async def suspend(
+        self, requests: DeferredToolRequests
+    ) -> ActionBatchEvent | None:
+        self.suspended.append(requests)
+        return None
+
+
+def _test_conversation_key() -> ConversationKey:
+    return ConversationKey(
+        channel_tentacle_id="test",
+        chat_type="private",
+        chat_id="test",
+        user_id="test",
+    )
+
+
+# The loop tests run str-output agents through the graph (they exercise loop
+# mechanics, not inkling's reply contract), so the calls below pin output_type
+# back to text explicitly.
+STR_OUTPUT: list[type[str] | type[DeferredToolRequests]] = [str, DeferredToolRequests]
+
+
+def _tentacle(
+    agent: Agent[None, ScriptedOutput],
+    conversations: FakeConversationManager,
+) -> InklingTentacle:
+    return InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=cast(Agent[None, InklingOutput], agent),
+        conversation_manager=conversations,
+    )
+
+
+def _boom_agent() -> Agent[None, ScriptedOutput]:
+    async def boom(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        raise RuntimeError("model boom")
+        yield ""  # pragma: no cover - marks this an async generator
+
+    return Agent(
+        FunctionModel(stream_function=boom, model_name="scripted"),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        toolsets=[inkling_toolset],
+        system_prompt=SYSTEM_PROMPT,
+    )
+
+
+def test_build_inkling_agent_passes_model_settings_through() -> None:
+    agent = build_inkling_agent(
+        cast(ProviderRegistry, StubRegistry()),
+        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
+        model_settings={"temperature": 0.2},
+    )
+    assert agent.name == "octomate-inkling"
+    assert agent.model_settings == {"temperature": 0.2}
+
+
+def test_build_inkling_agent_defaults_model_settings_to_none() -> None:
+    # Per-model settings (incl. thinking) live in model.settings, applied by the
+    # registry; the agent adds nothing of its own by default.
+    agent = build_inkling_agent(
+        cast(ProviderRegistry, StubRegistry()),
+        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
+    )
+    assert agent.model_settings is None
+
+
+async def test_inkling_loop_emits_deferred_question_batch() -> None:
+    agent, script = build_scripted_agent(
+        [
+            ScriptedTurn(
+                tool_name="ask_questions",
+                args={
+                    "questions": [
+                        {
+                            "question": "what's your name?",
+                            "choices": ["Ada", "Grace"],
+                            "hint": "Pick or type the name to use.",
+                        },
+                    ]
+                },
+                tool_call_id="call_ask_1",
+            ),
+        ]
+    )
+
+    captured_events: list[InklingTestEvent] = []
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(agent, conversations)
+    async with tentacle.run_stream_events(
+        "hi octomate",
+        conversation_key=_test_conversation_key(),
+        output_type=STR_OUTPUT,
+    ) as stream:
+        async for event in stream:
+            captured_events.append(event)
+
+    result_events = [
+        event for event in captured_events if isinstance(event, AgentRunResultEvent)
+    ]
+    assert len(result_events) == 1
+
+    output = result_events[-1].result.output
+    assert isinstance(output, DeferredToolRequests)
+    assert len(output.calls) == 1
+    call = output.calls[0]
+    assert call.tool_name == "ask_questions"
+    assert call.args_as_dict()["questions"][0]["question"] == "what's your name?"
+
+    assert captured_events, "graph output should stream pydantic events"
+
+    assert script.cursor == 1
+    assert len(conversations.runs) == 1
+    assert all(run[1].startswith("react:") for run in conversations.runs)
+
+
+async def test_inkling_tentacle_invokes_suspender_on_deferred_request() -> None:
+    """The real InklingTentacle -> react graph must invoke a supplied suspender
+    when the run yields DeferredToolRequests (the persist+present contract)."""
+
+    agent, _ = build_scripted_agent(
+        [
+            ScriptedTurn(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "what's your name?"}]},
+                tool_call_id="call_ask_1",
+            ),
+        ]
+    )
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(agent, conversations)
+    suspender = StubSuspender()
+
+    outputs: list[object] = []
+    async with tentacle.run_stream_events(
+        "hi octomate",
+        conversation_key=_test_conversation_key(),
+        output_type=STR_OUTPUT,
+        deferred_suspender=suspender,
+    ) as stream:
+        async for event in stream:
+            if isinstance(event, AgentRunResultEvent):
+                outputs.append(event.result.output)
+
+    assert len(suspender.suspended) == 1
+    assert isinstance(suspender.suspended[0], DeferredToolRequests)
+    assert suspender.suspended[0] is outputs[-1]
+
+
+async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
+    agent, script = build_scripted_agent(
+        [
+            "all done!",
+        ]
+    )
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(agent, conversations)
+
+    captured_events: list[InklingTestEvent] = []
+    async with tentacle.run_stream_events(
+        "hi octomate",
+        conversation_key=_test_conversation_key(),
+        output_type=STR_OUTPUT,
+    ) as stream:
+        async for event in stream:
+            captured_events.append(event)
+
+    result_events = [
+        event for event in captured_events if isinstance(event, AgentRunResultEvent)
+    ]
+    assert result_events
+    assert result_events[-1].result.output == "all done!"
+    assert script.cursor == 1
+
+
+async def test_run_resumes_via_resume_turn_when_deferred_results_passed() -> None:
+    """`run` with deferred_tool_results starts the graph from ResumeTurn: the
+    resolved answers feed the recorded deferral and the loop continues."""
+
+    agent, script = build_scripted_agent(
+        [
+            ScriptedTurn(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "what's your name?"}]},
+                tool_call_id="call_ask_1",
+            ),
+            "all done!",
+        ]
+    )
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(agent, conversations)
+
+    first = await tentacle.run(
+        "hi octomate",
+        conversation_key=_test_conversation_key(),
+        output_type=STR_OUTPUT,
+    )
+    assert isinstance(first.output, DeferredToolRequests)
+
+    results = DeferredToolResults()
+    results.calls["call_ask_1"] = ["Ada"]
+    resumed = await tentacle.run(
+        conversation_key=_test_conversation_key(),
+        output_type=STR_OUTPUT,
+        deferred_tool_results=results,
+    )
+
+    assert resumed.output == "all done!"
+    assert script.cursor == 2
+    assert len(conversations.runs) == 2
+
+
+async def test_inkling_default_includes_todo_capability() -> None:
+    """The todo capability is on by default: its tools are offered to the model."""
+
+    agent = build_inkling_agent(
+        cast(ProviderRegistry, StubRegistry()),
+        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
+    )
+    seen_tools: list[str] = []
+
+    async def respond_stream(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        seen_tools.extend(tool.name for tool in info.function_tools)
+        yield "ok"
+
+    await agent.run(
+        "hi",
+        output_type=STR_OUTPUT,
+        model=FunctionModel(stream_function=respond_stream, model_name="probe"),
+    )
+
+    assert "write_todos" in seen_tools
+    assert "read_todos" in seen_tools
+
+
+async def test_inkling_default_output_is_segments() -> None:
+    """The real inkling contract: with no output_type override the reply is a
+    list of output segments (TestModel auto-generates from the segment schema)."""
+
+    agent = build_inkling_agent(
+        cast(ProviderRegistry, StubRegistry()),
+        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
+    )
+    conversations = FakeConversationManager()
+    tentacle = InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=agent,
+        conversation_manager=conversations,
+    )
+
+    result = await tentacle.run(
+        "hi octomate",
+        conversation_key=_test_conversation_key(),
+        model=TestModel(
+            call_tools=[],
+            custom_output_args=[
+                {"type": "markdown", "data": {"text": "hello from the reef"}}
+            ],
+        ),
+    )
+
+    assert isinstance(result.output, list)
+    assert all(isinstance(segment, Segment) for segment in result.output)
+    assert [str(segment) for segment in result.output] == ["hello from the reef"]
+
+
+async def test_inkling_loop_propagates_graph_error_streaming() -> None:
+    """A model/graph error during a streamed run must surface to the caller
+    rather than be swallowed by the background graph task (which would otherwise
+    cancel the consumer mid-event and mask the real error)."""
+
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(_boom_agent(), conversations)
+
+    with pytest.raises(RuntimeError, match="model boom"):
+        async with tentacle.run_stream_events(
+            "hi octomate",
+            conversation_key=_test_conversation_key(),
+        ) as stream:
+            async for _ in stream:
+                pass
+
+
+async def test_inkling_loop_propagates_graph_error_collected_run() -> None:
+    """`run` collects graph events internally; a graph error must still surface
+    to the caller rather than be lost in the background task."""
+
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(_boom_agent(), conversations)
+
+    with pytest.raises(RuntimeError, match="model boom"):
+        await tentacle.run(
+            "hi octomate",
+            conversation_key=_test_conversation_key(),
+            output_type=STR_OUTPUT,
+        )

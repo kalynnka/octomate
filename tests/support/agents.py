@@ -1,0 +1,194 @@
+"""The canonical fake agents.
+
+`FakeAgent` stands in for an `AgentTentacle` at the tentacle level: it records
+run/stream calls and plays scripted outputs (a `TriageDecision`, deferred
+requests, or a scenarios event script). The `Scripted*` builders operate at the
+model level instead — they build real pydantic-ai agents around a scripted
+`FunctionModel`, for tests that drive the actual react graph.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
+
+from pydantic_ai import AgentRunResult
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, UserContent
+from pydantic_ai.models.function import (
+    AgentInfo,
+    DeltaToolCall,
+    DeltaToolCalls,
+    FunctionModel,
+)
+from pydantic_ai.output import OutputSpec
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+
+from octomate import Octomate
+from octomate.capabilities.agent import Agent
+from octomate.capabilities.deferred import DeferredSuspender
+from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
+from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.triage import TriageDecision
+from octomate.tentacles.agent.inkling import inkling_toolset
+from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.channel.base import ChannelOutput
+from octomate.types.json import JsonObject
+
+from tests.support.scenarios import plain_answer, play
+
+FakeRunOutput = TriageDecision | str | DeferredToolRequests
+ScriptedOutput = str | DeferredToolRequests
+
+
+@dataclass
+class RecordedRun:
+    prompt: str | Sequence[UserContent] | None
+    history: list[ModelMessage]
+    key: ConversationKey
+    run_name: str | None
+    deferred_results: DeferredToolResults | None = None
+
+
+@dataclass
+class FakeAgent:
+    """Stands in for an AgentTentacle. Because the react graph is short-circuited
+    here, the fake itself honors the AgentTentacle contract: when its output is a
+    DeferredToolRequests it invokes the supplied suspender, exactly as react would.
+    """
+
+    id: str = "inkling"
+    octomate: Octomate | None = None
+    triage_output: TriageDecision | DeferredToolRequests = field(
+        default_factory=lambda: TriageDecision(action="answer", answer="handled")
+    )
+    reception_output: str = "handled"
+    reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
+    allow_reception_run: bool = False
+    turns: list[RecordedRun] = field(default_factory=list)
+    streams: list[RecordedRun] = field(default_factory=list)
+
+    async def run(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        conversation_key: ConversationKey,
+        run_name: str | None = None,
+        output_type: OutputSpec[FakeRunOutput] | None = None,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
+        instructions: str | None = None,
+    ) -> AgentRunResult[FakeRunOutput]:
+        self.turns.append(
+            RecordedRun(
+                prompt=user_prompt,
+                history=list(message_history or []),
+                key=conversation_key,
+                run_name=run_name,
+                deferred_results=deferred_tool_results,
+            )
+        )
+        if run_name == "reception":
+            if not self.allow_reception_run:
+                raise AssertionError("reception should use run_stream_events")
+            output: FakeRunOutput = self.reception_output
+        else:
+            output = self.triage_output
+        if isinstance(output, DeferredToolRequests) and deferred_suspender is not None:
+            await deferred_suspender.suspend(output)
+        return AgentRunResult(output)
+
+    def run_stream_events(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        conversation_key: ConversationKey,
+        run_name: str | None = None,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
+    ) -> ReactEventStream[ChannelOutput]:
+        self.streams.append(
+            RecordedRun(
+                prompt=user_prompt,
+                history=list(message_history or []),
+                key=conversation_key,
+                run_name=run_name,
+                deferred_results=deferred_tool_results,
+            )
+        )
+        script = self.reception_script or plain_answer(self.reception_output)
+        return ReactEventStream(play(script))
+
+
+@dataclass
+class ScriptedTurn:
+    """One turn of the conversation: one tool call to emit as a streamed delta."""
+
+    tool_name: str
+    args: JsonObject
+    tool_call_id: str
+
+
+@dataclass
+class ScriptedStream:
+    """FunctionModel stream callback: emits tool-call deltas or text output."""
+
+    turns: list[ScriptedTurn | str]
+    cursor: int = 0
+    seen_output_tools: list[list[str]] = field(default_factory=list)
+    __name__: str = "scripted_stream"
+
+    def __call__(
+        self, messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str | DeltaToolCalls]:
+        self.seen_output_tools.append([t.name for t in info.output_tools])
+        turn = self.turns[self.cursor]
+        self.cursor += 1
+        return emit_scripted_turn(turn)
+
+
+async def emit_scripted_turn(
+    turn: ScriptedTurn | str,
+) -> AsyncIterator[str | DeltaToolCalls]:
+    if isinstance(turn, str):
+        yield turn
+        return
+    yield {
+        0: DeltaToolCall(
+            name=turn.tool_name,
+            json_args=json.dumps(turn.args),
+            tool_call_id=turn.tool_call_id,
+        )
+    }
+
+
+def build_scripted_agent(
+    turns: list[ScriptedTurn | str],
+) -> tuple[Agent[None, ScriptedOutput], ScriptedStream]:
+    script = ScriptedStream(turns=turns)
+    agent: Agent[None, ScriptedOutput] = Agent(
+        FunctionModel(stream_function=script, model_name="scripted"),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        toolsets=[inkling_toolset],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    return agent, script
+
+
+def build_non_stream_agent() -> Agent[None, ScriptedOutput]:
+    def respond(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> ModelResponse:
+        return ModelResponse(parts=[TextPart(content="all done!")])
+
+    return Agent(
+        FunctionModel(function=respond, model_name="scripted"),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        toolsets=[inkling_toolset],
+        system_prompt=SYSTEM_PROMPT,
+    )
