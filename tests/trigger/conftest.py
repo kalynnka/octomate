@@ -7,7 +7,7 @@ credentials (the regular `octomate.channels` section) and a `trigger:` section
 naming the target chat per channel:
 
     trigger:
-      slack: {chat_id: D0123, user_id: U0123, thread_id: "1234.5678"}
+      slack: {chat_id: D0123, user_id: U0123}
       lark: {chat_type: group, chat_id: oc_xxx, user_id: ou_xxx}
 
 `OctomateConfig` reads only the `octomate:` yaml section, so the sibling

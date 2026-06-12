@@ -3,10 +3,15 @@
 Each test replays a canonical scenario script through the real SlackTentacle
 into the chat configured under `trigger.slack` in octomate.yaml; pass/fail only
 checks that something was posted and no render failed — the human inspects the
-rendering in Slack."""
+rendering in Slack. Every test of one pytest run posts into the SAME thread:
+a session fixture opens it with a fresh, visible header message in the DM
+(slack streaming only works inside a thread, and a new root per run keeps the
+replays at the bottom of the chat instead of buried in an old thread)."""
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime
 from uuid import uuid4
 
 import pytest
@@ -29,25 +34,48 @@ from tests.support.scenarios import (
 pytestmark = pytest.mark.trigger
 
 
-@pytest.fixture
-def slack_channel(
+@pytest.fixture(scope="session")
+def slack_run_thread(
     live_config: OctomateConfig,
     trigger_targets: TriggerTargets,
-    in_memory_engine: AsyncEngine,
 ) -> tuple[SlackTentacle, ConversationKey]:
+    """One tentacle and one freshly opened thread, shared by the whole run."""
     config = live_config.channels.slack
     if config is None or not config.enabled or trigger_targets.slack is None:
         pytest.skip("slack credentials/trigger target not configured in octomate.yaml")
-    if not trigger_targets.slack.thread_id:
-        pytest.skip(
-            "trigger.slack needs a thread_id — slack streams into a thread "
-            "(use an existing conversation's thread_ts)"
-        )
+    target = trigger_targets.slack
     channel = SlackTentacle("slack", Octomate(), config=config)
+    main_key = ConversationKey(
+        channel_tentacle_id="slack",
+        chat_type=target.chat_type,
+        chat_id=target.chat_id,
+        user_id=target.user_id,
+    )
+    started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    thread_ts = asyncio.run(
+        channel.feelers.markdown.present(
+            main_key,
+            f":test_tube: Octomate trigger run {started} — replays follow in this thread.",
+        )
+    )
+    if thread_ts is None:
+        pytest.fail("could not open the slack run thread (no message ts returned)")
     key = ConversationKey(
-        channel_tentacle_id="slack", **trigger_targets.slack.model_dump()
+        channel_tentacle_id="slack",
+        chat_type=target.chat_type,
+        chat_id=target.chat_id,
+        user_id=target.user_id,
+        thread_id=thread_ts,
     )
     return channel, key
+
+
+@pytest.fixture
+def slack_channel(
+    slack_run_thread: tuple[SlackTentacle, ConversationKey],
+    in_memory_engine: AsyncEngine,
+) -> tuple[SlackTentacle, ConversationKey]:
+    return slack_run_thread
 
 
 async def test_slack_renders_showcase(
