@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from uuid import UUID, uuid4
+
 from typing_extensions import NotRequired, TypedDict
 
 import pytest
-from pydantic_ai import AgentRunResult
+from pydantic_ai import AgentRunResult, AgentRunResultEvent
+from pydantic_ai.result import FinalResult
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -22,8 +26,14 @@ from pydantic_ai.result import StreamedRunResult
 from octomate import Octomate
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.conversations import ConversationManager
+from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal, UserMessageSignal
 from octomate.schemas.conversation import ChatType, ConversationKey, UserProfile
+from octomate.schemas.deferred import (
+    ApprovalRequest,
+    DeferredApproval,
+    DeferredQuestion,
+)
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AtData,
@@ -32,12 +42,19 @@ from octomate.schemas.segments import (
     MessageSegment,
     TextSegment,
 )
+from octomate.capabilities.events import (
+    ActionBatchEvent,
+    ResultTextDeltaEvent,
+    StreamEvents,
+    TodoCompletedEvent,
+)
+from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import (
+    ChannelOutput,
     ChannelTentacle,
     Chromo,
     DownloadedImage,
     Ink,
-    ResultT,
 )
 from octomate.tentacles.channel.feelers.output import (
     StreamBlock,
@@ -66,6 +83,18 @@ class FakeOctomate(Octomate):
         signal: AwakeSignal,
     ) -> None:
         self.kicks.append(signal)
+
+
+@dataclass
+class FakeDeferredActions(DeferredActionManager):
+    marked: list[tuple[UUID, str | None]] = field(default_factory=list)
+
+    async def mark_action_presented(
+        self,
+        action_id: UUID,
+        platform_message_id: str | None,
+    ) -> None:
+        self.marked.append((action_id, platform_message_id))
 
 
 @dataclass
@@ -112,7 +141,6 @@ class FakeInk(Ink[NativeMessage]):
 @dataclass
 class FakeChromo(Chromo[RawMessage, NativeMessage]):
     sip_calls: list[RawMessage] = field(default_factory=list)
-    squirt_calls: list[str | None] = field(default_factory=list)
 
     async def sip(self, raw: RawMessage) -> MessageEvent | None:
         self.sip_calls.append(raw)
@@ -125,14 +153,8 @@ class FakeChromo(Chromo[RawMessage, NativeMessage]):
             segments=raw.get("segments", []),
         )
 
-    def squirt(
-        self,
-        result: AgentRunResult[ResultT],
-        *,
-        reply_to: str | None = None,
-    ) -> list[NativeMessage]:
-        self.squirt_calls.append(reply_to)
-        return [{"text": str(result.output)}]
+    def outbound_markdown(self, text: str) -> list[NativeMessage]:
+        return [{"text": text}] if text else []
 
 
 class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
@@ -287,6 +309,191 @@ async def test_markdown_stream_feeler_default_sends_final_result(
     assert "does not support streaming responses" not in caplog.text
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "stream me"
+
+
+async def test_markdown_stream_feeler_present_output_sends_final(
+    channel: FakeChannelTentacle,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+
+    async def events() -> (
+        AsyncIterator[ResultTextDeltaEvent | FinalResult[ChannelOutput]]
+    ):
+        yield ResultTextDeltaEvent(delta="strea")
+        yield FinalResult[ChannelOutput](output="stream me")
+
+    with caplog.at_level("WARNING"):
+        await channel.feelers.markdown_stream.present_output(key, events())
+
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "stream me"
+    # The Default stream feeler has no streaming transport, so it warns and sends
+    # the reply as a single message.
+    assert "no streaming transport" in caplog.text
+
+
+async def test_consume_renders_answer_and_drains_stream(
+    channel: FakeChannelTentacle,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+    drained = False
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        nonlocal drained
+        # Thinking + tool passthrough exercise the dispatch; the Default timeline
+        # (no streaming transport) drops them and only accumulates the answer text.
+        yield PartStartEvent(index=0, part=ThinkingPart(content="hmm"))
+        yield FunctionToolCallEvent(
+            part=ToolCallPart(tool_name="search", args={"q": "x"}, tool_call_id="t1")
+        )
+        yield ResultTextDeltaEvent(delta="stream ")
+        yield ResultTextDeltaEvent(delta="me")
+        yield FinalResult[ChannelOutput](output="stream me")
+        # Reached only if consume() drains the whole stream past FinalResult.
+        drained = True
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.consume(key, events())
+
+    assert message_id is not None
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "stream me"
+    assert "no streaming transport" in caplog.text
+    assert drained
+
+
+async def test_consume_renders_raw_text_answer(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        # The react graph streams the reply as raw text parts (no normalizer).
+        yield PartStartEvent(index=0, part=TextPart(content="raw "))
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="answer"))
+        yield AgentRunResultEvent(AgentRunResult("raw answer"))
+
+    await channel.consume(key, events())
+
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "raw answer"
+
+
+async def test_consume_falls_back_to_final_output_when_no_text_streamed(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        # No streamed answer text — only the terminal result carries the reply.
+        yield AgentRunResultEvent(AgentRunResult("just the final"))
+
+    await channel.consume(key, events())
+
+    assert len(channel.sent) == 1
+    assert channel.sent[0][2][0]["text"] == "just the final"
+
+
+async def test_consume_appends_todo_checklist_to_final_message(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+    todo = Todo(
+        conversation_id=uuid4(),
+        ref="T1",
+        content="Find the docs",
+        status="completed",
+    )
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        yield ResultTextDeltaEvent(delta="done")
+        yield TodoCompletedEvent(todo=todo)
+
+    await channel.consume(key, events())
+
+    # The answer-only timeline has no live transport: the latest todo snapshot
+    # rides under the final message as a checklist.
+    assert len(channel.sent) == 1
+    text = channel.sent[0][2][0]["text"]
+    assert text.startswith("done")
+    assert "Tasks:" in text
+    assert "- [x] Find the docs" in text
+
+
+async def test_consume_renders_and_marks_action_batch(
+    channel: FakeChannelTentacle,
+) -> None:
+    key = ConversationKey(
+        channel_tentacle_id="chan1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+    )
+    question = DeferredQuestion(
+        tool_name="ask_questions",
+        tool_call_id="c1",
+        args={"question": "Pick one?"},
+    )
+    approval = DeferredApproval(
+        tool_name="do_thing",
+        tool_call_id="c2",
+        args=ApprovalRequest(tool_name="do_thing"),
+    )
+    actions = FakeDeferredActions()
+    channel.octomate.deferred_actions = actions
+
+    async def events() -> (
+        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
+    ):
+        yield ActionBatchEvent(
+            batch_id="b1", questions=[question], approvals=[approval]
+        )
+
+    await channel.consume(key, events())
+
+    # The batch renders through the channel's (plaintext) question/approval feelers
+    # as a unit, and each presented action is marked with its message id.
+    assert len(channel.sent) == 2
+    assert "Pick one?" in channel.sent[0][2][0]["text"]
+    assert "do_thing" in channel.sent[1][2][0]["text"]
+    marked = {str(action_id): message_id for action_id, message_id in actions.marked}
+    assert marked[str(question.id)] == "sent-1"
+    assert marked[str(approval.id)] == "sent-2"
 
 
 async def test_markdown_feeler_uses_normal_adapter(

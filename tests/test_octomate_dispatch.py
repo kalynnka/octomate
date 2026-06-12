@@ -26,15 +26,15 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.tentacles.agent.graph import TriageDecision
 from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agent.graph import TriageDecision
 from octomate.tentacles.channel.base import ChannelTentacle, ThreadStrategy
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
-
+from octomate.tentacles.channel.feelers.output import TimelineState
 
 FakeRunOutput = TriageDecision | str | DeferredToolRequests
 FakeStreamEvent = AgentStreamEvent | AgentRunResultEvent[str]
@@ -159,6 +159,13 @@ class RecordingMarkdownStreamFeeler:
         self.stream_sent.append((key, outputs))
         return "stream-message"
 
+    async def present_output(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[object],
+    ) -> str | None:
+        return None
+
 
 class NoopMarkdownStreamFeeler:
     async def present(
@@ -169,32 +176,10 @@ class NoopMarkdownStreamFeeler:
         return None
 
 
-class NoopEventStreamFeeler:
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[FakeStreamEvent],
-    ) -> str | None:
-        async for _event in events:
-            pass
-        return None
-
-
-@dataclass
-class RecordingEventStreamFeeler:
-    stream_sent: list[tuple[ConversationKey, list[str]]]
-
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[FakeStreamEvent],
-    ) -> str | None:
-        outputs: list[str] = []
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                outputs.append(str(event.result.output))
-        self.stream_sent.append((key, outputs))
-        return "event-message"
+class NoopTimeline(TimelineState):
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncIterator[NoopTimeline]:
+        yield self
 
 
 @dataclass
@@ -216,11 +201,7 @@ class FakeChannel:
         self.feelers = Feelers[str](
             markdown=self,
             markdown_stream=RecordingMarkdownStreamFeeler(self.stream_sent),
-            event_stream=(
-                RecordingEventStreamFeeler(self.stream_sent)
-                if self.config.stream.enabled
-                else NoopEventStreamFeeler()
-            ),
+            timeline=NoopTimeline(),
             approvals=PlainTextApprovalFeeler(self),
             ask_questions=PlainTextAskQuestionFeeler(self),
         )
@@ -238,6 +219,18 @@ class FakeChannel:
     ) -> str | None:
         self.sent.append((key, [markdown]))
         return None
+
+    async def consume(
+        self,
+        key: ConversationKey,
+        stream: AsyncIterator[FakeStreamEvent],
+    ) -> str | None:
+        outputs: list[str] = []
+        async for event in stream:
+            if isinstance(event, AgentRunResultEvent):
+                outputs.append(str(event.result.output))
+        self.stream_sent.append((key, outputs))
+        return "event-message"
 
     async def start_sub_thread(
         self,

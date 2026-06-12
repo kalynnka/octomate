@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar
 
@@ -10,23 +11,26 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.schemas.deferred import DeferredActionBatch
+from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.tentacles.channel.feelers.deferred import (
     ApprovalFeeler,
     QuestionFeeler,
 )
 from octomate.tentacles.channel.feelers.output import (
-    EventStreamFeeler,
     JsonValue,
     MarkdownFeeler,
     MarkdownStreamFeeler,
+    TimelineFeeler,
 )
 
 if TYPE_CHECKING:
     from octomate.managers.deferred import DeferredActionManager
 
 
-OutputT = TypeVar("OutputT", bound=JsonValue | DeferredToolRequests)
+OutputT = TypeVar(
+    "OutputT", bound=JsonValue | Sequence[MessageSegment] | DeferredToolRequests
+)
 
 
 @dataclass
@@ -35,7 +39,7 @@ class Feelers(Generic[OutputT]):
 
     markdown: MarkdownFeeler
     markdown_stream: MarkdownStreamFeeler[OutputT]
-    event_stream: EventStreamFeeler[OutputT]
+    timeline: TimelineFeeler
     approvals: ApprovalFeeler
     ask_questions: QuestionFeeler
 

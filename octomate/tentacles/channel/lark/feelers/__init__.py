@@ -1,7 +1,6 @@
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.feelers.approvals import LarkApprovalFeeler
 from octomate.tentacles.channel.lark.feelers.output import (
-    LarkEventStreamFeeler,
     LarkMarkdownFeeler,
     LarkMarkdownStreamFeeler,
 )
@@ -11,7 +10,6 @@ __all__ = [
     "LarkApprovalFeeler",
     "LarkAskQuestionFeeler",
     "LarkCardAction",
-    "LarkEventStreamFeeler",
     "LarkMarkdownFeeler",
     "LarkMarkdownStreamFeeler",
 ]

@@ -2,39 +2,45 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     OutputToolCallEvent,
     OutputToolResultEvent,
-    PartDeltaEvent,
-    PartStartEvent,
     RetryPromptPart,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
     ToolReturnPart,
 )
-from pydantic_ai.result import StreamedRunResult
+from pydantic_ai.result import FinalResult, StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
 
+from octomate.capabilities.events import (
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+    TodoDeletedEvent,
+    TodoEvent,
+)
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.segments import CardSegment, ImageSegment, MessageSegment
+from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.feelers.output import (
     BatchedTextUpdate,
     IMMessageID,
     JsonValue,
     MarkdownFeeler,
     TextStreamBatcher,
+    TimelineFeeler,
+    TimelineState,
     format_fields,
     humanize_tool_name,
     markdown_from_output,
+    render_todo_lines,
     should_skip_plan_tool,
     truncate_task_detail,
 )
@@ -45,7 +51,9 @@ from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStre
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
-OutputT = TypeVar("OutputT", bound=JsonValue | DeferredToolRequests)
+OutputT = TypeVar(
+    "OutputT", bound=JsonValue | Sequence[MessageSegment] | DeferredToolRequests
+)
 
 THINKING_HEADER = "🧠 Thinking"
 
@@ -80,7 +88,7 @@ class LarkMarkdownFeeler:
         return await self.ink.send_message(
             chat_id,
             key.chat_type,
-            [self.chromo.make_markdown_message(markdown)],
+            self.chromo.outbound_markdown(markdown),
             reply_to,
             reply_in_thread=reply_to is not None,
         )
@@ -106,6 +114,19 @@ class LarkMarkdownStreamFeeler(Generic[OutputT]):
         self,
         key: ConversationKey,
         stream: StreamedRunResult[None, OutputT],
+    ) -> IMMessageID | None:
+        return await self.present_snapshots(
+            key,
+            stream.stream_output(debounce_by=None),
+            final_output=stream.get_output,
+        )
+
+    async def present_output(
+        self,
+        key: ConversationKey,
+        events: AsyncIterator[
+            ResultTextDeltaEvent | ResultSegmentEvent | FinalResult[OutputT]
+        ],
     ) -> IMMessageID | None:
         chat_id = key.chat_id or key.user_id
         reply_to = key.thread_id if key.thread_id.startswith("om_") else None
@@ -151,27 +172,118 @@ class LarkMarkdownStreamFeeler(Generic[OutputT]):
                 raise RuntimeError("failed to update Lark stream card")
 
         try:
-            try:
-                previous_markdown = ""
-                async for streamed_output in stream.stream_output(debounce_by=None):
-                    output = streamed_output
-                    markdown = markdown_from_output(streamed_output)
-                    if markdown is None:
-                        continue
-                    delta_text = (
-                        markdown[len(previous_markdown) :]
-                        if markdown.startswith(previous_markdown)
-                        else markdown
-                    )
-                    previous_markdown = markdown
-                    for update in batcher.push_text(delta_text):
-                        await apply_update(update)
-            except Exception:
-                output = await stream.get_output()
+            async for event in events:
+                if isinstance(event, FinalResult):
+                    output = event.output
+                    continue
+                delta_text = (
+                    event.delta
+                    if isinstance(event, ResultTextDeltaEvent)
+                    else str(event.segment)
+                )
+                for update in batcher.push_text(delta_text):
+                    await apply_update(update)
+        except Exception:
+            # A mid-stream failure still gets finalized below with what batched.
+            pass
 
+        try:
             for update in batcher.finish_all():
                 await apply_update(update)
+            if card is not None:
+                await self.ink.finish_stream_card(card, sequence=last_sequence + 1)
+            else:
+                markdown = markdown_from_output(output) if output is not None else None
+                if markdown is not None:
+                    await self.markdown_feeler.present(key, markdown)
+        except Exception:
+            logger.warning(
+                "Channel %s: failed to stream Lark response",
+                self.channel_id,
+                exc_info=True,
+            )
+            if card is not None:
+                await self.ink.finish_stream_card(card, sequence=last_sequence + 1)
+            if output is not None:
+                markdown = markdown_from_output(output)
+                if markdown is not None:
+                    await self.markdown_feeler.present(key, markdown)
+            elif fallback_text := batcher.full_text():
+                await self.markdown_feeler.present(key, fallback_text)
+        return message_id
 
+    async def present_snapshots(
+        self,
+        key: ConversationKey,
+        snapshots: AsyncIterator[OutputT],
+        *,
+        final_output: Callable[[], Awaitable[OutputT | None]] | None,
+    ) -> IMMessageID | None:
+        chat_id = key.chat_id or key.user_id
+        reply_to = key.thread_id if key.thread_id.startswith("om_") else None
+        reply_in_thread = reply_to is not None
+        batcher = TextStreamBatcher(
+            flush_interval=self.stream_config.flush_interval,
+            min_chars=self.stream_config.min_chars,
+            max_chars=self.stream_config.max_chars,
+            fold_threshold=self.stream_config.fold_threshold,
+        )
+        card: LarkStreamCard | None = None
+        message_id: IMMessageID | None = None
+        output: OutputT | None = None
+        last_sequence = 0
+
+        async def apply_update(update: BatchedTextUpdate) -> None:
+            nonlocal card, message_id, last_sequence
+            if card is None:
+                card_data = self.chromo.make_stream_card_data(
+                    "",
+                    element_id=LARK_STREAM_ELEMENT_ID,
+                )
+                card = await self.ink.create_stream_card(
+                    card_data,
+                    element_id=LARK_STREAM_ELEMENT_ID,
+                )
+                message_id = await self.ink.send_stream_card(
+                    chat_id,
+                    key.chat_type,
+                    card,
+                    reply_to=reply_to,
+                    reply_in_thread=reply_in_thread,
+                )
+                if message_id is None:
+                    raise RuntimeError("failed to send Lark stream card")
+
+            last_sequence = update.sequence
+            if not await self.ink.update_stream_card(
+                card,
+                content=update.full_text,
+                sequence=update.sequence,
+            ):
+                raise RuntimeError("failed to update Lark stream card")
+
+        try:
+            previous_markdown = ""
+            async for snapshot in snapshots:
+                output = snapshot
+                markdown = markdown_from_output(snapshot)
+                if markdown is None:
+                    continue
+                delta_text = (
+                    markdown[len(previous_markdown) :]
+                    if markdown.startswith(previous_markdown)
+                    else markdown
+                )
+                previous_markdown = markdown
+                for update in batcher.push_text(delta_text):
+                    await apply_update(update)
+        except Exception:
+            if final_output is not None:
+                output = await final_output()
+
+        try:
+            for update in batcher.finish_all():
+                await apply_update(update)
             if card is not None:
                 await self.ink.finish_stream_card(card, sequence=last_sequence + 1)
             else:
@@ -218,7 +330,7 @@ def answer_stream_card_data() -> str:
 
 
 @dataclass
-class LarkRunCards:
+class LarkRunStateCards(TimelineState):
     """The per-run cards for one agent run. Each thinking block and each tool call
     is its own card — sent on start, then patched into a folded collapsible panel
     once it finishes — and the answer streams into its own card."""
@@ -230,6 +342,7 @@ class LarkRunCards:
     reply_in_thread: bool
     answer_batcher: TextStreamBatcher
 
+    message_id: IMMessageID | None = None
     answer_card: LarkStreamCard | None = None
     answer_message_id: IMMessageID | None = None
     answer_sequence: int = 0
@@ -239,6 +352,8 @@ class LarkRunCards:
     thinking_text: str = ""
     tool_cards: dict[str, tuple[str | None, str, str]] = field(default_factory=dict)
     skipped: set[str] = field(default_factory=set)
+    todos: dict[str, Todo] = field(default_factory=dict)
+    todo_card_id: str | None = None
 
     async def post(self, card: JsonObject) -> str | None:
         return await self.ink.send_message(
@@ -254,35 +369,18 @@ class LarkRunCards:
             reply_in_thread=self.reply_in_thread,
         )
 
-    async def handle(self, event: AgentStreamEvent) -> None:
-        if isinstance(event, PartStartEvent):
-            if isinstance(event.part, ThinkingPart):
-                await self.start_thinking(event.part.content or "")
-            elif isinstance(event.part, TextPart):
-                await self.add_answer(event.part.content)
-        elif isinstance(event, PartDeltaEvent):
-            if isinstance(event.delta, ThinkingPartDelta):
-                await self.append_thinking(event.delta.content_delta or "")
-            elif isinstance(event.delta, TextPartDelta):
-                await self.add_answer(event.delta.content_delta)
-        elif isinstance(event, FunctionToolCallEvent | OutputToolCallEvent):
-            await self.start_tool(event)
-        elif isinstance(event, FunctionToolResultEvent | OutputToolResultEvent):
-            await self.finish_tool(event)
-
-    async def start_thinking(self, initial: str) -> None:
+    async def thinking_start(self) -> None:
         await self.fold_thinking()
-        self.thinking_text = initial
+        self.thinking_text = ""
         self.thinking_card_id = await self.post(
             cards.card_v2([cards.markdown(f"⏳ **{THINKING_HEADER}…**")])
         )
 
-    async def append_thinking(self, text: str) -> None:
+    async def thinking_delta(self, text: str) -> None:
         if not text:
             return
         if self.thinking_card_id is None:
-            await self.start_thinking(text)
-            return
+            await self.thinking_start()
         self.thinking_text += text
 
     async def fold_thinking(self) -> None:
@@ -299,7 +397,9 @@ class LarkRunCards:
             card_id, json.dumps(folded, ensure_ascii=False, separators=(",", ":"))
         )
 
-    async def start_tool(self, event: AgentStreamEvent) -> None:
+    async def tool_start(
+        self, event: FunctionToolCallEvent | OutputToolCallEvent
+    ) -> None:
         await self.fold_thinking()
         tool = event.part
         if should_skip_plan_tool(tool.tool_name):
@@ -318,7 +418,9 @@ class LarkRunCards:
         slot = tool.tool_call_id or f"tool-{len(self.tool_cards)}"
         self.tool_cards[slot] = (message_id, title, args_text)
 
-    async def finish_tool(self, event: AgentStreamEvent) -> None:
+    async def tool_end(
+        self, event: FunctionToolResultEvent | OutputToolResultEvent
+    ) -> None:
         part = event.part
         tool_name = part.tool_name or "output"
         tool_call_id = getattr(part, "tool_call_id", None)
@@ -351,12 +453,56 @@ class LarkRunCards:
         else:
             await self.post(folded)
 
-    async def add_answer(self, text: str | None) -> None:
+    async def answer_delta(self, text: str | None) -> None:
         if not text:
             return
         await self.fold_thinking()
         for update in self.answer_batcher.push_text(text):
             await self.push_answer(update.full_text)
+
+    async def answer_segment(self, segment: MessageSegment) -> None:
+        match segment:
+            case ImageSegment():
+                await self.fold_thinking()
+                image_key = await self.ink.upload_media(
+                    segment.data.path.read_bytes()
+                )
+                if image_key is None:
+                    raise RuntimeError("failed to upload Lark image")
+                await self.ink.send_message(
+                    self.chat_id,
+                    self.chat_type,
+                    [
+                        LarkOutboundMessage(
+                            msg_type="image",
+                            content=json.dumps({"image_key": image_key}),
+                        )
+                    ],
+                    self.reply_to,
+                    reply_in_thread=self.reply_in_thread,
+                )
+            case CardSegment():
+                await self.fold_thinking()
+                await self.post(segment.data.payload)
+            case _:
+                await self.answer_delta(str(segment))
+
+    async def todo(self, event: TodoEvent) -> None:
+        if isinstance(event, TodoDeletedEvent):
+            self.todos.pop(event.todo.ref, None)
+        else:
+            self.todos[event.todo.ref] = event.todo
+        if not self.todos and self.todo_card_id is None:
+            return
+        body = "**Tasks**\n" + "\n".join(render_todo_lines(self.todos.values()))
+        card = cards.card_v2([cards.markdown(body)])
+        if self.todo_card_id is None:
+            self.todo_card_id = await self.post(card)
+        else:
+            await self.ink.patch_card(
+                self.todo_card_id,
+                json.dumps(card, ensure_ascii=False, separators=(",", ":")),
+            )
 
     async def ensure_answer_card(self) -> LarkStreamCard:
         if self.answer_card is None:
@@ -403,32 +549,28 @@ class LarkRunCards:
             )
 
 
-class LarkEventStreamFeeler(Generic[OutputT]):
-    """Posts an agent run as a sequence of cards in the thread: each thinking
-    block and each tool call is its own card (sent on start, then patched and
-    folded once it finishes), and the final answer streams with the typewriter
-    in its own card."""
+class LarkTimelineFeeler(TimelineFeeler):
+    """Renders a run as Lark cards (a card per thinking block / tool call + a
+    streaming answer card), driven event-by-event by `ChannelTentacle.consume`.
+
+    Stateless; `open(key)` builds a fresh per-run `LarkRunStateCards` machine that
+    `drive_timeline` renders each event onto."""
 
     def __init__(
         self,
         *,
         ink: LarkInk,
+        chromo: LarkChromo,
         stream_config: ChannelStreamConfig,
-        markdown_feeler: MarkdownFeeler,
-        channel_id: str,
     ) -> None:
         self.ink = ink
+        self.chromo = chromo
         self.stream_config = stream_config
-        self.markdown_feeler = markdown_feeler
-        self.channel_id = channel_id
 
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[AgentStreamEvent | AgentRunResultEvent[OutputT]],
-    ) -> IMMessageID | None:
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncIterator[LarkRunStateCards]:
         reply_to = key.thread_id if key.thread_id.startswith("om_") else None
-        cards_state = LarkRunCards(
+        state = LarkRunStateCards(
             ink=self.ink,
             chat_id=key.chat_id or key.user_id,
             chat_type=key.chat_type,
@@ -441,45 +583,10 @@ class LarkEventStreamFeeler(Generic[OutputT]):
                 fold_threshold=self.stream_config.fold_threshold,
             ),
         )
-
-        result_event: AgentRunResultEvent[OutputT] | None = None
-        failed = False
-        # Always drain the event stream: abandoning it mid-run would tear down
-        # the agent task group from the wrong task. Per-event failures degrade
-        # the run and fall back to a plain message at the end.
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                result_event = event
-                continue
-            if failed:
-                continue
-            try:
-                await cards_state.handle(event)
-            except Exception:
-                logger.warning(
-                    "Channel %s: failed to render Lark event card",
-                    self.channel_id,
-                    exc_info=True,
-                )
-                failed = True
-
-        if not failed:
-            try:
-                await cards_state.finish(result_event)
-            except Exception:
-                logger.warning(
-                    "Channel %s: failed to finish Lark answer card",
-                    self.channel_id,
-                    exc_info=True,
-                )
-                failed = True
-
-        if failed or not cards_state.saw_answer:
-            fallback = None
-            if result_event is not None and not isinstance(
-                result_event.result.output, DeferredToolRequests
-            ):
-                fallback = markdown_from_output(result_event.result.output)
-            if fallback is not None:
-                await self.markdown_feeler.present(key, fallback)
-        return cards_state.answer_message_id
+        try:
+            yield state
+        finally:
+            # consume() already fed any non-streamed final output via answer_delta,
+            # so the result-fallback arg is None here.
+            await state.finish(None)
+            state.message_id = state.answer_message_id

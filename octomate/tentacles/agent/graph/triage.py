@@ -7,11 +7,12 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal, TypeAlias
 
 import logfire
-from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from octomate.capabilities.events import StreamEvents
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
@@ -437,6 +438,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             target_key=target_key,
             target_mode=target.mode,
             decision=state.decision,
+            emit_on_stream=target_channel.config.stream.enabled,
         )
 
         with logfire.span(
@@ -451,7 +453,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             if target_channel.config.stream.enabled:
 
                 async def stream_events() -> AsyncIterator[
-                    AgentStreamEvent | AgentRunResultEvent[ChannelOutput]
+                    StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
                 ]:
                     nonlocal result
                     async with agent.run_stream_events(
@@ -466,10 +468,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                                 result = event.result
                             yield event
 
-                await target_channel.feelers.event_stream.present(
-                    target_key,
-                    stream_events(),
-                )
+                await target_channel.consume(target_key, stream_events())
                 if result is None:
                     raise RuntimeError(
                         f"reception stream for {target_key} completed without a result"

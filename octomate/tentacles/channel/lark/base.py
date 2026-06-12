@@ -29,16 +29,16 @@ from octomate.tentacles.channel.lark.feelers.approvals import (
     LarkApprovalFeeler,
     approval_resolution_card_data,
 )
+from octomate.tentacles.channel.lark.feelers.output import (
+    LarkMarkdownFeeler,
+    LarkMarkdownStreamFeeler,
+    LarkTimelineFeeler,
+)
 from octomate.tentacles.channel.lark.feelers.questions import (
     LarkAskQuestionFeeler,
     ask_question_card_data,
     collect_answer,
     submitted_card_data,
-)
-from octomate.tentacles.channel.lark.feelers.output import (
-    LarkEventStreamFeeler,
-    LarkMarkdownFeeler,
-    LarkMarkdownStreamFeeler,
 )
 from octomate.tentacles.channel.lark.ink import LarkInk
 from octomate.tentacles.channel.lark.schema import (
@@ -118,11 +118,10 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 markdown_feeler=markdown_feeler,
                 channel_id=self.id,
             ),
-            event_stream=LarkEventStreamFeeler[ChannelOutput](
+            timeline=LarkTimelineFeeler(
                 ink=self.ink,
+                chromo=self.chromo,
                 stream_config=self.config.stream,
-                markdown_feeler=markdown_feeler,
-                channel_id=self.id,
             ),
             approvals=LarkApprovalFeeler(self.ink),
             ask_questions=LarkAskQuestionFeeler(self.ink),
@@ -155,7 +154,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
         message_id = await self.ink.send_message(
             key.chat_id or key.user_id,
             key.chat_type,
-            [self.chromo.make_markdown_message(hint_text)],
+            self.chromo.outbound_markdown(hint_text),
             None,
         )
         return replace(key, thread_id=message_id or key.thread_id)

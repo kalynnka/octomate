@@ -1,0 +1,100 @@
+"""Vercel UI event stream that also speaks the octomate `StreamEvents`.
+
+The stock `VercelAIEventStream` silently drops events it does not know
+(`handle_event`'s catch-all). The react stream is normalized, so the reply
+arrives as `ResultTextDeltaEvent` / `ResultSegmentEvent` rather than raw text
+parts, and capabilities add display/action events — this subclass renders all
+of them onto the Vercel protocol:
+
+- the reply streams as one text part (`text-start` / `text-delta` / `text-end`,
+  closed by the normalizer's terminal `FinalResult`),
+- todo events surface as transient ``data-todo`` chunks,
+- a suspended run's deferred-action batch surfaces as a transient
+  ``data-action-batch`` chunk,
+- everything else (thinking, tool calls, the run result) passes to the stock
+  handlers.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+
+from pydantic_ai.result import FinalResult
+from pydantic_ai.ui import NativeEvent
+from pydantic_ai.ui.vercel_ai import VercelAIEventStream
+from pydantic_ai.ui.vercel_ai.response_types import (
+    BaseChunk,
+    DataChunk,
+    TextDeltaChunk,
+    TextEndChunk,
+    TextStartChunk,
+)
+
+from octomate.capabilities.events import (
+    ActionBatchEvent,
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+    TodoCompletedEvent,
+    TodoCreatedEvent,
+    TodoDeletedEvent,
+    TodoStatusChangedEvent,
+    TodoUpdatedEvent,
+)
+from octomate.capabilities.react import ReactStreamEvent
+from octomate.tentacles.agent.inkling.base import InklingOutput
+
+
+@dataclass
+class OctomateUIEventStream(VercelAIEventStream[None, InklingOutput]):
+    reply_id: str | None = None
+
+    async def handle_event(
+        self, event: NativeEvent | ReactStreamEvent[InklingOutput]
+    ) -> AsyncIterator[BaseChunk]:
+        match event:
+            case ResultTextDeltaEvent():
+                async for chunk in self.reply_delta(event.delta):
+                    yield chunk
+            case ResultSegmentEvent():
+                # Completed segments join the reply text as separate blocks.
+                text = str(event.segment)
+                if self.reply_id is not None:
+                    text = f"\n\n{text}"
+                async for chunk in self.reply_delta(text):
+                    yield chunk
+            case FinalResult():
+                if self.reply_id is not None:
+                    yield TextEndChunk(id=self.reply_id)
+                    self.reply_id = None
+            case (
+                TodoCreatedEvent()
+                | TodoUpdatedEvent()
+                | TodoStatusChangedEvent()
+                | TodoCompletedEvent()
+                | TodoDeletedEvent()
+            ):
+                yield DataChunk(
+                    type="data-todo",
+                    data=event.model_dump(mode="json"),
+                    transient=True,
+                )
+            case ActionBatchEvent():
+                yield DataChunk(
+                    type="data-action-batch",
+                    data=event.model_dump(mode="json"),
+                    transient=True,
+                )
+            case _:
+                async for chunk in super().handle_event(event):
+                    yield chunk
+
+    async def reply_delta(self, text: str) -> AsyncIterator[BaseChunk]:
+        if not text:
+            return
+        async for chunk in self._turn_to("response"):
+            yield chunk
+        if self.reply_id is None:
+            self.reply_id = self.new_message_id()
+            yield TextStartChunk(id=self.reply_id)
+        yield TextDeltaChunk(id=self.reply_id, delta=text)

@@ -4,12 +4,12 @@ from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic_ai import Agent
 from pydantic_ai.models import infer_model
-from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.ui._web.app import _get_ui_html
 from pydantic_ai.ui.vercel_ai.request_types import RequestData
 
+from octomate.capabilities.agent import Agent
+from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.web.dev_ui.adapter import GraphAdapter
 
 if TYPE_CHECKING:
@@ -35,7 +35,7 @@ def build_dev_ui_router(
 
     adapter = GraphAdapter(
         channel_id=channel_id,
-        agent=cast(Agent[None, str | DeferredToolRequests], graph_agent),
+        agent=cast(Agent[None, InklingOutput], graph_agent),
         conversations=octomate.conversations,
         agent_id=agent_id,
     )

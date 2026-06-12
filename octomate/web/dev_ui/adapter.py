@@ -3,33 +3,38 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 
 from fastapi.responses import StreamingResponse
-from pydantic_ai import Agent, AgentRunResult, AgentRunResultEvent
+from pydantic_ai import AgentRunResult
 from pydantic_ai.messages import (
-    AgentStreamEvent,
     ModelMessage,
     ModelRequest,
     UserContent,
     UserPromptPart,
 )
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
-from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
+from pydantic_ai.ui import NativeEvent
+from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from pydantic_ai.ui.vercel_ai.request_types import RequestData
 from pydantic_ai.ui.vercel_ai.response_types import (
     BaseChunk,
     DataChunk,
 )
 
-from octomate.managers.conversations import ConversationManager
-from octomate.schemas.conversation import ConversationKey
-from octomate.tentacles.agent.graph import (
+from octomate.capabilities.agent import Agent
+from octomate.capabilities.react import (
     ReactDeps,
     ReactState,
+    ReactStreamEvent,
+    ResumeTurn,
+    StartTurn,
     iter_react_graph_events,
 )
-from octomate.tentacles.agent.graph.react import ReactOutput, ResumeTurn, StartTurn
+from octomate.managers.conversations import ConversationManager
+from octomate.schemas.conversation import ConversationKey
+from octomate.tentacles.agent.inkling.base import InklingOutput
+from octomate.web.dev_ui.event_stream import OctomateUIEventStream
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +46,7 @@ class GraphAdapter:
     SDK_VERSION: ClassVar[Literal[6]] = 6
 
     channel_id: str
-    agent: Agent[None, str | DeferredToolRequests]
+    agent: Agent[None, InklingOutput]
     conversations: ConversationManager
     agent_id: str = "Inkling"
 
@@ -65,16 +70,22 @@ class GraphAdapter:
             deferred_tool_results=deferred,
         )
 
-        event_stream = VercelAIEventStream(
+        event_stream = OctomateUIEventStream(
             body,
             sdk_version=self.SDK_VERSION,
         )
         return event_stream.streaming_response(
             event_stream.transform_stream(
-                self.native_events(
-                    conversation_key=key,
-                    user_prompt=self.latest_user_prompt(client_messages),
-                    deferred=deferred,
+                # pydantic-ai types the stream over its native events only; the
+                # octomate events pass through at runtime and OctomateUIEventStream
+                # handles them.
+                cast(
+                    AsyncIterator[NativeEvent],
+                    self.native_events(
+                        conversation_key=key,
+                        user_prompt=self.latest_user_prompt(client_messages),
+                        deferred=deferred,
+                    ),
                 ),
                 on_complete=self.complete_chunks,
             )
@@ -86,7 +97,7 @@ class GraphAdapter:
         conversation_key: ConversationKey,
         user_prompt: str | Sequence[UserContent] | None,
         deferred: DeferredToolResults | None,
-    ) -> AsyncIterator[AgentStreamEvent | AgentRunResultEvent[ReactOutput]]:
+    ) -> AsyncIterator[ReactStreamEvent[InklingOutput]]:
         try:
             async for event in iter_react_graph_events(
                 self.start_node(user_prompt=user_prompt, deferred=deferred),
@@ -143,7 +154,7 @@ class GraphAdapter:
 
     @staticmethod
     async def complete_chunks(
-        result: AgentRunResult[ReactOutput],
+        result: AgentRunResult[InklingOutput],
     ) -> AsyncIterator[BaseChunk]:
         if not isinstance(result.output, DeferredToolRequests):
             return

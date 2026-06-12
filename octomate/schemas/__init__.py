@@ -9,9 +9,18 @@ Submodules
 - ``events``: Platform-agnostic event models.
 - ``triage``: Graph routing decisions.
 - ``deferred``: Deferred human-in-the-loop action records.
+- ``todos``: Conversation-scoped todo records.
 """
 
-from octomate.schemas import actions, conversation, deferred, events, segments, triage
+from octomate.schemas import (
+    actions,
+    conversation,
+    deferred,
+    events,
+    segments,
+    todos,
+    triage,
+)
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MessageSegment
 
@@ -23,5 +32,6 @@ __all__ = [
     "deferred",
     "events",
     "segments",
+    "todos",
     "triage",
 ]

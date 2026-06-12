@@ -1,11 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import TypeVar
-
-from pydantic_core import to_json
-from pydantic_ai import AgentRunResult
-from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.events import MessageEvent
 from octomate.tentacles.channel.base import Chromo
@@ -19,7 +14,6 @@ from octomate.tentacles.channel.napcat.schema import (
 from octomate.utils import strip_markdown
 
 logger = logging.getLogger(__name__)
-OutputT = TypeVar("OutputT")
 
 
 class NapcatChromo(Chromo[str | bytes, NapcatOutboundMessage]):
@@ -36,38 +30,10 @@ class NapcatChromo(Chromo[str | bytes, NapcatOutboundMessage]):
             return None
         return to_message_event(frame)
 
-    def squirt(
-        self,
-        result: AgentRunResult[OutputT],
-        *,
-        reply_to: str | None = None,
-    ) -> list[NapcatOutboundMessage]:
-        output = result.output
-        if isinstance(output, DeferredToolRequests):
-            lines: list[str] = ["Deferred tool requests:"]
-            for call in output.calls:
-                lines.append(
-                    f"- {call.tool_name} needs input "
-                    f"({call.tool_call_id}): "
-                    f"{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}"
-                )
-            for call in output.approvals:
-                lines.append(
-                    f"- {call.tool_name} needs approval "
-                    f"({call.tool_call_id}): "
-                    f"{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}"
-                )
-            text = "\n".join(lines)
-        elif isinstance(output, str):
-            text = strip_markdown(output)
-        elif output is None:
+    def outbound_markdown(self, text: str) -> list[NapcatOutboundMessage]:
+        stripped = strip_markdown(text)
+        if not stripped:
             return []
-        else:
-            payload = to_json(output, indent=2, ensure_ascii=False, fallback=str).decode()
-            text = strip_markdown(f"```json\n{payload}\n```")
-        return [self.make_text_message(text)] if text else []
-
-    def make_text_message(self, text: str) -> NapcatOutboundMessage:
-        return NapcatOutboundMessage(
-            segments=[{"type": "text", "data": {"text": text}}]
-        )
+        return [
+            NapcatOutboundMessage(segments=[{"type": "text", "data": {"text": stripped}}])
+        ]

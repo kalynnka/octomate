@@ -3,14 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Literal, TypeVar
+from typing import Literal
 
 from lark_oapi.api.im.v1.model.mention_event import MentionEvent
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import TypeAdapter, ValidationError
-from pydantic_ai import AgentRunResult
-from pydantic_ai.tools import DeferredToolRequests
-from pydantic_core import to_json
 
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
@@ -27,10 +24,9 @@ from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
-OutputT = TypeVar("OutputT")
+JsonObjectAdapter = TypeAdapter(JsonObject)
 
 LARK_STREAM_ELEMENT_ID = "octomate_answer"
-JsonObjectAdapter = TypeAdapter(JsonObject)
 
 
 class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
@@ -90,48 +86,14 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
             logger.warning("LarkChromo: failed to decode event", exc_info=True)
             return None
 
-    def squirt(
-        self,
-        result: AgentRunResult[OutputT],
-        *,
-        reply_to: str | None = None,
-    ) -> list[LarkOutboundMessage]:
-        output = result.output
-        if isinstance(output, DeferredToolRequests):
-            lines: list[str] = ["Deferred tool requests:"]
-            for call in output.calls:
-                lines.append(
-                    f"- `{call.tool_name}` needs input "
-                    f"(`{call.tool_call_id}`): "
-                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
-                )
-            for call in output.approvals:
-                lines.append(
-                    f"- `{call.tool_name}` needs approval "
-                    f"(`{call.tool_call_id}`): "
-                    f"`{to_json(call.args_as_dict(), ensure_ascii=False, fallback=str).decode()}`"
-                )
-            text = "\n".join(lines)
-        elif isinstance(output, str):
-            text = output
-        elif output is None:
+    def outbound_markdown(self, text: str) -> list[LarkOutboundMessage]:
+        if not text:
             return []
-        else:
-            payload = to_json(
-                output,
-                indent=2,
-                ensure_ascii=False,
-                fallback=str,
-            ).decode()
-            text = f"```json\n{payload}\n```"
-        return [self.make_markdown_message(text)] if text else []
-
-    def make_markdown_message(self, text: str) -> LarkOutboundMessage:
         payload = {
             "schema": "2.0",
             "body": {"elements": [{"tag": "markdown", "content": text}]},
         }
-        return LarkOutboundMessage(msg_type="interactive", content=json.dumps(payload))
+        return [LarkOutboundMessage(msg_type="interactive", content=json.dumps(payload))]
 
     def make_stream_card_data(
         self,

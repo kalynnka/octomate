@@ -6,10 +6,8 @@ from octomate.tentacles.channel.feelers.deferred import (
     QuestionFeeler,
 )
 from octomate.tentacles.channel.feelers.output import (
-    DefaultEventStreamFeeler,
     DefaultMarkdownFeeler,
     DefaultMarkdownStreamFeeler,
-    EventStreamFeeler,
     IMMessageID,
     MarkdownFeeler,
     MarkdownStreamFeeler,
@@ -17,10 +15,8 @@ from octomate.tentacles.channel.feelers.output import (
 
 __all__ = [
     "ApprovalFeeler",
-    "DefaultEventStreamFeeler",
     "DefaultMarkdownFeeler",
     "DefaultMarkdownStreamFeeler",
-    "EventStreamFeeler",
     "Feelers",
     "IMMessageID",
     "MarkdownFeeler",

@@ -13,6 +13,7 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
+from octomate.capabilities.deferred import DeferredSuspender
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
@@ -22,7 +23,6 @@ from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.graph import (
     DeferredResult,
-    DeferredSuspender,
     ResponseTarget,
     ResponseTargetMode,
     TriageDecision,
@@ -37,7 +37,7 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
-
+from octomate.tentacles.channel.feelers.output import TimelineState
 
 FakeRunOutput = TriageDecision | str | DeferredToolRequests
 FakeStreamEvent = AgentStreamEvent | AgentRunResultEvent[str]
@@ -50,9 +50,7 @@ class FakeConversation:
 
 @dataclass
 class FakeConversationManager:
-    conversations: dict[ConversationKey, FakeConversation] = field(
-        default_factory=dict
-    )
+    conversations: dict[ConversationKey, FakeConversation] = field(default_factory=dict)
     ensured: list[ConversationKey] = field(default_factory=list)
 
     async def ensure(
@@ -150,22 +148,18 @@ class NoopMarkdownStreamFeeler:
     ) -> str | None:
         return None
 
-
-@dataclass
-class RecordingEventStreamRecorder:
-    stream_sent: list[tuple[ConversationKey, list[str]]]
-
-    async def present(
+    async def present_output(
         self,
         key: ConversationKey,
-        events: AsyncIterator[FakeStreamEvent],
+        events: AsyncIterator[object],
     ) -> str | None:
-        outputs: list[str] = []
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                outputs.append(str(event.result.output))
-        self.stream_sent.append((key, outputs))
-        return "event-message"
+        return None
+
+
+class NoopTimeline(TimelineState):
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncIterator[NoopTimeline]:
+        yield self
 
 
 @dataclass
@@ -185,7 +179,7 @@ class FakeChannel:
         self.feelers = Feelers[str](
             markdown=self,
             markdown_stream=NoopMarkdownStreamFeeler(),
-            event_stream=RecordingEventStreamRecorder(self.stream_sent),
+            timeline=NoopTimeline(),
             approvals=PlainTextApprovalFeeler(self),
             ask_questions=PlainTextAskQuestionFeeler(self),
         )
@@ -197,6 +191,18 @@ class FakeChannel:
     ) -> str | None:
         self.sent.append((key, [markdown]))
         return None
+
+    async def consume(
+        self,
+        key: ConversationKey,
+        stream: AsyncIterator[FakeStreamEvent],
+    ) -> str | None:
+        outputs: list[str] = []
+        async for event in stream:
+            if isinstance(event, AgentRunResultEvent):
+                outputs.append(str(event.result.output))
+        self.stream_sent.append((key, outputs))
+        return "event-message"
 
     async def start_sub_thread(
         self,
@@ -226,26 +232,14 @@ class RecordingMarkdownFeeler:
         return "markdown-message"
 
 
-@dataclass
-class RecordingEventStreamFeeler:
-    calls: list[tuple[ConversationKey, str]] = field(default_factory=list)
+class DroppingChannel(FakeChannel):
+    """A channel whose consumer abandons the reception stream without producing a
+    result (exercises the fail-fast guard)."""
 
-    async def present(
+    async def consume(
         self,
         key: ConversationKey,
-        events: AsyncIterator[FakeStreamEvent],
-    ) -> str | None:
-        async for event in events:
-            if isinstance(event, AgentRunResultEvent):
-                self.calls.append((key, str(event.result.output)))
-        return "event-message"
-
-
-class DroppingEventStreamFeeler:
-    async def present(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[FakeStreamEvent],
+        stream: AsyncIterator[FakeStreamEvent],
     ) -> str | None:
         return None
 
@@ -292,7 +286,9 @@ def _deps(
         channels={cid: cast(ChannelTentacle, c) for cid, c in channels.items()},
         agents={agent.id: cast(AgentTentacle, agent)},
         conversation_manager=cast(ConversationManager, conversations),
-        action_manager=cast(DeferredActionManager, action_manager or FakeActionManager()),
+        action_manager=cast(
+            DeferredActionManager, action_manager or FakeActionManager()
+        ),
     )
 
 
@@ -444,7 +440,9 @@ async def test_triage_graph_emits_direct_route() -> None:
     assert ops.sent == []
 
 
-async def test_triage_graph_returns_deferred_result_when_triage_requests_input() -> None:
+async def test_triage_graph_returns_deferred_result_when_triage_requests_input() -> (
+    None
+):
     key = _key()
     requests = _requests()
     agent = FakeAgent(requests)
@@ -684,7 +682,7 @@ async def test_triage_resume_does_not_leak_deferred_results_into_reception() -> 
     assert agent.stream_deferred == [None]
 
 
-async def test_triage_graph_uses_event_stream_feeler_for_reception() -> None:
+async def test_triage_graph_consumes_reception_stream() -> None:
     key = _key()
     agent = FakeAgent(
         TriageDecision(
@@ -698,8 +696,6 @@ async def test_triage_graph_uses_event_stream_feeler_for_reception() -> None:
     conversations = FakeConversationManager()
     im = FakeChannel()
     ops = FakeChannel()
-    event_feeler = RecordingEventStreamFeeler()
-    ops.feelers.event_stream = event_feeler
 
     result = (
         await triage_graph.run(
@@ -715,11 +711,13 @@ async def test_triage_graph_uses_event_stream_feeler_for_reception() -> None:
 
     assert result.result is not None
     assert result.result.output == "done"
-    assert len(event_feeler.calls) == 1
-    call_key, output = event_feeler.calls[0]
+    # Reception streamed through the target channel's consumer, not markdown.
+    assert len(ops.stream_sent) == 1
+    call_key, outputs = ops.stream_sent[0]
     assert call_key.thread_id == "hint-thread"
-    assert output == "done"
-    assert ops.stream_sent == []
+    assert outputs == ["done"]
+    assert ops.sent == []
+    assert im.stream_sent == []
 
 
 async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
@@ -735,8 +733,7 @@ async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
     )
     conversations = FakeConversationManager()
     im = FakeChannel()
-    ops = FakeChannel()
-    ops.feelers.event_stream = DroppingEventStreamFeeler()
+    ops = DroppingChannel()
 
     with pytest.raises(RuntimeError, match="completed without a result"):
         await triage_graph.run(

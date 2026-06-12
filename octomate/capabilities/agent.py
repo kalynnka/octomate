@@ -1,0 +1,257 @@
+"""`Agent`: a Pydantic AI `Agent` subclass that streams events AND the typed output.
+
+`run_stream_events` gives raw events but not validated output; `stream_output`
+gives validated partial output but not thinking/tool events. `stream_events` drives
+`iter()` ourselves and emits BOTH from each node:
+
+- thinking + tool-call events pass through unchanged,
+- the reply streams in whichever of Pydantic AI's two modes fits the output: a text
+  reply as additive `ResultTextDeltaEvent` (the model's `content_delta` typewriter), a
+  `list[MessageSegment]` reply as one `ResultSegmentEvent` per segment (as partial
+  validation reveals it); then Pydantic AI's own `FinalResult[OutputT]` as the final
+  value. Other structured outputs surface only at `FinalResult`.
+- capability-injected events (e.g. todo events) flow through: each node's stream is
+  wrapped with the run's capabilities' `wrap_run_event_stream`, which the manual
+  `iter()` path would otherwise bypass (pydantic-ai applies it only inside `run()`),
+- a terminal `AgentRunResultEvent` closes the stream (run-complete / deferred).
+
+The two `output_type` overloads carry the output type into the event stream, so the
+final `Agent[Deps, list[Row]].stream_events(...)` value is a `FinalResult[list[Row]]`.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Sequence
+from typing import Any, cast, overload
+
+from pydantic import ValidationError
+from pydantic_ai import Agent as PydanticAgent
+from pydantic_ai import (
+    AgentBuiltinTool,
+    AgentCapability,
+    AgentModelSettings,
+    AgentRunResultEvent,
+    AgentSpec,
+    RunUsage,
+    UsageLimits,
+)
+from pydantic_ai.agent.abstract import (
+    AgentInstructions,
+    AgentMetadata,
+    RunOutputDataT,
+)
+from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.messages import (
+    FinalResultEvent,
+    ModelMessage,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    UserContent,
+)
+from pydantic_ai.models import KnownModelName, Model
+from pydantic_ai.output import OutputDataT, OutputSpec
+from pydantic_ai.result import FinalResult
+from pydantic_ai.tools import AgentDepsT, DeferredToolResults
+from pydantic_ai.toolsets import AbstractToolset
+
+# Pydantic AI applies capability wrap_run_event_stream only inside run()'s hooked
+# path; stream_events drives iter() directly, so we replicate the wrap per node.
+# build_run_context is private — no public RunContext-from-AgentRun exists in 1.93.0.
+from pydantic_ai._agent_graph import build_run_context
+
+from octomate.capabilities.events import (
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+    StreamEvents,
+)
+from octomate.schemas.segments import MessageSegment, Segment
+
+
+class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
+    """A Pydantic AI agent that can stream events and the typed output together."""
+
+    @overload
+    def stream_events(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        output_type: None = None,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        conversation_id: str | None = None,
+        deps: AgentDepsT = None,
+        model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[AgentDepsT] = None,
+        model_settings: AgentModelSettings[AgentDepsT] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[AgentDepsT] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+        spec: dict[str, Any] | AgentSpec | None = None,
+    ) -> AsyncIterator[
+        StreamEvents[OutputDataT] | AgentRunResultEvent[OutputDataT]
+    ]: ...
+
+    @overload
+    def stream_events(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        output_type: OutputSpec[RunOutputDataT],
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        conversation_id: str | None = None,
+        deps: AgentDepsT = None,
+        model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[AgentDepsT] = None,
+        model_settings: AgentModelSettings[AgentDepsT] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[AgentDepsT] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+        spec: dict[str, Any] | AgentSpec | None = None,
+    ) -> AsyncIterator[
+        StreamEvents[RunOutputDataT] | AgentRunResultEvent[RunOutputDataT]
+    ]: ...
+
+    async def stream_events(
+        self,
+        user_prompt: str | Sequence[UserContent] | None = None,
+        *,
+        output_type: OutputSpec[Any] | None = None,
+        message_history: Sequence[ModelMessage] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        conversation_id: str | None = None,
+        deps: AgentDepsT = None,
+        model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[AgentDepsT] = None,
+        model_settings: AgentModelSettings[AgentDepsT] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[AgentDepsT] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+        spec: dict[str, Any] | AgentSpec | None = None,
+    ) -> AsyncIterator[StreamEvents[Any] | AgentRunResultEvent[Any]]:
+        async with self.iter(
+            user_prompt,
+            output_type=output_type,
+            message_history=message_history,
+            deferred_tool_results=deferred_tool_results,
+            conversation_id=conversation_id,
+            deps=deps,
+            model=model,
+            instructions=instructions,
+            model_settings=model_settings,
+            usage_limits=usage_limits,
+            usage=usage,
+            metadata=metadata,
+            output_retries=output_retries,
+            infer_name=infer_name,
+            toolsets=toolsets,
+            builtin_tools=builtin_tools,
+            capabilities=capabilities,
+            spec=spec,
+        ) as run:
+            async for node in run:
+                if self.is_model_request_node(node):
+                    # The model node streams the reply: passthrough thinking/pre-output
+                    # events, then map the output (after FinalResultEvent) to Output events.
+                    async with node.stream(run.ctx) as stream:
+                        wrapped = run.ctx.deps.root_capability.wrap_run_event_stream(
+                            build_run_context(run.ctx), stream=stream
+                        )
+                        final_event: FinalResultEvent | None = None
+                        emitted_segments = 0
+                        # A capability injecting a non-AgentStreamEvent before the
+                        # FinalResultEvent passes through here; injecting after it is
+                        # not supported (todo events inject on the tools node).
+                        async for event in wrapped:
+                            if isinstance(event, FinalResultEvent):
+                                final_event = event
+                                continue
+                            if final_event is None:
+                                yield event
+                                continue
+                            # After the final result is recognized, stream the reply in
+                            # whichever of Pydantic AI's two modes fits the output: a text
+                            # reply arrives as additive `content_delta` (the typewriter);
+                            # a structured reply's tool args validate into a growing
+                            # list[MessageSegment] that we surface one segment at a time.
+                            if isinstance(event, PartStartEvent) and isinstance(
+                                event.part, TextPart
+                            ):
+                                if event.part.content:
+                                    yield ResultTextDeltaEvent(delta=event.part.content)
+                                continue
+                            if isinstance(event, PartDeltaEvent) and isinstance(
+                                event.delta, TextPartDelta
+                            ):
+                                if event.delta.content_delta:
+                                    yield ResultTextDeltaEvent(delta=event.delta.content_delta)
+                                continue
+                            try:
+                                partial = await stream.validate_response_output(
+                                    stream.response, allow_partial=True
+                                )
+                            except (ValidationError, ModelRetry):
+                                continue
+                            if isinstance(partial, list):
+                                # The trailing element may still be growing under
+                                # partial validation — emit only the elements a later
+                                # one has sealed; the tail is emitted from the final
+                                # validated output below.
+                                for segment in partial[emitted_segments:-1]:
+                                    # A validated list[MessageSegment] element is a union
+                                    # member; the Annotated discriminated union can't be
+                                    # isinstance-narrowed, so guard on the base then cast.
+                                    if isinstance(segment, Segment):
+                                        yield ResultSegmentEvent(
+                                            segment=cast(MessageSegment, segment)
+                                        )
+                                emitted_segments = max(
+                                    emitted_segments, len(partial) - 1
+                                )
+                        if final_event is not None:
+                            try:
+                                final = await stream.validate_response_output(
+                                    stream.response
+                                )
+                            except (ValidationError, ModelRetry):
+                                final = None
+                            if isinstance(final, list):
+                                for segment in final[emitted_segments:]:
+                                    if isinstance(segment, Segment):
+                                        yield ResultSegmentEvent(
+                                            segment=cast(MessageSegment, segment)
+                                        )
+                            yield FinalResult(
+                                output=final,
+                                tool_name=final_event.tool_name,
+                                tool_call_id=final_event.tool_call_id,
+                            )
+                elif self.is_call_tools_node(node):
+                    # The tools node streams tool call/result events. Wrapping with the
+                    # run's capabilities lets capability-injected events (e.g. todo
+                    # events stashed on a ToolReturn) reach the consumer.
+                    async with node.stream(run.ctx) as tool_stream:
+                        wrapped = run.ctx.deps.root_capability.wrap_run_event_stream(
+                            build_run_context(run.ctx), stream=tool_stream
+                        )
+                        async for tool_event in wrapped:
+                            yield tool_event
+            if run.result is not None:
+                yield AgentRunResultEvent(run.result)

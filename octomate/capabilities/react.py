@@ -3,20 +3,21 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, replace
-from typing import Generic, TypeAlias, TypeVar
+from types import TracebackType
+from typing import Any, Generic, TypeVar
+
+from typing_extensions import TypeAliasType
 
 import anyio
 import logfire
 from anyio.abc import ObjectSendStream
-from pydantic import BaseModel, JsonValue
 from pydantic_ai import (
-    Agent,
     AgentBuiltinTool,
     AgentCapability,
     AgentModelSettings,
     AgentRunResult,
     AgentRunResultEvent,
-    AgentStreamEvent,
+    AgentSpec,
     RunUsage,
     UsageLimits,
 )
@@ -30,14 +31,25 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ConversationKey
-from octomate.tentacles.agent.base import AgentOutput, AgentSpecInput
-from octomate.tentacles.agent.graph.resolver import DeferredResolver
-from octomate.tentacles.agent.graph.suspender import DeferredSuspender
+from octomate.capabilities.agent import Agent
+from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
+from octomate.capabilities.events import StreamEvents
 
 logger = logging.getLogger(__name__)
-ReactOutput: TypeAlias = JsonValue | BaseModel | DeferredToolRequests
-ReactOutputT = TypeVar("ReactOutputT", bound=AgentOutput)
+# The react graph is generic machinery: the run's output type is whatever the
+# builder's agent/output_type produce, so neither type variable is bounded.
+ReactOutputT = TypeVar("ReactOutputT")
+ReactOutputCoT = TypeVar("ReactOutputCoT", covariant=True)
 ReactDepsT = TypeVar("ReactDepsT")
+
+# The events a react run streams: the normalized `StreamEvents` union (Pydantic AI
+# passthrough + output/display events + a suspended run's deferred-action batch)
+# plus the terminal result.
+ReactStreamEvent = TypeAliasType(
+    "ReactStreamEvent",
+    StreamEvents[ReactOutputT] | AgentRunResultEvent[ReactOutputT],
+    type_params=(ReactOutputT,),
+)
 
 
 @dataclass
@@ -55,9 +67,7 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     agent: Agent[ReactDepsT, ReactOutputT]
     conversation_manager: ConversationManager
     agent_deps: ReactDepsT
-    event_send_stream: (
-        ObjectSendStream[AgentStreamEvent | AgentRunResultEvent[ReactOutputT]] | None
-    ) = None
+    event_send_stream: ObjectSendStream[ReactStreamEvent[ReactOutputT]] | None = None
     resolver: DeferredResolver | None = None
     suspender: DeferredSuspender | None = None
     output_type: OutputSpec[ReactOutputT] | None = None
@@ -73,7 +83,7 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     toolsets: Sequence[AbstractToolset[ReactDepsT]] | None = None
     builtin_tools: Sequence[AgentBuiltinTool[ReactDepsT]] | None = None
     capabilities: Sequence[AgentCapability[ReactDepsT]] | None = None
-    spec: AgentSpecInput | None = None
+    spec: dict[str, Any] | AgentSpec | None = None
 
 
 @dataclass
@@ -177,8 +187,11 @@ class RunAgent(
                 return await self.next_node(ctx, result, conversation, span)
 
             result: AgentRunResult[ReactOutputT] | None = None
-            async with ctx.deps.agent.run_stream_events(
-                user_prompt=self.user_prompt,
+            # stream_events (the normalizer) instead of run_stream_events: thinking +
+            # tool events pass through raw, while the reply surfaces as typed output
+            # events (ResultTextDeltaEvent / ResultSegmentEvent) the consumer renders.
+            async for event in ctx.deps.agent.stream_events(
+                self.user_prompt,
                 output_type=ctx.deps.output_type,
                 message_history=conversation.messages or None,
                 deferred_tool_results=self.deferred_results,
@@ -196,16 +209,15 @@ class RunAgent(
                 builtin_tools=ctx.deps.builtin_tools,
                 capabilities=ctx.deps.capabilities,
                 spec=ctx.deps.spec,
-            ) as stream:
-                async for event in stream:
-                    if ctx.deps.event_send_stream is not None:
-                        await ctx.deps.event_send_stream.send(event)
-                    if isinstance(event, AgentRunResultEvent):
-                        result = event.result
+            ):
+                if ctx.deps.event_send_stream is not None:
+                    await ctx.deps.event_send_stream.send(event)
+                if isinstance(event, AgentRunResultEvent):
+                    result = event.result
 
             if result is None:
                 raise RuntimeError(
-                    "agent.run_stream_events did not yield AgentRunResultEvent"
+                    "agent.stream_events did not yield AgentRunResultEvent"
                 )
             return await self.next_node(ctx, result, conversation, span)
 
@@ -262,7 +274,9 @@ class ResolveDeferred(
             )
         if ctx.deps.suspender is not None:
             logfire.info("deferred suspended, ending run")
-            await ctx.deps.suspender.suspend(self.requests)
+            event = await ctx.deps.suspender.suspend(self.requests)
+            if event is not None and ctx.deps.event_send_stream is not None:
+                await ctx.deps.event_send_stream.send(event)
             return End(self.result)
         raise RuntimeError(
             "ResolveDeferred requires a react graph resolver or suspender"
@@ -271,12 +285,6 @@ class ResolveDeferred(
 
 REACT_NODES = [StartTurn, ResumeTurn, RunAgent, ResolveDeferred]
 
-react_graph: Graph[
-    ReactState,
-    ReactDeps[ReactOutput, object],
-    AgentRunResult[ReactOutput],
-] = Graph(nodes=REACT_NODES, name="react")
-
 
 async def iter_react_graph_events(
     start_node: StartTurn[ReactOutputT, ReactDepsT]
@@ -284,12 +292,9 @@ async def iter_react_graph_events(
     *,
     state: ReactState,
     deps: ReactDeps[ReactOutputT, ReactDepsT],
-) -> AsyncGenerator[
-    AgentStreamEvent | AgentRunResultEvent[ReactOutputT],
-    None,
-]:
+) -> AsyncGenerator[ReactStreamEvent[ReactOutputT], None]:
     send_stream, receive_stream = anyio.create_memory_object_stream[
-        AgentStreamEvent | AgentRunResultEvent[ReactOutputT]
+        ReactStreamEvent[ReactOutputT]
     ](100)
     graph_deps = replace(deps, event_send_stream=send_stream)
     captured: list[Exception] = []
@@ -322,3 +327,29 @@ async def iter_react_graph_events(
                 yield event
     for error in captured:
         raise error
+
+
+class ReactEventStream(Generic[ReactOutputCoT]):
+    """Deterministic-cleanup handle over a react event stream: entering the
+    context yields the underlying generator, exiting closes it. Mirrors
+    pydantic-ai's ``AgentEventStream``, but typed over ``ReactStreamEvent`` — a
+    react run also streams octomate output/display/action-batch events."""
+
+    # Private so the covariant type parameter has no mutable public surface.
+    def __init__(
+        self, generator: AsyncGenerator[ReactStreamEvent[ReactOutputCoT], None]
+    ) -> None:
+        self._generator = generator
+
+    async def __aenter__(
+        self,
+    ) -> AsyncGenerator[ReactStreamEvent[ReactOutputCoT], None]:
+        return self._generator
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self._generator.aclose()
