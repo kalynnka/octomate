@@ -369,7 +369,33 @@ class LarkRunStateCards(TimelineState):
             reply_in_thread=self.reply_in_thread,
         )
 
+    async def rotate(self) -> None:
+        """The mid-run notice streamed into the answer card — finalize it so
+        the next answer text (and todo checklist) opens a fresh card below the
+        new activity instead of updating one stranded above it."""
+        # Flush first: a short notice may still sit in the batcher without
+        # having created the card yet.
+        for update in self.answer_batcher.finish_all():
+            await self.push_answer(update.full_text)
+        if self.answer_card is None:
+            return
+        self.answer_sequence += 1
+        await self.ink.finish_stream_card(
+            self.answer_card, sequence=self.answer_sequence
+        )
+        self.answer_card = None
+        self.answer_message_id = None
+        self.answer_sequence = 0
+        self.todo_card_id = None
+        self.answer_batcher = TextStreamBatcher(
+            flush_interval=self.answer_batcher.flush_interval,
+            min_chars=self.answer_batcher.min_chars,
+            max_chars=self.answer_batcher.max_chars,
+            fold_threshold=self.answer_batcher.fold_threshold,
+        )
+
     async def thinking_start(self) -> None:
+        await self.begin_entry()
         await self.fold_thinking()
         self.thinking_text = ""
         self.thinking_card_id = await self.post(
@@ -391,7 +417,7 @@ class LarkRunStateCards(TimelineState):
         self.thinking_card_id = None
         self.thinking_text = ""
         folded = cards.card_v2(
-            [cards.collapsible_panel(f"✅ {THINKING_HEADER}", [cards.markdown(body)])]
+            [cards.collapsible_panel(THINKING_HEADER, [cards.markdown(body)])]
         )
         await self.ink.patch_card(
             card_id, json.dumps(folded, ensure_ascii=False, separators=(",", ":"))
@@ -400,6 +426,7 @@ class LarkRunStateCards(TimelineState):
     async def tool_start(
         self, event: FunctionToolCallEvent | OutputToolCallEvent
     ) -> None:
+        await self.begin_entry()
         await self.fold_thinking()
         tool = event.part
         if should_skip_plan_tool(tool.tool_name):
@@ -442,7 +469,7 @@ class LarkRunStateCards(TimelineState):
         folded = cards.card_v2(
             [
                 cards.collapsible_panel(
-                    f"{'❌' if error else '✅'} 🔧 {title}",
+                    f"❌ 🔧 {title}" if error else f"🔧 {title}",
                     [cards.markdown("\n\n".join(sections))],
                 )
             ]
@@ -457,6 +484,7 @@ class LarkRunStateCards(TimelineState):
         if not text:
             return
         await self.fold_thinking()
+        self.noticed = True
         for update in self.answer_batcher.push_text(text):
             await self.push_answer(update.full_text)
 
@@ -488,6 +516,7 @@ class LarkRunStateCards(TimelineState):
                 await self.answer_delta(str(segment))
 
     async def todo(self, event: TodoEvent) -> None:
+        await self.begin_entry()
         if isinstance(event, TodoDeletedEvent):
             self.todos.pop(event.todo.ref, None)
         else:

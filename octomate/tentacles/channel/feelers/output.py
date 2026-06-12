@@ -487,17 +487,44 @@ class TimelineState:
     lifecycle methods as it walks the event stream — one per real stream event:
     `PartStart`/`PartDelta`/`PartEnd` of the thinking and answer parts map to
     `*_start` / `*_delta` / `*_end`, and the tool call/result events to
-    `tool_start` / `tool_end`. Every method is a no-op; a per-run timeline subclasses
-    this and overrides only the lifecycle points it actually renders. `message_id`
-    carries the platform id of the rendered reply once the run's context closes."""
+    `tool_start` / `tool_end`. A per-run timeline subclasses this and overrides
+    only the lifecycle points it actually renders; the base methods render
+    nothing. `message_id` carries the platform id of the rendered reply once
+    the run's context closes.
+
+    Mid-run notice contract: answer hooks that render reply text set `noticed`,
+    and every hook that opens a NEW timeline entry (a thinking block, a tool
+    call, a todo update — never a tool result, so in-flight work finishes where
+    it began) calls `begin_entry()` first, which `rotate()`s once when a notice
+    streamed in between. Overrides must keep doing both."""
 
     message_id: IMMessageID | None = None
+    noticed: bool = False
 
-    async def thinking_start(self) -> None: ...
+    async def begin_entry(self) -> None:
+        """A new timeline entry is opening: if answer content streamed since
+        the last rotation, that content was a mid-run notice — rotate first."""
+        if not self.noticed:
+            return
+        self.noticed = False
+        await self.rotate()
+
+    async def rotate(self) -> None:
+        """A mid-run notice happened: finalize the current timeline surface
+        (plan message, cards, buffered text) so the notice stays visible where
+        it streamed, and let the new entries open a fresh surface below it.
+        Work still in flight finishes — and closes — the previous surface."""
+
+    async def thinking_start(self) -> None:
+        await self.begin_entry()
+
     async def thinking_delta(self, text: str) -> None: ...
     async def thinking_end(self) -> None: ...
     async def answer_start(self) -> None: ...
-    async def answer_delta(self, text: str) -> None: ...
+
+    async def answer_delta(self, text: str) -> None:
+        self.noticed = True
+
     async def answer_end(self) -> None: ...
 
     async def answer_segment(self, segment: MessageSegment) -> None:
@@ -508,11 +535,15 @@ class TimelineState:
 
     async def tool_start(
         self, event: FunctionToolCallEvent | OutputToolCallEvent
-    ) -> None: ...
+    ) -> None:
+        await self.begin_entry()
+
     async def tool_end(
         self, event: FunctionToolResultEvent | OutputToolResultEvent
     ) -> None: ...
-    async def todo(self, event: TodoEvent) -> None: ...
+
+    async def todo(self, event: TodoEvent) -> None:
+        await self.begin_entry()
 
 
 class TimelineFeeler(Protocol):
@@ -605,29 +636,60 @@ class DefaultMarkdownFeeler(Generic[RawT, MessageT]):
 
 
 @dataclass
-class DefaultTimelineState(TimelineState):
+class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
+    ink: Ink[MessageT]
+    chromo: Chromo[RawT, MessageT]
+    key: ConversationKey
     parts: list[str] = field(default_factory=list)
     todos: dict[str, Todo] = field(default_factory=dict)
     message_id: IMMessageID | None = None
 
     async def answer_delta(self, text: str) -> None:
+        self.noticed = True
         self.parts.append(text)
 
     async def todo(self, event: TodoEvent) -> None:
-        # No live transport: keep the latest snapshot; the feeler appends it as a
-        # checklist under the final message.
+        await self.begin_entry()
+        # No live transport: keep the latest snapshot; it rides as a checklist
+        # under the final message.
         if isinstance(event, TodoDeletedEvent):
             self.todos.pop(event.todo.ref, None)
         else:
             self.todos[event.todo.ref] = event.todo
 
+    async def rotate(self) -> None:
+        # The accumulated text was a mid-run notice: send it as its own message
+        # so the final reply arrives separately.
+        await self.send_parts()
+
+    async def send_parts(self, *, todo_block: bool = False) -> None:
+        markdown = "".join(self.parts)
+        self.parts.clear()
+        if todo_block and self.todos:
+            block = "Tasks:\n" + "\n".join(render_todo_lines(self.todos.values()))
+            markdown = f"{markdown}\n\n{block}" if markdown else block
+        if not markdown:
+            return
+        logger.warning(
+            "Channel %s: timeline has no streaming transport; "
+            "sending the reply as a single message",
+            self.key.channel_tentacle_id,
+        )
+        self.message_id = await present_markdown(
+            ink=self.ink,
+            chromo=self.chromo,
+            key=self.key,
+            markdown=markdown,
+        )
+
 
 class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
     """Answer-only timeline for platforms with no streaming transport (NapCat).
 
-    Stateless; `open(key)` yields a fresh `DefaultTimelineState`. Thinking/tool/todo
-    are inherited no-ops; the reply text is accumulated and sent as a single message on
-    exit, with a warning that streaming was unavailable.
+    Stateless; `open(key)` yields a fresh `DefaultTimelineState`. Thinking/tool
+    are inherited no-ops; the reply text is accumulated and sent as a single
+    message on exit (a mid-run notice rotates out as its own message), with a
+    warning that streaming was unavailable.
     """
 
     def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
@@ -635,29 +697,14 @@ class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
         self.chromo = chromo
 
     @asynccontextmanager
-    async def open(self, key: ConversationKey) -> AsyncIterator[DefaultTimelineState]:
-        state = DefaultTimelineState()
+    async def open(
+        self, key: ConversationKey
+    ) -> AsyncIterator[DefaultTimelineState[RawT, MessageT]]:
+        state = DefaultTimelineState(ink=self.ink, chromo=self.chromo, key=key)
         try:
             yield state
         finally:
-            markdown = "".join(state.parts)
-            if state.todos:
-                todo_block = "Tasks:\n" + "\n".join(
-                    render_todo_lines(state.todos.values())
-                )
-                markdown = f"{markdown}\n\n{todo_block}" if markdown else todo_block
-            if markdown:
-                logger.warning(
-                    "Channel %s: timeline has no streaming transport; "
-                    "sending the reply as a single message",
-                    key.channel_tentacle_id,
-                )
-                state.message_id = await present_markdown(
-                    ink=self.ink,
-                    chromo=self.chromo,
-                    key=key,
-                    markdown=markdown,
-                )
+            await state.send_parts(todo_block=True)
 
 
 class DefaultMarkdownStreamFeeler(Generic[RawT, MessageT, OutputT]):

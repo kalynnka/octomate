@@ -319,6 +319,60 @@ def agent_run() -> ChannelScript:
     ]
 
 
+def mid_run_notice(
+    notice: str = "The docs don't cover this — I'm trying another way.",
+    answer: str = "Found it: pinning the dependency fixes the flake.",
+) -> ChannelScript:
+    """A run that pauses to tell the user it is changing course: one round of
+    timeline work, a streamed notice, then a second round — with the first
+    round's slow tool finishing only after the new round began — and the final
+    answer. Exercises the consumers' timeline rotation."""
+    return [
+        PartStartEvent(index=0, part=ThinkingPart(content="Checking the docs first.")),
+        PartEndEvent(index=0, part=ThinkingPart(content="Checking the docs first.")),
+        FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="lookup",
+                args={"query": "flaky build"},
+                tool_call_id="call_slow_1",
+            )
+        ),
+        # The notice streams while lookup is still running.
+        ResultTextDeltaEvent(delta=notice[: len(notice) // 2]),
+        ResultTextDeltaEvent(delta=notice[len(notice) // 2 :]),
+        # A new round begins: consumers rotate to a fresh timeline; the
+        # in-flight lookup still finishes into the previous one.
+        PartStartEvent(
+            index=1, part=ThinkingPart(content="Reading the build logs instead.")
+        ),
+        PartEndEvent(
+            index=1, part=ThinkingPart(content="Reading the build logs instead.")
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="lookup",
+                content={"matches": 0},
+                tool_call_id="call_slow_1",
+            )
+        ),
+        FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="read_logs",
+                args={"job": "build", "tail": 50},
+                tool_call_id="call_logs_1",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="read_logs",
+                content={"hint": "unpinned dependency"},
+                tool_call_id="call_logs_1",
+            )
+        ),
+        *streamed_text(answer),
+    ]
+
+
 def showcase(*, image_file: str | None = None) -> ChannelScript:
     """Thinking + tools + todos + segment reply — the visual-inspection script."""
     plan, docs = scenario_todos()

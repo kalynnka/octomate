@@ -61,7 +61,7 @@ from tests.support.channels import (
     output_events,
     streamed_result,
 )
-from tests.support.scenarios import action_batch, batch_actions, play
+from tests.support.scenarios import action_batch, batch_actions, mid_run_notice, play
 
 
 def _json_object(value: JsonValue) -> JsonObject:
@@ -184,7 +184,8 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
     message_id = await channel.consume(slack_key(), events())
 
     assert message_id == "stream-ts"
-    assert ink.streams and ink.streams[0]["task_display_mode"] == "timeline"
+    # "plan" gathers all the run's tasks into one plan block.
+    assert ink.streams and ink.streams[0]["task_display_mode"] == "plan"
     chunks = [chunk for group in ink.stream_chunks for chunk in group]
     task_chunks = [chunk for chunk in chunks if isinstance(chunk, TaskUpdateChunk)]
     # ask_questions skipped; thinking + lookup rendered.
@@ -405,3 +406,43 @@ async def test_slack_tentacle_ensures_assistant_thread_conversation() -> None:
         thread_id="1710000000.000100",
     )
     assert agent_id == "inkling"
+
+
+async def test_slack_timeline_rotates_plan_on_mid_run_notice() -> None:
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+
+    message_id = await channel.consume(slack_key(), play(mid_run_notice()))
+
+    assert message_id == "stream-ts"
+    # The notice triggered a rotation: a second plan stream was opened.
+    assert len(ink.stream_objects) == 2
+    first, second = ink.stream_objects
+
+    # The notice streamed inline into the first plan message...
+    assert "trying another way" in "".join(first.appends)
+    # ...and the in-flight lookup still completed there after the rotation,
+    # which then closed the drained first message.
+    first_tasks = [
+        chunk
+        for group in first.chunks
+        for chunk in group
+        if isinstance(chunk, TaskUpdateChunk)
+    ]
+    assert any(
+        chunk.id == "call_slow_1" and chunk.status == "complete"
+        for chunk in first_tasks
+    )
+    assert first.stopped
+
+    # The second round (thinking + read_logs) rendered in the new plan message,
+    # along with the final answer text.
+    second_tasks = [
+        chunk
+        for group in second.chunks
+        for chunk in group
+        if isinstance(chunk, TaskUpdateChunk)
+    ]
+    assert {chunk.id for chunk in second_tasks} == {"thinking-2", "call_logs_1"}
+    assert "pinning the dependency" in "".join(second.appends)
+    assert second.stopped

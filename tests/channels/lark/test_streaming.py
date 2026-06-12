@@ -39,7 +39,7 @@ from tests.support.channels import (
     output_events,
     streamed_result,
 )
-from tests.support.scenarios import action_batch, batch_actions, play
+from tests.support.scenarios import action_batch, batch_actions, mid_run_notice, play
 
 JsonObjectAdapter = TypeAdapter(JsonObject)
 
@@ -349,3 +349,33 @@ async def test_lark_consume_renders_action_batch_cards() -> None:
         (question.id, "created-1"),
         (approval.id, "created-2"),
     ]
+
+
+async def test_lark_timeline_opens_new_answer_card_after_mid_run_notice() -> None:
+    ink = FakeLarkInk()
+    channel = lark_channel(ink)
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="u1",
+        user_id="u1",
+    )
+
+    await channel.consume(key, play(mid_run_notice()))
+
+    # The notice streamed into a first answer card which the rotation
+    # finalized; the final answer opened a fresh card below the new activity.
+    assert len(ink.stream_cards) == 2
+    assert len(ink.finalized) == 2
+    notice_card, answer_card = (card for card, _seq in ink.finalized)
+    notice_text = "".join(
+        content for card, content, _seq in ink.stream_updates if card is notice_card
+    )
+    answer_text = "".join(
+        content for card, content, _seq in ink.stream_updates if card is answer_card
+    )
+    assert "trying another way" in notice_text
+    assert "pinning the dependency" in answer_text
+    # Both rounds' thinking and tool cards posted (and folded via patch).
+    assert len(ink.created) == 4
+    assert len(ink.patched) == 4

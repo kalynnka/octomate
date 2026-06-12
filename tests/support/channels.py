@@ -16,11 +16,21 @@ from uuid import UUID
 
 from typing_extensions import TypeVar
 
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    OutputToolCallEvent,
+    OutputToolResultEvent,
+)
 from pydantic_ai.result import FinalResult, StreamedRunResult
 from typing_extensions import NotRequired, TypedDict
 
 from octomate import Octomate
-from octomate.capabilities.events import ResultSegmentEvent, ResultTextDeltaEvent
+from octomate.capabilities.events import (
+    ResultSegmentEvent,
+    ResultTextDeltaEvent,
+    TodoEvent,
+)
 from octomate.capabilities.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
@@ -213,7 +223,9 @@ class NoopTimeline(TimelineState):
 
 @dataclass
 class RecordingTimeline(TimelineState):
-    """Records every dispatched lifecycle call as a (method, payload) tuple."""
+    """Records every dispatched lifecycle call as a (method, payload) tuple,
+    honoring the mid-run-notice contract (`begin_entry`/`noticed`) so rotation
+    dispatch is observable too."""
 
     calls: list[tuple[str, object]] = field(default_factory=list)
     message_id: IMMessageID | None = None
@@ -223,6 +235,7 @@ class RecordingTimeline(TimelineState):
         yield self
 
     async def thinking_start(self) -> None:
+        await self.begin_entry()
         self.calls.append(("thinking_start", None))
 
     async def thinking_delta(self, text: str) -> None:
@@ -235,6 +248,7 @@ class RecordingTimeline(TimelineState):
         self.calls.append(("answer_start", None))
 
     async def answer_delta(self, text: str) -> None:
+        self.noticed = True
         self.calls.append(("answer_delta", text))
 
     async def answer_end(self) -> None:
@@ -243,14 +257,23 @@ class RecordingTimeline(TimelineState):
     async def answer_segment(self, segment: MessageSegment) -> None:
         self.calls.append(("answer_segment", segment))
 
-    async def tool_start(self, event: object) -> None:
+    async def tool_start(
+        self, event: FunctionToolCallEvent | OutputToolCallEvent
+    ) -> None:
+        await self.begin_entry()
         self.calls.append(("tool_start", event))
 
-    async def tool_end(self, event: object) -> None:
+    async def tool_end(
+        self, event: FunctionToolResultEvent | OutputToolResultEvent
+    ) -> None:
         self.calls.append(("tool_end", event))
 
-    async def todo(self, event: object) -> None:
+    async def todo(self, event: TodoEvent) -> None:
+        await self.begin_entry()
         self.calls.append(("todo", event))
+
+    async def rotate(self) -> None:
+        self.calls.append(("rotate", None))
 
     def names(self) -> list[str]:
         return [name for name, _ in self.calls]

@@ -26,6 +26,7 @@ from tests.support.scenarios import (
     action_batch,
     agent_run,
     batch_actions,
+    mid_run_notice,
     play,
     showcase,
     streamed_text,
@@ -141,6 +142,21 @@ async def test_slack_renders_agent_run_timeline(
     with caplog.at_level("WARNING"):
         # Paced playback so the timeline visibly streams in the client.
         message_id = await channel.consume(key, play(agent_run(), delay=0.2))
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_slack_renders_mid_run_notice(
+    slack_channel: tuple[SlackTentacle, ConversationKey],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The run notices the user mid-way: a fresh timeline opens below the
+    notice while the in-flight tool still closes out the previous one."""
+    channel, key = slack_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.consume(key, play(mid_run_notice(), delay=0.2))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text

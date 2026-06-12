@@ -65,6 +65,10 @@ THINKING_TITLE = "Thinking"
 STATUS_THINKING = "Thinking…"
 STATUS_WRITING = "Writing the response…"
 
+# "plan" gathers all tasks into one plan block; "timeline" would render each
+# task as an independent inline item.
+TASK_DISPLAY_MODE = "plan"
+
 
 @dataclass
 class SlackStep:
@@ -95,8 +99,11 @@ class SlackStep:
 
 @dataclass
 class SlackTimelineState(TimelineState):
-    """Drives a Slack ``timeline`` stream: one task per thinking block / tool call,
-    plus a live ``assistant.threads.setStatus`` hint for the current agent activity."""
+    """Drives Slack ``plan`` stream messages: one task per thinking block / tool
+    call, plus a live ``assistant.threads.setStatus`` hint for the current agent
+    activity. A mid-run notice (answer text followed by more timeline activity)
+    rotates to a fresh plan message; tool calls still in flight keep updating —
+    and eventually close — the message they started in."""
 
     ink: SlackInk
     stream: Any
@@ -104,8 +111,9 @@ class SlackTimelineState(TimelineState):
     chat_type: str
     thread_ts: str
     answer_batcher: TextStreamBatcher
+    recipient_user_id: str | None = None
+    recipient_team_id: str | None = None
     message_id: IMMessageID | None = None
-    plan_started: bool = False
     saw_answer: bool = False
     thinking_seq: int = 0
     active_thinking: SlackStep | None = None
@@ -113,6 +121,9 @@ class SlackTimelineState(TimelineState):
     todo_steps: dict[str, SlackStep] = field(default_factory=dict)
     skipped_tool_call_ids: set[str] = field(default_factory=set)
     last_status: str | None = None
+    plans_started: set[int] = field(default_factory=set)
+    step_streams: dict[str, Any] = field(default_factory=dict)
+    retired: list[Any] = field(default_factory=list)
 
     async def set_status(self, status: str) -> None:
         if status == self.last_status:
@@ -120,18 +131,51 @@ class SlackTimelineState(TimelineState):
         self.last_status = status
         await self.ink.set_assistant_status(self.channel, self.thread_ts, status)
 
-    async def ensure_plan_started(self) -> None:
-        if self.plan_started:
+    async def ensure_plan_started(self, stream: Any) -> None:
+        if id(stream) in self.plans_started:
             return
         await self.ink.append_stream_chunks(
-            self.stream,
+            stream,
             [PlanUpdateChunk(title=PLAN_TITLE)],
         )
-        self.plan_started = True
+        self.plans_started.add(id(stream))
 
     async def emit(self, step: SlackStep, *, status: str | None = None) -> None:
-        await self.ensure_plan_started()
-        await self.ink.append_stream_chunks(self.stream, [step.chunk(status=status)])
+        # A step stays on the stream it first rendered to, so in-flight work
+        # finishes in its own plan message even after a rotation.
+        stream = self.step_streams.setdefault(step.id, self.stream)
+        await self.ensure_plan_started(stream)
+        await self.ink.append_stream_chunks(stream, [step.chunk(status=status)])
+
+    def stream_has_inflight(self, stream: Any) -> bool:
+        return any(
+            step.status == "in_progress"
+            and self.step_streams.get(step.id) is stream
+            for step in self.tool_steps.values()
+        )
+
+    async def rotate(self) -> None:
+        """The mid-run notice streamed into the current plan message — the new
+        timeline activity opens a fresh plan message below it."""
+        await self.finish_answer()
+        old = self.stream
+        if self.stream_has_inflight(old):
+            self.retired.append(old)
+        else:
+            await self.ink.stop_stream(old)
+        self.answer_batcher = TextStreamBatcher(flush_interval=0, min_chars=0)
+        self.stream = await self.ink.start_stream(
+            self.channel,
+            self.thread_ts,
+            recipient_user_id=self.recipient_user_id,
+            recipient_team_id=self.recipient_team_id,
+            task_display_mode=TASK_DISPLAY_MODE,
+        )
+
+    async def release_drained(self) -> None:
+        for stream in [s for s in self.retired if not self.stream_has_inflight(s)]:
+            self.retired.remove(stream)
+            await self.ink.stop_stream(stream)
 
     async def complete_active_thinking(self) -> None:
         step = self.active_thinking
@@ -142,6 +186,7 @@ class SlackTimelineState(TimelineState):
         await self.emit(step, status="complete")
 
     async def thinking_start(self) -> None:
+        await self.begin_entry()
         await self.complete_active_thinking()
         self.thinking_seq += 1
         step = SlackStep(id=f"thinking-{self.thinking_seq}", title=THINKING_TITLE)
@@ -167,6 +212,7 @@ class SlackTimelineState(TimelineState):
         args_text: str | None,
         status: str,
     ) -> None:
+        await self.begin_entry()
         await self.complete_active_thinking()
         step = SlackStep(id=tool_call_id or f"tool-{len(self.tool_steps)}", title=title)
         if args_text:
@@ -193,6 +239,7 @@ class SlackTimelineState(TimelineState):
         step.append_section("Result", result_text)
         step.status = "error" if error else "complete"
         await self.emit(step, status=step.status)
+        await self.release_drained()
 
     async def tool_start(
         self, event: FunctionToolCallEvent | OutputToolCallEvent
@@ -233,6 +280,7 @@ class SlackTimelineState(TimelineState):
         await self.complete_active_thinking()
         await self.set_status(STATUS_WRITING)
         self.saw_answer = True
+        self.noticed = True
         for update in self.answer_batcher.push_text(text):
             await self.ink.append_stream(self.stream, update.delta_text)
 
@@ -271,6 +319,7 @@ class SlackTimelineState(TimelineState):
                 await self.answer_delta(str(segment))
 
     async def todo(self, event: TodoEvent) -> None:
+        await self.begin_entry()
         todo = event.todo
         if isinstance(event, TodoDeletedEvent):
             step = self.todo_steps.pop(todo.ref, None)
@@ -283,6 +332,9 @@ class SlackTimelineState(TimelineState):
         if step is None:
             step = SlackStep(id=f"todo-{todo.ref}", title=todo.content)
             self.todo_steps[todo.ref] = step
+        # Todos are live plan state: after a rotation they re-render in the
+        # current plan message rather than updating the closed one.
+        self.step_streams[step.id] = self.stream
         step.title = (
             todo.active_form
             if todo.status == "in_progress" and todo.active_form
@@ -521,7 +573,7 @@ class SlackTimelineFeeler(TimelineFeeler):
             context.thread_ts,
             recipient_user_id=context.recipient_user_id,
             recipient_team_id=context.recipient_team_id,
-            task_display_mode="timeline",
+            task_display_mode=TASK_DISPLAY_MODE,
         )
         state = SlackTimelineState(
             ink=self.ink,
@@ -530,6 +582,8 @@ class SlackTimelineFeeler(TimelineFeeler):
             chat_type=key.chat_type,
             thread_ts=context.thread_ts,
             answer_batcher=TextStreamBatcher(flush_interval=0, min_chars=0),
+            recipient_user_id=context.recipient_user_id,
+            recipient_team_id=context.recipient_team_id,
         )
         await state.set_status(STATUS_THINKING)
         try:
@@ -537,5 +591,7 @@ class SlackTimelineFeeler(TimelineFeeler):
         finally:
             await state.complete_pending()
             await state.finish_answer()
-            state.message_id = await self.ink.stop_stream(stream)
+            await state.release_drained()
+            # The current (possibly rotated-to) stream carries the final reply.
+            state.message_id = await self.ink.stop_stream(state.stream)
             await state.set_status("")

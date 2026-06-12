@@ -55,7 +55,13 @@ from tests.support.channels import (
     RecordingDeferredActions,
     RecordingTimeline,
 )
-from tests.support.scenarios import plan_tool_noise, play, showcase, streamed_text
+from tests.support.scenarios import (
+    mid_run_notice,
+    plan_tool_noise,
+    play,
+    showcase,
+    streamed_text,
+)
 
 
 @pytest.fixture
@@ -321,8 +327,8 @@ async def test_consume_appends_todo_checklist_to_final_message(
     async def events() -> (
         AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
     ):
-        yield ResultTextDeltaEvent(delta="done")
         yield TodoCompletedEvent(todo=todo)
+        yield ResultTextDeltaEvent(delta="done")
 
     await channel.consume(_key(), events())
 
@@ -404,6 +410,33 @@ async def test_drive_timeline_dispatches_each_event_kind(
         "answer_segment",  # markdown + card segments
         "answer_segment",
     ]
+
+
+async def test_drive_timeline_rotates_on_mid_run_notice(
+    channel: FakeChannelTentacle,
+) -> None:
+    state = RecordingTimeline()
+
+    await channel.drive_timeline(_key(), play(mid_run_notice()), state)
+
+    # Rotation fires exactly once: after the notice deltas, before the new
+    # round's thinking — never for the in-flight tool's result.
+    names = state.names()
+    assert names.count("rotate") == 1
+    assert names.index("rotate") == names.index("answer_delta") + 2
+    assert names[names.index("rotate") + 1] == "thinking_start"
+
+
+async def test_default_timeline_sends_mid_run_notice_as_own_message(
+    channel: FakeChannelTentacle,
+) -> None:
+    await channel.consume(_key(), play(mid_run_notice()))
+
+    # No streaming transport: the notice flushes as its own message when the
+    # run continues, and the final answer arrives separately.
+    assert len(channel.sent) == 2
+    assert "trying another way" in channel.sent[0][2][0]["text"]
+    assert "pinning the dependency" in channel.sent[1][2][0]["text"]
 
 
 async def test_drive_timeline_keeps_draining_after_render_failure(

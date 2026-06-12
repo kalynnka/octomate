@@ -33,12 +33,15 @@ from octomate.types.json import JsonObject
 
 @dataclass
 class FakeSlackStream:
-    pass
+    appends: list[str] = field(default_factory=list)
+    chunks: list[list[Chunk]] = field(default_factory=list)
+    stopped: bool = False
 
 
 @dataclass
 class FakeSlackInk(Ink[SlackOutboundMessage]):
     streams: list[dict[str, str | None]] = field(default_factory=list)
+    stream_objects: list[FakeSlackStream] = field(default_factory=list)
     appends: list[str] = field(default_factory=list)
     stream_chunks: list[list[Chunk]] = field(default_factory=list)
     stops: list[str | None] = field(default_factory=list)
@@ -94,7 +97,9 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
         if task_display_mode is not None:
             stream["task_display_mode"] = task_display_mode
         self.streams.append(stream)
-        return FakeSlackStream()
+        stream_object = FakeSlackStream()
+        self.stream_objects.append(stream_object)
+        return stream_object
 
     @asynccontextmanager
     async def open_stream(
@@ -119,6 +124,7 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
             await self.stop_stream(stream)
 
     async def append_stream(self, stream: FakeSlackStream, markdown_text: str) -> None:
+        stream.appends.append(markdown_text)
         self.appends.append(markdown_text)
 
     async def append_stream_chunks(
@@ -126,6 +132,7 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
         stream: FakeSlackStream,
         chunks: list[Chunk],
     ) -> None:
+        stream.chunks.append(chunks)
         self.stream_chunks.append(chunks)
 
     async def stop_stream(
@@ -134,6 +141,7 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
         *,
         markdown_text: str | None = None,
     ) -> str:
+        stream.stopped = True
         self.stops.append(markdown_text)
         return "stream-ts"
 
