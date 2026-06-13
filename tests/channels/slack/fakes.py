@@ -14,11 +14,15 @@ from slack_sdk.models.messages.chunk import Chunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 
 from octomate.config import SlackChannelConfig, SlackStreamConfig
+from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ConversationKey, UserProfile
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.channel.base import DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
-from octomate.tentacles.channel.feelers.output import DefaultMarkdownFeeler
+from octomate.tentacles.channel.feelers.output import (
+    DefaultMarkdownFeeler,
+    DefaultSegmentsFeeler,
+)
 from octomate.tentacles.channel.slack import SlackChromo, SlackTentacle
 from octomate.tentacles.channel.slack.feelers.approvals import SlackApprovalFeeler
 from octomate.tentacles.channel.slack.feelers.output import (
@@ -52,7 +56,7 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
     )
     uploads: list[tuple[str, bytes, str, str | None]] = field(default_factory=list)
 
-    def inspect(self) -> UserProfile:
+    async def inspect(self) -> UserProfile:
         return UserProfile(user_id="bot", name="Bot")
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
@@ -219,7 +223,9 @@ class FakeSlackBlocksInk:
             self.events.append("update")
 
 
-def slack_channel(ink: FakeSlackInk) -> SlackTentacle:
+def slack_channel(
+    ink: FakeSlackInk, deferred_actions: DeferredActionManager | None = None
+) -> SlackTentacle:
     channel = object.__new__(SlackTentacle)
     channel.id = "slack"
     channel.ink = cast(SlackInkType, ink)
@@ -230,14 +236,19 @@ def slack_channel(ink: FakeSlackInk) -> SlackTentacle:
         app_token=SecretStr("xapp-test"),
         stream=SlackStreamConfig(flush_interval=0),
     )
-    compose_slack_feelers(channel)
+    compose_slack_feelers(channel, deferred_actions)
     return channel
 
 
-def compose_slack_feelers(channel: SlackTentacle) -> None:
+def compose_slack_feelers(
+    channel: SlackTentacle, deferred_actions: DeferredActionManager | None = None
+) -> None:
     ink = cast(SlackInkType, channel.ink)
     chromo = cast(SlackChromo, channel.chromo)
     markdown_feeler = DefaultMarkdownFeeler(ink=ink, chromo=chromo)
+    approvals = SlackApprovalFeeler(ink)
+    ask_questions = SlackAskQuestionFeeler(ink)
+    actions = deferred_actions or DeferredActionManager()
     channel.feelers = Feelers(
         markdown=markdown_feeler,
         markdown_stream=SlackMarkdownStreamFeeler(
@@ -247,9 +258,16 @@ def compose_slack_feelers(channel: SlackTentacle) -> None:
             markdown_feeler=markdown_feeler,
             channel_id=channel.id,
         ),
-        timeline=SlackTimelineFeeler(ink=ink, chromo=chromo),
-        approvals=SlackApprovalFeeler(ink),
-        ask_questions=SlackAskQuestionFeeler(ink),
+        timeline=SlackTimelineFeeler(
+            ink=ink,
+            chromo=chromo,
+            ask_questions=ask_questions,
+            approvals=approvals,
+            deferred_actions=actions,
+        ),
+        segments=DefaultSegmentsFeeler(ink=ink, chromo=chromo),
+        approvals=approvals,
+        ask_questions=ask_questions,
     )
 
 

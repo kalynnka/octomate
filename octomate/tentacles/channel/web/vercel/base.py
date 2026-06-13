@@ -75,7 +75,7 @@ class VercelInk(Ink[BaseChunk]):
     platform-shaped members fail fast until kick-dispatch lands.
     """
 
-    def inspect(self) -> UserProfile:
+    async def inspect(self) -> UserProfile:
         return UserProfile(user_id="dev_ui", name="Inkling")
 
     async def get_user_profile(self, user_id: str) -> UserProfile:

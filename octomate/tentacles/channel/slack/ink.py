@@ -9,7 +9,6 @@ from pydantic import SecretStr
 from slack_sdk.models.messages.chunk import Chunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
-from slack_sdk.web.client import WebClient
 
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.channel.base import DownloadedImage, Ink
@@ -40,12 +39,11 @@ class SlackInk(Ink[SlackOutboundMessage]):
         self.bot_token = bot_token
         token = bot_token.get_secret_value()
         self.client = AsyncWebClient(token=token)
-        self.sync_client = WebClient(token=token)
 
-    def inspect(self) -> SlackUserProfile:
-        resp = self.sync_client.auth_test()
+    async def inspect(self) -> SlackUserProfile:
+        resp = await self.client.auth_test()
         bot_user_id = resp.get("user_id", "")
-        user_resp = self.sync_client.users_info(user=bot_user_id)
+        user_resp = await self.client.users_info(user=bot_user_id)
         user = user_resp.get("user", {})
         profile = user.get("profile", {})
         return SlackUserProfile(

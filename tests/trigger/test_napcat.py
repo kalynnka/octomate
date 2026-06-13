@@ -27,6 +27,7 @@ from tests.support.scenarios import (
     showcase,
     streamed_text,
 )
+from tests.support.channels import drive
 from tests.trigger.conftest import TriggerTargets, run_banner
 
 pytestmark = pytest.mark.trigger
@@ -70,7 +71,7 @@ async def test_napcat_renders_streamed_str_output(
     channel, key = napcat_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await channel.consume(
+        message_id = await drive(channel, 
             key,
             play(streamed_text("String ", "output from the octomate test suite.")),
         )
@@ -87,7 +88,7 @@ async def test_napcat_renders_streamed_segments_showcase(
     channel, key = napcat_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await channel.consume(key, play(showcase(image_file=None)))
+        message_id = await drive(channel, key, play(showcase(image_file=None)))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text
@@ -107,6 +108,6 @@ async def test_napcat_renders_action_batch(
     )
 
     with caplog.at_level("WARNING"):
-        await channel.consume(key, play(script))
+        await drive(channel, key, play(script))
 
     assert "timeline render failed" not in caplog.text

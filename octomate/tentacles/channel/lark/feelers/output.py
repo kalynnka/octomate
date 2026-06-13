@@ -6,7 +6,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
@@ -49,6 +49,13 @@ from octomate.tentacles.channel.lark.chromo import LARK_STREAM_ELEMENT_ID, LarkC
 from octomate.tentacles.channel.lark.feelers import cards
 from octomate.tentacles.channel.lark.ink import LarkInk
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
+
+if TYPE_CHECKING:
+    from octomate.managers.deferred import DeferredActionManager
+    from octomate.tentacles.channel.feelers.deferred import (
+        ApprovalFeeler,
+        QuestionFeeler,
+    )
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
@@ -339,11 +346,15 @@ class LarkRunStateCards(TimelineState):
     once it finishes — and the answer streams into its own card."""
 
     ink: LarkInk
+    key: ConversationKey
     chat_id: str
     chat_type: str
     reply_to: str | None
     reply_in_thread: bool
     answer_batcher: TextStreamBatcher
+    ask_questions: QuestionFeeler
+    approvals: ApprovalFeeler
+    deferred_actions: DeferredActionManager
 
     message_id: IMMessageID | None = None
     answer_card: LarkStreamCard | None = None
@@ -609,16 +620,23 @@ class LarkTimelineFeeler(TimelineFeeler):
         ink: LarkInk,
         chromo: LarkChromo,
         stream_config: ChannelStreamConfig,
+        ask_questions: QuestionFeeler,
+        approvals: ApprovalFeeler,
+        deferred_actions: DeferredActionManager,
     ) -> None:
         self.ink = ink
         self.chromo = chromo
         self.stream_config = stream_config
+        self.ask_questions = ask_questions
+        self.approvals = approvals
+        self.deferred_actions = deferred_actions
 
     @asynccontextmanager
     async def open(self, key: ConversationKey) -> AsyncIterator[LarkRunStateCards]:
         reply_to = key.thread_id if key.thread_id.startswith("om_") else None
         state = LarkRunStateCards(
             ink=self.ink,
+            key=key,
             chat_id=key.chat_id or key.user_id,
             chat_type=key.chat_type,
             reply_to=reply_to,
@@ -629,6 +647,9 @@ class LarkTimelineFeeler(TimelineFeeler):
                 max_chars=self.stream_config.max_chars,
                 fold_threshold=self.stream_config.fold_threshold,
             ),
+            ask_questions=self.ask_questions,
+            approvals=self.approvals,
+            deferred_actions=self.deferred_actions,
         )
         try:
             yield state

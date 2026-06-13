@@ -91,6 +91,8 @@ class Octomate:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             with sqlalchemy_materia():
+                for channel in self.channels.values():
+                    await channel.probe()
                 async with anyio.create_task_group() as tg:
                     for channel in self.channels.values():
                         tg.start_soon(channel.activate)

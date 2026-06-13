@@ -63,6 +63,7 @@ from tests.channels.slack.fakes import (
 )
 from tests.support.channels import (
     RecordingDeferredActions,
+    drive,
     output_events,
     streamed_result,
 )
@@ -187,7 +188,7 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
         yield FinalResult[ChannelOutput](output="done")
         yield AgentRunResultEvent(AgentRunResult("done"))
 
-    message_id = await channel.consume(slack_key(), events())
+    message_id = await drive(channel, slack_key(), events())
 
     assert message_id == "stream-ts"
     # "plan" gathers all the run's tasks into one plan block.
@@ -225,7 +226,7 @@ async def test_slack_consume_renders_thinking_deltas_live(
         yield FinalResult[ChannelOutput](output="done")
         yield AgentRunResultEvent(AgentRunResult("done"))
 
-    await channel.consume(slack_key(), events())
+    await drive(channel, slack_key(), events())
 
     thinking_chunks = [
         chunk
@@ -266,7 +267,7 @@ async def test_slack_consume_renders_image_and_card_segments(
             segment=CardSegment(data=CardData(payload={"blocks": [{"type": "divider"}]}))
         )
 
-    await channel.consume(slack_key(), events())
+    await drive(channel, slack_key(), events())
 
     # Markdown streams as answer text; the image uploads shared into the thread;
     # the card posts as a blocks message.
@@ -295,7 +296,7 @@ async def test_slack_consume_renders_todos_as_timeline_tasks() -> None:
         )
         yield TodoCompletedEvent(todo=todo.model_copy(update={"status": "completed"}))
 
-    await channel.consume(slack_key(), events())
+    await drive(channel, slack_key(), events())
 
     chunks = [chunk for group in ink.stream_chunks for chunk in group]
     todo_chunks = [
@@ -315,9 +316,8 @@ async def test_slack_consume_renders_todos_as_timeline_tasks() -> None:
 
 async def test_slack_consume_renders_action_batch_blocks() -> None:
     ink = FakeSlackInk()
-    channel = slack_channel(ink)
     actions = RecordingDeferredActions()
-    channel.octomate = cast(Octomate, SimpleNamespace(deferred_actions=actions))
+    channel = slack_channel(ink, deferred_actions=actions)
     # The slack block builders serialize the batch id into the buttons, so the
     # scripted actions need one (the action manager sets it on real runs).
     batch_id = uuid4()
@@ -325,7 +325,8 @@ async def test_slack_consume_renders_action_batch_blocks() -> None:
     question = question.model_copy(update={"batch_id": batch_id})
     approval = approval.model_copy(update={"batch_id": batch_id})
 
-    await channel.consume(
+    await drive(
+        channel,
         slack_key(),
         play(action_batch(questions=[question], approvals=[approval])),
     )
@@ -457,7 +458,7 @@ async def test_slack_timeline_rotates_plan_on_mid_run_notice() -> None:
     ink = FakeSlackInk()
     channel = slack_channel(ink)
 
-    message_id = await channel.consume(slack_key(), play(mid_run_notice()))
+    message_id = await drive(channel, slack_key(), play(mid_run_notice()))
 
     assert message_id == "stream-ts"
     # The notice triggered a rotation: a second plan stream was opened.

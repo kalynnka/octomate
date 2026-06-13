@@ -18,6 +18,7 @@ from octomate.tentacles.channel.base import (
     ThreadStrategy,
 )
 from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.feelers.output import DefaultSegmentsFeeler
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.channel.slack.feelers.approvals import (
@@ -111,6 +112,8 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
         self.app_token = config.app_token
         self.handler: AsyncSocketModeHandler | None = None
         markdown_feeler = self.feelers.markdown
+        approvals = SlackApprovalFeeler(self.ink)
+        ask_questions = SlackAskQuestionFeeler(self.ink)
         self.feelers = Feelers(
             markdown=markdown_feeler,
             markdown_stream=SlackMarkdownStreamFeeler[ChannelOutput](
@@ -120,9 +123,16 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
                 markdown_feeler=markdown_feeler,
                 channel_id=self.id,
             ),
-            timeline=SlackTimelineFeeler(ink=self.ink, chromo=self.chromo),
-            approvals=SlackApprovalFeeler(self.ink),
-            ask_questions=SlackAskQuestionFeeler(self.ink),
+            timeline=SlackTimelineFeeler(
+                ink=self.ink,
+                chromo=self.chromo,
+                ask_questions=ask_questions,
+                approvals=approvals,
+                deferred_actions=self.octomate.deferred_actions,
+            ),
+            segments=DefaultSegmentsFeeler(ink=self.ink, chromo=self.chromo),
+            approvals=approvals,
+            ask_questions=ask_questions,
         )
 
     async def activate(self) -> None:

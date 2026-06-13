@@ -27,6 +27,7 @@ from pydantic_ai.messages import (
     OutputToolCallEvent,
     OutputToolResultEvent,
     PartDeltaEvent,
+    PartEndEvent,
     PartStartEvent,
     RetryPromptPart,
     TextPart,
@@ -41,9 +42,15 @@ from pydantic_core import to_json
 from typing_extensions import TypeVar
 
 from octomate.capabilities.events import (
+    ActionBatchEvent,
     ResultSegmentEvent,
+    StreamEvents,
+    TodoCompletedEvent,
+    TodoCreatedEvent,
     TodoDeletedEvent,
     TodoEvent,
+    TodoStatusChangedEvent,
+    TodoUpdatedEvent,
 )
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.segments import MessageSegment, Segment
@@ -51,7 +58,12 @@ from octomate.schemas.todos import Todo
 from octomate.types.todos import STATUS_MARKERS
 
 if TYPE_CHECKING:
-    from octomate.tentacles.channel.base import Chromo, Ink
+    from octomate.managers.deferred import DeferredActionManager
+    from octomate.tentacles.channel.base import ChannelOutput, Chromo, Ink
+    from octomate.tentacles.channel.feelers.deferred import (
+        ApprovalFeeler,
+        QuestionFeeler,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -482,8 +494,10 @@ class MarkdownStreamFeeler(Protocol[OutputT]):
 
 
 class TimelineState:
-    """Streaming render hook for one run. `ChannelTentacle.drive_timeline` calls these
-    lifecycle methods as it walks the event stream — one per real stream event:
+    """Streaming render hook for one run, and the event→render dispatch (`drive`)
+    that walks the run stream. The feeler that opened the state calls `bind` with
+    the per-run context (key + the deferred-action feelers), then hands the stream
+    to `drive`, which maps one lifecycle method per real stream event:
     `PartStart`/`PartDelta`/`PartEnd` of the thinking and answer parts map to
     `*_start` / `*_delta` / `*_end`, and the tool call/result events to
     `tool_start` / `tool_end`. A per-run timeline subclasses this and overrides
@@ -499,6 +513,119 @@ class TimelineState:
 
     message_id: IMMessageID | None = None
     noticed: bool = False
+    # Per-run context the timeline feeler injects when it creates the state, so
+    # `drive` can present deferred-action batches.
+    key: ConversationKey
+    ask_questions: QuestionFeeler
+    approvals: ApprovalFeeler
+    deferred_actions: DeferredActionManager
+
+    async def drive(
+        self,
+        stream: AsyncIterator[
+            StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+        ],
+    ) -> None:
+        """The single event→render dispatch over the run stream; each typed event is
+        drawn onto this state, which renders itself. Draining the whole stream is
+        mandatory — abandoning it mid-run tears down the agent task group from the
+        wrong task.
+        """
+        skipped_tools: set[str] = set()
+        failed = False
+        answered = False
+        final_output: ChannelOutput = None
+        async for event in stream:
+            if failed:
+                continue  # keep draining the stream even after a render failure
+            try:
+                match event:
+                    case PartStartEvent(part=ThinkingPart(content=content)):
+                        await self.thinking_start()
+                        if content:
+                            await self.thinking_delta(content)
+                    case PartDeltaEvent(delta=ThinkingPartDelta(content_delta=delta)):
+                        await self.thinking_delta(delta or "")
+                    case PartEndEvent(part=ThinkingPart()):
+                        await self.thinking_end()
+                    case PartStartEvent(part=TextPart(content=content)):
+                        answered = True
+                        await self.answer_start()
+                        if content:
+                            await self.answer_delta(content)
+                    case PartDeltaEvent(delta=TextPartDelta(content_delta=delta)):
+                        answered = answered or bool(delta)
+                        await self.answer_delta(delta or "")
+                    case PartEndEvent(part=TextPart()):
+                        await self.answer_end()
+                    case FunctionToolCallEvent() | OutputToolCallEvent():
+                        if should_skip_plan_tool(event.part.tool_name):
+                            if event.part.tool_call_id:
+                                skipped_tools.add(event.part.tool_call_id)
+                        else:
+                            await self.tool_start(event)
+                    case FunctionToolResultEvent() | OutputToolResultEvent():
+                        part = event.part
+                        tool_call_id = getattr(part, "tool_call_id", None)
+                        if should_skip_plan_tool(part.tool_name or "") or (
+                            tool_call_id is not None and tool_call_id in skipped_tools
+                        ):
+                            skipped_tools.discard(tool_call_id or "")
+                        else:
+                            await self.tool_end(event)
+                    case ResultSegmentEvent():
+                        answered = True
+                        await self.answer_segment(event.segment)
+                    case (
+                        TodoCreatedEvent()
+                        | TodoUpdatedEvent()
+                        | TodoStatusChangedEvent()
+                        | TodoCompletedEvent()
+                        | TodoDeletedEvent()
+                    ):
+                        await self.todo(event)
+                    case ActionBatchEvent():
+                        answered = answered or bool(event.questions or event.approvals)
+                        await self.present_actions(event)
+                    case AgentRunResultEvent():
+                        final_output = event.result.output  # for the fallback below
+                    case _:
+                        pass  # FinalResult / PartEnd of other parts / passthrough
+            except Exception:
+                logger.warning(
+                    "Channel %s: timeline render failed",
+                    self.key.channel_tentacle_id,
+                    exc_info=True,
+                )
+                failed = True
+        if (
+            not failed
+            and not answered
+            and isinstance(final_output, Sequence)
+            and all(isinstance(segment, Segment) for segment in final_output)
+        ):
+            for segment in final_output:
+                await self.answer_segment(cast(MessageSegment, segment))
+        elif not failed and not answered and final_output is not None:
+            # The reply never streamed; render the final output once so the turn
+            # is not left blank.
+            await self.answer_delta(str(final_output))
+
+    async def present_actions(self, event: ActionBatchEvent) -> None:
+        """Render a deferred-action batch as a unit, then record each presented
+        action's platform message id."""
+        if event.questions:
+            message_ids = await self.ask_questions.present(self.key, event.questions)
+            for action in event.questions:
+                await self.deferred_actions.mark_action_presented(
+                    action.id, message_ids.get(action.id)
+                )
+        if event.approvals:
+            message_ids = await self.approvals.present(self.key, event.approvals)
+            for action in event.approvals:
+                await self.deferred_actions.mark_action_presented(
+                    action.id, message_ids.get(action.id)
+                )
 
     async def begin_entry(self) -> None:
         """A new timeline entry is opening: if answer content streamed since
@@ -646,11 +773,49 @@ class DefaultMarkdownFeeler(Generic[RawT, MessageT]):
         )
 
 
+class SegmentsFeeler(Protocol):
+    """Sends completed output segments to a conversation as one platform message.
+
+    Platforms with native media transport (e.g. NapCat images/files) implement
+    this to deliver segments natively; the default joins their text forms.
+    """
+
+    async def present(
+        self,
+        key: ConversationKey,
+        segments: list[MessageSegment],
+    ) -> IMMessageID | None: ...
+
+
+class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
+    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
+        self.ink = ink
+        self.chromo = chromo
+
+    async def present(
+        self,
+        key: ConversationKey,
+        segments: list[MessageSegment],
+    ) -> IMMessageID | None:
+        markdown = "\n\n".join(str(seg) for seg in segments)
+        if not markdown:
+            return None
+        return await present_markdown(
+            ink=self.ink,
+            chromo=self.chromo,
+            key=key,
+            markdown=markdown,
+        )
+
+
 @dataclass
 class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
     ink: Ink[MessageT]
     chromo: Chromo[RawT, MessageT]
     key: ConversationKey
+    ask_questions: QuestionFeeler
+    approvals: ApprovalFeeler
+    deferred_actions: DeferredActionManager
     parts: list[str] = field(default_factory=list)
     todos: dict[str, Todo] = field(default_factory=dict)
     message_id: IMMessageID | None = None
@@ -703,15 +868,33 @@ class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
     warning that streaming was unavailable.
     """
 
-    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
+    def __init__(
+        self,
+        *,
+        ink: Ink[MessageT],
+        chromo: Chromo[RawT, MessageT],
+        ask_questions: QuestionFeeler,
+        approvals: ApprovalFeeler,
+        deferred_actions: DeferredActionManager,
+    ) -> None:
         self.ink = ink
         self.chromo = chromo
+        self.ask_questions = ask_questions
+        self.approvals = approvals
+        self.deferred_actions = deferred_actions
 
     @asynccontextmanager
     async def open(
         self, key: ConversationKey
     ) -> AsyncIterator[DefaultTimelineState[RawT, MessageT]]:
-        state = DefaultTimelineState(ink=self.ink, chromo=self.chromo, key=key)
+        state = DefaultTimelineState(
+            ink=self.ink,
+            chromo=self.chromo,
+            key=key,
+            ask_questions=self.ask_questions,
+            approvals=self.approvals,
+            deferred_actions=self.deferred_actions,
+        )
         try:
             yield state
         finally:

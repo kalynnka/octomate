@@ -4,7 +4,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Literal, TypeAlias
+from typing import Any, Iterable, Literal, TypeAlias
 
 import logfire
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
@@ -19,13 +19,12 @@ from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.agent.inkling.graph.suspender import HumanReviewSuspender
 from octomate.tentacles.channel.base import (
-    ChannelOutput,
     ChannelTentacle,
     ThreadStrategy,
 )
-from octomate.tentacles.channel.feelers.output import markdown_from_output
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +65,7 @@ class ResponseTarget:
 class TriageResult:
     decision: TriageDecision
     target: ResponseTarget
-    result: AgentRunResult[ChannelOutput] | None = None
+    result: AgentRunResult[InklingOutput] | None = None
 
 
 @dataclass
@@ -102,7 +101,7 @@ class TriageState:
 @dataclass
 class TriageDeps:
     channels: dict[str, ChannelTentacle]
-    agents: dict[str, AgentTentacle[ChannelOutput, None]] = field(default_factory=dict)
+    agents: dict[str, AgentTentacle[InklingOutput, None]] = field(default_factory=dict)
     conversation_manager: ConversationManager = field(
         default_factory=ConversationManager
     )
@@ -114,7 +113,7 @@ class TriageDeps:
             raise ValueError(f"unknown channel {target.channel_id!r}")
         return channel
 
-    def agent_for(self, agent_id: str) -> AgentTentacle[ChannelOutput, None]:
+    def agent_for(self, agent_id: str) -> AgentTentacle[InklingOutput, None]:
         agent = self.agents.get(agent_id)
         if agent is None:
             raise ValueError(f"unknown agent {agent_id!r}")
@@ -449,11 +448,11 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             streaming=target_channel.config.stream.enabled,
             resume_batch_id=str(self.resume_batch_id) if self.resume_batch_id else None,
         ) as span:
-            result: AgentRunResult[ChannelOutput] | None = None
+            result: AgentRunResult[InklingOutput] | None = None
             if target_channel.config.stream.enabled:
 
                 async def stream_events() -> AsyncIterator[
-                    StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+                    StreamEvents[InklingOutput] | AgentRunResultEvent[InklingOutput]
                 ]:
                     nonlocal result
                     async with agent.run_stream_events(
@@ -468,7 +467,8 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                                 result = event.result
                             yield event
 
-                await target_channel.consume(target_key, stream_events())
+                async with target_channel.feelers.timeline.open(target_key) as state:
+                    await state.drive(stream_events())
                 if result is None:
                     raise RuntimeError(
                         f"reception stream for {target_key} completed without a result"
@@ -481,13 +481,21 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     deferred_tool_results=deferred_results,
                     deferred_suspender=suspender,
                 )
-                if not isinstance(result.output, DeferredToolRequests):
-                    markdown = markdown_from_output(result.output)
-                    if markdown is not None:
+                output = result.output
+                if isinstance(output, str):
+                    if output:
                         await target_channel.feelers.markdown.present(
                             target_key,
-                            markdown,
+                            output,
                         )
+                elif isinstance(output, Iterable):
+                    # A segment list is the only media-bearing reply: deliver it
+                    # natively (channels without a media transport fall back to
+                    # the joined text form in send_segments).
+                    await target_channel.feelers.segments.present(
+                        target_key, list(output)
+                    )
+                # DeferredToolRequests / None: nothing to deliver here.
 
             if self.resume_batch_id is not None:
                 await ctx.deps.action_manager.mark_batch(

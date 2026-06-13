@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import AsyncIterator
 from types import SimpleNamespace, TracebackType
 from typing import cast
@@ -8,7 +9,9 @@ import httpx
 from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection
 
+from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.segments import ImageData, ImageSegment, TextSegment
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
@@ -17,12 +20,15 @@ from octomate.tentacles.channel.feelers.deferred import (
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
     DefaultMarkdownStreamFeeler,
+    DefaultSegmentsFeeler,
     DefaultTimelineFeeler,
 )
 from octomate.tentacles.channel.napcat import NapcatChromo, NapcatInk, NapcatTentacle
+from octomate.tentacles.channel.napcat.feelers import NapcatSegmentsFeeler
 from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
 
 from tests.channels.napcat.fakes import FakeNapcatHTTP
+from tests.support.channels import drive
 from tests.support.scenarios import plain_answer, play
 
 
@@ -53,6 +59,64 @@ async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
             {"user_id": "3003", "message": message.segments},
         ),
     ]
+
+
+async def test_napcat_segments_feeler_delivers_native_media(tmp_path) -> None:
+    http = FakeNapcatHTTP()
+    ink = object.__new__(NapcatInk)
+    ink.httpx = cast(httpx.AsyncClient, http)
+    feeler = NapcatSegmentsFeeler(ink=ink, chromo=NapcatChromo())
+    image = tmp_path / "pic.png"
+    image.write_bytes(b"image-bytes")
+    key = ConversationKey(
+        channel_tentacle_id="napcat",
+        chat_type="group",
+        chat_id="2002",
+        user_id="3003",
+        thread_id="1001",
+    )
+
+    message_id = await feeler.present(
+        key,
+        [
+            TextSegment(data={"text": "look:"}),
+            ImageSegment(data=ImageData(file=str(image))),
+        ],
+    )
+
+    image_b64 = base64.b64encode(b"image-bytes").decode()
+    assert message_id == "msg-1"
+    assert http.posts == [
+        (
+            "/send_group_msg",
+            {
+                "group_id": "2002",
+                "message": [
+                    {"type": "text", "data": {"text": "look:"}},
+                    {"type": "image", "data": {"file": f"base64://{image_b64}"}},
+                ],
+                "reply": "1001",
+            },
+        )
+    ]
+
+
+async def test_napcat_segments_feeler_empty_sends_nothing() -> None:
+    http = FakeNapcatHTTP()
+    ink = object.__new__(NapcatInk)
+    ink.httpx = cast(httpx.AsyncClient, http)
+    feeler = NapcatSegmentsFeeler(ink=ink, chromo=NapcatChromo())
+    key = ConversationKey(
+        channel_tentacle_id="napcat",
+        chat_type="private",
+        chat_id="3003",
+        user_id="3003",
+    )
+
+    message_id = await feeler.present(key, [TextSegment(data={"text": ""})])
+
+    assert message_id is None
+    assert http.posts == []
 
 
 async def test_napcat_tentacle_sense_invokes_ingest() -> None:
@@ -131,12 +195,21 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
     channel.ink = ink
     channel.chromo = chromo
     markdown_feeler = DefaultMarkdownFeeler(ink=ink, chromo=chromo)
+    approvals = PlainTextApprovalFeeler(markdown_feeler)
+    ask_questions = PlainTextAskQuestionFeeler(markdown_feeler)
     channel.feelers = Feelers(
         markdown=markdown_feeler,
         markdown_stream=DefaultMarkdownStreamFeeler(ink=ink, chromo=chromo),
-        timeline=DefaultTimelineFeeler(ink=ink, chromo=chromo),
-        approvals=PlainTextApprovalFeeler(markdown_feeler),
-        ask_questions=PlainTextAskQuestionFeeler(markdown_feeler),
+        timeline=DefaultTimelineFeeler(
+            ink=ink,
+            chromo=chromo,
+            ask_questions=ask_questions,
+            approvals=approvals,
+            deferred_actions=DeferredActionManager(),
+        ),
+        segments=DefaultSegmentsFeeler(ink=ink, chromo=chromo),
+        approvals=approvals,
+        ask_questions=ask_questions,
     )
     key = ConversationKey(
         channel_tentacle_id="napcat",
@@ -145,7 +218,7 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
         user_id="3003",
     )
 
-    message_id = await channel.consume(key, play(plain_answer("hello from octomate")))
+    message_id = await drive(channel, key, play(plain_answer("hello from octomate")))
 
     assert message_id == "msg-1"
     assert http.posts == [

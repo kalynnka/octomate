@@ -73,7 +73,9 @@ class LarkInk(Ink[LarkOutboundMessage]):
             raise RuntimeError("LarkInk: failed to obtain tenant_access_token")
         self.sync_http.headers["Authorization"] = f"Bearer {token}"
 
-    def inspect(self) -> LarkUserProfile:
+    async def inspect(self) -> LarkUserProfile:
+        # The bot-info endpoint has no async SDK method; reuse the authenticated
+        # sync client. Runs once at startup (probe), so the brief block is fine.
         resp = self.sync_http.get("/open-apis/bot/v3/info")
         resp.raise_for_status()
         bot = resp.json().get("bot", {})

@@ -21,6 +21,7 @@ from octomate.tentacles.channel.feelers.output import (
     JsonValue,
     MarkdownFeeler,
     MarkdownStreamFeeler,
+    SegmentsFeeler,
     TimelineFeeler,
 )
 
@@ -40,6 +41,7 @@ class Feelers(Generic[OutputT]):
     markdown: MarkdownFeeler
     markdown_stream: MarkdownStreamFeeler[OutputT]
     timeline: TimelineFeeler
+    segments: SegmentsFeeler
     approvals: ApprovalFeeler
     ask_questions: QuestionFeeler
 

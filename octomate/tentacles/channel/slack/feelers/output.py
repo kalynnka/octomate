@@ -5,7 +5,7 @@ import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from pydantic_ai import AgentStreamEvent
 from pydantic_ai.messages import (
@@ -46,6 +46,13 @@ from octomate.tentacles.channel.feelers.output import (
 from octomate.tentacles.channel.slack.chromo import SlackChromo
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import SlackBlock, SlackOutboundMessage
+
+if TYPE_CHECKING:
+    from octomate.managers.deferred import DeferredActionManager
+    from octomate.tentacles.channel.feelers.deferred import (
+        ApprovalFeeler,
+        QuestionFeeler,
+    )
 from octomate.types.todos import TodoStatus
 
 logger = logging.getLogger(__name__)
@@ -113,10 +120,14 @@ class SlackTimelineState(TimelineState):
 
     ink: SlackInk
     stream: Any
+    key: ConversationKey
     channel: str
     chat_type: str
     thread_ts: str
     answer_batcher: TextStreamBatcher
+    ask_questions: QuestionFeeler
+    approvals: ApprovalFeeler
+    deferred_actions: DeferredActionManager
     recipient_user_id: str | None = None
     recipient_team_id: str | None = None
     message_id: IMMessageID | None = None
@@ -570,9 +581,20 @@ class SlackTimelineFeeler(TimelineFeeler):
     Stateless; `open(key)` starts the `timeline` stream and yields a per-run
     `SlackTimelineState` machine that `drive_timeline` renders each event onto."""
 
-    def __init__(self, *, ink: SlackInk, chromo: SlackChromo) -> None:
+    def __init__(
+        self,
+        *,
+        ink: SlackInk,
+        chromo: SlackChromo,
+        ask_questions: QuestionFeeler,
+        approvals: ApprovalFeeler,
+        deferred_actions: DeferredActionManager,
+    ) -> None:
         self.ink = ink
         self.chromo = chromo
+        self.ask_questions = ask_questions
+        self.approvals = approvals
+        self.deferred_actions = deferred_actions
 
     @asynccontextmanager
     async def open(self, key: ConversationKey) -> AsyncIterator[SlackTimelineState]:
@@ -588,10 +610,14 @@ class SlackTimelineFeeler(TimelineFeeler):
         state = SlackTimelineState(
             ink=self.ink,
             stream=stream,
+            key=key,
             channel=channel,
             chat_type=key.chat_type,
             thread_ts=context.thread_ts,
             answer_batcher=TextStreamBatcher(flush_interval=0, min_chars=0),
+            ask_questions=self.ask_questions,
+            approvals=self.approvals,
+            deferred_actions=self.deferred_actions,
             recipient_user_id=context.recipient_user_id,
             recipient_team_id=context.recipient_team_id,
         )

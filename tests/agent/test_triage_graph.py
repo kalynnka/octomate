@@ -3,14 +3,14 @@ and ResumeDeferred — driven with the canonical fake agent/channel/managers."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import cast
 
 import pytest
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
-from octomate.capabilities.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
@@ -32,8 +32,8 @@ from octomate.tentacles.agent.inkling.graph.triage import (
     Route,
     RunTriage,
 )
-from octomate.tentacles.channel.base import ChannelOutput
-from octomate.tentacles.channel.feelers.output import IMMessageID
+from octomate.tentacles.agent.inkling.base import InklingOutput
+from octomate.tentacles.channel.feelers.output import TimelineState
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, RecordingMarkdownFeeler
 from tests.support.managers import (
@@ -53,16 +53,27 @@ def _channel(*, stream: bool = True) -> FakeChannelTentacle:
     )
 
 
+class DroppingTimelineState(TimelineState):
+    async def drive(
+        self,
+        stream: AsyncIterator[object],
+    ) -> None:
+        return  # abandon the reception stream without draining it
+
+
+class DroppingTimelineFeeler:
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncGenerator[DroppingTimelineState]:
+        yield DroppingTimelineState()
+
+
 class DroppingChannel(FakeChannelTentacle):
-    """A channel whose consumer abandons the reception stream without producing a
+    """A channel whose timeline abandons the reception stream without producing a
     result (exercises the fail-fast guard)."""
 
-    async def consume(
-        self,
-        key: ConversationKey,
-        stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
-    ) -> IMMessageID | None:
-        return None
+    def __init__(self, *, config: ChannelConfig) -> None:
+        super().__init__(config=config)
+        self.feelers.timeline = DroppingTimelineFeeler()
 
 
 def _key(thread_id: str = "") -> ConversationKey:
@@ -105,7 +116,7 @@ def _deps(
 ) -> TriageDeps:
     return TriageDeps(
         channels=dict(channels),
-        agents={agent.id: cast(AgentTentacle[ChannelOutput, None], agent)},
+        agents={agent.id: cast(AgentTentacle[InklingOutput, None], agent)},
         conversation_manager=conversations,
         action_manager=cast(
             DeferredActionManager, action_manager or FakeActionManager()

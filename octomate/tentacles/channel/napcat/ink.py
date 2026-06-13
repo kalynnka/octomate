@@ -21,7 +21,6 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
     http_url: str
     access_token: SecretStr | None
     httpx: httpx.AsyncClient
-    sync_httpx: httpx.Client
 
     def __init__(self, http_url: str, access_token: SecretStr | None = None) -> None:
         self.http_url = str(http_url).rstrip("/")
@@ -30,14 +29,13 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         if access_token:
             headers["Authorization"] = f"Bearer {access_token.get_secret_value()}"
         self.httpx = httpx.AsyncClient(base_url=self.http_url, headers=headers)
-        self.sync_httpx = httpx.Client(base_url=self.http_url, headers=headers)
 
-    def inspect(self) -> NapcatUserProfile:
-        resp = self.sync_httpx.post("/get_login_info", json={})
+    async def inspect(self) -> NapcatUserProfile:
+        resp = await self.httpx.post("/get_login_info", json={})
         resp.raise_for_status()
         login_data = resp.json().get("data", {})
         user_id = str(login_data.get("user_id", ""))
-        resp = self.sync_httpx.post(
+        resp = await self.httpx.post(
             "/get_stranger_info",
             json={"user_id": user_id},
         )
@@ -125,4 +123,3 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
 
     async def close(self) -> None:
         await self.httpx.aclose()
-        self.sync_httpx.close()
