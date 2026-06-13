@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from pydantic import SecretStr
 
 from octomate.config import LarkChannelConfig, LarkStreamConfig
+from octomate.managers.deferred import DeferredActionManager
 from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.feelers.output import DefaultSegmentsFeeler
 from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
 from octomate.tentacles.channel.lark.feelers.approvals import LarkApprovalFeeler
 from octomate.tentacles.channel.lark.feelers.output import (
@@ -136,7 +138,9 @@ class FakeLarkCardsInk:
         return f"lark-{len(self.sent)}"
 
 
-def lark_channel(ink: FakeLarkInk) -> LarkTentacle:
+def lark_channel(
+    ink: FakeLarkInk, deferred_actions: DeferredActionManager | None = None
+) -> LarkTentacle:
     channel = object.__new__(LarkTentacle)
     channel.id = "lark"
     channel.ink = ink
@@ -146,7 +150,7 @@ def lark_channel(ink: FakeLarkInk) -> LarkTentacle:
         app_secret=SecretStr("secret"),
         stream=LarkStreamConfig(flush_interval=0.2, min_chars=1),
     )
-    compose_lark_feelers(channel)
+    compose_lark_feelers(channel, deferred_actions)
     return channel
 
 
@@ -155,10 +159,15 @@ def enable_lark_stream(channel: LarkTentacle, *, interval: float = 0.2) -> None:
     compose_lark_feelers(channel)
 
 
-def compose_lark_feelers(channel: LarkTentacle) -> None:
+def compose_lark_feelers(
+    channel: LarkTentacle, deferred_actions: DeferredActionManager | None = None
+) -> None:
     ink = channel.ink
     chromo = channel.chromo
     markdown_feeler = LarkMarkdownFeeler(ink=ink, chromo=chromo)
+    approvals = LarkApprovalFeeler(ink)
+    ask_questions = LarkAskQuestionFeeler(ink)
+    actions = deferred_actions or DeferredActionManager()
     channel.feelers = Feelers(
         markdown=markdown_feeler,
         markdown_stream=LarkMarkdownStreamFeeler(
@@ -169,8 +178,14 @@ def compose_lark_feelers(channel: LarkTentacle) -> None:
             channel_id=channel.id,
         ),
         timeline=LarkTimelineFeeler(
-            ink=ink, chromo=chromo, stream_config=channel.config.stream
+            ink=ink,
+            chromo=chromo,
+            stream_config=channel.config.stream,
+            ask_questions=ask_questions,
+            approvals=approvals,
+            deferred_actions=actions,
         ),
-        approvals=LarkApprovalFeeler(ink),
-        ask_questions=LarkAskQuestionFeeler(ink),
+        segments=DefaultSegmentsFeeler(ink=ink, chromo=chromo),
+        approvals=approvals,
+        ask_questions=ask_questions,
     )

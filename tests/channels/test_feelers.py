@@ -51,6 +51,7 @@ from octomate.tentacles.channel.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
 
 from tests.support.channels import (
     NoopMarkdownStreamFeeler,
+    NoopSegmentsFeeler,
     NoopTimeline,
     RecordingApprovalFeeler,
     RecordingMarkdownFeeler,
@@ -199,6 +200,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         markdown=RecordingMarkdownFeeler(),
         markdown_stream=NoopMarkdownStreamFeeler(),
         timeline=NoopTimeline(),
+        segments=NoopSegmentsFeeler(),
         approvals=approvals,
         ask_questions=ask_questions,
     ).present_actions(

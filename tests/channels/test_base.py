@@ -53,6 +53,7 @@ from tests.support.channels import (
     RawMessage,
     RecordingDeferredActions,
     RecordingTimeline,
+    bound,
 )
 from tests.support.scenarios import (
     action_batch,
@@ -389,7 +390,7 @@ async def test_consume_renders_and_marks_action_batch(
         args=ApprovalRequest(tool_name="do_thing"),
     )
     actions = RecordingDeferredActions()
-    channel.octomate.deferred_actions = actions
+    channel = FakeChannelTentacle(id="chan1", octomate=FakeOctomate(deferred_actions=actions))
 
     async def events() -> (
         AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
@@ -424,7 +425,7 @@ async def test_consume_renders_streamed_deferred_requests_once(
         args=ApprovalRequest(tool_name="do_thing"),
     )
     actions = RecordingDeferredActions()
-    channel.octomate.deferred_actions = actions
+    channel = FakeChannelTentacle(id="chan1", octomate=FakeOctomate(deferred_actions=actions))
 
     await channel.consume(
         _key(),
@@ -442,7 +443,7 @@ async def test_consume_skips_plan_tool_events(
 ) -> None:
     state = RecordingTimeline()
 
-    await channel.drive_timeline(_key(), play(plan_tool_noise()), state)
+    await bound(state, channel, _key()).drive(play(plan_tool_noise()))
 
     # The plan tool call AND its paired result are both dropped.
     assert "tool_start" not in state.names()
@@ -455,7 +456,7 @@ async def test_drive_timeline_dispatches_each_event_kind(
 ) -> None:
     state = RecordingTimeline()
 
-    await channel.drive_timeline(_key(), play(showcase()), state)
+    await bound(state, channel, _key()).drive(play(showcase()))
 
     assert state.names() == [
         "thinking_start",
@@ -478,7 +479,7 @@ async def test_drive_timeline_rotates_on_mid_run_notice(
 ) -> None:
     state = RecordingTimeline()
 
-    await channel.drive_timeline(_key(), play(mid_run_notice()), state)
+    await bound(state, channel, _key()).drive(play(mid_run_notice()))
 
     # Rotation fires exactly once: after the notice deltas, before the new
     # round's thinking — never for the in-flight tool's result.
@@ -520,7 +521,7 @@ async def test_drive_timeline_keeps_draining_after_render_failure(
         drained = True
 
     with caplog.at_level("WARNING"):
-        await channel.drive_timeline(_key(), events(), state)
+        await bound(state, channel, _key()).drive(events())
 
     assert drained
     assert "timeline render failed" in caplog.text

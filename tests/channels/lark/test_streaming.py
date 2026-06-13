@@ -38,8 +38,8 @@ from octomate.tentacles.channel.lark.schema import LarkStreamCard
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkInk, enable_lark_stream, lark_channel
 from tests.support.channels import (
-    FakeOctomate,
     RecordingDeferredActions,
+    drive,
     output_events,
     streamed_result,
 )
@@ -219,7 +219,7 @@ async def test_lark_consume_renders_timeline_per_event() -> None:
         yield PartStartEvent(index=1, part=TextPart(content="done"))
         yield AgentRunResultEvent(AgentRunResult("done"))
 
-    message_id = await channel.consume(key, events())
+    message_id = await drive(channel, key, events())
 
     # Thinking + tool each posted as their own card (then folded via patch)...
     assert len(ink.created) == 2
@@ -253,7 +253,7 @@ async def test_lark_consume_renders_thinking_deltas_live(
         yield PartStartEvent(index=1, part=TextPart(content="done"))
         yield AgentRunResultEvent(AgentRunResult("done"))
 
-    await channel.consume(key, events())
+    await drive(channel, key, events())
 
     # The thinking card patches live with the accumulating text, then folds
     # into the collapsible panel with the full text once the answer starts.
@@ -288,7 +288,7 @@ async def test_lark_consume_renders_image_and_card_segments(
             segment=CardSegment(data=CardData(payload={"header": {"title": "t"}}))
         )
 
-    await channel.consume(key, events())
+    await drive(channel, key, events())
 
     # The image uploads then sends as an image message; the card posts as an
     # interactive message carrying the payload verbatim.
@@ -322,7 +322,7 @@ async def test_lark_consume_renders_todo_checklist_card() -> None:
         yield TodoCreatedEvent(todo=todo)
         yield TodoCompletedEvent(todo=todo.model_copy(update={"status": "completed"}))
 
-    await channel.consume(key, events())
+    await drive(channel, key, events())
 
     # First event posts the checklist card; later events patch it in place.
     todo_cards = [
@@ -336,10 +336,8 @@ async def test_lark_consume_renders_todo_checklist_card() -> None:
 
 async def test_lark_consume_renders_action_batch_cards() -> None:
     ink = FakeLarkInk()
-    channel = lark_channel(ink)
-    channel.octomate = FakeOctomate()
     deferred = RecordingDeferredActions()
-    channel.octomate.deferred_actions = deferred
+    channel = lark_channel(ink, deferred_actions=deferred)
     key = ConversationKey(
         channel_tentacle_id="lark",
         chat_type="private",
@@ -353,7 +351,7 @@ async def test_lark_consume_renders_action_batch_cards() -> None:
     question = question.model_copy(update={"batch_id": batch_id})
     approval = approval.model_copy(update={"batch_id": batch_id})
 
-    await channel.consume(
+    await drive(channel, 
         key,
         play(
             action_batch(
@@ -398,7 +396,7 @@ async def test_lark_timeline_opens_new_answer_card_after_mid_run_notice() -> Non
         user_id="u1",
     )
 
-    await channel.consume(key, play(mid_run_notice()))
+    await drive(channel, key, play(mid_run_notice()))
 
     # The notice streamed into a first answer card which the rotation
     # finalized; the final answer opened a fresh card below the new activity.

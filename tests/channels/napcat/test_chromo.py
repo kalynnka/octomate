@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import base64
 import json
+from pathlib import Path
+
+import pytest
 
 from octomate.schemas.segments import (
     AtSegment,
+    CardData,
+    CardSegment,
+    FileData,
+    FileSegment,
+    ImageData,
     ImageSegment,
+    MarkdownSegment,
+    MessageSegment,
     ReplySegment,
     TextSegment,
 )
@@ -113,3 +124,55 @@ def test_napcat_chromo_renders_markdown_as_plain_text() -> None:
             segments=[{"type": "text", "data": {"text": "hello napcat"}}]
         )
     ]
+
+
+async def test_napcat_chromo_outbound_segments_native_media(tmp_path: Path) -> None:
+    chromo = NapcatChromo()
+    image = tmp_path / "pic.png"
+    image.write_bytes(b"image-bytes")
+    doc = tmp_path / "report.pdf"
+    doc.write_bytes(b"file-bytes")
+
+    segments: list[MessageSegment] = [
+        TextSegment(data={"text": "before"}),
+        MarkdownSegment(data={"text": "and **after**"}),
+        ImageSegment(data=ImageData(file=str(image))),
+        FileSegment(data=FileData(file=str(doc), name="report.pdf")),
+        CardSegment(data=CardData(payload={})),
+    ]
+    messages = await chromo.outbound_segments(segments)
+
+    image_b64 = base64.b64encode(b"image-bytes").decode()
+    file_b64 = base64.b64encode(b"file-bytes").decode()
+    assert messages == [
+        NapcatOutboundMessage(
+            segments=[
+                {"type": "text", "data": {"text": "before"}},
+                {"type": "text", "data": {"text": "and after"}},
+                {"type": "image", "data": {"file": f"base64://{image_b64}"}},
+                {
+                    "type": "file",
+                    "data": {"file": f"base64://{file_b64}", "name": "report.pdf"},
+                },
+                {"type": "text", "data": {"text": "[card]"}},
+            ]
+        )
+    ]
+
+
+async def test_napcat_chromo_outbound_segments_skips_empty_and_returns_nothing() -> None:
+    chromo = NapcatChromo()
+
+    assert await chromo.outbound_segments([TextSegment(data={"text": ""})]) == []
+    assert await chromo.outbound_segments([]) == []
+
+
+async def test_napcat_chromo_outbound_segments_missing_file_raises(
+    tmp_path: Path,
+) -> None:
+    chromo = NapcatChromo()
+    missing = tmp_path / "gone.png"
+
+    segments: list[MessageSegment] = [ImageSegment(data=ImageData(file=str(missing)))]
+    with pytest.raises(FileNotFoundError):
+        await chromo.outbound_segments(segments)

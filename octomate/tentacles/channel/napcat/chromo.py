@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import base64
 import logging
+from pathlib import Path
+
+import anyio
 
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import (
+    FileSegment,
+    ImageSegment,
+    MarkdownSegment,
+    MessageSegment,
+    TextSegment,
+)
 from octomate.tentacles.channel.base import Chromo
 from octomate.tentacles.channel.napcat.schema import (
     ActionResponse,
@@ -11,9 +22,17 @@ from octomate.tentacles.channel.napcat.schema import (
     inbound_adapter,
     to_message_event,
 )
+from octomate.types.json import JsonObject
 from octomate.utils import strip_markdown
 
 logger = logging.getLogger(__name__)
+
+
+async def inline_base64(path: Path) -> str:
+    """Read a local file and encode it as a NapCat `base64://` reference so the
+    OneBot side uploads it inline. Missing files raise (fail-fast)."""
+    data = await anyio.Path(path).read_bytes()
+    return f"base64://{base64.b64encode(data).decode()}"
 
 
 class NapcatChromo(Chromo[str | bytes, NapcatOutboundMessage]):
@@ -37,3 +56,33 @@ class NapcatChromo(Chromo[str | bytes, NapcatOutboundMessage]):
         return [
             NapcatOutboundMessage(segments=[{"type": "text", "data": {"text": stripped}}])
         ]
+
+    async def outbound_segments(
+        self, segments: list[MessageSegment]
+    ) -> list[NapcatOutboundMessage]:
+        """Convert output segments to a single OneBot message. octomate's segment
+        shape (`{"type", "data"}`) is OneBot's: text/markdown flatten through
+        `strip_markdown`, image/file rewrite `data.file` to an inline `base64://`
+        reference, and anything else (e.g. a card) degrades to its text form."""
+        onebot: list[JsonObject] = []
+        for seg in segments:
+            match seg:
+                case TextSegment() | MarkdownSegment():
+                    text = strip_markdown(seg.data["text"])
+                    if text:
+                        onebot.append({"type": "text", "data": {"text": text}})
+                case ImageSegment():
+                    file = await inline_base64(seg.data.path)
+                    onebot.append({"type": "image", "data": {"file": file}})
+                case FileSegment():
+                    data: JsonObject = {"file": await inline_base64(Path(seg.data.file))}
+                    if seg.data.name:
+                        data["name"] = seg.data.name
+                    onebot.append({"type": "file", "data": data})
+                case _:
+                    text = str(seg)
+                    if text:
+                        onebot.append({"type": "text", "data": {"text": text}})
+        if not onebot:
+            return []
+        return [NapcatOutboundMessage(segments=onebot)]

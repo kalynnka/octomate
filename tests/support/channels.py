@@ -1,9 +1,11 @@
 """The canonical fake channel.
 
 `FakeChannelTentacle` is a real `ChannelTentacle` subclass: it runs the actual
-ingest/consume/drive_timeline pipeline over a `RecordingInk`, so channel and
-graph tests exercise the production code path and assert on what was actually
-sent (`channel.ink.sent`) plus the consume/sub-thread call records.
+ingest pipeline over a `RecordingInk`, so channel and graph tests exercise the
+production code path and assert on what was actually sent (`channel.ink.sent`)
+plus the consume/sub-thread call records. `drive` mirrors the production
+inline-consume path (open the timeline feeler, `state.drive` the stream); `bound`
+binds a bare `TimelineState` to a channel's feelers for the direct-drive tests.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import ClassVar, Generic, cast
+from typing import Any, ClassVar, Generic, cast
 from uuid import UUID
 
 from typing_extensions import TypeVar
@@ -55,9 +57,39 @@ from octomate.tentacles.channel.feelers.deferred import (
     ApprovalFeeler,
     QuestionFeeler,
 )
-from octomate.tentacles.channel.feelers.output import IMMessageID, TimelineState
+from octomate.tentacles.channel.feelers.output import (
+    IMMessageID,
+    TimelineFeeler,
+    TimelineState,
+)
 
 NativeMessage = dict[str, str]
+
+
+async def drive(
+    channel: ChannelTentacle[Any, Any],
+    key: ConversationKey,
+    stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
+) -> IMMessageID | None:
+    """The production inline-consume path: open the timeline feeler and drive the
+    run stream onto the per-run state."""
+    async with channel.feelers.timeline.open(key) as state:
+        await state.drive(stream)
+    return state.message_id
+
+
+def bound(
+    state: TimelineState,
+    channel: ChannelTentacle[Any, Any],
+    key: ConversationKey,
+) -> TimelineState:
+    """Inject a channel's deferred-action feelers into a bare `TimelineState`, the
+    way the timeline feeler's `open()` would, so `state.drive` can run standalone."""
+    state.key = key
+    state.ask_questions = channel.feelers.ask_questions
+    state.approvals = channel.feelers.approvals
+    state.deferred_actions = channel.octomate.deferred_actions
+    return state
 
 
 class RawMessage(TypedDict, total=False):
@@ -102,7 +134,7 @@ class RecordingInk(Ink[NativeMessage]):
     )
     downloads: dict[str, DownloadedImage] = field(default_factory=dict)
 
-    def inspect(self) -> UserProfile:
+    async def inspect(self) -> UserProfile:
         return self.self_profile
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
@@ -152,9 +184,27 @@ class FakeChromo(Chromo[RawMessage, NativeMessage]):
         return [{"text": text}] if text else []
 
 
+@dataclass
+class RecordingTimelineFeeler:
+    """Wraps a channel's timeline feeler to log every `open()`'d run as a
+    `(key, message_id)` pair, so graph tests can assert a reception streamed
+    through the timeline (the inline-consume path) and to which conversation."""
+
+    inner: TimelineFeeler
+    consumed: list[tuple[ConversationKey, IMMessageID | None]]
+
+    @asynccontextmanager
+    async def open(self, key: ConversationKey) -> AsyncGenerator[TimelineState]:
+        async with self.inner.open(key) as state:
+            yield state
+        self.consumed.append((key, state.message_id))
+
+
 class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     """Real channel pipeline over recording fakes. `start_sub_thread` succeeds
-    and records, so the graph tests can route receptions into "hint-thread"."""
+    and records, so the graph tests can route receptions into "hint-thread".
+    `consume` mirrors the production inline path (open the timeline, drive the
+    stream); the recording timeline feeler logs each run into `consumed`."""
 
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
 
@@ -188,17 +238,17 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.sent = self.recording_ink.sent
         self.consumed = []
         self.sub_threads = []
+        self.profile = self.recording_ink.self_profile
+        self.feelers.timeline = RecordingTimelineFeeler(
+            self.feelers.timeline, self.consumed
+        )
 
     async def consume(
         self,
         key: ConversationKey,
-        stream: AsyncIterator[
-            ReactStreamEvent[ChannelOutput]
-        ],
+        stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
     ) -> IMMessageID | None:
-        message_id = await super().consume(key, stream)
-        self.consumed.append((key, message_id))
-        return message_id
+        return await drive(self, key, stream)
 
     async def start_sub_thread(
         self,
@@ -294,6 +344,15 @@ class RecordingMarkdownFeeler:
     ) -> IMMessageID | None:
         self.calls.append((key, markdown))
         return "markdown-message"
+
+
+class NoopSegmentsFeeler:
+    async def present(
+        self,
+        key: ConversationKey,
+        segments: list[MessageSegment],
+    ) -> IMMessageID | None:
+        return None
 
 
 class NoopMarkdownStreamFeeler:

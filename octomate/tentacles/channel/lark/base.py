@@ -23,6 +23,7 @@ from octomate.tentacles.channel.base import (
     ThreadStrategy,
 )
 from octomate.tentacles.channel.feelers.base import Feelers
+from octomate.tentacles.channel.feelers.output import DefaultSegmentsFeeler
 from octomate.tentacles.channel.lark.chromo import LarkChromo
 from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.feelers.approvals import (
@@ -109,6 +110,8 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
         self.stop_event = None
         self.ping_task = None
         markdown_feeler = LarkMarkdownFeeler(ink=self.ink, chromo=self.chromo)
+        approvals = LarkApprovalFeeler(self.ink)
+        ask_questions = LarkAskQuestionFeeler(self.ink)
         self.feelers = Feelers(
             markdown=markdown_feeler,
             markdown_stream=LarkMarkdownStreamFeeler[ChannelOutput](
@@ -122,9 +125,13 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 ink=self.ink,
                 chromo=self.chromo,
                 stream_config=self.config.stream,
+                ask_questions=ask_questions,
+                approvals=approvals,
+                deferred_actions=self.octomate.deferred_actions,
             ),
-            approvals=LarkApprovalFeeler(self.ink),
-            ask_questions=LarkAskQuestionFeeler(self.ink),
+            segments=DefaultSegmentsFeeler(ink=self.ink, chromo=self.chromo),
+            approvals=approvals,
+            ask_questions=ask_questions,
         )
 
     async def activate(self) -> None:
