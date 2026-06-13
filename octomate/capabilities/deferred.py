@@ -7,7 +7,7 @@ Two complementary hooks (keep both):
   is resumed later by feeding the collected results back through a fresh run.
 
 The concrete, channel-coupled suspender (`HumanReviewSuspender`) lives in the
-domain layer (`tentacles.agent.graph.suspender`) so the harness never imports
+domain layer (`tentacles.agent.inkling.graph.suspender`) so the harness never imports
 channels.
 """
 

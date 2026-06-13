@@ -18,7 +18,7 @@ from octomate.schemas.awakes import (
 )
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.graph import (
+from octomate.tentacles.agent.inkling.graph import (
     Awake,
     TriageDeps,
     TriageState,

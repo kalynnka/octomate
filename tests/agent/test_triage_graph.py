@@ -18,7 +18,7 @@ from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.graph import (
+from octomate.tentacles.agent.inkling.graph import (
     DeferredResult,
     ResponseTarget,
     TriageDecision,
@@ -26,7 +26,7 @@ from octomate.tentacles.agent.graph import (
     TriageState,
     triage_graph,
 )
-from octomate.tentacles.agent.graph.triage import (
+from octomate.tentacles.agent.inkling.graph.triage import (
     Awake,
     ResumeDeferred,
     Route,
@@ -34,7 +34,6 @@ from octomate.tentacles.agent.graph.triage import (
 )
 from octomate.tentacles.channel.base import ChannelOutput
 from octomate.tentacles.channel.feelers.output import IMMessageID
-
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, RecordingMarkdownFeeler
 from tests.support.managers import (

@@ -1,5 +1,5 @@
-from octomate.tentacles.agent.graph.suspender import HumanReviewSuspender
-from octomate.tentacles.agent.graph.triage import (
+from octomate.tentacles.agent.inkling.graph.suspender import HumanReviewSuspender
+from octomate.tentacles.agent.inkling.graph.triage import (
     Awake,
     DeferredResult,
     ResponseTarget,

@@ -41,9 +41,9 @@ from pydantic_settings import (
 
 from octomate.config import OctomateConfig
 
-# Real images for the showcase live in tests/src (see its README); the
-# generated 1x1 transparent PNG below is only the fallback when none is there.
-SCENARIO_SRC = Path(__file__).parent.parent / "src"
+# Real images for the showcase live in tests/src/images (see tests/src/README);
+# the generated 1x1 transparent PNG below is only the fallback when none is there.
+SCENARIO_SRC = Path(__file__).parent.parent / "src" / "images"
 IMAGE_PATTERNS = ("*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp")
 SCENARIO_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"

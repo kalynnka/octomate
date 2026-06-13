@@ -16,9 +16,8 @@ from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.graph import TriageDecision
+from octomate.tentacles.agent.inkling.graph import TriageDecision
 from octomate.tentacles.channel.base import ChannelTentacle
-
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, MainOnlyChannelTentacle
 

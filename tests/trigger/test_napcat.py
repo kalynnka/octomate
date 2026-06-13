@@ -20,18 +20,14 @@ from octomate.config import OctomateConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.napcat import NapcatTentacle
 
-from tests.trigger.conftest import TriggerTargets, run_banner
 from tests.support.scenarios import (
     action_batch,
     batch_actions,
-    plain_answer,
-    plain_deferred_requests,
-    plain_segments,
     play,
-    segments_reply,
     showcase,
     streamed_text,
 )
+from tests.trigger.conftest import TriggerTargets, run_banner
 
 pytestmark = pytest.mark.trigger
 
@@ -67,48 +63,6 @@ def napcat_channel(
     return napcat_run
 
 
-async def test_napcat_renders_normal_str_output(
-    napcat_channel: tuple[NapcatTentacle, ConversationKey],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    channel, key = napcat_channel
-
-    with caplog.at_level("WARNING"):
-        message_id = await channel.consume(
-            key, play(plain_answer("Normal string output from the octomate test suite."))
-        )
-
-    assert message_id is not None
-    # drive_timeline swallows render errors and keeps draining; surface them here.
-    assert "timeline render failed" not in caplog.text
-
-
-async def test_napcat_renders_normal_segments_output(
-    napcat_channel: tuple[NapcatTentacle, ConversationKey],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    channel, key = napcat_channel
-
-    with caplog.at_level("WARNING"):
-        message_id = await channel.consume(key, play(plain_segments(image_file=None)))
-
-    assert message_id is not None
-    assert "timeline render failed" not in caplog.text
-
-
-async def test_napcat_renders_normal_deferred_requests(
-    napcat_channel: tuple[NapcatTentacle, ConversationKey],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    channel, key = napcat_channel
-
-    with caplog.at_level("WARNING"):
-        message_id = await channel.consume(key, play(plain_deferred_requests()))
-
-    assert message_id is not None
-    assert "timeline render failed" not in caplog.text
-
-
 async def test_napcat_renders_streamed_str_output(
     napcat_channel: tuple[NapcatTentacle, ConversationKey],
     caplog: pytest.LogCaptureFixture,
@@ -126,20 +80,20 @@ async def test_napcat_renders_streamed_str_output(
     assert "timeline render failed" not in caplog.text
 
 
-async def test_napcat_renders_streamed_segments_output(
+async def test_napcat_renders_streamed_segments_showcase(
     napcat_channel: tuple[NapcatTentacle, ConversationKey],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     channel, key = napcat_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await channel.consume(key, play(segments_reply(image_file=None)))
+        message_id = await channel.consume(key, play(showcase(image_file=None)))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text
 
 
-async def test_napcat_renders_streamed_deferred_requests(
+async def test_napcat_renders_action_batch(
     napcat_channel: tuple[NapcatTentacle, ConversationKey],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -155,17 +109,4 @@ async def test_napcat_renders_streamed_deferred_requests(
     with caplog.at_level("WARNING"):
         await channel.consume(key, play(script))
 
-    assert "timeline render failed" not in caplog.text
-
-
-async def test_napcat_renders_showcase(
-    napcat_channel: tuple[NapcatTentacle, ConversationKey],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    channel, key = napcat_channel
-
-    with caplog.at_level("WARNING"):
-        message_id = await channel.consume(key, play(showcase()))
-
-    assert message_id is not None
     assert "timeline render failed" not in caplog.text

@@ -22,7 +22,7 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.schemas.triage import TriageDecision
-from octomate.tentacles.agent.graph.suspender import HumanReviewSuspender
+from octomate.tentacles.agent.inkling.graph.suspender import HumanReviewSuspender
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeActionManager,

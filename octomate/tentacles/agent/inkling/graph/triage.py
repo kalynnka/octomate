@@ -19,7 +19,7 @@ from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.graph.suspender import HumanReviewSuspender
+from octomate.tentacles.agent.inkling.graph.suspender import HumanReviewSuspender
 from octomate.tentacles.channel.base import (
     ChannelOutput,
     ChannelTentacle,
