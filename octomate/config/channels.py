@@ -51,6 +51,11 @@ class LarkChannelConfig(ChannelConfig):
     stream: LarkStreamConfig = Field(default_factory=LarkStreamConfig)
 
 
+class VercelChannelConfig(ChannelConfig):
+    type: Literal["vercel"] = "vercel"
+    mention_only: Literal[False] = False  # The dev UI is always mention-free.
+
+
 class NapcatChannelConfig(ChannelConfig):
     type: Literal["napcat"] = "napcat"
     stream: NapcatStreamConfig = Field(default_factory=NapcatStreamConfig)
@@ -68,3 +73,6 @@ class ChannelsConfig(BaseModel):
     slack: SlackChannelConfig | None = None
     lark: LarkChannelConfig | None = None
     napcat: NapcatChannelConfig | None = None
+    # The dev UI ships on by default; disable it with `enabled: false` or `null`.
+    # Keyed `dev_ui` to match the channel id it is registered under.
+    dev_ui: VercelChannelConfig | None = Field(default_factory=VercelChannelConfig)

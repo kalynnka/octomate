@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -8,37 +8,25 @@ from pydantic_ai.models import infer_model
 from pydantic_ai.ui._web.app import _get_ui_html
 from pydantic_ai.ui.vercel_ai.request_types import RequestData
 
-from octomate.capabilities.agent import Agent
-from octomate.tentacles.agent.inkling.base import InklingOutput
-from octomate.web.dev_ui.adapter import GraphAdapter
+from octomate.tentacles.channel.web.vercel.base import VercelTentacle
 
 if TYPE_CHECKING:
     from octomate import Octomate
 
 
-def build_dev_ui_router(
+def build_vercel_router(
     octomate: Octomate,
     *,
     channel_id: str = "dev_ui",
-    agent_id: str = "inkling",
 ) -> APIRouter:
-    """Build the DevUI HTTP router bound to an Octomate instance."""
-    agent = octomate.agents.get(agent_id)
-    if agent is None:
-        raise ValueError(f"DevUI requires registered agent {agent_id!r}")
-
-    graph_agent = getattr(agent, "agent", None)
-    if graph_agent is None:
+    """Build the Vercel dev-UI HTTP router bound to a registered VercelTentacle."""
+    registered = octomate.channels.get(channel_id)
+    if not isinstance(registered, VercelTentacle):
         raise ValueError(
-            f"DevUI requires registered agent {agent_id!r} to expose a pydantic-ai agent"
+            f"Vercel router requires a registered VercelTentacle at {channel_id!r}"
         )
+    channel: VercelTentacle = registered
 
-    adapter = GraphAdapter(
-        channel_id=channel_id,
-        agent=cast(Agent[None, InklingOutput], graph_agent),
-        conversations=octomate.conversations,
-        agent_id=agent_id,
-    )
     router = APIRouter()
 
     async def _serve_index() -> HTMLResponse:
@@ -63,7 +51,7 @@ def build_dev_ui_router(
         summary="Vercel AI Data Stream Protocol — drives react_graph",
     )
     async def chat(body: RequestData) -> StreamingResponse:
-        return await adapter.handle_request(body)
+        return await channel.handle_request(body)
 
     @router.options("/api/chat", include_in_schema=False)
     async def chat_options() -> Response:
@@ -78,17 +66,17 @@ def build_dev_ui_router(
         # The UI still requires at least one model on init — an empty list
         # makes it crash dereferencing the default. Whatever the user picks
         # here is ignored on the server; this entry is informational.
-        #
-        # `agent.model` is statically typed `Model | KnownModelName | str | None`;
-        # `infer_model` is idempotent on Model instances and narrows the type
-        # for the static checker so `.model_name` resolves cleanly.
-        assert adapter.agent.model is not None, "agent must be constructed with a model"
+        agent = channel.graph_agent
+        assert agent.model is not None, "agent must be constructed with a model"
         return JSONResponse(
             {
                 "models": [
                     {
-                        "id": adapter.agent_id,
-                        "name": f"{adapter.agent_id} ({infer_model(adapter.agent.model).model_name})",
+                        "id": channel.agent_id,
+                        "name": (
+                            f"{channel.agent_id} "
+                            f"({infer_model(agent.model).model_name})"
+                        ),
                         "builtinTools": [],
                     }
                 ],

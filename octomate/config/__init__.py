@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from pydantic import Field
+from ipaddress import IPv4Address
+from typing import Annotated
+
+from pydantic import Field, IPvAnyAddress
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -49,6 +52,9 @@ class OctomateConfig(BaseSettings):
         nested_model_default_partial_update=True,
         extra="ignore",
     )
+
+    host: IPvAnyAddress = IPv4Address("127.0.0.1")
+    port: Annotated[int, Field(ge=1, le=65535)] = 8000
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

@@ -164,7 +164,10 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
             async for node in run:
                 if self.is_model_request_node(node):
                     # The model node streams thinking/pre-output events unchanged.
-                    # After FinalResultEvent, segment-list outputs also surface as
+                    # Plain-text output (FinalResultEvent.tool_name is None) keeps
+                    # streaming its native text events after the final result is
+                    # recognized — that text *is* the answer. Tool-backed structured
+                    # outputs instead surface segment-list elements as
                     # ResultSegmentEvent; every output type still reaches FinalResult.
                     async with node.stream(run.ctx) as stream:
                         wrapped = run.ctx.deps.root_capability.wrap_run_event_stream(
@@ -179,11 +182,13 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                             if isinstance(event, FinalResultEvent):
                                 final_event = event
                                 continue
-                            if final_event is None:
+                            # Pre-final events pass through; once a plain-text final
+                            # result is recognized its native text deltas keep flowing.
+                            if final_event is None or final_event.tool_name is None:
                                 yield event
                                 continue
-                            # After the final result is recognized, outputs that
-                            # validate into a growing list of message segments are
+                            # After a tool-backed final result is recognized, outputs
+                            # that validate into a growing list of message segments are
                             # surfaced one segment at a time. Other structured
                             # outputs are intentionally left for FinalResult.
                             try:
