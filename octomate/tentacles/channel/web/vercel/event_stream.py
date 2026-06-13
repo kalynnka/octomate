@@ -8,11 +8,14 @@ Octomate-specific ones onto the Vercel protocol:
 
 - text replies pass through to the stock Vercel handler,
 - segment replies stream as one custom text part,
-- todo events surface as transient ``data-todo`` chunks,
-- a suspended run's deferred-action batch surfaces as a transient
-  ``data-action-batch`` chunk,
+- todo events render as a markdown text note (the stock dev UI does not render
+  custom ``data-*`` parts, so they would otherwise be invisible),
+- a suspended run's deferred-action batch renders as a markdown text summary,
 - everything else (thinking, tool calls, the run result) passes to the stock
   handlers.
+
+Deferred *tool requests* (the Vercel client-side-call path) are noop'd in this
+dev channel — there is no resolver/suspender, so the run simply ends.
 """
 
 from __future__ import annotations
@@ -25,7 +28,6 @@ from pydantic_ai.ui import NativeEvent
 from pydantic_ai.ui.vercel_ai import VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.response_types import (
     BaseChunk,
-    DataChunk,
     TextDeltaChunk,
     TextEndChunk,
     TextStartChunk,
@@ -70,17 +72,19 @@ class OctomateUIEventStream(VercelAIEventStream[None, InklingOutput]):
                 | TodoCompletedEvent()
                 | TodoDeletedEvent()
             ):
-                yield DataChunk(
-                    type="data-todo",
-                    data=event.model_dump(mode="json"),
-                    transient=True,
+                todo = event.todo
+                note = (
+                    f"\n\n*[{event.event_kind}]* `{todo.ref}` {todo.content} "
+                    f"— _{todo.status}_"
                 )
+                async for chunk in self.reply_delta(note):
+                    yield chunk
             case ActionBatchEvent():
-                yield DataChunk(
-                    type="data-action-batch",
-                    data=event.model_dump(mode="json"),
-                    transient=True,
-                )
+                lines = ["\n\n**Pending input** _(noop in dev UI)_"]
+                lines += [f"- ❓ {q.args['question']}" for q in event.questions]
+                lines += [f"- ✅ {a.args.title}" for a in event.approvals]
+                async for chunk in self.reply_delta("\n".join(lines)):
+                    yield chunk
             case _:
                 async for chunk in super().handle_event(event):
                     yield chunk

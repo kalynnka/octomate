@@ -1,4 +1,4 @@
-"""OctomateUIEventStream: dev_ui's Vercel stream speaks the octomate StreamEvents."""
+"""OctomateUIEventStream: the Vercel channel's stream speaks octomate StreamEvents."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ from pydantic_ai.ui import NativeEvent
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
 from pydantic_ai.ui.vercel_ai.response_types import (
     BaseChunk,
-    DataChunk,
     ReasoningStartChunk,
     TextDeltaChunk,
     TextStartChunk,
@@ -34,7 +33,7 @@ from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.todos import Todo
 from octomate.tentacles.agent.inkling.base import InklingOutput
-from octomate.web.dev_ui.event_stream import OctomateUIEventStream
+from octomate.tentacles.channel.web.vercel.event_stream import OctomateUIEventStream
 
 
 async def _chunks(events: list[ReactStreamEvent[InklingOutput]]) -> list[BaseChunk]:
@@ -46,7 +45,7 @@ async def _chunks(events: list[ReactStreamEvent[InklingOutput]]) -> list[BaseChu
     return [
         chunk
         async for chunk in stream.transform_stream(
-            # The same documented seam as the adapter: pydantic-ai types the
+            # The same documented seam as the channel: pydantic-ai types the
             # stream over its native events; octomate events flow at runtime.
             cast(AsyncIterator[NativeEvent], gen())
         )
@@ -102,20 +101,19 @@ async def test_segments_join_the_reply_as_blocks() -> None:
     assert deltas == ["first", "\n\nsecond"]
 
 
-async def test_todo_events_surface_as_data_chunks() -> None:
+async def test_todo_events_surface_as_markdown_text() -> None:
     todo = Todo(conversation_id=uuid4(), ref="T1", content="Find the docs")
 
     chunks = await _chunks([TodoCreatedEvent(todo=todo)])
 
-    data_chunks = [chunk for chunk in chunks if isinstance(chunk, DataChunk)]
-    assert len(data_chunks) == 1
-    assert data_chunks[0].type == "data-todo"
-    assert data_chunks[0].transient
-    assert data_chunks[0].data["event_kind"] == "todo_created"
-    assert data_chunks[0].data["todo"]["ref"] == "T1"
+    deltas = [chunk.delta for chunk in chunks if isinstance(chunk, TextDeltaChunk)]
+    assert len(deltas) == 1
+    assert "todo_created" in deltas[0]
+    assert "T1" in deltas[0]
+    assert "Find the docs" in deltas[0]
 
 
-async def test_action_batch_surfaces_as_data_chunk() -> None:
+async def test_action_batch_surfaces_as_markdown_text() -> None:
     question = DeferredQuestion(
         tool_name="ask_questions",
         tool_call_id="c1",
@@ -124,17 +122,13 @@ async def test_action_batch_surfaces_as_data_chunk() -> None:
 
     chunks = await _chunks([ActionBatchEvent(batch_id="b1", questions=[question])])
 
-    data_chunks = [chunk for chunk in chunks if isinstance(chunk, DataChunk)]
-    assert len(data_chunks) == 1
-    assert data_chunks[0].type == "data-action-batch"
-    assert data_chunks[0].transient
-    assert data_chunks[0].data["batch_id"] == "b1"
-    assert data_chunks[0].data["questions"][0]["args"]["question"] == "Pick one?"
+    deltas = [chunk.delta for chunk in chunks if isinstance(chunk, TextDeltaChunk)]
+    assert len(deltas) == 1
+    assert "Pending input" in deltas[0]
+    assert "Pick one?" in deltas[0]
 
 
 async def test_native_events_pass_through_to_stock_handlers() -> None:
-    chunks = await _chunks(
-        [PartStartEvent(index=0, part=ThinkingPart(content="hmm"))]
-    )
+    chunks = await _chunks([PartStartEvent(index=0, part=ThinkingPart(content="hmm"))])
 
     assert any(isinstance(chunk, ReasoningStartChunk) for chunk in chunks)

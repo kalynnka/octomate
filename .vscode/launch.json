@@ -15,8 +15,6 @@
       "module": "uvicorn",
       "args": [
         "main:app",
-        "--port",
-        "2333"
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
@@ -30,8 +28,6 @@
       "module": "uvicorn",
       "args": [
         "main:app",
-        "--port",
-        "2333",
         "--reload",
         "--reload-dir",
         "octomate",
@@ -41,42 +37,5 @@
       "console": "integratedTerminal",
       "justMyCode": false
     },
-    {
-      "name": "Inkling Dev",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "uvicorn",
-      "args": [
-        "scripts.inkling_dev:app",
-        "--app-dir",
-        ".",
-        "--port",
-        "8000",
-        "--reload",
-        "--reload-dir",
-        "octomate",
-        "--reload-dir",
-        "scripts"
-      ],
-      "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env",
-      "console": "integratedTerminal",
-      "justMyCode": false
-    },
-    {
-      "name": "Attach to tmux (debugpy)",
-      "type": "debugpy",
-      "request": "attach",
-      "connect": {
-        "host": "localhost",
-        "port": 5678
-      },
-      "pathMappings": [
-        {
-          "localRoot": "${workspaceFolder}",
-          "remoteRoot": "${workspaceFolder}"
-        }
-      ]
-    }
   ]
 }
