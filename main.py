@@ -39,13 +39,15 @@ logging.basicConfig(
     force=True,
 )
 
+logger = logging.getLogger("octomate.main")
+
 from octomate import Octomate
 from octomate.providers import ProviderRegistry
 from octomate.tentacles.agent.inkling import InklingTentacle, build_inkling_agent
 from octomate.tentacles.channel.lark import LarkTentacle
 from octomate.tentacles.channel.napcat import NapcatTentacle
 from octomate.tentacles.channel.slack import SlackTentacle
-from octomate.web.dev_ui import build_dev_ui_router
+from octomate.tentacles.channel.web.vercel import VercelTentacle, build_vercel_router
 
 octomate = Octomate()
 registry = ProviderRegistry(config.providers)
@@ -90,13 +92,21 @@ if (channel_config := config.channels.napcat) is not None and channel_config.ena
     )
 
 
-octomate.include_router(
-    build_dev_ui_router(
-        octomate,
-        channel_id="dev_ui",
-        agent_id="inkling",
+if (channel_config := config.channels.dev_ui) is not None and channel_config.enabled:
+    octomate.connect_channel(
+        "dev_ui",
+        VercelTentacle(
+            "dev_ui",
+            octomate,
+            config=channel_config,
+        ),
     )
-)
+    octomate.include_router(build_vercel_router(octomate, channel_id="dev_ui"))
+    logger.info(
+        "Dev UI (vercel) enabled — open http://%s:%d/",
+        config.host,
+        config.port,
+    )
 
 app = octomate.app(title="Octomate")
 
@@ -104,8 +114,8 @@ app = octomate.app(title="Octomate")
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
-        host="127.0.0.1",
-        port=8000,
+        host=str(config.host),
+        port=config.port,
         reload=True,
         log_level=config.logging.level.lower(),
     )

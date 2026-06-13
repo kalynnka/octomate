@@ -66,7 +66,8 @@ async def test_str_output_streams_native_text_events_then_final() -> None:
     final = next(e for e in events if isinstance(e, FinalResult))
     assert deltas, "expected native text events"
     assert final.output == "Hello there, world!"
-    assert final.output.startswith("".join(deltas))
+    # Every text delta must stream, not just the first one before FinalResultEvent.
+    assert "".join(deltas) == final.output
     assert any(type(e).__name__ == "AgentRunResultEvent" for e in events)
 
 
