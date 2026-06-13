@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -66,6 +67,10 @@ THINKING_TITLE = "Thinking"
 STATUS_THINKING = "Thinking…"
 STATUS_WRITING = "Writing the response…"
 
+# Each task-chunk emit is one chat.appendStream call resending the step's full
+# details, so live thinking re-renders are paced rather than sent per delta.
+THINKING_FLUSH_INTERVAL = 1.0
+
 # "plan" gathers all tasks into one plan block; "timeline" would render each
 # task as an independent inline item.
 TASK_DISPLAY_MODE = "plan"
@@ -118,6 +123,7 @@ class SlackTimelineState(TimelineState):
     saw_answer: bool = False
     thinking_seq: int = 0
     active_thinking: SlackStep | None = None
+    thinking_emitted_at: float = 0.0
     tool_steps: dict[str, SlackStep] = field(default_factory=dict)
     todo_steps: dict[str, SlackStep] = field(default_factory=dict)
     skipped_tool_call_ids: set[str] = field(default_factory=set)
@@ -194,6 +200,7 @@ class SlackTimelineState(TimelineState):
         self.active_thinking = step
         await self.set_status(STATUS_THINKING)
         await self.emit(step)
+        self.thinking_emitted_at = time.monotonic()
 
     async def thinking_delta(self, text: str) -> None:
         if self.active_thinking is None:
@@ -205,6 +212,10 @@ class SlackTimelineState(TimelineState):
             step.sections[-1] += text
         else:
             step.sections.append(text)
+        now = time.monotonic()
+        if now - self.thinking_emitted_at >= THINKING_FLUSH_INTERVAL:
+            self.thinking_emitted_at = now
+            await self.emit(step)
 
     async def start_tool(
         self,

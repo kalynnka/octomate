@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import cast
 from uuid import uuid4
 
+import pytest
 from pydantic import JsonValue
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -19,6 +20,7 @@ from pydantic_ai.messages import (
     TextPart,
     TextPartDelta,
     ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -45,6 +47,7 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import ChannelOutput
+from octomate.tentacles.channel.slack.feelers import output as slack_output
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.channel.slack.feelers.questions import (
     question_choice_block_id,
@@ -203,6 +206,45 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
     assert "Lookup…" in ink.statuses
     assert "Writing the response…" in ink.statuses
     assert ink.statuses[-1] == ""
+
+
+async def test_slack_consume_renders_thinking_deltas_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(slack_output, "THINKING_FLUSH_INTERVAL", 0.0)
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" the"))
+        yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" docs"))
+        yield PartStartEvent(index=1, part=TextPart(content="done"))
+        yield FinalResult[ChannelOutput](output="done")
+        yield AgentRunResultEvent(AgentRunResult("done"))
+
+    await channel.consume(slack_key(), events())
+
+    thinking_chunks = [
+        chunk
+        for group in ink.stream_chunks
+        for chunk in group
+        if isinstance(chunk, TaskUpdateChunk) and chunk.id == "thinking-1"
+    ]
+    live = [
+        chunk
+        for chunk in thinking_chunks
+        if chunk.status == "in_progress" and chunk.details
+    ]
+    assert [chunk.details for chunk in live] == [
+        "checking",
+        "checking the",
+        "checking the docs",
+    ]
+    assert thinking_chunks[-1].status == "complete"
+    assert thinking_chunks[-1].details == "checking the docs"
 
 
 async def test_slack_consume_renders_image_and_card_segments(

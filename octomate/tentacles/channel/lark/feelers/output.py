@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -56,6 +57,10 @@ OutputT = TypeVar(
 )
 
 THINKING_HEADER = "🧠 Thinking"
+
+# Each live thinking re-render is one card-patch API call, so updates are
+# paced rather than sent per delta.
+THINKING_FLUSH_INTERVAL = 1.0
 
 
 def format_tool_arguments(_tool_name: str, args: dict[str, Any]) -> str:
@@ -348,6 +353,7 @@ class LarkRunStateCards(TimelineState):
 
     thinking_card_id: str | None = None
     thinking_text: str = ""
+    thinking_emitted_at: float = 0.0
     tool_cards: dict[str, tuple[str | None, str, str]] = field(default_factory=dict)
     skipped: set[str] = field(default_factory=set)
     todos: dict[str, Todo] = field(default_factory=dict)
@@ -399,6 +405,7 @@ class LarkRunStateCards(TimelineState):
         self.thinking_card_id = await self.post(
             cards.card_v2([cards.markdown(f"⏳ **{THINKING_HEADER}…**")])
         )
+        self.thinking_emitted_at = time.monotonic()
 
     async def thinking_delta(self, text: str) -> None:
         if not text:
@@ -406,6 +413,19 @@ class LarkRunStateCards(TimelineState):
         if self.thinking_card_id is None:
             await self.thinking_start()
         self.thinking_text += text
+        now = time.monotonic()
+        if (
+            self.thinking_card_id is not None
+            and now - self.thinking_emitted_at >= THINKING_FLUSH_INTERVAL
+        ):
+            self.thinking_emitted_at = now
+            live = cards.card_v2(
+                [cards.markdown(f"⏳ **{THINKING_HEADER}…**\n\n{self.thinking_text}")]
+            )
+            await self.ink.patch_card(
+                self.thinking_card_id,
+                json.dumps(live, ensure_ascii=False, separators=(",", ":")),
+            )
 
     async def fold_thinking(self) -> None:
         if self.thinking_card_id is None:

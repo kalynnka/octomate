@@ -30,6 +30,9 @@ class AnthropicModelSettings(ModelSettings, total=False):
 
 class BedrockThinkingConfig(TypedDict, total=False):
     type: Literal["adaptive", "enabled", "disabled"]
+    # Opus 4.7+ defaults to "omitted": thinking blocks stream with empty text
+    # (signature only). "summarized" restores visible thinking deltas.
+    display: Literal["summarized", "omitted"]
 
 
 class BedrockOutputConfig(TypedDict, total=False):

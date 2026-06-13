@@ -7,14 +7,17 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    PartDeltaEvent,
     PartStartEvent,
     TextPart,
     ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -30,6 +33,7 @@ from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.segments import CardData, CardSegment, ImageData, ImageSegment
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import ChannelOutput
+from octomate.tentacles.channel.lark.feelers import output as lark_output
 from octomate.tentacles.channel.lark.schema import LarkStreamCard
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkInk, enable_lark_stream, lark_channel
@@ -225,6 +229,39 @@ async def test_lark_consume_renders_timeline_per_event() -> None:
     assert any("done" in content for _card, content, _seq in ink.stream_updates)
     assert ink.finalized
     assert message_id == "stream-1"
+
+
+async def test_lark_consume_renders_thinking_deltas_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lark_output, "THINKING_FLUSH_INTERVAL", 0.0)
+    ink = FakeLarkInk()
+    channel = lark_channel(ink)
+    key = ConversationKey(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="u1",
+        user_id="u1",
+    )
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" the"))
+        yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" docs"))
+        yield PartStartEvent(index=1, part=TextPart(content="done"))
+        yield AgentRunResultEvent(AgentRunResult("done"))
+
+    await channel.consume(key, events())
+
+    # The thinking card patches live with the accumulating text, then folds
+    # into the collapsible panel with the full text once the answer starts.
+    live = [content for _id, content in ink.patched if "⏳" in content]
+    assert ["checking" in content for content in live] == [True, True, True]
+    assert "checking the docs" in live[-1]
+    folded = [content for _id, content in ink.patched if "⏳" not in content]
+    assert folded and "checking the docs" in folded[0]
 
 
 async def test_lark_consume_renders_image_and_card_segments(
