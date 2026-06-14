@@ -57,6 +57,7 @@ from tests.support.channels import (
 )
 from tests.support.scenarios import (
     action_batch,
+    message_sent,
     mid_run_notice,
     plan_tool_noise,
     plain_deferred_requests,
@@ -449,6 +450,24 @@ async def test_consume_skips_plan_tool_events(
     assert "tool_start" not in state.names()
     assert "tool_end" not in state.names()
     assert "answer_delta" in state.names()
+
+
+async def test_drive_timeline_renders_message_sent_and_skips_the_tool(
+    channel: FakeChannelTentacle,
+) -> None:
+    state = RecordingTimeline()
+
+    await bound(state, channel, _key()).drive(play(message_sent()))
+
+    # The send_message tool call/result render nothing (skipped); the
+    # MessageSentEvent renders its segments as reply content.
+    names = state.names()
+    assert "tool_start" not in names
+    assert "tool_end" not in names
+    sent = [
+        segment for name, segment in state.calls if name == "answer_segment"
+    ]
+    assert any(str(segment) == "progress update" for segment in sent)
 
 
 async def test_drive_timeline_dispatches_each_event_kind(

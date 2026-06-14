@@ -48,7 +48,7 @@ from octomate.tentacles.channel.base import (
     IMMessageID,
     Ink,
 )
-from octomate.tentacles.channel.web.vercel.event_stream import OctomateUIEventStream
+from octomate.tentacles.channel.web.vercel.event_stream import VercelEventStream
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -62,7 +62,7 @@ class VercelSeamNotWired(NotImplementedError):
     def __init__(self) -> None:
         super().__init__(
             "The Vercel channel renders inline over SSE via the Vercel adapter and "
-            "OctomateUIEventStream; the chromo/transport seam wires in when the "
+            "VercelEventStream; the chromo/transport seam wires in when the "
             "channel moves onto octomate.kick."
         )
 
@@ -104,7 +104,7 @@ class VercelChromo(Chromo[RequestData, BaseChunk]):
     """Translation stub for the Vercel channel.
 
     Inbound decode runs through `handle_request` (the Vercel adapter) and
-    outbound encode through `OctomateUIEventStream` in this step, so the chromo
+    outbound encode through `VercelEventStream` in this step, so the chromo
     seam is latent until kick-dispatch lands.
     """
 
@@ -163,11 +163,11 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
             deferred_tool_results=deferred,
         )
 
-        event_stream = OctomateUIEventStream(body, sdk_version=self.SDK_VERSION)
+        event_stream = VercelEventStream(body, sdk_version=self.SDK_VERSION)
         return event_stream.streaming_response(
             event_stream.transform_stream(
                 # pydantic-ai types the stream over its native events only; the
-                # octomate events pass through at runtime and OctomateUIEventStream
+                # octomate events pass through at runtime and VercelEventStream
                 # handles them.
                 cast(
                     AsyncIterator[NativeEvent],

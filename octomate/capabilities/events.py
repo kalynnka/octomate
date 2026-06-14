@@ -37,7 +37,7 @@ from pydantic_ai.result import FinalResult
 from typing_extensions import TypeAliasType
 
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
-from octomate.schemas.segments import MessageSegment
+from octomate.schemas.segments import OutputSegment
 from octomate.schemas.todos import Todo
 
 OutputT = TypeVar("OutputT")
@@ -45,13 +45,13 @@ OutputT = TypeVar("OutputT")
 
 @dataclass
 class ResultSegmentEvent:
-    """One completed message segment from a `list[MessageSegment]` output.
+    """One completed message segment from a `list[OutputSegment]` output.
 
     This is a convenience streaming event for channel renderers. The full typed
     output, segment list or otherwise, still arrives as `FinalResult[OutputT]`.
     """
 
-    segment: MessageSegment
+    segment: OutputSegment
     event_kind: Literal["result_segment"] = "result_segment"
 
 
@@ -96,6 +96,17 @@ TodoEvent: TypeAlias = (
 )
 
 
+class MessageSentEvent(DisplayEvent):
+    """The send capability emitted `segments` to be delivered to the run's
+    conversation mid-run, without ending the turn. Emit-only: the tool does not
+    touch any channel — the consumer rendering this run's stream (the channel
+    timeline, or the web event stream) renders these segments into the current
+    conversation, the same way it renders a streamed reply."""
+
+    event_kind: Literal["message_sent"] = "message_sent"
+    segments: list[OutputSegment]
+
+
 class ActionBatchEvent(BaseModel):
     """A persisted batch of deferred actions presented as one unit; the run
     suspends until the user replies.
@@ -119,6 +130,7 @@ StreamEvents = TypeAliasType(
     | ResultSegmentEvent
     | FinalResult[OutputT]
     | TodoEvent
+    | MessageSentEvent
     | ActionBatchEvent,
     type_params=(OutputT,),
 )

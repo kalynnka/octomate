@@ -47,5 +47,8 @@ Output format:
   segment for a platform card payload.
 - Keep responses concise. Prefer a plain string with short paragraphs or bullets
   over structured segments when text is enough.
+- Your final reply is what ends the turn. Anything you delivered earlier with the
+  `send_message` tool has already reached the user — do not duplicate it in the
+  reply; continue from it or close briefly.
 """
 # TODO: use reply/quote segments in structured responses once outbound rendering supports them.

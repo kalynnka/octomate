@@ -21,6 +21,10 @@ from typing import (
 import logfire
 from pydantic import JsonValue
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
+
+# pydantic-ai's default output-tool name lives in a private module (no public
+# re-export), like the build_run_context import the agent harness already uses.
+from pydantic_ai._output import DEFAULT_OUTPUT_TOOL_NAME
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -43,6 +47,7 @@ from typing_extensions import TypeVar
 
 from octomate.capabilities.events import (
     ActionBatchEvent,
+    MessageSentEvent,
     ResultSegmentEvent,
     StreamEvents,
     TodoCompletedEvent,
@@ -52,9 +57,11 @@ from octomate.capabilities.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
+from octomate.capabilities.send import SEND_TOOL_NAME
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.schemas.todos import Todo
+from octomate.tentacles.agent.inkling.tools import ASK_QUESTIONS_TOOL_NAME
 from octomate.types.todos import STATUS_MARKERS
 
 if TYPE_CHECKING:
@@ -375,7 +382,17 @@ def format_stream_value(value: JsonValue, *, max_chars: int = 2000) -> str:
     return f"{text[:max_chars].rstrip()}\n\n...[truncated]"
 
 
-SKIPPED_PLAN_TOOL_NAMES = frozenset({"ask_questions", "final_result"})
+# Tools the timeline draws nothing for: ask_questions and final_result render
+# through their own surfaces, and `send_message` renders itself — its
+# `MessageSentEvent` lands as a mid-run message in the timeline. Each name is
+# sourced from its defining module so the literal lives in exactly one place.
+SKIPPED_PLAN_TOOL_NAMES = frozenset(
+    {
+        ASK_QUESTIONS_TOOL_NAME,
+        DEFAULT_OUTPUT_TOOL_NAME,
+        SEND_TOOL_NAME,
+    }
+)
 MAX_TASK_DETAIL_CHARS = 2000
 
 
@@ -584,6 +601,9 @@ class TimelineState:
                         | TodoDeletedEvent()
                     ):
                         await self.todo(event)
+                    case MessageSentEvent():
+                        answered = True
+                        await self.message_sent(event)
                     case ActionBatchEvent():
                         answered = answered or bool(event.questions or event.approvals)
                         await self.present_actions(event)
@@ -669,6 +689,15 @@ class TimelineState:
     ) -> None: ...
 
     async def todo(self, event: TodoEvent) -> None:
+        await self.begin_entry()
+
+    async def message_sent(self, event: MessageSentEvent) -> None:
+        """A `send_message` tool delivered these segments mid-run. Render them as
+        reply content (images/cards land natively via `answer_segment`), then
+        `begin_entry()` to rotate the just-rendered notice out as its own message —
+        the run continues afterward, so the final reply lands separately."""
+        for segment in event.segments:
+            await self.answer_segment(segment)
         await self.begin_entry()
 
 

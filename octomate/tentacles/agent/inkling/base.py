@@ -38,6 +38,7 @@ from octomate.tentacles.agent.base import (
 )
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
+from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.capabilities.react import (
     ReactDeps,
@@ -71,7 +72,7 @@ def build_inkling_agent(
         output_type=[str, list[OutputSegment], DeferredToolRequests],
         model_settings=model_settings,
         toolsets=[inkling_toolset],
-        capabilities=[TodoCapability()],
+        capabilities=[TodoCapability(), SendCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
 
