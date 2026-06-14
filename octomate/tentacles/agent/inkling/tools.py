@@ -3,10 +3,12 @@ from pydantic_ai.toolsets import FunctionToolset
 
 from octomate.schemas.deferred import QuestionRequest
 
+ASK_QUESTIONS_TOOL_NAME = "ask_questions"
+
 inkling_toolset: FunctionToolset[None] = FunctionToolset()
 
 
-@inkling_toolset.tool
+@inkling_toolset.tool(name=ASK_QUESTIONS_TOOL_NAME)
 async def ask_questions(
     ctx: RunContext[None],
     questions: list[QuestionRequest],

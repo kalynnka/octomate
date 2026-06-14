@@ -170,13 +170,14 @@ MessageSegment = Annotated[
 
 # The reply vocabulary an agent's structured output may carry: the MessageSegment
 # subset that makes sense outbound.
-# TODO: extend with the 3 missing segment types (At/Reply/File) once their
-# outbound rendering lands (mention targeting, reply threading, file upload).
+# TODO: extend with the 2 missing segment types (At/Reply) once their outbound
+# rendering lands (mention targeting, reply threading).
 OutputSegment = Annotated[
     Union[
         TextSegment,
         MarkdownSegment,
         ImageSegment,
+        FileSegment,
         CardSegment,
     ],
     Discriminator("type"),

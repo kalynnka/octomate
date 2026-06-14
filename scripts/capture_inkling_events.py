@@ -19,7 +19,7 @@ import types
 from dataclasses import dataclass
 from io import TextIOBase
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeAlias, cast
+from typing import Literal, TypeAlias, cast
 from uuid import uuid4
 
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
@@ -33,22 +33,23 @@ octomate_package = types.ModuleType("octomate")
 octomate_package.__path__ = [str(REPO_ROOT / "octomate")]
 sys.modules.setdefault("octomate", octomate_package)
 
+from pydantic_ai.tools import DeferredToolRequests
+
+from octomate.capabilities.agent import Agent
+from octomate.capabilities.send import SendCapability
+from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.managers.conversations import ConversationManager
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.segments import ImageSegment, OutputSegment
-from octomate.tentacles.agent.inkling import (
-    build_inkling_agent,
-)
+from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.base import (
     InklingOutput,
 )
+from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.json import JsonObject
-
-if TYPE_CHECKING:
-    from octomate.capabilities.agent import Agent
 
 
 DEFAULT_PROMPT = (
@@ -143,7 +144,15 @@ async def capture(
     config = OctomateConfig()
     conversations = ConversationManager()
     registry = ProviderRegistry(config.providers)
-    agent = build_inkling_agent(registry, config.agents.inkling.model)
+    agent: Agent[None, InklingOutput] = Agent(
+        registry.build_model(config.agents.inkling.model),
+        deps_type=type(None),
+        name="octomate-inkling",
+        output_type=[str, list[OutputSegment], DeferredToolRequests],
+        toolsets=[inkling_toolset],
+        capabilities=[TodoCapability(), SendCapability()],
+        system_prompt=SYSTEM_PROMPT,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     case_counts: dict[str, int] = {}

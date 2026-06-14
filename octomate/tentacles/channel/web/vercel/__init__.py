@@ -3,11 +3,11 @@ from octomate.tentacles.channel.web.vercel.base import (
     VercelInk,
     VercelTentacle,
 )
-from octomate.tentacles.channel.web.vercel.event_stream import OctomateUIEventStream
+from octomate.tentacles.channel.web.vercel.event_stream import VercelEventStream
 from octomate.tentacles.channel.web.vercel.routes import build_vercel_router
 
 __all__ = [
-    "OctomateUIEventStream",
+    "VercelEventStream",
     "VercelChromo",
     "VercelInk",
     "VercelTentacle",

@@ -6,8 +6,11 @@ arrive as native Pydantic events, segment replies arrive as `ResultSegmentEvent`
 and capabilities add display/action events — this subclass renders the
 Octomate-specific ones onto the Vercel protocol:
 
-- text replies pass through to the stock Vercel handler,
+- text replies pass through to the stock Vercel handler — but the octomate-managed
+  text part (a mid-run notice / todo note / segment) is closed first, so the two
+  never interleave into one unbounded part (which crashes the dev UI),
 - segment replies stream as one custom text part,
+- a send capability's ``MessageSentEvent`` streams as its own closed text block,
 - todo events render as a markdown text note (the stock dev UI does not render
   custom ``data-*`` parts, so they would otherwise be invisible),
 - a suspended run's deferred-action batch renders as a markdown text summary,
@@ -23,6 +26,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+from pydantic_ai.messages import PartStartEvent, TextPart
 from pydantic_ai.result import FinalResult
 from pydantic_ai.ui import NativeEvent
 from pydantic_ai.ui.vercel_ai import VercelAIEventStream
@@ -35,6 +39,7 @@ from pydantic_ai.ui.vercel_ai.response_types import (
 
 from octomate.capabilities.events import (
     ActionBatchEvent,
+    MessageSentEvent,
     ResultSegmentEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
@@ -47,13 +52,21 @@ from octomate.tentacles.agent.inkling.base import InklingOutput
 
 
 @dataclass
-class OctomateUIEventStream(VercelAIEventStream[None, InklingOutput]):
+class VercelEventStream(VercelAIEventStream[None, InklingOutput]):
     reply_id: str | None = None
 
     async def handle_event(
         self, event: NativeEvent | ReactStreamEvent[InklingOutput]
     ) -> AsyncIterator[BaseChunk]:
         match event:
+            case PartStartEvent(part=TextPart()):
+                # The native reply's text part is opening — close any mid-run notice
+                # block first so the two text parts don't interleave (an unbounded
+                # part crashes the dev UI).
+                async for chunk in self.close_reply():
+                    yield chunk
+                async for chunk in super().handle_event(event):
+                    yield chunk
             case ResultSegmentEvent():
                 # Completed segments join the reply text as separate blocks.
                 text = str(event.segment)
@@ -62,9 +75,8 @@ class OctomateUIEventStream(VercelAIEventStream[None, InklingOutput]):
                 async for chunk in self.reply_delta(text):
                     yield chunk
             case FinalResult():
-                if self.reply_id is not None:
-                    yield TextEndChunk(id=self.reply_id)
-                    self.reply_id = None
+                async for chunk in self.close_reply():
+                    yield chunk
             case (
                 TodoCreatedEvent()
                 | TodoUpdatedEvent()
@@ -79,6 +91,14 @@ class OctomateUIEventStream(VercelAIEventStream[None, InklingOutput]):
                 )
                 async for chunk in self.reply_delta(note):
                     yield chunk
+            case MessageSentEvent():
+                # Emit-only send: render the delivered segments as reply content,
+                # the same way streamed segment replies are rendered.
+                text = "\n\n".join(str(segment) for segment in event.segments)
+                if self.reply_id is not None:
+                    text = f"\n\n{text}"
+                async for chunk in self.reply_delta(text):
+                    yield chunk
             case ActionBatchEvent():
                 lines = ["\n\n**Pending input** _(noop in dev UI)_"]
                 lines += [f"- ❓ {q.args['question']}" for q in event.questions]
@@ -88,6 +108,12 @@ class OctomateUIEventStream(VercelAIEventStream[None, InklingOutput]):
             case _:
                 async for chunk in super().handle_event(event):
                     yield chunk
+
+    async def close_reply(self) -> AsyncIterator[BaseChunk]:
+        """End the current octomate-managed text part, if one is open."""
+        if self.reply_id is not None:
+            yield TextEndChunk(id=self.reply_id)
+            self.reply_id = None
 
     async def reply_delta(self, text: str) -> AsyncIterator[BaseChunk]:
         if not text:

@@ -35,6 +35,7 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import (
     ActionBatchEvent,
+    MessageSentEvent,
     ResultSegmentEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
@@ -52,7 +53,7 @@ from octomate.schemas.segments import (
     ImageData,
     ImageSegment,
     MarkdownSegment,
-    MessageSegment,
+    OutputSegment,
 )
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import ChannelOutput
@@ -133,10 +134,10 @@ def reply_segments(
     *,
     image_file: str | None = "/tmp/octomate-scenario.png",
     card_payload: JsonObject | None = None,
-) -> list[MessageSegment]:
+) -> list[OutputSegment]:
     if card_payload is None:
         card_payload = scenario_card_payload()
-    segments: list[MessageSegment] = [
+    segments: list[OutputSegment] = [
         MarkdownSegment(
             data={"text": "## Scenario\nA *markdown* reply segment."},
         ),
@@ -169,7 +170,9 @@ def segments_reply(
     ]
 
 
-def segment_result_events(segments: list[MessageSegment], *, index: int = 0) -> ChannelScript:
+def segment_result_events(
+    segments: list[OutputSegment], *, index: int = 0
+) -> ChannelScript:
     payload = json.dumps(
         {"response": [segment.model_dump(mode="json") for segment in segments]},
         ensure_ascii=False,
@@ -332,6 +335,37 @@ def plan_tool_noise(answer: str = "no plan rendered") -> ChannelScript:
                 tool_call_id="call_plan_1",
             )
         ),
+        *streamed_text(answer),
+    ]
+
+
+def message_sent(
+    segments: list[OutputSegment] | None = None,
+    *,
+    answer: str = "all set",
+) -> ChannelScript:
+    """A `send_message` tool call/result pair (which the timeline skips) plus the
+    `MessageSentEvent` the capability injects, then the closing streamed reply."""
+    if segments is None:
+        segments = [MarkdownSegment(data={"text": "progress update"})]
+    event = MessageSentEvent(segments=segments)
+    return [
+        FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="send_message",
+                args={"segments": [seg.model_dump() for seg in segments]},
+                tool_call_id="call_send_1",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="send_message",
+                content="sent",
+                tool_call_id="call_send_1",
+                metadata=[event],
+            )
+        ),
+        event,
         *streamed_text(answer),
     ]
 

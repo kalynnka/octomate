@@ -61,7 +61,7 @@ from octomate.capabilities.events import (
     ResultSegmentEvent,
     StreamEvents,
 )
-from octomate.schemas.segments import MessageSegment, Segment
+from octomate.schemas.segments import OutputSegment, Segment
 
 
 class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
@@ -210,7 +210,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                                     # isinstance-narrowed, so guard on the base then cast.
                                     if isinstance(segment, Segment):
                                         yield ResultSegmentEvent(
-                                            segment=cast(MessageSegment, segment)
+                                            segment=cast(OutputSegment, segment)
                                         )
                                 emitted_segments = max(
                                     emitted_segments, len(partial) - 1
@@ -226,7 +226,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                                 for segment in final[emitted_segments:]:
                                     if isinstance(segment, Segment):
                                         yield ResultSegmentEvent(
-                                            segment=cast(MessageSegment, segment)
+                                            segment=cast(OutputSegment, segment)
                                         )
                             yield FinalResult(
                                 output=final,

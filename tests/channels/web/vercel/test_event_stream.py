@@ -1,4 +1,4 @@
-"""OctomateUIEventStream: the Vercel channel's stream speaks octomate StreamEvents."""
+"""VercelEventStream: the Vercel channel's stream speaks octomate StreamEvents."""
 
 from __future__ import annotations
 
@@ -20,11 +20,13 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     BaseChunk,
     ReasoningStartChunk,
     TextDeltaChunk,
+    TextEndChunk,
     TextStartChunk,
 )
 
 from octomate.capabilities.events import (
     ActionBatchEvent,
+    MessageSentEvent,
     ResultSegmentEvent,
     TodoCreatedEvent,
 )
@@ -33,7 +35,7 @@ from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.todos import Todo
 from octomate.tentacles.agent.inkling.base import InklingOutput
-from octomate.tentacles.channel.web.vercel.event_stream import OctomateUIEventStream
+from octomate.tentacles.channel.web.vercel.event_stream import VercelEventStream
 
 
 async def _chunks(events: list[ReactStreamEvent[InklingOutput]]) -> list[BaseChunk]:
@@ -41,7 +43,7 @@ async def _chunks(events: list[ReactStreamEvent[InklingOutput]]) -> list[BaseChu
         for event in events:
             yield event
 
-    stream = OctomateUIEventStream(SubmitMessage(id="chat-1", messages=[]), sdk_version=6)
+    stream = VercelEventStream(SubmitMessage(id="chat-1", messages=[]), sdk_version=6)
     return [
         chunk
         async for chunk in stream.transform_stream(
@@ -126,6 +128,40 @@ async def test_action_batch_surfaces_as_markdown_text() -> None:
     assert len(deltas) == 1
     assert "Pending input" in deltas[0]
     assert "Pick one?" in deltas[0]
+
+
+async def test_message_sent_renders_segments_as_reply_text() -> None:
+    chunks = await _chunks(
+        [MessageSentEvent(segments=[MarkdownSegment(data={"text": "progress"})])]
+    )
+
+    deltas = [chunk.delta for chunk in chunks if isinstance(chunk, TextDeltaChunk)]
+    assert deltas == ["progress"]
+
+
+async def test_mid_run_notice_text_part_closes_before_native_reply() -> None:
+    # A mid-run send followed by the native reply: the notice's text part must be
+    # closed before the reply's text part opens, or the two interleave into one
+    # unbounded part and crash the dev UI.
+    chunks = await _chunks(
+        [
+            MessageSentEvent(segments=[MarkdownSegment(data={"text": "progress"})]),
+            PartStartEvent(index=0, part=TextPart(content="all set")),
+            FinalResult(output="all set", tool_name=None, tool_call_id=None),
+        ]
+    )
+
+    boundaries = [
+        chunk.type
+        for chunk in chunks
+        if isinstance(chunk, (TextStartChunk, TextEndChunk))
+    ]
+    # The notice part is fully bounded before the reply part opens (no interleave).
+    assert boundaries == ["text-start", "text-end", "text-start"]
+    starts = [chunk for chunk in chunks if isinstance(chunk, TextStartChunk)]
+    ends = [chunk for chunk in chunks if isinstance(chunk, TextEndChunk)]
+    assert ends[0].id == starts[0].id  # the notice closed its own part
+    assert starts[1].id != starts[0].id  # the reply opened a fresh part
 
 
 async def test_native_events_pass_through_to_stock_handlers() -> None:

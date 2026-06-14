@@ -1,5 +1,5 @@
 """InklingTentacle run entrypoints driving the real react graph against
-scripted FunctionModels (no real LLM call), plus `build_inkling_agent`."""
+scripted FunctionModels (no real LLM call)."""
 
 from __future__ import annotations
 
@@ -18,18 +18,16 @@ from octomate import Octomate
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import ActionBatchEvent
 from octomate.capabilities.react import ReactStreamEvent
-from octomate.config import ModelConfig
-from octomate.providers import ProviderRegistry
+from octomate.capabilities.send import SendCapability
+from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.segments import Segment
+from octomate.schemas.segments import OutputSegment, Segment
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
-    build_inkling_agent,
     inkling_toolset,
 )
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
-
 from tests.support.agents import (
     ScriptedOutput,
     ScriptedTurn,
@@ -40,23 +38,23 @@ from tests.support.managers import FakeConversationManager
 InklingTestEvent: TypeAlias = ReactStreamEvent[ScriptedOutput]
 
 
-class StubRegistry:
-    """Returns a credential-free TestModel so build_inkling_agent runs without
-    constructing a real provider client (Vertex/etc. would need credentials)."""
-
-    def build_model(
-        self, model: ModelConfig, settings: object | None = None
-    ) -> TestModel:
-        return TestModel()
+def _inkling_agent() -> Agent[None, InklingOutput]:
+    return Agent(
+        TestModel(),
+        deps_type=type(None),
+        name="octomate-inkling",
+        output_type=[str, list[OutputSegment], DeferredToolRequests],
+        toolsets=[inkling_toolset],
+        capabilities=[TodoCapability(), SendCapability()],
+        system_prompt=SYSTEM_PROMPT,
+    )
 
 
 @dataclass
 class StubSuspender:
     suspended: list[DeferredToolRequests] = field(default_factory=list)
 
-    async def suspend(
-        self, requests: DeferredToolRequests
-    ) -> ActionBatchEvent | None:
+    async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         self.suspended.append(requests)
         return None
 
@@ -89,9 +87,7 @@ def _tentacle(
 
 
 def _boom_agent() -> Agent[None, ScriptedOutput]:
-    async def boom(
-        messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[str]:
+    async def boom(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
         raise RuntimeError("model boom")
         yield ""  # pragma: no cover - marks this an async generator
 
@@ -102,26 +98,6 @@ def _boom_agent() -> Agent[None, ScriptedOutput]:
         toolsets=[inkling_toolset],
         system_prompt=SYSTEM_PROMPT,
     )
-
-
-def test_build_inkling_agent_passes_model_settings_through() -> None:
-    agent = build_inkling_agent(
-        cast(ProviderRegistry, StubRegistry()),
-        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
-        model_settings={"temperature": 0.2},
-    )
-    assert agent.name == "octomate-inkling"
-    assert agent.model_settings == {"temperature": 0.2}
-
-
-def test_build_inkling_agent_defaults_model_settings_to_none() -> None:
-    # Per-model settings (incl. thinking) live in model.settings, applied by the
-    # registry; the agent adds nothing of its own by default.
-    agent = build_inkling_agent(
-        cast(ProviderRegistry, StubRegistry()),
-        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
-    )
-    assert agent.model_settings is None
 
 
 async def test_inkling_loop_emits_deferred_question_batch() -> None:
@@ -272,10 +248,7 @@ async def test_run_resumes_via_resume_turn_when_deferred_results_passed() -> Non
 async def test_inkling_default_includes_todo_capability() -> None:
     """The todo capability is on by default: its tools are offered to the model."""
 
-    agent = build_inkling_agent(
-        cast(ProviderRegistry, StubRegistry()),
-        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
-    )
+    agent = _inkling_agent()
     seen_tools: list[str] = []
 
     async def respond_stream(
@@ -298,10 +271,7 @@ async def test_inkling_default_output_is_segments() -> None:
     """The real inkling contract: with no output_type override the reply is a
     list of output segments (TestModel auto-generates from the segment schema)."""
 
-    agent = build_inkling_agent(
-        cast(ProviderRegistry, StubRegistry()),
-        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
-    )
+    agent = _inkling_agent()
     conversations = FakeConversationManager()
     tentacle = InklingTentacle(
         "inkling",
