@@ -57,7 +57,7 @@ from octomate.capabilities.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
-from octomate.capabilities.send import SEND_TOOL_NAME
+from octomate.constants import SEND_TOOL_NAME
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.schemas.todos import Todo
