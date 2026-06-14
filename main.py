@@ -5,11 +5,17 @@ import logging
 import logfire
 import uvicorn
 from fastapi import FastAPI
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate import Octomate
+from octomate.capabilities.agent import Agent
+from octomate.capabilities.send import SendCapability
+from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.providers import ProviderRegistry
-from octomate.tentacles.agent.inkling import InklingTentacle, build_inkling_agent
+from octomate.schemas.segments import OutputSegment
+from octomate.tentacles.agent.inkling import InklingTentacle, inkling_toolset
+from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.channel.lark import LarkTentacle
 from octomate.tentacles.channel.napcat import NapcatTentacle
 from octomate.tentacles.channel.slack import SlackTentacle
@@ -62,12 +68,21 @@ def create_app() -> FastAPI:
     octomate = Octomate()
     registry = ProviderRegistry(config.providers)
 
+    inkling_agent = Agent(
+        registry.build_model(config.agents.inkling.model),
+        deps_type=type(None),
+        name="octomate-inkling",
+        output_type=[str, list[OutputSegment], DeferredToolRequests],
+        toolsets=[inkling_toolset],
+        capabilities=[TodoCapability(), SendCapability()],
+        system_prompt=SYSTEM_PROMPT,
+    )
     octomate.register_agent(
         "inkling",
         InklingTentacle(
             "inkling",
             octomate,
-            agent=build_inkling_agent(registry, config.agents.inkling.model),
+            agent=inkling_agent,
             conversation_manager=octomate.conversations,
         ),
     )

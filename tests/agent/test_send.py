@@ -14,26 +14,30 @@ from typing import Any, cast
 from pydantic_ai import AgentStreamEvent, RunContext
 from pydantic_ai.messages import FunctionToolResultEvent, ToolReturn, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import DeferredToolRequests
 
+from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import MessageSentEvent
 from octomate.capabilities.send import SendCapability
-from octomate.config import ModelConfig
-from octomate.providers import ProviderRegistry
+from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.segments import MarkdownSegment, OutputSegment
-from octomate.tentacles.agent.inkling import build_inkling_agent
-
-from pydantic_ai.models.test import TestModel
-
+from octomate.tentacles.agent.inkling import inkling_toolset
+from octomate.tentacles.agent.inkling.base import InklingOutput
+from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import ScriptedStream, ScriptedTurn
 
 
-class StubRegistry:
-    """A credential-free TestModel so build_inkling_agent runs without a provider."""
-
-    def build_model(
-        self, model: ModelConfig, settings: object | None = None
-    ) -> TestModel:
-        return TestModel()
+def _inkling_agent() -> Agent[None, InklingOutput]:
+    return Agent(
+        TestModel(),
+        deps_type=type(None),
+        name="octomate-inkling",
+        output_type=[str, list[OutputSegment], DeferredToolRequests],
+        toolsets=[inkling_toolset],
+        capabilities=[TodoCapability(), SendCapability()],
+        system_prompt=SYSTEM_PROMPT,
+    )
 
 
 async def test_send_message_returns_sent_and_announces_event() -> None:
@@ -83,12 +87,9 @@ async def test_wrap_forwards_stashed_message_sent_event() -> None:
 
 
 async def test_inkling_agent_send_tool_surfaces_event_end_to_end() -> None:
-    # build_inkling_agent wires SendCapability: a scripted send_message call
-    # surfaces a MessageSentEvent on the run's stream.
-    agent = build_inkling_agent(
-        cast(ProviderRegistry, StubRegistry()),
-        ModelConfig(provider="vertex", name="gemini-3-flash-preview"),
-    )
+    # The inkling agent assembly wires SendCapability: a scripted send_message
+    # call surfaces a MessageSentEvent on the run's stream.
+    agent = _inkling_agent()
     conversation_id = "11111111-1111-1111-1111-111111111111"
     script = ScriptedStream(
         turns=[

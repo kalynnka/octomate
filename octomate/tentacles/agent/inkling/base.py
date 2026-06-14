@@ -23,13 +23,10 @@ from pydantic_ai.agent.abstract import (
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.config import ModelConfig
 from octomate.managers.conversations import ConversationManager
-from octomate.providers import ProviderRegistry
 from octomate.schemas.conversation import ConversationKey
 from octomate.schemas.segments import OutputSegment
 from octomate.tentacles.agent.base import (
@@ -38,8 +35,6 @@ from octomate.tentacles.agent.base import (
 )
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
-from octomate.capabilities.send import SendCapability
-from octomate.capabilities.todos import TodoCapability
 from octomate.capabilities.react import (
     ReactDeps,
     ReactEventStream,
@@ -49,32 +44,11 @@ from octomate.capabilities.react import (
     StartTurn,
     iter_react_graph_events,
 )
-from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
-from octomate.tentacles.agent.inkling.tools import inkling_toolset
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
 
 InklingOutput: TypeAlias = str | list[OutputSegment] | DeferredToolRequests
-
-
-def build_inkling_agent(
-    registry: ProviderRegistry,
-    model: ModelConfig,
-    *,
-    name: str = "octomate-inkling",
-    model_settings: ModelSettings | None = None,
-) -> Agent[None, InklingOutput]:
-    return Agent(
-        registry.build_model(model),
-        deps_type=type(None),
-        name=name,
-        output_type=[str, list[OutputSegment], DeferredToolRequests],
-        model_settings=model_settings,
-        toolsets=[inkling_toolset],
-        capabilities=[TodoCapability(), SendCapability()],
-        system_prompt=SYSTEM_PROMPT,
-    )
 
 
 @dataclass
