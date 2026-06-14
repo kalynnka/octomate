@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import ClassVar, Literal
 
-from pydantic_ai.messages import ModelMessage, ToolCallPart
+from pydantic_ai.messages import ModelMessage as PydanticModelMessage
+from pydantic_ai.messages import ToolCallPart
 
 from octomate.database import async_session
 from octomate.schemas.conversation import Conversation, ConversationKey
-from octomate.schemas.messages import ModelResponse
+from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun
 
 
@@ -104,7 +106,7 @@ class ConversationManager:
         self,
         conversation: Conversation,
         run_id: str,
-        messages: Sequence[ModelMessage],
+        messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
     ) -> None:
@@ -151,3 +153,74 @@ class ConversationManager:
             await session.commit()
         await self.refresh(conversation)
         return last
+
+    async def search_messages(
+        self,
+        conversation_id: uuid.UUID,
+        query: str,
+        *,
+        role: Literal["user", "assistant"] | None = None,
+        limit: int = 10,
+    ) -> list[ModelMessage]:
+        """Conversation messages whose `message_text` contains `query`
+        (case-insensitive), ordered chronologically. One polymorphic select spans
+        both kinds, so an unfiltered search returns user and assistant hits in a
+        single pass; `role` narrows it when set. Tool-call/thinking messages carry
+        no `message_text` and never match — reach them via
+        `messages_before`/`messages_after`."""
+        expressions = [
+            ModelMessage["conversation_id"] == str(conversation_id),
+            ModelMessage["message_text"].ilike(f"%{query}%"),
+        ]
+        if role is not None:
+            expressions.append(ModelMessage["role"] == role)
+        async with async_session() as session:
+            rows = await session.list(
+                ModelMessage,
+                limit=limit,
+                order_bys=[ModelMessage["id"]],
+                expressions=expressions,
+            )
+        return list(rows)
+
+    async def messages_before(
+        self,
+        conversation_id: uuid.UUID,
+        anchor_id: uuid.UUID,
+        *,
+        limit: int = 5,
+    ) -> list[ModelMessage]:
+        """The `limit` messages immediately preceding `anchor_id` in the
+        conversation (all kinds), oldest-first."""
+        async with async_session() as session:
+            rows = await session.list(
+                ModelMessage,
+                limit=limit,
+                order_bys=[ModelMessage["id"].desc()],
+                expressions=[
+                    ModelMessage["conversation_id"] == str(conversation_id),
+                    ModelMessage["id"] < anchor_id,
+                ],
+            )
+        return list(reversed(rows))
+
+    async def messages_after(
+        self,
+        conversation_id: uuid.UUID,
+        anchor_id: uuid.UUID,
+        *,
+        limit: int = 5,
+    ) -> list[ModelMessage]:
+        """The `limit` messages immediately following `anchor_id` in the
+        conversation (all kinds), oldest-first."""
+        async with async_session() as session:
+            rows = await session.list(
+                ModelMessage,
+                limit=limit,
+                order_bys=[ModelMessage["id"]],
+                expressions=[
+                    ModelMessage["conversation_id"] == str(conversation_id),
+                    ModelMessage["id"] > anchor_id,
+                ],
+            )
+        return list(rows)

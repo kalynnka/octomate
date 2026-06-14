@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
@@ -83,6 +83,13 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     conversation_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )
+    # Derived at the schema boundary (see octomate.schemas.messages): `role`
+    # tags the human-facing sender; `message_text` is the flattened plain text of
+    # the user/assistant message (None for tool-only turns), the search substrate.
+    role: Mapped[Literal["user", "assistant"]] = mapped_column(
+        String, nullable=False, server_default="assistant", index=True
+    )
+    message_text: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     run: Mapped[AgentRun] = relationship("AgentRun", back_populates="messages")
 
