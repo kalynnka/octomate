@@ -37,7 +37,7 @@ from pydantic_ai.result import FinalResult
 from typing_extensions import TypeAliasType
 
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
-from octomate.schemas.segments import OutputSegment
+from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
 
 OutputT = TypeVar("OutputT")
@@ -45,13 +45,13 @@ OutputT = TypeVar("OutputT")
 
 @dataclass
 class ResultSegmentEvent:
-    """One completed message segment from a `list[OutputSegment]` output.
+    """One completed message segment from a `list[MessageSegment]` output.
 
     This is a convenience streaming event for channel renderers. The full typed
     output, segment list or otherwise, still arrives as `FinalResult[OutputT]`.
     """
 
-    segment: OutputSegment
+    segment: MessageSegment
     event_kind: Literal["result_segment"] = "result_segment"
 
 
@@ -104,7 +104,7 @@ class MessageSentEvent(DisplayEvent):
     conversation, the same way it renders a streamed reply."""
 
     event_kind: Literal["message_sent"] = "message_sent"
-    segments: list[OutputSegment]
+    segments: list[MessageSegment]
 
 
 class ActionBatchEvent(BaseModel):

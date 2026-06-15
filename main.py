@@ -14,7 +14,7 @@ from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.providers import ProviderRegistry
-from octomate.schemas.segments import OutputSegment
+from octomate.schemas.segments import MessageSegment
 from octomate.tentacles.agent.inkling import InklingTentacle, inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.channel.lark import LarkTentacle
@@ -73,7 +73,7 @@ def create_app() -> FastAPI:
         registry.build_model(config.agents.inkling.model),
         deps_type=type(None),
         name="octomate-inkling",
-        output_type=[str, list[OutputSegment], DeferredToolRequests],
+        output_type=[str, list[MessageSegment], DeferredToolRequests],
         toolsets=[inkling_toolset],
         capabilities=[
             TodoCapability(),

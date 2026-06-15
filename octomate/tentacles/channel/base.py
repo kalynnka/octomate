@@ -77,6 +77,13 @@ class Chromo(
     def outbound_markdown(self, text: str) -> list[MessageT]:
         """Encode markdown text as platform-native outbound message payloads."""
 
+    async def outbound_segments(self, segments: list[MessageSegment]) -> list[MessageT]:
+        """Encode output segments as platform-native outbound message payloads. The
+        default flattens them to a single markdown body via their `str` form;
+        channels with native transport override to ship media inline or to encode a
+        mention token a user actually gets pinged by."""
+        return self.outbound_markdown("\n\n".join(str(seg) for seg in segments))
+
 
 class Ink(ABC, Generic[MessageT]):
     """Base class for platform API clients (transport only)."""

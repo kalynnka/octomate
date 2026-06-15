@@ -59,7 +59,7 @@ from octomate.capabilities.events import (
 )
 from octomate.constants import SEND_TOOL_NAME
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.segments import MessageSegment, Segment
+from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
 from octomate.schemas.todos import Todo
 from octomate.tentacles.agent.inkling.tools import ASK_QUESTIONS_TOOL_NAME
 from octomate.types.todos import STATUS_MARKERS
@@ -530,6 +530,13 @@ class TimelineState:
 
     message_id: IMMessageID | None = None
     noticed: bool = False
+    # The first `ReplySegment` seen sets this to the message id the reply threads
+    # onto; send sites prefer it over the open-time thread target. Annotation-only
+    # here (no value) so dataclass subclasses that redeclare it keep their own
+    # defaults; `capture_reply` assigns it, the concrete states provide the
+    # field/default, and `reply_captured` keeps the first one from being overwritten.
+    reply_to: str | None
+    reply_captured: bool = False
     # Per-run context the timeline feeler injects when it creates the state, so
     # `drive` can present deferred-action batches.
     key: ConversationKey
@@ -590,6 +597,9 @@ class TimelineState:
                             skipped_tools.discard(tool_call_id or "")
                         else:
                             await self.tool_end(event)
+                    case ResultSegmentEvent(segment=ReplySegment(data=reply_data)):
+                        # The reply handle threads the message; it is not rendered.
+                        self.capture_reply(reply_data["id"])
                     case ResultSegmentEvent():
                         answered = True
                         await self.answer_segment(event.segment)
@@ -618,14 +628,20 @@ class TimelineState:
                     exc_info=True,
                 )
                 failed = True
+        # `failed` means a render already raised (the transport threw); this
+        # "never streamed" backup is outside the try/except, so re-rendering after
+        # a failure would propagate and abort the drain (or double-send a partial).
+        # It only fires when nothing was drawn — not as an error-recovery retry.
         if (
             not failed
             and not answered
             and isinstance(final_output, Sequence)
             and all(isinstance(segment, Segment) for segment in final_output)
         ):
-            for segment in final_output:
-                await self.answer_segment(cast(MessageSegment, segment))
+            reply_to, body = split_reply(cast("list[MessageSegment]", final_output))
+            self.capture_reply(reply_to)
+            for segment in body:
+                await self.answer_segment(segment)
         elif not failed and not answered and final_output is not None:
             # The reply never streamed; render the final output once so the turn
             # is not left blank.
@@ -691,12 +707,21 @@ class TimelineState:
     async def todo(self, event: TodoEvent) -> None:
         await self.begin_entry()
 
+    def capture_reply(self, reply_to: str | None) -> None:
+        """Apply the first reply target seen this run — it overrides the open-time
+        thread default; later reply segments are ignored."""
+        if reply_to is not None and not self.reply_captured:
+            self.reply_to = reply_to
+            self.reply_captured = True
+
     async def message_sent(self, event: MessageSentEvent) -> None:
         """A `send_message` tool delivered these segments mid-run. Render them as
         reply content (images/cards land natively via `answer_segment`), then
         `begin_entry()` to rotate the just-rendered notice out as its own message —
         the run continues afterward, so the final reply lands separately."""
-        for segment in event.segments:
+        reply_to, body = split_reply(event.segments)
+        self.capture_reply(reply_to)
+        for segment in body:
             await self.answer_segment(segment)
         await self.begin_entry()
 
@@ -738,13 +763,21 @@ def markdown_from_output(
         return output
     if isinstance(output, Sequence):
         if all(isinstance(item, Segment) for item in output):
-            return "\n\n".join(str(item) for item in output) or None
+            # A leading reply threads the message; it is never rendered as text.
+            return (
+                "\n\n".join(
+                    str(item) for item in output if not isinstance(item, ReplySegment)
+                )
+                or None
+            )
         output = [item for item in output if not isinstance(item, Segment)]
     return f"```json\n{format_stream_value(output)}\n```"
 
 
 def reply_text_from_event(event: AgentStreamEvent | ResultSegmentEvent) -> str | None:
     match event:
+        case ResultSegmentEvent(segment=ReplySegment()):
+            return None  # the reply handle threads the message; never rendered
         case ResultSegmentEvent():
             return str(event.segment)
         case PartStartEvent(part=TextPart(content=content)):
@@ -755,16 +788,34 @@ def reply_text_from_event(event: AgentStreamEvent | ResultSegmentEvent) -> str |
             return None
 
 
+def split_reply(
+    segments: Sequence[MessageSegment],
+) -> tuple[str | None, list[MessageSegment]]:
+    """Take the first `ReplySegment` anywhere in the list as the reply target (its
+    `data.id` is passed to the platform as `reply_to`); the body is the remaining
+    segments with every reply stripped out, so none renders as `[reply: …]` text.
+    No reply segment leaves the list untouched."""
+    reply_to: str | None = None
+    body: list[MessageSegment] = []
+    for seg in segments:
+        if isinstance(seg, ReplySegment):
+            reply_to = reply_to or seg.data["id"]
+        else:
+            body.append(seg)
+    return reply_to, body
+
+
 async def present_markdown(
     *,
     ink: Ink[MessageT],
     chromo: Chromo[RawT, MessageT],
     key: ConversationKey,
     markdown: str,
+    reply_to: str | None = None,
 ) -> IMMessageID | None:
     chat_id = key.chat_id or key.user_id
     chat_type = key.chat_type
-    reply_to: str | None = key.thread_id or None
+    reply_to = reply_to or key.thread_id or None
     first_message_id: IMMessageID | None = None
     with logfire.span(
         "present_markdown",
@@ -826,15 +877,21 @@ class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
         key: ConversationKey,
         segments: list[MessageSegment],
     ) -> IMMessageID | None:
-        markdown = "\n\n".join(str(seg) for seg in segments)
-        if not markdown:
+        reply_to, body = split_reply(segments)
+        messages = await self.chromo.outbound_segments(body)
+        if not messages:
             return None
-        return await present_markdown(
-            ink=self.ink,
-            chromo=self.chromo,
-            key=key,
-            markdown=markdown,
-        )
+        chat_id = key.chat_id or key.user_id
+        first_message_id: IMMessageID | None = None
+        for message in messages:
+            message_id = await self.ink.send_message(
+                chat_id,
+                key.chat_type,
+                [message],
+                reply_to or key.thread_id or None,
+            )
+            first_message_id = first_message_id or message_id
+        return first_message_id
 
 
 @dataclass
@@ -848,6 +905,7 @@ class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
     parts: list[str] = field(default_factory=list)
     todos: dict[str, Todo] = field(default_factory=dict)
     message_id: IMMessageID | None = None
+    reply_to: str | None = None
 
     async def answer_delta(self, text: str) -> None:
         self.noticed = True
@@ -885,6 +943,7 @@ class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
             chromo=self.chromo,
             key=self.key,
             markdown=markdown,
+            reply_to=self.reply_to,
         )
 
 

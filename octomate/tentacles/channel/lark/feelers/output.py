@@ -27,7 +27,12 @@ from octomate.capabilities.events import (
 )
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.segments import CardSegment, ImageSegment, MessageSegment
+from octomate.schemas.segments import (
+    AtSegment,
+    CardSegment,
+    ImageSegment,
+    MessageSegment,
+)
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.feelers.output import (
     BatchedTextUpdate,
@@ -519,6 +524,8 @@ class LarkRunStateCards(TimelineState):
 
     async def answer_segment(self, segment: MessageSegment) -> None:
         match segment:
+            case AtSegment():
+                await self.answer_delta(f"<at id={segment.data.user_id}></at>")
             case ImageSegment():
                 await self.fold_thinking()
                 image_key = await self.ink.upload_media(

@@ -27,7 +27,12 @@ from octomate.capabilities.events import (
 )
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.segments import CardSegment, ImageSegment, MessageSegment
+from octomate.schemas.segments import (
+    AtSegment,
+    CardSegment,
+    ImageSegment,
+    MessageSegment,
+)
 from octomate.tentacles.channel.feelers.output import (
     IMMessageID,
     JsonValue,
@@ -314,6 +319,8 @@ class SlackTimelineState(TimelineState):
 
     async def answer_segment(self, segment: MessageSegment) -> None:
         match segment:
+            case AtSegment():
+                await self.answer_delta(f"<@{segment.data.user_id}>")
             case ImageSegment():
                 await self.complete_active_thinking()
                 await self.ink.upload_image(

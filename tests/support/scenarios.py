@@ -53,7 +53,7 @@ from octomate.schemas.segments import (
     ImageData,
     ImageSegment,
     MarkdownSegment,
-    OutputSegment,
+    MessageSegment,
 )
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import ChannelOutput
@@ -134,10 +134,10 @@ def reply_segments(
     *,
     image_file: str | None = "/tmp/octomate-scenario.png",
     card_payload: JsonObject | None = None,
-) -> list[OutputSegment]:
+) -> list[MessageSegment]:
     if card_payload is None:
         card_payload = scenario_card_payload()
-    segments: list[OutputSegment] = [
+    segments: list[MessageSegment] = [
         MarkdownSegment(
             data={"text": "## Scenario\nA *markdown* reply segment."},
         ),
@@ -171,7 +171,7 @@ def segments_reply(
 
 
 def segment_result_events(
-    segments: list[OutputSegment], *, index: int = 0
+    segments: list[MessageSegment], *, index: int = 0
 ) -> ChannelScript:
     payload = json.dumps(
         {"response": [segment.model_dump(mode="json") for segment in segments]},
@@ -340,7 +340,7 @@ def plan_tool_noise(answer: str = "no plan rendered") -> ChannelScript:
 
 
 def message_sent(
-    segments: list[OutputSegment] | None = None,
+    segments: list[MessageSegment] | None = None,
     *,
     answer: str = "all set",
 ) -> ChannelScript:
