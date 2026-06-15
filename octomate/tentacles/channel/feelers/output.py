@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import (
@@ -40,7 +40,6 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
     ToolReturnPart,
 )
-from pydantic_ai.result import FinalResult, StreamedRunResult
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_core import to_json
 from typing_extensions import TypeVar
@@ -492,24 +491,6 @@ class MarkdownFeeler(Protocol):
     ) -> IMMessageID | None: ...
 
 
-class MarkdownStreamFeeler(Protocol[OutputT]):
-    """Presents streamed markdown to IM and returns platform message metadata only."""
-
-    async def present(
-        self,
-        key: ConversationKey,
-        stream: StreamedRunResult[None, OutputT],
-    ) -> IMMessageID | None: ...
-
-    async def present_output(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[
-            AgentStreamEvent | ResultSegmentEvent | FinalResult[OutputT]
-        ],
-    ) -> IMMessageID | None: ...
-
-
 class TimelineState:
     """Streaming render hook for one run, and the event→render dispatch (`drive`)
     that walks the run stream. The feeler that opened the state calls `bind` with
@@ -774,20 +755,6 @@ def markdown_from_output(
     return f"```json\n{format_stream_value(output)}\n```"
 
 
-def reply_text_from_event(event: AgentStreamEvent | ResultSegmentEvent) -> str | None:
-    match event:
-        case ResultSegmentEvent(segment=ReplySegment()):
-            return None  # the reply handle threads the message; never rendered
-        case ResultSegmentEvent():
-            return str(event.segment)
-        case PartStartEvent(part=TextPart(content=content)):
-            return content
-        case PartDeltaEvent(delta=TextPartDelta(content_delta=delta)):
-            return delta
-        case _:
-            return None
-
-
 def split_reply(
     segments: Sequence[MessageSegment],
 ) -> tuple[str | None, list[MessageSegment]]:
@@ -989,76 +956,3 @@ class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
             await state.send_parts(todo_block=True)
 
 
-class DefaultMarkdownStreamFeeler(Generic[RawT, MessageT, OutputT]):
-    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
-        self.ink = ink
-        self.chromo = chromo
-
-    async def present(
-        self,
-        key: ConversationKey,
-        stream: StreamedRunResult[None, OutputT],
-    ) -> IMMessageID | None:
-        return await self.present_final(
-            key,
-            stream.stream_output(debounce_by=None),
-            final_output=stream.get_output,
-        )
-
-    async def present_output(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[
-            AgentStreamEvent | ResultSegmentEvent | FinalResult[OutputT]
-        ],
-    ) -> IMMessageID | None:
-        # No streaming Ink (NapCat): consume the stream and send one final message.
-        final_output: OutputT | None = None
-        parts: list[str] = []
-        async for event in events:
-            if isinstance(event, FinalResult):
-                final_output = event.output
-            else:
-                text = reply_text_from_event(event)
-                if text is not None:
-                    parts.append(text)
-        markdown = (
-            markdown_from_output(final_output) if final_output is not None else None
-        )
-        if markdown is None and parts:
-            markdown = "".join(parts)
-        if markdown is not None:
-            logger.warning(
-                "Channel %s: stream feeler has no streaming transport; "
-                "sending the reply as a single message",
-                key.channel_tentacle_id,
-            )
-            return await present_markdown(
-                ink=self.ink,
-                chromo=self.chromo,
-                key=key,
-                markdown=markdown,
-            )
-        return None
-
-    async def present_final(
-        self,
-        key: ConversationKey,
-        snapshots: AsyncIterator[OutputT],
-        *,
-        final_output: Callable[[], Awaitable[OutputT | None]] | None,
-    ) -> IMMessageID | None:
-        last: OutputT | None = None
-        async for snapshot in snapshots:
-            last = snapshot
-        if last is None and final_output is not None:
-            last = await final_output()
-        markdown = markdown_from_output(last) if last is not None else None
-        if markdown is not None:
-            return await present_markdown(
-                ink=self.ink,
-                chromo=self.chromo,
-                key=key,
-                markdown=markdown,
-            )
-        return None

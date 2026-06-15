@@ -25,7 +25,6 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.result import FinalResult
-from pydantic_ai.tools import DeferredToolRequests
 from slack_sdk.models.messages.chunk import TaskUpdateChunk
 
 from octomate import Octomate
@@ -36,7 +35,6 @@ from octomate.capabilities.events import (
     TodoCreatedEvent,
     TodoStatusChangedEvent,
 )
-from octomate.config import SlackStreamConfig
 from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.schemas.segments import (
     CardData,
@@ -56,16 +54,12 @@ from octomate.types.json import JsonObject
 
 from tests.channels.slack.fakes import (
     FakeSlackInk,
-    FakeSlackStream,
-    compose_slack_feelers,
     slack_channel,
     slack_key,
 )
 from tests.support.channels import (
     RecordingDeferredActions,
     drive,
-    output_events,
-    streamed_result,
 )
 from tests.support.scenarios import action_batch, batch_actions, mid_run_notice, play
 
@@ -82,79 +76,6 @@ def _json_objects(value: JsonValue) -> list[JsonObject]:
         assert isinstance(item, dict)
         objects.append(item)
     return objects
-
-
-async def test_slack_tentacle_streams_text_deltas_in_source_thread() -> None:
-    ink = FakeSlackInk()
-    channel = slack_channel(ink)
-
-    await channel.feelers.markdown_stream.present(
-        slack_key(),
-        streamed_result("# Hello\n**world**", "# Hello\n", "**world**"),
-    )
-
-    assert ink.streams == [
-        {
-            "channel": "C1",
-            "thread_ts": "1710000000.000100",
-            "recipient_user_id": "U1",
-            "recipient_team_id": None,
-        }
-    ]
-    assert ink.appends == ["# Hello\n", "**world**"]
-    assert ink.stops == [None]
-    assert ink.finals == []
-
-
-async def test_slack_present_output_renders_output_event_deltas() -> None:
-    ink = FakeSlackInk()
-    channel = slack_channel(ink)
-
-    await channel.feelers.markdown_stream.present_output(
-        slack_key(),
-        output_events("# Hello\n", "**world**"),
-    )
-
-    assert ink.appends == ["# Hello\n", "**world**"]
-    assert ink.stops == [None]
-
-
-async def test_slack_tentacle_can_batch_stream_deltas_when_configured() -> None:
-    ink = FakeSlackInk()
-    channel = slack_channel(ink)
-    channel.config.stream = SlackStreamConfig(flush_interval=999, min_chars=100)
-    compose_slack_feelers(channel)
-
-    await channel.feelers.markdown_stream.present(
-        slack_key(),
-        streamed_result("# Hello\n**world**", "# Hello\n", "**world**"),
-    )
-
-    assert ink.appends == ["# Hello\n**world**"]
-    assert ink.stops == [None]
-
-
-async def test_slack_tentacle_stops_stream_on_deferred_result() -> None:
-    ink = FakeSlackInk()
-    channel = slack_channel(ink)
-
-    await channel.feelers.markdown_stream.present(
-        slack_key(),
-        streamed_result(
-            DeferredToolRequests(
-                calls=[
-                    ToolCallPart(
-                        tool_name="ask_user",
-                        args={"question": "Continue?"},
-                        tool_call_id="call_1",
-                    )
-                ]
-            )
-        ),
-    )
-
-    assert ink.appends == []
-    assert ink.sent == []
 
 
 async def test_slack_consume_renders_timeline_per_event() -> None:
@@ -371,43 +292,6 @@ async def test_slack_consume_renders_action_batch_blocks() -> None:
     assert len(actions.marked) == 2
     assert marked[question.id] == "fallback-ts"
     assert marked[approval.id] == "fallback-ts"
-
-
-async def test_slack_tentacle_streams_final_only_result_once() -> None:
-    ink = FakeSlackInk()
-    channel = slack_channel(ink)
-
-    await channel.feelers.markdown_stream.present(
-        slack_key(),
-        streamed_result("final **markdown**"),
-    )
-
-    assert len(ink.streams) == 1
-    assert ink.appends == ["final **markdown**"]
-    assert ink.stops == [None]
-    assert ink.finals == []
-
-
-async def test_slack_tentacle_closes_open_stream_on_append_error() -> None:
-    class RaisingSlackInk(FakeSlackInk):
-        async def append_stream(
-            self,
-            stream: FakeSlackStream,
-            markdown_text: str,
-        ) -> None:
-            await super().append_stream(stream, markdown_text)
-            raise RuntimeError("append failed")
-
-    ink = RaisingSlackInk()
-    channel = slack_channel(ink)
-
-    await channel.feelers.markdown_stream.present(
-        slack_key(),
-        streamed_result("hello"),
-    )
-
-    assert ink.appends == ["hello"]
-    assert ink.stops == [None]
 
 
 async def test_slack_tentacle_ensures_assistant_thread_conversation() -> None:

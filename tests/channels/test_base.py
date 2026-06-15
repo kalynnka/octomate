@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from pydantic_ai import AgentRunResult, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     PartDeltaEvent,
@@ -17,7 +17,7 @@ from pydantic_ai.messages import (
     ThinkingPart,
     ToolCallPart,
 )
-from pydantic_ai.result import FinalResult, StreamedRunResult
+from pydantic_ai.result import FinalResult
 
 from octomate.capabilities.events import (
     ActionBatchEvent,
@@ -218,41 +218,6 @@ async def test_markdown_feeler_uses_conversation_thread_as_reply_target(
     assert len(channel.sent) == 1
     assert channel.sent[0][3] == "m1"
     assert channel.sent[0][2][0]["text"] == "after reply"
-
-
-async def test_markdown_stream_feeler_default_sends_final_result(
-    channel: FakeChannelTentacle,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    with caplog.at_level("WARNING"):
-        await channel.feelers.markdown_stream.present(
-            _key(),
-            StreamedRunResult([], 0, run_result=AgentRunResult("stream me")),
-        )
-
-    assert "does not support streaming responses" not in caplog.text
-    assert len(channel.sent) == 1
-    assert channel.sent[0][2][0]["text"] == "stream me"
-
-
-async def test_markdown_stream_feeler_present_output_sends_final(
-    channel: FakeChannelTentacle,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    async def events() -> (
-        AsyncIterator[AgentStreamEvent | FinalResult[ChannelOutput]]
-    ):
-        yield PartStartEvent(index=0, part=TextPart(content="strea"))
-        yield FinalResult[ChannelOutput](output="stream me")
-
-    with caplog.at_level("WARNING"):
-        await channel.feelers.markdown_stream.present_output(_key(), events())
-
-    assert len(channel.sent) == 1
-    assert channel.sent[0][2][0]["text"] == "stream me"
-    # The Default stream feeler has no streaming transport, so it warns and sends
-    # the reply as a single message.
-    assert "no streaming transport" in caplog.text
 
 
 async def test_consume_renders_answer_and_drains_stream(

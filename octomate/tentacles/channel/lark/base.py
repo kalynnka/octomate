@@ -18,7 +18,6 @@ from octomate.config import LarkChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.base import (
-    ChannelOutput,
     ChannelTentacle,
     ThreadStrategy,
 )
@@ -32,7 +31,6 @@ from octomate.tentacles.channel.lark.feelers.approvals import (
 )
 from octomate.tentacles.channel.lark.feelers.output import (
     LarkMarkdownFeeler,
-    LarkMarkdownStreamFeeler,
     LarkTimelineFeeler,
 )
 from octomate.tentacles.channel.lark.feelers.questions import (
@@ -72,7 +70,7 @@ def log_card_action_result(channel_id: str, task: asyncio.Task[None]) -> None:
 
 class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
-    feelers: Feelers[ChannelOutput]
+    feelers: Feelers
     ink: LarkInk
     chromo: LarkChromo
 
@@ -114,13 +112,6 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
         ask_questions = LarkAskQuestionFeeler(self.ink)
         self.feelers = Feelers(
             markdown=markdown_feeler,
-            markdown_stream=LarkMarkdownStreamFeeler[ChannelOutput](
-                ink=self.ink,
-                chromo=self.chromo,
-                stream_config=self.config.stream,
-                markdown_feeler=markdown_feeler,
-                channel_id=self.id,
-            ),
             timeline=LarkTimelineFeeler(
                 ink=self.ink,
                 chromo=self.chromo,

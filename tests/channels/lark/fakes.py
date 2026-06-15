@@ -21,7 +21,6 @@ from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
 from octomate.tentacles.channel.lark.feelers.approvals import LarkApprovalFeeler
 from octomate.tentacles.channel.lark.feelers.output import (
     LarkMarkdownFeeler,
-    LarkMarkdownStreamFeeler,
     LarkTimelineFeeler,
 )
 from octomate.tentacles.channel.lark.feelers.questions import LarkAskQuestionFeeler
@@ -170,13 +169,6 @@ def compose_lark_feelers(
     actions = deferred_actions or DeferredActionManager()
     channel.feelers = Feelers(
         markdown=markdown_feeler,
-        markdown_stream=LarkMarkdownStreamFeeler(
-            ink=ink,
-            chromo=chromo,
-            stream_config=channel.config.stream,
-            markdown_feeler=markdown_feeler,
-            channel_id=channel.id,
-        ),
         timeline=LarkTimelineFeeler(
             ink=ink,
             chromo=chromo,

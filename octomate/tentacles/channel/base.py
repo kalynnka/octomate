@@ -33,7 +33,6 @@ from octomate.tentacles.channel.feelers.deferred import (
 )
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
-    DefaultMarkdownStreamFeeler,
     DefaultSegmentsFeeler,
     DefaultTimelineFeeler,
     IMMessageID,
@@ -132,7 +131,7 @@ class ChannelTentacle(
     thread_strategy: ClassVar[ThreadStrategy] = "main_only"
 
     profile: UserProfile
-    feelers: Feelers[ChannelOutput]
+    feelers: Feelers
     ink: Ink[MessageT]
     chromo: Chromo[RawT, MessageT]
     config: ChannelConfig
@@ -157,12 +156,8 @@ class ChannelTentacle(
         approvals = PlainTextApprovalFeeler(markdown_feeler)
         ask_questions = PlainTextAskQuestionFeeler(markdown_feeler)
 
-        self.feelers = Feelers[ChannelOutput](
+        self.feelers = Feelers(
             markdown=markdown_feeler,
-            markdown_stream=DefaultMarkdownStreamFeeler[RawT, MessageT, ChannelOutput](
-                ink=self.ink,
-                chromo=self.chromo,
-            ),
             timeline=DefaultTimelineFeeler[RawT, MessageT](
                 ink=self.ink,
                 chromo=self.chromo,

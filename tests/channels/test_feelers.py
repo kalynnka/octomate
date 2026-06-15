@@ -31,7 +31,6 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.triage import TriageDecision
-from octomate.tentacles.channel.base import ChannelOutput
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
@@ -50,7 +49,6 @@ from octomate.tentacles.channel.slack import SlackTentacle
 from octomate.tentacles.channel.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
 
 from tests.support.channels import (
-    NoopMarkdownStreamFeeler,
     NoopSegmentsFeeler,
     NoopTimeline,
     RecordingApprovalFeeler,
@@ -196,9 +194,8 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         agent_tentacle_id="inkling",
     )
 
-    batch = await Feelers[ChannelOutput](
+    batch = await Feelers(
         markdown=RecordingMarkdownFeeler(),
-        markdown_stream=NoopMarkdownStreamFeeler(),
         timeline=NoopTimeline(),
         segments=NoopSegmentsFeeler(),
         approvals=approvals,

@@ -19,7 +19,6 @@ from octomate.tentacles.channel.feelers.deferred import (
 )
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
-    DefaultMarkdownStreamFeeler,
     DefaultSegmentsFeeler,
     DefaultTimelineFeeler,
 )
@@ -198,7 +197,6 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
     ask_questions = PlainTextAskQuestionFeeler(markdown_feeler)
     channel.feelers = Feelers(
         markdown=markdown_feeler,
-        markdown_stream=DefaultMarkdownStreamFeeler(ink=ink, chromo=chromo),
         timeline=DefaultTimelineFeeler(
             ink=ink,
             chromo=chromo,
