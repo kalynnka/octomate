@@ -127,7 +127,9 @@ class MarkdownSegment(Segment):
 
 
 class ReplySegment(Segment):
-    """Quote/reply to a previous message. Set data.id to the message ID (as string). Must be the first segment in the message."""
+    """Quote/reply to a previous message so the answer threads onto it. Set data.id
+    to the target's message id — the `#msg:<id>` handle shown beside each message in
+    the conversation. Put it first; the message threads onto the first reply it carries."""
 
     type: Literal["reply"] = "reply"
     data: ReplyData
@@ -162,21 +164,6 @@ MessageSegment = Annotated[
         ImageSegment,
         MarkdownSegment,
         ReplySegment,
-        FileSegment,
-        CardSegment,
-    ],
-    Discriminator("type"),
-]
-
-# The reply vocabulary an agent's structured output may carry: the MessageSegment
-# subset that makes sense outbound.
-# TODO: extend with the 2 missing segment types (At/Reply) once their outbound
-# rendering lands (mention targeting, reply threading).
-OutputSegment = Annotated[
-    Union[
-        TextSegment,
-        MarkdownSegment,
-        ImageSegment,
         FileSegment,
         CardSegment,
     ],

@@ -19,12 +19,10 @@ from octomate.tentacles.channel.feelers.deferred import (
 )
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
-    DefaultMarkdownStreamFeeler,
     DefaultSegmentsFeeler,
     DefaultTimelineFeeler,
 )
 from octomate.tentacles.channel.napcat import NapcatChromo, NapcatInk, NapcatTentacle
-from octomate.tentacles.channel.napcat.feelers import NapcatSegmentsFeeler
 from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
 
 from tests.channels.napcat.fakes import FakeNapcatHTTP
@@ -65,7 +63,7 @@ async def test_napcat_segments_feeler_delivers_native_media(tmp_path) -> None:
     http = FakeNapcatHTTP()
     ink = object.__new__(NapcatInk)
     ink.httpx = cast(httpx.AsyncClient, http)
-    feeler = NapcatSegmentsFeeler(ink=ink, chromo=NapcatChromo())
+    feeler = DefaultSegmentsFeeler(ink=ink, chromo=NapcatChromo())
     image = tmp_path / "pic.png"
     image.write_bytes(b"image-bytes")
     key = ConversationKey(
@@ -105,7 +103,7 @@ async def test_napcat_segments_feeler_empty_sends_nothing() -> None:
     http = FakeNapcatHTTP()
     ink = object.__new__(NapcatInk)
     ink.httpx = cast(httpx.AsyncClient, http)
-    feeler = NapcatSegmentsFeeler(ink=ink, chromo=NapcatChromo())
+    feeler = DefaultSegmentsFeeler(ink=ink, chromo=NapcatChromo())
     key = ConversationKey(
         channel_tentacle_id="napcat",
         chat_type="private",
@@ -199,7 +197,6 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
     ask_questions = PlainTextAskQuestionFeeler(markdown_feeler)
     channel.feelers = Feelers(
         markdown=markdown_feeler,
-        markdown_stream=DefaultMarkdownStreamFeeler(ink=ink, chromo=chromo),
         timeline=DefaultTimelineFeeler(
             ink=ink,
             chromo=chromo,

@@ -13,28 +13,20 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Generic, cast
+from typing import Any, ClassVar
 from uuid import UUID
 
-from typing_extensions import TypeVar
 
-from pydantic_ai import AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     OutputToolCallEvent,
     OutputToolResultEvent,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
 )
-from pydantic_ai.result import FinalResult, StreamedRunResult
 from typing_extensions import NotRequired, TypedDict
 
 from octomate import Octomate
 from octomate.capabilities.events import (
-    ResultSegmentEvent,
     TodoEvent,
 )
 from octomate.capabilities.react import ReactStreamEvent
@@ -355,24 +347,6 @@ class NoopSegmentsFeeler:
         return None
 
 
-class NoopMarkdownStreamFeeler:
-    async def present(
-        self,
-        key: ConversationKey,
-        stream: StreamedRunResult[None, ChannelOutput],
-    ) -> IMMessageID | None:
-        return None
-
-    async def present_output(
-        self,
-        key: ConversationKey,
-        events: AsyncIterator[
-            AgentStreamEvent | ResultSegmentEvent | FinalResult[ChannelOutput]
-        ],
-    ) -> IMMessageID | None:
-        return None
-
-
 @dataclass
 class RecordingApprovalFeeler(ApprovalFeeler):
     presented: list[tuple[ConversationKey, list[DeferredApproval]]] = field(
@@ -401,70 +375,3 @@ class RecordingQuestionFeeler(QuestionFeeler):
     ) -> dict[UUID, IMMessageID | None]:
         self.presented.append((key, list(actions)))
         return {action.id: f"question-{action.id}" for action in actions}
-
-
-StreamOutputT = TypeVar("StreamOutputT", bound=ChannelOutput)
-
-
-@dataclass
-class FakeStreamedRunResult(Generic[StreamOutputT]):
-    output: StreamOutputT
-    text_deltas: list[str] = field(default_factory=list)
-    fail_text_stream: bool = False
-
-    async def stream_text(
-        self,
-        *,
-        delta: bool = False,
-        debounce_by: float | None = 0.1,
-    ) -> AsyncIterator[str]:
-        if self.fail_text_stream or not isinstance(self.output, str):
-            raise RuntimeError("text stream unavailable")
-        for text in self.text_deltas or [self.output]:
-            yield text
-
-    async def stream_output(
-        self,
-        *,
-        debounce_by: float | None = 0.1,
-    ) -> AsyncIterator[StreamOutputT]:
-        if self.fail_text_stream:
-            raise RuntimeError("output stream unavailable")
-        if isinstance(self.output, str):
-            content = ""
-            for text in self.text_deltas or [self.output]:
-                content += text
-                yield cast(StreamOutputT, content)
-            return
-        yield self.output
-
-    async def get_output(self) -> StreamOutputT:
-        return self.output
-
-
-def streamed_result(
-    output: StreamOutputT,
-    *text_deltas: str,
-    fail_text_stream: bool = False,
-) -> StreamedRunResult[None, StreamOutputT]:
-    return cast(
-        StreamedRunResult[None, StreamOutputT],
-        FakeStreamedRunResult(
-            output=output,
-            text_deltas=list(text_deltas),
-            fail_text_stream=fail_text_stream,
-        ),
-    )
-
-
-async def output_events(
-    *deltas: str,
-) -> AsyncIterator[AgentStreamEvent | FinalResult[ChannelOutput]]:
-    """A streamed text reply as native Pydantic text events, then the joined whole
-    as `FinalResult`."""
-    if deltas:
-        yield PartStartEvent(index=0, part=TextPart(content=deltas[0]))
-    for delta in deltas[1:]:
-        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=delta))
-    if deltas:
-        yield FinalResult[ChannelOutput](output="".join(deltas))

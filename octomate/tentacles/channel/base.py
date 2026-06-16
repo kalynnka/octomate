@@ -33,7 +33,6 @@ from octomate.tentacles.channel.feelers.deferred import (
 )
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
-    DefaultMarkdownStreamFeeler,
     DefaultSegmentsFeeler,
     DefaultTimelineFeeler,
     IMMessageID,
@@ -76,6 +75,13 @@ class Chromo(
     @abstractmethod
     def outbound_markdown(self, text: str) -> list[MessageT]:
         """Encode markdown text as platform-native outbound message payloads."""
+
+    async def outbound_segments(self, segments: list[MessageSegment]) -> list[MessageT]:
+        """Encode output segments as platform-native outbound message payloads. The
+        default flattens them to a single markdown body via their `str` form;
+        channels with native transport override to ship media inline or to encode a
+        mention token a user actually gets pinged by."""
+        return self.outbound_markdown("\n\n".join(str(seg) for seg in segments))
 
 
 class Ink(ABC, Generic[MessageT]):
@@ -125,7 +131,7 @@ class ChannelTentacle(
     thread_strategy: ClassVar[ThreadStrategy] = "main_only"
 
     profile: UserProfile
-    feelers: Feelers[ChannelOutput]
+    feelers: Feelers
     ink: Ink[MessageT]
     chromo: Chromo[RawT, MessageT]
     config: ChannelConfig
@@ -150,12 +156,8 @@ class ChannelTentacle(
         approvals = PlainTextApprovalFeeler(markdown_feeler)
         ask_questions = PlainTextAskQuestionFeeler(markdown_feeler)
 
-        self.feelers = Feelers[ChannelOutput](
+        self.feelers = Feelers(
             markdown=markdown_feeler,
-            markdown_stream=DefaultMarkdownStreamFeeler[RawT, MessageT, ChannelOutput](
-                ink=self.ink,
-                chromo=self.chromo,
-            ),
             timeline=DefaultTimelineFeeler[RawT, MessageT](
                 ink=self.ink,
                 chromo=self.chromo,

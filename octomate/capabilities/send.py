@@ -1,7 +1,7 @@
 """Send capability: one tool to deliver content to the run's conversation mid-run.
 
-Emit-only. The agent decides *what* to send (the `OutputSegment` vocabulary —
-text, markdown, image, file, card); the system decides *where* implicitly: the
+Emit-only. The agent decides *what* to send (the `MessageSegment` vocabulary —
+text, markdown, image, file, card, reply, at); the system decides *where* implicitly: the
 tool emits a `MessageSentEvent` onto the run's event stream, and whichever consumer
 is rendering this run (the channel timeline, or the web event stream) renders the
 segments into the current conversation — the same surface that renders the reply.
@@ -26,7 +26,7 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from octomate.capabilities.events import MessageSentEvent
 from octomate.constants import SEND_TOOL_NAME
-from octomate.schemas.segments import OutputSegment
+from octomate.schemas.segments import MessageSegment
 
 SEND_INSTRUCTION = """\
 ## Sending content mid-run
@@ -41,6 +41,11 @@ choose or name a channel.
   there — summarize or extend it, never restate what you already sent.
 - If everything worth saying was already sent, return a minimal closing reply (a
   short wrap-up) rather than re-sending the content.
+
+To thread your answer onto a specific message (e.g. one of several in a busy
+group chat), lead with a reply segment whose id is that message's `#msg:<id>`
+handle, shown beside each message — it must be the first segment. To ping someone,
+use an `at` segment with their user id.
 """
 
 
@@ -49,7 +54,7 @@ def build_send_toolset() -> FunctionToolset[Any]:
 
     @toolset.tool(name=SEND_TOOL_NAME)
     async def send_message(
-        ctx: RunContext[Any], segments: list[OutputSegment]
+        ctx: RunContext[Any], segments: list[MessageSegment]
     ) -> ToolReturn[str]:
         """Send messages to the current conversation immediately, without ending
         your turn — progress updates, an intermediate result, an image or a file.

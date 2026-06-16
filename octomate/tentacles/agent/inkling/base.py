@@ -28,7 +28,7 @@ from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.segments import OutputSegment
+from octomate.schemas.segments import MessageSegment
 from octomate.tentacles.agent.base import (
     AgentSpecInput,
     AgentTentacle,
@@ -48,7 +48,7 @@ from octomate.capabilities.react import (
 if TYPE_CHECKING:
     from octomate.base import Octomate
 
-InklingOutput: TypeAlias = str | list[OutputSegment] | DeferredToolRequests
+InklingOutput: TypeAlias = str | list[MessageSegment] | DeferredToolRequests
 
 
 @dataclass
@@ -302,7 +302,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     ]:
         resolved_run_name = run_name or "react"
         react_output_type: OutputSpec[InklingOutput | RunOutputDataT] = (
-            [str, list[OutputSegment], DeferredToolRequests]
+            [str, list[MessageSegment], DeferredToolRequests]
             if output_type is None
             else output_type
         )

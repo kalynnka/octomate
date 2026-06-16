@@ -95,6 +95,20 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
         }
         return [LarkOutboundMessage(msg_type="interactive", content=json.dumps(payload))]
 
+    async def outbound_segments(
+        self, segments: list[MessageSegment]
+    ) -> list[LarkOutboundMessage]:
+        # `<at id=…></at>` is the markup Lark renders as a real mention in card
+        # markdown; everything else flattens to its markdown text form.
+        return self.outbound_markdown(
+            "\n\n".join(
+                f"<at id={seg.data.user_id}></at>"
+                if isinstance(seg, AtSegment)
+                else str(seg)
+                for seg in segments
+            )
+        )
+
     def make_stream_card_data(
         self,
         text: str = "",

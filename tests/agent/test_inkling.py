@@ -21,7 +21,7 @@ from octomate.capabilities.react import ReactStreamEvent
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.segments import OutputSegment, Segment
+from octomate.schemas.segments import MessageSegment, Segment
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
     inkling_toolset,
@@ -43,7 +43,7 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
         TestModel(),
         deps_type=type(None),
         name="octomate-inkling",
-        output_type=[str, list[OutputSegment], DeferredToolRequests],
+        output_type=[str, list[MessageSegment], DeferredToolRequests],
         toolsets=[inkling_toolset],
         capabilities=[TodoCapability(), SendCapability()],
         system_prompt=SYSTEM_PROMPT,

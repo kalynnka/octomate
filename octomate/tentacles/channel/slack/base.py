@@ -13,7 +13,6 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.base import (
-    ChannelOutput,
     ChannelTentacle,
     ThreadStrategy,
 )
@@ -35,10 +34,7 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     question_title,
     submitted_blocks,
 )
-from octomate.tentacles.channel.slack.feelers.output import (
-    SlackMarkdownStreamFeeler,
-    SlackTimelineFeeler,
-)
+from octomate.tentacles.channel.slack.feelers.output import SlackTimelineFeeler
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
     SlackApprovalActionBody,
@@ -70,7 +66,7 @@ IGNORED_SUBTYPES = frozenset(
 
 class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
-    feelers: Feelers[ChannelOutput]
+    feelers: Feelers
     ink: SlackInk
     chromo: SlackChromo
 
@@ -116,13 +112,6 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
         ask_questions = SlackAskQuestionFeeler(self.ink)
         self.feelers = Feelers(
             markdown=markdown_feeler,
-            markdown_stream=SlackMarkdownStreamFeeler[ChannelOutput](
-                ink=self.ink,
-                chromo=self.chromo,
-                stream_config=self.config.stream,
-                markdown_feeler=markdown_feeler,
-                channel_id=self.id,
-            ),
             timeline=SlackTimelineFeeler(
                 ink=self.ink,
                 chromo=self.chromo,

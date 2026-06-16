@@ -8,6 +8,7 @@ import anyio
 
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
+    AtSegment,
     FileSegment,
     ImageSegment,
     MarkdownSegment,
@@ -71,6 +72,8 @@ class NapcatChromo(Chromo[str | bytes, NapcatOutboundMessage]):
                     text = strip_markdown(seg.data["text"])
                     if text:
                         onebot.append({"type": "text", "data": {"text": text}})
+                case AtSegment():
+                    onebot.append({"type": "at", "data": {"qq": seg.data.user_id}})
                 case ImageSegment():
                     file = await inline_base64(seg.data.path)
                     onebot.append({"type": "image", "data": {"file": file}})

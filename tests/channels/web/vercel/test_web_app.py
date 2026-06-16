@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.agent import Agent
 from octomate.config.channels import VercelChannelConfig
-from octomate.schemas.segments import OutputSegment
+from octomate.schemas.segments import MessageSegment
 from octomate.tentacles.agent.inkling import InklingTentacle
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
@@ -124,7 +124,7 @@ async def test_handle_request_streams_every_text_delta(
     agent: Agent[None, InklingOutput] = Agent(
         FunctionModel(stream_function=stream_text, model_name="scripted"),
         deps_type=type(None),
-        output_type=[str, list[OutputSegment], DeferredToolRequests],
+        output_type=[str, list[MessageSegment], DeferredToolRequests],
         system_prompt=SYSTEM_PROMPT,
     )
     channel = _register(Octomate(), agent)

@@ -21,7 +21,6 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
-from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import (
     ResultSegmentEvent,
@@ -34,14 +33,11 @@ from octomate.schemas.segments import CardData, CardSegment, ImageData, ImageSeg
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import ChannelOutput
 from octomate.tentacles.channel.lark.feelers import output as lark_output
-from octomate.tentacles.channel.lark.schema import LarkStreamCard
 from octomate.types.json import JsonObject
-from tests.channels.lark.fakes import FakeLarkInk, enable_lark_stream, lark_channel
+from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 from tests.support.channels import (
     RecordingDeferredActions,
     drive,
-    output_events,
-    streamed_result,
 )
 from tests.support.scenarios import action_batch, batch_actions, mid_run_notice, play
 
@@ -50,147 +46,6 @@ JsonObjectAdapter = TypeAdapter(JsonObject)
 
 def _loaded_json_object(value: str) -> JsonObject:
     return JsonObjectAdapter.validate_json(value)
-
-
-async def test_lark_tentacle_streams_batched_card_updates_in_reply_thread() -> None:
-    ink = FakeLarkInk()
-    channel = lark_channel(ink)
-    enable_lark_stream(channel, interval=0.2)
-    key = ConversationKey(
-        channel_tentacle_id="lark",
-        chat_type="group",
-        chat_id="oc_group",
-        user_id="ou_user",
-        thread_id="om_parent",
-    )
-    await channel.feelers.markdown_stream.present(
-        key,
-        streamed_result("hello", "he", "llo"),
-    )
-
-    assert len(ink.stream_cards) == 1
-    stream_data = _loaded_json_object(ink.stream_cards[0][0])
-    stream_config = stream_data["config"]
-    assert isinstance(stream_config, dict)
-    assert stream_config["streaming_mode"] is True
-    assert ink.stream_messages == [
-        (
-            "oc_group",
-            "group",
-            LarkStreamCard(card_id="card-1", element_id="octomate_answer"),
-            "om_parent",
-            True,
-        )
-    ]
-    assert ink.stream_updates == [
-        (
-            LarkStreamCard(card_id="card-1", element_id="octomate_answer"),
-            "hello",
-            1,
-        )
-    ]
-    assert ink.created == []
-
-
-async def test_lark_present_output_renders_card_updates() -> None:
-    ink = FakeLarkInk()
-    channel = lark_channel(ink)
-    enable_lark_stream(channel, interval=0.2)
-    key = ConversationKey(
-        channel_tentacle_id="lark",
-        chat_type="group",
-        chat_id="oc_group",
-        user_id="ou_user",
-        thread_id="om_parent",
-    )
-
-    await channel.feelers.markdown_stream.present_output(
-        key,
-        output_events("he", "llo"),
-    )
-
-    assert ink.stream_updates == [
-        (
-            LarkStreamCard(card_id="card-1", element_id="octomate_answer"),
-            "hello",
-            1,
-        )
-    ]
-    assert ink.replies == []
-
-
-async def test_lark_tentacle_can_stream_immediate_updates_when_configured() -> None:
-    ink = FakeLarkInk()
-    channel = lark_channel(ink)
-    enable_lark_stream(channel, interval=0)
-    key = ConversationKey(
-        channel_tentacle_id="lark",
-        chat_type="private",
-        chat_id="ou_user",
-        user_id="ou_user",
-    )
-
-    await channel.feelers.markdown_stream.present(
-        key,
-        streamed_result("hello", "he", "llo"),
-    )
-
-    assert [(content, sequence) for _, content, sequence in ink.stream_updates] == [
-        ("he", 1),
-        ("hello", 2),
-    ]
-
-
-async def test_lark_tentacle_falls_back_to_final_message_on_stream_failure() -> None:
-    ink = FakeLarkInk()
-    ink.fail_stream_create = True
-    channel = lark_channel(ink)
-    enable_lark_stream(channel, interval=0)
-    key = ConversationKey(
-        channel_tentacle_id="lark",
-        chat_type="private",
-        chat_id="ou_user",
-        user_id="ou_user",
-    )
-
-    await channel.feelers.markdown_stream.present(
-        key,
-        streamed_result("hello", "hello"),
-    )
-
-    assert ink.stream_messages == []
-    assert ink.created[0][:3] == ("ou_user", "open_id", "interactive")
-    assert "hello" in ink.created[0][3]
-
-
-async def test_lark_tentacle_stops_stream_on_deferred_result() -> None:
-    ink = FakeLarkInk()
-    channel = lark_channel(ink)
-    enable_lark_stream(channel, interval=0)
-    key = ConversationKey(
-        channel_tentacle_id="lark",
-        chat_type="private",
-        chat_id="ou_user",
-        user_id="ou_user",
-    )
-    await channel.feelers.markdown_stream.present(
-        key,
-        streamed_result(
-            DeferredToolRequests(
-                calls=[
-                    ToolCallPart(
-                        tool_name="ask_user",
-                        args={"question": "Continue?"},
-                        tool_call_id="call_1",
-                    )
-                ]
-            )
-        ),
-    )
-
-    assert ink.stream_updates == []
-    assert ink.created == []
-    assert ink.replies == []
 
 
 async def test_lark_consume_renders_timeline_per_event() -> None:

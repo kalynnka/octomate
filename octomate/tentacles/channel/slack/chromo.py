@@ -91,6 +91,18 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
     def outbound_markdown(self, text: str) -> list[SlackOutboundMessage]:
         return [SlackOutboundMessage(text=text, markdown_text=text)] if text else []
 
+    async def outbound_segments(
+        self, segments: list[MessageSegment]
+    ) -> list[SlackOutboundMessage]:
+        # `<@U…>` is the only token Slack renders as a real mention (inverse of
+        # `AT_RE`); everything else flattens to its markdown text form.
+        return self.outbound_markdown(
+            "\n\n".join(
+                f"<@{seg.data.user_id}>" if isinstance(seg, AtSegment) else str(seg)
+                for seg in segments
+            )
+        )
+
     def thread_context(self, key: ConversationKey) -> SlackThreadContext:
         return SlackThreadContext(
             thread_ts=key.thread_id,

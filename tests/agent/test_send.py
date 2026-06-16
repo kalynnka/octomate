@@ -21,7 +21,7 @@ from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import MessageSentEvent
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
-from octomate.schemas.segments import MarkdownSegment, OutputSegment
+from octomate.schemas.segments import MarkdownSegment, MessageSegment
 from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
@@ -33,7 +33,7 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
         TestModel(),
         deps_type=type(None),
         name="octomate-inkling",
-        output_type=[str, list[OutputSegment], DeferredToolRequests],
+        output_type=[str, list[MessageSegment], DeferredToolRequests],
         toolsets=[inkling_toolset],
         capabilities=[TodoCapability(), SendCapability()],
         system_prompt=SYSTEM_PROMPT,
@@ -44,7 +44,7 @@ async def test_send_message_returns_sent_and_announces_event() -> None:
     capability = SendCapability()
     assert capability.toolset is not None
     send_message = capability.toolset.tools["send_message"].function
-    segments: list[OutputSegment] = [MarkdownSegment(data={"text": "halfway there"})]
+    segments: list[MessageSegment] = [MarkdownSegment(data={"text": "halfway there"})]
 
     result = await send_message(cast(RunContext[Any], None), segments)
 
