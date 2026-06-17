@@ -112,8 +112,10 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
     message_id = await drive(channel, slack_key(), events())
 
     assert message_id == "stream-ts"
-    # "plan" gathers all the run's tasks into one plan block.
-    assert ink.streams and ink.streams[0]["task_display_mode"] == "plan"
+    # The tasks render in a "plan" stream; the answer is its own text message.
+    plan_streams = [s for s in ink.stream_objects if s.chunks]
+    text_streams = [s for s in ink.stream_objects if s.appends and not s.chunks]
+    assert ink.streams[0]["task_display_mode"] == "plan"
     chunks = [chunk for group in ink.stream_chunks for chunk in group]
     task_chunks = [chunk for chunk in chunks if isinstance(chunk, TaskUpdateChunk)]
     # ask_questions skipped; thinking + lookup rendered.
@@ -122,8 +124,13 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
     assert any(chunk.title == "Lookup" for chunk in task_chunks)
     details = "\n\n".join(chunk.details or "" for chunk in task_chunks)
     assert "ask_questions" not in details
+    # The finished thinking task keeps its details (Slack collapses it natively).
+    thinking_done = [c for c in task_chunks if c.id == "thinking-1"][-1]
+    assert thinking_done.status == "complete" and thinking_done.details == "checking"
+    # The answer "done" lands in its own text stream, not the plan stream.
+    assert len(plan_streams) == 1
+    assert "".join(text_streams[-1].appends) == "done"
     assert "".join(ink.appends) == "done"
-    assert ink.stops == ["stream-ts"] or ink.stops == [None]
     assert ink.statuses[0] == "Thinking…"
     assert "Lookup…" in ink.statuses
     assert "Writing the response…" in ink.statuses
@@ -165,8 +172,11 @@ async def test_slack_consume_renders_thinking_deltas_live(
         "checking the",
         "checking the docs",
     ]
+    # Once complete the thinking task retitles to "Thought for …" but keeps its
+    # body so Slack can collapse it natively.
     assert thinking_chunks[-1].status == "complete"
     assert thinking_chunks[-1].details == "checking the docs"
+    assert thinking_chunks[-1].title.startswith("Thought for")
 
 
 async def test_slack_consume_renders_image_and_card_segments(
@@ -338,24 +348,31 @@ async def test_slack_tentacle_ensures_assistant_thread_conversation() -> None:
     assert agent_id == "inkling"
 
 
-async def test_slack_timeline_rotates_plan_on_mid_run_notice() -> None:
+async def test_slack_timeline_alternates_plan_and_message() -> None:
     ink = FakeSlackInk()
     channel = slack_channel(ink)
 
     message_id = await drive(channel, slack_key(), play(mid_run_notice()))
 
     assert message_id == "stream-ts"
-    # The notice triggered a rotation: a second plan stream was opened.
-    assert len(ink.stream_objects) == 2
-    first, second = ink.stream_objects
+    # The run alternates: plan block, notice message, plan block, answer message.
+    plan_streams = [s for s in ink.stream_objects if s.chunks]
+    text_streams = [s for s in ink.stream_objects if s.appends and not s.chunks]
+    assert len(plan_streams) == 2
+    assert len(text_streams) == 2
+    first_plan, second_plan = plan_streams
+    notice, answer = text_streams
 
-    # The notice streamed inline into the first plan message...
-    assert "trying another way" in "".join(first.appends)
-    # ...and the in-flight lookup still completed there after the rotation,
-    # which then closed the drained first message.
+    # The notice and the final answer are each their own message, not folded
+    # into a plan widget.
+    assert "trying another way" in "".join(notice.appends)
+    assert "pinning the dependency" in "".join(answer.appends)
+
+    # The in-flight lookup finished — folded — in the first plan it started in,
+    # which then closed once it drained.
     first_tasks = [
         chunk
-        for group in first.chunks
+        for group in first_plan.chunks
         for chunk in group
         if isinstance(chunk, TaskUpdateChunk)
     ]
@@ -363,16 +380,15 @@ async def test_slack_timeline_rotates_plan_on_mid_run_notice() -> None:
         chunk.id == "call_slow_1" and chunk.status == "complete"
         for chunk in first_tasks
     )
-    assert first.stopped
+    assert first_plan.stopped
 
-    # The second round (thinking + read_logs) rendered in the new plan message,
-    # along with the final answer text.
+    # The second round (thinking + read_logs) opened a fresh plan below the
+    # notice message.
     second_tasks = [
         chunk
-        for group in second.chunks
+        for group in second_plan.chunks
         for chunk in group
         if isinstance(chunk, TaskUpdateChunk)
     ]
     assert {chunk.id for chunk in second_tasks} == {"thinking-2", "call_logs_1"}
-    assert "pinning the dependency" in "".join(second.appends)
-    assert second.stopped
+    assert second_plan.stopped

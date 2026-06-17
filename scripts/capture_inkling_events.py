@@ -43,8 +43,8 @@ from octomate.managers.conversations import ConversationManager
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.segments import ImageSegment, OutputSegment
-from octomate.tentacles.agent.inkling import inkling_toolset
+from octomate.schemas.segments import ImageSegment, MessageSegment
+from octomate.tentacles.agent.inkling import build_mcp_toolsets, inkling_toolset
 from octomate.tentacles.agent.inkling.base import (
     InklingOutput,
 )
@@ -110,6 +110,16 @@ def parser() -> argparse.ArgumentParser:
         help=f"JSONL destination directory. Defaults to {DEFAULT_OUTPUT_DIR}.",
     )
     parser.add_argument(
+        "--file-name",
+        default="inkling_text.jsonl",
+        help="Output file for a prompt-override run. Defaults to inkling_text.jsonl.",
+    )
+    parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="Attach the GitHub/Linear MCP toolsets (GitHub forced read-only).",
+    )
+    parser.add_argument(
         "--run-name",
         default="capture",
         help="Run name persisted with the conversation history.",
@@ -140,16 +150,27 @@ async def capture(
     chat_id: str,
     user_id: str,
     thread_id: str,
+    with_mcp: bool = False,
 ) -> dict[str, int]:
     config = OctomateConfig()
     conversations = ConversationManager()
     registry = ProviderRegistry(config.providers)
+    toolsets = [inkling_toolset]
+    if with_mcp:
+        # Force GitHub read-only for captures so a recording can never mutate a
+        # real repo, regardless of the operator's octomate.yaml setting.
+        mcp = config.mcp
+        if mcp.github is not None:
+            mcp = mcp.model_copy(
+                update={"github": mcp.github.model_copy(update={"read_only": True})}
+            )
+        toolsets = [inkling_toolset, *build_mcp_toolsets(mcp)]
     agent: Agent[None, InklingOutput] = Agent(
         registry.build_model(config.agents.inkling.model),
         deps_type=type(None),
         name="octomate-inkling",
-        output_type=[str, list[OutputSegment], DeferredToolRequests],
-        toolsets=[inkling_toolset],
+        output_type=[str, list[MessageSegment], DeferredToolRequests],
+        toolsets=toolsets,
         capabilities=[TodoCapability(), SendCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
@@ -265,7 +286,7 @@ def main() -> None:
                 name="segments_with_image",
                 file_name="inkling_segments.jsonl",
                 prompt=SEGMENTS_PROMPT,
-                output_type=list[OutputSegment],
+                output_type=list[MessageSegment],
                 expectation="segments_with_image",
                 required_image=DEFAULT_IMAGE.as_posix(),
             ),
@@ -274,7 +295,7 @@ def main() -> None:
         cases = [
             CaptureCase(
                 name="plain_text",
-                file_name="inkling_text.jsonl",
+                file_name=args.file_name,
                 prompt=args.prompt,
                 output_type=str,
                 expectation="plain_text",
@@ -288,6 +309,7 @@ def main() -> None:
             chat_id=args.chat_id,
             user_id=args.user_id,
             thread_id=args.thread_id,
+            with_mcp=args.mcp,
         )
     )
     total = sum(case_counts.values())

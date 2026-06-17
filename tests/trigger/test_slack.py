@@ -20,9 +20,10 @@ from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.channel.slack import SlackTentacle
-
+from tests.support.channels import drive
 from tests.support.scenarios import (
     action_batch,
+    agent_run,
     batch_actions,
     mid_run_notice,
     play,
@@ -30,7 +31,6 @@ from tests.support.scenarios import (
     slack_card_payload,
     streamed_text,
 )
-from tests.support.channels import drive
 from tests.trigger.conftest import TriggerTargets, run_banner
 
 pytestmark = pytest.mark.trigger
@@ -86,7 +86,8 @@ async def test_slack_renders_streamed_str_output(
     channel, key = slack_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, 
+        message_id = await drive(
+            channel,
             key,
             play(streamed_text("String ", "output from the octomate test suite.")),
         )
@@ -104,7 +105,8 @@ async def test_slack_renders_streamed_segments_showcase(
     channel, key = slack_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, 
+        message_id = await drive(
+            channel,
             key,
             play(
                 showcase(
@@ -149,7 +151,24 @@ async def test_slack_renders_mid_run_notice(
     channel, key = slack_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, key, play(mid_run_notice(), delay=0.2))
+        message_id = await drive(channel, key, play(mid_run_notice(), delay=0.05))
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_slack_renders_timeline(
+    slack_channel: tuple[SlackTentacle, ConversationKey],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The full timeline example: thinking + several github_/linear_ tool calls
+    fold into plan blocks, and the agent's one-line notes between them post as
+    their own messages, alternating plan → message → plan → … → final reply.
+    The delay lets the human watch tasks fold and messages land live."""
+    channel, key = slack_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await drive(channel, key, play(agent_run(), delay=0.05))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text

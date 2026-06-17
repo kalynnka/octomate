@@ -104,6 +104,15 @@ def text_part_events(*deltas: str, index: int = 0) -> ChannelScript:
     ]
 
 
+def narration(text: str, *, index: int = 1) -> ChannelScript:
+    """One complete assistant text part — a mid-run progress note or the final
+    reply — opened and closed so the channel posts it as its own message."""
+    return [
+        PartStartEvent(index=index, part=TextPart(content=text)),
+        PartEndEvent(index=index, part=TextPart(content=text)),
+    ]
+
+
 def scenario_card_payload() -> JsonObject:
     return {
         "schema": "2.0",
@@ -371,77 +380,166 @@ def message_sent(
 
 
 def agent_run() -> ChannelScript:
-    """A full mocked agent run as the react graph streams it: two rounds of
-    thinking and tool work with todo progress in between, then the reply as
-    streamed text deltas. The timeline scenario — exercises every lifecycle
-    hook a multi-step run drives."""
-    plan, docs = scenario_todos()
-    answer_deltas = (
-        "Looked through the docs",
-        " and the build logs — ",
-        "the flake comes from an unpinned dependency. ",
-        "Pinning it in the lockfile fixes the failure.",
+    """A real read-only GitHub + Linear lookup as the react graph streamed it
+    (captured with ``scripts/capture_inkling_events.py --mcp``, then condensed
+    and de-identified): the agent thinks, discovers the MCP tools via ToolSearch,
+    then drops a one-line note before each tool call and closes with a summary.
+
+    The timeline scenario — folding plan tasks (thinking + several github_/
+    linear_ tool calls) interleaved with the agent's narration messages, which
+    each post as their own message. Exercises the alternating plan/message
+    rendering the streaming feelers drive."""
+    answer = (
+        "All read-only — here's what I found 🐙\n\n"
+        "*GitHub `pydantic/pydantic-ai`* — \"AI Agent Framework, the Pydantic "
+        "way\", 17,812⭐, 635 open issues. Recent: #5966 Native minimax support, "
+        "#5964 AGUIAdapter reorders ToolReturnPart.\n\n"
+        "*Linear* — teams China, Vita, DevOps. Recent in Vita: VITA-909 "
+        "progressive-loading taxonomy (Triaged), VITA-908 New Chat loading state "
+        "(In Progress).\n\nNothing was created or modified — pure reads. 🌊"
     )
-    answer = "".join(answer_deltas)
     return [
-        PartStartEvent(index=0, part=ThinkingPart(content="The user asks about")),
-        PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" a flaky build.")),
+        PartStartEvent(index=0, part=ThinkingPart(content="I need to look up the")),
         PartDeltaEvent(
             index=0,
-            delta=ThinkingPartDelta(content_delta=" I should plan and check the docs."),
+            delta=ThinkingPartDelta(
+                content_delta=" GitHub and Linear tools before I can read anything."
+            ),
         ),
         PartEndEvent(
             index=0,
             part=ThinkingPart(
-                content="The user asks about a flaky build. "
-                "I should plan and check the docs."
+                content="I need to look up the GitHub and Linear tools "
+                "before I can read anything."
             ),
         ),
-        TodoCreatedEvent(todo=plan.model_copy(update={"status": "pending"})),
-        TodoCreatedEvent(todo=docs.model_copy(update={"status": "pending"})),
+        *narration("I'll start by finding the right GitHub and Linear tools."),
         FunctionToolCallEvent(
             part=ToolCallPart(
-                tool_name="lookup",
-                args={"query": "flaky build"},
-                tool_call_id="call_lookup_1",
+                tool_name="search_tools",
+                args={
+                    "queries": [
+                        "github repository search",
+                        "github issues list",
+                        "linear teams issues",
+                    ]
+                },
+                tool_call_id="call_search_1",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="lookup",
-                content={"matches": 3, "best": "ci-troubleshooting.md"},
-                tool_call_id="call_lookup_1",
+                tool_name="search_tools",
+                content={
+                    "discovered": [
+                        "github_search_repositories",
+                        "github_list_issues",
+                        "linear_list_teams",
+                        "linear_list_issues",
+                    ]
+                },
+                tool_call_id="call_search_1",
             )
         ),
-        TodoCompletedEvent(todo=plan),
-        TodoStatusChangedEvent(
-            todo=docs,
-            previous=docs.model_copy(update={"status": "pending"}),
-        ),
-        PartStartEvent(
-            index=1,
-            part=ThinkingPart(content="The docs point at the dependency lockfile."),
-        ),
-        PartEndEvent(
-            index=1,
-            part=ThinkingPart(content="The docs point at the dependency lockfile."),
-        ),
+        *narration("Step 1: Searching GitHub for the pydantic/pydantic-ai repo."),
         FunctionToolCallEvent(
             part=ToolCallPart(
-                tool_name="read_logs",
-                args={"job": "build", "tail": 50},
-                tool_call_id="call_logs_1",
+                tool_name="github_search_repositories",
+                args={"query": "repo:pydantic/pydantic-ai", "minimal_output": False},
+                tool_call_id="call_gh_repos_1",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="read_logs",
-                content={"failed_step": "install", "hint": "unpinned dependency"},
-                tool_call_id="call_logs_1",
+                tool_name="github_search_repositories",
+                content={
+                    "full_name": "pydantic/pydantic-ai",
+                    "description": "AI Agent Framework, the Pydantic way",
+                    "stars": 17812,
+                    "open_issues": 635,
+                    "language": "Python",
+                },
+                tool_call_id="call_gh_repos_1",
             )
         ),
-        TodoCompletedEvent(todo=docs.model_copy(update={"status": "completed"})),
-        *text_part_events(*answer_deltas),
+        *narration("Step 2: Listing a few open issues on pydantic/pydantic-ai."),
+        FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="github_list_issues",
+                args={
+                    "owner": "pydantic",
+                    "repo": "pydantic-ai",
+                    "state": "OPEN",
+                    "perPage": 5,
+                },
+                tool_call_id="call_gh_issues_1",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="github_list_issues",
+                content={
+                    "issues": [
+                        {
+                            "number": 5966,
+                            "title": "Native minimax support",
+                            "labels": ["feature", "new models"],
+                        },
+                        {
+                            "number": 5964,
+                            "title": "AGUIAdapter.dump_messages reorders "
+                            "ToolReturnPart after UserPromptPart",
+                            "labels": ["bug", "AG-UI"],
+                        },
+                    ]
+                },
+                tool_call_id="call_gh_issues_1",
+            )
+        ),
+        *narration("Step 3a: Listing your Linear teams."),
+        FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="linear_list_teams",
+                args={"limit": 10},
+                tool_call_id="call_lin_teams_1",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="linear_list_teams",
+                content={"teams": ["China", "Vita", "DevOps"]},
+                tool_call_id="call_lin_teams_1",
+            )
+        ),
+        *narration('Step 3b: Pulling a few recent issues from the "Vita" team.'),
+        FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name="linear_list_issues",
+                args={"limit": 5, "orderBy": "updatedAt", "team": "Vita"},
+                tool_call_id="call_lin_issues_1",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="linear_list_issues",
+                content={
+                    "issues": [
+                        {
+                            "id": "VITA-909",
+                            "title": "HTML generation: progressive-loading taxonomy",
+                            "state": "Triaged",
+                        },
+                        {
+                            "id": "VITA-908",
+                            "title": "Fix New Chat loading state during background run",
+                            "state": "In Progress",
+                        },
+                    ]
+                },
+                tool_call_id="call_lin_issues_1",
+            )
+        ),
+        *narration(answer),
         FinalResult[ChannelOutput](output=answer),
         AgentRunResultEvent(AgentRunResult(answer)),
     ]
