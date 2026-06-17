@@ -76,6 +76,19 @@ octomate:
   #     # or: profile_name: my-profile
   #     # or: api_key: <AWS_BEARER_TOKEN_BEDROCK>
 
+  # Vendor MCP servers (GitHub, Linear) connected over Streamable HTTP with one
+  # operator token each. Tools are deferred-loaded: hidden until the model
+  # discovers them via ToolSearch. Put real tokens in octomate.yaml or env.
+  mcp: {}
+  # mcp:
+  #   github:
+  #     enabled: true
+  #     token: ghp_xxx            # or OCTOMATE__MCP__GITHUB__TOKEN
+  #     read_only: false          # true => the /readonly endpoint variant
+  #   linear:
+  #     enabled: true
+  #     token: lin_api_xxx        # or OCTOMATE__MCP__LINEAR__TOKEN
+
 # Live-replay test targets (`pytest tests/trigger/`).
 # This section sits OUTSIDE `octomate:` — the application never reads it.
 # Configure it in the gitignored octomate.yaml, next to the channel credentials:

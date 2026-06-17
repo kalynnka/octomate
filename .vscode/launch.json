@@ -14,7 +14,8 @@
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "main:app",
+        "main:create_app",
+        "--factory",
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
@@ -27,7 +28,8 @@
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "main:app",
+        "main:create_app",
+        "--factory",
         "--reload",
         "--reload-dir",
         "octomate",

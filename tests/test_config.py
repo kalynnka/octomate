@@ -8,7 +8,10 @@ from pydantic_settings import SettingsConfigDict
 
 from octomate.config import (
     ChannelsConfig,
+    GitHubMcpConfig,
     LarkChannelConfig,
+    LinearMcpConfig,
+    McpConfig,
     NapcatChannelConfig,
     OctomateConfig,
     SlackChannelConfig,
@@ -67,6 +70,42 @@ def test_channel_config_parses_supported_channels() -> None:
     assert config.channels.lark.stream.flush_interval == 0.2
     assert config.channels.lark.stream.min_chars == 1
     assert config.channels.napcat.stream.enabled is False
+
+
+def test_mcp_defaults_to_no_servers() -> None:
+    mcp = McpConfig()
+    assert mcp.github is None
+    assert mcp.linear is None
+
+
+def test_mcp_config_parses_servers() -> None:
+    config = OctomateConfig(
+        mcp={
+            "github": {"enabled": True, "token": "ghp_test", "read_only": True},
+            "linear": {"enabled": True, "token": "lin_test"},
+        }
+    )
+
+    assert isinstance(config.mcp.github, GitHubMcpConfig)
+    assert config.mcp.github.enabled is True
+    assert config.mcp.github.read_only is True
+    assert config.mcp.github.token is not None
+    assert config.mcp.github.token.get_secret_value() == "ghp_test"
+    assert config.mcp.github.url == "https://api.githubcopilot.com/mcp/"
+
+    assert isinstance(config.mcp.linear, LinearMcpConfig)
+    assert config.mcp.linear.url == "https://mcp.linear.app/mcp"
+
+
+def test_mcp_token_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__ENABLED", "true")
+    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__TOKEN", "ghp_env")
+
+    config = OctomateConfig()
+
+    assert config.mcp.github is not None
+    assert config.mcp.github.token is not None
+    assert config.mcp.github.token.get_secret_value() == "ghp_env"
 
 
 def test_channel_stream_config_uses_partial_defaults_from_yaml(

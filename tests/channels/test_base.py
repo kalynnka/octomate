@@ -536,3 +536,22 @@ async def test_start_sub_thread_falls_back_to_main_target(
     assert "does not support sub-thread startup" in caplog.text
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "handoff"
+
+
+async def test_channel_context_manager_probes_on_enter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = FakeChannelTentacle(id="chan1")
+    probed: list[bool] = []
+    original = channel.probe
+
+    async def probe() -> None:
+        probed.append(True)
+        await original()
+
+    monkeypatch.setattr(channel, "probe", probe)
+
+    async with channel as entered:
+        assert entered is channel
+
+    assert probed == [True]

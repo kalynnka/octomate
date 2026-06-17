@@ -13,7 +13,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Generic, Literal, TypeAlias, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Generic,
+    Literal,
+    Self,
+    TypeAlias,
+    TypeVar,
+)
 
 import anyio
 import logfire
@@ -174,7 +182,7 @@ class ChannelTentacle(
 
     async def probe(self) -> None:
         """Resolve the channel's own identity from the platform. Awaited by the
-        host before the channel is activated, so `self.profile` is set before any
+        host before the channel is served, so `self.profile` is set before any
         inbound event is ingested."""
         self.profile = await self.ink.inspect()
         logger.info(
@@ -183,6 +191,13 @@ class ChannelTentacle(
             self.profile.user_id,
             self.profile.name,
         )
+
+    async def __aenter__(self) -> Self:
+        # Resolve identity before any inbound event is ingested. Channels with a
+        # persistent connection override this to open it (and `__aexit__` to tear
+        # it down); HTTP-driven channels (e.g. the dev UI) need only the probe.
+        await self.probe()
+        return self
 
     @property
     def name(self) -> str:

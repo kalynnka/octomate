@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 
-import anyio
 import logfire
 from fastapi import APIRouter, FastAPI, Request, Response
 
@@ -25,8 +23,6 @@ from octomate.tentacles.agent.inkling.graph import (
     triage_graph,
 )
 from octomate.tentacles.channel.base import ChannelTentacle
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -91,23 +87,17 @@ class Octomate:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             with sqlalchemy_materia():
-                for channel in self.channels.values():
-                    await channel.probe()
-                async with anyio.create_task_group() as tg:
+                # Each tentacle is an async context manager owning its own
+                # long-lived resources (agents: warm MCP sessions; channels:
+                # the inbound receive loop). Enter agents first so their tools
+                # are warm before channels start ingesting; the stack tears
+                # everything down in reverse on shutdown.
+                async with AsyncExitStack() as stack:
+                    for agent in self.agents.values():
+                        await stack.enter_async_context(agent)
                     for channel in self.channels.values():
-                        tg.start_soon(channel.activate)
-                    try:
-                        yield
-                    finally:
-                        for channel in reversed(list(self.channels.values())):
-                            try:
-                                await channel.deactivate()
-                            except Exception:
-                                logger.exception(
-                                    "Channel %s failed during shutdown",
-                                    getattr(channel, "id", "<unknown>"),
-                                )
-                        tg.cancel_scope.cancel()
+                        await stack.enter_async_context(channel)
+                    yield
 
         app = FastAPI(title=title, docs_url="/docs", redoc_url=None, lifespan=lifespan)
         app.state.octomate = self

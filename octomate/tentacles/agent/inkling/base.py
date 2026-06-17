@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, TypeAlias, overload
+from typing import TYPE_CHECKING, Self, TypeAlias, overload
 
 import logfire
 from pydantic_ai import (
-    AgentNativeTool,
     AgentCapability,
     AgentModelSettings,
+    AgentNativeTool,
     AgentRunResult,
     AgentRunResultEvent,
     RunUsage,
@@ -26,13 +27,6 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.managers.conversations import ConversationManager
-from octomate.schemas.conversation import ConversationKey
-from octomate.schemas.segments import MessageSegment
-from octomate.tentacles.agent.base import (
-    AgentSpecInput,
-    AgentTentacle,
-)
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
 from octomate.capabilities.react import (
@@ -43,6 +37,13 @@ from octomate.capabilities.react import (
     ResumeTurn,
     StartTurn,
     iter_react_graph_events,
+)
+from octomate.managers.conversations import ConversationManager
+from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.segments import MessageSegment
+from octomate.tentacles.agent.base import (
+    AgentSpecInput,
+    AgentTentacle,
 )
 
 if TYPE_CHECKING:
@@ -59,6 +60,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
 
+    _exit_stack: AsyncExitStack = field(init=False)
+
     def __init__(
         self,
         id: str,
@@ -72,6 +75,17 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self.agent = agent
         self.conversation_manager = conversation_manager or ConversationManager()
         self.deferred_resolver = deferred_resolver
+        self._exit_stack = AsyncExitStack()
+
+    async def __aenter__(self) -> Self:
+        # Enter the wrapped pydantic-ai agent once for the tentacle's lifetime so
+        # its MCP toolsets open + `initialize` a single warm session, reused across
+        # every react-graph run instead of reconnecting per turn.
+        await self._exit_stack.enter_async_context(self.agent)
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self._exit_stack.aclose()
 
     @overload
     async def run(
