@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, TypeAlias, TypeVar, overload
 
 from pydantic_ai import (
-    AgentBuiltinTool,
+    AgentNativeTool,
     AgentCapability,
     AgentModelSettings,
     AgentRunResult,
@@ -64,7 +64,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         event_stream_handler: EventStreamHandler[AgentDepsT] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
@@ -90,7 +90,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         event_stream_handler: EventStreamHandler[AgentDepsT] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
@@ -116,7 +116,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         event_stream_handler: EventStreamHandler[AgentDepsT] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
@@ -143,7 +143,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[AgentOutputT]: ...
@@ -168,7 +168,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[RunOutputDataT]: ...
@@ -193,7 +193,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[AgentOutputT | RunOutputDataT]:

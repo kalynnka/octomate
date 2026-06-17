@@ -12,7 +12,7 @@ import anyio
 import logfire
 from anyio.abc import ObjectSendStream
 from pydantic_ai import (
-    AgentBuiltinTool,
+    AgentNativeTool,
     AgentCapability,
     AgentModelSettings,
     AgentRunResult,
@@ -21,12 +21,16 @@ from pydantic_ai import (
     RunUsage,
     UsageLimits,
 )
-from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata
+from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata, AgentRetries
+from pydantic_ai.capabilities import NativeTool
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+# TODO: migrate this graph to the pydantic_graph GraphBuilder (Step/Decision/Edge)
+# API once pydantic-graph v2 is officially released. The BaseNode `Graph` runner is
+# deprecated for v2; pinned <2 in pyproject.toml until then.
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.managers.conversations import ConversationManager
@@ -81,7 +85,7 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     output_retries: int | None = None
     infer_name: bool = True
     toolsets: Sequence[AbstractToolset[ReactDepsT]] | None = None
-    builtin_tools: Sequence[AgentBuiltinTool[ReactDepsT]] | None = None
+    builtin_tools: Sequence[AgentNativeTool[ReactDepsT]] | None = None
     capabilities: Sequence[AgentCapability[ReactDepsT]] | None = None
     spec: dict[str, Any] | AgentSpec | None = None
 
@@ -164,6 +168,22 @@ class RunAgent(
                 agent_tentacle_id=ctx.state.agent_tentacle_id,
             )
             if ctx.deps.event_send_stream is None:
+                # builtin_tools and output_retries are deprecated run kwargs in
+                # pydantic-ai 1.x: native tools register as NativeTool capabilities,
+                # and the output-retry budget moves under retries={"output": ...}.
+                # (The stream_events path below still takes the deprecated-shaped
+                # kwargs; Agent.stream_events translates them internally.)
+                retries = (
+                    AgentRetries(output=ctx.deps.output_retries)
+                    if ctx.deps.output_retries is not None
+                    else None
+                )
+                capabilities = ctx.deps.capabilities
+                if ctx.deps.builtin_tools:
+                    capabilities = [
+                        *(capabilities or []),
+                        *(NativeTool(tool) for tool in ctx.deps.builtin_tools),
+                    ]
                 result = await ctx.deps.agent.run(
                     self.user_prompt,
                     output_type=ctx.deps.output_type,
@@ -177,11 +197,10 @@ class RunAgent(
                     usage_limits=ctx.deps.usage_limits,
                     usage=ctx.deps.usage,
                     metadata=ctx.deps.metadata,
-                    output_retries=ctx.deps.output_retries,
+                    retries=retries,
                     infer_name=ctx.deps.infer_name,
                     toolsets=ctx.deps.toolsets,
-                    builtin_tools=ctx.deps.builtin_tools,
-                    capabilities=ctx.deps.capabilities,
+                    capabilities=capabilities,
                     spec=ctx.deps.spec,
                 )
                 return await self.next_node(ctx, result, conversation, span)

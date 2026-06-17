@@ -104,7 +104,7 @@ class ProviderRegistry:
                 return DeepSeekProvider(**present(api_key=cfg.api_key))
             case "gemini":
                 cfg = self.config.gemini or GeminiProviderConfig()
-                return GoogleProvider(vertexai=False, **present(api_key=cfg.api_key))
+                return GoogleProvider(**present(api_key=cfg.api_key))
             case "vertex":
                 cfg = self.config.vertex or VertexProviderConfig()
                 credentials = None

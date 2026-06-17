@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, TypeAlias, overload
 
 import logfire
 from pydantic_ai import (
-    AgentBuiltinTool,
+    AgentNativeTool,
     AgentCapability,
     AgentModelSettings,
     AgentRunResult,
@@ -93,7 +93,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[None]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
         event_stream_handler: EventStreamHandler[None] | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
@@ -119,7 +119,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[None]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
         event_stream_handler: EventStreamHandler[None] | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
@@ -144,7 +144,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[None]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
         event_stream_handler: EventStreamHandler[None] | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
@@ -197,7 +197,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[None]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[InklingOutput]: ...
@@ -222,7 +222,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[None]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[RunOutputDataT]: ...
@@ -246,7 +246,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[None]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[InklingOutput | RunOutputDataT]:
@@ -293,7 +293,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         output_retries: int | None,
         infer_name: bool,
         toolsets: Sequence[AbstractToolset[None]] | None,
-        builtin_tools: Sequence[AgentBuiltinTool[None]] | None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None,
         capabilities: Sequence[AgentCapability[None]] | None,
         spec: AgentSpecInput | None,
     ) -> AsyncGenerator[

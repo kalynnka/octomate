@@ -27,7 +27,7 @@ from typing import Any, cast, overload
 from pydantic import ValidationError
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
-    AgentBuiltinTool,
+    AgentNativeTool,
     AgentCapability,
     AgentModelSettings,
     AgentRunResultEvent,
@@ -43,8 +43,10 @@ from pydantic_ai._agent_graph import build_run_context
 from pydantic_ai.agent.abstract import (
     AgentInstructions,
     AgentMetadata,
+    AgentRetries,
     RunOutputDataT,
 )
+from pydantic_ai.capabilities import NativeTool
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import (
     FinalResultEvent,
@@ -86,7 +88,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: dict[str, Any] | AgentSpec | None = None,
     ) -> AsyncIterator[
@@ -112,7 +114,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: dict[str, Any] | AgentSpec | None = None,
     ) -> AsyncIterator[
@@ -137,10 +139,21 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         output_retries: int | None = None,
         infer_name: bool = True,
         toolsets: Sequence[AbstractToolset[AgentDepsT]] | None = None,
-        builtin_tools: Sequence[AgentBuiltinTool[AgentDepsT]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: dict[str, Any] | AgentSpec | None = None,
     ) -> AsyncIterator[StreamEvents[Any] | AgentRunResultEvent[Any]]:
+        # builtin_tools and output_retries are deprecated run kwargs in pydantic-ai
+        # 1.x: native tools register as NativeTool capabilities, and the output-retry
+        # budget moves under retries={"output": ...}.
+        retries = (
+            AgentRetries(output=output_retries) if output_retries is not None else None
+        )
+        if builtin_tools:
+            capabilities = [
+                *(capabilities or []),
+                *(NativeTool(tool) for tool in builtin_tools),
+            ]
         async with self.iter(
             user_prompt,
             output_type=output_type,
@@ -154,10 +167,9 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
             usage_limits=usage_limits,
             usage=usage,
             metadata=metadata,
-            output_retries=output_retries,
+            retries=retries,
             infer_name=infer_name,
             toolsets=toolsets,
-            builtin_tools=builtin_tools,
             capabilities=capabilities,
             spec=spec,
         ) as run:

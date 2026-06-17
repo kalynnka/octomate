@@ -10,6 +10,9 @@ import logfire
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
+# TODO: migrate this graph to the pydantic_graph GraphBuilder (Step/Decision/Edge)
+# API once pydantic-graph v2 is officially released. The BaseNode `Graph` runner is
+# deprecated for v2; pinned <2 in pyproject.toml until then.
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.capabilities.events import StreamEvents
