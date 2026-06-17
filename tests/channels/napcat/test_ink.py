@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 from collections.abc import AsyncIterator
 from types import SimpleNamespace, TracebackType
@@ -176,11 +177,40 @@ async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
         FakeConnect,
     )
 
-    await channel.activate()
+    await channel.serve()
 
     assert calls == [
         ("ws://napcat", {"Authorization": "Bearer token"}),
     ]
+
+
+async def test_napcat_context_manager_runs_serve_until_exit(monkeypatch) -> None:
+    channel = object.__new__(NapcatTentacle)
+    channel.id = "napcat"
+    channel.ws_client = None
+    channel.stop_event = None
+    channel.serve_task = None
+
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def fake_probe() -> None:
+        return None
+
+    async def fake_serve() -> None:
+        started.set()
+        await blocked.wait()
+
+    monkeypatch.setattr(channel, "probe", fake_probe)
+    monkeypatch.setattr(channel, "serve", fake_serve)
+
+    async with channel:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert channel.serve_task is not None
+        assert not channel.serve_task.done()
+
+    # __aexit__ cancels and joins the never-completing serve loop.
+    assert channel.serve_task is None
 
 
 async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import lark_oapi
 import lark_oapi.ws.client as ws_mod
@@ -75,7 +75,6 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
     chromo: LarkChromo
 
     ws_client: lark_oapi.ws.Client
-    stop_event: asyncio.Event | None
     ping_task: asyncio.Task[None] | None
 
     def __init__(
@@ -105,7 +104,6 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             event_handler=event_handler,
             log_level=lark_oapi.LogLevel.INFO,
         )
-        self.stop_event = None
         self.ping_task = None
         markdown_feeler = LarkMarkdownFeeler(ink=self.ink, chromo=self.chromo)
         approvals = LarkApprovalFeeler(self.ink)
@@ -125,24 +123,29 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             ask_questions=ask_questions,
         )
 
-    async def activate(self) -> None:
+    async def __aenter__(self) -> Self:
+        await super().__aenter__()
         logger.info("Channel %s: starting Lark WebSocket client", self.id)
         # lark-oapi exposes a blocking public start(), but its WebSocket client
         # is async internally. Run those internals on Octomate's event loop so
-        # message callbacks can schedule ingest directly.
+        # message callbacks can schedule ingest directly. `_connect` plus the ping
+        # task keep the socket live and callback-driven — no receive loop to park.
         ws_mod.loop = asyncio.get_running_loop()
-        self.stop_event = asyncio.Event()
         await self.ws_client._connect()  # type: ignore[attr-defined]
         self.ping_task = asyncio.create_task(self.ws_client._ping_loop())  # type: ignore[attr-defined]
-        try:
-            await self.stop_event.wait()
-        finally:
-            await self._disconnect()
+        return self
 
-    async def deactivate(self) -> None:
-        if self.stop_event is not None:
-            self.stop_event.set()
-        await self._disconnect()
+    async def __aexit__(self, *exc: object) -> None:
+        self.ws_client._auto_reconnect = False  # type: ignore[attr-defined]
+        if self.ping_task is not None:
+            ping_task = self.ping_task
+            self.ping_task = None
+            ping_task.cancel()
+            try:
+                await ping_task
+            except asyncio.CancelledError:
+                pass
+        await self.ws_client._disconnect()  # type: ignore[attr-defined]
 
     async def start_sub_thread(
         self,
@@ -313,19 +316,3 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             )
 
         return P2CardActionTriggerResponse({})
-
-    async def close(self) -> None:
-        await self.deactivate()
-        self.ink.close()
-
-    async def _disconnect(self) -> None:
-        self.ws_client._auto_reconnect = False  # type: ignore[attr-defined]
-        if self.ping_task is not None:
-            ping_task = self.ping_task
-            self.ping_task = None
-            ping_task.cancel()
-            try:
-                await ping_task
-            except asyncio.CancelledError:
-                pass
-        await self.ws_client._disconnect()  # type: ignore[attr-defined]

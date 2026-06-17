@@ -23,6 +23,7 @@ from octomate.config.channels import (
     SlackChannelConfig,
     SlackStreamConfig,
 )
+from octomate.config.mcp import GitHubMcpConfig, LinearMcpConfig, McpConfig
 from octomate.config.models import (
     AnthropicModelSettings,
     BedrockModelSettings,
@@ -45,7 +46,7 @@ from octomate.config.providers import (
 
 class OctomateConfig(BaseSettings):
     model_config = SettingsConfigDict(
-        env_prefix="OCTOMATE_",
+        env_prefix="OCTOMATE__",
         env_nested_delimiter="__",
         yaml_file=("octomate.default.yaml", "octomate.yaml"),
         yaml_config_section="octomate",
@@ -61,6 +62,7 @@ class OctomateConfig(BaseSettings):
     logfire: LogfireConfig = Field(default_factory=LogfireConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
 
     @classmethod
     def settings_customise_sources(
@@ -101,6 +103,10 @@ __all__ = [
     "OpenAIProviderConfig",
     "ProvidersConfig",
     "VertexProviderConfig",
+    # mcp
+    "McpConfig",
+    "GitHubMcpConfig",
+    "LinearMcpConfig",
     # channels
     "ChannelConfig",
     "ChannelsConfig",

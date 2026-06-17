@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection, connect
@@ -24,6 +24,7 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
     ws_url: str
     ws_client: ClientConnection | None
     stop_event: asyncio.Event | None
+    serve_task: asyncio.Task[None] | None
 
     access_token: SecretStr | None
     backoff_base: float
@@ -57,8 +58,30 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
         self.backoff_factor = config.backoff_factor
         self.ws_client = None
         self.stop_event = None
+        self.serve_task = None
 
-    async def activate(self) -> None:
+    async def __aenter__(self) -> Self:
+        await super().__aenter__()
+        # Napcat reads messages off the socket itself (`sense`), so the reconnect
+        # loop must run as a background task the tentacle owns.
+        self.serve_task = asyncio.create_task(self.serve(), name=f"napcat:{self.id}")
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        if self.stop_event is not None:
+            self.stop_event.set()
+        if self.ws_client is not None:
+            await self.ws_client.close()
+            self.ws_client = None
+        if self.serve_task is not None:
+            self.serve_task.cancel()
+            try:
+                await self.serve_task
+            except asyncio.CancelledError:
+                pass
+            self.serve_task = None
+
+    async def serve(self) -> None:
         logger.info("Channel %s: connecting to Napcat at %s", self.id, self.ws_url)
         self.stop_event = asyncio.Event()
         delay = self.backoff_base
@@ -104,17 +127,6 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
                 pass
             delay = min(delay * self.backoff_factor, self.backoff_max)
 
-    async def deactivate(self) -> None:
-        if self.stop_event is not None:
-            self.stop_event.set()
-        if self.ws_client is not None:
-            await self.ws_client.close()
-            self.ws_client = None
-
     async def sense(self, ws: ClientConnection) -> None:
         async for raw in ws:
             await self.ingest(raw)
-
-    async def close(self) -> None:
-        await self.deactivate()
-        await self.ink.close()

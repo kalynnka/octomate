@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import TypeAdapter, ValidationError
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -124,15 +124,19 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             ask_questions=ask_questions,
         )
 
-    async def activate(self) -> None:
+    async def __aenter__(self) -> Self:
+        await super().__aenter__()
         logger.info("Channel %s: starting Slack Socket Mode client", self.id)
         self.handler = AsyncSocketModeHandler(
             self.app,
             self.app_token.get_secret_value(),
         )
+        # start_async returns once connected; the Slack SDK drives the socket on
+        # its own background tasks, so there is nothing to keep alive here.
         await self.handler.start_async()
+        return self
 
-    async def deactivate(self) -> None:
+    async def __aexit__(self, *exc: object) -> None:
         if self.handler:
             await self.handler.close_async()
             self.handler = None
