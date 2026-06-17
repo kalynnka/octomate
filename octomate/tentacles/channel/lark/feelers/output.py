@@ -62,7 +62,7 @@ OutputT = TypeVar(
     "OutputT", bound=JsonValue | Sequence[MessageSegment] | DeferredToolRequests
 )
 
-THINKING_HEADER = "🧠 Thinking"
+THINKING_HEADER = "Thinking"
 
 # Each live thinking re-render is one card-patch API call, so updates are
 # paced rather than sent per delta.
@@ -153,6 +153,7 @@ class LarkRunStateCards(TimelineState):
     thinking_card_id: str | None = None
     thinking_text: str = ""
     thinking_emitted_at: float = 0.0
+    thinking_started_at: float = 0.0
     tool_cards: dict[str, tuple[str | None, str, str]] = field(default_factory=dict)
     skipped: set[str] = field(default_factory=set)
     todos: dict[str, Todo] = field(default_factory=dict)
@@ -201,10 +202,11 @@ class LarkRunStateCards(TimelineState):
         await self.begin_entry()
         await self.fold_thinking()
         self.thinking_text = ""
+        self.thinking_started_at = time.monotonic()
         self.thinking_card_id = await self.post(
-            cards.card_v2([cards.markdown(f"⏳ **{THINKING_HEADER}…**")])
+            cards.card_v2([cards.markdown(f"**{THINKING_HEADER}…**")])
         )
-        self.thinking_emitted_at = time.monotonic()
+        self.thinking_emitted_at = self.thinking_started_at
 
     async def thinking_delta(self, text: str) -> None:
         if not text:
@@ -219,7 +221,7 @@ class LarkRunStateCards(TimelineState):
         ):
             self.thinking_emitted_at = now
             live = cards.card_v2(
-                [cards.markdown(f"⏳ **{THINKING_HEADER}…**\n\n{self.thinking_text}")]
+                [cards.markdown(f"**{THINKING_HEADER}…**\n\n{self.thinking_text}")]
             )
             await self.ink.patch_card(
                 self.thinking_card_id,
@@ -233,8 +235,13 @@ class LarkRunStateCards(TimelineState):
         body = self.thinking_text.strip() or "_No detail_"
         self.thinking_card_id = None
         self.thinking_text = ""
+        elapsed = max(1, round(time.monotonic() - self.thinking_started_at))
         folded = cards.card_v2(
-            [cards.collapsible_panel(THINKING_HEADER, [cards.markdown(body)])]
+            [
+                cards.collapsible_panel(
+                    f"Thought for {elapsed}s", [cards.markdown(body)]
+                )
+            ]
         )
         await self.ink.patch_card(
             card_id, json.dumps(folded, ensure_ascii=False, separators=(",", ":"))
@@ -255,7 +262,7 @@ class LarkRunStateCards(TimelineState):
             title = f"Output: {title}"
         args = tool.args_as_dict()
         args_text = format_tool_arguments(tool.tool_name, args) if args else ""
-        body = f"🔧 **{title}**"
+        body = f"**{title}**\n\n**Tool**\n`{tool.tool_name}`"
         if args_text:
             body += f"\n\n**Arguments**\n{args_text}"
         message_id = await self.post(cards.card_v2([cards.markdown(body)]))
@@ -279,14 +286,14 @@ class LarkRunStateCards(TimelineState):
             entry if entry is not None else (None, humanize_tool_name(tool_name), "")
         )
         error = isinstance(part, RetryPromptPart)
-        sections: list[str] = []
+        sections: list[str] = [f"**Tool**\n`{tool_name}`"]
         if args_text:
             sections.append(f"**Arguments**\n{args_text}")
         sections.append(f"**Result**\n{format_tool_result(part)}")
         folded = cards.card_v2(
             [
                 cards.collapsible_panel(
-                    f"❌ 🔧 {title}" if error else f"🔧 {title}",
+                    f"{title} (failed)" if error else title,
                     [cards.markdown("\n\n".join(sections))],
                 )
             ]

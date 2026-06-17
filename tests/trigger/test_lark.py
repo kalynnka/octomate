@@ -22,6 +22,7 @@ from octomate.tentacles.channel.lark import LarkTentacle
 
 from tests.support.scenarios import (
     action_batch,
+    agent_run,
     batch_actions,
     mid_run_notice,
     play,
@@ -142,6 +143,22 @@ async def test_lark_renders_mid_run_notice(
 
     with caplog.at_level("WARNING"):
         message_id = await drive(channel, key, play(mid_run_notice(), delay=0.2))
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_lark_renders_timeline(
+    lark_channel: tuple[LarkTentacle, ConversationKey],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The full timeline example: thinking + several github_/linear_ tool calls
+    each post as their own card and fold into collapsible panels, with the
+    agent's one-line notes between them streaming as answer cards."""
+    channel, key = lark_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await drive(channel, key, play(agent_run(), delay=0.2))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text

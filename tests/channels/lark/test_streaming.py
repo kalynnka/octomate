@@ -110,12 +110,13 @@ async def test_lark_consume_renders_thinking_deltas_live(
 
     await drive(channel, key, events())
 
-    # The thinking card patches live with the accumulating text, then folds
-    # into the collapsible panel with the full text once the answer starts.
-    live = [content for _id, content in ink.patched if "⏳" in content]
+    # The thinking card patches live with the accumulating text ("Thinking…"),
+    # then folds into a "Thought for Ns" collapsible panel with the full text
+    # once the answer starts.
+    live = [content for _id, content in ink.patched if "Thinking…" in content]
     assert ["checking" in content for content in live] == [True, True, True]
     assert "checking the docs" in live[-1]
-    folded = [content for _id, content in ink.patched if "⏳" not in content]
+    folded = [content for _id, content in ink.patched if "Thought for" in content]
     assert folded and "checking the docs" in folded[0]
 
 
