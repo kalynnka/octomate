@@ -11,7 +11,12 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from octomate.config.agents import AgentsConfig, InklingConfig
+from octomate.config.agents import (
+    AgentsConfig,
+    ClaudeCodeConfig,
+    ClaudeSSHConfig,
+    InklingConfig,
+)
 from octomate.config.channels import (
     ChannelConfig,
     ChannelsConfig,
@@ -87,6 +92,8 @@ __all__ = [
     "OctomateConfig",
     # agents
     "AgentsConfig",
+    "ClaudeCodeConfig",
+    "ClaudeSSHConfig",
     "InklingConfig",
     # models
     "AnthropicModelSettings",

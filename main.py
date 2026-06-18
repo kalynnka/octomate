@@ -15,6 +15,7 @@ from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.providers import ProviderRegistry
 from octomate.schemas.segments import MessageSegment
+from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
     build_mcp_toolsets,
@@ -98,6 +99,12 @@ def create_app() -> FastAPI:
             conversation_manager=octomate.conversations,
         ),
     )
+
+    if (claude_config := config.agents.claude) is not None:
+        octomate.register_agent(
+            "claude",
+            ClaudeCodeTentacle("claude", octomate, config=claude_config),
+        )
 
     if (channel_config := config.channels.slack) is not None and channel_config.enabled:
         octomate.connect_channel(
