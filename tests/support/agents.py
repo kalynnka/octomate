@@ -58,6 +58,7 @@ class FakeAgent:
     """
 
     id: str = "inkling"
+    description: str = "fake agent"
     octomate: Octomate | None = None
     triage_output: TriageDecision | DeferredToolRequests = field(
         default_factory=lambda: TriageDecision(action="answer", answer="handled")

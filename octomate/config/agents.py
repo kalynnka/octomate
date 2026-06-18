@@ -42,9 +42,6 @@ class ClaudeCodeConfig(BaseModel):
     cwd: str = "."
     model: str | None = None
     max_turns: int | None = None
-    description: str = (
-        "Claude Code — coding, file editing, shell commands, multi-step planning"
-    )
     transport: Literal["local", "ssh"] = "local"
     ssh: ClaudeSSHConfig | None = None
 

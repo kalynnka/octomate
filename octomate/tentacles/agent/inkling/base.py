@@ -60,6 +60,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
 
+    description: str = (
+        "General assistant for conversation, questions, writing, analysis, and "
+        "coordinating multi-step work."
+    )
+
     _exit_stack: AsyncExitStack = field(init=False)
 
     def __init__(
@@ -70,11 +75,13 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         agent: Agent[None, InklingOutput],
         conversation_manager: ConversationManager | None = None,
         deferred_resolver: DeferredResolver | None = None,
+        description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.agent = agent
         self.conversation_manager = conversation_manager or ConversationManager()
         self.deferred_resolver = deferred_resolver
+        self.description = description or self.description
         self._exit_stack = AsyncExitStack()
 
     async def __aenter__(self) -> Self:

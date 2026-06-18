@@ -61,19 +61,6 @@ For action="reception":
 """
 
 TRIAGE_AGENT_ID = "triage"
-
-# Hardcoded reception candidates (codex added later). Descriptions guide triage;
-# the live set is intersected with the registered agents at run time.
-RECEPTION_AGENTS: dict[str, str] = {
-    "reception": (
-        "General assistant — Q&A, writing, analysis, light tool use, and "
-        "GitHub/Linear via MCP."
-    ),
-    "claude": (
-        "Claude Code — coding, file edits, shell commands, multi-step "
-        "engineering and planning inside a specific repo."
-    ),
-}
 DEFAULT_RECEPTION_AGENT_ID = "reception"
 
 
@@ -253,9 +240,9 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         source_address = source_target.address
         agent = ctx.deps.agent_for(TRIAGE_AGENT_ID)
         receptions = {
-            agent_id: description
-            for agent_id, description in RECEPTION_AGENTS.items()
-            if agent_id in ctx.deps.agents
+            agent_id: tentacle.description
+            for agent_id, tentacle in ctx.deps.agents.items()
+            if agent_id != TRIAGE_AGENT_ID
         }
 
         candidates = {

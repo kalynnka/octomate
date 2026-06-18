@@ -44,6 +44,10 @@ AgentSpecInput: TypeAlias = JsonObject | AgentSpec
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     """Base class for Octomate agents wrapping pydantic-ai run entrypoints."""
 
+    # Capability blurb the triage agent reads when routing to a reception agent.
+    # Subclasses refine this default; overridable at init.
+    description: str = "General-purpose agent for handling user requests."
+
     @overload
     async def run(
         self,

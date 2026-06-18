@@ -69,15 +69,22 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
     config: ClaudeCodeConfig = field(init=False)
 
+    description: str = (
+        "Coding agent for software engineering and multi-step technical work in a "
+        "code repository."
+    )
+
     def __init__(
         self,
         id: str,
         octomate: Octomate,
         *,
         config: ClaudeCodeConfig,
+        description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.config = config
+        self.description = description or self.description
 
     async def _iter_events(
         self,
