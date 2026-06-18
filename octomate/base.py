@@ -66,9 +66,9 @@ class Octomate:
             "kick {signal_type}", signal_type=type(signal).__name__
         ) as span:
             if isinstance(signal, UserMessageSignal) and signal:
-                key = signal.key
-                span.set_attribute("channel_id", key.channel_tentacle_id)
-                span.set_attribute("conversation_key", str(key))
+                address = signal.address
+                span.set_attribute("channel_id", address.channel_tentacle_id)
+                span.set_attribute("conversation_address", str(address))
             elif isinstance(signal, DeferredActionBatchResponse):
                 span.set_attribute("batch_id", str(signal.batch_id))
             with sqlalchemy_materia():

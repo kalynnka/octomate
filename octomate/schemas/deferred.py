@@ -32,7 +32,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.models import deferred as deferred_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import (
     DeferredActionKind,
@@ -218,8 +218,8 @@ class DeferredActionBatch(BaseTransmuter):
     agent_tentacle_id: str
     run_name: str | None = "reception"
     status: DeferredBatchStatus = "pending"
-    source_key: ConversationKey
-    target_key: ConversationKey
+    source_address: ChannelAddress
+    target_address: ChannelAddress
     target_mode: ResponseTargetMode = "main"
     decision: TriageDecision | None = None
     requests: DeferredToolRequests

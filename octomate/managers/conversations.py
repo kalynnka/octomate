@@ -9,7 +9,11 @@ from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 
 from octomate.database import async_session
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import (
+    ChannelAddress,
+    Conversation,
+    ConversationKey,
+)
 from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun
 
@@ -24,9 +28,9 @@ class ConversationManager:
     commits and then `refresh`es the conversation, re-caching the freshly loaded
     object (its `runs` and `messages` come along via selectin) instead of
     patching the in-memory collections. History is keyed by `ConversationKey`
-    (channel + chat + thread + user), which is the isolation boundary — a
-    sub-thread reception has its own key and never inherits the main triage
-    thread.
+    (a `ChannelAddress` + the owning agent), the isolation boundary — a sub-thread
+    reception, or a different agent at the same address, gets its own conversation
+    and never inherits another's.
     """
 
     DEFAULT_CACHE_SIZE: ClassVar[int] = 256
@@ -37,37 +41,39 @@ class ConversationManager:
 
     async def ensure(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         *,
         agent_tentacle_id: str,
     ) -> Conversation:
-        """Resolve the conversation, creating it with `agent_tentacle_id` if it
-        does not yet exist. Its `conversation.messages` is the live history. The
-        owning agent is set at creation and never changes, so callers must
-        always supply it."""
-        cached = self.conversations.get(key)
+        """Resolve the conversation for `(address, agent_tentacle_id)`, creating
+        it if it does not yet exist. Its `conversation.messages` is the live
+        history. The owning agent is part of the key — two agents at the same
+        address keep separate conversations — so callers must always supply it."""
+        cache_key = ConversationKey(address, agent_tentacle_id)
+        cached = self.conversations.get(cache_key)
         if cached is not None:
-            self.conversations.move_to_end(key)
+            self.conversations.move_to_end(cache_key)
             return cached
 
         async with async_session() as session:
             conversation = await session.one_or_none(
                 Conversation,
                 expressions=[
-                    Conversation["channel_tentacle_id"] == key.channel_tentacle_id,
-                    Conversation["chat_type"] == key.chat_type,
-                    Conversation["chat_id"] == key.chat_id,
-                    Conversation["user_id"] == key.user_id,
-                    Conversation["thread_id"] == key.thread_id,
+                    Conversation["channel_tentacle_id"] == address.channel_tentacle_id,
+                    Conversation["chat_type"] == address.chat_type,
+                    Conversation["chat_id"] == address.chat_id,
+                    Conversation["user_id"] == address.user_id,
+                    Conversation["thread_id"] == address.thread_id,
+                    Conversation["agent_tentacle_id"] == agent_tentacle_id,
                 ],
             )
             if conversation is None:
                 conversation = Conversation(
-                    channel_tentacle_id=key.channel_tentacle_id,
-                    chat_type=key.chat_type,
-                    chat_id=key.chat_id,
-                    user_id=key.user_id,
-                    thread_id=key.thread_id,
+                    channel_tentacle_id=address.channel_tentacle_id,
+                    chat_type=address.chat_type,
+                    chat_id=address.chat_id,
+                    user_id=address.user_id,
+                    thread_id=address.thread_id,
                     agent_tentacle_id=agent_tentacle_id,
                 )
                 session.add(conversation)
@@ -81,8 +87,11 @@ class ConversationManager:
         return conversation
 
     def cache_conversation(self, conversation: Conversation) -> None:
-        self.conversations[conversation.key] = conversation
-        self.conversations.move_to_end(conversation.key)
+        cache_key = ConversationKey(
+            conversation.address, conversation.agent_tentacle_id
+        )
+        self.conversations[cache_key] = conversation
+        self.conversations.move_to_end(cache_key)
         while len(self.conversations) > self.cache_size:
             self.conversations.popitem(last=False)
 

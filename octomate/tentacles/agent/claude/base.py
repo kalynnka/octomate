@@ -31,7 +31,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.deferred import DeferredSuspender
 from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 
@@ -83,11 +83,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         conversation = await self.octomate.conversations.ensure(
-            conversation_key, agent_tentacle_id=self.id
+            conversation_address, agent_tentacle_id=self.id
         )
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
@@ -99,10 +99,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             resume=conversation.external_id,
         )
         with logfire.span(
-            "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_key}]",
+            "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
             agent_id=self.id,
             run_name=run_name or "claude",
-            conversation_key=str(conversation_key),
+            conversation_address=str(conversation_address),
         ):
             async with ClaudeSDKClient(options=options) as client:
                 await client.query(_prompt_text(user_prompt))
@@ -128,7 +128,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -154,7 +154,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -179,7 +179,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -201,7 +201,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     ) -> AgentRunResult[str | RunOutputDataT]:
         result: AgentRunResult[str] | None = None
         async for event in self._iter_events(
-            user_prompt, conversation_key=conversation_key, run_name=run_name
+            user_prompt, conversation_address=conversation_address, run_name=run_name
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
@@ -214,7 +214,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -239,7 +239,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -263,7 +263,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -284,6 +284,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     ) -> ReactEventStream[str | RunOutputDataT]:
         return ReactEventStream(
             self._iter_events(
-                user_prompt, conversation_key=conversation_key, run_name=run_name
+                user_prompt, conversation_address=conversation_address, run_name=run_name
             )
         )

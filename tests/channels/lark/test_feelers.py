@@ -12,7 +12,7 @@ from pydantic import JsonValue, TypeAdapter
 from uuid_utils.compat import uuid7
 
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -41,8 +41,8 @@ from tests.support.channels import FakeOctomate
 JsonObjectAdapter = TypeAdapter(JsonObject)
 
 
-def _key(channel: str = "im") -> ConversationKey:
-    return ConversationKey(
+def _key(channel: str = "im") -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id=channel,
         chat_type="private",
         chat_id="alice",
@@ -120,23 +120,23 @@ def _loaded_json_object(value: str) -> JsonObject:
 
 async def test_lark_feelers_send_approval_and_question_cards() -> None:
     ink = FakeLarkCardsInk()
-    key = _key("lark")
-    key = ConversationKey(
-        channel_tentacle_id=key.channel_tentacle_id,
-        chat_type=key.chat_type,
-        chat_id=key.chat_id,
-        user_id=key.user_id,
+    address = _key("lark")
+    address = ChannelAddress(
+        channel_tentacle_id=address.channel_tentacle_id,
+        chat_type=address.chat_type,
+        chat_id=address.chat_id,
+        user_id=address.user_id,
         thread_id="om_parent",
     )
     approval = _approval()
     questions = [_question(question="Environment?", choices=["prod", "stage"])]
 
     approval_message_ids = await LarkApprovalFeeler(cast(LarkInk, ink)).present(
-        key,
+        address,
         [approval],
     )
     question_message_ids = await LarkAskQuestionFeeler(cast(LarkInk, ink)).present(
-        key,
+        address,
         questions,
     )
 

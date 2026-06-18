@@ -6,7 +6,7 @@ import re
 from abc import ABC, abstractmethod
 from uuid import UUID
 
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
@@ -31,7 +31,7 @@ class ApprovalFeeler(ABC):
     @abstractmethod
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         actions: list[DeferredApproval],
     ) -> dict[UUID, IMMessageID | None]: ...
 
@@ -42,7 +42,7 @@ class QuestionFeeler(ABC):
     @abstractmethod
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         actions: list[DeferredQuestion],
     ) -> dict[UUID, IMMessageID | None]: ...
 
@@ -53,13 +53,13 @@ class PlainTextApprovalFeeler(ApprovalFeeler):
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         actions: list[DeferredApproval],
     ) -> dict[UUID, IMMessageID | None]:
         message_ids: dict[UUID, IMMessageID | None] = {}
         for action in actions:
             message_ids[action.id] = await self.markdown.present(
-                key,
+                address,
                 (
                     f"Octomate needs approval for `{action.tool_name}` "
                     f"({action.id}). This channel can show the request, but does "
@@ -75,7 +75,7 @@ class PlainTextAskQuestionFeeler(QuestionFeeler):
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         actions: list[DeferredQuestion],
     ) -> dict[UUID, IMMessageID | None]:
         message_ids: dict[UUID, IMMessageID | None] = {}
@@ -88,7 +88,7 @@ class PlainTextAskQuestionFeeler(QuestionFeeler):
             hint = action.args.get("hint") or ""
             hint_text = f"\nHint: {hint}" if hint else ""
             message_ids[action.id] = await self.markdown.present(
-                key,
+                address,
                 (
                     f"Octomate needs an answer: {question_text(action)}"
                     f"{hint_text}{choices_text}\nDeferred action: `{action.id}`"

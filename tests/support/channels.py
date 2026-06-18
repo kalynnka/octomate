@@ -33,7 +33,7 @@ from octomate.capabilities.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal
-from octomate.schemas.conversation import ChatType, ConversationKey, UserProfile
+from octomate.schemas.conversation import ChatType, ChannelAddress, UserProfile
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
@@ -60,12 +60,12 @@ NativeMessage = dict[str, str]
 
 async def drive(
     channel: ChannelTentacle[Any, Any],
-    key: ConversationKey,
+    address: ChannelAddress,
     stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
 ) -> IMMessageID | None:
     """The production inline-consume path: open the timeline feeler and drive the
     run stream onto the per-run state."""
-    async with channel.feelers.timeline.open(key) as state:
+    async with channel.feelers.timeline.open(address) as state:
         await state.drive(stream)
     return state.message_id
 
@@ -73,11 +73,11 @@ async def drive(
 def bound(
     state: TimelineState,
     channel: ChannelTentacle[Any, Any],
-    key: ConversationKey,
+    address: ChannelAddress,
 ) -> TimelineState:
     """Inject a channel's deferred-action feelers into a bare `TimelineState`, the
     way the timeline feeler's `open()` would, so `state.drive` can run standalone."""
-    state.key = key
+    state.address = address
     state.ask_questions = channel.feelers.ask_questions
     state.approvals = channel.feelers.approvals
     state.deferred_actions = channel.octomate.deferred_actions
@@ -179,17 +179,17 @@ class FakeChromo(Chromo[RawMessage, NativeMessage]):
 @dataclass
 class RecordingTimelineFeeler:
     """Wraps a channel's timeline feeler to log every `open()`'d run as a
-    `(key, message_id)` pair, so graph tests can assert a reception streamed
+    `(address, message_id)` pair, so graph tests can assert a reception streamed
     through the timeline (the inline-consume path) and to which conversation."""
 
     inner: TimelineFeeler
-    consumed: list[tuple[ConversationKey, IMMessageID | None]]
+    consumed: list[tuple[ChannelAddress, IMMessageID | None]]
 
     @asynccontextmanager
-    async def open(self, key: ConversationKey) -> AsyncGenerator[TimelineState]:
-        async with self.inner.open(key) as state:
+    async def open(self, address: ChannelAddress) -> AsyncGenerator[TimelineState]:
+        async with self.inner.open(address) as state:
             yield state
-        self.consumed.append((key, state.message_id))
+        self.consumed.append((address, state.message_id))
 
 
 class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
@@ -202,8 +202,8 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
 
     recording_ink: RecordingInk
     sent: list[tuple[str, str, list[NativeMessage], str | None, bool]]
-    consumed: list[tuple[ConversationKey, IMMessageID | None]]
-    sub_threads: list[tuple[ConversationKey, str]]
+    consumed: list[tuple[ChannelAddress, IMMessageID | None]]
+    sub_threads: list[tuple[ChannelAddress, str]]
 
     def __init__(
         self,
@@ -223,7 +223,6 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
             config=config
             or ChannelConfig(
                 type="fake",
-                agent_id="inkling",
                 stream=ChannelStreamConfig(),
             ),
         )
@@ -237,22 +236,22 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
 
     async def consume(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
     ) -> IMMessageID | None:
-        return await drive(self, key, stream)
+        return await drive(self, address, stream)
 
     async def start_sub_thread(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         hint_text: str,
-    ) -> ConversationKey:
-        self.sub_threads.append((key, hint_text))
-        return ConversationKey(
-            channel_tentacle_id=key.channel_tentacle_id,
-            chat_type=key.chat_type,
-            chat_id=key.chat_id,
-            user_id=key.user_id,
+    ) -> ChannelAddress:
+        self.sub_threads.append((address, hint_text))
+        return ChannelAddress(
+            channel_tentacle_id=address.channel_tentacle_id,
+            chat_type=address.chat_type,
+            chat_id=address.chat_id,
+            user_id=address.user_id,
             thread_id="hint-thread",
         )
 
@@ -263,7 +262,7 @@ class MainOnlyChannelTentacle(FakeChannelTentacle):
 
 class NoopTimeline(TimelineState):
     @asynccontextmanager
-    async def open(self, key: ConversationKey) -> AsyncGenerator[NoopTimeline]:
+    async def open(self, address: ChannelAddress) -> AsyncGenerator[NoopTimeline]:
         yield self
 
 
@@ -277,7 +276,7 @@ class RecordingTimeline(TimelineState):
     message_id: IMMessageID | None = None
 
     @asynccontextmanager
-    async def open(self, key: ConversationKey) -> AsyncGenerator[RecordingTimeline]:
+    async def open(self, address: ChannelAddress) -> AsyncGenerator[RecordingTimeline]:
         yield self
 
     async def thinking_start(self) -> None:
@@ -327,21 +326,21 @@ class RecordingTimeline(TimelineState):
 
 @dataclass
 class RecordingMarkdownFeeler:
-    calls: list[tuple[ConversationKey, str]] = field(default_factory=list)
+    calls: list[tuple[ChannelAddress, str]] = field(default_factory=list)
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         markdown: str,
     ) -> IMMessageID | None:
-        self.calls.append((key, markdown))
+        self.calls.append((address, markdown))
         return "markdown-message"
 
 
 class NoopSegmentsFeeler:
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         segments: list[MessageSegment],
     ) -> IMMessageID | None:
         return None
@@ -349,29 +348,29 @@ class NoopSegmentsFeeler:
 
 @dataclass
 class RecordingApprovalFeeler(ApprovalFeeler):
-    presented: list[tuple[ConversationKey, list[DeferredApproval]]] = field(
+    presented: list[tuple[ChannelAddress, list[DeferredApproval]]] = field(
         default_factory=list
     )
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         actions: list[DeferredApproval],
     ) -> dict[UUID, IMMessageID | None]:
-        self.presented.append((key, list(actions)))
+        self.presented.append((address, list(actions)))
         return {action.id: f"approval-{action.id}" for action in actions}
 
 
 @dataclass
 class RecordingQuestionFeeler(QuestionFeeler):
-    presented: list[tuple[ConversationKey, list[DeferredQuestion]]] = field(
+    presented: list[tuple[ChannelAddress, list[DeferredQuestion]]] = field(
         default_factory=list
     )
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         actions: list[DeferredQuestion],
     ) -> dict[UUID, IMMessageID | None]:
-        self.presented.append((key, list(actions)))
+        self.presented.append((address, list(actions)))
         return {action.id: f"question-{action.id}" for action in actions}

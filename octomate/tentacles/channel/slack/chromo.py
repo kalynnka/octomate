@@ -5,7 +5,7 @@ import logging
 import re
 import time
 
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AtData,
@@ -103,8 +103,8 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
             )
         )
 
-    def thread_context(self, key: ConversationKey) -> SlackThreadContext:
+    def thread_context(self, address: ChannelAddress) -> SlackThreadContext:
         return SlackThreadContext(
-            thread_ts=key.thread_id,
-            recipient_user_id=key.user_id or None,
+            thread_ts=address.thread_id,
+            recipient_user_id=address.user_id or None,
         )

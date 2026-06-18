@@ -34,7 +34,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.managers.conversations import ConversationManager
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
 from octomate.capabilities.events import StreamEvents
@@ -62,7 +62,7 @@ class ReactState:
     fetch the live conversation from the ConversationManager (the cache + source
     of truth). Every node `ensure()`s the conversation and reads its messages."""
 
-    conversation_key: ConversationKey
+    conversation_address: ChannelAddress
     agent_tentacle_id: str
 
 
@@ -106,7 +106,7 @@ class StartTurn(
     ) -> RunAgent[ReactOutputT, ReactDepsT]:
         if self.user_prompt is not None:
             conversation = await ctx.deps.conversation_manager.ensure(
-                ctx.state.conversation_key,
+                ctx.state.conversation_address,
                 agent_tentacle_id=ctx.state.agent_tentacle_id,
             )
             abandoned = await ctx.deps.conversation_manager.drop_trailing_deferral(
@@ -160,11 +160,11 @@ class RunAgent(
             "react.agent_run",
             run_name=ctx.deps.run_name,
             streaming=ctx.deps.event_send_stream is not None,
-            conversation_key=str(ctx.state.conversation_key),
+            conversation_address=str(ctx.state.conversation_address),
             resumed=self.deferred_results is not None,
         ) as span:
             conversation = await ctx.deps.conversation_manager.ensure(
-                ctx.state.conversation_key,
+                ctx.state.conversation_address,
                 agent_tentacle_id=ctx.state.agent_tentacle_id,
             )
             if ctx.deps.event_send_stream is None:

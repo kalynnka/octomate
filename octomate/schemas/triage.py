@@ -12,6 +12,7 @@ class TriageDecision(BaseModel):
     action: TriageAction
     answer: str = ""
     target_id: str = ""
+    agent_id: str = ""
     reason: str = ""
     hint: str = ""
     handoff: str = ""

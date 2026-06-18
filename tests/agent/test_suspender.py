@@ -15,7 +15,7 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -31,8 +31,8 @@ from tests.support.managers import (
 )
 
 
-def _key() -> ConversationKey:
-    return ConversationKey(
+def _key() -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id="im",
         chat_type="private",
         chat_id="alice",
@@ -53,7 +53,7 @@ def _requests() -> DeferredToolRequests:
 
 
 async def test_human_review_suspender_persists_batch_and_records_id() -> None:
-    key = _key()
+    address = _key()
     requests = _requests()
     conversations = FakeConversationManager()
     action_manager = FakeActionManager()
@@ -66,8 +66,8 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
         conversation_manager=conversations,
         agent_tentacle_id="inkling",
         run_name="reception",
-        source_key=key,
-        target_key=key,
+        source_address=address,
+        target_address=address,
         target_mode="sub",
         decision=decision,
     )
@@ -78,17 +78,17 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
     assert len(action_manager.create_calls) == 1
     call = action_manager.create_calls[0]
     assert call.run_name == "reception"
-    assert call.source_key == key
-    assert call.target_key == key
+    assert call.source_address == address
+    assert call.target_address == address
     assert call.target_mode == "sub"
     assert call.decision is decision
     assert call.requests is requests
     assert suspender.suspended_batch_id == call.batch_id
-    assert conversations.ensured == [(key, "inkling")]
+    assert conversations.ensured == [(address, "inkling")]
 
 
 async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() -> None:
-    key = _key()
+    address = _key()
     question = DeferredQuestion(
         tool_name="ask_questions",
         tool_call_id="c1",
@@ -110,8 +110,8 @@ async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() 
         conversation_manager=FakeConversationManager(),
         agent_tentacle_id="inkling",
         run_name="reception",
-        source_key=key,
-        target_key=key,
+        source_address=address,
+        target_address=address,
         target_mode="sub",
         decision=None,
         emit_on_stream=True,

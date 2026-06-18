@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import TypeAdapter
 
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
     DeferredApproval,
@@ -45,15 +45,15 @@ class SlackApprovalFeeler(ApprovalFeeler):
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         actions: list[DeferredApproval],
     ) -> dict[UUID, IMMessageID | None]:
         if not actions:
             return {}
         text = approval_title(actions)
         message_id = await self.ink.send_message(
-            key.chat_id or key.user_id,
-            key.chat_type,
+            address.chat_id or address.user_id,
+            address.chat_type,
             [
                 SlackOutboundMessage(
                     text=text,
@@ -61,7 +61,7 @@ class SlackApprovalFeeler(ApprovalFeeler):
                     blocks=approval_blocks(actions),
                 )
             ],
-            key.thread_id or None,
+            address.thread_id or None,
         )
         return {action.id: message_id for action in actions}
 

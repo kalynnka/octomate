@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.history import HistoryCapability
 from octomate.managers import ConversationManager
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import ModelRequest, ModelResponse
 
 
@@ -138,8 +138,8 @@ async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
     yield
 
 
-def _key() -> ConversationKey:
-    return ConversationKey(
+def _key() -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id="dev_ui",
         chat_type="private",
         chat_id="alice",

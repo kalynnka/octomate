@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import logfire
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.tentacles.channel.feelers.deferred import (
@@ -42,8 +42,8 @@ class Feelers:
         conversation: Conversation,
         agent_tentacle_id: str,
         run_name: str | None,
-        source_key: ConversationKey,
-        target_key: ConversationKey,
+        source_address: ChannelAddress,
+        target_address: ChannelAddress,
         target_mode: ResponseTargetMode,
         decision: TriageDecision | None,
         requests: DeferredToolRequests,
@@ -51,14 +51,14 @@ class Feelers:
         with logfire.span(
             "present_actions",
             run_name=run_name,
-            target_key=str(target_key),
+            target_address=str(target_address),
         ) as span:
             batch = await action_manager.create_batch(
                 conversation=conversation,
                 agent_tentacle_id=agent_tentacle_id,
                 run_name=run_name,
-                source_key=source_key,
-                target_key=target_key,
+                source_address=source_address,
+                target_address=target_address,
                 target_mode=target_mode,
                 decision=decision,
                 requests=requests,
@@ -68,14 +68,14 @@ class Feelers:
             span.set_attribute("approvals", len(approvals))
             span.set_attribute("questions", len(questions))
 
-            approval_message_ids = await self.approvals.present(target_key, approvals)
+            approval_message_ids = await self.approvals.present(target_address, approvals)
             for action in approvals:
                 await action_manager.mark_action_presented(
                     action.id,
                     approval_message_ids.get(action.id),
                 )
 
-            message_ids = await self.ask_questions.present(target_key, questions)
+            message_ids = await self.ask_questions.present(target_address, questions)
             for action in questions:
                 await action_manager.mark_action_presented(
                     action.id,

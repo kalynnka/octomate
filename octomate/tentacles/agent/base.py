@@ -26,7 +26,7 @@ from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.capabilities.react import ReactEventStream
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
 
@@ -49,7 +49,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -75,7 +75,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -101,7 +101,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -128,7 +128,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -153,7 +153,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -178,7 +178,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,

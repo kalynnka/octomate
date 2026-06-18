@@ -16,7 +16,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from octomate.config import LarkChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel.base import (
     ChannelTentacle,
     ThreadStrategy,
@@ -149,16 +149,16 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
 
     async def start_sub_thread(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         hint_text: str,
-    ) -> ConversationKey:
+    ) -> ChannelAddress:
         message_id = await self.ink.send_message(
-            key.chat_id or key.user_id,
-            key.chat_type,
+            address.chat_id or address.user_id,
+            address.chat_type,
             self.chromo.outbound_markdown(hint_text),
             None,
         )
-        return replace(key, thread_id=message_id or key.thread_id)
+        return replace(address, thread_id=message_id or address.thread_id)
 
     def sense(self, data: P2ImMessageReceiveV1) -> None:
         task = asyncio.create_task(self.ingest(data))

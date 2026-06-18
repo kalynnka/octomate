@@ -41,8 +41,8 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
         nullable=False,
         default="pending",
     )
-    source_key: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
-    target_key: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
+    source_address: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
+    target_address: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
     target_mode: Mapped[str] = mapped_column(String, nullable=False, default="main")
     decision: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=True)
     requests: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)

@@ -9,7 +9,7 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.database import async_session
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.schemas.deferred import (
     DeferredAction,
     DeferredActionBatch,
@@ -28,8 +28,8 @@ class DeferredActionManager:
         conversation: Conversation,
         agent_tentacle_id: str,
         run_name: str | None,
-        source_key: ConversationKey,
-        target_key: ConversationKey,
+        source_address: ChannelAddress,
+        target_address: ChannelAddress,
         target_mode: ResponseTargetMode,
         decision: TriageDecision | None,
         requests: DeferredToolRequests,
@@ -46,8 +46,8 @@ class DeferredActionManager:
                 conversation_id=conversation.id,
                 agent_tentacle_id=agent_tentacle_id,
                 run_name=run_name,
-                source_key=source_key,
-                target_key=target_key,
+                source_address=source_address,
+                target_address=target_address,
                 target_mode=target_mode,
                 decision=decision,
                 requests=requests,

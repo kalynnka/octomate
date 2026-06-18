@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel.slack import SlackTentacle
 from tests.support.channels import drive
 from tests.support.scenarios import (
@@ -40,14 +40,14 @@ pytestmark = pytest.mark.trigger
 def slack_run_thread(
     live_config: OctomateConfig,
     trigger_targets: TriggerTargets,
-) -> tuple[SlackTentacle, ConversationKey]:
+) -> tuple[SlackTentacle, ChannelAddress]:
     """One tentacle and one freshly opened thread, shared by the whole run."""
     config = live_config.channels.slack
     if config is None or not config.enabled or trigger_targets.slack is None:
         pytest.skip("slack credentials/trigger target not configured in octomate.yaml")
     target = trigger_targets.slack
     channel = SlackTentacle("slack", Octomate(), config=config)
-    main_key = ConversationKey(
+    main_key = ChannelAddress(
         channel_tentacle_id="slack",
         chat_type=target.chat_type,
         chat_id=target.chat_id,
@@ -61,34 +61,34 @@ def slack_run_thread(
     )
     if thread_ts is None:
         pytest.fail("could not open the slack run thread (no message ts returned)")
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="slack",
         chat_type=target.chat_type,
         chat_id=target.chat_id,
         user_id=target.user_id,
         thread_id=thread_ts,
     )
-    return channel, key
+    return channel, address
 
 
 @pytest.fixture
 def slack_channel(
-    slack_run_thread: tuple[SlackTentacle, ConversationKey],
+    slack_run_thread: tuple[SlackTentacle, ChannelAddress],
     in_memory_engine: AsyncEngine,
-) -> tuple[SlackTentacle, ConversationKey]:
+) -> tuple[SlackTentacle, ChannelAddress]:
     return slack_run_thread
 
 
 async def test_slack_renders_streamed_str_output(
-    slack_channel: tuple[SlackTentacle, ConversationKey],
+    slack_channel: tuple[SlackTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    channel, key = slack_channel
+    channel, address = slack_channel
 
     with caplog.at_level("WARNING"):
         message_id = await drive(
             channel,
-            key,
+            address,
             play(streamed_text("String ", "output from the octomate test suite.")),
         )
 
@@ -98,16 +98,16 @@ async def test_slack_renders_streamed_str_output(
 
 
 async def test_slack_renders_streamed_segments_showcase(
-    slack_channel: tuple[SlackTentacle, ConversationKey],
+    slack_channel: tuple[SlackTentacle, ChannelAddress],
     scenario_image: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    channel, key = slack_channel
+    channel, address = slack_channel
 
     with caplog.at_level("WARNING"):
         message_id = await drive(
             channel,
-            key,
+            address,
             play(
                 showcase(
                     image_file=scenario_image,
@@ -121,10 +121,10 @@ async def test_slack_renders_streamed_segments_showcase(
 
 
 async def test_slack_renders_action_batch(
-    slack_channel: tuple[SlackTentacle, ConversationKey],
+    slack_channel: tuple[SlackTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    channel, key = slack_channel
+    channel, address = slack_channel
     # The slack buttons serialize the batch id into their state; the scenario
     # actions need real ids (on a live run the action manager sets them).
     batch_id = uuid4()
@@ -137,38 +137,38 @@ async def test_slack_renders_action_batch(
 
     with caplog.at_level("WARNING"):
         # The batch is never answered: the run simply stays suspended.
-        await drive(channel, key, play(script))
+        await drive(channel, address, play(script))
 
     assert "timeline render failed" not in caplog.text
 
 
 async def test_slack_renders_mid_run_notice(
-    slack_channel: tuple[SlackTentacle, ConversationKey],
+    slack_channel: tuple[SlackTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The run notices the user mid-way: a fresh timeline opens below the
     notice while the in-flight tool still closes out the previous one."""
-    channel, key = slack_channel
+    channel, address = slack_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, key, play(mid_run_notice(), delay=0.05))
+        message_id = await drive(channel, address, play(mid_run_notice(), delay=0.05))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text
 
 
 async def test_slack_renders_timeline(
-    slack_channel: tuple[SlackTentacle, ConversationKey],
+    slack_channel: tuple[SlackTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The full timeline example: thinking + several github_/linear_ tool calls
     fold into plan blocks, and the agent's one-line notes between them post as
     their own messages, alternating plan → message → plan → … → final reply.
     The delay lets the human watch tasks fold and messages land live."""
-    channel, key = slack_channel
+    channel, address = slack_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, key, play(agent_run(), delay=0.05))
+        message_id = await drive(channel, address, play(agent_run(), delay=0.05))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text

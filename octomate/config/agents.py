@@ -58,5 +58,16 @@ class ClaudeCodeConfig(BaseModel):
 
 
 class AgentsConfig(BaseModel):
-    inkling: InklingConfig = Field(default_factory=InklingConfig)
+    # Triage runs a fast/cheap inkling;
+    # reception runs a stronger inkling (or claude / codex tentacle)
+    triage: InklingConfig = Field(
+        default_factory=lambda: InklingConfig(
+            model=ModelConfig(provider="deepseek", name="deepseek-v4-flash")
+        )
+    )
+    reception: InklingConfig = Field(
+        default_factory=lambda: InklingConfig(
+            model=ModelConfig(provider="deepseek", name="deepseek-v4-pro")
+        )
+    )
     claude: ClaudeCodeConfig | None = None

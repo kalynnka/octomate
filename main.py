@@ -45,9 +45,9 @@ def create_app() -> FastAPI:
         console=logfire.ConsoleOptions() if config.logfire.console else False,
         scrubbing=logfire.ScrubbingOptions(
             extra_patterns=[
-                "conversation_key",
-                "source_key",
-                "target_key",
+                "conversation_address",
+                "source_address",
+                "target_address",
                 "user_id",
                 "chat_id",
                 "responder_id",
@@ -74,10 +74,12 @@ def create_app() -> FastAPI:
     octomate = Octomate()
     registry = ProviderRegistry(config.providers)
 
-    inkling_agent = Agent(
-        registry.build_model(config.agents.inkling.model),
+    # Triage only routes (outputs a TriageDecision) — a lean, fast agent with no
+    # work tools or capabilities. Reception does the work.
+    triage_agent = Agent(
+        registry.build_model(config.agents.triage.model),
         deps_type=type(None),
-        name="octomate-inkling",
+        name="octomate-triage",
         output_type=[str, list[MessageSegment], DeferredToolRequests],
         toolsets=[
             inkling_toolset,
@@ -91,11 +93,37 @@ def create_app() -> FastAPI:
         system_prompt=SYSTEM_PROMPT,
     )
     octomate.register_agent(
-        "inkling",
+        "triage",
         InklingTentacle(
-            "inkling",
+            "triage",
             octomate,
-            agent=inkling_agent,
+            agent=triage_agent,
+            conversation_manager=octomate.conversations,
+        ),
+    )
+
+    reception_agent = Agent(
+        registry.build_model(config.agents.reception.model),
+        deps_type=type(None),
+        name="octomate-reception",
+        output_type=[str, list[MessageSegment], DeferredToolRequests],
+        toolsets=[
+            inkling_toolset,
+            *build_mcp_toolsets(config.mcp),
+        ],
+        capabilities=[
+            TodoCapability(),
+            SendCapability(),
+            HistoryCapability(octomate.conversations),
+        ],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    octomate.register_agent(
+        "reception",
+        InklingTentacle(
+            "reception",
+            octomate,
+            agent=reception_agent,
             conversation_manager=octomate.conversations,
         ),
     )

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel.lark import LarkTentacle
 
 from tests.support.scenarios import (
@@ -39,14 +39,14 @@ pytestmark = pytest.mark.trigger
 def lark_run_thread(
     live_config: OctomateConfig,
     trigger_targets: TriggerTargets,
-) -> tuple[LarkTentacle, ConversationKey]:
+) -> tuple[LarkTentacle, ChannelAddress]:
     """One tentacle and one run-notice root message, shared by the whole run."""
     config = live_config.channels.lark
     if config is None or not config.enabled or trigger_targets.lark is None:
         pytest.skip("lark credentials/trigger target not configured in octomate.yaml")
     target = trigger_targets.lark
     channel = LarkTentacle("lark", Octomate(), config=config)
-    main_key = ConversationKey(
+    main_key = ChannelAddress(
         channel_tentacle_id="lark",
         chat_type=target.chat_type,
         chat_id=target.chat_id,
@@ -60,33 +60,33 @@ def lark_run_thread(
     )
     if root_id is None:
         pytest.fail("could not post the lark run notice (no message id returned)")
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="lark",
         chat_type=target.chat_type,
         chat_id=target.chat_id,
         user_id=target.user_id,
         thread_id=root_id,
     )
-    return channel, key
+    return channel, address
 
 
 @pytest.fixture
 def lark_channel(
-    lark_run_thread: tuple[LarkTentacle, ConversationKey],
+    lark_run_thread: tuple[LarkTentacle, ChannelAddress],
     in_memory_engine: AsyncEngine,
-) -> tuple[LarkTentacle, ConversationKey]:
+) -> tuple[LarkTentacle, ChannelAddress]:
     return lark_run_thread
 
 
 async def test_lark_renders_streamed_str_output(
-    lark_channel: tuple[LarkTentacle, ConversationKey],
+    lark_channel: tuple[LarkTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    channel, key = lark_channel
+    channel, address = lark_channel
 
     with caplog.at_level("WARNING"):
         message_id = await drive(channel, 
-            key,
+            address,
             play(streamed_text("String ", "output from the octomate test suite.")),
         )
 
@@ -96,15 +96,15 @@ async def test_lark_renders_streamed_str_output(
 
 
 async def test_lark_renders_streamed_segments_showcase(
-    lark_channel: tuple[LarkTentacle, ConversationKey],
+    lark_channel: tuple[LarkTentacle, ChannelAddress],
     scenario_image: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    channel, key = lark_channel
+    channel, address = lark_channel
 
     with caplog.at_level("WARNING"):
         message_id = await drive(channel, 
-            key, play(showcase(image_file=scenario_image))
+            address, play(showcase(image_file=scenario_image))
         )
 
     assert message_id is not None
@@ -112,10 +112,10 @@ async def test_lark_renders_streamed_segments_showcase(
 
 
 async def test_lark_renders_action_batch(
-    lark_channel: tuple[LarkTentacle, ConversationKey],
+    lark_channel: tuple[LarkTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    channel, key = lark_channel
+    channel, address = lark_channel
     # The lark card buttons serialize the batch id into their state; the
     # scenario actions need real ids (on a live run the action manager sets them).
     batch_id = uuid4()
@@ -128,37 +128,37 @@ async def test_lark_renders_action_batch(
 
     with caplog.at_level("WARNING"):
         # The batch is never answered: the run simply stays suspended.
-        await drive(channel, key, play(script))
+        await drive(channel, address, play(script))
 
     assert "timeline render failed" not in caplog.text
 
 
 async def test_lark_renders_mid_run_notice(
-    lark_channel: tuple[LarkTentacle, ConversationKey],
+    lark_channel: tuple[LarkTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The run notices the user mid-way: a fresh timeline opens below the
     notice while the in-flight tool still closes out the previous one."""
-    channel, key = lark_channel
+    channel, address = lark_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, key, play(mid_run_notice(), delay=0.2))
+        message_id = await drive(channel, address, play(mid_run_notice(), delay=0.2))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text
 
 
 async def test_lark_renders_timeline(
-    lark_channel: tuple[LarkTentacle, ConversationKey],
+    lark_channel: tuple[LarkTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The full timeline example: thinking + several github_/linear_ tool calls
     each post as their own card and fold into collapsible panels, with the
     agent's one-line notes between them streaming as answer cards."""
-    channel, key = lark_channel
+    channel, address = lark_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, key, play(agent_run(), delay=0.2))
+        message_id = await drive(channel, address, play(agent_run(), delay=0.2))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text

@@ -23,7 +23,7 @@ from octomate.capabilities.events import (
     TodoDeletedEvent,
     TodoEvent,
 )
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtSegment,
     CardSegment,
@@ -123,7 +123,7 @@ class SlackTimelineState(TimelineState):
     its result lands, then that plan closes."""
 
     ink: SlackInk
-    key: ConversationKey
+    address: ChannelAddress
     channel: str
     chat_type: str
     thread_ts: str
@@ -473,7 +473,7 @@ class SlackTimelineFeeler(TimelineFeeler):
     """Renders a run as a Slack `timeline` stream (thinking blocks + tool tasks +
     inline answer), driven event-by-event by `ChannelTentacle.consume`.
 
-    Stateless; `open(key)` starts the `timeline` stream and yields a per-run
+    Stateless; `open(address)` starts the `timeline` stream and yields a per-run
     `SlackTimelineState` machine that `drive_timeline` renders each event onto."""
 
     def __init__(
@@ -492,16 +492,16 @@ class SlackTimelineFeeler(TimelineFeeler):
         self.deferred_actions = deferred_actions
 
     @asynccontextmanager
-    async def open(self, key: ConversationKey) -> AsyncIterator[SlackTimelineState]:
-        context = self.chromo.thread_context(key)
-        channel = key.chat_id or key.user_id
+    async def open(self, address: ChannelAddress) -> AsyncIterator[SlackTimelineState]:
+        context = self.chromo.thread_context(address)
+        channel = address.chat_id or address.user_id
         # Streams open lazily: the first thinking/tool event starts a plan, the
         # first text part starts a message. A run with neither sends nothing.
         state = SlackTimelineState(
             ink=self.ink,
-            key=key,
+            address=address,
             channel=channel,
-            chat_type=key.chat_type,
+            chat_type=address.chat_type,
             thread_ts=context.thread_ts,
             ask_questions=self.ask_questions,
             approvals=self.approvals,

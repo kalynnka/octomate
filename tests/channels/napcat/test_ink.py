@@ -11,7 +11,7 @@ from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection
 
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageData, ImageSegment, TextSegment
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
@@ -67,7 +67,7 @@ async def test_napcat_segments_feeler_delivers_native_media(tmp_path) -> None:
     feeler = DefaultSegmentsFeeler(ink=ink, chromo=NapcatChromo())
     image = tmp_path / "pic.png"
     image.write_bytes(b"image-bytes")
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="napcat",
         chat_type="group",
         chat_id="2002",
@@ -76,7 +76,7 @@ async def test_napcat_segments_feeler_delivers_native_media(tmp_path) -> None:
     )
 
     message_id = await feeler.present(
-        key,
+        address,
         [
             TextSegment(data={"text": "look:"}),
             ImageSegment(data=ImageData(file=str(image))),
@@ -105,14 +105,14 @@ async def test_napcat_segments_feeler_empty_sends_nothing() -> None:
     ink = object.__new__(NapcatInk)
     ink.httpx = cast(httpx.AsyncClient, http)
     feeler = DefaultSegmentsFeeler(ink=ink, chromo=NapcatChromo())
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="napcat",
         chat_type="private",
         chat_id="3003",
         user_id="3003",
     )
 
-    message_id = await feeler.present(key, [TextSegment(data={"text": ""})])
+    message_id = await feeler.present(address, [TextSegment(data={"text": ""})])
 
     assert message_id is None
     assert http.posts == []
@@ -238,14 +238,14 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
         approvals=approvals,
         ask_questions=ask_questions,
     )
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="napcat",
         chat_type="private",
         chat_id="3003",
         user_id="3003",
     )
 
-    message_id = await drive(channel, key, play(plain_answer("hello from octomate")))
+    message_id = await drive(channel, address, play(plain_answer("hello from octomate")))
 
     assert message_id == "msg-1"
     assert http.posts == [

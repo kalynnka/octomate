@@ -21,12 +21,12 @@ from pydantic_ai.messages import (
 
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.claude import base as claude_base
 from tests.support.managers import FakeConversation, FakeConversationManager
 
-KEY = ConversationKey(
+KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
 )
 
@@ -88,7 +88,7 @@ async def test_run_stream_events_proxies_events_and_persists(
 
     events = []
     async with tentacle.run_stream_events(
-        "fix it", conversation_key=KEY, run_name="reception"
+        "fix it", conversation_address=KEY, run_name="reception"
     ) as stream:
         async for event in stream:
             events.append(event)
@@ -111,10 +111,10 @@ async def test_run_stream_events_proxies_events_and_persists(
 async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
-    conversations.store[KEY] = FakeConversation(external_id="prev-sess")
+    conversations.store[(KEY, "claude")] = FakeConversation(external_id="prev-sess")
     tentacle = _tentacle(conversations)
 
-    result = await tentacle.run("again", conversation_key=KEY)
+    result = await tentacle.run("again", conversation_address=KEY)
 
     assert result.output == "done"
     options = FakeClaudeClient.last_options

@@ -39,7 +39,7 @@ from octomate.capabilities.react import (
     iter_react_graph_events,
 )
 from octomate.managers.conversations import ConversationManager
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.tentacles.agent.base import (
     AgentSpecInput,
@@ -92,7 +92,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -118,7 +118,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -143,7 +143,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -166,7 +166,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         result: AgentRunResult[InklingOutput | RunOutputDataT] | None = None
         async for event in self.iter_graph_events(
             user_prompt=user_prompt,
-            conversation_key=conversation_key,
+            conversation_address=conversation_address,
             run_name=run_name,
             output_type=output_type,
             deferred_tool_results=deferred_tool_results,
@@ -196,7 +196,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -221,7 +221,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -245,7 +245,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -267,7 +267,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         return ReactEventStream(
             self.iter_graph_events(
                 user_prompt=user_prompt,
-                conversation_key=conversation_key,
+                conversation_address=conversation_address,
                 run_name=run_name,
                 output_type=output_type,
                 deferred_tool_results=deferred_tool_results,
@@ -292,7 +292,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self,
         *,
         user_prompt: str | Sequence[UserContent] | None,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None,
         deferred_tool_results: DeferredToolResults | None,
@@ -345,7 +345,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # live conversation (and its history) from the ConversationManager, the
         # single source of truth — no message-history copy is threaded here.
         state = ReactState(
-            conversation_key=conversation_key,
+            conversation_address=conversation_address,
             agent_tentacle_id=self.id,
         )
         start_node = (
@@ -354,10 +354,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             else StartTurn(user_prompt=user_prompt)
         )
         with logfire.span(
-            "AgentTentacle {agent_id} {run_name} [{conversation_key}]",
+            "AgentTentacle {agent_id} {run_name} [{conversation_address}]",
             agent_id=self.id,
             run_name=resolved_run_name,
-            conversation_key=str(conversation_key),
+            conversation_address=str(conversation_address),
         ):
             async for event in iter_react_graph_events(
                 start_node,

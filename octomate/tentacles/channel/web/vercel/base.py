@@ -37,7 +37,7 @@ from octomate.capabilities.react import (
     iter_react_graph_events,
 )
 from octomate.config import ChannelConfig
-from octomate.schemas.conversation import ConversationKey, UserProfile
+from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.agent.inkling.base import InklingOutput
@@ -119,6 +119,9 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
     """Channel that serves the pydantic-ai Vercel dev UI over the react graph."""
 
     SDK_VERSION: ClassVar[Literal[6]] = 6
+    # The dev UI runs one agent directly (bypassing triage); hardcode it now
+    # that channels no longer carry a configured agent_id.
+    agent_id: ClassVar[str] = "reception"
 
     ink: VercelInk
     chromo: VercelChromo
@@ -150,7 +153,7 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
             run_input=body,
             sdk_version=self.SDK_VERSION,
         )
-        key = ConversationKey(
+        address = ChannelAddress(
             channel_tentacle_id=self.id,
             chat_type="private",
             chat_id=body.id,
@@ -172,7 +175,7 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
                 cast(
                     AsyncIterator[NativeEvent],
                     self.native_events(
-                        conversation_key=key,
+                        conversation_address=address,
                         user_prompt=self.latest_user_prompt(client_messages),
                         deferred=deferred,
                     ),
@@ -183,7 +186,7 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
     async def native_events(
         self,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         user_prompt: str | Sequence[UserContent] | None,
         deferred: DeferredToolResults | None,
     ) -> AsyncIterator[ReactStreamEvent[InklingOutput]]:
@@ -191,7 +194,7 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
             async for event in iter_react_graph_events(
                 self.start_node(user_prompt=user_prompt, deferred=deferred),
                 state=ReactState(
-                    conversation_key=conversation_key,
+                    conversation_address=conversation_address,
                     agent_tentacle_id=self.agent_id,
                 ),
                 deps=ReactDeps(

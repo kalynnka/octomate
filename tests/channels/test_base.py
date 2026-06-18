@@ -25,7 +25,7 @@ from octomate.capabilities.events import (
     TodoCompletedEvent,
 )
 from octomate.schemas.awakes import UserMessageSignal
-from octomate.schemas.conversation import ChatType, ConversationKey
+from octomate.schemas.conversation import ChatType, ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -81,8 +81,8 @@ def _key(
     chat_id: str = "alice",
     user_id: str = "alice",
     thread_id: str = "",
-) -> ConversationKey:
-    return ConversationKey(
+) -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id=channel_id,
         chat_type=chat_type,
         chat_id=chat_id,
@@ -112,12 +112,12 @@ async def test_ingest_dispatches_event_to_octomate(
     assert len(octomate.kicks) == 1
     signal = octomate.kicks[0]
     assert isinstance(signal, UserMessageSignal)
-    key = signal.key
+    address = signal.address
 
-    assert key.channel_tentacle_id == "chan1"
-    assert key.chat_id == "lobby"
-    assert key.chat_type == "group"
-    assert key.user_id == "alice"
+    assert address.channel_tentacle_id == "chan1"
+    assert address.chat_id == "lobby"
+    assert address.chat_type == "group"
+    assert address.user_id == "alice"
 
     event = signal.messages[0]
     assert event.tentacle_id == "chan1"
@@ -166,7 +166,7 @@ async def test_submerge_downloads_images_and_rewrites_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(FakeChannelTentacle, "FILES_ROOT", tmp_path)
-    channel.recording_ink.downloads["remote-image-key"] = DownloadedImage(
+    channel.recording_ink.downloads["remote-image-address"] = DownloadedImage(
         data=b"png-bytes",
         file_name="pic.png",
         content_type="image/png",
@@ -179,7 +179,7 @@ async def test_submerge_downloads_images_and_rewrites_file(
             "user_id": "alice",
             "chat_id": "alice",
             "chat_type": "private",
-            "segments": [ImageSegment(data=ImageData(file="remote-image-key"))],
+            "segments": [ImageSegment(data=ImageData(file="remote-image-address"))],
         }
     )
 
@@ -211,9 +211,9 @@ async def test_markdown_feeler_encodes_final_agent_result_and_sends_native_messa
 async def test_markdown_feeler_uses_conversation_thread_as_reply_target(
     channel: FakeChannelTentacle,
 ) -> None:
-    key = _key(chat_type="group", chat_id="lobby", thread_id="m1")
+    address = _key(chat_type="group", chat_id="lobby", thread_id="m1")
 
-    await channel.feelers.markdown.present(key, "after reply")
+    await channel.feelers.markdown.present(address, "after reply")
 
     assert len(channel.sent) == 1
     assert channel.sent[0][3] == "m1"
@@ -519,20 +519,20 @@ async def test_start_sub_thread_falls_back_to_main_target(
     class MainTargetChannel(FakeChannelTentacle):
         async def start_sub_thread(
             self,
-            key: ConversationKey,
+            address: ChannelAddress,
             hint_text: str,
-        ) -> ConversationKey:
+        ) -> ChannelAddress:
             return await ChannelTentacle[RawMessage, NativeMessage].start_sub_thread(
-                self, key, hint_text
+                self, address, hint_text
             )
 
     channel = MainTargetChannel(id="chan1")
-    key = _key()
+    address = _key()
 
     with caplog.at_level("WARNING"):
-        returned = await channel.start_sub_thread(key, "handoff")
+        returned = await channel.start_sub_thread(address, "handoff")
 
-    assert returned == key
+    assert returned == address
     assert "does not support sub-thread startup" in caplog.text
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "handoff"

@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from octomate.schemas.segments import MessageSegment
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.types.json import JsonObject
 
 
@@ -20,7 +20,7 @@ class AgentMessage(BaseModel):
 
 class ConfirmAction(BaseModel):
     confirmation_id: str
-    conversation_key: ConversationKey
+    conversation_address: ChannelAddress
     tool_name: str
     tool_call_id: str
     args: JsonObject
@@ -35,7 +35,7 @@ class ConfirmAction(BaseModel):
 
 class QuestionAction(BaseModel):
     question_id: str
-    conversation_key: ConversationKey
+    conversation_address: ChannelAddress
     text: str
     options: list[str] = Field(default_factory=list)
     multi_select: bool = False

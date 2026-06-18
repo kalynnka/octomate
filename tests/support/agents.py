@@ -28,7 +28,7 @@ from octomate import Octomate
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredSuspender
 from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import TriageDecision
 from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
@@ -45,7 +45,7 @@ ScriptedOutput = str | DeferredToolRequests
 class RecordedRun:
     prompt: str | Sequence[UserContent] | None
     history: list[ModelMessage]
-    key: ConversationKey
+    address: ChannelAddress
     run_name: str | None
     deferred_results: DeferredToolResults | None = None
 
@@ -72,7 +72,7 @@ class FakeAgent:
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[FakeRunOutput] | None = None,
         message_history: Sequence[ModelMessage] | None = None,
@@ -84,7 +84,7 @@ class FakeAgent:
             RecordedRun(
                 prompt=user_prompt,
                 history=list(message_history or []),
-                key=conversation_key,
+                address=conversation_address,
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
             )
@@ -103,7 +103,7 @@ class FakeAgent:
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
-        conversation_key: ConversationKey,
+        conversation_address: ChannelAddress,
         run_name: str | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -113,7 +113,7 @@ class FakeAgent:
             RecordedRun(
                 prompt=user_prompt,
                 history=list(message_history or []),
-                key=conversation_key,
+                address=conversation_address,
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
             )

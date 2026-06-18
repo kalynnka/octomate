@@ -24,7 +24,7 @@ from octomate.capabilities.events import (
     TodoEvent,
 )
 from octomate.config import ChannelStreamConfig
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtSegment,
     CardSegment,
@@ -91,14 +91,14 @@ class LarkMarkdownFeeler:
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         markdown: str,
     ) -> IMMessageID | None:
-        chat_id = key.chat_id or key.user_id
-        reply_to = key.thread_id if key.thread_id.startswith("om_") else None
+        chat_id = address.chat_id or address.user_id
+        reply_to = address.thread_id if address.thread_id.startswith("om_") else None
         return await self.ink.send_message(
             chat_id,
-            key.chat_type,
+            address.chat_type,
             self.chromo.outbound_markdown(markdown),
             reply_to,
             reply_in_thread=reply_to is not None,
@@ -134,7 +134,7 @@ class LarkRunStateCards(TimelineState):
     once it finishes — and the answer streams into its own card."""
 
     ink: LarkInk
-    key: ConversationKey
+    address: ChannelAddress
     chat_id: str
     chat_type: str
     reply_to: str | None
@@ -408,7 +408,7 @@ class LarkTimelineFeeler(TimelineFeeler):
     """Renders a run as Lark cards (a card per thinking block / tool call + a
     streaming answer card), driven event-by-event by `ChannelTentacle.consume`.
 
-    Stateless; `open(key)` builds a fresh per-run `LarkRunStateCards` machine that
+    Stateless; `open(address)` builds a fresh per-run `LarkRunStateCards` machine that
     `drive_timeline` renders each event onto."""
 
     def __init__(
@@ -429,13 +429,13 @@ class LarkTimelineFeeler(TimelineFeeler):
         self.deferred_actions = deferred_actions
 
     @asynccontextmanager
-    async def open(self, key: ConversationKey) -> AsyncIterator[LarkRunStateCards]:
-        reply_to = key.thread_id if key.thread_id.startswith("om_") else None
+    async def open(self, address: ChannelAddress) -> AsyncIterator[LarkRunStateCards]:
+        reply_to = address.thread_id if address.thread_id.startswith("om_") else None
         state = LarkRunStateCards(
             ink=self.ink,
-            key=key,
-            chat_id=key.chat_id or key.user_id,
-            chat_type=key.chat_type,
+            address=address,
+            chat_id=address.chat_id or address.user_id,
+            chat_type=address.chat_type,
             reply_to=reply_to,
             reply_in_thread=reply_to is not None,
             answer_batcher=TextStreamBatcher(

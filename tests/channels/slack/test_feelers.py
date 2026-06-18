@@ -12,7 +12,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -51,8 +51,8 @@ from tests.channels.slack.fakes import FakeSlackBlocksInk
 JsonObjectAdapter = TypeAdapter(JsonObject)
 
 
-def _key(channel: str = "im") -> ConversationKey:
-    return ConversationKey(
+def _key(channel: str = "im") -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id=channel,
         chat_type="private",
         chat_id="alice",
@@ -179,7 +179,7 @@ def _slack_question_body(
 
 async def test_slack_feelers_send_approval_and_question_blocks() -> None:
     ink = FakeSlackBlocksInk()
-    key = _key("slack")
+    address = _key("slack")
     approval = _approval()
     second_approval = _approval(batch_id=_batch_id(approval))
     questions = [
@@ -188,11 +188,11 @@ async def test_slack_feelers_send_approval_and_question_blocks() -> None:
     ]
 
     approval_message_ids = await SlackApprovalFeeler(cast(SlackInk, ink)).present(
-        key,
+        address,
         [approval, second_approval],
     )
     question_message_ids = await SlackAskQuestionFeeler(cast(SlackInk, ink)).present(
-        key,
+        address,
         questions,
     )
 

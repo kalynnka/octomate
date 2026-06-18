@@ -20,7 +20,7 @@ from octomate.capabilities.events import ActionBatchEvent
 from octomate.capabilities.react import ReactStreamEvent
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
@@ -59,8 +59,8 @@ class StubSuspender:
         return None
 
 
-def _test_conversation_key() -> ConversationKey:
-    return ConversationKey(
+def _test_conversation_address() -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id="test",
         chat_type="private",
         chat_id="test",
@@ -124,7 +124,7 @@ async def test_inkling_loop_emits_deferred_question_batch() -> None:
     tentacle = _tentacle(agent, conversations)
     async with tentacle.run_stream_events(
         "hi octomate",
-        conversation_key=_test_conversation_key(),
+        conversation_address=_test_conversation_address(),
         output_type=STR_OUTPUT,
     ) as stream:
         async for event in stream:
@@ -169,7 +169,7 @@ async def test_inkling_tentacle_invokes_suspender_on_deferred_request() -> None:
     outputs: list[object] = []
     async with tentacle.run_stream_events(
         "hi octomate",
-        conversation_key=_test_conversation_key(),
+        conversation_address=_test_conversation_address(),
         output_type=STR_OUTPUT,
         deferred_suspender=suspender,
     ) as stream:
@@ -194,7 +194,7 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
     captured_events: list[InklingTestEvent] = []
     async with tentacle.run_stream_events(
         "hi octomate",
-        conversation_key=_test_conversation_key(),
+        conversation_address=_test_conversation_address(),
         output_type=STR_OUTPUT,
     ) as stream:
         async for event in stream:
@@ -227,7 +227,7 @@ async def test_run_resumes_via_resume_turn_when_deferred_results_passed() -> Non
 
     first = await tentacle.run(
         "hi octomate",
-        conversation_key=_test_conversation_key(),
+        conversation_address=_test_conversation_address(),
         output_type=STR_OUTPUT,
     )
     assert isinstance(first.output, DeferredToolRequests)
@@ -235,7 +235,7 @@ async def test_run_resumes_via_resume_turn_when_deferred_results_passed() -> Non
     results = DeferredToolResults()
     results.calls["call_ask_1"] = ["Ada"]
     resumed = await tentacle.run(
-        conversation_key=_test_conversation_key(),
+        conversation_address=_test_conversation_address(),
         output_type=STR_OUTPUT,
         deferred_tool_results=results,
     )
@@ -282,7 +282,7 @@ async def test_inkling_default_output_is_segments() -> None:
 
     result = await tentacle.run(
         "hi octomate",
-        conversation_key=_test_conversation_key(),
+        conversation_address=_test_conversation_address(),
         model=TestModel(
             call_tools=[],
             custom_output_args=[
@@ -307,7 +307,7 @@ async def test_inkling_loop_propagates_graph_error_streaming() -> None:
     with pytest.raises(RuntimeError, match="model boom"):
         async with tentacle.run_stream_events(
             "hi octomate",
-            conversation_key=_test_conversation_key(),
+            conversation_address=_test_conversation_address(),
         ) as stream:
             async for _ in stream:
                 pass
@@ -323,6 +323,6 @@ async def test_inkling_loop_propagates_graph_error_collected_run() -> None:
     with pytest.raises(RuntimeError, match="model boom"):
         await tentacle.run(
             "hi octomate",
-            conversation_key=_test_conversation_key(),
+            conversation_address=_test_conversation_address(),
             output_type=STR_OUTPUT,
         )

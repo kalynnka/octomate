@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel.napcat import NapcatTentacle
 
 from tests.support.scenarios import (
@@ -37,42 +37,42 @@ pytestmark = pytest.mark.trigger
 def napcat_run(
     live_config: OctomateConfig,
     trigger_targets: TriggerTargets,
-) -> tuple[NapcatTentacle, ConversationKey]:
+) -> tuple[NapcatTentacle, ChannelAddress]:
     """One tentacle and one run notice, shared by the whole run (no threads)."""
     config = live_config.channels.napcat
     if config is None or not config.enabled or trigger_targets.napcat is None:
         pytest.skip("napcat credentials/trigger target not configured in octomate.yaml")
     target = trigger_targets.napcat
     channel = NapcatTentacle("napcat", Octomate(), config=config)
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="napcat",
         chat_type=target.chat_type,
         chat_id=target.chat_id,
         user_id=target.user_id,
     )
     asyncio.run(
-        channel.feelers.markdown.present(key, run_banner("replays follow."))
+        channel.feelers.markdown.present(address, run_banner("replays follow."))
     )
-    return channel, key
+    return channel, address
 
 
 @pytest.fixture
 def napcat_channel(
-    napcat_run: tuple[NapcatTentacle, ConversationKey],
+    napcat_run: tuple[NapcatTentacle, ChannelAddress],
     in_memory_engine: AsyncEngine,
-) -> tuple[NapcatTentacle, ConversationKey]:
+) -> tuple[NapcatTentacle, ChannelAddress]:
     return napcat_run
 
 
 async def test_napcat_renders_streamed_str_output(
-    napcat_channel: tuple[NapcatTentacle, ConversationKey],
+    napcat_channel: tuple[NapcatTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    channel, key = napcat_channel
+    channel, address = napcat_channel
 
     with caplog.at_level("WARNING"):
         message_id = await drive(channel, 
-            key,
+            address,
             play(streamed_text("String ", "output from the octomate test suite.")),
         )
 
@@ -82,23 +82,23 @@ async def test_napcat_renders_streamed_str_output(
 
 
 async def test_napcat_renders_streamed_segments_showcase(
-    napcat_channel: tuple[NapcatTentacle, ConversationKey],
+    napcat_channel: tuple[NapcatTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    channel, key = napcat_channel
+    channel, address = napcat_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, key, play(showcase(image_file=None)))
+        message_id = await drive(channel, address, play(showcase(image_file=None)))
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text
 
 
 async def test_napcat_renders_action_batch(
-    napcat_channel: tuple[NapcatTentacle, ConversationKey],
+    napcat_channel: tuple[NapcatTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    channel, key = napcat_channel
+    channel, address = napcat_channel
     batch_id = uuid4()
     question, approval = batch_actions()
     script = action_batch(
@@ -108,6 +108,6 @@ async def test_napcat_renders_action_batch(
     )
 
     with caplog.at_level("WARNING"):
-        await drive(channel, key, play(script))
+        await drive(channel, address, play(script))
 
     assert "timeline render failed" not in caplog.text

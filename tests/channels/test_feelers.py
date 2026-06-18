@@ -22,7 +22,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -58,8 +58,8 @@ from tests.support.channels import (
 from tests.support.managers import FakeActionManager, FakePresentedBatch
 
 
-def _key(channel: str = "im") -> ConversationKey:
-    return ConversationKey(
+def _key(channel: str = "im") -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id=channel,
         chat_type="private",
         chat_id="alice",
@@ -119,7 +119,7 @@ def test_markdown_from_output_renders_segments() -> None:
 
 async def test_plain_text_feelers_present_approval_and_questions() -> None:
     markdown = RecordingMarkdownFeeler()
-    key = _key()
+    address = _key()
     approval = _approval()
     questions = [
         _question(
@@ -129,11 +129,11 @@ async def test_plain_text_feelers_present_approval_and_questions() -> None:
     ]
 
     approval_ids = await PlainTextApprovalFeeler(markdown).present(
-        key,
+        address,
         [approval],
     )
     question_ids = await PlainTextAskQuestionFeeler(markdown).present(
-        key,
+        address,
         questions,
     )
 
@@ -144,7 +144,7 @@ async def test_plain_text_feelers_present_approval_and_questions() -> None:
     }
     sent = markdown.calls
     assert sent[0] == (
-        key,
+        address,
         (
             f"Octomate needs approval for `shell` ({approval.id}). This channel "
             "can show the request, but does not support interactive approval cards yet."
@@ -167,8 +167,8 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         questions=[first, second], approvals=[approval]
     )
     manager = FakeActionManager(presented_batch=presented_batch)
-    source_key = _key("source")
-    target_key = _key("target")
+    source_address = _key("source")
+    target_address = _key("target")
     decision = TriageDecision(action="reception", reason="needs input")
     requests = DeferredToolRequests(
         calls=[
@@ -205,8 +205,8 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         conversation=conversation,
         agent_tentacle_id="inkling",
         run_name="reception",
-        source_key=source_key,
-        target_key=target_key,
+        source_address=source_address,
+        target_address=target_address,
         target_mode="sub",
         decision=decision,
         requests=requests,
@@ -214,10 +214,10 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
 
     assert batch is presented_batch
     assert manager.create_calls[0].conversation is conversation
-    assert manager.create_calls[0].source_key == source_key
-    assert manager.create_calls[0].target_key == target_key
-    assert approvals.presented == [(target_key, [approval])]
-    assert ask_questions.presented == [(target_key, [first, second])]
+    assert manager.create_calls[0].source_address == source_address
+    assert manager.create_calls[0].target_address == target_address
+    assert approvals.presented == [(target_address, [approval])]
+    assert ask_questions.presented == [(target_address, [first, second])]
     assert manager.presented == [
         (approval.id, f"approval-{approval.id}"),
         (first.id, f"question-{first.id}"),

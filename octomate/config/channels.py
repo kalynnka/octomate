@@ -30,7 +30,6 @@ class NapcatStreamConfig(ChannelStreamConfig):
 
 class ChannelConfig(BaseModel):
     type: str
-    agent_id: str = "inkling"
     mention_only: bool = True
     enabled: bool = True
     stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)

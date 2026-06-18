@@ -11,7 +11,7 @@ from slack_bolt.async_app import AsyncApp, AsyncSay
 from octomate.config import SlackChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel.base import (
     ChannelTentacle,
     ThreadStrategy,
@@ -334,7 +334,7 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             )
             return
 
-        key = ConversationKey(
+        address = ChannelAddress(
             channel_tentacle_id=self.id,
             chat_type="private",
             chat_id=channel_id,
@@ -342,21 +342,23 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             thread_id=thread_ts,
         )
         with sqlalchemy_materia():
+            # Pre-create the source conversation owned by the entry triage agent;
+            # the triage run would otherwise create it on the first message.
             await self.octomate.conversations.ensure(
-                key,
-                agent_tentacle_id=self.agent_id,
+                address,
+                agent_tentacle_id="triage",
             )
-        logger.info("Channel %s: ensured Slack assistant thread %s", self.id, key)
+        logger.info("Channel %s: ensured Slack assistant thread %s", self.id, address)
 
     async def start_sub_thread(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         hint_text: str,
-    ) -> ConversationKey:
+    ) -> ChannelAddress:
         message_id = await self.ink.send_message(
-            key.chat_id or key.user_id,
-            key.chat_type,
+            address.chat_id or address.user_id,
+            address.chat_type,
             [SlackOutboundMessage(text=hint_text, markdown_text=hint_text)],
             None,
         )
-        return replace(key, thread_id=message_id or key.thread_id)
+        return replace(address, thread_id=message_id or address.thread_id)

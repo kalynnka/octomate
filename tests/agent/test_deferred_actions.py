@@ -13,7 +13,7 @@ from uuid_utils.compat import uuid7
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionBatch,
     DeferredActionCollection,
@@ -23,8 +23,8 @@ from octomate.schemas.deferred import (
 from octomate.schemas.triage import TriageDecision
 
 
-def _key() -> ConversationKey:
-    return ConversationKey(
+def _key() -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id="slack",
         chat_type="private",
         chat_id="alice",
@@ -52,14 +52,14 @@ def _requests() -> DeferredToolRequests:
 
 
 async def _create_batch() -> DeferredActionBatch:
-    key = _key()
-    conversation = await ConversationManager().ensure(key, agent_tentacle_id="inkling")
+    address = _key()
+    conversation = await ConversationManager().ensure(address, agent_tentacle_id="inkling")
     return await DeferredActionManager().create_batch(
         conversation=conversation,
         agent_tentacle_id="inkling",
         run_name="reception",
-        source_key=key,
-        target_key=key,
+        source_address=address,
+        target_address=address,
         target_mode="main",
         decision=TriageDecision(action="reception", reason="needs input"),
         requests=_requests(),
@@ -75,14 +75,14 @@ def test_deferred_action_batch_accepts_validated_actions() -> None:
     approvals = [
         action for action in actions if isinstance(action, DeferredApproval)
     ]
-    key = _key()
+    address = _key()
 
     batch = DeferredActionBatch(
         conversation_id=uuid7(),
         agent_tentacle_id="inkling",
         run_name="reception",
-        source_key=key,
-        target_key=key,
+        source_address=address,
+        target_address=address,
         target_mode="main",
         decision=TriageDecision(action="reception", reason="needs input"),
         requests=requests,

@@ -15,7 +15,7 @@ from slack_sdk.web.async_chat_stream import AsyncChatStream
 
 from octomate.config import SlackChannelConfig, SlackStreamConfig
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.conversation import ConversationKey, UserProfile
+from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.channel.base import DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
@@ -261,8 +261,8 @@ def compose_slack_feelers(
     )
 
 
-def slack_key() -> ConversationKey:
-    return ConversationKey(
+def slack_key() -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id="slack",
         chat_type="group",
         chat_id="C1",

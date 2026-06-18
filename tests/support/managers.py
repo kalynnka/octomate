@@ -1,6 +1,6 @@
 """Canonical in-memory manager fakes.
 
-`FakeConversationManager` keeps per-key message lists so graph tests run
+`FakeConversationManager` keeps per-address message lists so graph tests run
 without a database; `FakeActionManager` records batch lifecycle calls and
 returns scriptable batches. Tests of the *real* managers use the actual
 classes with the `in_memory_engine` fixture instead.
@@ -18,7 +18,7 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import DeferredBatchStatus
@@ -36,23 +36,26 @@ class FakeConversation:
 
 @dataclass
 class FakeConversationManager(ConversationManager):
-    store: dict[ConversationKey, FakeConversation] = field(default_factory=dict)
-    ensured: list[tuple[ConversationKey, str | None]] = field(default_factory=list)
+    store: dict[tuple[ChannelAddress, str | None], FakeConversation] = field(
+        default_factory=dict
+    )
+    ensured: list[tuple[ChannelAddress, str | None]] = field(default_factory=list)
     runs: list[tuple[FakeConversation, str, list[ModelMessage]]] = field(
         default_factory=list
     )
 
     async def ensure(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         *,
         agent_tentacle_id: str | None = None,
     ) -> Conversation:
-        self.ensured.append((key, agent_tentacle_id))
-        conversation = self.store.get(key)
+        self.ensured.append((address, agent_tentacle_id))
+        store_key = (address, agent_tentacle_id)
+        conversation = self.store.get(store_key)
         if conversation is None:
             conversation = FakeConversation()
-            self.store[key] = conversation
+            self.store[store_key] = conversation
         return cast(Conversation, conversation)
 
     async def record_agent_run(
@@ -82,8 +85,8 @@ class CreateBatchCall:
     conversation: Conversation
     agent_tentacle_id: str
     run_name: str | None
-    source_key: ConversationKey
-    target_key: ConversationKey
+    source_address: ChannelAddress
+    target_address: ChannelAddress
     target_mode: ResponseTargetMode
     decision: TriageDecision | None
     requests: DeferredToolRequests
@@ -103,8 +106,8 @@ class FakePresentedBatch:
 class FakeDeferredBatch:
     """What `resolve_batch`/`get_batch` hand back: a resumable batch."""
 
-    source_key: ConversationKey
-    target_key: ConversationKey
+    source_address: ChannelAddress
+    target_address: ChannelAddress
     requests: DeferredToolRequests
     deferred_results: DeferredToolResults
     id: uuid.UUID = field(default_factory=uuid.uuid4)
@@ -135,8 +138,8 @@ class FakeActionManager:
         conversation: Conversation,
         agent_tentacle_id: str,
         run_name: str | None,
-        source_key: ConversationKey,
-        target_key: ConversationKey,
+        source_address: ChannelAddress,
+        target_address: ChannelAddress,
         target_mode: ResponseTargetMode,
         decision: TriageDecision | None,
         requests: DeferredToolRequests,
@@ -147,8 +150,8 @@ class FakeActionManager:
                 conversation=conversation,
                 agent_tentacle_id=agent_tentacle_id,
                 run_name=run_name,
-                source_key=source_key,
-                target_key=target_key,
+                source_address=source_address,
+                target_address=target_address,
                 target_mode=target_mode,
                 decision=decision,
                 requests=requests,

@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import JsonValue, TypeAdapter
 
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.tentacles.channel.feelers.deferred import QuestionFeeler, question_text
 from octomate.tentacles.channel.feelers.output import IMMessageID
@@ -42,15 +42,15 @@ class SlackAskQuestionFeeler(QuestionFeeler):
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         actions: list[DeferredQuestion],
     ) -> dict[UUID, IMMessageID | None]:
         if not actions:
             return {}
         text = question_title(actions)
         message_id = await self.ink.send_message(
-            key.chat_id or key.user_id,
-            key.chat_type,
+            address.chat_id or address.user_id,
+            address.chat_type,
             [
                 SlackOutboundMessage(
                     text=text,
@@ -58,7 +58,7 @@ class SlackAskQuestionFeeler(QuestionFeeler):
                     blocks=ask_question_blocks(actions),
                 )
             ],
-            key.thread_id or None,
+            address.thread_id or None,
         )
         return {action.id: message_id for action in actions}
 

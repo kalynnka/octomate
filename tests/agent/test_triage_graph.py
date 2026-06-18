@@ -14,7 +14,7 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.base import AgentTentacle
@@ -47,7 +47,6 @@ def _channel(*, stream: bool = True) -> FakeChannelTentacle:
     return FakeChannelTentacle(
         config=ChannelConfig(
             type="fake",
-            agent_id="inkling",
             stream=ChannelStreamConfig(enabled=stream),
         )
     )
@@ -63,7 +62,7 @@ class DroppingTimelineState(TimelineState):
 
 class DroppingTimelineFeeler:
     @asynccontextmanager
-    async def open(self, key: ConversationKey) -> AsyncGenerator[DroppingTimelineState]:
+    async def open(self, address: ChannelAddress) -> AsyncGenerator[DroppingTimelineState]:
         yield DroppingTimelineState()
 
 
@@ -76,8 +75,8 @@ class DroppingChannel(FakeChannelTentacle):
         self.feelers.timeline = DroppingTimelineFeeler()
 
 
-def _key(thread_id: str = "") -> ConversationKey:
-    return ConversationKey(
+def _key(thread_id: str = "") -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id="im",
         chat_type="private",
         chat_id="alice",
@@ -86,23 +85,22 @@ def _key(thread_id: str = "") -> ConversationKey:
     )
 
 
-def _source_target(key: ConversationKey) -> ResponseTarget:
+def _source_target(address: ChannelAddress) -> ResponseTarget:
     return ResponseTarget(
         channel_id="im",
-        key=key,
+        address=address,
         thread_strategy="flat_thread",
         mode="main",
     )
 
 
 def _state(
-    key: ConversationKey,
+    address: ChannelAddress,
     *,
     user_prompt: str | None = "hi",
 ) -> TriageState:
     return TriageState(
-        source_target=_source_target(key),
-        agent_id="inkling",
+        source_target=_source_target(address),
         user_prompt=user_prompt,
     )
 
@@ -114,9 +112,12 @@ def _deps(
     agent: FakeAgent,
     action_manager: FakeActionManager | None = None,
 ) -> TriageDeps:
+    fake = cast(AgentTentacle[InklingOutput, None], agent)
     return TriageDeps(
         channels=dict(channels),
-        agents={agent.id: cast(AgentTentacle[InklingOutput, None], agent)},
+        # One fake serves both roles: the graph hardcodes the "triage" agent and
+        # routes reception via decision.agent_id (defaulting to "reception").
+        agents={"triage": fake, "reception": fake, agent.id: fake},
         conversation_manager=conversations,
         action_manager=cast(
             DeferredActionManager, action_manager or FakeActionManager()
@@ -143,7 +144,7 @@ def _deferred_results() -> DeferredToolResults:
 
 
 async def test_triage_graph_emits_direct_route() -> None:
-    key = _key()
+    address = _key()
     agent = FakeAgent(triage_output=TriageDecision(action="answer", answer="hello"))
     conversations = FakeConversationManager()
     im = _channel()
@@ -152,7 +153,7 @@ async def test_triage_graph_emits_direct_route() -> None:
     result = (
         await triage_graph.run(
             RunTriage(),
-            state=_state(key),
+            state=_state(address),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im, "ops": ops},
@@ -176,7 +177,7 @@ async def test_triage_graph_emits_direct_route() -> None:
 async def test_triage_graph_returns_deferred_result_when_triage_requests_input() -> (
     None
 ):
-    key = _key()
+    address = _key()
     requests = _requests()
     agent = FakeAgent(triage_output=requests)
     conversations = FakeConversationManager()
@@ -186,7 +187,7 @@ async def test_triage_graph_returns_deferred_result_when_triage_requests_input()
     result = (
         await triage_graph.run(
             RunTriage(),
-            state=_state(key),
+            state=_state(address),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im},
@@ -200,28 +201,28 @@ async def test_triage_graph_returns_deferred_result_when_triage_requests_input()
     assert result.requests is requests
     assert result.result.output is requests
     assert result.run_name == "triage"
-    assert result.target == _source_target(key)
+    assert result.target == _source_target(address)
     assert len(action_manager.create_calls) == 1
     create_call = action_manager.create_calls[0]
     assert create_call.run_name == "triage"
-    assert create_call.source_key == key
-    assert create_call.target_key == key
+    assert create_call.source_address == address
+    assert create_call.target_address == address
     assert create_call.target_mode == "main"
     assert create_call.decision is None
     assert create_call.requests is requests
     assert [turn.run_name for turn in agent.turns] == ["triage"]
     assert [turn.prompt for turn in agent.turns] == ["hi"]
     # The suspender ensures the conversation when persisting the batch.
-    assert conversations.ensured == [(key, "inkling")]
+    assert conversations.ensured == [(address, "inkling")]
     assert im.sub_threads == []
 
 
 async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
-    key = _key()
+    address = _key()
     deferred_results = _deferred_results()
     batch = FakeDeferredBatch(
-        source_key=key,
-        target_key=key,
+        source_address=address,
+        target_address=address,
         requests=_requests(),
         deferred_results=deferred_results,
     )
@@ -245,7 +246,7 @@ async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
 
     assert not isinstance(result, DeferredResult)
     assert result.decision.answer == "hello"
-    assert result.target == _source_target(key)
+    assert result.target == _source_target(address)
     assert [turn.run_name for turn in agent.turns] == ["triage"]
     assert [turn.prompt for turn in agent.turns] == [None]
     assert [turn.deferred_results for turn in agent.turns] == [deferred_results]
@@ -265,10 +266,10 @@ async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
 
 
 async def test_triage_graph_keeps_incomplete_triage_batch_deferred() -> None:
-    key = _key()
+    address = _key()
     batch = FakeDeferredBatch(
-        source_key=key,
-        target_key=key,
+        source_address=address,
+        target_address=address,
         requests=_requests(),
         deferred_results=_deferred_results(),
         status="pending",
@@ -303,7 +304,7 @@ async def test_triage_graph_keeps_incomplete_triage_batch_deferred() -> None:
 
 
 async def test_triage_graph_uses_markdown_feeler_for_direct_answer() -> None:
-    key = _key()
+    address = _key()
     agent = FakeAgent(triage_output=TriageDecision(action="answer", answer="hello"))
     conversations = FakeConversationManager()
     im = _channel()
@@ -313,7 +314,7 @@ async def test_triage_graph_uses_markdown_feeler_for_direct_answer() -> None:
     result = (
         await triage_graph.run(
             RunTriage(),
-            state=_state(key),
+            state=_state(address),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im},
@@ -324,12 +325,12 @@ async def test_triage_graph_uses_markdown_feeler_for_direct_answer() -> None:
 
     assert not isinstance(result, DeferredResult)
     assert result.decision.answer == "hello"
-    assert markdown_feeler.calls == [(key, "hello")]
+    assert markdown_feeler.calls == [(address, "hello")]
     assert im.sent == []
 
 
 async def test_triage_graph_emits_reception_after_route() -> None:
-    key = _key()
+    address = _key()
     agent = FakeAgent(
         triage_output=TriageDecision(
             action="reception",
@@ -347,7 +348,7 @@ async def test_triage_graph_emits_reception_after_route() -> None:
     result = (
         await triage_graph.run(
             RunTriage(),
-            state=_state(key, user_prompt="debug this"),
+            state=_state(address, user_prompt="debug this"),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im, "ops": ops},
@@ -362,7 +363,7 @@ async def test_triage_graph_emits_reception_after_route() -> None:
     assert result.result is not None
     assert result.result.output == "done"
     assert [turn.run_name for turn in agent.turns] == ["triage"]
-    assert agent.streams[0].key.thread_id == "hint-thread"
+    assert agent.streams[0].address.thread_id == "hint-thread"
     assert agent.streams[0].run_name == "reception"
     assert agent.streams[0].prompt == "Please debug this in reception."
     # The triage graph no longer ensures conversations for runs; react loads
@@ -379,11 +380,11 @@ async def test_triage_resume_does_not_leak_deferred_results_into_reception() -> 
     # open a reception. The triage answer must NOT leak into that fresh
     # sub-thread run — it would resume an empty conversation and raise
     # "Tool call results were provided, but the message history is empty."
-    key = _key()
+    address = _key()
     deferred_results = _deferred_results()
     batch = FakeDeferredBatch(
-        source_key=key,
-        target_key=key,
+        source_address=address,
+        target_address=address,
         requests=_requests(),
         deferred_results=deferred_results,
     )
@@ -422,7 +423,7 @@ async def test_triage_resume_does_not_leak_deferred_results_into_reception() -> 
 
 
 async def test_triage_graph_consumes_reception_stream() -> None:
-    key = _key()
+    address = _key()
     agent = FakeAgent(
         triage_output=TriageDecision(
             action="reception",
@@ -440,7 +441,7 @@ async def test_triage_graph_consumes_reception_stream() -> None:
     result = (
         await triage_graph.run(
             RunTriage(),
-            state=_state(key, user_prompt="debug this"),
+            state=_state(address, user_prompt="debug this"),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im, "ops": ops},
@@ -461,7 +462,7 @@ async def test_triage_graph_consumes_reception_stream() -> None:
 
 
 async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
-    key = _key()
+    address = _key()
     agent = FakeAgent(
         triage_output=TriageDecision(
             action="reception",
@@ -477,7 +478,6 @@ async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
     ops = DroppingChannel(
         config=ChannelConfig(
             type="fake",
-            agent_id="inkling",
             stream=ChannelStreamConfig(enabled=True),
         )
     )
@@ -485,7 +485,7 @@ async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
     with pytest.raises(RuntimeError, match="completed without a result"):
         await triage_graph.run(
             RunTriage(),
-            state=_state(key, user_prompt="debug this"),
+            state=_state(address, user_prompt="debug this"),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im, "ops": ops},
@@ -497,7 +497,7 @@ async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
 
 
 async def test_triage_graph_runs_final_reception_without_stream_when_disabled() -> None:
-    key = _key()
+    address = _key()
     agent = FakeAgent(
         triage_output=TriageDecision(
             action="reception",
@@ -514,7 +514,7 @@ async def test_triage_graph_runs_final_reception_without_stream_when_disabled() 
     result = (
         await triage_graph.run(
             RunTriage(),
-            state=_state(key, user_prompt="debug this"),
+            state=_state(address, user_prompt="debug this"),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im},
@@ -534,7 +534,7 @@ async def test_triage_graph_runs_final_reception_without_stream_when_disabled() 
 
 
 async def test_triage_graph_skips_triage_inside_flat_thread() -> None:
-    key = _key(thread_id="existing-thread")
+    address = _key(thread_id="existing-thread")
     agent = FakeAgent(
         triage_output=TriageDecision(action="answer", answer="unused"),
         reception_output="done",
@@ -545,7 +545,7 @@ async def test_triage_graph_skips_triage_inside_flat_thread() -> None:
     result = (
         await triage_graph.run(
             Route(),
-            state=_state(key, user_prompt="continue"),
+            state=_state(address, user_prompt="continue"),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im},
@@ -560,11 +560,11 @@ async def test_triage_graph_skips_triage_inside_flat_thread() -> None:
     assert result.result is not None
     assert result.result.output == "done"
     assert agent.turns == []
-    assert agent.streams[0].key == key
+    assert agent.streams[0].address == address
     assert agent.streams[0].run_name == "reception"
     assert agent.streams[0].prompt == "continue"
     assert im.sub_threads == []
-    assert im.consumed[0][0] == key
+    assert im.consumed[0][0] == address
     assert im.sent[-1][2][0]["text"] == "done"
 
 
@@ -686,12 +686,12 @@ async def test_prepare_reception_falls_back_to_main_on_sub_thread_failure() -> N
     class FailingSubThreadChannel(FakeChannelTentacle):
         async def start_sub_thread(
             self,
-            key: ConversationKey,
+            address: ChannelAddress,
             hint_text: str,
-        ) -> ConversationKey:
+        ) -> ChannelAddress:
             raise RuntimeError("platform refused the thread")
 
-    key = _key()
+    address = _key()
     agent = FakeAgent(
         triage_output=TriageDecision(
             action="reception",
@@ -705,7 +705,6 @@ async def test_prepare_reception_falls_back_to_main_on_sub_thread_failure() -> N
     im = FailingSubThreadChannel(
         config=ChannelConfig(
             type="fake",
-            agent_id="inkling",
             stream=ChannelStreamConfig(enabled=True),
         )
     )
@@ -713,7 +712,7 @@ async def test_prepare_reception_falls_back_to_main_on_sub_thread_failure() -> N
     result = (
         await triage_graph.run(
             RunTriage(),
-            state=_state(key, user_prompt="debug this"),
+            state=_state(address, user_prompt="debug this"),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im},
@@ -724,17 +723,17 @@ async def test_prepare_reception_falls_back_to_main_on_sub_thread_failure() -> N
 
     assert not isinstance(result, DeferredResult)
     assert result.target.mode == "main"
-    # Reception ran at the main conversation key, not a sub-thread.
-    assert im.consumed[0][0] == key
-    assert agent.streams[0].key == key
+    # Reception ran at the main conversation address, not a sub-thread.
+    assert im.consumed[0][0] == address
+    assert agent.streams[0].address == address
 
 
 async def test_resume_routes_reception_batch_to_run_reception() -> None:
-    key = _key(thread_id="hint-thread")
+    address = _key(thread_id="hint-thread")
     deferred_results = _deferred_results()
     batch = FakeDeferredBatch(
-        source_key=_key(),
-        target_key=key,
+        source_address=_key(),
+        target_address=address,
         requests=_requests(),
         deferred_results=deferred_results,
         run_name="reception",
@@ -765,9 +764,9 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
     assert agent.turns == []
     assert agent.streams[0].prompt is None
     assert agent.streams[0].run_name == "reception"
-    assert agent.streams[0].key == key
+    assert agent.streams[0].address == address
     assert [stream.deferred_results for stream in agent.streams] == [deferred_results]
-    assert im.consumed[0][0] == key
+    assert im.consumed[0][0] == address
     # The resumed batch is marked resuming, then completed after the run.
     assert action_manager.marked == [
         (batch.id, "resuming", False),
@@ -776,11 +775,11 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
 
 
 async def test_resume_returns_triage_result_for_already_completed_batch() -> None:
-    key = _key(thread_id="hint-thread")
+    address = _key(thread_id="hint-thread")
     decision = TriageDecision(action="reception", target_id="im", reason="resumed")
     batch = FakeDeferredBatch(
-        source_key=_key(),
-        target_key=key,
+        source_address=_key(),
+        target_address=address,
         requests=_requests(),
         deferred_results=_deferred_results(),
         run_name="reception",
@@ -815,10 +814,10 @@ async def test_resume_returns_triage_result_for_already_completed_batch() -> Non
 
 
 async def test_resume_keeps_incomplete_reception_batch_deferred() -> None:
-    key = _key(thread_id="hint-thread")
+    address = _key(thread_id="hint-thread")
     batch = FakeDeferredBatch(
-        source_key=_key(),
-        target_key=key,
+        source_address=_key(),
+        target_address=address,
         requests=_requests(),
         deferred_results=_deferred_results(),
         run_name="reception",

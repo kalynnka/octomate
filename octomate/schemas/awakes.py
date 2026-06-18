@@ -6,7 +6,7 @@ from functools import cached_property
 from typing import TypeAlias
 
 from pydantic import BaseModel, Field
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 
 
@@ -18,11 +18,11 @@ class UserMessageSignal:
         return bool(self.messages)
 
     @cached_property
-    def key(self) -> ConversationKey:
+    def address(self) -> ChannelAddress:
         if not self.messages:
-            raise ValueError("empty user message signal has no conversation key")
+            raise ValueError("empty user message signal has no conversation address")
         last_event = self.messages[-1]
-        return ConversationKey(
+        return ChannelAddress(
             channel_tentacle_id=last_event.tentacle_id,
             chat_type=last_event.chat_type,
             chat_id=last_event.chat_id,

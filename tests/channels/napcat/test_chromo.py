@@ -43,7 +43,7 @@ async def test_napcat_chromo_decodes_group_message_segments() -> None:
                     {"type": "at", "data": {"qq": "42", "name": "Octomate"}},
                     {
                         "type": "image",
-                        "data": {"file": "image-key", "url": "https://image"},
+                        "data": {"file": "image-address", "url": "https://image"},
                     },
                     {"type": "face", "data": {"id": "14"}},
                 ],
@@ -69,7 +69,7 @@ async def test_napcat_chromo_decodes_group_message_segments() -> None:
     assert isinstance(at_seg, AtSegment)
     assert isinstance(image_seg, ImageSegment)
     assert at_seg.data.user_id == "42"
-    assert image_seg.data.file == "image-key"
+    assert image_seg.data.file == "image-address"
 
 
 async def test_napcat_chromo_decodes_private_message() -> None:

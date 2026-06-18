@@ -10,7 +10,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from octomate.capabilities.events import ActionBatchEvent
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.tentacles.channel.base import ChannelTentacle
 
@@ -28,8 +28,8 @@ class HumanReviewSuspender:
     conversation_manager: ConversationManager
     agent_tentacle_id: str
     run_name: Literal["triage", "reception"]
-    source_key: ConversationKey
-    target_key: ConversationKey
+    source_address: ChannelAddress
+    target_address: ChannelAddress
     target_mode: ResponseTargetMode
     decision: TriageDecision | None
     emit_on_stream: bool = False
@@ -40,12 +40,12 @@ class HumanReviewSuspender:
             "suspend_for_review",
             run_name=self.run_name,
             agent_id=self.agent_tentacle_id,
-            target_key=str(self.target_key),
-            source_key=str(self.source_key),
+            target_address=str(self.target_address),
+            source_address=str(self.source_address),
             emit_on_stream=self.emit_on_stream,
         ) as span:
             conversation = await self.conversation_manager.ensure(
-                self.target_key,
+                self.target_address,
                 agent_tentacle_id=self.agent_tentacle_id,
             )
             if self.emit_on_stream:
@@ -55,8 +55,8 @@ class HumanReviewSuspender:
                     conversation=conversation,
                     agent_tentacle_id=self.agent_tentacle_id,
                     run_name=self.run_name,
-                    source_key=self.source_key,
-                    target_key=self.target_key,
+                    source_address=self.source_address,
+                    target_address=self.target_address,
                     target_mode=self.target_mode,
                     decision=self.decision,
                     requests=requests,
@@ -74,8 +74,8 @@ class HumanReviewSuspender:
                 conversation=conversation,
                 agent_tentacle_id=self.agent_tentacle_id,
                 run_name=self.run_name,
-                source_key=self.source_key,
-                target_key=self.target_key,
+                source_address=self.source_address,
+                target_address=self.target_address,
                 target_mode=self.target_mode,
                 decision=self.decision,
                 requests=requests,

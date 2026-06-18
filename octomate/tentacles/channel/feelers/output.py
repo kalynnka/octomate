@@ -57,7 +57,7 @@ from octomate.capabilities.events import (
     TodoUpdatedEvent,
 )
 from octomate.constants import SEND_TOOL_NAME
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
 from octomate.schemas.todos import Todo
 from octomate.tentacles.agent.inkling.tools import ASK_QUESTIONS_TOOL_NAME
@@ -486,7 +486,7 @@ class MarkdownFeeler(Protocol):
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         markdown: str,
     ) -> IMMessageID | None: ...
 
@@ -494,7 +494,7 @@ class MarkdownFeeler(Protocol):
 class TimelineState:
     """Streaming render hook for one run, and the event→render dispatch (`drive`)
     that walks the run stream. The feeler that opened the state calls `bind` with
-    the per-run context (key + the deferred-action feelers), then hands the stream
+    the per-run context (address + the deferred-action feelers), then hands the stream
     to `drive`, which maps one lifecycle method per real stream event:
     `PartStart`/`PartDelta`/`PartEnd` of the thinking and answer parts map to
     `*_start` / `*_delta` / `*_end`, and the tool call/result events to
@@ -520,7 +520,7 @@ class TimelineState:
     reply_captured: bool = False
     # Per-run context the timeline feeler injects when it creates the state, so
     # `drive` can present deferred-action batches.
-    key: ConversationKey
+    address: ChannelAddress
     ask_questions: QuestionFeeler
     approvals: ApprovalFeeler
     deferred_actions: DeferredActionManager
@@ -605,7 +605,7 @@ class TimelineState:
             except Exception:
                 logger.warning(
                     "Channel %s: timeline render failed",
-                    self.key.channel_tentacle_id,
+                    self.address.channel_tentacle_id,
                     exc_info=True,
                 )
                 failed = True
@@ -632,13 +632,13 @@ class TimelineState:
         """Render a deferred-action batch as a unit, then record each presented
         action's platform message id."""
         if event.questions:
-            message_ids = await self.ask_questions.present(self.key, event.questions)
+            message_ids = await self.ask_questions.present(self.address, event.questions)
             for action in event.questions:
                 await self.deferred_actions.mark_action_presented(
                     action.id, message_ids.get(action.id)
                 )
         if event.approvals:
-            message_ids = await self.approvals.present(self.key, event.approvals)
+            message_ids = await self.approvals.present(self.address, event.approvals)
             for action in event.approvals:
                 await self.deferred_actions.mark_action_presented(
                     action.id, message_ids.get(action.id)
@@ -710,13 +710,13 @@ class TimelineState:
 class TimelineFeeler(Protocol):
     """Opens a per-run `TimelineState` for a channel. The per-channel `Feelers.timeline`
     is a single stateless instance: `ChannelTentacle.consume` does
-    `async with feelers.timeline.open(key) as state:` — entering acquires the platform
+    `async with feelers.timeline.open(address) as state:` — entering acquires the platform
     resource and yields the per-run hook (a card, a stream session, …), or the feeler
     itself when there is nothing to set up; `drive_timeline` then renders each event onto
     it; exiting releases the resource and sets `message_id`."""
 
     def open(
-        self, key: ConversationKey
+        self, address: ChannelAddress
     ) -> AbstractAsyncContextManager[TimelineState]: ...
 
 
@@ -776,17 +776,17 @@ async def present_markdown(
     *,
     ink: Ink[MessageT],
     chromo: Chromo[RawT, MessageT],
-    key: ConversationKey,
+    address: ChannelAddress,
     markdown: str,
     reply_to: str | None = None,
 ) -> IMMessageID | None:
-    chat_id = key.chat_id or key.user_id
-    chat_type = key.chat_type
-    reply_to = reply_to or key.thread_id or None
+    chat_id = address.chat_id or address.user_id
+    chat_type = address.chat_type
+    reply_to = reply_to or address.thread_id or None
     first_message_id: IMMessageID | None = None
     with logfire.span(
         "present_markdown",
-        channel_id=key.channel_tentacle_id,
+        channel_id=address.channel_tentacle_id,
         chat_type=chat_type,
         markdown_len=len(markdown),
     ) as span:
@@ -809,13 +809,13 @@ class DefaultMarkdownFeeler(Generic[RawT, MessageT]):
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         markdown: str,
     ) -> IMMessageID | None:
         return await present_markdown(
             ink=self.ink,
             chromo=self.chromo,
-            key=key,
+            address=address,
             markdown=markdown,
         )
 
@@ -829,7 +829,7 @@ class SegmentsFeeler(Protocol):
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         segments: list[MessageSegment],
     ) -> IMMessageID | None: ...
 
@@ -841,21 +841,21 @@ class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
 
     async def present(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         segments: list[MessageSegment],
     ) -> IMMessageID | None:
         reply_to, body = split_reply(segments)
         messages = await self.chromo.outbound_segments(body)
         if not messages:
             return None
-        chat_id = key.chat_id or key.user_id
+        chat_id = address.chat_id or address.user_id
         first_message_id: IMMessageID | None = None
         for message in messages:
             message_id = await self.ink.send_message(
                 chat_id,
-                key.chat_type,
+                address.chat_type,
                 [message],
-                reply_to or key.thread_id or None,
+                reply_to or address.thread_id or None,
             )
             first_message_id = first_message_id or message_id
         return first_message_id
@@ -865,7 +865,7 @@ class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
 class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
     ink: Ink[MessageT]
     chromo: Chromo[RawT, MessageT]
-    key: ConversationKey
+    address: ChannelAddress
     ask_questions: QuestionFeeler
     approvals: ApprovalFeeler
     deferred_actions: DeferredActionManager
@@ -903,12 +903,12 @@ class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
         logger.warning(
             "Channel %s: timeline has no streaming transport; "
             "sending the reply as a single message",
-            self.key.channel_tentacle_id,
+            self.address.channel_tentacle_id,
         )
         self.message_id = await present_markdown(
             ink=self.ink,
             chromo=self.chromo,
-            key=self.key,
+            address=self.address,
             markdown=markdown,
             reply_to=self.reply_to,
         )
@@ -917,7 +917,7 @@ class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
 class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
     """Answer-only timeline for platforms with no streaming transport (NapCat).
 
-    Stateless; `open(key)` yields a fresh `DefaultTimelineState`. Thinking/tool
+    Stateless; `open(address)` yields a fresh `DefaultTimelineState`. Thinking/tool
     are inherited no-ops; the reply text is accumulated and sent as a single
     message on exit (a mid-run notice rotates out as its own message), with a
     warning that streaming was unavailable.
@@ -940,12 +940,12 @@ class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
 
     @asynccontextmanager
     async def open(
-        self, key: ConversationKey
+        self, address: ChannelAddress
     ) -> AsyncIterator[DefaultTimelineState[RawT, MessageT]]:
         state = DefaultTimelineState(
             ink=self.ink,
             chromo=self.chromo,
-            key=key,
+            address=address,
             ask_questions=self.ask_questions,
             approvals=self.approvals,
             deferred_actions=self.deferred_actions,

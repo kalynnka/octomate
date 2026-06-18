@@ -29,13 +29,13 @@ from octomate.capabilities.events import (
 from octomate.capabilities.todos import TodoCapability, update_events
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.todos import TodoManager
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.schemas.todos import Todo
 
 
 async def _conversation() -> Conversation:
     return await ConversationManager().ensure(
-        ConversationKey(
+        ChannelAddress(
             channel_tentacle_id="slack",
             chat_type="private",
             chat_id="alice",

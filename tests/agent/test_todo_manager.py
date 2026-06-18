@@ -6,13 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.todos import TodoManager
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.schemas.todos import TodoWrite
 
 
 async def _conversation(chat_id: str = "alice") -> Conversation:
     return await ConversationManager().ensure(
-        ConversationKey(
+        ChannelAddress(
             channel_tentacle_id="slack",
             chat_type="private",
             chat_id=chat_id,

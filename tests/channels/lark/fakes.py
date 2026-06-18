@@ -44,7 +44,7 @@ class FakeLarkInk(LarkInk):
 
     async def upload_media(self, data: bytes) -> str | None:
         self.uploaded.append(data)
-        return f"img-key-{len(self.uploaded)}"
+        return f"img-address-{len(self.uploaded)}"
 
     async def _create_message(
         self,

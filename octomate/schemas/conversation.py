@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NamedTuple
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
@@ -19,7 +19,7 @@ ChatType = Literal["private", "group"]
 
 
 @dataclass(frozen=True)
-class ConversationKey:
+class ChannelAddress:
     channel_tentacle_id: str
     chat_type: ChatType
     chat_id: str
@@ -49,6 +49,15 @@ class ConversationKey:
         )
 
 
+class ConversationKey(NamedTuple):
+    """The real conversation key: a channel address plus the owning agent. Two
+    agents at the same address keep separate conversations, so the conversation a
+    `ConversationManager` resolves and caches is identified by both."""
+
+    address: ChannelAddress
+    agent_id: str
+
+
 @sqlalchemy_materia.bless(ConversationModel)
 class Conversation(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
@@ -71,8 +80,8 @@ class Conversation(BaseTransmuter):
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
     @cached_property
-    def key(self) -> ConversationKey:
-        return ConversationKey(
+    def address(self) -> ChannelAddress:
+        return ChannelAddress(
             channel_tentacle_id=self.channel_tentacle_id,
             chat_type=self.chat_type,
             chat_id=self.chat_id,

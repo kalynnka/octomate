@@ -30,9 +30,9 @@ from tests.support.agents import build_scripted_agent
 
 def _register(octomate: Octomate, agent: Agent[None, InklingOutput]) -> VercelTentacle:
     octomate.register_agent(
-        "inkling",
+        "reception",
         InklingTentacle(
-            "inkling",
+            "reception",
             octomate,
             agent=agent,
             conversation_manager=octomate.conversations,

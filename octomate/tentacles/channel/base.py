@@ -30,7 +30,7 @@ from uuid_utils import uuid7
 
 from octomate.config import ChannelConfig
 from octomate.schemas.awakes import UserMessageSignal
-from octomate.schemas.conversation import ConversationKey, UserProfile
+from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.tentacles.base import Tentacle
@@ -103,7 +103,7 @@ class Ink(ABC, Generic[MessageT]):
 
     @abstractmethod
     async def upload_media(self, data: bytes) -> str | None:
-        """Upload media bytes and return a platform key or URL."""
+        """Upload media bytes and return a platform address or URL."""
 
     @abstractmethod
     async def download_image(
@@ -157,7 +157,6 @@ class ChannelTentacle(
         self.config = config
         self.ink = ink
         self.chromo = chromo
-        self.agent_id = config.agent_id
         self.user_profiles: dict[str, UserProfile] = {}
 
         markdown_feeler = DefaultMarkdownFeeler(ink=self.ink, chromo=self.chromo)
@@ -214,7 +213,7 @@ class ChannelTentacle(
             event.self_id = self.profile.user_id
             event.sender = await self.get_user_profile(event.user_id)
             await self.submerge(event)
-            key = ConversationKey(
+            address = ChannelAddress(
                 channel_tentacle_id=self.id,
                 chat_type=event.chat_type,
                 chat_id=event.chat_id,
@@ -224,18 +223,18 @@ class ChannelTentacle(
             logfire.info(
                 "ingest decoded message",
                 channel_id=self.id,
-                conversation_key=str(key),
+                conversation_address=str(address),
                 message_id=str(event.message_id),
             )
             if (
                 self.config.mention_only
-                and key.is_group
+                and address.is_group
                 and not event.is_at(self.profile.user_id)
             ):
                 logger.debug(
                     "Channel %s: ignored unmentioned group event %s",
                     self.id,
-                    key,
+                    address,
                 )
                 return
             await self.octomate.kick(UserMessageSignal([event]))
@@ -244,15 +243,15 @@ class ChannelTentacle(
 
     async def start_sub_thread(
         self,
-        key: ConversationKey,
+        address: ChannelAddress,
         hint_text: str,
-    ) -> ConversationKey:
+    ) -> ChannelAddress:
         logger.warning(
             "Channel %s does not support sub-thread startup; using main target",
             self.id,
         )
-        await self.feelers.markdown.present(key, hint_text)
-        return key
+        await self.feelers.markdown.present(address, hint_text)
+        return address
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
         cached = self.user_profiles.get(user_id)

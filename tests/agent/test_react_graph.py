@@ -28,7 +28,7 @@ from octomate.capabilities.react import (
     StartTurn,
     iter_react_graph_events,
 )
-from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 
@@ -62,8 +62,8 @@ class StubSuspender:
         return self.event
 
 
-def _key() -> ConversationKey:
-    return ConversationKey(
+def _key() -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id="test",
         chat_type="private",
         chat_id="test",
@@ -105,7 +105,7 @@ def _ctx(
     deps: ReactDeps[ScriptedOutput, None],
 ) -> GraphRunContext[ReactState, ReactDeps[ScriptedOutput, None]]:
     return GraphRunContext(
-        state=ReactState(conversation_key=_key(), agent_tentacle_id="inkling"),
+        state=ReactState(conversation_address=_key(), agent_tentacle_id="inkling"),
         deps=deps,
     )
 
@@ -137,7 +137,7 @@ async def test_start_turn_drops_trailing_deferral_on_new_prompt() -> None:
 
     assert isinstance(nxt, RunAgent)
     assert nxt.user_prompt == "hi"
-    assert [key for key, _ in recorder.ensured] == [_key()]
+    assert [address for address, _ in recorder.ensured] == [_key()]
     assert len(recorder.dropped) == 1
 
     # Without a fresh prompt there is nothing to supersede: no conversation IO.
@@ -234,7 +234,7 @@ async def test_graph_ends_after_immediate_final_response() -> None:
 
     result = await _graph().run(
         StartTurn(user_prompt="just say done"),
-        state=ReactState(conversation_key=_key(), agent_tentacle_id="inkling"),
+        state=ReactState(conversation_address=_key(), agent_tentacle_id="inkling"),
         deps=deps,
     )
 
@@ -248,7 +248,7 @@ async def test_run_agent_records_new_messages_with_run_name() -> None:
 
     await _graph().run(
         StartTurn(user_prompt="just say done"),
-        state=ReactState(conversation_key=_key(), agent_tentacle_id="inkling"),
+        state=ReactState(conversation_address=_key(), agent_tentacle_id="inkling"),
         deps=deps,
     )
 
@@ -257,7 +257,7 @@ async def test_run_agent_records_new_messages_with_run_name() -> None:
     assert run_label.startswith("custom:")
     assert messages
     # The recorded turn lands in the conversation the next ensure() serves.
-    assert conversations.store[_key()].messages == messages
+    assert conversations.store[(_key(), "inkling")].messages == messages
 
 
 async def test_run_agent_streaming_sends_every_event_and_requires_result() -> None:
@@ -324,7 +324,7 @@ async def test_iter_react_graph_events_reraises_graph_error_after_drain() -> Non
     with pytest.raises(RuntimeError, match="model boom"):
         async for event in iter_react_graph_events(
             StartTurn(user_prompt="hi"),
-            state=ReactState(conversation_key=_key(), agent_tentacle_id="inkling"),
+            state=ReactState(conversation_address=_key(), agent_tentacle_id="inkling"),
             deps=deps,
         ):
             received.append(event)

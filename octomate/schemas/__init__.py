@@ -3,7 +3,7 @@ Shared schema package.
 
 Submodules
 ----------
-- ``conversation``: ConversationKey, Conversation, UserProfile.
+- ``conversation``: ChannelAddress, ConversationKey, Conversation, UserProfile.
 - ``segments``: Message segment data types and models.
 - ``actions``: Outbound action models.
 - ``events``: Platform-agnostic event models.

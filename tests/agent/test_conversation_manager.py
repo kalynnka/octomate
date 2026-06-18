@@ -16,7 +16,7 @@ from pydantic_ai.messages import TextPart, ToolCallPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.managers import ConversationManager
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 
 
 @pytest.fixture(autouse=True)
@@ -24,8 +24,8 @@ async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
     yield
 
 
-def _key(chat_id: str = "alice") -> ConversationKey:
-    return ConversationKey(
+def _key(chat_id: str = "alice") -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id="dev_ui",
         chat_type="private",
         chat_id=chat_id,
@@ -50,16 +50,20 @@ async def test_ensure_loads_existing_conversation() -> None:
     assert fetched.id == created.id
 
 
-async def test_ensure_sets_agent_at_creation_and_keeps_it() -> None:
+async def test_ensure_is_per_agent() -> None:
     service = ConversationManager()
-    created = await service.ensure(_key(), agent_tentacle_id="inkling")
-    assert created.agent_tentacle_id == "inkling"
+    inkling = await service.ensure(_key(), agent_tentacle_id="inkling")
+    assert inkling.agent_tentacle_id == "inkling"
 
-    # The owning agent is set once at creation; a later ensure with a different
-    # agent does not change it.
-    again = await ConversationManager().ensure(_key(), agent_tentacle_id="other")
-    assert again.id == created.id
-    assert again.agent_tentacle_id == "inkling"
+    # A different agent at the same location gets its own conversation; the
+    # original agent's conversation is untouched, and re-ensuring the original
+    # agent returns it.
+    other = await ConversationManager().ensure(_key(), agent_tentacle_id="other")
+    assert other.id != inkling.id
+    assert other.agent_tentacle_id == "other"
+
+    again = await ConversationManager().ensure(_key(), agent_tentacle_id="inkling")
+    assert again.id == inkling.id
 
 
 async def test_record_run_creates_run_and_persists_messages() -> None:

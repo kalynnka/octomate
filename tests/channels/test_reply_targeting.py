@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from octomate.capabilities.events import MessageSentEvent
 from octomate.capabilities.send import SendCapability
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtData,
     AtSegment,
@@ -27,8 +27,8 @@ from octomate.tentacles.channel.slack.chromo import SlackChromo
 from tests.support.channels import FakeChromo, RecordingInk
 
 
-def _key() -> ConversationKey:
-    return ConversationKey(
+def _key() -> ChannelAddress:
+    return ChannelAddress(
         channel_tentacle_id="im",
         chat_type="private",
         chat_id="alice",

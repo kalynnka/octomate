@@ -6,7 +6,7 @@ import asyncio
 
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 
-from octomate.schemas.conversation import ConversationKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel.lark import LarkTentacle
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
@@ -69,7 +69,7 @@ async def test_lark_tentacle_replies_to_key_thread_id_when_it_is_open_message_id
 ):
     ink = FakeLarkInk()
     channel = lark_channel(ink)
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="lark",
         chat_type="group",
         chat_id="oc_group",
@@ -77,7 +77,7 @@ async def test_lark_tentacle_replies_to_key_thread_id_when_it_is_open_message_id
         thread_id="om_child_message",
     )
 
-    await channel.feelers.markdown.present(key, "thread reply")
+    await channel.feelers.markdown.present(address, "thread reply")
 
     assert ink.created == []
     assert len(ink.replies) == 1
@@ -91,7 +91,7 @@ async def test_lark_tentacle_replies_to_key_thread_id_when_it_is_open_message_id
 async def test_lark_tentacle_private_thread_uses_reply_in_thread() -> None:
     ink = FakeLarkInk()
     channel = lark_channel(ink)
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="lark",
         chat_type="private",
         chat_id="ou_user",
@@ -99,7 +99,7 @@ async def test_lark_tentacle_private_thread_uses_reply_in_thread() -> None:
         thread_id="om_private_anchor",
     )
 
-    await channel.feelers.markdown.present(key, "private thread reply")
+    await channel.feelers.markdown.present(address, "private thread reply")
 
     assert ink.created == []
     assert len(ink.replies) == 1
@@ -113,7 +113,7 @@ async def test_lark_tentacle_private_thread_uses_reply_in_thread() -> None:
 async def test_lark_tentacle_ignores_thread_id_as_reply_target() -> None:
     ink = FakeLarkInk()
     channel = lark_channel(ink)
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="lark",
         chat_type="group",
         chat_id="oc_group",
@@ -121,7 +121,7 @@ async def test_lark_tentacle_ignores_thread_id_as_reply_target() -> None:
         thread_id="omt_19766a1bf00edb8e",
     )
 
-    await channel.feelers.markdown.present(key, "new message")
+    await channel.feelers.markdown.present(address, "new message")
 
     assert ink.replies == []
     assert ink.created[0][:2] == ("oc_group", "chat_id")
