@@ -600,7 +600,6 @@ async def test_awake_short_circuits_on_empty_prompt() -> None:
         def __str__(self) -> str:
             return "   "
 
-    key = _key()
     agent = FakeAgent()
     conversations = FakeConversationManager()
     im = _channel()
@@ -628,8 +627,9 @@ async def test_awake_short_circuits_on_empty_prompt() -> None:
     assert not isinstance(result, DeferredResult)
     assert result.decision.reason == "Empty user prompt."
     assert result.target.channel_id == "im"
-    # Awake resolves the conversation before checking the prompt.
-    assert conversations.ensured == [(key, "inkling")]
+    # The empty-prompt guard short-circuits in Awake, before Route ensures the
+    # conversation, so nothing is ensured.
+    assert conversations.ensured == []
     assert agent.turns == []
     assert im.sent == []
 

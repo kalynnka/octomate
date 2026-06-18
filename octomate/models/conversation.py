@@ -28,6 +28,7 @@ class Conversation(Base, TransmuterProxiedMixin):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    external_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     chat_type: Mapped[str] = mapped_column(String, nullable=False)
     chat_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -41,6 +42,9 @@ class Conversation(Base, TransmuterProxiedMixin):
 
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    # Resumable session handle for external-runtime agents (e.g. the Claude
+    # Agent SDK `session_id`); null for native pydantic-ai agents.
+    external_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     runs: Mapped[list[AgentRun]] = relationship(
         "AgentRun",

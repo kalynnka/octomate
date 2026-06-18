@@ -109,9 +109,12 @@ class ConversationManager:
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
+        external_id: str | None = None,
     ) -> None:
         """Persist a fresh agent run, then refresh the cached conversation from
-        the database so it includes the new run."""
+        the database so it includes the new run. `external_id`, when
+        given, updates the conversation's resumable agent session handle in the
+        same commit (external-runtime agents own their own session)."""
         if not messages:
             return
         # Shallow `vars(m)` per message lets pydantic route each dict through
@@ -127,6 +130,10 @@ class ConversationManager:
         )
         async with async_session() as session:
             session.add(run)
+            if external_id is not None:
+                stored = await session.get(Conversation, conversation.id)
+                if stored is not None:
+                    stored.external_id = external_id
             await session.commit()
         await self.refresh(conversation)
 

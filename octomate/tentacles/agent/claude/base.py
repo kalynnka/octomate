@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, overload
 
+import logfire
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
     AgentNativeTool,
     AgentRunResult,
+    AgentRunResultEvent,
     RunUsage,
     UsageLimits,
 )
@@ -23,28 +26,45 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.deferred import DeferredSuspender
-from octomate.capabilities.react import ReactEventStream
+from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.schemas.conversation import ConversationKey
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
+from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+
+
+def _prompt_text(user_prompt: str | Sequence[UserContent] | None) -> str:
+    """The plain-text prompt to send to the Claude CLI. Multimodal prompt parts
+    are not supported yet; a prompt must carry at least some text."""
+    if isinstance(user_prompt, str):
+        text = user_prompt
+    elif user_prompt:
+        text = "\n".join(part for part in user_prompt if isinstance(part, str))
+    else:
+        text = ""
+    if not text:
+        raise ValueError("ClaudeCodeTentacle requires a non-empty text prompt")
+    return text
 
 
 @dataclass
 class ClaudeCodeTentacle(AgentTentacle[str, None]):
     """Claude Agent SDK runner exposed as an Octomate agent tentacle.
 
-    Its output is the run's final text (`str`); the deferred-action approval
-    bridge happens mid-run via a live callback, not as a terminal output type.
-    Conversation persistence and the Claude session id are reached through
-    `self.octomate.conversations`.
-
-    Phase 0 skeleton: construction + registration only. `run` /
-    `run_stream_events` (the SDK adapter) arrive in Phase 1.
+    A run drives a `ClaudeSDKClient` locally (SSH transport lands later),
+    translating its message stream through `ClaudeRunAccumulator` into live
+    stream events (proxied to the channel feelers) and persisted
+    `ModelMessage`s. The Claude session id is stored on the conversation as
+    `external_id` and replayed via `resume=` so Claude owns its own
+    context across turns. Output is the run's final text (`str`); pydantic-ai
+    run options that don't map onto Claude (custom output_type, toolsets,
+    capabilities, ...) are ignored.
     """
 
     config: ClaudeCodeConfig = field(init=False)
@@ -58,6 +78,50 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.config = config
+
+    async def _iter_events(
+        self,
+        user_prompt: str | Sequence[UserContent] | None,
+        *,
+        conversation_key: ConversationKey,
+        run_name: str | None,
+    ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        conversation = await self.octomate.conversations.ensure(
+            conversation_key, agent_tentacle_id=self.id
+        )
+        accumulator = ClaudeRunAccumulator()
+        accumulator.begin(user_prompt)
+        options = ClaudeAgentOptions(
+            cwd=self.config.cwd,
+            model=self.config.model or None,
+            permission_mode="acceptEdits",
+            max_turns=self.config.max_turns,
+            resume=conversation.external_id,
+        )
+        with logfire.span(
+            "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_key}]",
+            agent_id=self.id,
+            run_name=run_name or "claude",
+            conversation_key=str(conversation_key),
+        ):
+            async with ClaudeSDKClient(options=options) as client:
+                await client.query(_prompt_text(user_prompt))
+                async for message in client.receive_response():
+                    for event in accumulator.consume(message):
+                        yield event
+            run_id = str(uuid7())
+            await self.octomate.conversations.record_agent_run(
+                conversation,
+                run_id=run_id,
+                messages=accumulator.messages,
+                name=run_name,
+                external_id=accumulator.session_id,
+            )
+            yield AgentRunResultEvent(
+                accumulator.build_result(
+                    run_id=run_id, conversation_id=str(conversation.id)
+                )
+            )
 
     @overload
     async def run(
@@ -135,7 +199,15 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> AgentRunResult[str | RunOutputDataT]:
-        raise NotImplementedError("ClaudeCodeTentacle.run lands in Phase 1")
+        result: AgentRunResult[str] | None = None
+        async for event in self._iter_events(
+            user_prompt, conversation_key=conversation_key, run_name=run_name
+        ):
+            if isinstance(event, AgentRunResultEvent):
+                result = event.result
+        if result is None:
+            raise RuntimeError("Claude run completed without a result")
+        return result
 
     @overload
     def run_stream_events(
@@ -210,6 +282,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[str | RunOutputDataT]:
-        raise NotImplementedError(
-            "ClaudeCodeTentacle.run_stream_events lands in Phase 1"
+        return ReactEventStream(
+            self._iter_events(
+                user_prompt, conversation_key=conversation_key, run_name=run_name
+            )
         )

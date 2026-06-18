@@ -54,6 +54,7 @@ class Conversation(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    external_id: str | None = None
 
     chat_type: ChatType = Field(frozen=True)
     chat_id: str = Field(frozen=True)

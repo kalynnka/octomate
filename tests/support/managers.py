@@ -31,6 +31,7 @@ class FakeConversation:
 
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     messages: list[ModelMessage] = field(default_factory=list)
+    external_id: str | None = None
 
 
 @dataclass
@@ -61,10 +62,13 @@ class FakeConversationManager(ConversationManager):
         messages: Sequence[ModelMessage],
         *,
         name: str | None = None,
+        external_id: str | None = None,
     ) -> None:
         fake = cast(FakeConversation, conversation)
         self.runs.append((fake, f"{name}:{run_id}", list(messages)))
         fake.messages.extend(messages)
+        if external_id is not None:
+            fake.external_id = external_id
 
     async def drop_trailing_deferral(
         self,
