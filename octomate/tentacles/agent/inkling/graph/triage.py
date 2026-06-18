@@ -10,6 +10,7 @@ import logfire
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
+
 # TODO: migrate this graph to the pydantic_graph GraphBuilder (Step/Decision/Edge)
 # API once pydantic-graph v2 is officially released. The BaseNode `Graph` runner is
 # deprecated for v2; pinned <2 in pyproject.toml until then.
@@ -151,13 +152,6 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         if channel is None:
             raise ValueError(f"unknown channel {key.channel_tentacle_id!r}")
 
-        resolved_agent_id = channel.config.agent_id
-        ctx.deps.agent_for(resolved_agent_id)
-        await ctx.deps.conversation_manager.ensure(
-            key,
-            agent_tentacle_id=resolved_agent_id,
-        )
-
         source_target = ResponseTarget(
             channel_id=key.channel_tentacle_id,
             key=key,
@@ -165,7 +159,6 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             mode="main",
         )
         ctx.state.source_target = source_target
-        ctx.state.agent_id = resolved_agent_id
 
         user_prompt = "\n\n".join(str(event) for event in self.signal.messages).strip()
         ctx.state.user_prompt = user_prompt
@@ -197,7 +190,17 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         source_target = state.source_target
         if source_target is None or source_target.key is None:
             raise ValueError("Route requires a resolved source target")
+
         source_key = source_target.key
+        channel = ctx.deps.channels.get(source_key.channel_tentacle_id)
+        if channel is None:
+            raise ValueError(f"unknown channel {source_key.channel_tentacle_id!r}")
+
+        state.agent_id = channel.agent_id
+        await ctx.deps.conversation_manager.ensure(
+            source_key,
+            agent_tentacle_id=channel.agent_id,
+        )
 
         if source_key.thread_id and source_target.thread_strategy == "flat_thread":
             logfire.info(
@@ -213,6 +216,7 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             )
             state.target = replace(source_target, mode="sub")
             state.run_name = "reception"
+
             return RunReception()
         return RunTriage()
 
