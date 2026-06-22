@@ -1,6 +1,9 @@
 # Claude Agent Integration — Implementation Plan
 
-**Status:** approved design, not yet started
+**Status:** Phases 0–4 shipped on `feat/claude-agent-tentacle`. Phase 3's session
+resume reuses the conversation's existing `external_id` column (no separate
+`agent_session_id`); the raw-transcript audit blob is still deferred. Phases 5
+(SSH) and 6 (lifecycle) remain.
 **Scope:** integrate the Claude Agent SDK (`claude-agent-sdk`, installed `0.1.80`; CLI `2.1.177`) into octomate in two ways.
 
 - **Pattern 1 — routable Claude agent tentacle (build now).** Triage dispatches "let Claude do X" to a Claude agent that runs the SDK locally or on a remote host over SSH, and streams adapted events back to the originating channel.
@@ -104,15 +107,20 @@ The core. Build `adapter.py` consuming `ClaudeSDKClient.receive_response()` and 
 
 **Success:** a second turn in the same thread resumes the same Claude session (context continuity + session-id continuity); raw transcript stored per run.
 
-### Phase 4 — Approval bridge (deferred-actions)
-- `can_use_tool` callback + `PreToolUse` hooks (`AskUserQuestion`, `ExitPlanMode`).
-- On a gated tool / question: synthesize a `DeferredToolRequests` → `action_manager.create_batch(...)` → yield `ActionBatchEvent` (channel renders the existing cards) → register `pending_future[batch_id]` and `await` it.
-- Add the **`kick` branch**: a `DeferredActionBatchResponse` whose batch has a live Claude waiter resolves the future (+ `resolve_batch`) instead of re-entering `triage_graph`.
-- `allow_session` → per-session auto-approve for that tool kind.
+### Phase 4 — Approval bridge (deferred-actions) ✅ shipped
+Implemented at `permission_mode="default"`, so gated tools and questions route to humans:
+- **Approvals — `can_use_tool` callback.** A gated tool synthesizes a `DeferredToolRequests(approvals=[ToolCallPart(...)])`, presents cards **out-of-band** via the channel's existing `feelers.present_actions` (works for streaming *and* non-streaming channels — no on-stream `ActionBatchEvent` merge needed), parks a future, and `await`s it. Approve → `PermissionResultAllow`; deny → `PermissionResultDeny(message=...)` feeds the reason back to Claude. `ExitPlanMode` is gated as a plain approval through the same path.
+- **Questions — `PreToolUse`/`AskUserQuestion` hook.** `can_use_tool` only allows/denies, so the answer can't be injected as a tool *result*. Instead a `PreToolUse` hook matched to `AskUserQuestion` presents a question card and feeds the answer back via `permissionDecision="deny"` + `permissionDecisionReason="<question>: <answer>"`. (Honest cost: Claude sees a denial-with-context, not a clean tool return — acceptable for v1.)
+- **Shared bridge.** Both callbacks use `ClaudeCodeTentacle._await_human(...)`: present cards → park `pending[batch_id]` future → on response `resolve_batch(...)` for persistence.
+- **`kick` branch.** `AgentTentacle.try_resolve_live_deferred(response)` (default `False`); `ClaudeCodeTentacle` overrides it to resolve its live future. `Octomate.kick` consults every agent for a `DeferredActionBatchResponse` and returns early if one owns the live waiter, instead of re-entering `triage_graph`. Inkling's durable batches fall through unchanged.
+- **Persisted approval state** — two columns on `conversations` (migration `e3f4a5b6c7d8`): `permission_mode` (the approval level — `default`/`acceptEdits`/`bypassPermissions`, fed to the SDK `permission_mode`) and `allowed_tools` (the `allow_session` grants — native `text[]` on Postgres, JSON on SQLite via `with_variant`, `list[str]` either way). A run seeds its in-memory allow-set from `allowed_tools`; an `allow_session` approval extends the set **and** persists via `ConversationManager.grant_session_tool`, so the grant survives across turns/restarts. In `octomate/schemas/conversation.py` + `octomate/models/conversation.py`; round-trip covered by `tests/agent/test_conversation_manager.py`.
+- **Timeout + shutdown robustness:** `_await_human` waits on the future via `asyncio.wait_for(config.approval_timeout)` — on expiry it marks the batch `expired` and denies the tool so the live run unblocks (`approval_timeout=None` waits forever, the default). `ClaudeCodeTentacle.__aexit__` cancels any pending waiters so a parked run never hangs shutdown.
 
-**Success:** a Bash/Write call raises an approval card in Slack/web; approve → runs, deny(reason) → fed back to Claude; `AskUserQuestion` renders as a question card; `allow_session` suppresses repeats.
+**Tests:** `tests/agent/test_claude_approval.py` (9) — allow / deny-with-reason / `allow_session` suppression + persistence / persisted-tool-skips-card / `permission.mode` → SDK / approval timeout → deny+expire / AskUserQuestion answer-feedback / `kick` routing / unknown-batch ignored. Migration round-trip verified.
 
-**Documented caveat:** answered against a *live* in-process session → not durable across an octomate restart (unlike inkling deferrals, which are). Acceptable for v1; note it in code.
+**Slack dispatch verified + hardened:** `slack_sdk` dispatches each socket envelope's listeners via `asyncio.ensure_future`, so the approve-button event resolves the parked future concurrently with the suspended `on_message` run — **no deadlock**. But bolt's aiohttp socket handler acks the envelope only *after* the listener returns, so awaiting the full run inline would miss Slack's ~3s ack window on any long/parked turn → event re-delivery → duplicate runs. Fixed: `SlackTentacle.on_message` now runs `ingest` as a tracked task (`ingest_tasks`) and returns immediately, so the envelope acks right away (mirrors Lark's `create_task` dispatch). Covered by `tests/channels/slack/test_dispatch.py`.
+
+**Documented caveat (deferred to Phase 6):** answered against a *live* in-process session → not durable across an octomate restart (unlike inkling deferrals). The durable path is *session resume*, not a durable prompt: persist `external_id` early + on a stale-card answer resume `resume=external_id` so Claude replays its transcript and re-asks (mirrors VS Code). Also pending: interrupt the live run on a new inbound message (one run per `ConversationKey`), and withdraw/disable stale cards on expiry/shutdown (feelers need an edit/withdraw method — currently `present`-only).
 
 ### Phase 5 — Remote SSH transport
 - Port `SSHTransport` from `archive` (interface verified byte-for-byte against the `0.1.80` `Transport` ABC). Spawns `ssh -T host 'cd … && export … && claude … --output-format stream-json --input-format stream-json --permission-prompt-tool stdio'` via `asyncio.create_subprocess_exec`; system `ssh`, no in-process SSH lib.

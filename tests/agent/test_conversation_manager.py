@@ -41,6 +41,22 @@ async def test_ensure_is_idempotent() -> None:
     assert a.id == b.id
 
 
+async def test_permission_defaults_and_grant_round_trip() -> None:
+    service = ConversationManager()
+    convo = await service.ensure(_key(), agent_tentacle_id="claude")
+    assert convo.permission_mode == "default"
+    assert convo.allowed_tools == []
+
+    await service.grant_session_tool(convo, "Bash")
+    await service.grant_session_tool(convo, "Bash")  # idempotent
+    await service.grant_session_tool(convo, "Write")
+
+    # A fresh manager reads the persisted grants back from the database.
+    fresh = ConversationManager()
+    reloaded = await fresh.ensure(_key(), agent_tentacle_id="claude")
+    assert reloaded.allowed_tools == ["Bash", "Write"]
+
+
 async def test_ensure_loads_existing_conversation() -> None:
     first = ConversationManager()
     created = await first.ensure(_key(), agent_tentacle_id="inkling")

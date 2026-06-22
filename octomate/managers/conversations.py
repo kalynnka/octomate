@@ -146,6 +146,30 @@ class ConversationManager:
             await session.commit()
         await self.refresh(conversation)
 
+    async def grant_session_tool(
+        self,
+        conversation: Conversation,
+        tool_name: str,
+    ) -> None:
+        """Persist an `allow for session` grant on the conversation, so the tool
+        auto-approves on later turns. Resolves the cached instance via `ensure`,
+        writes the change through an attached row, then re-caches that fresh row
+        directly (no extra reload — `stored` already reflects the commit)."""
+        cached = await self.ensure(
+            conversation.address, agent_tentacle_id=conversation.agent_tentacle_id
+        )
+        if tool_name in cached.allowed_tools:
+            return
+        async with async_session() as session:
+            stored = await session.get(Conversation, cached.id)
+            if stored is None:
+                return
+            stored.allowed_tools = [*stored.allowed_tools, tool_name]
+            await session.commit()
+            await stored.runs
+            await stored.messages
+        self.cache_conversation(stored)
+
     async def drop_trailing_deferral(
         self,
         conversation: Conversation,

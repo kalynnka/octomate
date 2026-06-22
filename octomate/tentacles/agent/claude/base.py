@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, ClassVar, cast, overload
 
 import logfire
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    HookContext,
+    HookInput,
+    HookJSONOutput,
+    HookMatcher,
+    PermissionMode,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    PreToolUseHookInput,
+    ToolPermissionContext,
+)
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -21,22 +34,37 @@ from pydantic_ai.agent.abstract import (
     EventStreamHandler,
     RunOutputDataT,
 )
-from pydantic_ai.messages import UserContent
+from pydantic_ai.messages import ToolCallPart, UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.tools import DeferredToolResults
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.deferred import DeferredSuspender
 from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.conversation import (
+    ChannelAddress,
+    Conversation,
+    ConversationPermissionMode,
+)
+from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
+from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+
+
+# Our snake_case approval levels → the Claude SDK's camelCase `permission_mode`.
+SDK_PERMISSION_MODE: dict[ConversationPermissionMode, PermissionMode] = {
+    "default": "default",
+    "accept_edits": "acceptEdits",
+    "bypass_permissions": "bypassPermissions",
+}
 
 
 def _prompt_text(user_prompt: str | Sequence[UserContent] | None) -> str:
@@ -69,6 +97,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
     config: ClaudeCodeConfig = field(init=False)
 
+    # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
+    # waiter per gated tool / question until `Octomate.kick` delivers the response.
+    in_process: ClassVar[bool] = True
+
     description: str = (
         "Coding agent for software engineering and multi-step technical work in a "
         "code repository."
@@ -85,6 +117,65 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         super().__init__(id=id, octomate=octomate)
         self.config = config
         self.description = description or self.description
+        self.pending = {}
+
+    async def _await_human(
+        self,
+        *,
+        conversation: Conversation,
+        conversation_address: ChannelAddress,
+        run_name: str | None,
+        requests: DeferredToolRequests,
+    ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
+        """Present a deferred batch as approval/question cards through the channel,
+        then park a future until the human response arrives via
+        `try_resolve_live_deferred`. The Claude session stays open in-process while
+        this awaits, so the answer is not durable across an Octomate restart.
+
+        Returns `(batch, None)` if the wait exceeds `config.approval_timeout`; the
+        batch is marked expired and the caller denies the pending tool so the live
+        run unblocks."""
+        channel = self.octomate.channels.get(conversation_address.channel_tentacle_id)
+        if channel is None:
+            raise RuntimeError(
+                f"no channel {conversation_address.channel_tentacle_id!r} to "
+                f"present a Claude approval/question"
+            )
+        batch = await channel.feelers.present_actions(
+            action_manager=self.octomate.deferred_actions,
+            conversation=conversation,
+            agent_tentacle_id=self.id,
+            run_name=run_name,
+            source_address=conversation_address,
+            target_address=conversation_address,
+            target_mode="sub" if conversation_address.thread_id else "main",
+            decision=None,
+            requests=requests,
+        )
+        future: asyncio.Future[DeferredActionBatchResponse] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self.pending[batch.id] = future
+        try:
+            response = await asyncio.wait_for(
+                asyncio.shield(future), self.config.approval_timeout
+            )
+        except asyncio.TimeoutError:
+            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+            return batch, None
+        finally:
+            self.pending.pop(batch.id, None)
+        await self.octomate.deferred_actions.resolve_batch(response)
+        return batch, response
+
+    async def __aexit__(self, *exc: object) -> None:
+        """Cancel any approvals/questions still awaiting a human so their parked
+        runs unblock instead of hanging shutdown. The pending tools are denied as
+        the cancellation unwinds; the live sessions are not durable across this."""
+        for future in list(self.pending.values()):
+            if not future.done():
+                future.cancel()
+        self.pending.clear()
 
     async def _iter_events(
         self,
@@ -98,12 +189,121 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         )
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
+        # Tools the user already granted "allow for session" on this conversation
+        # auto-approve without a card; new grants extend the set and persist.
+        session_allowed: set[str] = set(conversation.allowed_tools)
+
+        async def can_use_tool(
+            tool_name: str,
+            input_data: JsonObject,
+            context: ToolPermissionContext,
+        ) -> PermissionResultAllow | PermissionResultDeny:
+            if tool_name in session_allowed:
+                return PermissionResultAllow(updated_input=input_data)
+            requests = DeferredToolRequests(
+                approvals=[
+                    ToolCallPart(
+                        tool_name=tool_name,
+                        args=input_data,
+                        tool_call_id=context.tool_use_id or tool_name,
+                    )
+                ]
+            )
+            batch, response = await self._await_human(
+                conversation=conversation,
+                conversation_address=conversation_address,
+                run_name=run_name,
+                requests=requests,
+            )
+            # `can_use_tool` fires per tool call, so we built the batch with a
+            # single approval — this is that one action.
+            action = next(iter(batch.approvals))
+            approved = response is not None and bool(
+                response.approvals.get(action.id, False)
+            )
+            if approved and response is not None and response.allow_session:
+                session_allowed.add(tool_name)
+                await self.octomate.conversations.grant_session_tool(
+                    conversation, tool_name
+                )
+            if approved:
+                return PermissionResultAllow(updated_input=input_data)
+            if response is None:
+                return PermissionResultDeny(
+                    message=f"The approval for {tool_name} expired without a response."
+                )
+            return PermissionResultDeny(
+                message=f"The user declined permission to run {tool_name}."
+            )
+
+        async def ask_user_question(
+            hook_input: HookInput,
+            tool_use_id: str | None,
+            context: HookContext,
+        ) -> HookJSONOutput:
+            # Registered only for PreToolUse/AskUserQuestion, so the input is always
+            # a PreToolUseHookInput. `can_use_tool` can only allow/deny, so the
+            # answer is fed back by denying with the answer as the reason.
+            tool_input = cast(PreToolUseHookInput, hook_input)["tool_input"]
+            asked = tool_input.get("questions") or []
+            requests = DeferredToolRequests(
+                calls=[
+                    ToolCallPart(
+                        tool_name="AskUserQuestion",
+                        args={
+                            "questions": [
+                                QuestionRequest(
+                                    question=str(item.get("question", "")),
+                                    choices=[
+                                        str(option.get("label", ""))
+                                        for option in item.get("options", [])
+                                    ]
+                                    or None,
+                                    hint=str(item.get("header", "")),
+                                )
+                                for item in asked
+                            ]
+                        },
+                        tool_call_id=tool_use_id or "AskUserQuestion",
+                    )
+                ]
+            )
+            batch, response = await self._await_human(
+                conversation=conversation,
+                conversation_address=conversation_address,
+                run_name=run_name,
+                requests=requests,
+            )
+            answered = (
+                [
+                    f"{question.args['question']}: {response.answers[question.id]}"
+                    for question in sorted(batch.questions)
+                    if response.answers.get(question.id)
+                ]
+                if response is not None
+                else []
+            )
+            reason = "\n".join(answered) or "The user did not provide an answer."
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+
         options = ClaudeAgentOptions(
             cwd=self.config.cwd,
             model=self.config.model or None,
-            permission_mode="acceptEdits",
+            permission_mode=SDK_PERMISSION_MODE[conversation.permission_mode],
             max_turns=self.config.max_turns,
             resume=conversation.external_id,
+            can_use_tool=can_use_tool,
+            hooks={
+                "PreToolUse": [
+                    HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
+                ]
+            },
         )
         with logfire.span(
             "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",

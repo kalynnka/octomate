@@ -71,6 +71,18 @@ class Octomate:
                 span.set_attribute("conversation_address", str(address))
             elif isinstance(signal, DeferredActionBatchResponse):
                 span.set_attribute("batch_id", str(signal.batch_id))
+                # Deliver the response to a live Claude run blocked on this batch
+                # (approval/question), rather than resuming through the graph.
+                for agent in self.agents.values():
+                    if not agent.in_process:
+                        continue
+                    future = agent.pending.get(signal.batch_id)
+                    if future is None:
+                        continue
+                    if not future.done():
+                        future.set_result(signal)
+                    span.set_attribute("resolved_live", agent.id)
+                    return
             with sqlalchemy_materia():
                 await triage_graph.run(
                     Awake(signal=signal),

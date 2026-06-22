@@ -18,7 +18,11 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import Conversation, ChannelAddress
+from octomate.schemas.conversation import (
+    ChannelAddress,
+    Conversation,
+    ConversationPermissionMode,
+)
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import DeferredBatchStatus
@@ -32,6 +36,8 @@ class FakeConversation:
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     messages: list[ModelMessage] = field(default_factory=list)
     external_id: str | None = None
+    permission_mode: ConversationPermissionMode = "default"
+    allowed_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -72,6 +78,15 @@ class FakeConversationManager(ConversationManager):
         fake.messages.extend(messages)
         if external_id is not None:
             fake.external_id = external_id
+
+    async def grant_session_tool(
+        self,
+        conversation: Conversation,
+        tool_name: str,
+    ) -> None:
+        fake = cast(FakeConversation, conversation)
+        if tool_name not in fake.allowed_tools:
+            fake.allowed_tools.append(tool_name)
 
     async def drop_trailing_deferral(
         self,

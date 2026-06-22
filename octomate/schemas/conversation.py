@@ -17,6 +17,12 @@ from octomate.schemas.runs import AgentRun
 
 ChatType = Literal["private", "group"]
 
+# The approval level a conversation grants an external coding agent (Claude):
+# prompt every gated tool ("default"), auto-accept edits, or skip all gating
+# ("bypass_permissions"). Our values are snake_case; the Claude tentacle maps
+# them to the SDK's camelCase `permission_mode` at the boundary.
+ConversationPermissionMode = Literal["default", "accept_edits", "bypass_permissions"]
+
 
 @dataclass(frozen=True)
 class ChannelAddress:
@@ -75,6 +81,11 @@ class Conversation(BaseTransmuter):
 
     name: str | None = None
     status: str = "active"
+    # Approval state for an external coding agent (Claude): the granted mode, and
+    # the tools the user allowed for the life of this conversation ("allow for
+    # session"), auto-approved without raising a card again.
+    permission_mode: ConversationPermissionMode = "default"
+    allowed_tools: list[str] = Field(default_factory=list)
 
     runs: RelationCollection[AgentRun] = Relationships()
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()

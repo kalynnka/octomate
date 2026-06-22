@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
@@ -107,6 +108,10 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
         )
         self.app_token = config.app_token
         self.handler: AsyncSocketModeHandler | None = None
+        # In-flight inbound turns. `on_message` runs the turn off the socket
+        # listener (see there); the set keeps a strong reference so the task is
+        # not garbage-collected mid-run.
+        self.ingest_tasks: set[asyncio.Task[None]] = set()
         markdown_feeler = self.feelers.markdown
         approvals = SlackApprovalFeeler(self.ink)
         ask_questions = SlackAskQuestionFeeler(self.ink)
@@ -147,7 +152,14 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             return
         if event.get("bot_id") or event.get("user") == self.profile.user_id:
             return
-        await self.ingest(event)
+        # Run the turn off the socket listener so bolt acks the envelope right
+        # away. Awaiting `ingest` here would hold the ack until the whole run
+        # finishes — and a turn parked on an approval would miss Slack's ~3s ack
+        # window, making Slack re-deliver the event (duplicate runs). `ingest`
+        # logs its own exceptions, so the task needs no result handling.
+        task = asyncio.create_task(self.ingest(event))
+        self.ingest_tasks.add(task)
+        task.add_done_callback(self.ingest_tasks.discard)
 
     async def on_assistant_thread_started(
         self,

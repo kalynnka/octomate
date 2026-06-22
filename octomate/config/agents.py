@@ -44,6 +44,9 @@ class ClaudeCodeConfig(BaseModel):
     max_turns: int | None = None
     transport: Literal["local", "ssh"] = "local"
     ssh: ClaudeSSHConfig | None = None
+    # Seconds to wait for a human approval/answer before the card expires and the
+    # pending tool is denied (so the live run unblocks). None waits indefinitely.
+    approval_timeout: float | None = None
 
     @model_validator(mode="after")
     def _require_ssh_block_for_ssh_transport(self) -> Self:

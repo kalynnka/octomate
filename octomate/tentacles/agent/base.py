@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, TypeAlias, TypeVar, overload
+from typing import TYPE_CHECKING, ClassVar, TypeAlias, TypeVar, overload
 
 from pydantic_ai import (
     AgentNativeTool,
@@ -26,6 +28,7 @@ from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.capabilities.react import ReactEventStream
+from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
@@ -47,6 +50,13 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # Capability blurb the triage agent reads when routing to a reception agent.
     # Subclasses refine this default; overridable at init.
     description: str = "General-purpose agent for handling user requests."
+
+    # Whether the agent keeps a live in-process run that can park on a human
+    # deferral (approval/question) and resume by delivering the response to its
+    # waiter, instead of resuming durably through the triage graph. In-process
+    # agents populate `pending` (batch id -> waiter); the rest never touch it.
+    in_process: ClassVar[bool] = False
+    pending: dict[uuid.UUID, asyncio.Future[DeferredActionBatchResponse]]
 
     @overload
     async def run(

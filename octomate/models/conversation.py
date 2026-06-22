@@ -4,7 +4,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import String, UniqueConstraint, Uuid
+from sqlalchemy import ARRAY, JSON, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
@@ -43,6 +43,16 @@ class Conversation(Base, TransmuterProxiedMixin):
 
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    permission_mode: Mapped[str] = mapped_column(
+        String, nullable=False, default="default"
+    )
+    # Native string array on Postgres; SQLite (tests/dev) has no array type, so
+    # store the list as JSON there. The Python value is `list[str]` either way.
+    allowed_tools: Mapped[list[str]] = mapped_column(
+        ARRAY(String).with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
 
     runs: Mapped[list[AgentRun]] = relationship(
         "AgentRun",
