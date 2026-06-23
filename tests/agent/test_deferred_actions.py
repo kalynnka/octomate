@@ -20,7 +20,7 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.schemas.triage import HandoffDecision
+from octomate.schemas.triage import SummonDecision
 
 
 def _key() -> ChannelAddress:
@@ -61,14 +61,13 @@ async def _create_batch() -> DeferredActionBatch:
         source_address=address,
         target_address=address,
         target_mode="main",
-        decision=HandoffDecision(
-            action="handoff",
-            target_id="slack",
+        decision=SummonDecision(
+            action="summon",
             agent_id="inkling",
             model="",
             reason="needs input",
             hint="needs input",
-            handoff="needs input",
+            summon="needs input",
         ),
         requests=_requests(),
     )
@@ -92,14 +91,13 @@ def test_deferred_action_batch_accepts_validated_actions() -> None:
         source_address=address,
         target_address=address,
         target_mode="main",
-        decision=HandoffDecision(
-            action="handoff",
-            target_id="slack",
+        decision=SummonDecision(
+            action="summon",
             agent_id="inkling",
             model="",
             reason="needs input",
             hint="needs input",
-            handoff="needs input",
+            summon="needs input",
         ),
         requests=requests,
         questions=RelationCollection(questions),

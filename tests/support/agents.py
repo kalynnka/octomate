@@ -10,10 +10,16 @@ model level instead — they build real pydantic-ai agents around a scripted
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
-from pydantic_ai import AgentRunResult
+from pydantic_ai import (
+    AgentCapability,
+    AgentRunResult,
+    AgentRunResultEvent,
+    RunContext,
+)
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, UserContent
 from pydantic_ai.models import Model
 from pydantic_ai.models.function import (
@@ -29,8 +35,13 @@ from octomate import Octomate
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredSuspender
 from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
+from octomate.capabilities.summon import SUMMON_TOOL_NAME, SummonCapability
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import DirectAnswerDecision, TriageDecision
+from octomate.schemas.triage import (
+    DirectAnswerDecision,
+    SummonDecision,
+    TriageDecision,
+)
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
@@ -39,7 +50,7 @@ from octomate.types.json import JsonObject
 
 from tests.support.scenarios import plain_answer, play
 
-FakeRunOutput = TriageDecision | str | DeferredToolRequests
+FakeRunOutput = TriageDecision | ChannelOutput
 ScriptedOutput = str | DeferredToolRequests
 
 
@@ -63,7 +74,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     id: str = "inkling"
     description: str = "fake agent"
     octomate: Octomate | None = None
-    triage_output: TriageDecision | DeferredToolRequests = field(
+    triage_output: TriageDecision | ChannelOutput = field(
         default_factory=lambda: DirectAnswerDecision(
             action="direct_answer",
             target_id="im",
@@ -71,7 +82,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             reason="handled",
         )
     )
-    reception_output: str = "handled"
+    reception_output: ChannelOutput = "handled"
+    reception_summon: SummonDecision | None = None
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
     allow_reception_run: bool = False
     models: dict[str, Model | str] = field(default_factory=dict)
@@ -90,6 +102,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         instructions: str | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AgentRunResult[FakeRunOutput]:
         self.turns.append(
             RecordedRun(
@@ -105,19 +118,36 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             if not self.allow_reception_run:
                 raise AssertionError("reception should use run_stream_events")
             output: FakeRunOutput = self.reception_output
+            summon_decision = self.reception_summon
         else:
             output = self.triage_output
+            summon_decision = output if isinstance(output, SummonDecision) else None
+        if summon_decision is not None:
+            summon = next(
+                (
+                    capability
+                    for capability in capabilities or []
+                    if isinstance(capability, SummonCapability)
+                ),
+                None,
+            )
+            if summon is None:
+                raise AssertionError("summon decision requires SummonCapability")
+            if summon.toolset is None:
+                raise AssertionError("summon capability requires a toolset")
+            summon_tool = summon.toolset.tools[SUMMON_TOOL_NAME].function
+            await summon_tool(
+                cast(RunContext[None], None),
+                agent_id=summon_decision.agent_id,
+                model=summon_decision.model,
+                reason=summon_decision.reason,
+                hint=summon_decision.hint,
+                summon=summon_decision.summon,
+            )
+            output = ""
         if isinstance(output, DeferredToolRequests) and deferred_suspender is not None:
             await deferred_suspender.suspend(output)
         return AgentRunResult(output)
-
-    def model_for(self, name: str | None) -> Model | str | None:
-        if not name:
-            return None
-        model = self.models.get(name)
-        if model is None:
-            raise ValueError(f"agent {self.id!r} has no configured model {name!r}")
-        return model
 
     def run_stream_events(
         self,
@@ -129,6 +159,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> ReactEventStream[ChannelOutput]:
         self.streams.append(
             RecordedRun(
@@ -140,7 +171,41 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 model=model,
             )
         )
-        script = self.reception_script or plain_answer(self.reception_output)
+        summon_decision = self.reception_summon
+        if summon_decision is not None:
+
+            async def summon_events() -> AsyncGenerator[
+                ReactStreamEvent[ChannelOutput], None
+            ]:
+                summon = next(
+                    (
+                        capability
+                        for capability in capabilities or []
+                        if isinstance(capability, SummonCapability)
+                    ),
+                    None,
+                )
+                if summon is None:
+                    raise AssertionError("summon decision requires SummonCapability")
+                if summon.toolset is None:
+                    raise AssertionError("summon capability requires a toolset")
+                summon_tool = summon.toolset.tools[SUMMON_TOOL_NAME].function
+                await summon_tool(
+                    cast(RunContext[None], None),
+                    agent_id=summon_decision.agent_id,
+                    model=summon_decision.model,
+                    reason=summon_decision.reason,
+                    hint=summon_decision.hint,
+                    summon=summon_decision.summon,
+                )
+                yield AgentRunResultEvent(AgentRunResult(""))
+
+            return ReactEventStream(summon_events())
+
+        output = self.reception_output
+        if not isinstance(output, str):
+            raise AssertionError("streamed reception output must be text or summon")
+        script = self.reception_script or plain_answer(output)
         return ReactEventStream(play(script))
 
 

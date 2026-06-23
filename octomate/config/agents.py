@@ -2,9 +2,20 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, Field, model_validator
+from frozendict import frozendict
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from octomate.config.models import ModelConfig
+
+CLAUDE_CODE_MODELS: frozendict[str, str] = frozendict(
+    {
+        "haiku": "haiku",
+        "sonnet": "sonnet",
+        "opus": "opus",
+        "opusplan": "opusplan",
+        "fable": "fable",
+    }
+)
 
 
 class InklingConfig(BaseModel):
@@ -33,14 +44,18 @@ class ClaudeCodeConfig(BaseModel):
     """Claude Agent SDK runner, registered as the `claude` agent tentacle.
 
     Opt-in: `agents.claude` is null by default, so the agent is absent unless a
-    block is supplied. `model` is a Claude CLI model string (not a `ModelConfig`,
-    since the SDK builds the model, not the provider registry). `transport`
-    selects where `claude` runs — a local subprocess, or a remote host over SSH
-    (which requires an `ssh` block).
+    block is supplied. `models` maps route model names to Claude CLI model
+    strings (not `ModelConfig`s, since the SDK builds the model, not the
+    provider registry). `model` remains a backward-compatible default-model
+    override. `transport` selects where `claude` runs — a local subprocess, or a
+    remote host over SSH (which requires an `ssh` block).
     """
 
     cwd: str = "."
     model: str | None = None
+    models: dict[str, str] = Field(
+        default_factory=lambda: dict(CLAUDE_CODE_MODELS), min_length=1
+    )
     max_turns: int | None = None
     transport: Literal["local", "ssh"] = "local"
     ssh: ClaudeSSHConfig | None = None
@@ -48,12 +63,34 @@ class ClaudeCodeConfig(BaseModel):
     # pending tool is denied (so the live run unblocks). None waits indefinitely.
     approval_timeout: float | None = None
 
+    @classmethod
+    def validate_model_name(cls, model: str) -> str:
+        if model in CLAUDE_CODE_MODELS.values() or model.startswith("claude-"):
+            return model
+        raise ValueError(f"{model!r} is not a supported Claude Code model")
+
+    @field_validator("model")
+    @classmethod
+    def validate_default_model(cls, model: str | None) -> str | None:
+        if model is None:
+            return None
+        return cls.validate_model_name(model)
+
+    @field_validator("models")
+    @classmethod
+    def validate_models(cls, models: dict[str, str]) -> dict[str, str]:
+        for model in models.values():
+            cls.validate_model_name(model)
+        return models
+
     @model_validator(mode="after")
-    def _require_ssh_block_for_ssh_transport(self) -> Self:
+    def validate_config(self) -> Self:
         if self.transport == "ssh" and self.ssh is None:
             raise ValueError(
                 "claude.transport='ssh' requires an `ssh` (ClaudeSSHConfig) block"
             )
+        if self.model:
+            self.models.setdefault(self.model, self.model)
         return self
 
 

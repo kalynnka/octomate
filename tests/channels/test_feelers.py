@@ -30,7 +30,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.segments import MarkdownSegment, TextSegment
-from octomate.schemas.triage import HandoffDecision
+from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
@@ -169,14 +169,13 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
     manager = FakeActionManager(presented_batch=presented_batch)
     source_address = _key("source")
     target_address = _key("target")
-    decision = HandoffDecision(
-        action="handoff",
-        target_id="target",
+    decision = SummonDecision(
+        action="summon",
         agent_id="inkling",
         model="",
         reason="needs input",
         hint="needs input",
-        handoff="needs input",
+        summon="needs input",
     )
     requests = DeferredToolRequests(
         calls=[

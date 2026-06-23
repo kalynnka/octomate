@@ -530,12 +530,12 @@ async def test_start_sub_thread_falls_back_to_main_target(
     address = _key()
 
     with caplog.at_level("WARNING"):
-        returned = await channel.start_sub_thread(address, "handoff")
+        returned = await channel.start_sub_thread(address, "summon")
 
     assert returned == address
     assert "does not support sub-thread startup" in caplog.text
     assert len(channel.sent) == 1
-    assert channel.sent[0][2][0]["text"] == "handoff"
+    assert channel.sent[0][2][0]["text"] == "summon"
 
 
 async def test_channel_context_manager_probes_on_enter(

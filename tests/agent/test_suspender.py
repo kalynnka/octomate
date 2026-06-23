@@ -21,7 +21,7 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.schemas.triage import HandoffDecision
+from octomate.schemas.triage import SummonDecision
 from octomate.triage.suspender import HumanReviewSuspender
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
@@ -58,14 +58,13 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
     conversations = FakeConversationManager()
     action_manager = FakeActionManager()
     channel = FakeChannelTentacle()
-    decision = HandoffDecision(
-        action="handoff",
-        target_id="im",
+    decision = SummonDecision(
+        action="summon",
         agent_id="inkling",
         model="",
         reason="needs input",
         hint="needs input",
-        handoff="needs input",
+        summon="needs input",
     )
 
     suspender = HumanReviewSuspender(

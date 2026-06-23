@@ -4,12 +4,13 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Literal, TypeAlias, overload
+from functools import cached_property
+from typing import Any, Iterable, Literal, TypeAlias, cast, overload
 
 import logfire
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import UserContent
-from pydantic_ai.models import Model
+from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests
 
 # TODO: migrate this graph to the pydantic_graph GraphBuilder (Step/Decision/Edge)
@@ -18,6 +19,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.capabilities.events import StreamEvents
+from octomate.capabilities.summon import SummonCapability
 from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
@@ -26,13 +28,15 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     DirectAnswerDecision,
-    HandoffDecision,
     ResponseTargetMode,
+    SummonDecision,
+    SummonRoute,
     TriageDecision,
     TriageDecisionAdapter,
 )
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.channel.base import (
+    ChannelOutput,
     ChannelTentacle,
     ThreadStrategy,
 )
@@ -40,38 +44,9 @@ from octomate.triage.suspender import HumanReviewSuspender
 
 logger = logging.getLogger(__name__)
 
-# The output a reception agent returns and the graph delivers, independent of any
-# specific agent: plain text, a media segment list, or a deferred-tool request.
-TriageOutput: TypeAlias = str | list[MessageSegment] | DeferredToolRequests
-
-TRIAGE_INSTRUCTIONS = """\
-Decide how Octomate should respond to the latest user message.
-
-Use action="direct_answer" for simple Q&A you can answer directly and completely.
-Use action="handoff" for multi-step work, debugging, coding, tool-heavy or
-long-running operations, or anything better handled by a specialist away from
-the main chat.
-
-Available response targets (where the reply is delivered):
-{targets}
-
-Available reception routes (who does the work and which model to use):
-{agents}
-
-For action="direct_answer": set `target_id` to a response target id and put the
-complete user-facing reply in `answer`.
-
-For action="handoff":
-- Set `agent_id` and `model` from one listed reception route. Leave `model`
-  empty only when that route says "default".
-- Set `target_id` to a response target id (default to the source channel).
-- Put a short user-facing thread starter in `hint` and the routing rationale in
-  `reason`.
-- Put a DETAILED, self-contained handoff in `handoff`: the reception agent never
-  sees this chat, so include the user's full request, relevant context,
-  constraints, acceptance criteria, and anything it needs to start working
-  without re-reading prior messages.
-"""
+# Triage adds a structured direct-answer decision on top of ordinary
+# channel-renderable output.
+TriageOutput: TypeAlias = ChannelOutput | DirectAnswerDecision
 
 
 @dataclass(frozen=True)
@@ -93,7 +68,7 @@ class ResponseTarget:
 class TriageResult:
     decision: TriageDecision
     target: ResponseTarget
-    result: AgentRunResult[TriageOutput] | None = None
+    result: AgentRunResult[TriageOutput] | AgentRunResult[ChannelOutput] | None = None
 
 
 @dataclass
@@ -119,6 +94,8 @@ class TriageState:
     source_target: ResponseTarget | None = None
     target: ResponseTarget | None = None
     decision: TriageDecision | None = None
+    targets: dict[str, ResponseTarget] = field(default_factory=dict)
+    summon_routes: list[SummonRoute] = field(default_factory=list)
     user_prompt: str | Sequence[UserContent] | None = None
     run_name: Literal["triage", "reception"] = "triage"
 
@@ -126,7 +103,7 @@ class TriageState:
 @dataclass
 class TriageDeps:
     channels: dict[str, ChannelTentacle]
-    agents: dict[str, AgentTentacle[TriageOutput, None]] = field(default_factory=dict)
+    agents: dict[str, AgentTentacle] = field(default_factory=dict)
     conversation_manager: ConversationManager = field(
         default_factory=ConversationManager
     )
@@ -145,7 +122,7 @@ class TriageDeps:
             raise ValueError(f"unknown channel {channel_id!r}")
         return channel
 
-    def agent(self, agent_id: str) -> AgentTentacle[TriageOutput, None]:
+    def agent(self, agent_id: str) -> AgentTentacle:
         agent = self.agents.get(agent_id)
         if agent is None:
             raise ValueError(f"unknown agent {agent_id!r}")
@@ -155,7 +132,28 @@ class TriageDeps:
         return self.channel(channel_id).config.triage
 
     def receptions(self, channel_id: str) -> list[AgentModelConfig]:
-        return self.channel(channel_id).config.receptions
+        return [
+            reception
+            for reception in self.channel(channel_id).config.receptions
+            if reception.agent in self.agents
+        ]
+
+    @cached_property
+    def available_routes(self) -> dict[str, list[SummonRoute]]:
+        available: dict[str, list[SummonRoute]] = {}
+        for channel_id, channel in self.channels.items():
+            routes: list[SummonRoute] = []
+            for reception in self.receptions(channel_id):
+                agent = self.agent(reception.agent)
+                routes.append(
+                    SummonRoute(
+                        agent_id=reception.agent,
+                        model=reception.model or "",
+                        description=agent.description,
+                    )
+                )
+            available[channel_id] = routes
+        return available
 
     def reception(
         self,
@@ -164,19 +162,13 @@ class TriageDeps:
         model: str,
     ) -> AgentModelConfig:
         receptions = self.receptions(channel_id)
-        if not receptions:
-            raise ValueError(f"channel {channel_id!r} has no reception agents")
+        matched: AgentModelConfig | None = None
         for reception in receptions:
             if reception.agent == agent_id and (reception.model or "") == model:
                 return reception
-        if agent_id:
-            for reception in receptions:
-                if reception.agent == agent_id:
-                    return reception
-        return receptions[0]
-
-    def model(self, config: AgentModelConfig) -> Model | str | None:
-        return self.agent(config.agent).model_for(config.model)
+            if agent_id and reception.agent == agent_id:
+                matched = reception
+        return matched or receptions[0]
 
 
 @dataclass
@@ -259,14 +251,13 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 conversation_address=str(source_address),
             )
             reception = ctx.deps.reception(source_address.channel_tentacle_id, "", "")
-            state.decision = HandoffDecision(
-                action="handoff",
-                target_id=source_target.channel_id,
+            state.decision = SummonDecision(
+                action="summon",
                 agent_id=reception.agent,
                 model=reception.model or "",
                 reason="Continuing in the current thread.",
                 hint="Continuing in the current thread.",
-                handoff=str(state.user_prompt or ""),
+                summon=str(state.user_prompt or ""),
             )
             state.target = replace(source_target, mode="sub")
             state.run_name = "reception"
@@ -290,21 +281,42 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         source_channel_id = source_address.channel_tentacle_id
         triage = ctx.deps.triage(source_channel_id)
         agent = ctx.deps.agent(triage.agent)
-        receptions = ctx.deps.receptions(source_channel_id)
-        triage_model = ctx.deps.model(triage)
+        triage_model = None
+        if triage.model:
+            triage_model = agent.models.get(triage.model)
+            if triage_model is None:
+                raise ValueError(
+                    f"agent {agent.id!r} has no configured model {triage.model!r}"
+                )
 
-        candidates = {
-            channel_id: ResponseTarget(
-                channel_id=channel_id,
-                address=source_address
+        targets: dict[str, ResponseTarget] = {}
+        for channel_id, channel in ctx.deps.channels.items():
+            targets[channel_id] = (
+                source_target
                 if channel_id == source_target.channel_id
-                else None,
-                thread_strategy=channel.thread_strategy,
-                mode="main",
+                else ResponseTarget(
+                    channel_id=channel_id,
+                    address=None,
+                    thread_strategy=channel.thread_strategy,
+                    mode="main",
+                )
             )
-            for channel_id, channel in ctx.deps.channels.items()
-        }
-        candidates[source_target.channel_id] = source_target
+        state.targets = targets
+
+        routes = [
+            route
+            for route in ctx.deps.available_routes[source_channel_id]
+            if route.agent_id != agent.id
+        ]
+        state.summon_routes = routes
+        summon = (
+            SummonCapability(
+                routes=routes,
+                current_agent_id=agent.id,
+            )
+            if routes
+            else None
+        )
 
         suspender = HumanReviewSuspender(
             channel=ctx.deps.channel(source_target),
@@ -332,25 +344,19 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 state.user_prompt,
                 conversation_address=source_address,
                 run_name="triage",
-                model=triage_model,
-                output_type=(
-                    TriageDecision
-                    if agent.in_process
-                    else [TriageDecision, DeferredToolRequests]
+                output_type=cast(
+                    OutputSpec[TriageOutput],
+                    [
+                        str,
+                        list[MessageSegment],
+                        DirectAnswerDecision,
+                        DeferredToolRequests,
+                    ],
                 ),
+                model=triage_model,
                 deferred_tool_results=deferred_results,
                 deferred_suspender=suspender,
-                instructions=TRIAGE_INSTRUCTIONS.format(
-                    targets="\n".join(str(target) for target in candidates.values()),
-                    agents="\n".join(
-                        (
-                            f"- {reception.agent} "
-                            f"(model: {reception.model or 'default'}): "
-                            f"{ctx.deps.agent(reception.agent).description}"
-                        )
-                        for reception in receptions
-                    ),
-                ),
+                capabilities=[summon] if summon is not None else None,
             )
             if self.resume_batch_id is not None:
                 await ctx.deps.action_manager.mark_batch(
@@ -376,35 +382,77 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 )
 
             output = result.output
-            if not isinstance(output, (DirectAnswerDecision, HandoffDecision)):
-                raise TypeError(
-                    f"triage agent returned unsupported output {type(output).__name__}"
-                )
-            decision: TriageDecision = output
-            state.decision = decision
-            span.set_attribute("triage.action", decision.action)
-            span.set_attribute("triage.target_id", decision.target_id)
-            logfire.info(
-                "triage -> {action} target={target_id}",
-                action=decision.action,
-                target_id=decision.target_id,
-                reason=decision.reason,
-            )
-            target = candidates.get(decision.target_id) or source_target
-
-            if isinstance(decision, DirectAnswerDecision):
-                if target.mode != "main":
-                    target = replace(target, mode="main")
-                state.target = target
+            decision = summon.decision if summon is not None else None
+            if decision is None:
+                if isinstance(output, DirectAnswerDecision):
+                    decision = output
+                    target = targets.get(decision.target_id)
+                    if target is None:
+                        raise ValueError(
+                            f"Invalid response target {decision.target_id!r}. "
+                            f"Choose one of: {', '.join(repr(key) for key in targets)}."
+                        )
+                    answer = decision.answer
+                elif isinstance(output, str):
+                    target = source_target
+                    answer = output
+                    decision = DirectAnswerDecision(
+                        action="direct_answer",
+                        target_id=target.channel_id,
+                        answer=answer,
+                        reason="Answered directly.",
+                    )
+                elif isinstance(output, list):
+                    target = source_target
+                    answer = ""
+                    decision = DirectAnswerDecision(
+                        action="direct_answer",
+                        target_id=target.channel_id,
+                        answer="",
+                        reason="Answered directly with message segments.",
+                    )
+                else:
+                    raise TypeError(
+                        "triage agent must return a direct answer or use the "
+                        f"summon tool, got {type(output).__name__}"
+                    )
                 if target.address is None:
                     raise ValueError(
                         f"target {target.channel_id!r} has no resolved address"
                     )
-                await ctx.deps.channel(target).feelers.markdown.present(
-                    target.address,
-                    decision.answer,
+                state.decision = decision
+                state.target = target
+                span.set_attribute("triage.action", decision.action)
+                span.set_attribute("triage.target_id", decision.target_id)
+                logfire.info(
+                    "triage -> {action} target={target_id}",
+                    action=decision.action,
+                    target_id=decision.target_id,
+                    reason=decision.reason,
                 )
-                return End(TriageResult(decision=decision, target=target))
+                if isinstance(output, list):
+                    await ctx.deps.channel(target).feelers.segments.present(
+                        target.address, output
+                    )
+                elif answer:
+                    await ctx.deps.channel(target).feelers.markdown.present(
+                        target.address,
+                        answer,
+                    )
+                return End(
+                    TriageResult(decision=decision, target=target, result=result)
+                )
+
+            state.decision = decision
+            span.set_attribute("triage.action", decision.action)
+            span.set_attribute("triage.target_id", source_target.channel_id)
+            logfire.info(
+                "triage -> {action} target={target_id}",
+                action=decision.action,
+                target_id=source_target.channel_id,
+                reason=decision.reason,
+            )
+            target = source_target
 
             reception = ctx.deps.reception(
                 source_channel_id, decision.agent_id, decision.model
@@ -437,8 +485,8 @@ class PrepareReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             or source_target.address is None
         ):
             raise ValueError("PrepareReception requires a decision and source target")
-        if not isinstance(decision, HandoffDecision):
-            raise ValueError("PrepareReception requires a handoff decision")
+        if not isinstance(decision, SummonDecision):
+            raise ValueError("PrepareReception requires a summon decision")
         source_address = source_target.address
         channel = ctx.deps.channel(target)
 
@@ -485,7 +533,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
-    ) -> End[TriageGraphResult]:
+    ) -> PrepareReception | End[TriageGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target
@@ -498,8 +546,8 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             or source_target.address is None
         ):
             raise ValueError("RunReception requires a decision and resolved target")
-        if not isinstance(decision, HandoffDecision):
-            raise ValueError("RunReception requires a handoff decision")
+        if not isinstance(decision, SummonDecision):
+            raise ValueError("RunReception requires a summon decision")
         target_address = target.address
         source_address = source_target.address
         reception = ctx.deps.reception(
@@ -510,8 +558,28 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         )
         state.decision = decision
         agent = ctx.deps.agent(reception.agent)
-        reception_model = ctx.deps.model(reception)
+        reception_model = None
+        if reception.model:
+            reception_model = agent.models.get(reception.model)
+            if reception_model is None:
+                raise ValueError(
+                    f"agent {agent.id!r} has no configured model {reception.model!r}"
+                )
         target_channel = ctx.deps.channel(target)
+        routes = [
+            route
+            for route in ctx.deps.available_routes[source_address.channel_tentacle_id]
+            if route.agent_id != agent.id
+        ]
+        state.summon_routes = routes
+        summon = (
+            SummonCapability(
+                routes=routes,
+                current_agent_id=agent.id,
+            )
+            if routes
+            else None
+        )
 
         deferred_results = None
         if self.resume_batch_id is not None:
@@ -520,7 +588,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         if deferred_results is not None:
             user_prompt: str | Sequence[UserContent] | None = None
         else:
-            user_prompt = decision.handoff or str(state.user_prompt or "")
+            user_prompt = decision.summon or str(state.user_prompt or "")
 
         suspender = HumanReviewSuspender(
             channel=target_channel,
@@ -543,11 +611,11 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             streaming=target_channel.config.stream.enabled,
             resume_batch_id=str(self.resume_batch_id) if self.resume_batch_id else None,
         ) as span:
-            result: AgentRunResult[TriageOutput] | None = None
+            result: AgentRunResult[ChannelOutput] | None = None
             if target_channel.config.stream.enabled:
 
                 async def stream_events() -> AsyncIterator[
-                    StreamEvents[TriageOutput] | AgentRunResultEvent[TriageOutput]
+                    StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
                 ]:
                     nonlocal result
                     async with agent.run_stream_events(
@@ -557,6 +625,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                         model=reception_model,
                         deferred_tool_results=deferred_results,
                         deferred_suspender=suspender,
+                        capabilities=[summon] if summon is not None else None,
                     ) as stream:
                         async for event in stream:
                             if isinstance(event, AgentRunResultEvent):
@@ -565,8 +634,8 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 
                 async with target_channel.feelers.timeline.open(
                     target_address
-                ) as state:
-                    await state.drive(stream_events())
+                ) as timeline_state:
+                    await timeline_state.drive(stream_events())
                 if result is None:
                     raise RuntimeError(
                         f"reception stream for {target_address} completed without a result"
@@ -579,6 +648,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     model=reception_model,
                     deferred_tool_results=deferred_results,
                     deferred_suspender=suspender,
+                    capabilities=[summon] if summon is not None else None,
                 )
                 output = result.output
                 if isinstance(output, str):
@@ -605,18 +675,34 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 
             span.set_attribute("reception.run_id", result.run_id)
             span.set_attribute(
-                "reception.deferred", isinstance(result.output, DeferredToolRequests)
+                "reception.deferred", isinstance(output, DeferredToolRequests)
             )
-            if isinstance(result.output, DeferredToolRequests):
+            if isinstance(output, DeferredToolRequests):
                 return End(
                     DeferredResult(
-                        requests=result.output,
+                        requests=output,
                         target=target,
                         run_name="reception",
                         result=result,
                         batch_id=suspender.suspended_batch_id,
                     )
                 )
+
+            summon_decision = summon.decision if summon is not None else None
+            if summon_decision is not None:
+                state.decision = summon_decision
+                state.target = target
+                state.run_name = "reception"
+                span.set_attribute("reception.action", summon_decision.action)
+                span.set_attribute("reception.next_agent_id", summon_decision.agent_id)
+                logfire.info(
+                    "reception -> {action} agent={agent_id}",
+                    action=summon_decision.action,
+                    agent_id=summon_decision.agent_id,
+                    reason=summon_decision.reason,
+                )
+                return PrepareReception()
+
             return End(
                 TriageResult(
                     decision=decision,
@@ -683,22 +769,21 @@ class ResumeDeferred(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             logfire.info("resume routes to RunTriage", batch_id=str(batch.id))
             return RunTriage(resume_batch_id=batch.id)
 
-        if isinstance(batch.decision, (DirectAnswerDecision, HandoffDecision)):
+        if isinstance(batch.decision, (DirectAnswerDecision, SummonDecision)):
             decision = batch.decision
         elif batch.decision:
             decision = TriageDecisionAdapter.validate_python(batch.decision)
         else:
-            decision = HandoffDecision(
-                action="handoff",
-                target_id=batch.target_address.channel_tentacle_id,
+            decision = SummonDecision(
+                action="summon",
                 agent_id=batch.agent_tentacle_id,
                 model="",
                 reason="Resuming deferred human input.",
                 hint="Resuming deferred human input.",
-                handoff="",
+                summon="",
             )
-        if not isinstance(decision, HandoffDecision):
-            raise ValueError("reception deferred batch requires a handoff decision")
+        if not isinstance(decision, SummonDecision):
+            raise ValueError("reception deferred batch requires a summon decision")
         decision = decision.model_copy(update={"agent_id": batch.agent_tentacle_id})
         state.decision = decision
         if batch.status in {"completed", "resuming"}:

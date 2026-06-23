@@ -14,7 +14,7 @@ from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.triage import HandoffDecision
+from octomate.triage import SummonDecision
 from octomate.tentacles.base import Tentacle
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, MainOnlyChannelTentacle
@@ -29,6 +29,15 @@ def _streaming_config() -> ChannelConfig:
     return ChannelConfig(
         type="fake",
         stream=ChannelStreamConfig(enabled=True),
+        receptions=[AgentModelConfig(agent="other")],
+    )
+
+
+def _non_streaming_config() -> ChannelConfig:
+    return ChannelConfig(
+        type="fake",
+        stream=ChannelStreamConfig(enabled=False),
+        receptions=[AgentModelConfig(agent="other")],
     )
 
 
@@ -59,15 +68,26 @@ def _key(thread_id: str = "") -> ChannelAddress:
     )
 
 
-def _register_agents(octomate: Octomate, agent: FakeAgent) -> None:
-    octomate.connect(agent)
+def _register_agents(octomate: Octomate, *agents: FakeAgent) -> None:
+    for agent in agents:
+        octomate.connect(agent)
 
 
 async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     octomate = Octomate()
-    agent = FakeAgent()
-    channel = FakeChannelTentacle()
-    _register_agents(octomate, agent)
+    agent = FakeAgent(
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
+            model="",
+            reason="needs work",
+            hint="needs work",
+            summon="Please handle this.",
+        )
+    )
+    reception = FakeAgent(id="other", allow_reception_run=True)
+    channel = FakeChannelTentacle(config=_non_streaming_config())
+    _register_agents(octomate, agent, reception)
     octomate.connect(channel)
 
     event = _event()
@@ -79,27 +99,30 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     assert agent.turns[0].prompt == str(event)
     assert agent.turns[0].address == address
     assert agent.turns[0].run_name == "triage"
+    assert len(reception.turns) == 1
+    assert reception.turns[0].run_name == "reception"
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "handled"
     assert channel.consumed == []
     assert agent.streams == []
+    assert reception.streams == []
 
 
 async def test_octomate_kick_streams_reception_result_when_enabled() -> None:
     octomate = Octomate()
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="im",
-            agent_id="",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="",
             reason="debugging",
             hint="debugging",
-            handoff="Please continue debugging in reception.",
+            summon="Please continue debugging in reception.",
         )
     )
     channel = FakeChannelTentacle(config=_streaming_config())
-    _register_agents(octomate, agent)
+    reception = FakeAgent(id="other")
+    _register_agents(octomate, agent, reception)
     octomate.connect(channel)
 
     await octomate.kick(UserMessageSignal([_event()]))
@@ -110,19 +133,21 @@ async def test_octomate_kick_streams_reception_result_when_enabled() -> None:
     assert channel.consumed[0][0].thread_id == "hint-thread"
     assert channel.sent[-1][2][0]["text"] == "handled"
     assert len(agent.turns) == 1
-    assert len(agent.streams) == 1
+    assert agent.streams == []
+    assert len(reception.streams) == 1
     assert agent.turns[0].run_name == "triage"
-    assert agent.streams[0].prompt == "Please continue debugging in reception."
-    assert agent.streams[0].history == []
-    assert agent.streams[0].address.thread_id == "hint-thread"
-    assert agent.streams[0].run_name == "reception"
+    assert reception.streams[0].prompt == "Please continue debugging in reception."
+    assert reception.streams[0].history == []
+    assert reception.streams[0].address.thread_id == "hint-thread"
+    assert reception.streams[0].run_name == "reception"
 
 
 async def test_octomate_kick_skips_triage_inside_flat_thread() -> None:
     octomate = Octomate()
     agent = FakeAgent()
+    reception = FakeAgent(id="other")
     channel = FakeChannelTentacle(config=_streaming_config())
-    _register_agents(octomate, agent)
+    _register_agents(octomate, agent, reception)
     octomate.connect(channel)
 
     address = _key(thread_id="existing-thread")
@@ -131,68 +156,71 @@ async def test_octomate_kick_skips_triage_inside_flat_thread() -> None:
     await octomate.kick(UserMessageSignal([event]))
 
     assert agent.turns == []
-    assert len(agent.streams) == 1
-    assert agent.streams[0].address == address
-    assert agent.streams[0].run_name == "reception"
+    assert agent.streams == []
+    assert len(reception.streams) == 1
+    assert reception.streams[0].address == address
+    assert reception.streams[0].run_name == "reception"
     assert channel.sub_threads == []
     assert channel.consumed[0][0] == address
     assert channel.sent[-1][2][0]["text"] == "handled"
 
 
-async def test_octomate_kick_routes_reception_to_attached_channel_sub_thread() -> None:
+async def test_octomate_kick_routes_summoned_reception_to_source_sub_thread() -> None:
     octomate = Octomate()
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="ops",
-            agent_id="",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="",
             reason="needs work",
             hint="Working on it",
-            handoff="Please investigate this in ops.",
+            summon="Please investigate this in ops.",
         )
     )
-    source = FakeChannelTentacle()
+    source = FakeChannelTentacle(config=_streaming_config())
     ops = FakeChannelTentacle(id="ops", config=_streaming_config())
-    _register_agents(octomate, agent)
+    reception = FakeAgent(id="other")
+    _register_agents(octomate, agent, reception)
     octomate.connect(source)
     octomate.connect(ops)
 
     await octomate.kick(UserMessageSignal([_event(text="please investigate")]))
 
-    assert source.sent == []
-    assert len(ops.sub_threads) == 1
-    assert ops.sub_threads[0][1] == "Working on it"
-    assert len(ops.consumed) == 1
-    target_address = ops.consumed[0][0]
-    assert target_address.channel_tentacle_id == "ops"
+    assert len(source.sub_threads) == 1
+    assert source.sub_threads[0][1] == "Working on it"
+    assert len(source.consumed) == 1
+    target_address = source.consumed[0][0]
+    assert target_address.channel_tentacle_id == "im"
     assert target_address.chat_id == "alice"
     assert target_address.thread_id == "hint-thread"
-    assert ops.sent[-1][2][0]["text"] == "handled"
+    assert source.sent[-1][2][0]["text"] == "handled"
+    assert ops.sent == []
+    assert ops.sub_threads == []
     assert len(agent.turns) == 1
-    assert len(agent.streams) == 1
+    assert agent.streams == []
+    assert len(reception.streams) == 1
     assert agent.turns[0].run_name == "triage"
-    assert agent.streams[0].prompt == "Please investigate this in ops."
-    assert agent.streams[0].history == []
-    assert agent.streams[0].address == target_address
-    assert agent.streams[0].run_name == "reception"
+    assert reception.streams[0].prompt == "Please investigate this in ops."
+    assert reception.streams[0].history == []
+    assert reception.streams[0].address == target_address
+    assert reception.streams[0].run_name == "reception"
 
 
 async def test_octomate_kick_keeps_reception_in_main_for_main_only_channel() -> None:
     octomate = Octomate()
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="im",
-            agent_id="",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="",
             reason="needs work",
             hint="needs work",
-            handoff="Please investigate this in main.",
+            summon="Please investigate this in main.",
         )
     )
     channel = MainOnlyChannelTentacle(config=_streaming_config())
-    _register_agents(octomate, agent)
+    reception = FakeAgent(id="other")
+    _register_agents(octomate, agent, reception)
     octomate.connect(channel)
 
     address = _key()
@@ -203,38 +231,39 @@ async def test_octomate_kick_keeps_reception_in_main_for_main_only_channel() -> 
     assert len(channel.consumed) == 1
     assert channel.consumed[0][0] == address
     assert agent.turns[0].run_name == "triage"
-    assert agent.streams[0].prompt == "Please investigate this in main."
-    assert agent.streams[0].address == address
-    assert agent.streams[0].run_name == "reception"
+    assert agent.streams == []
+    assert reception.streams[0].prompt == "Please investigate this in main."
+    assert reception.streams[0].address == address
+    assert reception.streams[0].run_name == "reception"
 
 
 async def test_channel_reception_model_is_resolved_from_agent() -> None:
     octomate = Octomate()
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="im",
-            agent_id="inkling",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="pro",
             reason="needs stronger model",
             hint="needs stronger model",
-            handoff="Use the stronger model.",
+            summon="Use the stronger model.",
         ),
-        models={"pro": "pro-m"},
     )
+    reception = FakeAgent(id="other", models={"pro": "pro-m"})
     octomate.connect(agent)
+    octomate.connect(reception)
     channel = FakeChannelTentacle(
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
-            receptions=[AgentModelConfig(agent="inkling", model="pro")],
+            receptions=[AgentModelConfig(agent="other", model="pro")],
         )
     )
     octomate.connect(channel)
 
     await octomate.kick(UserMessageSignal([_event(text="please work")]))
 
-    assert agent.streams[0].model == "pro-m"
+    assert reception.streams[0].model == "pro-m"
 
 
 async def test_connect_rejects_duplicates() -> None:

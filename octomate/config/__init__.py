@@ -78,6 +78,7 @@ class OctomateConfig(BaseSettings):
         if self.agents.claude is not None:
             agent_ids.add("claude")
         inkling_models = {model.name for model in self.agents.inkling.models}
+
         errors: list[InitErrorDetails] = []
 
         channels: tuple[tuple[str, ChannelConfig | None], ...] = (
@@ -111,11 +112,19 @@ class OctomateConfig(BaseSettings):
                     )
                     continue
                 if route.agent == "claude":
-                    claude_model = (
-                        self.agents.claude.model
-                        if self.agents.claude is not None
-                        else None
-                    )
+                    if self.agents.claude is None:
+                        errors.append(
+                            InitErrorDetails(
+                                type=PydanticCustomError(
+                                    "channel_agent_route",
+                                    "claude agent is not configured",
+                                    {},
+                                ),
+                                loc=("channels", channel_id, *route_location, "agent"),
+                                input=route.agent,
+                            )
+                        )
+                        continue
                     if route.model is None:
                         errors.append(
                             InitErrorDetails(
@@ -128,13 +137,13 @@ class OctomateConfig(BaseSettings):
                                 input=route.model,
                             )
                         )
-                    elif route.model != claude_model:
+                    elif route.model not in self.agents.claude.models:
                         errors.append(
                             InitErrorDetails(
-                            type=PydanticCustomError(
-                                "channel_agent_route",
-                                "{model} is not configured in agents.claude.model",
-                                {"model": repr(route.model)},
+                                type=PydanticCustomError(
+                                    "channel_agent_route",
+                                    "{model} is not configured in agents.claude.models",
+                                    {"model": repr(route.model)},
                                 ),
                                 loc=("channels", channel_id, *route_location, "model"),
                                 input=route.model,

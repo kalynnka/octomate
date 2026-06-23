@@ -111,7 +111,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.config = config
         self.description = description or self.description
         self.pending = {}
-        self.models = {config.model: config.model} if config.model else {}
+        self.models = dict(config.models)
 
     async def _await_human(
         self,
@@ -179,6 +179,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
+        instructions: AgentInstructions[None] = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         conversation = await self.octomate.conversations.ensure(
             conversation_address, agent_tentacle_id=self.id
@@ -352,6 +354,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     raise ValueError(
                         "ClaudeCodeTentacle requires a non-empty text prompt"
                     )
+                instruction_parts: list[str] = []
+                if isinstance(instructions, str):
+                    instruction_parts.append(instructions)
+                if instruction_parts:
+                    prompt_text = "\n\n".join([*instruction_parts, prompt_text])
                 await client.query(prompt_text)
                 async for message in client.receive_response():
                     for event in accumulator.consume(message):
@@ -367,14 +374,15 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             if output_adapter is not None and accumulator.structured_output is not None:
                 # The model instance rides the str-typed event stream; `run`
                 # restores the declared output type at its boundary.
+                structured = accumulator.build_structured_result(
+                    output_adapter,
+                    run_id=run_id,
+                    conversation_id=str(conversation.id),
+                )
                 yield AgentRunResultEvent(
                     cast(
                         "AgentRunResult[str]",
-                        accumulator.build_structured_result(
-                            output_adapter,
-                            run_id=run_id,
-                            conversation_id=str(conversation.id),
-                        ),
+                        structured,
                     )
                 )
             else:
@@ -467,6 +475,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             run_name=run_name,
             output_type=output_type,
             model=model,
+            instructions=instructions,
+            capabilities=capabilities,
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
@@ -558,5 +568,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 run_name=run_name,
                 output_type=output_type,
                 model=model,
+                instructions=instructions,
+                capabilities=capabilities,
             )
         )

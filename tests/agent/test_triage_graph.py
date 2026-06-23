@@ -17,11 +17,10 @@ from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSign
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.tentacles.agent.base import AgentTentacle
 from octomate.triage import (
     DeferredResult,
     DirectAnswerDecision,
-    HandoffDecision,
+    SummonDecision,
     ResponseTarget,
     TriageDeps,
     TriageState,
@@ -33,7 +32,6 @@ from octomate.triage.graph import (
     Route,
     RunTriage,
 )
-from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.channel.feelers.output import TimelineState
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, RecordingMarkdownFeeler
@@ -49,6 +47,7 @@ def _channel(*, stream: bool = True) -> FakeChannelTentacle:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=stream),
+            receptions=[AgentModelConfig(agent="other")],
         )
     )
 
@@ -113,10 +112,9 @@ def _deps(
     agent: FakeAgent,
     action_manager: FakeActionManager | None = None,
 ) -> TriageDeps:
-    fake = cast(AgentTentacle[InklingOutput, None], agent)
     return TriageDeps(
         channels=dict(channels),
-        agents={"inkling": fake, agent.id: fake},
+        agents={"inkling": agent, "other": agent, agent.id: agent},
         conversation_manager=conversations,
         action_manager=cast(
             DeferredActionManager, action_manager or FakeActionManager()
@@ -140,6 +138,31 @@ def _deferred_results() -> DeferredToolResults:
     results = DeferredToolResults()
     results.calls["call_question"] = ["please answer directly"]
     return results
+
+
+def test_available_routes_skip_disconnected_reception_agents() -> None:
+    channel = FakeChannelTentacle(
+        id="chan1",
+        config=ChannelConfig(
+            type="fake",
+            receptions=[
+                AgentModelConfig(agent="claude", model="opus"),
+                AgentModelConfig(agent="other"),
+            ],
+        ),
+    )
+    other = FakeAgent(id="other")
+    deps = TriageDeps(
+        channels={"chan1": channel},
+        agents={"other": other},
+        conversation_manager=FakeConversationManager(),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
+    )
+
+    routes = deps.available_routes["chan1"]
+
+    assert [(route.agent_id, route.model) for route in routes] == [("other", "")]
+    assert deps.available_routes["chan1"] is routes
 
 
 async def test_triage_graph_emits_direct_route() -> None:
@@ -171,7 +194,7 @@ async def test_triage_graph_emits_direct_route() -> None:
     assert not isinstance(result, DeferredResult)
     assert result.decision.answer == "hello"
     assert result.target.channel_id == "im"
-    assert result.result is None
+    assert result.result is not None and result.result.output.answer == "hello"
     assert [turn.run_name for turn in agent.turns] == ["triage"]
     assert agent.streams == []
     assert conversations.ensured == []
@@ -233,12 +256,15 @@ async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
         deferred_results=deferred_results,
     )
     agent = FakeAgent(
-        triage_output=DirectAnswerDecision(
-            action="direct_answer",
-            target_id="im",
-            answer="hello",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
+            model="",
             reason="answered",
-        )
+            hint="continuing",
+            summon="continue after the answered question",
+        ),
+        reception_output="done",
     )
     conversations = FakeConversationManager()
     action_manager = FakeActionManager(batch=batch)
@@ -258,11 +284,15 @@ async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
     ).output
 
     assert not isinstance(result, DeferredResult)
-    assert result.decision.answer == "hello"
-    assert result.target == _source_target(address)
+    assert isinstance(result.decision, SummonDecision)
+    assert result.target.channel_id == "im"
+    assert result.target.mode == "sub"
+    assert result.result is not None and result.result.output == "done"
     assert [turn.run_name for turn in agent.turns] == ["triage"]
     assert [turn.prompt for turn in agent.turns] == [None]
     assert [turn.deferred_results for turn in agent.turns] == [deferred_results]
+    assert agent.streams[0].run_name == "reception"
+    assert agent.streams[0].deferred_results is None
     # RunTriage no longer threads history through the graph — react loads it
     # from the conversation (which carries the deferred turn the create run
     # recorded), so the agent is called with no explicit history.
@@ -274,8 +304,7 @@ async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
         (batch.id, "resuming", False),
         (batch.id, "completed", True),
     ]
-    assert len(im.sent) == 1
-    assert im.sent[0][2][0]["text"] == "hello"
+    assert im.sent[-1][2][0]["text"] == "done"
 
 
 async def test_triage_graph_keeps_incomplete_triage_batch_deferred() -> None:
@@ -359,14 +388,13 @@ async def test_triage_graph_uses_markdown_feeler_for_direct_answer() -> None:
 async def test_per_channel_routing_resolves_agent_and_model() -> None:
     triage_fake = FakeAgent(
         id="t2",
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="ops",
+        triage_output=SummonDecision(
+            action="summon",
             agent_id="r2",
             model="opus",
             reason="needs work",
             hint="needs work",
-            handoff="Please debug this in reception.",
+            summon="Please debug this in reception.",
         ),
     )
     reception_fake = FakeAgent(
@@ -384,10 +412,7 @@ async def test_per_channel_routing_resolves_agent_and_model() -> None:
     ops = _channel()
     deps = TriageDeps(
         channels={"im": im, "ops": ops},
-        agents={
-            "t2": cast(AgentTentacle[InklingOutput, None], triage_fake),
-            "r2": cast(AgentTentacle[InklingOutput, None], reception_fake),
-        },
+        agents={"t2": triage_fake, "r2": reception_fake},
         conversation_manager=conversations,
         action_manager=cast(DeferredActionManager, FakeActionManager()),
     )
@@ -410,14 +435,13 @@ async def test_per_channel_routing_resolves_agent_and_model() -> None:
 async def test_triage_graph_emits_reception_after_route() -> None:
     address = _key()
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="ops",
-            agent_id="",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="",
             reason="needs work",
             hint="Working on it",
-            handoff="Please debug this in reception.",
+            summon="Please debug this in reception.",
         ),
         reception_output="done",
     )
@@ -438,7 +462,7 @@ async def test_triage_graph_emits_reception_after_route() -> None:
     ).output
 
     assert not isinstance(result, DeferredResult)
-    assert result.target.channel_id == "ops"
+    assert result.target.channel_id == "im"
     assert result.target.mode == "sub"
     assert result.result is not None
     assert result.result.output == "done"
@@ -449,10 +473,10 @@ async def test_triage_graph_emits_reception_after_route() -> None:
     # The triage graph no longer ensures conversations for runs; react loads
     # history from the (sub-thread) conversation itself.
     assert conversations.ensured == []
-    assert im.sent == []
-    assert ops.sub_threads[0][1] == "Working on it"
-    assert ops.consumed[0][0].thread_id == "hint-thread"
-    assert ops.sent[-1][2][0]["text"] == "done"
+    assert im.sub_threads[0][1] == "Working on it"
+    assert im.consumed[0][0].thread_id == "hint-thread"
+    assert im.sent[-1][2][0]["text"] == "done"
+    assert ops.sent == []
 
 
 async def test_triage_resume_does_not_leak_deferred_results_into_reception() -> None:
@@ -469,14 +493,13 @@ async def test_triage_resume_does_not_leak_deferred_results_into_reception() -> 
         deferred_results=deferred_results,
     )
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="ops",
-            agent_id="",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="",
             reason="needs work",
             hint="Working on it",
-            handoff="Please debug this in reception.",
+            summon="Please debug this in reception.",
         ),
         reception_output="done",
     )
@@ -507,14 +530,13 @@ async def test_triage_resume_does_not_leak_deferred_results_into_reception() -> 
 async def test_triage_graph_consumes_reception_stream() -> None:
     address = _key()
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="ops",
-            agent_id="",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="",
             reason="needs work",
             hint="Working on it",
-            handoff="Please debug this in reception.",
+            summon="Please debug this in reception.",
         ),
         reception_output="done",
     )
@@ -537,36 +559,36 @@ async def test_triage_graph_consumes_reception_stream() -> None:
     assert not isinstance(result, DeferredResult)
     assert result.result is not None
     assert result.result.output == "done"
-    # Reception streamed through the target channel's consumer, not markdown.
-    assert len(ops.consumed) == 1
-    assert ops.consumed[0][0].thread_id == "hint-thread"
-    assert ops.sent[-1][2][0]["text"] == "done"
-    assert im.consumed == []
-    assert im.sent == []
+    # Reception streamed through the source channel's consumer, not markdown.
+    assert len(im.consumed) == 1
+    assert im.consumed[0][0].thread_id == "hint-thread"
+    assert im.sent[-1][2][0]["text"] == "done"
+    assert ops.consumed == []
+    assert ops.sent == []
 
 
 async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
     address = _key()
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="ops",
-            agent_id="",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="",
             reason="needs work",
             hint="Working on it",
-            handoff="Please debug this in reception.",
+            summon="Please debug this in reception.",
         ),
         reception_output="done",
     )
     conversations = FakeConversationManager()
-    im = _channel()
-    ops = DroppingChannel(
+    im = DroppingChannel(
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
+            receptions=[AgentModelConfig(agent="other")],
         )
     )
+    ops = _channel()
 
     with pytest.raises(RuntimeError, match="completed without a result"):
         await triage_graph.run(
@@ -585,14 +607,13 @@ async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
 async def test_triage_graph_runs_final_reception_without_stream_when_disabled() -> None:
     address = _key()
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="im",
-            agent_id="",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="",
             reason="needs work",
             hint="needs work",
-            handoff="Please finish this without streaming.",
+            summon="Please finish this without streaming.",
         ),
         reception_output="done",
         allow_reception_run=True,
@@ -620,6 +641,80 @@ async def test_triage_graph_runs_final_reception_without_stream_when_disabled() 
     assert im.sub_threads[0][1] == "needs work"
     assert im.sent[0][3] == "hint-thread"  # reply target is the sub-thread
     assert im.sent[0][2][0]["text"] == "done"
+
+
+async def test_reception_can_summon_another_reception_agent() -> None:
+    address = _key()
+    triage_agent = FakeAgent(
+        id="triage",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="first",
+            model="",
+            reason="needs first pass",
+            hint="First pass",
+            summon="First agent brief.",
+        ),
+    )
+    first_agent = FakeAgent(
+        id="first",
+        reception_summon=SummonDecision(
+            action="summon",
+            agent_id="second",
+            model="",
+            reason="needs second pass",
+            hint="Second pass",
+            summon="Second agent brief.",
+        ),
+        allow_reception_run=True,
+    )
+    second_agent = FakeAgent(
+        id="second",
+        reception_output="done",
+        allow_reception_run=True,
+    )
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            triage=AgentModelConfig(agent="triage"),
+            receptions=[
+                AgentModelConfig(agent="first"),
+                AgentModelConfig(agent="second"),
+            ],
+        )
+    )
+    conversations = FakeConversationManager()
+
+    result = (
+        await triage_graph.run(
+            RunTriage(),
+            state=_state(address, user_prompt="debug this"),
+            deps=TriageDeps(
+                channels={"im": im},
+                agents={
+                    "triage": triage_agent,
+                    "first": first_agent,
+                    "second": second_agent,
+                },
+                conversation_manager=conversations,
+                action_manager=cast(DeferredActionManager, FakeActionManager()),
+            ),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert isinstance(result.decision, SummonDecision)
+    assert result.decision.agent_id == "second"
+    assert result.result is not None and result.result.output == "done"
+    assert [turn.run_name for turn in triage_agent.turns] == ["triage"]
+    assert [turn.prompt for turn in first_agent.turns] == ["First agent brief."]
+    assert [turn.prompt for turn in second_agent.turns] == ["Second agent brief."]
+    assert len(im.sub_threads) == 1
+    assert im.sub_threads[0][1] == "First pass"
+    assert im.sent == [
+        ("alice", "private", [{"text": "done"}], "hint-thread", False)
+    ]
 
 
 async def test_triage_graph_skips_triage_inside_flat_thread() -> None:
@@ -660,6 +755,40 @@ async def test_triage_graph_skips_triage_inside_flat_thread() -> None:
     assert im.sub_threads == []
     assert im.consumed[0][0] == address
     assert im.sent[-1][2][0]["text"] == "done"
+
+
+async def test_flat_thread_skips_disconnected_reception_agents() -> None:
+    address = _key(thread_id="existing-thread")
+    agent = FakeAgent(reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=True),
+            receptions=[
+                AgentModelConfig(agent="claude", model="opus"),
+                AgentModelConfig(agent="other"),
+            ],
+        )
+    )
+
+    result = (
+        await triage_graph.run(
+            Route(),
+            state=_state(address, user_prompt="continue"),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+            ),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert result.result is not None
+    assert result.result.output == "done"
+    assert result.decision.agent_id == "other"
+    assert agent.streams[0].run_name == "reception"
 
 
 async def test_awake_short_circuits_on_empty_signal() -> None:
@@ -787,14 +916,13 @@ async def test_prepare_reception_falls_back_to_main_on_sub_thread_failure() -> N
 
     address = _key()
     agent = FakeAgent(
-        triage_output=HandoffDecision(
-            action="handoff",
-            target_id="im",
-            agent_id="",
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
             model="",
             reason="needs work",
             hint="needs work",
-            handoff="Please continue in reception.",
+            summon="Please continue in reception.",
         ),
         reception_output="done",
     )
@@ -803,6 +931,7 @@ async def test_prepare_reception_falls_back_to_main_on_sub_thread_failure() -> N
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
+            receptions=[AgentModelConfig(agent="other")],
         )
     )
 
@@ -873,14 +1002,13 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
 
 async def test_resume_returns_triage_result_for_already_completed_batch() -> None:
     address = _key(thread_id="hint-thread")
-    decision = HandoffDecision(
-        action="handoff",
-        target_id="im",
+    decision = SummonDecision(
+        action="summon",
         agent_id="inkling",
         model="",
         reason="resumed",
         hint="resumed",
-        handoff="",
+        summon="",
     )
     batch = FakeDeferredBatch(
         source_address=_key(),

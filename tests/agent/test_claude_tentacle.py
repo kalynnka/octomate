@@ -83,9 +83,15 @@ class FakeClaudeClient:
         )
 
 
-def _tentacle(conversations: FakeConversationManager) -> ClaudeCodeTentacle:
+def _tentacle(
+    conversations: FakeConversationManager,
+    *,
+    config: ClaudeCodeConfig | None = None,
+) -> ClaudeCodeTentacle:
     return ClaudeCodeTentacle(
-        "claude", Octomate(conversations=conversations), config=ClaudeCodeConfig()
+        "claude",
+        Octomate(conversations=conversations),
+        config=config or ClaudeCodeConfig(),
     )
 
 
@@ -243,11 +249,35 @@ async def test_run_rejects_deferred_output_type(
 
 async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
-    tentacle = _tentacle(FakeConversationManager())
+    tentacle = _tentacle(
+        FakeConversationManager(),
+        config=ClaudeCodeConfig(models={"claude-opus-4-5": "claude-opus-4-5"}),
+    )
 
     await tentacle.run("hi", conversation_address=KEY, model="claude-opus-4-5")
 
     assert getattr(FakeClaudeClient.last_options, "model", None) == "claude-opus-4-5"
+
+
+def test_configured_aliases_and_full_model_ids_are_exposed() -> None:
+    tentacle = _tentacle(
+        FakeConversationManager(),
+        config=ClaudeCodeConfig(
+            models={
+                "opus": "claude-opus-4-8",
+                "opusplan": "opusplan",
+                "fable": "fable",
+                "claude-opus-4-8": "claude-opus-4-8",
+            }
+        ),
+    )
+
+    assert tentacle.models == {
+        "opus": "claude-opus-4-8",
+        "opusplan": "opusplan",
+        "fable": "fable",
+        "claude-opus-4-8": "claude-opus-4-8",
+    }
 
 
 def test_build_structured_result_validates_into_model() -> None:
