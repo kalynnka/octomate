@@ -642,22 +642,23 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     deferred_suspender=suspender,
                     capabilities=[summon],
                 )
-                output = result.output
-                if isinstance(output, str):
+                if isinstance(result.output, str):
+                    output = result.output
                     if output:
                         await target_channel.feelers.markdown.present(
                             target_address,
                             output,
                         )
-                elif isinstance(output, Iterable):
+                elif isinstance(result.output, Iterable):
                     # A segment list is the only media-bearing reply: deliver it
                     # natively (channels without a media transport fall back to
                     # the joined text form in send_segments).
                     await target_channel.feelers.segments.present(
-                        target_address, list(output)
+                        target_address, list(result.output)
                     )
                 # DeferredToolRequests / None: nothing to deliver here.
 
+            output = result.output
             if self.resume_batch_id is not None:
                 await ctx.deps.action_manager.mark_batch(
                     self.resume_batch_id,

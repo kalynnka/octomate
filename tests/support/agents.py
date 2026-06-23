@@ -206,6 +206,19 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             return ReactEventStream(summon_events())
 
         output = self.reception_output
+        if isinstance(output, DeferredToolRequests):
+
+            async def deferred_events() -> AsyncGenerator[
+                ReactStreamEvent[ChannelOutput], None
+            ]:
+                if deferred_suspender is not None:
+                    event = await deferred_suspender.suspend(output)
+                    if event is not None:
+                        yield event
+                yield AgentRunResultEvent(AgentRunResult(output))
+
+            return ReactEventStream(deferred_events())
+
         if not isinstance(output, str):
             raise AssertionError("streamed reception output must be text or summon")
         script = self.reception_script or plain_answer(output)

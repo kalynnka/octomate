@@ -17,6 +17,7 @@ from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.triage import (
@@ -42,6 +43,7 @@ from tests.support.managers import (
     FakeActionManager,
     FakeConversationManager,
     FakeDeferredBatch,
+    FakePresentedBatch,
 )
 
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -742,6 +744,65 @@ async def test_triage_graph_runs_final_reception_without_stream_when_disabled() 
     assert im.sub_threads[0][1] == "needs work"
     assert im.sent[0][3] == "hint-thread"  # reply target is the sub-thread
     assert im.sent[0][2][0]["text"] == "done"
+
+
+async def test_triage_graph_returns_deferred_result_when_streaming_reception_requests_input() -> (
+    None
+):
+    address = _key()
+    requests = _requests()
+    decision = SummonDecision(
+        action="summon",
+        agent_id="other",
+        model="",
+        reason="needs work",
+        hint="needs work",
+        summon="Please ask before continuing.",
+    )
+    agent = FakeAgent(
+        triage_output=decision,
+        reception_output=requests,
+    )
+    conversations = FakeConversationManager()
+    action_manager = FakeActionManager(
+        presented_batch=FakePresentedBatch(
+            questions=[
+                DeferredQuestion(
+                    tool_name="ask_questions",
+                    tool_call_id="call_question",
+                    position=0,
+                    args={"question": "What should I clarify?"},
+                    metadata={},
+                )
+            ]
+        )
+    )
+    im = _channel(stream=True)
+
+    result = (
+        await triage_graph.run(
+            RunTriage(),
+            state=_state(address, user_prompt="debug this"),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                action_manager=action_manager,
+            ),
+        )
+    ).output
+
+    assert isinstance(result, DeferredResult)
+    assert result.run_name == "reception"
+    assert result.requests is requests
+    assert result.result.output is requests
+    assert result.batch_id == action_manager.create_calls[0].batch_id
+    create_call = action_manager.create_calls[0]
+    assert create_call.run_name == "reception"
+    assert create_call.decision == decision
+    assert create_call.source_address == address
+    assert create_call.target_address.thread_id == "hint-thread"
+    assert agent.streams[0].run_name == "reception"
 
 
 async def test_reception_can_summon_another_reception_agent() -> None:

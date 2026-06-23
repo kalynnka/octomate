@@ -124,16 +124,16 @@ def test_claude_code_config_uses_model_route_mapping() -> None:
     assert not hasattr(config, "model")
 
 
-def test_claude_code_config_accepts_model_list() -> None:
-    config = ClaudeCodeConfig.model_validate(
-        {"models": ["claude-opus-4-5", "claude-opus-4-8"]}
-    )
-
-    assert config.models == {
-        "claude-opus-4-5": "claude-opus-4-5",
-        "claude-opus-4-8": "claude-opus-4-8",
-    }
-    assert not hasattr(config, "model")
+def test_claude_code_config_requires_model_mapping() -> None:
+    with pytest.raises(ValidationError):
+        ClaudeCodeConfig.model_validate(
+            {
+                "models": [
+                    "claude-opus-4-5",
+                    {"opus": "claude-opus-4-8"},
+                ]
+            }
+        )
 
 
 def test_claude_code_config_defaults_to_fixed_model_set() -> None:
@@ -151,6 +151,24 @@ def test_claude_code_config_defaults_to_fixed_model_set() -> None:
 def test_claude_code_config_validates_model_names() -> None:
     with pytest.raises(ValidationError, match="not a supported Claude Code model"):
         ClaudeCodeConfig(models={"missing": "missing-claude-model"})
+
+
+def test_claude_code_config_accepts_documented_model_aliases() -> None:
+    config = ClaudeCodeConfig(
+        models={
+            "best": "best",
+            "opus-long": "opus[1m]",
+            "sonnet-long": "sonnet[1m]",
+            "opus-plan-long": "opusplan[1m]",
+        }
+    )
+
+    assert config.models == {
+        "best": "best",
+        "opus-long": "opus[1m]",
+        "sonnet-long": "sonnet[1m]",
+        "opus-plan-long": "opusplan[1m]",
+    }
 
 
 def test_channel_agent_routes_must_reference_configured_agent() -> None:

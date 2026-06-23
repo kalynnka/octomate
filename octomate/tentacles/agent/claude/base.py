@@ -111,7 +111,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.config = config
         self.description = description or self.description
         self.pending = {}
-        self.models = dict(config.models)
+        self.models = {model: model for model in config.models}
 
     async def _await_human(
         self,
