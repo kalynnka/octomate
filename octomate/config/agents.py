@@ -46,13 +46,11 @@ class ClaudeCodeConfig(BaseModel):
     Opt-in: `agents.claude` is null by default, so the agent is absent unless a
     block is supplied. `models` maps route model names to Claude CLI model
     strings (not `ModelConfig`s, since the SDK builds the model, not the
-    provider registry). `model` remains a backward-compatible default-model
-    override. `transport` selects where `claude` runs — a local subprocess, or a
-    remote host over SSH (which requires an `ssh` block).
+    provider registry). `transport` selects where `claude` runs — a local
+    subprocess, or a remote host over SSH (which requires an `ssh` block).
     """
 
     cwd: str = "."
-    model: str | None = None
     models: dict[str, str] = Field(
         default_factory=lambda: dict(CLAUDE_CODE_MODELS), min_length=1
     )
@@ -63,24 +61,14 @@ class ClaudeCodeConfig(BaseModel):
     # pending tool is denied (so the live run unblocks). None waits indefinitely.
     approval_timeout: float | None = None
 
-    @classmethod
-    def validate_model_name(cls, model: str) -> str:
-        if model in CLAUDE_CODE_MODELS.values() or model.startswith("claude-"):
-            return model
-        raise ValueError(f"{model!r} is not a supported Claude Code model")
-
-    @field_validator("model")
-    @classmethod
-    def validate_default_model(cls, model: str | None) -> str | None:
-        if model is None:
-            return None
-        return cls.validate_model_name(model)
-
     @field_validator("models")
     @classmethod
     def validate_models(cls, models: dict[str, str]) -> dict[str, str]:
         for model in models.values():
-            cls.validate_model_name(model)
+            if not (
+                model in CLAUDE_CODE_MODELS.values() or model.startswith("claude-")
+            ):
+                raise ValueError(f"{model!r} is not a supported Claude Code model")
         return models
 
     @model_validator(mode="after")
@@ -89,8 +77,6 @@ class ClaudeCodeConfig(BaseModel):
             raise ValueError(
                 "claude.transport='ssh' requires an `ssh` (ClaudeSSHConfig) block"
             )
-        if self.model:
-            self.models.setdefault(self.model, self.model)
         return self
 
 

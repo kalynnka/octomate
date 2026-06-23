@@ -82,7 +82,7 @@ def test_channel_config_parses_supported_channels() -> None:
 
 def test_channel_config_parses_agent_model_routes() -> None:
     config = OctomateConfig(
-        agents={"claude": {"model": "claude-opus-4-5"}},
+        agents={"claude": {"models": {"claude-opus-4-5": "claude-opus-4-5"}}},
         channels={
             "dev_ui": None,
             "lark": None,
@@ -113,7 +113,6 @@ def test_channel_config_parses_agent_model_routes() -> None:
 def test_claude_code_config_uses_model_route_mapping() -> None:
     config = ClaudeCodeConfig.model_validate(
         {
-            "model": "claude-opus-4-5",
             "models": {"opus": "opus", "sonnet": "sonnet"},
         }
     )
@@ -121,8 +120,20 @@ def test_claude_code_config_uses_model_route_mapping() -> None:
     assert config.models == {
         "opus": "opus",
         "sonnet": "sonnet",
-        "claude-opus-4-5": "claude-opus-4-5",
     }
+    assert not hasattr(config, "model")
+
+
+def test_claude_code_config_accepts_model_list() -> None:
+    config = ClaudeCodeConfig.model_validate(
+        {"models": ["claude-opus-4-5", "claude-opus-4-8"]}
+    )
+
+    assert config.models == {
+        "claude-opus-4-5": "claude-opus-4-5",
+        "claude-opus-4-8": "claude-opus-4-8",
+    }
+    assert not hasattr(config, "model")
 
 
 def test_claude_code_config_defaults_to_fixed_model_set() -> None:
@@ -164,7 +175,7 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
 def test_channel_agent_route_validation_reports_all_errors() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig(
-            agents={"claude": {"model": "claude-opus-4-5"}},
+            agents={"claude": {"models": {"claude-opus-4-5": "claude-opus-4-5"}}},
             channels={
                 "dev_ui": None,
                 "napcat": None,
@@ -265,7 +276,7 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
 def test_channel_claude_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig(
-            agents={"claude": {"model": "claude-opus-4-5"}},
+            agents={"claude": {"models": {"claude-opus-4-5": "claude-opus-4-5"}}},
             channels={
                 "dev_ui": None,
                 "lark": None,
@@ -284,7 +295,7 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
 
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig(
-            agents={"claude": {"model": "claude-opus-4-5"}},
+            agents={"claude": {"models": {"claude-opus-4-5": "claude-opus-4-5"}}},
             channels={
                 "dev_ui": None,
                 "lark": None,

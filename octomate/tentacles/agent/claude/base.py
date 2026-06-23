@@ -220,7 +220,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         elif isinstance(model, str):
             cli_model = model
         else:
-            cli_model = self.config.model or None
+            cli_model = None
 
         async def can_use_tool(
             tool_name: str,
