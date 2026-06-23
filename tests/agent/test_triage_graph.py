@@ -8,9 +8,11 @@ from contextlib import asynccontextmanager
 from typing import cast
 
 import pytest
+from pydantic_ai import RunContext
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
+from octomate.capabilities.summon import SCRY_TOOL_NAME, SummonCapability
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
@@ -30,16 +32,19 @@ from octomate.triage.graph import (
     Awake,
     ResumeDeferred,
     Route,
+    RunReception,
     RunTriage,
 )
 from octomate.tentacles.channel.feelers.output import TimelineState
-from tests.support.agents import FakeAgent
+from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, RecordingMarkdownFeeler
 from tests.support.managers import (
     FakeActionManager,
     FakeConversationManager,
     FakeDeferredBatch,
 )
+
+FAKE_CONTEXT = cast(RunContext[None], None)
 
 
 def _channel(*, stream: bool = True) -> FakeChannelTentacle:
@@ -140,6 +145,16 @@ def _deferred_results() -> DeferredToolResults:
     return results
 
 
+def _recorded_summon_capability(run: RecordedRun) -> SummonCapability:
+    summons = [
+        capability
+        for capability in run.capabilities
+        if isinstance(capability, SummonCapability)
+    ]
+    assert len(summons) == 1
+    return summons[0]
+
+
 def test_available_routes_skip_disconnected_reception_agents() -> None:
     channel = FakeChannelTentacle(
         id="chan1",
@@ -163,6 +178,92 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
 
     assert [(route.agent_id, route.model) for route in routes] == [("other", "")]
     assert deps.available_routes["chan1"] is routes
+
+
+async def test_triage_mounts_summon_capability_without_routes() -> None:
+    address = _key()
+    agent = FakeAgent(
+        triage_output=DirectAnswerDecision(
+            action="direct_answer",
+            target_id="im",
+            answer="hello",
+            reason="answered",
+        )
+    )
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=True),
+            receptions=[],
+        )
+    )
+
+    result = (
+        await triage_graph.run(
+            RunTriage(),
+            state=_state(address),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+            ),
+        )
+    ).output
+
+    summon = _recorded_summon_capability(agent.turns[0])
+    assert not isinstance(result, DeferredResult)
+    assert summon.toolset is not None
+    scry = summon.toolset.tools[SCRY_TOOL_NAME].function
+    assert await scry(FAKE_CONTEXT) == []
+
+
+async def test_reception_mounts_summon_capability_without_routes() -> None:
+    address = _key()
+    decision = SummonDecision(
+        action="summon",
+        agent_id="other",
+        model="",
+        reason="needs work",
+        hint="Working on it",
+        summon="Please debug this in reception.",
+    )
+    agent = FakeAgent(
+        id="other",
+        allow_reception_run=True,
+        reception_output="done",
+    )
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            receptions=[AgentModelConfig(agent="other")],
+        )
+    )
+    target = _source_target(address)
+
+    result = (
+        await triage_graph.run(
+            RunReception(),
+            state=TriageState(
+                source_target=target,
+                target=target,
+                decision=decision,
+            ),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+            ),
+        )
+    ).output
+
+    summon = _recorded_summon_capability(agent.turns[0])
+    assert not isinstance(result, DeferredResult)
+    assert summon.toolset is not None
+    scry = summon.toolset.tools[SCRY_TOOL_NAME].function
+    assert await scry(FAKE_CONTEXT) == []
 
 
 async def test_triage_graph_emits_direct_route() -> None:

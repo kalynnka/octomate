@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
+from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 
-from octomate.capabilities.summon import SUMMON_TOOL_NAME, SummonCapability
+from octomate.capabilities.summon import (
+    SCRY_TOOL_NAME,
+    SUMMON_TOOL_NAME,
+    SummonCapability,
+)
 from octomate.schemas.triage import SummonDecision, SummonRoute
+
+FAKE_CONTEXT = cast(RunContext[None], None)
 
 
 def _capability() -> SummonCapability:
@@ -14,7 +23,12 @@ def _capability() -> SummonCapability:
                 agent_id="claude",
                 model="opus",
                 description="coding work",
-            )
+            ),
+            SummonRoute(
+                agent_id="inkling",
+                model="flash",
+                description="current agent",
+            ),
         ],
         current_agent_id="inkling",
     )
@@ -37,7 +51,7 @@ async def test_summon_capability_accepts_exact_route() -> None:
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
     await summon(
-        None,
+        FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
         reason="needs coding",
@@ -51,10 +65,29 @@ async def test_summon_capability_accepts_exact_route() -> None:
 def test_summon_instructions_keep_target_separate_from_route() -> None:
     instructions = _capability().get_instructions()
 
-    assert "You have a `summon` tool" in instructions
+    assert "You have two tools" in instructions
+    assert "`scry`" in instructions
     assert "If you can answer directly" in instructions
-    assert "agent_id=claude, model=opus" in instructions
+    assert "agent_id=claude" not in instructions
+    assert "inkling" not in instructions
+    assert "coding work" not in instructions
     assert "target_id" not in instructions
+
+
+async def test_scry_tool_returns_summonable_routes() -> None:
+    capability = _capability()
+    assert capability.toolset is not None
+    scry = capability.toolset.tools[SCRY_TOOL_NAME].function
+
+    routes = await scry(FAKE_CONTEXT)
+
+    assert routes == [
+        SummonRoute(
+            agent_id="claude",
+            model="opus",
+            description="coding work",
+        )
+    ]
 
 
 async def test_summon_capability_rejects_self_summon() -> None:
@@ -62,9 +95,9 @@ async def test_summon_capability_rejects_self_summon() -> None:
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
-    with pytest.raises(ModelRetry, match="Cannot summon current agent"):
+    with pytest.raises(ModelRetry, match="Cannot summon yourself"):
         await summon(
-            None,
+            FAKE_CONTEXT,
             agent_id="inkling",
             model="opus",
             reason="needs coding",
@@ -80,7 +113,7 @@ async def test_summon_tool_retries_invalid_route() -> None:
 
     with pytest.raises(ModelRetry, match="Invalid summon route"):
         await summon(
-            None,
+            FAKE_CONTEXT,
             agent_id="claude",
             model="sonnet",
             reason="needs coding",
@@ -95,7 +128,7 @@ async def test_summon_tool_records_decision() -> None:
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
     result = await summon(
-        None,
+        FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
         reason="needs coding",

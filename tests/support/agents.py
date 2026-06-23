@@ -62,6 +62,7 @@ class RecordedRun:
     run_name: str | None
     deferred_results: DeferredToolResults | None = None
     model: Model | str | None = None
+    capabilities: list[AgentCapability[None]] = field(default_factory=list)
 
 
 @dataclass
@@ -112,6 +113,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
                 model=model,
+                capabilities=list(capabilities or []),
             )
         )
         if run_name == "reception":
@@ -169,6 +171,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
                 model=model,
+                capabilities=list(capabilities or []),
             )
         )
         summon_decision = self.reception_summon

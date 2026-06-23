@@ -309,13 +309,9 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             if route.agent_id != agent.id
         ]
         state.summon_routes = routes
-        summon = (
-            SummonCapability(
-                routes=routes,
-                current_agent_id=agent.id,
-            )
-            if routes
-            else None
+        summon = SummonCapability(
+            routes=routes,
+            current_agent_id=agent.id,
         )
 
         suspender = HumanReviewSuspender(
@@ -356,7 +352,7 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 model=triage_model,
                 deferred_tool_results=deferred_results,
                 deferred_suspender=suspender,
-                capabilities=[summon] if summon is not None else None,
+                capabilities=[summon],
             )
             if self.resume_batch_id is not None:
                 await ctx.deps.action_manager.mark_batch(
@@ -382,7 +378,7 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 )
 
             output = result.output
-            decision = summon.decision if summon is not None else None
+            decision = summon.decision
             if decision is None:
                 if isinstance(output, DirectAnswerDecision):
                     decision = output
@@ -572,13 +568,9 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             if route.agent_id != agent.id
         ]
         state.summon_routes = routes
-        summon = (
-            SummonCapability(
-                routes=routes,
-                current_agent_id=agent.id,
-            )
-            if routes
-            else None
+        summon = SummonCapability(
+            routes=routes,
+            current_agent_id=agent.id,
         )
 
         deferred_results = None
@@ -625,7 +617,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                         model=reception_model,
                         deferred_tool_results=deferred_results,
                         deferred_suspender=suspender,
-                        capabilities=[summon] if summon is not None else None,
+                        capabilities=[summon],
                     ) as stream:
                         async for event in stream:
                             if isinstance(event, AgentRunResultEvent):
@@ -648,7 +640,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     model=reception_model,
                     deferred_tool_results=deferred_results,
                     deferred_suspender=suspender,
-                    capabilities=[summon] if summon is not None else None,
+                    capabilities=[summon],
                 )
                 output = result.output
                 if isinstance(output, str):
@@ -688,7 +680,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     )
                 )
 
-            summon_decision = summon.decision if summon is not None else None
+            summon_decision = summon.decision
             if summon_decision is not None:
                 state.decision = summon_decision
                 state.target = target
