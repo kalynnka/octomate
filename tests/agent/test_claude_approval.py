@@ -32,6 +32,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import Message, ToolPermissionContext
 
 from octomate import Octomate
+from octomate.config import ChannelConfig
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -70,6 +71,9 @@ class FakeFeelers:
 @dataclass
 class FakeChannel:
     feelers: FakeFeelers
+    config: ChannelConfig = field(
+        default_factory=lambda: ChannelConfig(type="fake", receptions=[])
+    )
 
 
 @dataclass
@@ -193,7 +197,7 @@ def _build(
     tentacle = ClaudeCodeTentacle(
         "claude", octomate, config=config or ClaudeCodeConfig()
     )
-    octomate.register_agent("claude", tentacle)
+    octomate.connect(tentacle)
     return tentacle, dam, feelers
 
 

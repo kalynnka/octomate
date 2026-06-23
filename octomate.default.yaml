@@ -3,13 +3,13 @@
 octomate:
   agents:
     inkling:
-      # provider + model id. Default: vertex / gemini-3-flash-preview.
-      model:
-        provider: ~
-        name: ~
-        # pydantic-ai model settings (thinking, caching, temperature, ...).
-        settings:
-          thinking: ~  # default: medium  (false|minimal|low|medium|high|xhigh)
+      models:
+        - provider: deepseek
+          name: deepseek-v4-flash
+          settings:
+            thinking: medium
+        - provider: deepseek
+          name: deepseek-v4-pro
 
   logging:
     level: ~   # default: INFO
@@ -30,21 +30,34 @@ octomate:
   channels: {}
   # channels:
   #   slack:
-  #     agent_id: inkling
+  #     triage:
+  #       agent: inkling
+  #       model: deepseek-v4-flash
+  #     receptions:
+  #       - agent: inkling
+  #         model: deepseek-v4-pro
   #     app_id: A...
   #     bot_token: xoxb-...
   #     app_token: xapp-...
   #     stream:
   #       flush_interval: 0
   #   lark:
-  #     agent_id: inkling
+  #     triage:
+  #       agent: inkling
+  #     receptions:
+  #       - agent: claude
+  #         model: claude-opus-4-5
   #     app_id: cli_...
   #     app_secret: ...
   #     stream:
   #       flush_interval: 0.2
   #       min_chars: 1
   #   napcat:
-  #     agent_id: inkling
+  #     triage:
+  #       agent: inkling
+  #     receptions:
+  #       - agent: inkling
+  #         model: deepseek-v4-pro
   #     stream:
   #       enabled: false
   #     ws_url: ws://127.0.0.1:3001

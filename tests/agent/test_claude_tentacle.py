@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Literal
 
 import pytest
 from claude_agent_sdk import (
@@ -12,6 +13,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import Message
+from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -19,11 +21,19 @@ from pydantic_ai.messages import (
     PartStartEvent,
 )
 
+from pydantic_ai.tools import DeferredToolRequests
+
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.triage import (
+    DirectAnswerDecision,
+    TriageDecision,
+    TriageDecisionAdapter,
+)
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.claude import base as claude_base
+from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from tests.support.managers import FakeConversation, FakeConversationManager
 
 KEY = ChannelAddress(
@@ -119,3 +129,139 @@ async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result.output == "done"
     options = FakeClaudeClient.last_options
     assert getattr(options, "resume", None) == "prev-sess"
+
+
+class StructuredClaudeClient(FakeClaudeClient):
+    """A run that returns a JSON structured result (an `output_format` run),
+    e.g. Claude acting as the triage agent emitting a TriageDecision."""
+
+    async def receive_response(self) -> AsyncIterator[Message]:
+        yield AssistantMessage(content=[TextBlock(text="deciding")], model="m")
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+            result="",
+            structured_output={
+                "action": "direct_answer",
+                "target_id": "im",
+                "answer": "hi there",
+                "reason": "simple answer",
+            },
+        )
+
+
+class LiteralClaudeClient(FakeClaudeClient):
+    async def receive_response(self) -> AsyncIterator[Message]:
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="literal-session",
+            result="",
+            structured_output="accepted",
+        )
+
+
+async def test_run_with_output_type_returns_structured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", StructuredClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    result = await tentacle.run(
+        "triage this",
+        conversation_address=KEY,
+        output_type=TriageDecision,
+    )
+
+    assert isinstance(result.output, DirectAnswerDecision)
+    assert result.output.action == "direct_answer"
+    assert result.output.answer == "hi there"
+    assert getattr(StructuredClaudeClient.last_options, "output_format", None) == {
+        "type": "json_schema",
+        "schema": TriageDecisionAdapter.json_schema(),
+    }
+
+
+async def test_run_uses_literal_output_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", LiteralClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    result = await tentacle.run(
+        "triage this",
+        conversation_address=KEY,
+        output_type=Literal["accepted"],
+    )
+
+    assert result.output == "accepted"
+    assert getattr(LiteralClaudeClient.last_options, "output_format", None) == {
+        "type": "json_schema",
+        "schema": TypeAdapter(Literal["accepted"]).json_schema(),
+    }
+
+
+async def test_run_extracts_structured_candidate_from_union(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", StructuredClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    result = await tentacle.run(
+        "triage this",
+        conversation_address=KEY,
+        output_type=TriageDecision | Literal["ignored"],
+    )
+
+    assert isinstance(result.output, DirectAnswerDecision)
+    assert getattr(StructuredClaudeClient.last_options, "output_format", None) == {
+        "type": "json_schema",
+        "schema": TypeAdapter(TriageDecision | Literal["ignored"]).json_schema(),
+    }
+
+
+async def test_run_rejects_deferred_output_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", StructuredClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    with pytest.raises(ValueError, match="DeferredToolRequests"):
+        await tentacle.run(
+            "triage this",
+            conversation_address=KEY,
+            output_type=[TriageDecision, DeferredToolRequests],
+        )
+
+
+async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    await tentacle.run("hi", conversation_address=KEY, model="claude-opus-4-5")
+
+    assert getattr(FakeClaudeClient.last_options, "model", None) == "claude-opus-4-5"
+
+
+def test_build_structured_result_validates_into_model() -> None:
+    accumulator = ClaudeRunAccumulator()
+    accumulator.structured_output = {
+        "action": "direct_answer",
+        "target_id": "im",
+        "answer": "done",
+        "reason": "simple answer",
+    }
+
+    result = accumulator.build_structured_result(
+        TriageDecisionAdapter, run_id="r1", conversation_id="c1"
+    )
+
+    assert isinstance(result.output, DirectAnswerDecision)
+    assert result.output.action == "direct_answer"

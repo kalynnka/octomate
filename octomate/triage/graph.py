@@ -4,11 +4,12 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Literal, TypeAlias
+from typing import Any, Iterable, Literal, TypeAlias, overload
 
 import logfire
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import UserContent
+from pydantic_ai.models import Model
 from pydantic_ai.tools import DeferredToolRequests
 
 # TODO: migrate this graph to the pydantic_graph GraphBuilder (Step/Decision/Edge)
@@ -17,51 +18,60 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.capabilities.events import StreamEvents
+from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import ResponseTargetMode, TriageDecision
+from octomate.schemas.segments import MessageSegment
+from octomate.schemas.triage import (
+    DirectAnswerDecision,
+    HandoffDecision,
+    ResponseTargetMode,
+    TriageDecision,
+    TriageDecisionAdapter,
+)
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.inkling.base import InklingOutput
-from octomate.tentacles.agent.inkling.graph.suspender import HumanReviewSuspender
 from octomate.tentacles.channel.base import (
     ChannelTentacle,
     ThreadStrategy,
 )
+from octomate.triage.suspender import HumanReviewSuspender
 
 logger = logging.getLogger(__name__)
+
+# The output a reception agent returns and the graph delivers, independent of any
+# specific agent: plain text, a media segment list, or a deferred-tool request.
+TriageOutput: TypeAlias = str | list[MessageSegment] | DeferredToolRequests
 
 TRIAGE_INSTRUCTIONS = """\
 Decide how Octomate should respond to the latest user message.
 
-Use action="answer" for simple Q&A you can answer directly and completely.
-Use action="reception" for multi-step work, debugging, coding, tool-heavy or
+Use action="direct_answer" for simple Q&A you can answer directly and completely.
+Use action="handoff" for multi-step work, debugging, coding, tool-heavy or
 long-running operations, or anything better handled by a specialist away from
 the main chat.
 
 Available response targets (where the reply is delivered):
 {targets}
 
-Available reception agents (who does the work):
+Available reception routes (who does the work and which model to use):
 {agents}
 
-For action="answer": put the complete user-facing reply in `answer`; leave
-`agent_id` empty.
+For action="direct_answer": set `target_id` to a response target id and put the
+complete user-facing reply in `answer`.
 
-For action="reception":
-- Set `agent_id` to the best reception agent id from the list above.
+For action="handoff":
+- Set `agent_id` and `model` from one listed reception route. Leave `model`
+  empty only when that route says "default".
 - Set `target_id` to a response target id (default to the source channel).
-- Leave `answer` empty; put a short user-facing thread starter in `hint` and the
-  routing rationale in `reason`.
+- Put a short user-facing thread starter in `hint` and the routing rationale in
+  `reason`.
 - Put a DETAILED, self-contained handoff in `handoff`: the reception agent never
   sees this chat, so include the user's full request, relevant context,
   constraints, acceptance criteria, and anything it needs to start working
   without re-reading prior messages.
 """
-
-TRIAGE_AGENT_ID = "triage"
-DEFAULT_RECEPTION_AGENT_ID = "reception"
 
 
 @dataclass(frozen=True)
@@ -83,7 +93,7 @@ class ResponseTarget:
 class TriageResult:
     decision: TriageDecision
     target: ResponseTarget
-    result: AgentRunResult[InklingOutput] | None = None
+    result: AgentRunResult[TriageOutput] | None = None
 
 
 @dataclass
@@ -103,9 +113,7 @@ class TriageState:
     """All run-wide context for one triage graph run.
 
     Awake resolves the source context once and writes it here; downstream nodes
-    read from state and carry only transition discriminators. Triage always runs
-    on `TRIAGE_AGENT_ID`; the chosen reception agent travels on
-    `decision.agent_id`, so the state stays free of live tentacle objects.
+    read from state and carry only transition discriminators.
     """
 
     source_target: ResponseTarget | None = None
@@ -118,23 +126,57 @@ class TriageState:
 @dataclass
 class TriageDeps:
     channels: dict[str, ChannelTentacle]
-    agents: dict[str, AgentTentacle[InklingOutput, None]] = field(default_factory=dict)
+    agents: dict[str, AgentTentacle[TriageOutput, None]] = field(default_factory=dict)
     conversation_manager: ConversationManager = field(
         default_factory=ConversationManager
     )
     action_manager: DeferredActionManager = field(default_factory=DeferredActionManager)
 
-    def channel_for(self, target: ResponseTarget) -> ChannelTentacle:
-        channel = self.channels.get(target.channel_id)
+    @overload
+    def channel(self, target: ResponseTarget) -> ChannelTentacle: ...
+
+    @overload
+    def channel(self, target: str) -> ChannelTentacle: ...
+
+    def channel(self, target: ResponseTarget | str) -> ChannelTentacle:
+        channel_id = target.channel_id if isinstance(target, ResponseTarget) else target
+        channel = self.channels.get(channel_id)
         if channel is None:
-            raise ValueError(f"unknown channel {target.channel_id!r}")
+            raise ValueError(f"unknown channel {channel_id!r}")
         return channel
 
-    def agent_for(self, agent_id: str) -> AgentTentacle[InklingOutput, None]:
+    def agent(self, agent_id: str) -> AgentTentacle[TriageOutput, None]:
         agent = self.agents.get(agent_id)
         if agent is None:
             raise ValueError(f"unknown agent {agent_id!r}")
         return agent
+
+    def triage(self, channel_id: str) -> AgentModelConfig:
+        return self.channel(channel_id).config.triage
+
+    def receptions(self, channel_id: str) -> list[AgentModelConfig]:
+        return self.channel(channel_id).config.receptions
+
+    def reception(
+        self,
+        channel_id: str,
+        agent_id: str,
+        model: str,
+    ) -> AgentModelConfig:
+        receptions = self.receptions(channel_id)
+        if not receptions:
+            raise ValueError(f"channel {channel_id!r} has no reception agents")
+        for reception in receptions:
+            if reception.agent == agent_id and (reception.model or "") == model:
+                return reception
+        if agent_id:
+            for reception in receptions:
+                if reception.agent == agent_id:
+                    return reception
+        return receptions[0]
+
+    def model(self, config: AgentModelConfig) -> Model | str | None:
+        return self.agent(config.agent).model_for(config.model)
 
 
 @dataclass
@@ -152,8 +194,10 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             logfire.info("awake short-circuit: empty signal")
             return End(
                 TriageResult(
-                    decision=TriageDecision(
-                        action="answer",
+                    decision=DirectAnswerDecision(
+                        action="direct_answer",
+                        target_id="",
+                        answer="",
                         reason="Empty awake signal.",
                     ),
                     target=ResponseTarget(channel_id=""),
@@ -183,8 +227,10 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             )
             return End(
                 TriageResult(
-                    decision=TriageDecision(
-                        action="answer",
+                    decision=DirectAnswerDecision(
+                        action="direct_answer",
+                        target_id=source_target.channel_id,
+                        answer="",
                         reason="Empty user prompt.",
                     ),
                     target=source_target,
@@ -212,11 +258,14 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 channel_id=source_address.channel_tentacle_id,
                 conversation_address=str(source_address),
             )
-            state.decision = TriageDecision(
-                action="reception",
+            reception = ctx.deps.reception(source_address.channel_tentacle_id, "", "")
+            state.decision = HandoffDecision(
+                action="handoff",
                 target_id=source_target.channel_id,
-                agent_id=DEFAULT_RECEPTION_AGENT_ID,
+                agent_id=reception.agent,
+                model=reception.model or "",
                 reason="Continuing in the current thread.",
+                hint="Continuing in the current thread.",
                 handoff=str(state.user_prompt or ""),
             )
             state.target = replace(source_target, mode="sub")
@@ -238,17 +287,18 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         if source_target is None or source_target.address is None:
             raise ValueError("RunTriage requires a resolved source target")
         source_address = source_target.address
-        agent = ctx.deps.agent_for(TRIAGE_AGENT_ID)
-        receptions = {
-            agent_id: tentacle.description
-            for agent_id, tentacle in ctx.deps.agents.items()
-            if agent_id != TRIAGE_AGENT_ID
-        }
+        source_channel_id = source_address.channel_tentacle_id
+        triage = ctx.deps.triage(source_channel_id)
+        agent = ctx.deps.agent(triage.agent)
+        receptions = ctx.deps.receptions(source_channel_id)
+        triage_model = ctx.deps.model(triage)
 
         candidates = {
             channel_id: ResponseTarget(
                 channel_id=channel_id,
-                address=source_address if channel_id == source_target.channel_id else None,
+                address=source_address
+                if channel_id == source_target.channel_id
+                else None,
                 thread_strategy=channel.thread_strategy,
                 mode="main",
             )
@@ -257,7 +307,7 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         candidates[source_target.channel_id] = source_target
 
         suspender = HumanReviewSuspender(
-            channel=ctx.deps.channel_for(source_target),
+            channel=ctx.deps.channel(source_target),
             action_manager=ctx.deps.action_manager,
             conversation_manager=ctx.deps.conversation_manager,
             agent_tentacle_id=agent.id,
@@ -282,14 +332,23 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 state.user_prompt,
                 conversation_address=source_address,
                 run_name="triage",
-                output_type=[TriageDecision, DeferredToolRequests],
+                model=triage_model,
+                output_type=(
+                    TriageDecision
+                    if agent.in_process
+                    else [TriageDecision, DeferredToolRequests]
+                ),
                 deferred_tool_results=deferred_results,
                 deferred_suspender=suspender,
                 instructions=TRIAGE_INSTRUCTIONS.format(
                     targets="\n".join(str(target) for target in candidates.values()),
                     agents="\n".join(
-                        f"- {agent_id}: {description}"
-                        for agent_id, description in receptions.items()
+                        (
+                            f"- {reception.agent} "
+                            f"(model: {reception.model or 'default'}): "
+                            f"{ctx.deps.agent(reception.agent).description}"
+                        )
+                        for reception in receptions
                     ),
                 ),
             )
@@ -317,11 +376,11 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 )
 
             output = result.output
-            decision = (
-                output
-                if isinstance(output, TriageDecision)
-                else TriageDecision.model_validate(output)
-            )
+            if not isinstance(output, (DirectAnswerDecision, HandoffDecision)):
+                raise TypeError(
+                    f"triage agent returned unsupported output {type(output).__name__}"
+                )
+            decision: TriageDecision = output
             state.decision = decision
             span.set_attribute("triage.action", decision.action)
             span.set_attribute("triage.target_id", decision.target_id)
@@ -333,7 +392,7 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             )
             target = candidates.get(decision.target_id) or source_target
 
-            if decision.action == "answer":
+            if isinstance(decision, DirectAnswerDecision):
                 if target.mode != "main":
                     target = replace(target, mode="main")
                 state.target = target
@@ -341,14 +400,19 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     raise ValueError(
                         f"target {target.channel_id!r} has no resolved address"
                     )
-                await ctx.deps.channel_for(target).feelers.markdown.present(
+                await ctx.deps.channel(target).feelers.markdown.present(
                     target.address,
-                    decision.answer or decision.hint,
+                    decision.answer,
                 )
                 return End(TriageResult(decision=decision, target=target))
 
-            if decision.agent_id not in receptions:
-                decision.agent_id = DEFAULT_RECEPTION_AGENT_ID
+            reception = ctx.deps.reception(
+                source_channel_id, decision.agent_id, decision.model
+            )
+            decision = decision.model_copy(
+                update={"agent_id": reception.agent, "model": reception.model or ""}
+            )
+            state.decision = decision
             if target.mode != "sub":
                 target = replace(target, mode="sub")
             state.target = target
@@ -373,8 +437,10 @@ class PrepareReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             or source_target.address is None
         ):
             raise ValueError("PrepareReception requires a decision and source target")
+        if not isinstance(decision, HandoffDecision):
+            raise ValueError("PrepareReception requires a handoff decision")
         source_address = source_target.address
-        channel = ctx.deps.channel_for(target)
+        channel = ctx.deps.channel(target)
 
         target_address = target.address
         if target_address is None:
@@ -432,10 +498,20 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             or source_target.address is None
         ):
             raise ValueError("RunReception requires a decision and resolved target")
+        if not isinstance(decision, HandoffDecision):
+            raise ValueError("RunReception requires a handoff decision")
         target_address = target.address
         source_address = source_target.address
-        agent = ctx.deps.agent_for(decision.agent_id or DEFAULT_RECEPTION_AGENT_ID)
-        target_channel = ctx.deps.channel_for(target)
+        reception = ctx.deps.reception(
+            source_address.channel_tentacle_id, decision.agent_id, decision.model
+        )
+        decision = decision.model_copy(
+            update={"agent_id": reception.agent, "model": reception.model or ""}
+        )
+        state.decision = decision
+        agent = ctx.deps.agent(reception.agent)
+        reception_model = ctx.deps.model(reception)
+        target_channel = ctx.deps.channel(target)
 
         deferred_results = None
         if self.resume_batch_id is not None:
@@ -467,17 +543,18 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             streaming=target_channel.config.stream.enabled,
             resume_batch_id=str(self.resume_batch_id) if self.resume_batch_id else None,
         ) as span:
-            result: AgentRunResult[InklingOutput] | None = None
+            result: AgentRunResult[TriageOutput] | None = None
             if target_channel.config.stream.enabled:
 
                 async def stream_events() -> AsyncIterator[
-                    StreamEvents[InklingOutput] | AgentRunResultEvent[InklingOutput]
+                    StreamEvents[TriageOutput] | AgentRunResultEvent[TriageOutput]
                 ]:
                     nonlocal result
                     async with agent.run_stream_events(
                         user_prompt,
                         conversation_address=target_address,
                         run_name="reception",
+                        model=reception_model,
                         deferred_tool_results=deferred_results,
                         deferred_suspender=suspender,
                     ) as stream:
@@ -486,7 +563,9 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                                 result = event.result
                             yield event
 
-                async with target_channel.feelers.timeline.open(target_address) as state:
+                async with target_channel.feelers.timeline.open(
+                    target_address
+                ) as state:
                     await state.drive(stream_events())
                 if result is None:
                     raise RuntimeError(
@@ -497,6 +576,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     user_prompt,
                     conversation_address=target_address,
                     run_name="reception",
+                    model=reception_model,
                     deferred_tool_results=deferred_results,
                     deferred_suspender=suspender,
                 )
@@ -565,7 +645,7 @@ class ResumeDeferred(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             raise ValueError(
                 f"unknown channel {batch.target_address.channel_tentacle_id!r}"
             )
-        ctx.deps.agent_for(batch.agent_tentacle_id)
+        ctx.deps.agent(batch.agent_tentacle_id)
         target = ResponseTarget(
             channel_id=batch.target_address.channel_tentacle_id,
             address=batch.target_address,
@@ -603,18 +683,23 @@ class ResumeDeferred(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             logfire.info("resume routes to RunTriage", batch_id=str(batch.id))
             return RunTriage(resume_batch_id=batch.id)
 
-        if isinstance(batch.decision, TriageDecision):
+        if isinstance(batch.decision, (DirectAnswerDecision, HandoffDecision)):
             decision = batch.decision
         elif batch.decision:
-            decision = TriageDecision.model_validate(batch.decision)
+            decision = TriageDecisionAdapter.validate_python(batch.decision)
         else:
-            decision = TriageDecision(
-                action="reception",
+            decision = HandoffDecision(
+                action="handoff",
                 target_id=batch.target_address.channel_tentacle_id,
+                agent_id=batch.agent_tentacle_id,
+                model="",
                 reason="Resuming deferred human input.",
+                hint="Resuming deferred human input.",
+                handoff="",
             )
-        # The batch records which reception agent suspended; resume on it.
-        decision.agent_id = batch.agent_tentacle_id
+        if not isinstance(decision, HandoffDecision):
+            raise ValueError("reception deferred batch requires a handoff decision")
+        decision = decision.model_copy(update={"agent_id": batch.agent_tentacle_id})
         state.decision = decision
         if batch.status in {"completed", "resuming"}:
             logfire.info("resume already completed", batch_id=str(batch.id))

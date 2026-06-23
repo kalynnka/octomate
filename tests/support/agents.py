@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from pydantic_ai import AgentRunResult
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, UserContent
+from pydantic_ai.models import Model
 from pydantic_ai.models.function import (
     AgentInfo,
     DeltaToolCall,
@@ -29,7 +30,8 @@ from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredSuspender
 from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import TriageDecision
+from octomate.schemas.triage import DirectAnswerDecision, TriageDecision
+from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.channel.base import ChannelOutput
@@ -48,10 +50,11 @@ class RecordedRun:
     address: ChannelAddress
     run_name: str | None
     deferred_results: DeferredToolResults | None = None
+    model: Model | str | None = None
 
 
 @dataclass
-class FakeAgent:
+class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     """Stands in for an AgentTentacle. Because the react graph is short-circuited
     here, the fake itself honors the AgentTentacle contract: when its output is a
     DeferredToolRequests it invokes the supplied suspender, exactly as react would.
@@ -61,11 +64,17 @@ class FakeAgent:
     description: str = "fake agent"
     octomate: Octomate | None = None
     triage_output: TriageDecision | DeferredToolRequests = field(
-        default_factory=lambda: TriageDecision(action="answer", answer="handled")
+        default_factory=lambda: DirectAnswerDecision(
+            action="direct_answer",
+            target_id="im",
+            answer="handled",
+            reason="handled",
+        )
     )
     reception_output: str = "handled"
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
     allow_reception_run: bool = False
+    models: dict[str, Model | str] = field(default_factory=dict)
     turns: list[RecordedRun] = field(default_factory=list)
     streams: list[RecordedRun] = field(default_factory=list)
 
@@ -76,6 +85,7 @@ class FakeAgent:
         conversation_address: ChannelAddress,
         run_name: str | None = None,
         output_type: OutputSpec[FakeRunOutput] | None = None,
+        model: Model | str | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
@@ -88,6 +98,7 @@ class FakeAgent:
                 address=conversation_address,
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
+                model=model,
             )
         )
         if run_name == "reception":
@@ -100,12 +111,21 @@ class FakeAgent:
             await deferred_suspender.suspend(output)
         return AgentRunResult(output)
 
+    def model_for(self, name: str | None) -> Model | str | None:
+        if not name:
+            return None
+        model = self.models.get(name)
+        if model is None:
+            raise ValueError(f"agent {self.id!r} has no configured model {name!r}")
+        return model
+
     def run_stream_events(
         self,
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
         run_name: str | None = None,
+        model: Model | str | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
@@ -117,6 +137,7 @@ class FakeAgent:
                 address=conversation_address,
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
+                model=model,
             )
         )
         script = self.reception_script or plain_answer(self.reception_output)

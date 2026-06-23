@@ -1,37 +1,35 @@
-"""Back-compat shim: the triage graph moved to `octomate.triage`, the neutral
-standard-entry router. Import from there directly; this re-export keeps older
-import sites working."""
-
-from octomate.triage import (
+from octomate.triage.graph import (
     Awake,
     DeferredResult,
     DirectAnswerDecision,
     HandoffDecision,
-    HumanReviewSuspender,
     ResponseTarget,
     ResponseTargetMode,
     TriageDecision,
     TriageDecisionAdapter,
     TriageDeps,
     TriageGraphResult,
+    TriageOutput,
     TriageResult,
     TriageState,
     triage_graph,
 )
+from octomate.triage.suspender import HumanReviewSuspender
 
 __all__ = [
-    "HumanReviewSuspender",
+    "Awake",
+    "DeferredResult",
     "DirectAnswerDecision",
     "HandoffDecision",
+    "HumanReviewSuspender",
     "ResponseTarget",
     "ResponseTargetMode",
-    "DeferredResult",
-    "Awake",
     "TriageDecision",
     "TriageDecisionAdapter",
     "TriageDecision",
     "TriageDeps",
     "TriageGraphResult",
+    "TriageOutput",
     "TriageResult",
     "TriageState",
     "triage_graph",

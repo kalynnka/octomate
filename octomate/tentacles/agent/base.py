@@ -58,6 +58,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     in_process: ClassVar[bool] = False
     pending: dict[uuid.UUID, asyncio.Future[DeferredActionBatchResponse]]
 
+    models: dict[str, Model | str]
+
+    def model_for(self, name: str | None) -> Model | str | None:
+        if not name:
+            return None
+        model = self.models.get(name)
+        if model is not None:
+            return model
+        raise ValueError(f"agent {self.id!r} has no configured model {name!r}")
+
     @overload
     async def run(
         self,

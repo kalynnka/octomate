@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from typing import TypeVar
+
+from pydantic import TypeAdapter
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -42,6 +45,8 @@ from pydantic_ai.messages import (
 
 from octomate.capabilities.events import StreamEvents
 
+StructuredOutputT = TypeVar("StructuredOutputT")
+
 
 @dataclass
 class ClaudeRunAccumulator:
@@ -65,6 +70,10 @@ class ClaudeRunAccumulator:
     messages: list[ModelMessage] = field(default_factory=list)
     result_text: str = ""
     session_id: str | None = None
+    # Set when the run was driven with an `output_format` schema: the SDK's
+    # validated structured result (a JSON-able object), used by
+    # `build_structured_result` instead of the freeform text.
+    structured_output: object | None = None
     tool_names: dict[str, str] = field(default_factory=dict)
     part_index: int = 0
 
@@ -84,6 +93,8 @@ class ClaudeRunAccumulator:
                 self.session_id = message.session_id
             if message.result:
                 self.result_text = message.result
+            if message.structured_output is not None:
+                self.structured_output = message.structured_output
 
     def build_result(self, run_id: str, conversation_id: str) -> AgentRunResult[str]:
         state = GraphAgentState(
@@ -92,6 +103,22 @@ class ClaudeRunAccumulator:
             conversation_id=conversation_id,
         )
         return AgentRunResult(output=self.result_text, _state=state)
+
+    def build_structured_result(
+        self,
+        output_adapter: TypeAdapter[StructuredOutputT],
+        run_id: str,
+        conversation_id: str,
+    ) -> AgentRunResult[StructuredOutputT]:
+        # TODO: retry through the Claude agent on validation failure, matching
+        # pydantic-ai's structured output repair loop.
+        output = output_adapter.validate_python(self.structured_output)
+        state = GraphAgentState(
+            message_history=self.messages,
+            run_id=run_id,
+            conversation_id=conversation_id,
+        )
+        return AgentRunResult(output=output, _state=state)
 
     def _take_index(self) -> int:
         index = self.part_index

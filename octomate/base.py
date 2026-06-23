@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
+from typing import TypeVar
 
 import logfire
 from fastapi import APIRouter, FastAPI, Request, Response
@@ -16,13 +18,17 @@ from octomate.schemas.awakes import (
 )
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.inkling.graph import (
+from octomate.tentacles.base import Tentacle
+from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.triage import (
     Awake,
     TriageDeps,
     TriageState,
     triage_graph,
 )
-from octomate.tentacles.channel.base import ChannelTentacle
+
+TentacleT = TypeVar("TentacleT", bound=Tentacle)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,21 +43,25 @@ class Octomate:
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
     routers: list[APIRouter] = field(default_factory=list)
 
-    def register_agent(self, id: str, agent: AgentTentacle) -> AgentTentacle:
-        if id in self.agents:
-            raise ValueError(f"agent {id!r} already registered")
-        agent.id = id
-        agent.octomate = self
-        self.agents[id] = agent
-        return agent
-
-    def connect_channel(self, id: str, channel: ChannelTentacle) -> ChannelTentacle:
-        if id in self.channels:
-            raise ValueError(f"channel {id!r} already registered")
-        channel.id = id
-        channel.octomate = self
-        self.channels[id] = channel
-        return channel
+    def connect(self, tentacle: TentacleT) -> TentacleT:
+        if isinstance(tentacle, ChannelTentacle):
+            tentacle.octomate = self
+            if tentacle.id in self.channels:
+                raise ValueError(f"channel {tentacle.id!r} already connected")
+            self.channels[tentacle.id] = tentacle
+            return tentacle
+        if isinstance(tentacle, AgentTentacle):
+            tentacle.octomate = self
+            if tentacle.id in self.agents:
+                raise ValueError(f"agent {tentacle.id!r} already connected")
+            self.agents[tentacle.id] = tentacle
+            return tentacle
+        logger.warning(
+            "Skipping unknown tentacle %s (%s)",
+            tentacle.id,
+            type(tentacle).__name__,
+        )
+        return tentacle
 
     def include_router(self, router: APIRouter) -> APIRouter:
         self.routers.append(router)

@@ -5,6 +5,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
+class AgentModelConfig(BaseModel):
+    agent: str = "inkling"
+    model: str | None = None
+
+
 class ChannelStreamConfig(BaseModel):
     enabled: bool = False
     flush_interval: float = 0.5
@@ -33,6 +38,8 @@ class ChannelConfig(BaseModel):
     mention_only: bool = True
     enabled: bool = True
     stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)
+    triage: AgentModelConfig = AgentModelConfig()
+    receptions: list[AgentModelConfig] = [AgentModelConfig()]
 
 
 class SlackChannelConfig(ChannelConfig):

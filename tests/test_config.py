@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
 
 from octomate.config import (
+    AgentModelConfig,
     ChannelsConfig,
     GitHubMcpConfig,
     LarkChannelConfig,
@@ -42,6 +43,9 @@ def test_channels_default_to_none() -> None:
     assert channels.slack is None
     assert channels.lark is None
     assert channels.napcat is None
+    assert channels.dev_ui is not None
+    assert channels.dev_ui.triage == AgentModelConfig()
+    assert channels.dev_ui.receptions == [AgentModelConfig()]
 
 
 def test_channel_config_parses_supported_channels() -> None:
@@ -70,6 +74,203 @@ def test_channel_config_parses_supported_channels() -> None:
     assert config.channels.lark.stream.flush_interval == 0.2
     assert config.channels.lark.stream.min_chars == 1
     assert config.channels.napcat.stream.enabled is False
+
+
+def test_channel_config_parses_agent_model_routes() -> None:
+    config = OctomateConfig(
+        agents={"claude": {"model": "claude-opus-4-5"}},
+        channels={
+            "slack": {
+                "app_id": "A-test",
+                "bot_token": "xoxb-test",
+                "app_token": "xapp-test",
+                "triage": {"agent": "inkling", "model": "deepseek-v4-flash"},
+                "receptions": [
+                    {"agent": "inkling", "model": "deepseek-v4-pro"},
+                    {"agent": "claude", "model": "claude-opus-4-5"},
+                ],
+            }
+        }
+    )
+
+    assert config.channels.slack is not None
+    assert config.channels.slack.triage == AgentModelConfig(
+        agent="inkling", model="deepseek-v4-flash"
+    )
+    assert config.channels.slack.receptions == [
+        AgentModelConfig(agent="inkling", model="deepseek-v4-pro"),
+        AgentModelConfig(agent="claude", model="claude-opus-4-5"),
+    ]
+
+
+def test_channel_agent_routes_must_reference_configured_agent() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig(
+            channels={
+                "slack": {
+                    "app_id": "A-test",
+                    "bot_token": "xoxb-test",
+                    "app_token": "xapp-test",
+                    "triage": {"agent": "ghost"},
+                }
+            }
+        )
+
+    [error] = exc_info.value.errors()
+    assert error["type"] == "channel_agent_route"
+    assert error["loc"] == ("channels", "slack", "triage", "agent")
+    assert error["msg"] == "'ghost' does not match a configured agent tentacle"
+
+
+def test_channel_agent_route_validation_reports_all_errors() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig(
+            agents={"claude": {"model": "claude-opus-4-5"}},
+            channels={
+                "slack": {
+                    "app_id": "A-test",
+                    "bot_token": "xoxb-test",
+                    "app_token": "xapp-test",
+                    "triage": {"agent": "ghost"},
+                    "receptions": [
+                        {"agent": "inkling", "model": "missing-model"},
+                        {"agent": "claude", "model": "claude-sonnet-4-5"},
+                    ],
+                },
+                "lark": {
+                    "enabled": False,
+                    "app_id": "cli-test",
+                    "app_secret": "secret",
+                    "triage": {"agent": "nobody"},
+                },
+            },
+        )
+
+    errors = {
+        tuple(error["loc"]): error["msg"] for error in exc_info.value.errors()
+    }
+    assert errors == {
+        (
+            "channels",
+            "slack",
+            "triage",
+            "agent",
+        ): "'ghost' does not match a configured agent tentacle",
+        (
+            "channels",
+            "slack",
+            "receptions",
+            0,
+            "model",
+        ): "'missing-model' is not configured in agents.inkling.models",
+        (
+            "channels",
+            "slack",
+            "receptions",
+            1,
+            "model",
+        ): "'claude-sonnet-4-5' is not configured in agents.claude.model",
+        (
+            "channels",
+            "lark",
+            "triage",
+            "agent",
+        ): "'nobody' does not match a configured agent tentacle",
+    }
+
+
+def test_disabled_channel_agent_routes_are_validated() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig(
+            channels={
+                "slack": {
+                    "enabled": False,
+                    "app_id": "A-test",
+                    "bot_token": "xoxb-test",
+                    "app_token": "xapp-test",
+                    "triage": {"agent": "ghost"},
+                }
+            }
+        )
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "triage", "agent")
+    assert error["msg"] == "'ghost' does not match a configured agent tentacle"
+
+
+def test_channel_claude_route_requires_claude_agent_config() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig(
+            agents={"claude": None},
+            channels={
+                "dev_ui": None,
+                "lark": None,
+                "napcat": None,
+                "slack": {
+                    "app_id": "A-test",
+                    "bot_token": "xoxb-test",
+                    "app_token": "xapp-test",
+                    "receptions": [{"agent": "claude"}],
+                }
+            }
+        )
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "receptions", 0, "agent")
+    assert error["msg"] == "'claude' does not match a configured agent tentacle"
+
+
+def test_channel_claude_routes_must_reference_configured_model() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig(
+            agents={"claude": {"model": "claude-opus-4-5"}},
+            channels={
+                "slack": {
+                    "app_id": "A-test",
+                    "bot_token": "xoxb-test",
+                    "app_token": "xapp-test",
+                    "receptions": [{"agent": "claude"}],
+                }
+            },
+        )
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "receptions", 0, "model")
+    assert error["msg"] == "model is required for claude routes"
+
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig(
+            agents={"claude": {"model": "claude-opus-4-5"}},
+            channels={
+                "slack": {
+                    "app_id": "A-test",
+                    "bot_token": "xoxb-test",
+                    "app_token": "xapp-test",
+                    "receptions": [
+                        {"agent": "claude", "model": "claude-sonnet-4-5"}
+                    ],
+                }
+            },
+        )
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "receptions", 0, "model")
+    assert error["msg"] == "'claude-sonnet-4-5' is not configured in agents.claude.model"
+
+
+def test_channel_inkling_routes_must_reference_configured_model() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig(
+            channels={
+                "slack": {
+                    "app_id": "A-test",
+                    "bot_token": "xoxb-test",
+                    "app_token": "xapp-test",
+                    "receptions": [{"agent": "inkling", "model": "missing-model"}],
+                }
+            }
+        )
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "receptions", 0, "model")
+    assert error["msg"] == "'missing-model' is not configured in agents.inkling.models"
 
 
 def test_mcp_defaults_to_no_servers() -> None:

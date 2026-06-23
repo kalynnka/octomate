@@ -5,16 +5,13 @@ import logging
 import logfire
 import uvicorn
 from fastapi import FastAPI
-from pydantic_ai.tools import DeferredToolRequests
 
 from octomate import Octomate
-from octomate.capabilities.agent import Agent
 from octomate.capabilities.history import HistoryCapability
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.providers import ProviderRegistry
-from octomate.schemas.segments import MessageSegment
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
@@ -71,111 +68,71 @@ def create_app() -> FastAPI:
     )
     logger = logging.getLogger("octomate.main")
 
-    octomate = Octomate()
     registry = ProviderRegistry(config.providers)
-
-    # Triage only routes (outputs a TriageDecision) — a lean, fast agent with no
-    # work tools or capabilities. Reception does the work.
-    triage_agent = Agent(
-        registry.build_model(config.agents.triage.model),
-        deps_type=type(None),
-        name="octomate-triage",
-        output_type=[str, list[MessageSegment], DeferredToolRequests],
-        toolsets=[
-            inkling_toolset,
-            *build_mcp_toolsets(config.mcp),
-        ],
-        capabilities=[
-            TodoCapability(),
-            SendCapability(),
-            HistoryCapability(octomate.conversations),
-        ],
-        system_prompt=SYSTEM_PROMPT,
-    )
-    octomate.register_agent(
-        "triage",
+    octomate = Octomate()
+    octomate.connect(
         InklingTentacle(
-            "triage",
+            "inkling",
             octomate,
-            agent=triage_agent,
-            conversation_manager=octomate.conversations,
-        ),
-    )
-
-    reception_agent = Agent(
-        registry.build_model(config.agents.reception.model),
-        deps_type=type(None),
-        name="octomate-reception",
-        output_type=[str, list[MessageSegment], DeferredToolRequests],
-        toolsets=[
-            inkling_toolset,
-            *build_mcp_toolsets(config.mcp),
-        ],
-        capabilities=[
-            TodoCapability(),
-            SendCapability(),
-            HistoryCapability(octomate.conversations),
-        ],
-        system_prompt=SYSTEM_PROMPT,
-    )
-    octomate.register_agent(
-        "reception",
-        InklingTentacle(
-            "reception",
-            octomate,
-            agent=reception_agent,
+            models={
+                model.name: registry.build_model(model)
+                for model in config.agents.inkling.models
+            },
+            toolsets=[
+                inkling_toolset,
+                *build_mcp_toolsets(config.mcp),
+            ],
+            capabilities=[
+                TodoCapability(),
+                SendCapability(),
+                HistoryCapability(octomate.conversations),
+            ],
+            system_prompt=SYSTEM_PROMPT,
             conversation_manager=octomate.conversations,
         ),
     )
 
     if (claude_config := config.agents.claude) is not None:
-        octomate.register_agent(
-            "claude",
-            ClaudeCodeTentacle("claude", octomate, config=claude_config),
-        )
+        octomate.connect(ClaudeCodeTentacle("claude", octomate, config=claude_config))
 
     if (channel_config := config.channels.slack) is not None and channel_config.enabled:
-        octomate.connect_channel(
-            "slack",
+        octomate.connect(
             SlackTentacle(
                 "slack",
                 octomate,
                 config=channel_config,
-            ),
+            )
         )
 
     if (channel_config := config.channels.lark) is not None and channel_config.enabled:
-        octomate.connect_channel(
-            "lark",
+        octomate.connect(
             LarkTentacle(
                 "lark",
                 octomate,
                 config=channel_config,
-            ),
+            )
         )
 
     if (
         channel_config := config.channels.napcat
     ) is not None and channel_config.enabled:
-        octomate.connect_channel(
-            "napcat",
+        octomate.connect(
             NapcatTentacle(
                 "napcat",
                 octomate,
                 config=channel_config,
-            ),
+            )
         )
 
     if (
         channel_config := config.channels.dev_ui
     ) is not None and channel_config.enabled:
-        octomate.connect_channel(
-            "dev_ui",
+        octomate.connect(
             VercelTentacle(
                 "dev_ui",
                 octomate,
                 config=channel_config,
-            ),
+            )
         )
         octomate.include_router(build_vercel_router(octomate, channel_id="dev_ui"))
         logger.info(

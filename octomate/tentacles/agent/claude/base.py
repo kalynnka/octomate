@@ -3,7 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    cast,
+    overload,
+)
 
 import logfire
 from claude_agent_sdk import (
@@ -19,6 +24,8 @@ from claude_agent_sdk import (
     PreToolUseHookInput,
     ToolPermissionContext,
 )
+from pydantic import TypeAdapter
+from pydantic.json_schema import JsonSchemaValue
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -67,20 +74,6 @@ SDK_PERMISSION_MODE: dict[ConversationPermissionMode, PermissionMode] = {
 }
 
 
-def _prompt_text(user_prompt: str | Sequence[UserContent] | None) -> str:
-    """The plain-text prompt to send to the Claude CLI. Multimodal prompt parts
-    are not supported yet; a prompt must carry at least some text."""
-    if isinstance(user_prompt, str):
-        text = user_prompt
-    elif user_prompt:
-        text = "\n".join(part for part in user_prompt if isinstance(part, str))
-    else:
-        text = ""
-    if not text:
-        raise ValueError("ClaudeCodeTentacle requires a non-empty text prompt")
-    return text
-
-
 @dataclass
 class ClaudeCodeTentacle(AgentTentacle[str, None]):
     """Claude Agent SDK runner exposed as an Octomate agent tentacle.
@@ -118,6 +111,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.config = config
         self.description = description or self.description
         self.pending = {}
+        self.models = {config.model: config.model} if config.model else {}
 
     async def _await_human(
         self,
@@ -183,6 +177,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         *,
         conversation_address: ChannelAddress,
         run_name: str | None,
+        output_type: OutputSpec[RunOutputDataT] | None = None,
+        model: Model | KnownModelName | str | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         conversation = await self.octomate.conversations.ensure(
             conversation_address, agent_tentacle_id=self.id
@@ -192,6 +188,37 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # Tools the user already granted "allow for session" on this conversation
         # auto-approve without a card; new grants extend the set and persist.
         session_allowed: set[str] = set(conversation.allowed_tools)
+
+        if output_type is DeferredToolRequests or (
+            isinstance(output_type, (list, tuple))
+            and DeferredToolRequests in output_type
+        ):
+            raise ValueError(
+                "ClaudeCodeTentacle does not support DeferredToolRequests "
+                "in output_type"
+            )
+
+        if output_type is not None:
+            output_adapter: TypeAdapter[RunOutputDataT] | None = TypeAdapter(
+                output_type
+            )
+            output_schema: JsonSchemaValue | None = output_adapter.json_schema()
+        else:
+            output_adapter = None
+            output_schema = None
+        output_format = (
+            {"type": "json_schema", "schema": output_schema}
+            if output_schema is not None
+            else None
+        )
+        # Per-run model override (e.g. Sonnet for triage, Opus for reception);
+        # the SDK takes a CLI model string, so a pydantic-ai Model yields its name.
+        if isinstance(model, Model):
+            cli_model = model.model_name
+        elif isinstance(model, str):
+            cli_model = model
+        else:
+            cli_model = self.config.model or None
 
         async def can_use_tool(
             tool_name: str,
@@ -294,7 +321,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
         options = ClaudeAgentOptions(
             cwd=self.config.cwd,
-            model=self.config.model or None,
+            model=cli_model,
             permission_mode=SDK_PERMISSION_MODE[conversation.permission_mode],
             max_turns=self.config.max_turns,
             resume=conversation.external_id,
@@ -304,6 +331,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
                 ]
             },
+            output_format=output_format,
         )
         with logfire.span(
             "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
@@ -312,7 +340,19 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             conversation_address=str(conversation_address),
         ):
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(_prompt_text(user_prompt))
+                if isinstance(user_prompt, str):
+                    prompt_text = user_prompt
+                elif user_prompt:
+                    prompt_text = "\n".join(
+                        part for part in user_prompt if isinstance(part, str)
+                    )
+                else:
+                    prompt_text = ""
+                if not prompt_text:
+                    raise ValueError(
+                        "ClaudeCodeTentacle requires a non-empty text prompt"
+                    )
+                await client.query(prompt_text)
                 async for message in client.receive_response():
                     for event in accumulator.consume(message):
                         yield event
@@ -324,11 +364,25 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 name=run_name,
                 external_id=accumulator.session_id,
             )
-            yield AgentRunResultEvent(
-                accumulator.build_result(
-                    run_id=run_id, conversation_id=str(conversation.id)
+            if output_adapter is not None and accumulator.structured_output is not None:
+                # The model instance rides the str-typed event stream; `run`
+                # restores the declared output type at its boundary.
+                yield AgentRunResultEvent(
+                    cast(
+                        "AgentRunResult[str]",
+                        accumulator.build_structured_result(
+                            output_adapter,
+                            run_id=run_id,
+                            conversation_id=str(conversation.id),
+                        ),
+                    )
                 )
-            )
+            else:
+                yield AgentRunResultEvent(
+                    accumulator.build_result(
+                        run_id=run_id, conversation_id=str(conversation.id)
+                    )
+                )
 
     @overload
     async def run(
@@ -408,12 +462,20 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     ) -> AgentRunResult[str | RunOutputDataT]:
         result: AgentRunResult[str] | None = None
         async for event in self._iter_events(
-            user_prompt, conversation_address=conversation_address, run_name=run_name
+            user_prompt,
+            conversation_address=conversation_address,
+            run_name=run_name,
+            output_type=output_type,
+            model=model,
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
         if result is None:
             raise RuntimeError("Claude run completed without a result")
+        # With output_type the event carried a structured AgentRunResult cast to
+        # str for the stream; restore the declared output type here.
+        if output_type is not None:
+            return cast("AgentRunResult[RunOutputDataT]", result)
         return result
 
     @overload
@@ -491,6 +553,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     ) -> ReactEventStream[str | RunOutputDataT]:
         return ReactEventStream(
             self._iter_events(
-                user_prompt, conversation_address=conversation_address, run_name=run_name
+                user_prompt,
+                conversation_address=conversation_address,
+                run_name=run_name,
+                output_type=output_type,
+                model=model,
             )
         )

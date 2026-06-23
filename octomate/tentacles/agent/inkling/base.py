@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Self, TypeAlias, overload
@@ -45,6 +45,7 @@ from octomate.tentacles.agent.base import (
     AgentSpecInput,
     AgentTentacle,
 )
+from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -72,12 +73,31 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         id: str,
         octomate: Octomate,
         *,
-        agent: Agent[None, InklingOutput],
+        agent: Agent[None, InklingOutput] | None = None,
+        models: Mapping[str, Model | str] | None = None,
+        name: str = "octomate-inkling",
+        toolsets: Sequence[AbstractToolset[None]] | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+        system_prompt: str = SYSTEM_PROMPT,
         conversation_manager: ConversationManager | None = None,
         deferred_resolver: DeferredResolver | None = None,
         description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
+        self.models = dict(models or {})
+        if agent is None:
+            default_model = next(iter(self.models.values()), None)
+            if default_model is None:
+                raise ValueError("InklingTentacle requires at least one model")
+            agent = Agent(
+                default_model,
+                deps_type=type(None),
+                name=name,
+                output_type=[str, list[MessageSegment], DeferredToolRequests],
+                toolsets=list(toolsets or []),
+                capabilities=list(capabilities or []),
+                system_prompt=system_prompt,
+            )
         self.agent = agent
         self.conversation_manager = conversation_manager or ConversationManager()
         self.deferred_resolver = deferred_resolver

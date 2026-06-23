@@ -1,18 +1,35 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, TypeAdapter
 
-TriageAction = Literal["answer", "reception"]
+TriageAction = Literal["direct_answer", "handoff"]
 ResponseTargetMode = Literal["main", "sub"]
 
 
-class TriageDecision(BaseModel):
+class TriageDecisionBase(BaseModel):
     action: TriageAction
-    answer: str = ""
-    target_id: str = ""
-    agent_id: str = ""
-    reason: str = ""
-    hint: str = ""
-    handoff: str = ""
+    reason: str
+
+
+class DirectAnswerDecision(TriageDecisionBase):
+    action: Literal["direct_answer"]
+    target_id: str
+    answer: str
+
+
+class HandoffDecision(TriageDecisionBase):
+    action: Literal["handoff"]
+    target_id: str
+    agent_id: str
+    model: str
+    hint: str
+    handoff: str
+
+
+TriageDecision: TypeAlias = Annotated[
+    DirectAnswerDecision | HandoffDecision,
+    Field(discriminator="action"),
+]
+TriageDecisionAdapter = TypeAdapter(TriageDecision)

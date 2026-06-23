@@ -29,18 +29,16 @@ from tests.support.agents import build_scripted_agent
 
 
 def _register(octomate: Octomate, agent: Agent[None, InklingOutput]) -> VercelTentacle:
-    octomate.register_agent(
-        "reception",
+    octomate.connect(
         InklingTentacle(
             "reception",
             octomate,
             agent=agent,
             conversation_manager=octomate.conversations,
-        ),
+        )
     )
-    channel = octomate.connect_channel(
-        "dev_ui",
-        VercelTentacle("dev_ui", octomate, config=VercelChannelConfig()),
+    channel = octomate.connect(
+        VercelTentacle("dev_ui", octomate, config=VercelChannelConfig())
     )
     assert isinstance(channel, VercelTentacle)
     return channel
@@ -87,7 +85,7 @@ def test_vercel_router_requires_registered_channel() -> None:
 
     channel = VercelTentacle("dev_ui", octomate, config=VercelChannelConfig())
     assert isinstance(channel, ChannelTentacle)
-    octomate.connect_channel("dev_ui", channel)
+    octomate.connect(channel)
     octomate.include_router(build_vercel_router(octomate, channel_id="dev_ui"))
 
     app = octomate.app()

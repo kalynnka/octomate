@@ -8,11 +8,11 @@ from octomate.config.models import ModelConfig
 
 
 class InklingConfig(BaseModel):
-    model: ModelConfig = ModelConfig(
-        provider="vertex",
-        name="gemini-3-flash-preview",
-        settings={"thinking": "medium"},
-    )
+    models: list[ModelConfig] = Field(min_length=1)
+
+    @property
+    def default_model(self) -> ModelConfig:
+        return self.models[0]
 
 
 class ClaudeSSHConfig(BaseModel):
@@ -58,16 +58,12 @@ class ClaudeCodeConfig(BaseModel):
 
 
 class AgentsConfig(BaseModel):
-    # Triage runs a fast/cheap inkling;
-    # reception runs a stronger inkling (or claude / codex tentacle)
-    triage: InklingConfig = Field(
+    inkling: InklingConfig = Field(
         default_factory=lambda: InklingConfig(
-            model=ModelConfig(provider="deepseek", name="deepseek-v4-flash")
-        )
-    )
-    reception: InklingConfig = Field(
-        default_factory=lambda: InklingConfig(
-            model=ModelConfig(provider="deepseek", name="deepseek-v4-pro")
+            models=[
+                ModelConfig(provider="deepseek", name="deepseek-v4-flash"),
+                ModelConfig(provider="deepseek", name="deepseek-v4-pro"),
+            ]
         )
     )
     claude: ClaudeCodeConfig | None = None
