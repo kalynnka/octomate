@@ -3,6 +3,8 @@ Shared schema package.
 
 Submodules
 ----------
+- ``channel``: ChannelThreadKey, ChannelThread, ChannelMessage, ChannelHandoff,
+  MessageBinding.
 - ``conversation``: ChannelAddress, ConversationKey, Conversation, UserProfile.
 - ``segments``: Message segment data types and models.
 - ``actions``: Outbound action models.
@@ -14,6 +16,7 @@ Submodules
 
 from octomate.schemas import (
     actions,
+    channel,
     conversation,
     deferred,
     events,
@@ -28,6 +31,7 @@ __all__ = [
     "MessageEvent",
     "MessageSegment",
     "actions",
+    "channel",
     "conversation",
     "deferred",
     "events",

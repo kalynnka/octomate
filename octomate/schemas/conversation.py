@@ -75,6 +75,7 @@ class Conversation(BaseTransmuter):
     chat_id: str = Field(frozen=True)
     thread_id: str = Field(default="", frozen=True)
     user_id: str = Field(frozen=True)
+    channel_thread_id: uuid.UUID | None = None
 
     channel_tentacle_id: str = Field(frozen=True)
     agent_tentacle_id: str

@@ -96,7 +96,7 @@ ChannelThread
     AgentRun[]
       ModelMessage[]
 
-  channel_model_message_bindings secondary table
+  message_binding secondary table
     ChannelMessage.model_messages <-> ModelMessage.channel_messages
 ```
 
@@ -205,11 +205,10 @@ Fields:
 This is the audit log. `ChannelThread.active_agent_tentacle_id` derives from the
 latest row and is the routing answer.
 
-### `channel_model_message_bindings`
+### `message_binding`
 
-New secondary table for strong relationships between the two histories. Do not
-create a first-class association transmuter unless a later feature needs to edit
-the association row as its own domain object.
+ORM-backed association table for strong relationships between the two histories.
+The message relationships use it as their secondary table.
 
 Fields:
 
@@ -365,7 +364,7 @@ Add models, schemas, exports, and an Alembic migration for:
 - `channel_threads`
 - `channel_messages`
 - `channel_handoffs`
-- `channel_model_message_bindings`
+- `message_binding`
 
 Add `channel_thread_id` to `conversations` and keep the existing address columns
 during the transition.

@@ -4,13 +4,14 @@ import uuid
 from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import ARRAY, JSON, String, UniqueConstraint, Uuid
+from sqlalchemy import ARRAY, ForeignKey, JSON, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
 
 if TYPE_CHECKING:
+    from octomate.models.channel import ChannelThread
     from octomate.models.messages import ModelMessage
     from octomate.models.runs import AgentRun
 
@@ -37,6 +38,12 @@ class Conversation(Base, TransmuterProxiedMixin):
         String, nullable=False, default="", index=True
     )
     user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    channel_thread_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("channel_threads.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     channel_tentacle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     agent_tentacle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -60,6 +67,10 @@ class Conversation(Base, TransmuterProxiedMixin):
         cascade="all, delete-orphan",
         order_by="AgentRun.started_at",
         lazy="selectin",
+    )
+    channel_thread: Mapped[ChannelThread | None] = relationship(
+        "ChannelThread",
+        back_populates="conversations",
     )
     # Read-only flat view of every message in the conversation, joined through
     # agent_runs. Writes go through `runs` and each run's `messages`.

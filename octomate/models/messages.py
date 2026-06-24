@@ -16,6 +16,7 @@ from uuid_utils.compat import uuid7
 from octomate.models.base import Base
 
 if TYPE_CHECKING:
+    from octomate.models.channel import ChannelMessage
     from octomate.models.runs import AgentRun
 
 
@@ -92,6 +93,15 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     message_text: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     run: Mapped[AgentRun] = relationship("AgentRun", back_populates="messages")
+    channel_messages: Mapped[list[ChannelMessage]] = relationship(
+        "ChannelMessage",
+        secondary="message_binding",
+        back_populates="model_messages",
+        order_by="ChannelMessage.id",
+        lazy="raise_on_sql",
+        viewonly=True,
+        overlaps="channel_message,model_message",
+    )
 
 
 class ModelRequest(ModelMessage):
