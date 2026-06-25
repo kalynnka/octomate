@@ -12,9 +12,15 @@ from dataclasses import dataclass, field
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.models import KnownModelName
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
-from octomate.schemas.triage import SummonDecision, SummonRoute
+from octomate.config.agents import ClaudeCodeModelName
+from octomate.schemas.triage import (
+    SummonDecision,
+    SummonRoute,
+    SummonRouteKey,
+)
 
 SCRY_TOOL_NAME = "scry"
 SUMMON_TOOL_NAME = "summon"
@@ -45,7 +51,7 @@ class SummonCapability(AbstractCapability[None]):
     current_agent_id: str
     decision: SummonDecision | None = field(default=None, init=False)
     summonable_routes: list[SummonRoute] = field(init=False, repr=False)
-    route_keys: set[tuple[str, str]] = field(init=False, repr=False)
+    route_keys: set[SummonRouteKey] = field(init=False, repr=False)
     toolset: FunctionToolset[None] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -64,7 +70,7 @@ class SummonCapability(AbstractCapability[None]):
         async def summon(
             ctx: RunContext[None],
             agent_id: str,
-            model: str,
+            model: KnownModelName | ClaudeCodeModelName,
             hint: str,
             reason: str,
             summon: str,
@@ -86,12 +92,11 @@ class SummonCapability(AbstractCapability[None]):
             if decision.key not in self.route_keys:
                 raise ModelRetry(
                     "Invalid summon route "
-                    f"(agent_id={agent_id!r}, model={model!r}). "
+                    f"(agent_id={agent_id!r}, model={decision.model!r}). "
                     f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
                 )
             self.decision = decision
-            route_model = model or "default"
-            return f"Summoning {agent_id} ({route_model})."
+            return f"Summoning {agent_id} ({decision.model})."
 
         self.toolset = toolset
 

@@ -11,7 +11,7 @@ from uuid_utils.compat import uuid7
 from octomate.models.base import Base
 
 if TYPE_CHECKING:
-    from octomate.models.channel import ChannelThread
+    from octomate.models.channel import Thread
     from octomate.models.messages import ModelMessage
     from octomate.models.runs import AgentRun
 
@@ -20,9 +20,10 @@ class Conversation(Base, TransmuterProxiedMixin):
     __tablename__ = "conversations"
     __table_args__ = (
         UniqueConstraint(
+            "channel_tentacle_id",
             "chat_type",
             "chat_id",
-            "thread_id",
+            "channel_thread_id",
             "user_id",
             "agent_tentacle_id",
             name="uq_conversations_conversation_key",
@@ -34,13 +35,13 @@ class Conversation(Base, TransmuterProxiedMixin):
 
     chat_type: Mapped[str] = mapped_column(String, nullable=False)
     chat_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    thread_id: Mapped[str] = mapped_column(
+    channel_thread_id: Mapped[str] = mapped_column(
         String, nullable=False, default="", index=True
     )
     user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    channel_thread_id: Mapped[uuid.UUID | None] = mapped_column(
+    thread_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
-        ForeignKey("channel_threads.id", ondelete="SET NULL"),
+        ForeignKey("threads.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -68,8 +69,8 @@ class Conversation(Base, TransmuterProxiedMixin):
         order_by="AgentRun.started_at",
         lazy="selectin",
     )
-    channel_thread: Mapped[ChannelThread | None] = relationship(
-        "ChannelThread",
+    thread: Mapped[Thread | None] = relationship(
+        "Thread",
         back_populates="conversations",
     )
     # Read-only flat view of every message in the conversation, joined through

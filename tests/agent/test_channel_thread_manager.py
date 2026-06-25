@@ -9,8 +9,8 @@ from pydantic_ai.messages import UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
-from octomate.managers import ChannelThreadManager, ConversationManager
-from octomate.schemas.channel import ChannelMessage
+from octomate.managers import ConversationManager, ThreadManager
+from octomate.schemas.channel import ThreadMessage
 from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -47,21 +47,21 @@ def event(message_id: str, user_id: str, text: str) -> MessageEvent:
 
 
 async def test_ensure_thread_ignores_sender_user_id() -> None:
-    manager = ChannelThreadManager()
+    manager = ThreadManager()
 
     alice_thread = await manager.ensure_thread(address("alice"))
     bob_thread = await manager.ensure_thread(address("bob"))
     await manager.record_inbound(event("m1", "alice", "alpha"))
     await manager.record_inbound(event("m2", "bob", "beta"))
 
-    fresh_thread = await ChannelThreadManager().ensure_thread(address("charlie"))
+    fresh_thread = await ThreadManager().ensure_thread(address("charlie"))
 
     assert alice_thread.id == bob_thread.id == fresh_thread.id
     assert [message.user_id for message in fresh_thread.messages] == ["alice", "bob"]
 
 
 async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> None:
-    manager = ChannelThreadManager()
+    manager = ThreadManager()
     thread = await manager.ensure_thread(address())
     human_message = await manager.record_inbound(event("m1", "alice", "human asks"))
     bot_message = await manager.record_inbound(
@@ -110,11 +110,11 @@ async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> 
 
 
 async def test_pending_prompt_messages_ensures_thread() -> None:
-    manager = ChannelThreadManager()
+    manager = ThreadManager()
     thread = await manager.ensure_thread(address())
     trigger = await manager.record_inbound(event("m1", "alice", "wake now"))
 
-    pending = await ChannelThreadManager().pending_prompt_messages(
+    pending = await ThreadManager().pending_prompt_messages(
         thread,
         trigger.id,
         active_agent_id="inkling",
@@ -124,13 +124,13 @@ async def test_pending_prompt_messages_ensures_thread() -> None:
 
 
 async def test_record_handoff_syncs_active_owner_cache() -> None:
-    manager = ChannelThreadManager()
+    manager = ThreadManager()
     thread = await manager.ensure_thread(address())
 
     await manager.record_handoff(
         thread,
         to_agent_tentacle_id="inkling",
-        to_model="mini",
+        to_model="haiku",
         reason="Initial owner.",
     )
     await manager.record_handoff(
@@ -152,7 +152,7 @@ async def test_record_handoff_syncs_active_owner_cache() -> None:
 
 
 async def test_chat_history_search_paging_and_message_bindings() -> None:
-    manager = ChannelThreadManager()
+    manager = ThreadManager()
     thread = await manager.ensure_thread(address())
     first = await manager.record_inbound(event("m1", "alice", "alpha first"))
     second = await manager.record_inbound(event("m2", "bob", "beta second"))
@@ -166,12 +166,13 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
     assert [message.id for message in before] == [second.id]
     assert [message.id for message in after] == [second.id]
 
-    conversation = await ConversationManager().ensure(
+    conversation_manager = ConversationManager()
+    conversation = await conversation_manager.ensure(
         address(),
         agent_tentacle_id="inkling",
     )
     run_id = "run-chat-binding"
-    await ConversationManager().record_agent_run(
+    await conversation_manager.record_agent_run(
         conversation,
         run_id=run_id,
         messages=[
@@ -183,7 +184,7 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
             )
         ],
     )
-    model_message = (await ConversationManager().search_messages(conversation.id, "alpha"))[
+    model_message = (await conversation_manager.search_messages(conversation.id, "alpha"))[
         0
     ]
 
@@ -196,8 +197,8 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
 
     async with async_session() as session:
         stored_message = await session.one_or_none(
-            ChannelMessage,
-            expressions=[ChannelMessage["id"] == first.id],
+            ThreadMessage,
+            expressions=[ThreadMessage["id"] == first.id],
         )
         assert stored_message is not None
         await stored_message.model_messages

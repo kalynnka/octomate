@@ -45,8 +45,12 @@ def test_channels_default_to_none() -> None:
     assert channels.lark is None
     assert channels.napcat is None
     assert channels.dev_ui is not None
-    assert channels.dev_ui.triage == AgentModelConfig()
-    assert channels.dev_ui.receptions == [AgentModelConfig()]
+    assert channels.dev_ui.triage == AgentModelConfig(
+        model="deepseek:deepseek-v4-flash"
+    )
+    assert channels.dev_ui.receptions == [
+        AgentModelConfig(model="deepseek:deepseek-v4-pro")
+    ]
 
 
 def test_channel_config_parses_supported_channels() -> None:
@@ -82,7 +86,7 @@ def test_channel_config_parses_supported_channels() -> None:
 
 def test_channel_config_parses_agent_model_routes() -> None:
     config = OctomateConfig(
-        agents={"claude": {"models": {"claude-opus-4-5": "claude-opus-4-5"}}},
+        agents={"claude": {"models": ["opus"]}},
         channels={
             "dev_ui": None,
             "lark": None,
@@ -91,10 +95,10 @@ def test_channel_config_parses_agent_model_routes() -> None:
                 "app_id": "A-test",
                 "bot_token": "xoxb-test",
                 "app_token": "xapp-test",
-                "triage": {"agent": "inkling", "model": "deepseek-v4-flash"},
+                "triage": {"agent": "inkling", "model": "deepseek:deepseek-v4-flash"},
                 "receptions": [
-                    {"agent": "inkling", "model": "deepseek-v4-pro"},
-                    {"agent": "claude", "model": "claude-opus-4-5"},
+                    {"agent": "inkling", "model": "deepseek:deepseek-v4-pro"},
+                    {"agent": "claude", "model": "opus"},
                 ],
             }
         }
@@ -102,25 +106,22 @@ def test_channel_config_parses_agent_model_routes() -> None:
 
     assert config.channels.slack is not None
     assert config.channels.slack.triage == AgentModelConfig(
-        agent="inkling", model="deepseek-v4-flash"
+        agent="inkling", model="deepseek:deepseek-v4-flash"
     )
     assert config.channels.slack.receptions == [
-        AgentModelConfig(agent="inkling", model="deepseek-v4-pro"),
-        AgentModelConfig(agent="claude", model="claude-opus-4-5"),
+        AgentModelConfig(agent="inkling", model="deepseek:deepseek-v4-pro"),
+        AgentModelConfig(agent="claude", model="opus"),
     ]
 
 
 def test_claude_code_config_uses_model_route_mapping() -> None:
     config = ClaudeCodeConfig.model_validate(
         {
-            "models": {"opus": "opus", "sonnet": "sonnet"},
+            "models": ["opus", "sonnet"],
         }
     )
 
-    assert config.models == {
-        "opus": "opus",
-        "sonnet": "sonnet",
-    }
+    assert config.models == {"opus", "sonnet"}
     assert not hasattr(config, "model")
 
 
@@ -129,7 +130,7 @@ def test_claude_code_config_requires_model_mapping() -> None:
         ClaudeCodeConfig.model_validate(
             {
                 "models": [
-                    "claude-opus-4-5",
+                    "opus",
                     {"opus": "claude-opus-4-8"},
                 ]
             }
@@ -139,36 +140,20 @@ def test_claude_code_config_requires_model_mapping() -> None:
 def test_claude_code_config_defaults_to_fixed_model_set() -> None:
     config = ClaudeCodeConfig()
 
-    assert config.models == {
-        "haiku": "haiku",
-        "sonnet": "sonnet",
-        "opus": "opus",
-        "opusplan": "opusplan",
-        "fable": "fable",
-    }
+    assert config.models == {"haiku", "sonnet[1m]", "opus[1m]", "opusplan[1m]"}
 
 
 def test_claude_code_config_validates_model_names() -> None:
-    with pytest.raises(ValidationError, match="not a supported Claude Code model"):
-        ClaudeCodeConfig(models={"missing": "missing-claude-model"})
+    with pytest.raises(ValidationError, match="Input should be"):
+        ClaudeCodeConfig(models={"missing"})
 
 
 def test_claude_code_config_accepts_documented_model_aliases() -> None:
     config = ClaudeCodeConfig(
-        models={
-            "best": "best",
-            "opus-long": "opus[1m]",
-            "sonnet-long": "sonnet[1m]",
-            "opus-plan-long": "opusplan[1m]",
-        }
+        models={"best", "opus[1m]", "sonnet[1m]", "opusplan[1m]"}
     )
 
-    assert config.models == {
-        "best": "best",
-        "opus-long": "opus[1m]",
-        "sonnet-long": "sonnet[1m]",
-        "opus-plan-long": "opusplan[1m]",
-    }
+    assert config.models == {"best", "opus[1m]", "sonnet[1m]", "opusplan[1m]"}
 
 
 def test_channel_agent_routes_must_reference_configured_agent() -> None:
@@ -179,7 +164,10 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
-                    "triage": {"agent": "ghost"},
+                    "triage": {
+                        "agent": "ghost",
+                        "model": "deepseek:deepseek-v4-flash",
+                    },
                 }
             }
         )
@@ -193,7 +181,7 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
 def test_channel_agent_route_validation_reports_all_errors() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig(
-            agents={"claude": {"models": {"claude-opus-4-5": "claude-opus-4-5"}}},
+            agents={"claude": {"models": ["opus"]}},
             channels={
                 "dev_ui": None,
                 "napcat": None,
@@ -201,17 +189,23 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
-                    "triage": {"agent": "ghost"},
+                    "triage": {
+                        "agent": "ghost",
+                        "model": "deepseek:deepseek-v4-flash",
+                    },
                     "receptions": [
-                        {"agent": "inkling", "model": "missing-model"},
-                        {"agent": "claude", "model": "missing-claude-model"},
+                        {"agent": "inkling", "model": "openai:gpt-5.2"},
+                        {"agent": "claude", "model": "sonnet"},
                     ],
                 },
                 "lark": {
                     "enabled": False,
                     "app_id": "cli-test",
                     "app_secret": "secret",
-                    "triage": {"agent": "nobody"},
+                    "triage": {
+                        "agent": "nobody",
+                        "model": "deepseek:deepseek-v4-flash",
+                    },
                     "receptions": [],
                 },
             },
@@ -233,14 +227,14 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
             "receptions",
             0,
             "model",
-        ): "'missing-model' is not configured in agents.inkling.models",
+        ): "'openai:gpt-5.2' is not configured in agents.inkling.models",
         (
             "channels",
             "slack",
             "receptions",
             1,
             "model",
-        ): "'missing-claude-model' is not configured in agents.claude.models",
+        ): "'sonnet' is not configured in agents.claude.models",
         (
             "channels",
             "lark",
@@ -259,7 +253,10 @@ def test_disabled_channel_agent_routes_are_validated() -> None:
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
-                    "triage": {"agent": "ghost"},
+                    "triage": {
+                        "agent": "ghost",
+                        "model": "deepseek:deepseek-v4-flash",
+                    },
                 }
             }
         )
@@ -281,7 +278,7 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
-                    "receptions": [{"agent": "claude"}],
+                    "receptions": [{"agent": "claude", "model": "opus"}],
                 }
             }
         )
@@ -291,10 +288,10 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
     assert error["msg"] == "'claude' does not match a configured agent tentacle"
 
 
-def test_channel_claude_routes_must_reference_configured_model() -> None:
+def test_channel_routes_require_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig(
-            agents={"claude": {"models": {"claude-opus-4-5": "claude-opus-4-5"}}},
+            agents={"claude": {"models": ["opus"]}},
             channels={
                 "dev_ui": None,
                 "lark": None,
@@ -309,11 +306,13 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
         )
     [error] = exc_info.value.errors()
     assert error["loc"] == ("channels", "slack", "receptions", 0, "model")
-    assert error["msg"] == "model is required for claude routes"
+    assert error["msg"] == "Field required"
 
+
+def test_channel_claude_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig(
-            agents={"claude": {"models": {"claude-opus-4-5": "claude-opus-4-5"}}},
+            agents={"claude": {"models": ["opus"]}},
             channels={
                 "dev_ui": None,
                 "lark": None,
@@ -323,14 +322,14 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
                     "receptions": [
-                        {"agent": "claude", "model": "missing-claude-model"}
+                        {"agent": "claude", "model": "sonnet"}
                     ],
                 }
             },
         )
     [error] = exc_info.value.errors()
     assert error["loc"] == ("channels", "slack", "receptions", 0, "model")
-    assert error["msg"] == "'missing-claude-model' is not configured in agents.claude.models"
+    assert error["msg"] == "'sonnet' is not configured in agents.claude.models"
 
 
 def test_channel_inkling_routes_must_reference_configured_model() -> None:
@@ -341,13 +340,13 @@ def test_channel_inkling_routes_must_reference_configured_model() -> None:
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
-                    "receptions": [{"agent": "inkling", "model": "missing-model"}],
+                    "receptions": [{"agent": "inkling", "model": "openai:gpt-5.2"}],
                 }
             }
         )
     [error] = exc_info.value.errors()
     assert error["loc"] == ("channels", "slack", "receptions", 0, "model")
-    assert error["msg"] == "'missing-model' is not configured in agents.inkling.models"
+    assert error["msg"] == "'openai:gpt-5.2' is not configured in agents.inkling.models"
 
 
 def test_mcp_defaults_to_no_servers() -> None:

@@ -13,7 +13,7 @@ from octomate.schemas.events import MessageEvent
 @dataclass(frozen=True)
 class UserMessageSignal:
     messages: list[MessageEvent]
-    trigger_channel_message_id: uuid.UUID | None = None
+    trigger_thread_message_id: uuid.UUID | None = None
 
     def __bool__(self) -> bool:
         return bool(self.messages)

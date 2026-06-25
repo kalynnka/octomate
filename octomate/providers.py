@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import SecretStr
-from pydantic_ai.models import Model
+from pydantic_ai.models import Model, parse_model_id
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.bedrock import BedrockConverseModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.test import TestModel
 from pydantic_ai.providers import Provider
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.bedrock import BedrockProvider
@@ -23,7 +24,6 @@ from octomate.config import (
     GeminiProviderConfig,
     ModelConfig,
     OpenAIProviderConfig,
-    ProviderName,
     ProvidersConfig,
     VertexProviderConfig,
 )
@@ -49,33 +49,45 @@ class ProviderRegistry:
 
     def __init__(self, config: ProvidersConfig) -> None:
         self.config = config
-        self.providers: dict[ProviderName, Provider[Any]] = {}
+        self.providers: dict[str, Provider[Any]] = {}
 
     def build_model(self, model: ModelConfig) -> Model:
-        provider = self.provider_for(model.provider)
+        provider_name = model.provider
+        if provider_name is None:
+            if model.name == "test":
+                return TestModel(settings=model.settings)
+            raise ValueError(
+                f"unsupported model without provider prefix {model.name!r}"
+            )
+        provider = self.providers.get(provider_name)
+        if provider is None:
+            provider = self.build_provider(provider_name)
+            self.providers[provider_name] = provider
+        _, model_name = parse_model_id(model.name)
         # Provider defaults are the base; the per-model `settings` overrides them.
         merged = merge_model_settings(
-            self.provider_defaults(model.provider), model.settings
+            self.provider_defaults(provider_name), model.settings
         )
-        match model.provider:
-            case "openai" | "deepseek":
-                return OpenAIChatModel(model.name, provider=provider, settings=merged)
-            case "gemini" | "vertex":
-                return GoogleModel(model.name, provider=provider, settings=merged)
+        match provider_name:
+            case "openai" | "openai-chat" | "deepseek":
+                return OpenAIChatModel(model_name, provider=provider, settings=merged)
+            case "google" | "google-cloud":
+                return GoogleModel(model_name, provider=provider, settings=merged)
             case "anthropic":
-                return AnthropicModel(model.name, provider=provider, settings=merged)
+                return AnthropicModel(model_name, provider=provider, settings=merged)
             case "bedrock":
                 return BedrockConverseModel(
-                    model.name, provider=provider, settings=merged
+                    model_name, provider=provider, settings=merged
                 )
+        raise ValueError(f"unsupported model provider {provider_name!r}")
 
-    def provider_defaults(self, name: ProviderName) -> ModelSettings:
+    def provider_defaults(self, name: str) -> ModelSettings:
         """The provider's default settings (e.g. prompt caching) taken from the
         octomate config — defined as field defaults on the provider configs, so
         an absent provider block still contributes them. Providers without
         provider-specific settings contribute nothing."""
         match name:
-            case "openai":
+            case "openai" | "openai-chat":
                 return (self.config.openai or OpenAIProviderConfig()).settings
             case "anthropic":
                 return (self.config.anthropic or AnthropicProviderConfig()).settings
@@ -84,17 +96,9 @@ class ProviderRegistry:
             case _:
                 return {}
 
-    def provider_for(self, name: ProviderName) -> Provider[Any]:
-        cached = self.providers.get(name)
-        if cached is not None:
-            return cached
-        provider = self.build_provider(name)
-        self.providers[name] = provider
-        return provider
-
-    def build_provider(self, name: ProviderName) -> Provider[Any]:
+    def build_provider(self, name: str) -> Provider[Any]:
         match name:
-            case "openai":
+            case "openai" | "openai-chat":
                 cfg = self.config.openai or OpenAIProviderConfig()
                 return OpenAIProvider(
                     **present(api_key=cfg.api_key, base_url=cfg.base_url)
@@ -102,10 +106,10 @@ class ProviderRegistry:
             case "deepseek":
                 cfg = self.config.deepseek or DeepSeekProviderConfig()
                 return DeepSeekProvider(**present(api_key=cfg.api_key))
-            case "gemini":
+            case "google":
                 cfg = self.config.gemini or GeminiProviderConfig()
                 return GoogleProvider(**present(api_key=cfg.api_key))
-            case "vertex":
+            case "google-cloud":
                 cfg = self.config.vertex or VertexProviderConfig()
                 credentials = None
                 if cfg.credentials_file is not None:
@@ -140,3 +144,4 @@ class ProviderRegistry:
                         api_key=cfg.api_key,
                     )
                 )
+        raise ValueError(f"unsupported model provider {name!r}")

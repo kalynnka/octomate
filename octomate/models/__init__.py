@@ -1,8 +1,8 @@
 from octomate.models.base import Base
 from octomate.models.channel import (
-    ChannelHandoff,
-    ChannelMessage,
-    ChannelThread,
+    Handoff,
+    ThreadMessage,
+    Thread,
     MessageBinding,
 )
 from octomate.models.conversation import Conversation
@@ -24,10 +24,10 @@ from octomate.models.todos import Todo
 __all__ = [
     "AgentRun",
     "Base",
-    "ChannelHandoff",
-    "ChannelMessage",
+    "Handoff",
+    "ThreadMessage",
     "MessageBinding",
-    "ChannelThread",
+    "Thread",
     "Conversation",
     "DeferredAction",
     "DeferredActionBatch",

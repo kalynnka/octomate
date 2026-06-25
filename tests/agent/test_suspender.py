@@ -61,7 +61,7 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
     decision = SummonDecision(
         action="summon",
         agent_id="inkling",
-        model="",
+        model="test",
         reason="needs input",
         hint="needs input",
         summon="needs input",

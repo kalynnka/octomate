@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, replace
 from types import TracebackType
@@ -64,6 +65,7 @@ class ReactState:
 
     conversation_address: ChannelAddress
     agent_tentacle_id: str
+    thread_id: uuid.UUID | None = None
 
 
 @dataclass
@@ -108,6 +110,7 @@ class StartTurn(
             conversation = await ctx.deps.conversation_manager.ensure(
                 ctx.state.conversation_address,
                 agent_tentacle_id=ctx.state.agent_tentacle_id,
+                thread_id=ctx.state.thread_id,
             )
             abandoned = await ctx.deps.conversation_manager.drop_trailing_deferral(
                 conversation
@@ -166,6 +169,7 @@ class RunAgent(
             conversation = await ctx.deps.conversation_manager.ensure(
                 ctx.state.conversation_address,
                 agent_tentacle_id=ctx.state.agent_tentacle_id,
+                thread_id=ctx.state.thread_id,
             )
             if ctx.deps.event_send_stream is None:
                 # builtin_tools and output_retries are deprecated run kwargs in

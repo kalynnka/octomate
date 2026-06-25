@@ -40,6 +40,7 @@ class ConversationManager:
         address: ChannelAddress,
         *,
         agent_tentacle_id: str,
+        thread_id: uuid.UUID | None = None,
     ) -> Conversation:
         """Resolve the conversation for `(address, agent_tentacle_id)`, creating
         it if it does not yet exist. Its `conversation.messages` is the live
@@ -48,6 +49,16 @@ class ConversationManager:
         cache_key = ConversationKey(address, agent_tentacle_id)
         cached = self.conversations.get(cache_key)
         if cached is not None:
+            if thread_id is not None:
+                if cached.thread_id is None:
+                    cached.thread_id = thread_id
+                    async with async_session() as session:
+                        await session.merge(cached)
+                        await session.commit()
+                elif cached.thread_id != thread_id:
+                    raise ValueError(
+                        "conversation is already attached to a different thread"
+                    )
             self.conversations.move_to_end(cache_key)
             return cached
 
@@ -59,7 +70,7 @@ class ConversationManager:
                     Conversation["chat_type"] == address.chat_type,
                     Conversation["chat_id"] == address.chat_id,
                     Conversation["user_id"] == address.user_id,
-                    Conversation["thread_id"] == address.thread_id,
+                    Conversation["channel_thread_id"] == address.thread_id,
                     Conversation["agent_tentacle_id"] == agent_tentacle_id,
                 ],
             )
@@ -69,15 +80,22 @@ class ConversationManager:
                     chat_type=address.chat_type,
                     chat_id=address.chat_id,
                     user_id=address.user_id,
-                    thread_id=address.thread_id,
+                    thread_id=thread_id,
+                    channel_thread_id=address.thread_id,
                     agent_tentacle_id=agent_tentacle_id,
                 )
                 session.add(conversation)
-                await session.commit()
-            # Force-load the relations while the session is open so the cached
-            # object can serve (and be mutated) detached, with no further I/O.
+            elif thread_id is not None:
+                if conversation.thread_id is None:
+                    conversation.thread_id = thread_id
+                elif conversation.thread_id != thread_id:
+                    raise ValueError(
+                        "conversation is already attached to a different thread"
+                    )
+            await session.flush()
             await conversation.runs
             await conversation.messages
+            await session.commit()
 
         self.cache_conversation(conversation)
         return conversation

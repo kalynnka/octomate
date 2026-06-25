@@ -30,6 +30,7 @@ class ChannelAddress:
     chat_type: ChatType
     chat_id: str
     user_id: str
+    # Thread id as named by the channel platform/address, not `Thread.id`.
     thread_id: str = ""
 
     @cached_property
@@ -73,9 +74,9 @@ class Conversation(BaseTransmuter):
 
     chat_type: ChatType = Field(frozen=True)
     chat_id: str = Field(frozen=True)
-    thread_id: str = Field(default="", frozen=True)
+    channel_thread_id: str = Field(default="", frozen=True)
     user_id: str = Field(frozen=True)
-    channel_thread_id: uuid.UUID | None = None
+    thread_id: uuid.UUID | None = None
 
     channel_tentacle_id: str = Field(frozen=True)
     agent_tentacle_id: str
@@ -98,7 +99,7 @@ class Conversation(BaseTransmuter):
             chat_type=self.chat_type,
             chat_id=self.chat_id,
             user_id=self.user_id,
-            thread_id=self.thread_id,
+            thread_id=self.channel_thread_id,
         )
 
 

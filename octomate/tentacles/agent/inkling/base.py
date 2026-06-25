@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -120,6 +121,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -146,6 +148,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -171,6 +174,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -194,6 +198,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         async for event in self.iter_graph_events(
             user_prompt=user_prompt,
             conversation_address=conversation_address,
+            thread_id=thread_id,
             run_name=run_name,
             output_type=output_type,
             deferred_tool_results=deferred_tool_results,
@@ -224,6 +229,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -249,6 +255,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -273,6 +280,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -295,6 +303,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             self.iter_graph_events(
                 user_prompt=user_prompt,
                 conversation_address=conversation_address,
+                thread_id=thread_id,
                 run_name=run_name,
                 output_type=output_type,
                 deferred_tool_results=deferred_tool_results,
@@ -320,6 +329,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         *,
         user_prompt: str | Sequence[UserContent] | None,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None,
         deferred_tool_results: DeferredToolResults | None,
@@ -374,6 +384,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         state = ReactState(
             conversation_address=conversation_address,
             agent_tentacle_id=self.id,
+            thread_id=thread_id,
         )
         start_node = (
             ResumeTurn(deferred_results=deferred_tool_results)

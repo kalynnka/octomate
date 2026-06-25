@@ -226,7 +226,7 @@ class ChannelTentacle(
                 conversation_address=str(address),
                 message_id=str(event.message_id),
             )
-            channel_message = await self.octomate.channel_threads.record_inbound(event)
+            thread_message = await self.octomate.thread_manager.record_inbound(event)
             if (
                 self.config.mention_only
                 and address.is_group
@@ -241,7 +241,7 @@ class ChannelTentacle(
             await self.octomate.kick(
                 UserMessageSignal(
                     [event],
-                    trigger_channel_message_id=channel_message.id,
+                    trigger_thread_message_id=thread_message.id,
                 )
             )
         except Exception:

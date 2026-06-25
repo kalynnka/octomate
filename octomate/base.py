@@ -9,7 +9,7 @@ from typing import TypeVar
 import logfire
 from fastapi import APIRouter, FastAPI, Request, Response
 
-from octomate.managers.channel import ChannelThreadManager
+from octomate.managers.channel import ThreadManager
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import (
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class Octomate:
     """Application host for shared services, agents, channels, and routers."""
 
-    channel_threads: ChannelThreadManager = field(default_factory=ChannelThreadManager)
+    thread_manager: ThreadManager = field(default_factory=ThreadManager)
     conversations: ConversationManager = field(default_factory=ConversationManager)
     deferred_actions: DeferredActionManager = field(
         default_factory=DeferredActionManager
@@ -103,6 +103,7 @@ class Octomate:
                         agents=self.agents,
                         channels=self.channels,
                         conversation_manager=self.conversations,
+                        thread_manager=self.thread_manager,
                         action_manager=self.deferred_actions,
                     ),
                 )

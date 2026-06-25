@@ -4,12 +4,10 @@ octomate:
   agents:
     inkling:
       models:
-        - provider: deepseek
-          name: deepseek-v4-flash
+        - name: deepseek:deepseek-v4-flash
           settings:
             thinking: medium
-        - provider: deepseek
-          name: deepseek-v4-pro
+        - name: deepseek:deepseek-v4-pro
 
   logging:
     level: ~   # default: INFO
@@ -32,10 +30,10 @@ octomate:
   #   slack:
   #     triage:
   #       agent: inkling
-  #       model: deepseek-v4-flash
+  #       model: deepseek:deepseek-v4-flash
   #     receptions:
   #       - agent: inkling
-  #         model: deepseek-v4-pro
+  #         model: deepseek:deepseek-v4-pro
   #     app_id: A...
   #     bot_token: xoxb-...
   #     app_token: xapp-...
@@ -44,9 +42,10 @@ octomate:
   #   lark:
   #     triage:
   #       agent: inkling
+  #       model: deepseek:deepseek-v4-flash
   #     receptions:
   #       - agent: claude
-  #         model: claude-opus-4-5
+  #         model: opus
   #     app_id: cli_...
   #     app_secret: ...
   #     stream:
@@ -55,9 +54,10 @@ octomate:
   #   napcat:
   #     triage:
   #       agent: inkling
+  #       model: deepseek:deepseek-v4-flash
   #     receptions:
   #       - agent: inkling
-  #         model: deepseek-v4-pro
+  #         model: deepseek:deepseek-v4-pro
   #     stream:
   #       enabled: false
   #     ws_url: ws://127.0.0.1:3001

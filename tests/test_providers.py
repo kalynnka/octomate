@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import pytest
 from pydantic import SecretStr, ValidationError
+from pydantic_ai.models import KnownModelName, parse_model_id
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.bedrock import BedrockConverseModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.test import TestModel
 
 from octomate.config import (
     AnthropicProviderConfig,
@@ -44,38 +46,54 @@ def make_registry() -> ProviderRegistry:
     )
 
 
-def test_invalid_provider_is_rejected() -> None:
-    with pytest.raises(ValidationError):
-        ModelConfig(provider="nope", name="x")  # type: ignore[arg-type]
+def test_unsupported_provider_prefix_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="unsupported model provider prefix"):
+        ModelConfig(name="xai:grok-3")
+
+
+def test_model_without_provider_uses_pydantic_ai_default() -> None:
+    config = ModelConfig(name="test", settings={"temperature": 0.5})
+    model = make_registry().build_model(config)
+    assert config.provider is None
+    assert isinstance(model, TestModel)
+    assert model.model_name == "test"
+    assert model.settings == {"temperature": 0.5}
 
 
 @pytest.mark.parametrize(
-    ("provider", "name", "model_cls"),
+    ("name", "provider", "model_cls"),
     [
-        ("openai", "gpt-5.2", OpenAIChatModel),
-        ("deepseek", "deepseek-chat", OpenAIChatModel),
-        ("gemini", "gemini-3-flash-preview", GoogleModel),
-        ("anthropic", "claude-sonnet-4-6", AnthropicModel),
-        ("bedrock", "us.anthropic.claude-3-5-sonnet-20240620-v1:0", BedrockConverseModel),
+        ("openai:gpt-5.2", "openai", OpenAIChatModel),
+        ("openai-chat:gpt-5.2", "openai-chat", OpenAIChatModel),
+        ("deepseek:deepseek-chat", "deepseek", OpenAIChatModel),
+        ("google:gemini-3-flash-preview", "google", GoogleModel),
+        ("anthropic:claude-sonnet-4-6", "anthropic", AnthropicModel),
+        (
+            "bedrock:us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "bedrock",
+            BedrockConverseModel,
+        ),
     ],
 )
 def test_build_model_dispatches_to_provider(
-    provider: str, name: str, model_cls: type
+    name: KnownModelName, provider: str, model_cls: type
 ) -> None:
-    model = make_registry().build_model(ModelConfig(provider=provider, name=name))  # type: ignore[arg-type]
+    config = ModelConfig(name=name)
+    model = make_registry().build_model(config)
+    assert config.provider == provider
     assert isinstance(model, model_cls)
-    assert model.model_name == name
+    assert model.model_name == parse_model_id(name)[1]
 
 
 def test_bedrock_model_name_with_colon_is_preserved() -> None:
-    name = "us.anthropic.claude-3-5-sonnet-20240620-v1:0"
-    model = make_registry().build_model(ModelConfig(provider="bedrock", name=name))
-    assert model.model_name == name
+    name = "bedrock:us.anthropic.claude-3-5-sonnet-20240620-v1:0"
+    model = make_registry().build_model(ModelConfig(name=name))
+    assert model.model_name == parse_model_id(name)[1]
 
 
 def test_anthropic_cache_breakpoints_are_default() -> None:
     model = make_registry().build_model(
-        ModelConfig(provider="anthropic", name="claude-sonnet-4-6")
+        ModelConfig(name="anthropic:claude-sonnet-4-6")
     )
     assert model.settings == {
         "anthropic_cache_tool_definitions": True,
@@ -86,7 +104,9 @@ def test_anthropic_cache_breakpoints_are_default() -> None:
 
 def test_bedrock_cache_breakpoints_are_default() -> None:
     model = make_registry().build_model(
-        ModelConfig(provider="bedrock", name="us.anthropic.claude-3-5-sonnet-20240620-v1:0")
+        ModelConfig(
+            name="bedrock:us.anthropic.claude-3-5-sonnet-20240620-v1:0",
+        )
     )
     assert model.settings == {
         "bedrock_cache_tool_definitions": True,
@@ -96,13 +116,15 @@ def test_bedrock_cache_breakpoints_are_default() -> None:
 
 
 def test_openai_cache_retention_is_default() -> None:
-    model = make_registry().build_model(ModelConfig(provider="openai", name="gpt-5.2"))
+    model = make_registry().build_model(
+        ModelConfig(name="openai:gpt-5.2")
+    )
     assert model.settings == {"openai_prompt_cache_retention": "24h"}
 
 
 def test_deepseek_has_no_cache_settings() -> None:
     model = make_registry().build_model(
-        ModelConfig(provider="deepseek", name="deepseek-chat")
+        ModelConfig(name="deepseek:deepseek-chat")
     )
     assert not model.settings
 
@@ -110,8 +132,7 @@ def test_deepseek_has_no_cache_settings() -> None:
 def test_per_model_settings_merge_with_provider_defaults() -> None:
     model = make_registry().build_model(
         ModelConfig(
-            provider="anthropic",
-            name="claude-sonnet-4-6",
+            name="anthropic:claude-sonnet-4-6",
             settings={"temperature": 0.5, "max_tokens": 1024},
         )
     )
@@ -129,8 +150,7 @@ def test_unknown_model_setting_is_dropped() -> None:
     model = make_registry().build_model(
         ModelConfig.model_validate(
             {
-                "provider": "openai",
-                "name": "gpt-5.2",
+                "name": "openai:gpt-5.2",
                 "settings": {"temperature": 0.5, "not_a_real_setting": 1},
             }
         )
@@ -145,14 +165,20 @@ def test_model_settings_thinking_reaches_built_model() -> None:
     # `thinking` is a per-model setting (the inkling default lives in model.settings);
     # it is baked into the built model by the registry.
     model = make_registry().build_model(
-        ModelConfig(provider="openai", name="gpt-5.2", settings={"thinking": "medium"})
+        ModelConfig(
+            name="openai:gpt-5.2",
+            settings={"thinking": "medium"},
+        )
     )
     assert dict(model.settings or {})["thinking"] == "medium"
 
 
 def test_providers_are_built_once_and_cached() -> None:
     registry = make_registry()
-    assert registry.provider_for("openai") is registry.provider_for("openai")
+    registry.build_model(ModelConfig(name="openai:gpt-5.2"))
+    provider = registry.providers["openai"]
+    registry.build_model(ModelConfig(name="openai:gpt-5.2"))
+    assert registry.providers["openai"] is provider
 
 
 def test_vertex_config_defaults_to_global_location() -> None:

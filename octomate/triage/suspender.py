@@ -32,6 +32,7 @@ class HumanReviewSuspender:
     target_address: ChannelAddress
     target_mode: ResponseTargetMode
     decision: TriageDecision | None
+    thread_id: uuid.UUID | None = None
     emit_on_stream: bool = False
     suspended_batch_id: uuid.UUID | None = field(default=None, init=False)
 
@@ -47,6 +48,7 @@ class HumanReviewSuspender:
             conversation = await self.conversation_manager.ensure(
                 self.target_address,
                 agent_tentacle_id=self.agent_tentacle_id,
+                thread_id=self.thread_id,
             )
             if self.emit_on_stream:
                 # On-stream round-trip: persist the batch and hand it back as one

@@ -3,7 +3,7 @@ Shared schema package.
 
 Submodules
 ----------
-- ``channel``: ChannelThreadKey, ChannelThread, ChannelMessage, ChannelHandoff,
+- ``channel``: ThreadKey, Thread, ThreadMessage, Handoff,
   MessageBinding.
 - ``conversation``: ChannelAddress, ConversationKey, Conversation, UserProfile.
 - ``segments``: Message segment data types and models.

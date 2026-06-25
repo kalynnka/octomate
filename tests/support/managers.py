@@ -15,9 +15,13 @@ from typing import cast
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from uuid_utils.compat import uuid7
 
+from octomate.config.agents import AgentRouteModelName
+from octomate.managers.channel import ThreadManager
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.channel import Handoff, Thread, ThreadKey
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -36,6 +40,7 @@ class FakeConversation:
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     messages: list[ModelMessage] = field(default_factory=list)
     external_id: str | None = None
+    thread_id: uuid.UUID | None = None
     permission_mode: ConversationPermissionMode = "default"
     allowed_tools: list[str] = field(default_factory=list)
 
@@ -55,13 +60,21 @@ class FakeConversationManager(ConversationManager):
         address: ChannelAddress,
         *,
         agent_tentacle_id: str | None = None,
+        thread_id: uuid.UUID | None = None,
     ) -> Conversation:
         self.ensured.append((address, agent_tentacle_id))
         store_key = (address, agent_tentacle_id)
         conversation = self.store.get(store_key)
         if conversation is None:
-            conversation = FakeConversation()
+            conversation = FakeConversation(thread_id=thread_id)
             self.store[store_key] = conversation
+        elif thread_id is not None:
+            if conversation.thread_id is None:
+                conversation.thread_id = thread_id
+            elif conversation.thread_id != thread_id:
+                raise ValueError(
+                    "conversation is already attached to a different thread"
+                )
         return cast(Conversation, conversation)
 
     async def record_agent_run(
@@ -93,6 +106,70 @@ class FakeConversationManager(ConversationManager):
         conversation: Conversation,
     ) -> None:
         return None
+
+
+@dataclass
+class FakeThreadManager(ThreadManager):
+    threads_by_key: dict[ThreadKey, Thread] = field(default_factory=dict)
+    handoffs: list[Handoff] = field(default_factory=list)
+
+    async def ensure_thread(
+        self,
+        address_or_key: ChannelAddress | ThreadKey,
+    ) -> Thread:
+        key = (
+            ThreadKey.from_address(address_or_key)
+            if isinstance(address_or_key, ChannelAddress)
+            else address_or_key
+        )
+        thread = self.threads_by_key.get(key)
+        if thread is None:
+            thread = Thread(
+                id=uuid7(),
+                channel_tentacle_id=key.channel_tentacle_id,
+                chat_type=key.chat_type,
+                chat_id=key.chat_id,
+                thread_id=key.thread_id,
+            )
+            self.threads_by_key[key] = thread
+        return thread
+
+    async def record_handoff(
+        self,
+        thread_or_address: Thread | ChannelAddress | ThreadKey,
+        *,
+        to_agent_tentacle_id: str,
+        from_agent_tentacle_id: str | None = None,
+        to_model: AgentRouteModelName | None = None,
+        reason: str = "",
+        hint: str = "",
+        brief: str = "",
+        source_conversation_id: uuid.UUID | None = None,
+        target_conversation_id: uuid.UUID | None = None,
+        source_run_id: str | None = None,
+        source_model_message_id: uuid.UUID | None = None,
+    ) -> Handoff:
+        if isinstance(thread_or_address, Thread):
+            thread = thread_or_address
+        else:
+            thread = await self.ensure_thread(thread_or_address)
+        handoff = Handoff(
+            id=uuid7(),
+            thread_id=thread.id,
+            from_agent_tentacle_id=from_agent_tentacle_id,
+            to_agent_tentacle_id=to_agent_tentacle_id,
+            to_model=to_model,
+            reason=reason,
+            hint=hint,
+            brief=brief,
+            source_conversation_id=source_conversation_id,
+            target_conversation_id=target_conversation_id,
+            source_run_id=source_run_id,
+            source_model_message_id=source_model_message_id,
+        )
+        thread.handoffs.append(handoff)
+        self.handoffs.append(handoff)
+        return handoff
 
 
 @dataclass

@@ -4,10 +4,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from octomate.config.agents import AgentRouteModelName
+
+DEFAULT_TRIAGE_MODEL: AgentRouteModelName = "deepseek:deepseek-v4-flash"
+DEFAULT_RECEPTION_MODEL: AgentRouteModelName = "deepseek:deepseek-v4-pro"
+
 
 class AgentModelConfig(BaseModel):
     agent: str = "inkling"
-    model: str | None = None
+    model: AgentRouteModelName
 
 
 class ChannelStreamConfig(BaseModel):
@@ -38,8 +43,10 @@ class ChannelConfig(BaseModel):
     mention_only: bool = True
     enabled: bool = True
     stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)
-    triage: AgentModelConfig = AgentModelConfig()
-    receptions: list[AgentModelConfig] = [AgentModelConfig()]
+    triage: AgentModelConfig = AgentModelConfig(model=DEFAULT_TRIAGE_MODEL)
+    receptions: list[AgentModelConfig] = [
+        AgentModelConfig(model=DEFAULT_RECEPTION_MODEL)
+    ]
 
 
 class SlackChannelConfig(ChannelConfig):

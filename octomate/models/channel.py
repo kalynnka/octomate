@@ -24,8 +24,8 @@ if TYPE_CHECKING:
     from octomate.models.conversation import Conversation
     from octomate.models.messages import ModelMessage
 
-ChannelThreadStatus = Literal["active", "closed"]
-ChannelMessageDirection = Literal["inbound", "outbound"]
+ThreadStatus = Literal["active", "closed"]
+ThreadMessageDirection = Literal["inbound", "outbound"]
 ChannelActorKind = Literal["human", "agent", "bot", "system"]
 MessageBindingKind = Literal[
     "prompt_source",
@@ -39,9 +39,9 @@ class MessageBinding(Base, TransmuterProxiedMixin):
 
     __tablename__ = "message_binding"
 
-    channel_message_id: Mapped[uuid.UUID] = mapped_column(
+    thread_message_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
-        ForeignKey("channel_messages.id", ondelete="CASCADE"),
+        ForeignKey("thread_messages.id", ondelete="CASCADE"),
         primary_key=True,
     )
     model_message_id: Mapped[uuid.UUID] = mapped_column(
@@ -74,28 +74,28 @@ class MessageBinding(Base, TransmuterProxiedMixin):
         index=True,
     )
 
-    channel_message: Mapped[ChannelMessage] = relationship(
-        "ChannelMessage",
-        overlaps="channel_messages,model_messages",
+    thread_message: Mapped[ThreadMessage] = relationship(
+        "ThreadMessage",
+        overlaps="thread_messages,model_messages",
     )
 
     model_message: Mapped[ModelMessage] = relationship(
         "ModelMessage",
-        overlaps="channel_messages,model_messages",
+        overlaps="thread_messages,model_messages",
     )
 
 
-class ChannelThread(Base, TransmuterProxiedMixin):
+class Thread(Base, TransmuterProxiedMixin):
     """One IM channel/chat/thread surface, independent of sender and agent."""
 
-    __tablename__ = "channel_threads"
+    __tablename__ = "threads"
     __table_args__ = (
         UniqueConstraint(
             "channel_tentacle_id",
             "chat_type",
             "chat_id",
             "thread_id",
-            name="uq_channel_threads_key",
+            name="uq_threads_key",
         ),
     )
 
@@ -108,12 +108,12 @@ class ChannelThread(Base, TransmuterProxiedMixin):
         String, nullable=False, default="", index=True
     )
 
-    status: Mapped[ChannelThreadStatus] = mapped_column(
+    status: Mapped[ThreadStatus] = mapped_column(
         String, nullable=False, default="active", index=True
     )
     prompt_cursor_message_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
-        ForeignKey("channel_messages.id", ondelete="SET NULL"),
+        ForeignKey("thread_messages.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -132,41 +132,41 @@ class ChannelThread(Base, TransmuterProxiedMixin):
         index=True,
     )
 
-    messages: Mapped[list[ChannelMessage]] = relationship(
-        "ChannelMessage",
-        back_populates="channel_thread",
+    messages: Mapped[list[ThreadMessage]] = relationship(
+        "ThreadMessage",
+        back_populates="thread",
         cascade="all, delete-orphan",
-        foreign_keys="ChannelMessage.channel_thread_id",
-        order_by="ChannelMessage.id",
+        foreign_keys="ThreadMessage.thread_id",
+        order_by="ThreadMessage.id",
         lazy="selectin",
     )
 
-    handoffs: Mapped[list[ChannelHandoff]] = relationship(
-        "ChannelHandoff",
-        back_populates="channel_thread",
+    handoffs: Mapped[list[Handoff]] = relationship(
+        "Handoff",
+        back_populates="thread",
         cascade="all, delete-orphan",
-        order_by="ChannelHandoff.id",
+        order_by="Handoff.id",
         lazy="selectin",
     )
 
     conversations: Mapped[list[Conversation]] = relationship(
         "Conversation",
-        back_populates="channel_thread",
+        back_populates="thread",
         order_by="Conversation.id",
         lazy="selectin",
     )
 
 
-class ChannelMessage(Base, TransmuterProxiedMixin):
-    """One user-facing message in a channel thread's chat ledger."""
+class ThreadMessage(Base, TransmuterProxiedMixin):
+    """One user-facing message in a thread's chat ledger."""
 
-    __tablename__ = "channel_messages"
+    __tablename__ = "thread_messages"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
 
-    channel_thread_id: Mapped[uuid.UUID] = mapped_column(
+    thread_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
-        ForeignKey("channel_threads.id", ondelete="CASCADE"),
+        ForeignKey("threads.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -181,7 +181,7 @@ class ChannelMessage(Base, TransmuterProxiedMixin):
         DateTime, nullable=True, index=True
     )
 
-    direction: Mapped[ChannelMessageDirection] = mapped_column(
+    direction: Mapped[ThreadMessageDirection] = mapped_column(
         String, nullable=False, index=True
     )
     actor_kind: Mapped[ChannelActorKind] = mapped_column(
@@ -204,33 +204,33 @@ class ChannelMessage(Base, TransmuterProxiedMixin):
         index=True,
     )
 
-    channel_thread: Mapped[ChannelThread] = relationship(
-        "ChannelThread",
+    thread: Mapped[Thread] = relationship(
+        "Thread",
         back_populates="messages",
-        foreign_keys=[channel_thread_id],
+        foreign_keys=[thread_id],
     )
 
     model_messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",
         secondary=MessageBinding.__table__,
-        back_populates="channel_messages",
+        back_populates="thread_messages",
         order_by="ModelMessage.id",
         lazy="selectin",
         viewonly=True,
-        overlaps="channel_message,model_message",
+        overlaps="thread_message,model_message",
     )
 
 
-class ChannelHandoff(Base, TransmuterProxiedMixin):
-    """Append-only ownership transfer for a channel thread."""
+class Handoff(Base, TransmuterProxiedMixin):
+    """Append-only ownership transfer for a thread."""
 
     __tablename__ = "channel_handoffs"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
 
-    channel_thread_id: Mapped[uuid.UUID] = mapped_column(
+    thread_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
-        ForeignKey("channel_threads.id", ondelete="CASCADE"),
+        ForeignKey("threads.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -279,13 +279,13 @@ class ChannelHandoff(Base, TransmuterProxiedMixin):
         index=True,
     )
 
-    channel_thread: Mapped[ChannelThread] = relationship(
-        "ChannelThread",
+    thread: Mapped[Thread] = relationship(
+        "Thread",
         back_populates="handoffs",
     )
 
-    def __lt__(self, other: ChannelHandoff) -> bool:
+    def __lt__(self, other: Handoff) -> bool:
         return self.id < other.id
 
-    def __gt__(self, other: ChannelHandoff) -> bool:
+    def __gt__(self, other: Handoff) -> bool:
         return self.id > other.id

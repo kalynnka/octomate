@@ -1,4 +1,4 @@
-# Plan: channel-thread ownership and split histories
+# Plan: thread ownership and split histories
 
 > Status: in progress
 > Owner: @luhui
@@ -28,8 +28,8 @@ The design below follows the repository rules in `AGENTS.md`:
 
 ## Success criteria
 
-1. A channel thread that was handed from Inkling to Claude remembers Claude as
-   the active owner, so the next user message in that same channel thread routes
+1. A thread that was handed from Inkling to Claude remembers Claude as
+   the active owner, so the next user message in that same thread routes
    to Claude instead of the channel default.
 2. The user-facing channel history is durable even when the agent was not awake
    for every message.
@@ -45,10 +45,10 @@ The design below follows the repository rules in `AGENTS.md`:
 
 Use these terms everywhere, including code comments and tool instructions:
 
-- **Channel thread**: the IM surface where people and bots talk. This is keyed
+- **Thread**: the IM surface where people and bots talk. This is keyed
   by channel, chat, and thread. It is not owned by one user and not owned by one
   agent.
-- **Chat ledger**: the append-only user-facing messages inside a channel thread.
+- **Chat ledger**: the append-only user-facing messages inside a thread.
   This is what humans, other bots, and Octomate agents visibly said.
 - **Agent conversation**: the existing per-agent model context. In code this is
   still the current `Conversation` table for the first implementation.
@@ -78,49 +78,49 @@ this IM address". It breaks down for group chat and handoff:
 ## Hierarchy
 
 ```text
-ChannelThread
+Thread
   key: channel_tentacle_id + chat_type + chat_id + thread_id
   active owner: latest handoff's to_agent_tentacle_id + to_model
   prompt cursor: last channel message included in a wake prompt
 
-  ChannelMessage[]
-    one durable user-facing message in the channel thread
+  ThreadMessage[]
+    one durable user-facing message in the thread
     sender/user/bot/agent identity
     typed segments + searchable text
 
-  ChannelHandoff[]
-    from agent -> to agent ownership changes for this channel thread
+  Handoff[]
+    from agent -> to agent ownership changes for this thread
 
   Conversation[]  # existing agent conversations, one per agent owner
-    key: channel_thread_id + agent_tentacle_id
+    key: thread_id + agent_tentacle_id
     AgentRun[]
       ModelMessage[]
 
   message_binding secondary table
-    ChannelMessage.model_messages <-> ModelMessage.channel_messages
+    ThreadMessage.model_messages <-> ModelMessage.thread_messages
 ```
 
 `ChannelAddress` should remain the delivery address because outbound reply
-targeting still needs `user_id`. Add a smaller `ChannelThreadKey` for stable
+targeting still needs `user_id`. Add a smaller `ThreadKey` for stable
 thread identity:
 
 ```python
 @dataclass(frozen=True)
-class ChannelThreadKey:
+class ThreadKey:
     channel_tentacle_id: str
     chat_type: ChatType
     chat_id: str
     thread_id: str = ""
 ```
 
-`ChannelThreadKey.from_address(address)` strips the sender user from the key.
+`ThreadKey.from_address(address)` strips the sender user from the key.
 That single distinction is the heart of the fix.
 
 ## Data model
 
-### `ChannelThread`
+### `Thread`
 
-New table and schema, owned by a `ChannelThreadManager`.
+New table and schema, owned by a `ThreadManager`.
 
 Fields:
 
@@ -140,24 +140,24 @@ Unique key:
 
 Relationships and derived attributes:
 
-- `handoffs: RelationCollection[ChannelHandoff]`
-- `latest_handoff: ChannelHandoff | None`
+- `handoffs: RelationCollection[Handoff]`
+- `latest_handoff: Handoff | None`
 - `active_agent_tentacle_id: str | None`
 - `active_model: str | None`
 
 `active_agent_tentacle_id` and `active_model` should be hybrid
 attributes/properties or association proxies over `latest_handoff`, not mutable
-columns. The active owner is still a property of the channel thread, but the
+columns. The active owner is still a property of the thread, but the
 source of truth is the append-only handoff history.
 
-### `ChannelMessage`
+### `ThreadMessage`
 
 New table and schema for the chat ledger.
 
 Fields:
 
 - `id: uuid.UUID`
-- `channel_thread_id: uuid.UUID`
+- `thread_id: uuid.UUID`
 - `platform_message_id: str | None`
 - `reply_id: str`
 - `timestamp: datetime | None`
@@ -173,23 +173,23 @@ Fields:
 
 Indexes:
 
-- `(channel_thread_id, id)`
-- `(channel_thread_id, platform_message_id)`
-- `(channel_thread_id, actor_kind)`
+- `(thread_id, id)`
+- `(thread_id, platform_message_id)`
+- `(thread_id, actor_kind)`
 - `message_text`
 
 `message_text` is derived from segments for simple `LIKE` search first. Keep the
 segments as the source of truth so history rendering does not depend on lossy
 text.
 
-### `ChannelHandoff`
+### `Handoff`
 
 New table and schema for ownership changes.
 
 Fields:
 
 - `id: uuid.UUID`
-- `channel_thread_id: uuid.UUID`
+- `thread_id: uuid.UUID`
 - `from_agent_tentacle_id: str | None`
 - `to_agent_tentacle_id: str`
 - `to_model: str | None`
@@ -202,7 +202,7 @@ Fields:
 - `source_model_message_id: uuid.UUID | None`
 - `created_at: datetime`
 
-This is the audit log. `ChannelThread.active_agent_tentacle_id` derives from the
+This is the audit log. `Thread.active_agent_tentacle_id` derives from the
 latest row and is the routing answer.
 
 ### `message_binding`
@@ -212,7 +212,7 @@ The message relationships use it as their secondary table.
 
 Fields:
 
-- `channel_message_id: uuid.UUID`
+- `thread_message_id: uuid.UUID`
 - `model_message_id: uuid.UUID`
 - `kind: Literal["prompt_source", "assistant_reply", "assistant_send"]`
 - `run_id: str`
@@ -222,8 +222,8 @@ Fields:
 
 Relationships:
 
-- `ChannelMessage.model_messages`
-- `ModelMessage.channel_messages`
+- `ThreadMessage.model_messages`
+- `ModelMessage.thread_messages`
 
 Why this is a secondary table instead of nullable columns:
 
@@ -240,25 +240,25 @@ Inbound channel events should be recorded before the mention-only gate.
 Flow:
 
 1. `ChannelTentacle.ingest` decodes and enriches a `MessageEvent`.
-2. `ChannelThreadManager.record_inbound(event)` ensures the `ChannelThread`,
-   appends a `ChannelMessage`, and returns both.
+2. `ThreadManager.record_inbound(event)` ensures the `Thread`,
+   appends a `ThreadMessage`, and returns both.
 3. If the message does not wake the agent, stop. The chat ledger still has the
    message.
 4. If it wakes the agent, `Octomate.kick` receives a signal containing the
-   `channel_thread_id` and trigger `channel_message_id`.
+   `thread_id` and trigger `thread_message_id`.
 5. Dispatch resolves the active owner:
-   - If `ChannelThread.active_agent_tentacle_id` resolves from
+   - If `Thread.active_agent_tentacle_id` resolves from
      `latest_handoff`, use that agent and model.
    - Otherwise use the channel's configured default route.
 6. Before the run, fetch pending prompt messages:
-   - `channel_thread_id` matches.
+   - `thread_id` matches.
    - `id` is greater than `prompt_cursor_message_id`, when present.
    - `id` is less than or equal to the trigger message id.
    - Exclude outbound messages by the active agent.
    - Include humans and other bots/agents.
 7. Build the user prompt from those channel messages in chronological order.
 8. After the run's user `ModelRequest` is persisted, relate it to every included
-   `ChannelMessage` through the secondary binding table with
+   `ThreadMessage` through the secondary binding table with
    `kind="prompt_source"`.
 9. Advance `prompt_cursor_message_id` to the latest included channel message.
 
@@ -276,14 +276,14 @@ Flow:
 
 1. Agent A calls `summon` for Agent B.
 2. Dispatch validates the route as it does today.
-3. Dispatch resolves or creates the target channel thread.
-4. Dispatch ensures Agent B's agent conversation for that channel thread.
-5. Dispatch writes a `ChannelHandoff` row.
-6. `ChannelThread.active_agent_tentacle_id` and `active_model` now resolve from
+3. Dispatch resolves or creates the target thread.
+4. Dispatch ensures Agent B's agent conversation for that thread.
+5. Dispatch writes a `Handoff` row.
+6. `Thread.active_agent_tentacle_id` and `active_model` now resolve from
    that latest handoff.
 7. Dispatch runs Agent B.
-8. The next inbound message in the same channel thread resolves Agent B from
-   `ChannelThread`, bypassing the channel default.
+8. The next inbound message in the same thread resolves Agent B from
+   `Thread`, bypassing the channel default.
 
 Every triage -> reception route is a handoff, even when the route is the
 configured/default reception. Writing that handoff is the explicit ownership
@@ -296,7 +296,7 @@ handoffs are just new rows; the active owner derives from the latest row.
 
 ## Outbound recording and reply binding
 
-All visible Octomate output should become `ChannelMessage` rows:
+All visible Octomate output should become `ThreadMessage` rows:
 
 - Final markdown replies.
 - Final segment replies.
@@ -317,7 +317,7 @@ Implementation note: for streaming and mid-run sends, platform output can happen
 before the run is fully persisted. Use a typed pending-output record in memory
 for the run, keyed by run id and tool call id or output part, then reconcile to
 the secondary binding table immediately after `record_agent_run` syncs the
-conversation. Avoid storing unresolved binding metadata in `ChannelMessage`
+conversation. Avoid storing unresolved binding metadata in `ThreadMessage`
 itself.
 
 ## History tools
@@ -327,14 +327,14 @@ The user-facing `history` capability should become chat-ledger first.
 Tools:
 
 - `search_history(query, actor_kind=None, limit=10)`: alias for
-  `search_chat_history`; searches `ChannelMessage.message_text` in the current
-  channel thread.
+  `search_chat_history`; searches `ThreadMessage.message_text` in the current
+  thread.
 - `search_chat_history(query, actor_kind=None, limit=10)`: explicit chat-ledger
   name.
-- `read_history_before(channel_message_id, limit=10)` and
-  `read_history_after(channel_message_id, limit=10)`: page chat-ledger messages.
-- `read_related_model_messages(channel_message_id)`: return
-  `ChannelMessage.model_messages` for a chat message.
+- `read_history_before(thread_message_id, limit=10)` and
+  `read_history_after(thread_message_id, limit=10)`: page chat-ledger messages.
+- `read_related_model_messages(thread_message_id)`: return
+  `ThreadMessage.model_messages` for a chat message.
 
 Add a separate model-history capability:
 
@@ -344,11 +344,11 @@ Add a separate model-history capability:
   `read_model_history_after(model_message_id, limit=10)`: the current paging
   behavior.
 - `read_related_chat_messages(model_message_id)`: return
-  `ModelMessage.channel_messages` for a model message.
+  `ModelMessage.thread_messages` for a model message.
 
 Instruction wording:
 
-- Chat history tells you what happened in the channel thread, including messages
+- Chat history tells you what happened in the thread, including messages
   sent while you were asleep.
 - Model history tells you what this agent conversation previously prompted,
   reasoned through, sent, and received from tools.
@@ -361,26 +361,26 @@ Instruction wording:
 
 Add models, schemas, exports, and an Alembic migration for:
 
-- `channel_threads`
-- `channel_messages`
+- `threads`
+- `thread_messages`
 - `channel_handoffs`
 - `message_binding`
 
-Add `channel_thread_id` to `conversations` and keep the existing address columns
+Add `thread_id` to `conversations` and keep the existing address columns
 during the transition.
 
 Success checks:
 
 - `Base.metadata.create_all` includes all tables.
-- Arcanus can create, load, mutate, and refresh `ChannelThread`.
-- The unique `ChannelThread` key ignores `user_id`.
+- Arcanus can create, load, mutate, and refresh `Thread`.
+- The unique `Thread` key ignores `user_id`.
 - Existing conversation tests still pass.
 
-### UoW 2: `ChannelThreadManager`
+### UoW 2: `ThreadManager`
 
 Add a manager that owns chat-ledger persistence through Arcanus:
 
-- `ensure_thread(address: ChannelAddress | ChannelThreadKey)`
+- `ensure_thread(address: ChannelAddress | ThreadKey)`
 - `record_inbound(event: MessageEvent)`
 - `record_outbound(...)`
 - `pending_prompt_messages(thread, trigger_message_id, active_agent_id)`
@@ -394,7 +394,7 @@ Add a manager that owns chat-ledger persistence through Arcanus:
 Success checks:
 
 - Manager tests prove group messages from different `user_id`s land in one
-  channel thread.
+  thread.
 - Pending prompt messages include unprompted human/bot messages and exclude the
   active agent's own outbound messages.
 - Prompt cursor advancement is persisted and cache-coherent.
@@ -419,17 +419,17 @@ Success checks:
 
 Resolve owner before picking the channel default:
 
-- Add `Octomate.channel_threads` as the project-level manager.
-- On user wake, resolve `ChannelThread.active_agent_tentacle_id` from
+- Add `Octomate.threads` as the project-level manager.
+- On user wake, resolve `Thread.active_agent_tentacle_id` from
   `latest_handoff`.
-- On every triage -> reception route and every summon, write `ChannelHandoff`
+- On every triage -> reception route and every summon, write `Handoff`
   before or while dispatching the target agent.
-- Ensure the target agent conversation belongs to the same `channel_thread_id`.
+- Ensure the target agent conversation belongs to the same `thread_id`.
 
 Success checks:
 
 - Regression test: Inkling summons Claude, Claude answers, then the next message
-  in the same channel thread routes to Claude.
+  in the same thread routes to Claude.
 - Chained summon updates ownership from Agent A to Agent B to Agent C.
 - A direct triage answer that does not route to reception does not accidentally
   claim ownership.
@@ -438,7 +438,7 @@ Success checks:
 
 Bind wake prompt messages to the persisted user `ModelRequest`:
 
-- Build the prompt from `ChannelMessage` rows.
+- Build the prompt from `ThreadMessage` rows.
 - After `record_agent_run`, identify the new user `ModelRequest`.
 - Relate each included channel message to the user `ModelRequest` with a
   `prompt_source` binding row.
@@ -467,9 +467,9 @@ Then reconcile output records to persisted assistant `ModelResponse`s:
 
 Success checks:
 
-- A final assistant reply has a `ChannelMessage` related to its
+- A final assistant reply has a `ThreadMessage` related to its
   `ModelResponse`.
-- A mid-run send has a `ChannelMessage` relationship row with the correct
+- A mid-run send has a `ThreadMessage` relationship row with the correct
   `tool_call_id`.
 - Streaming answer rotation records each visible output message without
   duplicating text.
@@ -495,10 +495,10 @@ Success checks:
 
 After the new path is covered:
 
-- Update `ConversationManager.ensure` to resolve by `channel_thread_id +
+- Update `ConversationManager.ensure` to resolve by `thread_id +
   agent_tentacle_id` when the thread id is available.
 - Keep a compatibility path from `ChannelAddress` for older tests and direct web
-  runs while the web/dev channel is moved to the same channel-thread path.
+  runs while the web/dev channel is moved to the same thread path.
 - Make Inkling use the project-level conversation manager in production wiring,
   so all agent conversations are under the same source of truth.
 - Move web/dev UI onto the channel pattern instead of preserving a separate
@@ -509,7 +509,7 @@ Success checks:
 
 - Existing tests for `ConversationManager`, deferred actions, Claude approval,
   triage dispatch, and history pass.
-- A fresh process can reload channel thread ownership and continue routing to the
+- A fresh process can reload thread ownership and continue routing to the
   handoff owner.
 
 ## Verification suite

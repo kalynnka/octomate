@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 
@@ -43,6 +44,30 @@ def _decision(agent_id: str = "claude", model: str = "opus") -> SummonDecision:
         hint="Working on it",
         summon="Please investigate the failing test.",
     )
+
+
+def test_summon_decision_requires_model_field() -> None:
+    with pytest.raises(ValidationError, match="model"):
+        SummonDecision(
+            action="summon",
+            agent_id="claude",
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+        )
+
+
+@pytest.mark.parametrize("model", [None, ""])
+def test_summon_decision_requires_concrete_model(model: str | None) -> None:
+    with pytest.raises(ValidationError, match="model"):
+        SummonDecision(
+            action="summon",
+            agent_id="claude",
+            model=model,
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+        )
 
 
 async def test_summon_capability_accepts_exact_route() -> None:

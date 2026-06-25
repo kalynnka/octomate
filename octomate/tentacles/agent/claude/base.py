@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from typing import (
@@ -176,6 +177,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -183,7 +185,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         conversation = await self.octomate.conversations.ensure(
-            conversation_address, agent_tentacle_id=self.id
+            conversation_address,
+            agent_tentacle_id=self.id,
+            thread_id=thread_id,
         )
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
@@ -398,6 +402,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -424,6 +429,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -449,6 +455,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -472,6 +479,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         async for event in self._iter_events(
             user_prompt,
             conversation_address=conversation_address,
+            thread_id=thread_id,
             run_name=run_name,
             output_type=output_type,
             model=model,
@@ -494,6 +502,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -519,6 +528,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -543,6 +553,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
+        thread_id: uuid.UUID | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -565,6 +576,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             self._iter_events(
                 user_prompt,
                 conversation_address=conversation_address,
+                thread_id=thread_id,
                 run_name=run_name,
                 output_type=output_type,
                 model=model,

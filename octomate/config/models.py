@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from functools import cached_property
+from typing import Literal, Self, TypedDict
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic_ai.models import KnownModelName, parse_model_id
 from pydantic_ai.settings import ModelSettings
 
-ProviderName = Literal[
-    "openai", "deepseek", "gemini", "vertex", "anthropic", "bedrock"
-]
+supported_providers: set[str] = {
+    "openai",
+    "openai-chat",
+    "deepseek",
+    "google",
+    "google-cloud",
+    "anthropic",
+    "bedrock",
+}
 
 CacheTTL = bool | Literal["5m", "1h"]
 
@@ -65,6 +73,18 @@ class ModelConfig(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    provider: ProviderName
-    name: str
+    name: KnownModelName
     settings: ModelSettings | None = None
+
+    @cached_property
+    def provider(self) -> str | None:
+        provider, _ = parse_model_id(self.name)
+        return provider
+
+    @model_validator(mode="after")
+    def validate_supported_provider(self) -> Self:
+        if self.provider is not None and self.provider not in supported_providers:
+            raise ValueError(
+                f"unsupported model provider prefix in {self.name!r}"
+            )
+        return self

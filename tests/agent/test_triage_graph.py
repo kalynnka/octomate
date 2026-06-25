@@ -41,6 +41,7 @@ from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, RecordingMarkdownFeeler
 from tests.support.managers import (
     FakeActionManager,
+    FakeThreadManager,
     FakeConversationManager,
     FakeDeferredBatch,
     FakePresentedBatch,
@@ -54,7 +55,7 @@ def _channel(*, stream: bool = True) -> FakeChannelTentacle:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=stream),
-            receptions=[AgentModelConfig(agent="other")],
+            receptions=[AgentModelConfig(agent="other", model="test")],
         )
     )
 
@@ -123,6 +124,7 @@ def _deps(
         channels=dict(channels),
         agents={"inkling": agent, "other": agent, agent.id: agent},
         conversation_manager=conversations,
+        thread_manager=FakeThreadManager(),
         action_manager=cast(
             DeferredActionManager, action_manager or FakeActionManager()
         ),
@@ -164,7 +166,7 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
             type="fake",
             receptions=[
                 AgentModelConfig(agent="claude", model="opus"),
-                AgentModelConfig(agent="other"),
+                AgentModelConfig(agent="other", model="test"),
             ],
         ),
     )
@@ -173,12 +175,13 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
+        thread_manager=FakeThreadManager(),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
     )
 
     routes = deps.available_routes["chan1"]
 
-    assert [(route.agent_id, route.model) for route in routes] == [("other", "")]
+    assert [(route.agent_id, route.model) for route in routes] == [("other", "test")]
     assert deps.available_routes["chan1"] is routes
 
 
@@ -225,7 +228,7 @@ async def test_reception_mounts_summon_capability_without_routes() -> None:
     decision = SummonDecision(
         action="summon",
         agent_id="other",
-        model="",
+        model="test",
         reason="needs work",
         hint="Working on it",
         summon="Please debug this in reception.",
@@ -240,7 +243,7 @@ async def test_reception_mounts_summon_capability_without_routes() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            receptions=[AgentModelConfig(agent="other")],
+            receptions=[AgentModelConfig(agent="other", model="test")],
         )
     )
     target = _source_target(address)
@@ -362,7 +365,7 @@ async def test_triage_graph_resumes_completed_triage_deferred_batch() -> None:
         triage_output=SummonDecision(
             action="summon",
             agent_id="other",
-            model="",
+            model="test",
             reason="answered",
             hint="continuing",
             summon="continue after the answered question",
@@ -508,7 +511,7 @@ async def test_per_channel_routing_resolves_agent_and_model() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
-            triage=AgentModelConfig(agent="t2"),
+            triage=AgentModelConfig(agent="t2", model="test"),
             receptions=[AgentModelConfig(agent="r2", model="opus")],
         )
     )
@@ -517,6 +520,7 @@ async def test_per_channel_routing_resolves_agent_and_model() -> None:
         channels={"im": im, "ops": ops},
         agents={"t2": triage_fake, "r2": reception_fake},
         conversation_manager=conversations,
+        thread_manager=FakeThreadManager(),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
     )
 
@@ -541,7 +545,7 @@ async def test_triage_graph_emits_reception_after_route() -> None:
         triage_output=SummonDecision(
             action="summon",
             agent_id="other",
-            model="",
+            model="test",
             reason="needs work",
             hint="Working on it",
             summon="Please debug this in reception.",
@@ -599,7 +603,7 @@ async def test_triage_resume_does_not_leak_deferred_results_into_reception() -> 
         triage_output=SummonDecision(
             action="summon",
             agent_id="other",
-            model="",
+            model="test",
             reason="needs work",
             hint="Working on it",
             summon="Please debug this in reception.",
@@ -636,7 +640,7 @@ async def test_triage_graph_consumes_reception_stream() -> None:
         triage_output=SummonDecision(
             action="summon",
             agent_id="other",
-            model="",
+            model="test",
             reason="needs work",
             hint="Working on it",
             summon="Please debug this in reception.",
@@ -676,7 +680,7 @@ async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
         triage_output=SummonDecision(
             action="summon",
             agent_id="other",
-            model="",
+            model="test",
             reason="needs work",
             hint="Working on it",
             summon="Please debug this in reception.",
@@ -688,7 +692,7 @@ async def test_triage_graph_fails_fast_when_stream_produces_no_result() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
-            receptions=[AgentModelConfig(agent="other")],
+            receptions=[AgentModelConfig(agent="other", model="test")],
         )
     )
     ops = _channel()
@@ -713,7 +717,7 @@ async def test_triage_graph_runs_final_reception_without_stream_when_disabled() 
         triage_output=SummonDecision(
             action="summon",
             agent_id="other",
-            model="",
+            model="test",
             reason="needs work",
             hint="needs work",
             summon="Please finish this without streaming.",
@@ -754,7 +758,7 @@ async def test_triage_graph_returns_deferred_result_when_streaming_reception_req
     decision = SummonDecision(
         action="summon",
         agent_id="other",
-        model="",
+        model="test",
         reason="needs work",
         hint="needs work",
         summon="Please ask before continuing.",
@@ -812,7 +816,7 @@ async def test_reception_can_summon_another_reception_agent() -> None:
         triage_output=SummonDecision(
             action="summon",
             agent_id="first",
-            model="",
+            model="test",
             reason="needs first pass",
             hint="First pass",
             summon="First agent brief.",
@@ -823,7 +827,7 @@ async def test_reception_can_summon_another_reception_agent() -> None:
         reception_summon=SummonDecision(
             action="summon",
             agent_id="second",
-            model="",
+            model="test",
             reason="needs second pass",
             hint="Second pass",
             summon="Second agent brief.",
@@ -839,10 +843,10 @@ async def test_reception_can_summon_another_reception_agent() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            triage=AgentModelConfig(agent="triage"),
+            triage=AgentModelConfig(agent="triage", model="test"),
             receptions=[
-                AgentModelConfig(agent="first"),
-                AgentModelConfig(agent="second"),
+                AgentModelConfig(agent="first", model="test"),
+                AgentModelConfig(agent="second", model="test"),
             ],
         )
     )
@@ -860,6 +864,7 @@ async def test_reception_can_summon_another_reception_agent() -> None:
                     "second": second_agent,
                 },
                 conversation_manager=conversations,
+                thread_manager=FakeThreadManager(),
                 action_manager=cast(DeferredActionManager, FakeActionManager()),
             ),
         )
@@ -929,7 +934,7 @@ async def test_flat_thread_skips_disconnected_reception_agents() -> None:
             stream=ChannelStreamConfig(enabled=True),
             receptions=[
                 AgentModelConfig(agent="claude", model="opus"),
-                AgentModelConfig(agent="other"),
+                AgentModelConfig(agent="other", model="test"),
             ],
         )
     )
@@ -1048,6 +1053,7 @@ async def test_awake_raises_for_unknown_channel_or_agent() -> None:
         channels={"im": stranger},
         agents={},
         conversation_manager=conversations,
+        thread_manager=FakeThreadManager(),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
     )
     event = MessageEvent(
@@ -1081,7 +1087,7 @@ async def test_prepare_reception_falls_back_to_main_on_sub_thread_failure() -> N
         triage_output=SummonDecision(
             action="summon",
             agent_id="other",
-            model="",
+            model="test",
             reason="needs work",
             hint="needs work",
             summon="Please continue in reception.",
@@ -1093,7 +1099,7 @@ async def test_prepare_reception_falls_back_to_main_on_sub_thread_failure() -> N
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
-            receptions=[AgentModelConfig(agent="other")],
+            receptions=[AgentModelConfig(agent="other", model="test")],
         )
     )
 
@@ -1167,7 +1173,7 @@ async def test_resume_returns_triage_result_for_already_completed_batch() -> Non
     decision = SummonDecision(
         action="summon",
         agent_id="inkling",
-        model="",
+        model="test",
         reason="resumed",
         hint="resumed",
         summon="",

@@ -20,10 +20,13 @@ from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.capabilities.events import StreamEvents
 from octomate.capabilities.summon import SummonCapability
+from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
+from octomate.managers.channel import ThreadManager
 from octomate.managers.conversations import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
+from octomate.schemas.channel import Thread
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
@@ -96,6 +99,9 @@ class TriageState:
     decision: TriageDecision | None = None
     targets: dict[str, ResponseTarget] = field(default_factory=dict)
     summon_routes: list[SummonRoute] = field(default_factory=list)
+    thread: Thread | None = None
+    claim_handoff: bool = False
+    handoff_from_agent_tentacle_id: str | None = None
     user_prompt: str | Sequence[UserContent] | None = None
     run_name: Literal["triage", "reception"] = "triage"
 
@@ -107,6 +113,7 @@ class TriageDeps:
     conversation_manager: ConversationManager = field(
         default_factory=ConversationManager
     )
+    thread_manager: ThreadManager = field(default_factory=ThreadManager)
     action_manager: DeferredActionManager = field(default_factory=DeferredActionManager)
 
     @overload
@@ -141,14 +148,14 @@ class TriageDeps:
     @cached_property
     def available_routes(self) -> dict[str, list[SummonRoute]]:
         available: dict[str, list[SummonRoute]] = {}
-        for channel_id, channel in self.channels.items():
+        for channel_id in self.channels:
             routes: list[SummonRoute] = []
             for reception in self.receptions(channel_id):
                 agent = self.agent(reception.agent)
                 routes.append(
                     SummonRoute(
                         agent_id=reception.agent,
-                        model=reception.model or "",
+                        model=reception.model,
                         description=agent.description,
                     )
                 )
@@ -158,15 +165,15 @@ class TriageDeps:
     def reception(
         self,
         channel_id: str,
-        agent_id: str,
-        model: str,
+        agent_id: str | None,
+        model: AgentRouteModelName | None,
     ) -> AgentModelConfig:
         receptions = self.receptions(channel_id)
         matched: AgentModelConfig | None = None
         for reception in receptions:
-            if reception.agent == agent_id and (reception.model or "") == model:
+            if reception.agent == agent_id and reception.model == model:
                 return reception
-            if agent_id and reception.agent == agent_id:
+            if agent_id is not None and reception.agent == agent_id:
                 matched = reception
         return matched or receptions[0]
 
@@ -208,6 +215,7 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             mode="main",
         )
         ctx.state.source_target = source_target
+        ctx.state.thread = await ctx.deps.thread_manager.ensure_thread(address)
 
         user_prompt = "\n\n".join(str(event) for event in self.signal.messages).strip()
         ctx.state.user_prompt = user_prompt
@@ -244,22 +252,61 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 
         source_address = source_target.address
 
+        thread = state.thread
+        active_agent_id = (
+            thread.active_agent_tentacle_id
+            if thread is not None
+            else None
+        )
+        if thread is not None and active_agent_id is not None:
+            active_model = thread.active_model
+            ctx.deps.agent(active_agent_id)
+            reception = ctx.deps.reception(
+                source_address.channel_tentacle_id,
+                active_agent_id,
+                active_model,
+            )
+            model = reception.model
+            state.decision = SummonDecision(
+                action="summon",
+                agent_id=reception.agent,
+                model=model,
+                reason="Continuing with the active thread owner.",
+                hint="Continuing with the active thread owner.",
+                summon=str(state.user_prompt or ""),
+            )
+            state.target = replace(
+                source_target,
+                mode="sub" if source_address.thread_id else "main",
+            )
+            state.claim_handoff = False
+            state.handoff_from_agent_tentacle_id = None
+            state.run_name = "reception"
+            return RunReception()
+
         if source_address.thread_id and source_target.thread_strategy == "flat_thread":
             logfire.info(
                 "route: flat-thread, skipping triage",
                 channel_id=source_address.channel_tentacle_id,
                 conversation_address=str(source_address),
             )
-            reception = ctx.deps.reception(source_address.channel_tentacle_id, "", "")
+            reception = ctx.deps.reception(
+                source_address.channel_tentacle_id,
+                None,
+                None,
+            )
+            model = reception.model
             state.decision = SummonDecision(
                 action="summon",
                 agent_id=reception.agent,
-                model=reception.model or "",
+                model=model,
                 reason="Continuing in the current thread.",
                 hint="Continuing in the current thread.",
                 summon=str(state.user_prompt or ""),
             )
             state.target = replace(source_target, mode="sub")
+            state.claim_handoff = True
+            state.handoff_from_agent_tentacle_id = None
             state.run_name = "reception"
             return RunReception()
         return RunTriage()
@@ -281,13 +328,11 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         source_channel_id = source_address.channel_tentacle_id
         triage = ctx.deps.triage(source_channel_id)
         agent = ctx.deps.agent(triage.agent)
-        triage_model = None
-        if triage.model:
-            triage_model = agent.models.get(triage.model)
-            if triage_model is None:
-                raise ValueError(
-                    f"agent {agent.id!r} has no configured model {triage.model!r}"
-                )
+        triage_model = agent.models.get(triage.model)
+        if triage_model is None:
+            raise ValueError(
+                f"agent {agent.id!r} has no configured model {triage.model!r}"
+            )
 
         targets: dict[str, ResponseTarget] = {}
         for channel_id, channel in ctx.deps.channels.items():
@@ -324,6 +369,7 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             target_address=source_address,
             target_mode="main",
             decision=None,
+            thread_id=state.thread.id if state.thread else None,
         )
         deferred_results = None
         if self.resume_batch_id is not None:
@@ -339,6 +385,9 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             result = await agent.run(
                 state.user_prompt,
                 conversation_address=source_address,
+                thread_id=(
+                    state.thread.id if state.thread else None
+                ),
                 run_name="triage",
                 output_type=cast(
                     OutputSpec[TriageOutput],
@@ -453,13 +502,16 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             reception = ctx.deps.reception(
                 source_channel_id, decision.agent_id, decision.model
             )
+            model = reception.model
             decision = decision.model_copy(
-                update={"agent_id": reception.agent, "model": reception.model or ""}
+                update={"agent_id": reception.agent, "model": model}
             )
             state.decision = decision
             if target.mode != "sub":
                 target = replace(target, mode="sub")
             state.target = target
+            state.claim_handoff = True
+            state.handoff_from_agent_tentacle_id = agent.id
             state.run_name = "reception"
             return PrepareReception()
 
@@ -519,6 +571,10 @@ class PrepareReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             target = replace(target, address=target_address)
 
         state.target = target
+        if target.address is not None and state.thread is not None:
+            state.thread = await ctx.deps.thread_manager.ensure_thread(
+                target.address
+            )
         return RunReception()
 
 
@@ -549,18 +605,43 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         reception = ctx.deps.reception(
             source_address.channel_tentacle_id, decision.agent_id, decision.model
         )
+        model = reception.model
         decision = decision.model_copy(
-            update={"agent_id": reception.agent, "model": reception.model or ""}
+            update={"agent_id": reception.agent, "model": model}
         )
         state.decision = decision
         agent = ctx.deps.agent(reception.agent)
-        reception_model = None
-        if reception.model:
-            reception_model = agent.models.get(reception.model)
-            if reception_model is None:
-                raise ValueError(
-                    f"agent {agent.id!r} has no configured model {reception.model!r}"
+        reception_model = agent.models.get(model)
+        if reception_model is None:
+            raise ValueError(
+                f"agent {agent.id!r} has no configured model {model!r}"
+            )
+        thread_id = state.thread.id if state.thread else None
+        if state.thread is not None and state.claim_handoff:
+            target_conversation = await ctx.deps.conversation_manager.ensure(
+                target_address,
+                agent_tentacle_id=agent.id,
+                thread_id=state.thread.id,
+            )
+            latest_handoff = state.thread.latest_handoff
+            target_model = model
+            if (
+                latest_handoff is None
+                or latest_handoff.to_agent_tentacle_id != agent.id
+                or latest_handoff.to_model != target_model
+            ):
+                await ctx.deps.thread_manager.record_handoff(
+                    state.thread,
+                    from_agent_tentacle_id=state.handoff_from_agent_tentacle_id,
+                    to_agent_tentacle_id=agent.id,
+                    to_model=target_model,
+                    reason=decision.reason,
+                    hint=decision.hint,
+                    brief=decision.summon,
+                    target_conversation_id=target_conversation.id,
                 )
+            state.claim_handoff = False
+            state.handoff_from_agent_tentacle_id = None
         target_channel = ctx.deps.channel(target)
         routes = [
             route
@@ -592,6 +673,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             target_address=target_address,
             target_mode=target.mode,
             decision=state.decision,
+            thread_id=thread_id,
             emit_on_stream=target_channel.config.stream.enabled,
         )
 
@@ -613,6 +695,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     async with agent.run_stream_events(
                         user_prompt,
                         conversation_address=target_address,
+                        thread_id=thread_id,
                         run_name="reception",
                         model=reception_model,
                         deferred_tool_results=deferred_results,
@@ -636,6 +719,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 result = await agent.run(
                     user_prompt,
                     conversation_address=target_address,
+                    thread_id=thread_id,
                     run_name="reception",
                     model=reception_model,
                     deferred_tool_results=deferred_results,
@@ -685,6 +769,8 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             if summon_decision is not None:
                 state.decision = summon_decision
                 state.target = target
+                state.claim_handoff = True
+                state.handoff_from_agent_tentacle_id = agent.id
                 state.run_name = "reception"
                 span.set_attribute("reception.action", summon_decision.action)
                 span.set_attribute("reception.next_agent_id", summon_decision.agent_id)
@@ -767,10 +853,16 @@ class ResumeDeferred(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         elif batch.decision:
             decision = TriageDecisionAdapter.validate_python(batch.decision)
         else:
+            reception = ctx.deps.reception(
+                batch.source_address.channel_tentacle_id,
+                batch.agent_tentacle_id,
+                None,
+            )
+            model = reception.model
             decision = SummonDecision(
                 action="summon",
-                agent_id=batch.agent_tentacle_id,
-                model="",
+                agent_id=reception.agent,
+                model=model,
                 reason="Resuming deferred human input.",
                 hint="Resuming deferred human input.",
                 summon="",

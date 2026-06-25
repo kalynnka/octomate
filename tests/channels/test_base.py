@@ -115,7 +115,7 @@ async def test_ingest_dispatches_event_to_octomate(
     signal = octomate.kicks[0]
     assert isinstance(signal, UserMessageSignal)
     address = signal.address
-    assert signal.trigger_channel_message_id is not None
+    assert signal.trigger_thread_message_id is not None
 
     assert address.channel_tentacle_id == "chan1"
     assert address.chat_id == "lobby"
@@ -127,8 +127,8 @@ async def test_ingest_dispatches_event_to_octomate(
     assert event.self_id == "bot"
     assert event.sender.user_id == "alice"
 
-    thread = await octomate.channel_threads.ensure_thread(address)
-    assert thread.messages[-1].id == signal.trigger_channel_message_id
+    thread = await octomate.thread_manager.ensure_thread(address)
+    assert thread.messages[-1].id == signal.trigger_thread_message_id
     assert thread.messages[-1].message_text == "hello"
 
 
@@ -168,7 +168,7 @@ async def test_group_mention_filter_records_unmentioned_events_before_ignore(
     assert isinstance(octomate, FakeOctomate)
     assert octomate.kicks == []
 
-    thread = await octomate.channel_threads.ensure_thread(
+    thread = await octomate.thread_manager.ensure_thread(
         _key(chat_type="group", chat_id="lobby")
     )
     assert [message.message_text for message in thread.messages] == ["hello"]
@@ -205,14 +205,14 @@ async def test_next_mention_prompt_includes_stored_unmentioned_messages(
     assert len(octomate.kicks) == 1
     signal = octomate.kicks[0]
     assert isinstance(signal, UserMessageSignal)
-    assert signal.trigger_channel_message_id is not None
+    assert signal.trigger_thread_message_id is not None
 
-    thread = await octomate.channel_threads.ensure_thread(
+    thread = await octomate.thread_manager.ensure_thread(
         _key(chat_type="group", chat_id="lobby")
     )
-    pending = await octomate.channel_threads.pending_prompt_messages(
+    pending = await octomate.thread_manager.pending_prompt_messages(
         thread,
-        signal.trigger_channel_message_id,
+        signal.trigger_thread_message_id,
         active_agent_id="inkling",
     )
     assert [message.message_text for message in pending] == [

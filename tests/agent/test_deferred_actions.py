@@ -64,7 +64,7 @@ async def _create_batch() -> DeferredActionBatch:
         decision=SummonDecision(
             action="summon",
             agent_id="inkling",
-            model="",
+            model="test",
             reason="needs input",
             hint="needs input",
             summon="needs input",
@@ -94,7 +94,7 @@ def test_deferred_action_batch_accepts_validated_actions() -> None:
         decision=SummonDecision(
             action="summon",
             agent_id="inkling",
-            model="",
+            model="test",
             reason="needs input",
             hint="needs input",
             summon="needs input",

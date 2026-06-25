@@ -14,6 +14,7 @@ from pydantic_settings import (
 
 from octomate.config.agents import (
     AgentsConfig,
+    AgentRouteModelName,
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     InklingConfig,
@@ -37,7 +38,7 @@ from octomate.config.models import (
     CacheTTL,
     ModelConfig,
     OpenAIModelSettings,
-    ProviderName,
+    supported_providers,
 )
 from octomate.config.observability import LogfireConfig, LoggingConfig, LogLevel
 from octomate.config.providers import (
@@ -125,19 +126,7 @@ class OctomateConfig(BaseSettings):
                             )
                         )
                         continue
-                    if route.model is None:
-                        errors.append(
-                            InitErrorDetails(
-                                type=PydanticCustomError(
-                                    "channel_agent_route",
-                                    "model is required for claude routes",
-                                    {},
-                                ),
-                                loc=("channels", channel_id, *route_location, "model"),
-                                input=route.model,
-                            )
-                        )
-                    elif route.model not in self.agents.claude.models:
+                    if route.model not in self.agents.claude.models:
                         errors.append(
                             InitErrorDetails(
                                 type=PydanticCustomError(
@@ -151,7 +140,6 @@ class OctomateConfig(BaseSettings):
                         )
                 if (
                     route.agent == "inkling"
-                    and route.model is not None
                     and route.model not in inkling_models
                 ):
                     errors.append(
@@ -195,6 +183,7 @@ __all__ = [
     "OctomateConfig",
     # agents
     "AgentsConfig",
+    "AgentRouteModelName",
     "ClaudeCodeConfig",
     "ClaudeSSHConfig",
     "InklingConfig",
@@ -204,7 +193,7 @@ __all__ = [
     "CacheTTL",
     "ModelConfig",
     "OpenAIModelSettings",
-    "ProviderName",
+    "supported_providers",
     # providers
     "AnthropicProviderConfig",
     "BedrockProviderConfig",

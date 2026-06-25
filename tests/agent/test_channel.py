@@ -14,14 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.database import async_session
 from octomate.managers import ConversationManager
 from octomate.models import Base
-from octomate.models.channel import ChannelMessage as ChannelMessageModel
+from octomate.models.channel import ThreadMessage as ThreadMessageModel
 from octomate.models.channel import MessageBinding as MessageBindingModel
 from octomate.models.messages import ModelMessage as ModelMessageModel
 from octomate.schemas.channel import (
-    ChannelHandoff,
-    ChannelMessage,
-    ChannelThread,
-    ChannelThreadKey,
+    Handoff,
+    ThreadMessage,
+    Thread,
+    ThreadKey,
     MessageBinding,
 )
 from octomate.schemas.conversation import ChannelAddress, UserProfile
@@ -43,17 +43,17 @@ def _address(*, user_id: str) -> ChannelAddress:
     )
 
 
-def test_channel_thread_tables_are_registered() -> None:
-    assert "channel_threads" in Base.metadata.tables
-    assert "channel_messages" in Base.metadata.tables
+def test_thread_tables_are_registered() -> None:
+    assert "threads" in Base.metadata.tables
+    assert "thread_messages" in Base.metadata.tables
     assert "channel_handoffs" in Base.metadata.tables
     assert "message_binding" in Base.metadata.tables
-    assert "channel_thread_id" in Base.metadata.tables["conversations"].columns
+    assert "thread_id" in Base.metadata.tables["conversations"].columns
 
 
 def test_message_relationships_use_message_binding() -> None:
-    channel_relationship = inspect(ChannelMessageModel).relationships["model_messages"]
-    model_relationship = inspect(ModelMessageModel).relationships["channel_messages"]
+    channel_relationship = inspect(ThreadMessageModel).relationships["model_messages"]
+    model_relationship = inspect(ModelMessageModel).relationships["thread_messages"]
 
     assert channel_relationship.secondary is MessageBindingModel.__table__
     assert model_relationship.secondary is MessageBindingModel.__table__
@@ -62,15 +62,15 @@ def test_message_relationships_use_message_binding() -> None:
 
 def test_channel_handoff_sorts_by_uuid7_id() -> None:
     thread_id = uuid.UUID("00000000-0000-7000-8000-000000000100")
-    earlier_handoff = ChannelHandoff(
+    earlier_handoff = Handoff(
         id=uuid.UUID("00000000-0000-7000-8000-000000000001"),
-        channel_thread_id=thread_id,
+        thread_id=thread_id,
         to_agent_tentacle_id="inkling",
         created_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
     )
-    later_handoff = ChannelHandoff(
+    later_handoff = Handoff(
         id=uuid.UUID("00000000-0000-7000-8000-000000000002"),
-        channel_thread_id=thread_id,
+        thread_id=thread_id,
         to_agent_tentacle_id="claude",
         created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
     )
@@ -83,14 +83,14 @@ def test_channel_handoff_sorts_by_uuid7_id() -> None:
     ]
 
 
-def test_channel_thread_key_ignores_sender_user() -> None:
-    assert ChannelThreadKey.from_address(_address(user_id="alice")) == (
-        ChannelThreadKey.from_address(_address(user_id="bob"))
+def test_thread_key_ignores_sender_user() -> None:
+    assert ThreadKey.from_address(_address(user_id="alice")) == (
+        ThreadKey.from_address(_address(user_id="bob"))
     )
 
 
-async def test_channel_thread_round_trips_with_messages_and_handoffs() -> None:
-    thread = ChannelThread(
+async def test_thread_round_trips_with_messages_and_handoffs() -> None:
+    thread = Thread(
         channel_tentacle_id="slack",
         chat_type="group",
         chat_id="C123",
@@ -102,8 +102,8 @@ async def test_channel_thread_round_trips_with_messages_and_handoffs() -> None:
     async with async_session() as session:
         session.add(thread)
         session.add(
-            ChannelMessage(
-                channel_thread_id=thread_id,
+            ThreadMessage(
+                thread_id=thread_id,
                 platform_message_id="1710000000.000002",
                 timestamp=datetime.now(timezone.utc),
                 direction="inbound",
@@ -115,19 +115,19 @@ async def test_channel_thread_round_trips_with_messages_and_handoffs() -> None:
             )
         )
         session.add(
-            ChannelHandoff(
+            Handoff(
                 id=earlier_handoff_id,
-                channel_thread_id=thread_id,
+                thread_id=thread_id,
                 to_agent_tentacle_id="inkling",
-                to_model="mini",
+                to_model="haiku",
                 reason="Initial owner.",
                 created_at=datetime(2030, 1, 1, tzinfo=timezone.utc),
             )
         )
         session.add(
-            ChannelHandoff(
+            Handoff(
                 id=later_handoff_id,
-                channel_thread_id=thread_id,
+                thread_id=thread_id,
                 from_agent_tentacle_id="inkling",
                 to_agent_tentacle_id="claude",
                 to_model="sonnet",
@@ -139,12 +139,12 @@ async def test_channel_thread_round_trips_with_messages_and_handoffs() -> None:
 
     async with async_session() as session:
         stored = await session.one_or_none(
-            ChannelThread,
+            Thread,
             expressions=[
-                ChannelThread["channel_tentacle_id"] == "slack",
-                ChannelThread["chat_type"] == "group",
-                ChannelThread["chat_id"] == "C123",
-                ChannelThread["thread_id"] == "1710000000.000001",
+                Thread["channel_tentacle_id"] == "slack",
+                Thread["chat_type"] == "group",
+                Thread["chat_id"] == "C123",
+                Thread["thread_id"] == "1710000000.000001",
             ],
         )
         assert stored is not None
@@ -155,24 +155,24 @@ async def test_channel_thread_round_trips_with_messages_and_handoffs() -> None:
 
     async with async_session() as session:
         reloaded = await session.one_or_none(
-            ChannelThread,
-            expressions=[ChannelThread["id"] == stored.id],
+            Thread,
+            expressions=[Thread["id"] == stored.id],
         )
         assert reloaded is not None
         await reloaded.messages
         await reloaded.handoffs
 
     assert reloaded.status == "closed"
-    assert reloaded.key == ChannelThreadKey.from_address(_address(user_id="alice"))
+    assert reloaded.key == ThreadKey.from_address(_address(user_id="alice"))
     assert reloaded.messages[0].message_text == "handoff this"
     assert reloaded.active_agent_tentacle_id == "claude"
     assert reloaded.active_model == "sonnet"
 
 
-async def test_channel_thread_unique_key_has_no_user_id() -> None:
+async def test_thread_unique_key_has_no_user_id() -> None:
     async with async_session() as session:
         session.add(
-            ChannelThread(
+            Thread(
                 channel_tentacle_id="slack",
                 chat_type="group",
                 chat_id="C123",
@@ -180,7 +180,7 @@ async def test_channel_thread_unique_key_has_no_user_id() -> None:
             )
         )
         session.add(
-            ChannelThread(
+            Thread(
                 channel_tentacle_id="slack",
                 chat_type="group",
                 chat_id="C123",
@@ -192,14 +192,14 @@ async def test_channel_thread_unique_key_has_no_user_id() -> None:
 
 
 async def test_message_binding_round_trips_as_orm() -> None:
-    thread = ChannelThread(
+    thread = Thread(
         channel_tentacle_id="slack",
         chat_type="group",
         chat_id="C123",
         thread_id="1710000000.000001",
     )
-    channel_message = ChannelMessage(
-        channel_thread_id=thread.id,
+    thread_message = ThreadMessage(
+        thread_id=thread.id,
         platform_message_id="1710000000.000002",
         timestamp=datetime.now(timezone.utc),
         direction="inbound",
@@ -211,7 +211,7 @@ async def test_message_binding_round_trips_as_orm() -> None:
     )
     async with async_session() as session:
         session.add(thread)
-        session.add(channel_message)
+        session.add(thread_message)
         await session.commit()
 
     manager = ConversationManager()
@@ -237,7 +237,7 @@ async def test_message_binding_round_trips_as_orm() -> None:
     async with async_session() as session:
         session.add(
             MessageBinding(
-                channel_message_id=channel_message.id,
+                thread_message_id=thread_message.id,
                 model_message_id=model_message.id,
                 kind="prompt_source",
                 run_id=run_id,
@@ -248,13 +248,13 @@ async def test_message_binding_round_trips_as_orm() -> None:
 
     async with async_session() as session:
         stored_message = await session.one_or_none(
-            ChannelMessage,
-            expressions=[ChannelMessage["id"] == channel_message.id],
+            ThreadMessage,
+            expressions=[ThreadMessage["id"] == thread_message.id],
         )
         stored_binding = await session.one_or_none(
             MessageBinding,
             expressions=[
-                MessageBinding["channel_message_id"] == channel_message.id,
+                MessageBinding["thread_message_id"] == thread_message.id,
                 MessageBinding["model_message_id"] == model_message.id,
                 MessageBinding["kind"] == "prompt_source",
             ],

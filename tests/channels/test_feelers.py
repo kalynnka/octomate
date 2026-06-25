@@ -101,7 +101,7 @@ def _approval(*, batch_id: uuid.UUID | None = None) -> DeferredApproval:
     )
 
 
-def test_channel_thread_strategies_are_declared() -> None:
+def test_thread_strategies_are_declared() -> None:
     assert SlackTentacle.thread_strategy == "flat_thread"
     assert LarkTentacle.thread_strategy == "flat_thread"
     assert NapcatTentacle.thread_strategy == "main_only"
@@ -172,7 +172,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
     decision = SummonDecision(
         action="summon",
         agent_id="inkling",
-        model="",
+        model="test",
         reason="needs input",
         hint="needs input",
         summon="needs input",

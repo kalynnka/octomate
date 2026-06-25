@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Literal, Self, TypeAlias
 
 from pydantic import BaseModel, Field, model_validator
+from pydantic_ai.models import KnownModelName
 
 from octomate.config.models import ModelConfig
 
-ClaudeCodeModelAlias: TypeAlias = Literal[
+ClaudeCodeModelName: TypeAlias = Literal[
     "best",
     "fable",
     "sonnet",
@@ -17,6 +18,7 @@ ClaudeCodeModelAlias: TypeAlias = Literal[
     "opusplan",
     "opusplan[1m]",
 ]
+AgentRouteModelName: TypeAlias = KnownModelName | ClaudeCodeModelName
 
 
 class InklingConfig(BaseModel):
@@ -52,7 +54,7 @@ class ClaudeCodeConfig(BaseModel):
     """
 
     cwd: str = "."
-    models: set[ClaudeCodeModelAlias] = Field(
+    models: set[ClaudeCodeModelName] = Field(
         default={"opusplan[1m]", "opus[1m]", "sonnet[1m]", "haiku"},
         min_length=1,
     )
@@ -76,8 +78,8 @@ class AgentsConfig(BaseModel):
     inkling: InklingConfig = Field(
         default_factory=lambda: InklingConfig(
             models=[
-                ModelConfig(provider="deepseek", name="deepseek-v4-flash"),
-                ModelConfig(provider="deepseek", name="deepseek-v4-pro"),
+                ModelConfig(name="deepseek:deepseek-v4-flash"),
+                ModelConfig(name="deepseek:deepseek-v4-pro"),
             ]
         )
     )
