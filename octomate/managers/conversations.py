@@ -24,13 +24,11 @@ class ConversationManager:
 
     The cache is the `Conversation` schema object itself — its `messages`
     relation (an arcanus list) is the in-memory history. The database is the
-    source of truth: every write (`record_agent_run`, `drop_trailing_deferral`)
-    commits and then `refresh`es the conversation, re-caching the freshly loaded
-    object (its `runs` and `messages` come along via selectin) instead of
-    patching the in-memory collections. History is keyed by `ConversationKey`
-    (a `ChannelAddress` + the owning agent), the isolation boundary — a sub-thread
-    reception, or a different agent at the same address, gets its own conversation
-    and never inherits another's.
+    source of truth; writes keep the cached transmuter object coherent after the
+    commit. History is keyed by `ConversationKey` (a `ChannelAddress` + the
+    owning agent), the isolation boundary — a sub-thread reception, or a
+    different agent at the same address, gets its own conversation and never
+    inherits another's.
     """
 
     def __init__(self, *, cache_size: int = 256) -> None:
@@ -93,22 +91,6 @@ class ConversationManager:
         while len(self.conversations) > self.cache_size:
             self.conversations.popitem(last=False)
 
-    async def refresh(self, conversation: Conversation) -> None:
-        """Reload the conversation from the database and re-cache it. The
-        relations don't auto-refresh across sessions, so every write re-reads
-        the persisted rows (the source of truth); `runs` and `messages` are
-        eagerly (selectin) loaded, so the re-fetched object is complete."""
-        async with async_session() as session:
-            stored = await session.one_or_none(
-                Conversation,
-                expressions=[Conversation["id"] == conversation.id],
-            )
-            if stored is None:
-                return
-            await stored.runs
-            await stored.messages
-        self.cache_conversation(stored)
-
     async def record_agent_run(
         self,
         conversation: Conversation,
@@ -118,10 +100,10 @@ class ConversationManager:
         name: str | None = None,
         external_id: str | None = None,
     ) -> None:
-        """Persist a fresh agent run, then refresh the cached conversation from
-        the database so it includes the new run. `external_id`, when
-        given, updates the conversation's resumable agent session handle in the
-        same commit (external-runtime agents own their own session)."""
+        """Persist a fresh agent run and keep the cached conversation in sync.
+        `external_id`, when given, updates the conversation's resumable agent
+        session handle in the same commit (external-runtime agents own their own
+        session)."""
         if not messages:
             return
         # Shallow `vars(m)` per message lets pydantic route each dict through
@@ -142,7 +124,11 @@ class ConversationManager:
                 if stored is not None:
                     stored.external_id = external_id
             await session.commit()
-        await self.refresh(conversation)
+        if external_id is not None:
+            conversation.external_id = external_id
+        conversation.runs.append(run)
+        conversation.messages.extend(list(run.messages))
+        self.cache_conversation(conversation)
 
     async def grant_session_tool(
         self,
@@ -150,9 +136,7 @@ class ConversationManager:
         tool_name: str,
     ) -> None:
         """Persist an `allow for session` grant on the conversation, so the tool
-        auto-approves on later turns. Resolves the cached instance via `ensure`,
-        writes the change through an attached row, then re-caches that fresh row
-        directly (no extra reload — `stored` already reflects the commit)."""
+        auto-approves on later turns."""
         cached = await self.ensure(
             conversation.address, agent_tentacle_id=conversation.agent_tentacle_id
         )
@@ -164,9 +148,8 @@ class ConversationManager:
                 return
             stored.allowed_tools = [*stored.allowed_tools, tool_name]
             await session.commit()
-            await stored.runs
-            await stored.messages
-        self.cache_conversation(stored)
+        cached.allowed_tools = [*cached.allowed_tools, tool_name]
+        self.cache_conversation(cached)
 
     async def drop_trailing_deferral(
         self,
@@ -189,7 +172,11 @@ class ConversationManager:
         async with async_session() as session:
             await session.delete(last)
             await session.commit()
-        await self.refresh(conversation)
+        conversation.messages.remove(last)
+        for run in conversation.runs:
+            if last in run.messages:
+                run.messages.remove(last)
+        self.cache_conversation(conversation)
         return last
 
     async def search_messages(

@@ -316,7 +316,7 @@ The binding should be created after `ModelMessage` rows exist:
 Implementation note: for streaming and mid-run sends, platform output can happen
 before the run is fully persisted. Use a typed pending-output record in memory
 for the run, keyed by run id and tool call id or output part, then reconcile to
-the secondary binding table immediately after `record_agent_run` refreshes the
+the secondary binding table immediately after `record_agent_run` syncs the
 conversation. Avoid storing unresolved binding metadata in `ChannelMessage`
 itself.
 

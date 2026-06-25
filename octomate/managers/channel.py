@@ -36,8 +36,7 @@ class ChannelThreadManager:
     """Owns durable channel-thread chat ledger persistence.
 
     The cache mirrors `ConversationManager`: the database is the source of truth,
-    and write methods refresh the cached `ChannelThread` so hot callers see the
-    latest cursor, handoff, and message relations.
+    and write methods keep the cached `ChannelThread` coherent after commits.
     """
 
     def __init__(self, *, cache_size: int = 256) -> None:
@@ -88,19 +87,6 @@ class ChannelThreadManager:
         while len(self.threads) > self.cache_size:
             self.threads.popitem(last=False)
 
-    async def refresh(self, thread: ChannelThread) -> ChannelThread | None:
-        async with async_session() as session:
-            stored = await session.one_or_none(
-                ChannelThread,
-                expressions=[ChannelThread["id"] == thread.id],
-            )
-            if stored is None:
-                return None
-            await stored.messages
-            await stored.handoffs
-        self.cache_thread(stored)
-        return stored
-
     async def record_inbound(
         self,
         event: MessageEvent,
@@ -137,6 +123,8 @@ class ChannelThreadManager:
         async with async_session() as session:
             session.add(message)
             await session.commit()
+        thread.messages.append(message)
+        self.cache_thread(thread)
         return message
 
     async def record_outbound(
@@ -175,6 +163,8 @@ class ChannelThreadManager:
         async with async_session() as session:
             session.add(message)
             await session.commit()
+        thread.messages.append(message)
+        self.cache_thread(thread)
         return message
 
     async def pending_prompt_messages(
@@ -218,10 +208,9 @@ class ChannelThreadManager:
                 return None
             stored.prompt_cursor_message_id = message_id
             await session.commit()
-            await stored.messages
-            await stored.handoffs
-        self.cache_thread(stored)
-        return stored
+        thread.prompt_cursor_message_id = message_id
+        self.cache_thread(thread)
+        return thread
 
     async def record_handoff(
         self,
@@ -258,7 +247,8 @@ class ChannelThreadManager:
         async with async_session() as session:
             session.add(handoff)
             await session.commit()
-        await self.refresh(thread)
+        thread.handoffs.append(handoff)
+        self.cache_thread(thread)
         return handoff
 
     async def bind_messages(

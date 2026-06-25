@@ -175,7 +175,7 @@ async def test_record_run_no_op_for_empty_list() -> None:
     assert list(reloaded.runs) == []
 
 
-async def test_record_run_refreshes_cached_history() -> None:
+async def test_record_run_syncs_cached_history() -> None:
     service = ConversationManager()
     conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
     assert list(conversation.messages) == []
@@ -198,8 +198,8 @@ async def test_record_run_refreshes_cached_history() -> None:
         ],
     )
 
-    # record_agent_run refreshes the cached conversation from the DB; a hot
-    # ensure() (cache hit, no cold reload) reflects the new run.
+    # record_agent_run keeps the cached conversation coherent; a hot ensure()
+    # (cache hit, no cold reload) reflects the new run.
     hot = await service.ensure(_key(), agent_tentacle_id="inkling")
     assert len(list(hot.messages)) == 2
 
@@ -230,7 +230,7 @@ async def test_drop_trailing_deferral_removes_from_cache_and_db() -> None:
         ],
     )
 
-    # ensure() returns the conversation re-cached by record_agent_run's refresh.
+    # ensure() returns the conversation synced by record_agent_run.
     conversation = await service.ensure(_key(), agent_tentacle_id="inkling")
     dropped = await service.drop_trailing_deferral(conversation)
     assert dropped is not None

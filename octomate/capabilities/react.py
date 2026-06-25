@@ -253,8 +253,9 @@ class RunAgent(
             "react.deferred", isinstance(result.output, DeferredToolRequests)
         )
         span.set_attribute("react.new_messages", len(new_messages))
-        # Recording refreshes the cached conversation, so the next RunAgent's
-        # ensure() picks up this turn from the manager — no copy in state.
+        # Recording keeps the cached conversation coherent, so the next
+        # RunAgent's ensure() picks up this turn from the manager — no copy in
+        # state.
         if new_messages:
             await ctx.deps.conversation_manager.record_agent_run(
                 conversation,

@@ -123,7 +123,7 @@ async def test_pending_prompt_messages_ensures_thread() -> None:
     assert [message.id for message in pending] == [trigger.id]
 
 
-async def test_record_handoff_refreshes_active_owner_cache() -> None:
+async def test_record_handoff_syncs_active_owner_cache() -> None:
     manager = ChannelThreadManager()
     thread = await manager.ensure_thread(address())
 
