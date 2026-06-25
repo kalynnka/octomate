@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
 )
 from pydantic_ai.result import FinalResult
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.events import (
     ActionBatchEvent,
@@ -93,6 +94,7 @@ def _key(
 
 async def test_ingest_dispatches_event_to_octomate(
     channel: FakeChannelTentacle,
+    in_memory_engine: AsyncEngine,
 ) -> None:
     raw: RawMessage = {
         "message_id": "m42",
@@ -113,6 +115,7 @@ async def test_ingest_dispatches_event_to_octomate(
     signal = octomate.kicks[0]
     assert isinstance(signal, UserMessageSignal)
     address = signal.address
+    assert signal.trigger_channel_message_id is not None
 
     assert address.channel_tentacle_id == "chan1"
     assert address.chat_id == "lobby"
@@ -123,6 +126,10 @@ async def test_ingest_dispatches_event_to_octomate(
     assert event.tentacle_id == "chan1"
     assert event.self_id == "bot"
     assert event.sender.user_id == "alice"
+
+    thread = await octomate.channel_threads.ensure_thread(address)
+    assert thread.messages[-1].id == signal.trigger_channel_message_id
+    assert thread.messages[-1].message_text == "hello"
 
 
 async def test_ingest_swallows_chromo_errors(
@@ -143,7 +150,9 @@ async def test_ingest_swallows_chromo_errors(
     assert "error in ingest" in caplog.text
 
 
-async def test_group_mention_filter_ignores_unmentioned_events() -> None:
+async def test_group_mention_filter_records_unmentioned_events_before_ignore(
+    in_memory_engine: AsyncEngine,
+) -> None:
     channel = FakeChannelTentacle(id="chan1")
     await channel.ingest(
         {
@@ -159,11 +168,64 @@ async def test_group_mention_filter_ignores_unmentioned_events() -> None:
     assert isinstance(octomate, FakeOctomate)
     assert octomate.kicks == []
 
+    thread = await octomate.channel_threads.ensure_thread(
+        _key(chat_type="group", chat_id="lobby")
+    )
+    assert [message.message_text for message in thread.messages] == ["hello"]
+
+
+async def test_next_mention_prompt_includes_stored_unmentioned_messages(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    channel = FakeChannelTentacle(id="chan1")
+    await channel.ingest(
+        {
+            "message_id": "m42",
+            "user_id": "alice",
+            "chat_id": "lobby",
+            "chat_type": "group",
+            "segments": [TextSegment(data={"text": "quiet context"})],
+        }
+    )
+    await channel.ingest(
+        {
+            "message_id": "m43",
+            "user_id": "alice",
+            "chat_id": "lobby",
+            "chat_type": "group",
+            "segments": [
+                AtSegment(data=AtData(user_id="bot")),
+                TextSegment(data={"text": "wake now"}),
+            ],
+        }
+    )
+
+    octomate = channel.octomate
+    assert isinstance(octomate, FakeOctomate)
+    assert len(octomate.kicks) == 1
+    signal = octomate.kicks[0]
+    assert isinstance(signal, UserMessageSignal)
+    assert signal.trigger_channel_message_id is not None
+
+    thread = await octomate.channel_threads.ensure_thread(
+        _key(chat_type="group", chat_id="lobby")
+    )
+    pending = await octomate.channel_threads.pending_prompt_messages(
+        thread,
+        signal.trigger_channel_message_id,
+        active_agent_id="inkling",
+    )
+    assert [message.message_text for message in pending] == [
+        "quiet context",
+        "wake now",
+    ]
+
 
 async def test_submerge_downloads_images_and_rewrites_file(
     channel: FakeChannelTentacle,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
 ) -> None:
     monkeypatch.setattr(FakeChannelTentacle, "FILES_ROOT", tmp_path)
     channel.recording_ink.downloads["remote-image-address"] = DownloadedImage(

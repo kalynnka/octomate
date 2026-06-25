@@ -226,6 +226,7 @@ class ChannelTentacle(
                 conversation_address=str(address),
                 message_id=str(event.message_id),
             )
+            channel_message = await self.octomate.channel_threads.record_inbound(event)
             if (
                 self.config.mention_only
                 and address.is_group
@@ -237,7 +238,12 @@ class ChannelTentacle(
                     address,
                 )
                 return
-            await self.octomate.kick(UserMessageSignal([event]))
+            await self.octomate.kick(
+                UserMessageSignal(
+                    [event],
+                    trigger_channel_message_id=channel_message.id,
+                )
+            )
         except Exception:
             logger.exception("Channel %s: error in ingest", self.id)
 
