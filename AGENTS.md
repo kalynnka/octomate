@@ -22,6 +22,7 @@
 1. For multi-step work, define brief success criteria before changing code. Map the work to verifiable steps such as reproducing a bug, adding focused tests, implementing the change, and running the relevant checks.
 2. Loop until the success criteria are verified or a concrete blocker is found. If verification is not possible, state what could not be checked and why.
 3. Every changed line should trace directly to the user's request, the agreed success criteria, or cleanup made necessary by the change.
+4. Do not create commits unless the user explicitly asks for a commit. When undoing a commit for review, preserve its changes in the working tree unless the user explicitly asks to discard them.
 
 ## Typing
 

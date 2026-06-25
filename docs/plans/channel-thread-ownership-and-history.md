@@ -1,6 +1,6 @@
 # Plan: channel-thread ownership and split histories
 
-> Status: proposed
+> Status: in progress
 > Owner: @luhui
 > Created: 2026-06-24
 > Supersedes the useful parts of
@@ -386,7 +386,7 @@ Add a manager that owns chat-ledger persistence through Arcanus:
 - `pending_prompt_messages(thread, trigger_message_id, active_agent_id)`
 - `advance_prompt_cursor(thread, message_id)`
 - `record_handoff(...)`
-- `relate_channel_model_messages(...)`
+- `bind_messages(...)`
 - `search_chat_messages(...)`
 - `chat_messages_before(...)`
 - `chat_messages_after(...)`

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
-from typing import ClassVar, Literal
+from typing import Literal
 
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
@@ -33,9 +33,7 @@ class ConversationManager:
     and never inherits another's.
     """
 
-    DEFAULT_CACHE_SIZE: ClassVar[int] = 256
-
-    def __init__(self, *, cache_size: int = DEFAULT_CACHE_SIZE) -> None:
+    def __init__(self, *, cache_size: int = 256) -> None:
         self.cache_size = cache_size
         self.conversations: OrderedDict[ConversationKey, Conversation] = OrderedDict()
 
