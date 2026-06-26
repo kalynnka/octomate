@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import TracebackType
 from typing import Any, Generic, TypeVar
 
@@ -34,11 +34,13 @@ from pydantic_ai.toolsets import AbstractToolset
 # deprecated for v2; pinned <2 in pyproject.toml until then.
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
+from octomate.managers.channel import ThreadManager
 from octomate.managers.conversations import ConversationManager
 from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
 from octomate.capabilities.events import StreamEvents
+from octomate.schemas.messages import ModelRequest
 
 logger = logging.getLogger(__name__)
 # The react graph is generic machinery: the run's output type is whatever the
@@ -66,6 +68,8 @@ class ReactState:
     conversation_address: ChannelAddress
     agent_tentacle_id: str
     thread_id: uuid.UUID | None = None
+    source_thread_address: ChannelAddress | None = None
+    source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
 
 
 @dataclass
@@ -73,6 +77,7 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     agent: Agent[ReactDepsT, ReactOutputT]
     conversation_manager: ConversationManager
     agent_deps: ReactDepsT
+    thread_manager: ThreadManager | None = None
     event_send_stream: ObjectSendStream[ReactStreamEvent[ReactOutputT]] | None = None
     resolver: DeferredResolver | None = None
     suspender: DeferredSuspender | None = None
@@ -260,12 +265,47 @@ class RunAgent(
         # Recording keeps the cached conversation coherent, so the next
         # RunAgent's ensure() picks up this turn from the manager — no copy in
         # state.
+        recorded_run = None
         if new_messages:
-            await ctx.deps.conversation_manager.record_agent_run(
+            recorded_run = await ctx.deps.conversation_manager.record_agent_run(
                 conversation,
                 run_id=result.run_id,
                 messages=new_messages,
                 name=ctx.deps.run_name,
+            )
+        if ctx.state.source_thread_message_ids:
+            if recorded_run is None:
+                raise RuntimeError(
+                    "prompt-source bindings require a persisted agent run"
+                )
+            prompt_request = next(
+                (
+                    message
+                    for message in recorded_run.messages
+                    if isinstance(message, ModelRequest) and message.role == "user"
+                ),
+                None,
+            )
+            if prompt_request is None:
+                raise RuntimeError(
+                    "prompt-source bindings require a persisted user ModelRequest"
+                )
+            if ctx.deps.thread_manager is None:
+                raise RuntimeError(
+                    "prompt-source bindings require a ThreadManager"
+                )
+            await ctx.deps.thread_manager.bind_messages(
+                ctx.state.source_thread_message_ids,
+                prompt_request.id,
+                kind="request_source",
+                run_id=recorded_run.id,
+            )
+            source_thread = await ctx.deps.thread_manager.ensure_thread(
+                ctx.state.source_thread_address or ctx.state.conversation_address
+            )
+            await ctx.deps.thread_manager.advance_prompt_cursor(
+                source_thread,
+                ctx.state.source_thread_message_ids[-1],
             )
 
         if isinstance(result.output, DeferredToolRequests) and (

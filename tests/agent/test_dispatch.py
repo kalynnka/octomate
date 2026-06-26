@@ -44,15 +44,17 @@ def _non_streaming_config() -> ChannelConfig:
 def _event(
     *,
     tentacle_id: str = "im",
+    message_id: str = "m1",
+    user_id: str = "alice",
     text: str = "hi",
     thread_id: str = "",
 ) -> MessageEvent:
     return MessageEvent(
         tentacle_id=tentacle_id,
-        message_id="m1",
+        message_id=message_id,
         chat_type="private",
         chat_id="alice",
-        user_id="alice",
+        user_id=user_id,
         thread_id=thread_id,
         segments=[TextSegment(data={"text": text})],
     )
@@ -106,6 +108,49 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     assert channel.consumed == []
     assert agent.streams == []
     assert reception.streams == []
+
+
+async def test_octomate_kick_builds_prompt_from_pending_thread_messages() -> None:
+    octomate = Octomate()
+    agent = FakeAgent(
+        triage_output=DirectAnswerDecision(
+            action="direct_answer",
+            target_id="im",
+            answer="handled",
+            reason="handled",
+        )
+    )
+    channel = FakeChannelTentacle(config=_non_streaming_config())
+    _register_agents(octomate, agent)
+    octomate.connect(channel)
+
+    events = [
+        _event(message_id="m1", text="first detail"),
+        _event(message_id="m2", user_id="bob", text="second detail"),
+        _event(message_id="m3", text="wake now"),
+    ]
+    stored = [
+        await octomate.thread_manager.record_inbound(event)
+        for event in events
+    ]
+
+    await octomate.kick(
+        UserMessageSignal(
+            [events[-1]],
+            trigger_thread_message_id=stored[-1].id,
+        )
+    )
+
+    assert len(agent.turns) == 1
+    assert agent.turns[0].prompt == (
+        "anonymous (alice) #msg:m1:\nfirst detail\n\n"
+        "anonymous (bob) #msg:m2:\nsecond detail\n\n"
+        "anonymous (alice) #msg:m3:\nwake now"
+    )
+    assert agent.turns[0].source_thread_address == _key()
+    assert agent.turns[0].source_thread_message_ids == [
+        message.id for message in stored
+    ]
 
 
 async def test_octomate_kick_streams_reception_result_when_enabled() -> None:

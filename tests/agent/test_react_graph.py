@@ -14,6 +14,7 @@ from pydantic_ai.messages import ModelMessage, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import End, Graph, GraphRunContext
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import ActionBatchEvent
@@ -28,7 +29,13 @@ from octomate.capabilities.react import (
     StartTurn,
     iter_react_graph_events,
 )
+from octomate.database import async_session
+from octomate.managers import ConversationManager, ThreadManager
+from octomate.schemas.channel import MessageBinding, ThreadMessage
 from octomate.schemas.conversation import Conversation, ChannelAddress
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.messages import ModelRequest as OctomateModelRequest
+from octomate.schemas.segments import TextSegment
 from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 
@@ -68,6 +75,18 @@ def _key() -> ChannelAddress:
         chat_type="private",
         chat_id="test",
         user_id="test",
+    )
+
+
+def _event(message_id: str, text: str, user_id: str = "test") -> MessageEvent:
+    return MessageEvent(
+        tentacle_id="test",
+        message_id=message_id,
+        chat_type="private",
+        chat_id="test",
+        user_id=user_id,
+        segments=[TextSegment(data={"text": text})],
+        raw=text,
     )
 
 
@@ -258,6 +277,75 @@ async def test_run_agent_records_new_messages_with_run_name() -> None:
     assert messages
     # The recorded turn lands in the conversation the next ensure() serves.
     assert conversations.store[(_key(), "inkling")].messages == messages
+
+
+async def test_run_agent_binds_request_sources_and_advances_cursor(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    address = _key()
+    thread_manager = ThreadManager()
+    first = await thread_manager.record_inbound(_event("m1", "first detail"))
+    second = await thread_manager.record_inbound(
+        _event("m2", "second detail", user_id="other")
+    )
+    trigger = await thread_manager.record_inbound(_event("m3", "wake now"))
+    thread = await thread_manager.ensure_thread(address)
+    conversations = ConversationManager()
+    agent = build_non_stream_agent()
+
+    await _graph().run(
+        StartTurn(user_prompt="first detail\n\nsecond detail\n\nwake now"),
+        state=ReactState(
+            conversation_address=address,
+            agent_tentacle_id="inkling",
+            thread_id=thread.id,
+            source_thread_address=address,
+            source_thread_message_ids=[first.id, second.id, trigger.id],
+        ),
+        deps=ReactDeps(
+            agent=agent,
+            conversation_manager=conversations,
+            agent_deps=None,
+            thread_manager=thread_manager,
+        ),
+    )
+
+    conversation = await conversations.ensure(
+        address,
+        agent_tentacle_id="inkling",
+        thread_id=thread.id,
+    )
+    prompt_request = next(
+        message
+        for message in conversation.messages
+        if isinstance(message, OctomateModelRequest) and message.role == "user"
+    )
+    async with async_session() as session:
+        bindings = await session.list(
+            MessageBinding,
+            limit=None,
+            order_bys=[MessageBinding["position"]],
+            expressions=[
+                MessageBinding["model_message_id"] == prompt_request.id,
+                MessageBinding["kind"] == "request_source",
+            ],
+        )
+        stored_first = await session.one_or_none(
+            ThreadMessage,
+            expressions=[ThreadMessage["id"] == first.id],
+        )
+        assert stored_first is not None
+        await stored_first.model_messages
+    fresh_thread = await ThreadManager().ensure_thread(address)
+
+    assert [binding.thread_message_id for binding in bindings] == [
+        first.id,
+        second.id,
+        trigger.id,
+    ]
+    assert {binding.run_id for binding in bindings} == {list(conversation.runs)[0].id}
+    assert stored_first.model_messages[0].id == prompt_request.id
+    assert fresh_thread.source_cursor_message_id == trigger.id
 
 
 async def test_run_agent_streaming_sends_every_event_and_requires_result() -> None:

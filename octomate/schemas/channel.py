@@ -21,7 +21,7 @@ ThreadStatus = Literal["active", "closed"]
 ThreadMessageDirection = Literal["inbound", "outbound"]
 ChannelActorKind = Literal["human", "agent", "bot", "system"]
 MessageBindingKind = Literal[
-    "prompt_source",
+    "request_source",
     "assistant_reply",
     "assistant_send",
 ]
@@ -119,7 +119,7 @@ class Thread(BaseTransmuter):
     chat_type: ChatType
     chat_id: str
     thread_id: str = ""
-    prompt_cursor_message_id: uuid.UUID | None = None
+    source_cursor_message_id: uuid.UUID | None = None
     status: ThreadStatus = "active"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

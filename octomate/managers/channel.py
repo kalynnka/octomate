@@ -187,9 +187,9 @@ class ThreadManager:
                     ThreadMessage["agent_tentacle_id"].is_(None),
                 ),
             ]
-            if cached.prompt_cursor_message_id is not None:
+            if cached.source_cursor_message_id is not None:
                 expressions.append(
-                    ThreadMessage["id"] > cached.prompt_cursor_message_id
+                    ThreadMessage["id"] > cached.source_cursor_message_id
                 )
             rows = await session.list(
                 ThreadMessage,
@@ -208,9 +208,9 @@ class ThreadManager:
             stored = await session.get(Thread, thread.id)
             if stored is None:
                 return None
-            stored.prompt_cursor_message_id = message_id
+            stored.source_cursor_message_id = message_id
             await session.commit()
-        thread.prompt_cursor_message_id = message_id
+        thread.source_cursor_message_id = message_id
         self.cache_thread(thread)
         return thread
 

@@ -100,6 +100,9 @@ class TriageState:
     targets: dict[str, ResponseTarget] = field(default_factory=dict)
     summon_routes: list[SummonRoute] = field(default_factory=list)
     thread: Thread | None = None
+    trigger_thread_message_id: uuid.UUID | None = None
+    source_thread_address: ChannelAddress | None = None
+    source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
     claim_handoff: bool = False
     handoff_from_agent_tentacle_id: str | None = None
     user_prompt: str | Sequence[UserContent] | None = None
@@ -177,6 +180,52 @@ class TriageDeps:
                 matched = reception
         return matched or receptions[0]
 
+    async def load_pending_prompt(
+        self,
+        state: TriageState,
+        active_agent_id: str,
+    ) -> None:
+        source_target = state.source_target
+        if (
+            state.thread is None
+            or state.trigger_thread_message_id is None
+            or source_target is None
+            or source_target.address is None
+        ):
+            return
+        # Pull every recorded chat-ledger row that has not been bound into a
+        # model request yet: rule-gated group messages, sleeping/not-kicked
+        # messages, and messages that stacked up behind an already-running turn.
+        messages = await self.thread_manager.pending_prompt_messages(
+            state.thread,
+            state.trigger_thread_message_id,
+            active_agent_id,
+        )
+        if not messages:
+            return
+        state.source_thread_address = source_target.address
+        state.source_thread_message_ids = [message.id for message in messages]
+
+        parts: list[str] = []
+        for message in messages:
+            text = message.message_text or message.raw
+            if not text:
+                continue
+            display_name = (
+                message.sender.name or message.sender.nickname or "anonymous"
+            )
+            platform_id = (
+                f" #msg:{message.platform_message_id}"
+                if message.platform_message_id
+                else ""
+            )
+            parts.append(
+                f"{display_name} ({message.user_id}){platform_id}:\n{text}"
+            )
+        prompt = "\n\n".join(parts)
+        if prompt:
+            state.user_prompt = prompt
+
 
 @dataclass
 class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
@@ -216,10 +265,11 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         )
         ctx.state.source_target = source_target
         ctx.state.thread = await ctx.deps.thread_manager.ensure_thread(address)
+        ctx.state.trigger_thread_message_id = self.signal.trigger_thread_message_id
 
         user_prompt = "\n\n".join(str(event) for event in self.signal.messages).strip()
         ctx.state.user_prompt = user_prompt
-        if not user_prompt:
+        if not user_prompt and self.signal.trigger_thread_message_id is None:
             logfire.info(
                 "awake short-circuit: empty prompt",
                 channel_id=address.channel_tentacle_id,
@@ -266,6 +316,7 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 active_agent_id,
                 active_model,
             )
+            await ctx.deps.load_pending_prompt(state, reception.agent)
             model = reception.model
             state.decision = SummonDecision(
                 action="summon",
@@ -295,6 +346,7 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 None,
                 None,
             )
+            await ctx.deps.load_pending_prompt(state, reception.agent)
             model = reception.model
             state.decision = SummonDecision(
                 action="summon",
@@ -328,6 +380,8 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         source_channel_id = source_address.channel_tentacle_id
         triage = ctx.deps.triage(source_channel_id)
         agent = ctx.deps.agent(triage.agent)
+        if self.resume_batch_id is None:
+            await ctx.deps.load_pending_prompt(state, agent.id)
         triage_model = agent.models.get(triage.model)
         if triage_model is None:
             raise ValueError(
@@ -388,6 +442,8 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 thread_id=(
                     state.thread.id if state.thread else None
                 ),
+                source_thread_address=state.source_thread_address,
+                source_thread_message_ids=state.source_thread_message_ids,
                 run_name="triage",
                 output_type=cast(
                     OutputSpec[TriageOutput],
@@ -696,6 +752,8 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                         user_prompt,
                         conversation_address=target_address,
                         thread_id=thread_id,
+                        source_thread_address=state.source_thread_address,
+                        source_thread_message_ids=state.source_thread_message_ids,
                         run_name="reception",
                         model=reception_model,
                         deferred_tool_results=deferred_results,
@@ -720,6 +778,8 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     user_prompt,
                     conversation_address=target_address,
                     thread_id=thread_id,
+                    source_thread_address=state.source_thread_address,
+                    source_thread_message_ids=state.source_thread_message_ids,
                     run_name="reception",
                     model=reception_model,
                     deferred_tool_results=deferred_results,

@@ -10,12 +10,19 @@
 
 1. Write elegant, straightforward code instead of relying on explanatory comments. Add comments only when they clarify non-obvious behavior. Do not use decorative divider comments.
 2. Imports should stay at the top of the file or module. If a local import is required to avoid a circular dependency, add a concise comment explaining why.
+3. Do not abuse the `_` prefix to mark attributes or methods as private. Python does not enforce real private members; use public names unless there is a specific reason to signal internal use.
+4. Keep changes surgical. Touch only the code required for the request, match existing style, and do not refactor, reformat, or clean up adjacent code unless it is necessary for the task. Mention unrelated dead code or issues instead of deleting them.
+5. Remove imports, variables, functions, or other code made unused by your own changes. Do not remove pre-existing unused code unless asked.
+6. Do not add fallback control flow or error handling unless it is explicitly required by the product behavior or caller contract. Prefer fail-fast errors with clear messages over silent retries, alternate execution paths, or best-effort recovery that hides broken assumptions.
+
+### Helpers
+
+1. Before adding a helper, search the codebase for existing functions, methods, classes, or manager APIs that already own the behavior; reuse or adjust the existing owner when that is clearer than creating a duplicate.
+2. Add a helper only when it names real policy, removes meaningful complexity, or is reused enough to earn its existence. Inline one-off formatting, branching, and simple call sequences at the call site unless extracting them makes the caller substantially easier to understand.
 3. Do not create private-looking `_xxx` helper methods that are called only once. Inline the logic at the call site unless there is a clear reuse or readability benefit.
 4. Do not create simple pass-through function wrappers that add no logic, policy, validation, or readability benefit. Call the underlying API directly.
-5. Do not overuse the `_` prefix to mark attributes or methods as private. Python does not enforce real private members; use public names unless there is a specific reason to signal internal use.
-6. Keep changes surgical. Touch only the code required for the request, match existing style, and do not refactor, reformat, or clean up adjacent code unless it is necessary for the task. Mention unrelated dead code or issues instead of deleting them.
-7. Remove imports, variables, functions, or other code made unused by your own changes. Do not remove pre-existing unused code unless asked.
-8. Do not add fallback control flow or error handling unless it is explicitly required by the product behavior or caller contract. Prefer fail-fast errors with clear messages over silent retries, alternate execution paths, or best-effort recovery that hides broken assumptions.
+5. Place helpers with the object or module that owns the data and dependencies they use. Prefer a method on the relevant manager, dependency object, schema/state object, or cohesive module over a detached utility function. When several helpers are related, introduce or reuse a small owner module/class instead of scattering script-like helper functions.
+6. Prefer public helper names unless there is a concrete reason to signal internal use. A private-looking `_xxx` helper must still have a clear owner and enough reuse or complexity to justify existing.
 
 ## Execution
 

@@ -62,6 +62,8 @@ class RecordedRun:
     address: ChannelAddress
     run_name: str | None
     thread_id: uuid.UUID | None = None
+    source_thread_address: ChannelAddress | None = None
+    source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
     deferred_results: DeferredToolResults | None = None
     model: Model | str | None = None
     capabilities: list[AgentCapability[None]] = field(default_factory=list)
@@ -107,6 +109,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         *,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None = None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[FakeRunOutput] | None = None,
         model: Model | str | None = None,
@@ -122,6 +126,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 history=list(message_history or []),
                 address=conversation_address,
                 thread_id=thread_id,
+                source_thread_address=source_thread_address,
+                source_thread_message_ids=list(source_thread_message_ids or []),
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
                 model=model,
@@ -169,6 +175,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         *,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None = None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None = None,
         model: Model | str | None = None,
         message_history: Sequence[ModelMessage] | None = None,
@@ -182,6 +190,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 history=list(message_history or []),
                 address=conversation_address,
                 thread_id=thread_id,
+                source_thread_address=source_thread_address,
+                source_thread_message_ids=list(source_thread_message_ids or []),
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
                 model=model,

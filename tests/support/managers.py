@@ -28,6 +28,7 @@ from octomate.schemas.conversation import (
     ConversationPermissionMode,
 )
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.schemas.runs import AgentRun
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import DeferredBatchStatus
 
@@ -85,12 +86,13 @@ class FakeConversationManager(ConversationManager):
         *,
         name: str | None = None,
         external_id: str | None = None,
-    ) -> None:
+    ) -> AgentRun | None:
         fake = cast(FakeConversation, conversation)
         self.runs.append((fake, f"{name}:{run_id}", list(messages)))
         fake.messages.extend(messages)
         if external_id is not None:
             fake.external_id = external_id
+        return None
 
     async def grant_session_tool(
         self,

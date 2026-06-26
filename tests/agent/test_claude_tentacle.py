@@ -251,32 +251,25 @@ async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=ClaudeCodeConfig(models={"claude-opus-4-5": "claude-opus-4-5"}),
+        config=ClaudeCodeConfig(models={"opus"}),
     )
 
-    await tentacle.run("hi", conversation_address=KEY, model="claude-opus-4-5")
+    await tentacle.run("hi", conversation_address=KEY, model="opus")
 
-    assert getattr(FakeClaudeClient.last_options, "model", None) == "claude-opus-4-5"
+    assert getattr(FakeClaudeClient.last_options, "model", None) == "opus"
 
 
-def test_configured_aliases_and_full_model_ids_are_exposed() -> None:
+def test_configured_model_names_are_exposed() -> None:
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=ClaudeCodeConfig(
-            models={
-                "opus": "claude-opus-4-8",
-                "opusplan": "opusplan",
-                "fable": "fable",
-                "claude-opus-4-8": "claude-opus-4-8",
-            }
-        ),
+        config=ClaudeCodeConfig(models={"opus", "opusplan", "fable", "opus[1m]"}),
     )
 
     assert tentacle.models == {
-        "opus": "claude-opus-4-8",
+        "opus": "opus",
         "opusplan": "opusplan",
         "fable": "fable",
-        "claude-opus-4-8": "claude-opus-4-8",
+        "opus[1m]": "opus[1m]",
     }
 
 

@@ -59,6 +59,7 @@ from octomate.schemas.conversation import (
     ConversationPermissionMode,
 )
 from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
+from octomate.schemas.messages import ModelRequest
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.types.json import JsonObject
@@ -178,6 +179,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         *,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None = None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
@@ -368,13 +371,45 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     for event in accumulator.consume(message):
                         yield event
             run_id = str(uuid7())
-            await self.octomate.conversations.record_agent_run(
+            recorded_run = await self.octomate.conversations.record_agent_run(
                 conversation,
                 run_id=run_id,
                 messages=accumulator.messages,
                 name=run_name,
                 external_id=accumulator.session_id,
             )
+            if source_thread_message_ids:
+                if recorded_run is None:
+                    raise RuntimeError(
+                        "prompt-source bindings require a persisted Claude run"
+                    )
+                prompt_request = next(
+                    (
+                        message
+                        for message in recorded_run.messages
+                        if isinstance(message, ModelRequest)
+                        and message.role == "user"
+                    ),
+                    None,
+                )
+                if prompt_request is None:
+                    raise RuntimeError(
+                        "prompt-source bindings require a persisted user ModelRequest"
+                    )
+                source_message_ids = list(source_thread_message_ids)
+                await self.octomate.thread_manager.bind_messages(
+                    source_message_ids,
+                    prompt_request.id,
+                    kind="request_source",
+                    run_id=recorded_run.id,
+                )
+                source_thread = await self.octomate.thread_manager.ensure_thread(
+                    source_thread_address or conversation_address
+                )
+                await self.octomate.thread_manager.advance_prompt_cursor(
+                    source_thread,
+                    source_message_ids[-1],
+                )
             if output_adapter is not None and accumulator.structured_output is not None:
                 # The model instance rides the str-typed event stream; `run`
                 # restores the declared output type at its boundary.
@@ -403,6 +438,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         *,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None = None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -430,6 +467,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         *,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None = None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -456,6 +495,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         *,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None = None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -480,6 +521,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             user_prompt,
             conversation_address=conversation_address,
             thread_id=thread_id,
+            source_thread_address=source_thread_address,
+            source_thread_message_ids=source_thread_message_ids,
             run_name=run_name,
             output_type=output_type,
             model=model,
@@ -503,6 +546,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         *,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None = None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -529,6 +574,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         *,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None = None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -554,6 +601,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         *,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None = None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -577,6 +626,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 user_prompt,
                 conversation_address=conversation_address,
                 thread_id=thread_id,
+                source_thread_address=source_thread_address,
+                source_thread_message_ids=source_thread_message_ids,
                 run_name=run_name,
                 output_type=output_type,
                 model=model,

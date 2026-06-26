@@ -96,7 +96,7 @@ async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> 
     stored = await manager.advance_prompt_cursor(thread, bot_message.id)
     hot = await manager.ensure_thread(address())
     assert stored is not None
-    assert hot.prompt_cursor_message_id == bot_message.id
+    assert hot.source_cursor_message_id == bot_message.id
 
     pending_after_cursor = await manager.pending_prompt_messages(
         thread,
@@ -191,7 +191,7 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
     bindings = await manager.bind_messages(
         [first.id, second.id],
         model_message.id,
-        kind="prompt_source",
+        kind="request_source",
         run_id=run_id,
     )
 

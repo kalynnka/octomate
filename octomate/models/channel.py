@@ -28,7 +28,7 @@ ThreadStatus = Literal["active", "closed"]
 ThreadMessageDirection = Literal["inbound", "outbound"]
 ChannelActorKind = Literal["human", "agent", "bot", "system"]
 MessageBindingKind = Literal[
-    "prompt_source",
+    "request_source",
     "assistant_reply",
     "assistant_send",
 ]
@@ -111,7 +111,7 @@ class Thread(Base, TransmuterProxiedMixin):
     status: Mapped[ThreadStatus] = mapped_column(
         String, nullable=False, default="active", index=True
     )
-    prompt_cursor_message_id: Mapped[uuid.UUID | None] = mapped_column(
+    source_cursor_message_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("thread_messages.id", ondelete="SET NULL"),
         nullable=True,

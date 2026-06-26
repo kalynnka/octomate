@@ -239,7 +239,7 @@ async def test_message_binding_round_trips_as_orm() -> None:
             MessageBinding(
                 thread_message_id=thread_message.id,
                 model_message_id=model_message.id,
-                kind="prompt_source",
+                kind="request_source",
                 run_id=run_id,
                 position=0,
             )
@@ -256,7 +256,7 @@ async def test_message_binding_round_trips_as_orm() -> None:
             expressions=[
                 MessageBinding["thread_message_id"] == thread_message.id,
                 MessageBinding["model_message_id"] == model_message.id,
-                MessageBinding["kind"] == "prompt_source",
+                MessageBinding["kind"] == "request_source",
             ],
         )
         assert stored_message is not None

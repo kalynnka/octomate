@@ -117,13 +117,13 @@ class ConversationManager:
         *,
         name: str | None = None,
         external_id: str | None = None,
-    ) -> None:
+    ) -> AgentRun | None:
         """Persist a fresh agent run and keep the cached conversation in sync.
         `external_id`, when given, updates the conversation's resumable agent
         session handle in the same commit (external-runtime agents own their own
         session)."""
         if not messages:
-            return
+            return None
         # Shallow `vars(m)` per message lets pydantic route each dict through
         # the blessed `ModelRequest | ModelResponse` discriminated union;
         # passing the raw pydantic-ai dataclass instance directly is rejected
@@ -147,6 +147,7 @@ class ConversationManager:
         conversation.runs.append(run)
         conversation.messages.extend(list(run.messages))
         self.cache_conversation(conversation)
+        return run
 
     async def grant_session_tool(
         self,
