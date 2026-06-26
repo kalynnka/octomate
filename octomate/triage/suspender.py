@@ -8,7 +8,7 @@ import logfire
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import ActionBatchEvent
-from octomate.managers.conversations import ConversationManager
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision

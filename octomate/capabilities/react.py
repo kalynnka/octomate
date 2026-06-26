@@ -7,15 +7,13 @@ from dataclasses import dataclass, field, replace
 from types import TracebackType
 from typing import Any, Generic, TypeVar
 
-from typing_extensions import TypeAliasType
-
 import anyio
 import logfire
 from anyio.abc import ObjectSendStream
 from pydantic_ai import (
-    AgentNativeTool,
     AgentCapability,
     AgentModelSettings,
+    AgentNativeTool,
     AgentRunResult,
     AgentRunResultEvent,
     AgentSpec,
@@ -29,17 +27,19 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+
 # TODO: migrate this graph to the pydantic_graph GraphBuilder (Step/Decision/Edge)
 # API once pydantic-graph v2 is officially released. The BaseNode `Graph` runner is
 # deprecated for v2; pinned <2 in pyproject.toml until then.
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
+from typing_extensions import TypeAliasType
 
-from octomate.managers.channel import ThreadManager
-from octomate.managers.conversations import ConversationManager
-from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
 from octomate.capabilities.events import StreamEvents
+from octomate.managers.conversation import ConversationManager
+from octomate.managers.thread import ThreadManager
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import ModelRequest
 
 logger = logging.getLogger(__name__)
@@ -291,9 +291,7 @@ class RunAgent(
                     "prompt-source bindings require a persisted user ModelRequest"
                 )
             if ctx.deps.thread_manager is None:
-                raise RuntimeError(
-                    "prompt-source bindings require a ThreadManager"
-                )
+                raise RuntimeError("prompt-source bindings require a ThreadManager")
             await ctx.deps.thread_manager.bind_messages(
                 ctx.state.source_thread_message_ids,
                 prompt_request.id,

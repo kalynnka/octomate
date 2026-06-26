@@ -27,9 +27,9 @@ from octomate.capabilities.events import (
     TodoStatusChangedEvent,
 )
 from octomate.capabilities.todos import TodoCapability, update_events
-from octomate.managers.conversations import ConversationManager
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.todos import TodoManager
-from octomate.schemas.conversation import Conversation, ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.todos import Todo
 
 
@@ -47,9 +47,7 @@ async def _conversation() -> Conversation:
 
 def _tool_ctx(conversation: Conversation) -> RunContext[Any]:
     """The todo tools only read `ctx.conversation_id` — one dynamic-boundary cast."""
-    return cast(
-        RunContext[Any], SimpleNamespace(conversation_id=str(conversation.id))
-    )
+    return cast(RunContext[Any], SimpleNamespace(conversation_id=str(conversation.id)))
 
 
 async def test_add_todo_emits_created_event_and_persists(

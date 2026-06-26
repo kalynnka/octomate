@@ -39,7 +39,7 @@ from octomate.capabilities.react import (
     StartTurn,
     iter_react_graph_events,
 )
-from octomate.managers.conversations import ConversationManager
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.tentacles.agent.base import (

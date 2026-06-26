@@ -39,7 +39,7 @@ from octomate.capabilities.agent import Agent
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
-from octomate.managers.conversations import ConversationManager
+from octomate.managers.conversation import ConversationManager
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ConversationKey
@@ -50,7 +50,6 @@ from octomate.tentacles.agent.inkling.base import (
 )
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.json import JsonObject
-
 
 DEFAULT_PROMPT = (
     "Use your todo tools to create a two-step plan for checking Octomate stream "
@@ -313,9 +312,7 @@ def main() -> None:
         )
     )
     total = sum(case_counts.values())
-    summary = ", ".join(
-        f"{name}={count}" for name, count in case_counts.items()
-    )
+    summary = ", ".join(f"{name}={count}" for name, count in case_counts.items())
     print(f"captured {total} events ({summary}) -> {args.output_dir}")
 
 

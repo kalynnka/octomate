@@ -136,16 +136,12 @@ class ConversationManager:
             messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
         )
         async with async_session() as session:
-            session.add(run)
-            if external_id is not None:
-                stored = await session.get(Conversation, conversation.id)
-                if stored is not None:
-                    stored.external_id = external_id
-            await session.commit()
-        if external_id is not None:
+            conversation.runs.append(run)
             conversation.external_id = external_id
-        conversation.runs.append(run)
-        conversation.messages.extend(list(run.messages))
+            await session.merge(conversation)
+            await session.commit()
+            await session.refresh(conversation)
+
         self.cache_conversation(conversation)
         return run
 

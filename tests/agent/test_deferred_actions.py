@@ -10,7 +10,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.managers.conversations import ConversationManager
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
@@ -53,7 +53,9 @@ def _requests() -> DeferredToolRequests:
 
 async def _create_batch() -> DeferredActionBatch:
     address = _key()
-    conversation = await ConversationManager().ensure(address, agent_tentacle_id="inkling")
+    conversation = await ConversationManager().ensure(
+        address, agent_tentacle_id="inkling"
+    )
     return await DeferredActionManager().create_batch(
         conversation=conversation,
         agent_tentacle_id="inkling",
@@ -76,12 +78,8 @@ async def _create_batch() -> DeferredActionBatch:
 def test_deferred_action_batch_accepts_validated_actions() -> None:
     requests = _requests()
     actions = DeferredActionCollection.validate_python(requests)
-    questions = [
-        action for action in actions if isinstance(action, DeferredQuestion)
-    ]
-    approvals = [
-        action for action in actions if isinstance(action, DeferredApproval)
-    ]
+    questions = [action for action in actions if isinstance(action, DeferredQuestion)]
+    approvals = [action for action in actions if isinstance(action, DeferredApproval)]
     address = _key()
 
     batch = DeferredActionBatch(

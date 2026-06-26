@@ -22,9 +22,9 @@ from octomate.capabilities.events import StreamEvents
 from octomate.capabilities.summon import SummonCapability
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
-from octomate.managers.channel import ThreadManager
-from octomate.managers.conversations import ConversationManager
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.thread import ThreadManager
 from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
 from octomate.schemas.channel import Thread
 from octomate.schemas.conversation import ChannelAddress
@@ -211,17 +211,13 @@ class TriageDeps:
             text = message.message_text or message.raw
             if not text:
                 continue
-            display_name = (
-                message.sender.name or message.sender.nickname or "anonymous"
-            )
+            display_name = message.sender.name or message.sender.nickname or "anonymous"
             platform_id = (
                 f" #msg:{message.platform_message_id}"
                 if message.platform_message_id
                 else ""
             )
-            parts.append(
-                f"{display_name} ({message.user_id}){platform_id}:\n{text}"
-            )
+            parts.append(f"{display_name} ({message.user_id}){platform_id}:\n{text}")
         prompt = "\n\n".join(parts)
         if prompt:
             state.user_prompt = prompt
@@ -304,9 +300,7 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 
         thread = state.thread
         active_agent_id = (
-            thread.active_agent_tentacle_id
-            if thread is not None
-            else None
+            thread.active_agent_tentacle_id if thread is not None else None
         )
         if thread is not None and active_agent_id is not None:
             active_model = thread.active_model
@@ -439,9 +433,7 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             result = await agent.run(
                 state.user_prompt,
                 conversation_address=source_address,
-                thread_id=(
-                    state.thread.id if state.thread else None
-                ),
+                thread_id=(state.thread.id if state.thread else None),
                 source_thread_address=state.source_thread_address,
                 source_thread_message_ids=state.source_thread_message_ids,
                 run_name="triage",
@@ -628,9 +620,7 @@ class PrepareReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 
         state.target = target
         if target.address is not None and state.thread is not None:
-            state.thread = await ctx.deps.thread_manager.ensure_thread(
-                target.address
-            )
+            state.thread = await ctx.deps.thread_manager.ensure_thread(target.address)
         return RunReception()
 
 
@@ -669,9 +659,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         agent = ctx.deps.agent(reception.agent)
         reception_model = agent.models.get(model)
         if reception_model is None:
-            raise ValueError(
-                f"agent {agent.id!r} has no configured model {model!r}"
-            )
+            raise ValueError(f"agent {agent.id!r} has no configured model {model!r}")
         thread_id = state.thread.id if state.thread else None
         if state.thread is not None and state.claim_handoff:
             target_conversation = await ctx.deps.conversation_manager.ensure(

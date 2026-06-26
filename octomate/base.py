@@ -9,9 +9,9 @@ from typing import TypeVar
 import logfire
 from fastapi import APIRouter, FastAPI, Request, Response
 
-from octomate.managers.channel import ThreadManager
-from octomate.managers.conversations import ConversationManager
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.thread import ThreadManager
 from octomate.schemas.awakes import (
     AwakeSignal,
     DeferredActionBatchResponse,

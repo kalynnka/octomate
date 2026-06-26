@@ -146,7 +146,9 @@ def render_todos(todos: list[Todo], *, hierarchical: bool) -> str:
                 counter[0] += 1
                 indent = "  " * depth
                 marker = STATUS_MARKERS.get(todo.status, "[ ]")
-                lines.append(f"{indent}{counter[0]}. {marker} [{todo.ref}] {todo.content}")
+                lines.append(
+                    f"{indent}{counter[0]}. {marker} [{todo.ref}] {todo.content}"
+                )
                 if todo.depends_on:
                     lines.append(f"{indent}   depends on {', '.join(todo.depends_on)}")
                 walk(todo.ref, depth + 1)
@@ -255,9 +257,7 @@ def build_todo_toolset(
         )
 
     @toolset.tool
-    async def remove_todo(
-        ctx: RunContext[Any], todo_id: str
-    ) -> str | ToolReturn[str]:
+    async def remove_todo(ctx: RunContext[Any], todo_id: str) -> str | ToolReturn[str]:
         """Delete a todo by id."""
         removed = await manager.remove_todo(conversation_id(ctx), todo_id)
         if removed is None:
@@ -323,7 +323,9 @@ def build_todo_toolset(
             message = f"'{todo.content}' now depends on '{dependency.content}'."
             if new_status == "blocked" and todo.status != "blocked":
                 message += " Task blocked until the dependency completes."
-            return ToolReturn(return_value=message, metadata=update_events(updated, todo))
+            return ToolReturn(
+                return_value=message, metadata=update_events(updated, todo)
+            )
 
         @toolset.tool
         async def get_available_tasks(ctx: RunContext[Any]) -> str:

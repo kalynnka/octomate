@@ -18,8 +18,8 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
-from octomate.managers.channel import ThreadManager
-from octomate.managers.conversations import ConversationManager
+from octomate.managers.conversation import ConversationManager
+from octomate.managers.thread import ThreadManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.channel import Handoff, Thread, ThreadKey
 from octomate.schemas.conversation import (

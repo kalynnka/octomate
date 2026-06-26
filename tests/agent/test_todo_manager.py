@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from octomate.managers.conversations import ConversationManager
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.todos import TodoManager
-from octomate.schemas.conversation import Conversation, ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.todos import TodoWrite
 
 
