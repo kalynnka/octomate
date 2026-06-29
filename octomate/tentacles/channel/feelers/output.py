@@ -954,5 +954,3 @@ class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
             yield state
         finally:
             await state.send_parts(todo_block=True)
-
-

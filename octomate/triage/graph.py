@@ -28,7 +28,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
 from octomate.schemas.channel import Thread
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.segments import MessageSegment
+from octomate.schemas.segments import MarkdownSegment, MessageSegment
 from octomate.schemas.triage import (
     DirectAnswerDecision,
     ResponseTargetMode,
@@ -43,6 +43,7 @@ from octomate.tentacles.channel.base import (
     ChannelTentacle,
     ThreadStrategy,
 )
+from octomate.tentacles.channel.feelers.output import split_reply
 from octomate.triage.suspender import HumanReviewSuspender
 
 logger = logging.getLogger(__name__)
@@ -523,14 +524,57 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     target_id=decision.target_id,
                     reason=decision.reason,
                 )
+                reply_thread_message_ids: list[uuid.UUID] = []
                 if isinstance(output, list):
-                    await ctx.deps.channel(target).feelers.segments.present(
+                    _reply_to, body = split_reply(output)
+                    thread_message = None
+                    if body:
+                        thread_message = await ctx.deps.thread_manager.record_outbound(
+                            target.address,
+                            agent_tentacle_id=agent.id,
+                            segments=body,
+                            raw="\n\n".join(str(segment) for segment in body),
+                        )
+                        reply_thread_message_ids.append(thread_message.id)
+                    await ctx.deps.thread_manager.bind_assistant_replies(
+                        reply_thread_message_ids,
+                        run_id=result.run_id,
+                    )
+                    message_id = await ctx.deps.channel(target).feelers.segments.present(
                         target.address, output
                     )
+                    if thread_message is not None:
+                        await ctx.deps.thread_manager.mark_presented(
+                            thread_message,
+                            message_id,
+                        )
                 elif answer:
-                    await ctx.deps.channel(target).feelers.markdown.present(
+                    thread_message = await ctx.deps.thread_manager.record_outbound(
+                        target.address,
+                        agent_tentacle_id=agent.id,
+                        segments=[MarkdownSegment(data={"text": answer})],
+                        message_text=answer,
+                        raw=answer,
+                    )
+                    reply_thread_message_ids.append(thread_message.id)
+                    await ctx.deps.thread_manager.bind_assistant_replies(
+                        reply_thread_message_ids,
+                        run_id=result.run_id,
+                    )
+                    message_id = await ctx.deps.channel(
+                        target
+                    ).feelers.markdown.present(
                         target.address,
                         answer,
+                    )
+                    await ctx.deps.thread_manager.mark_presented(
+                        thread_message,
+                        message_id,
+                    )
+                else:
+                    await ctx.deps.thread_manager.bind_assistant_replies(
+                        reply_thread_message_ids,
+                        run_id=result.run_id,
                     )
                 return End(
                     TriageResult(decision=decision, target=target, result=result)
@@ -729,13 +773,14 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             streaming=target_channel.config.stream.enabled,
             resume_batch_id=str(self.resume_batch_id) if self.resume_batch_id else None,
         ) as span:
-            result: AgentRunResult[ChannelOutput] | None = None
+            stream_results: list[AgentRunResult[ChannelOutput]] = []
+            reply_thread_message_ids: list[uuid.UUID] = []
+            assistant_replies_bound = False
             if target_channel.config.stream.enabled:
 
                 async def stream_events() -> AsyncIterator[
                     StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
                 ]:
-                    nonlocal result
                     async with agent.run_stream_events(
                         user_prompt,
                         conversation_address=target_address,
@@ -750,19 +795,49 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     ) as stream:
                         async for event in stream:
                             if isinstance(event, AgentRunResultEvent):
-                                result = event.result
+                                stream_results.append(event.result)
                             yield event
 
-                async with target_channel.feelers.timeline.open(
-                    target_address
-                ) as timeline_state:
-                    await timeline_state.drive(stream_events())
-                if result is None:
+                try:
+                    async with target_channel.feelers.timeline.open(
+                        target_address
+                    ) as timeline_state:
+                        await timeline_state.drive(stream_events())
+                except Exception:
+                    logger.warning(
+                        "Channel %s: timeline render failed",
+                        target_address.channel_tentacle_id,
+                        exc_info=True,
+                    )
+                if not stream_results:
                     raise RuntimeError(
                         f"reception stream for {target_address} completed without a result"
                     )
+                run_result = stream_results[-1]
+                run_output: ChannelOutput = run_result.output
+                if isinstance(run_output, str):
+                    if run_output:
+                        thread_message = await ctx.deps.thread_manager.record_outbound(
+                            target_address,
+                            agent_tentacle_id=agent.id,
+                            segments=[MarkdownSegment(data={"text": run_output})],
+                            message_text=run_output,
+                            raw=run_output,
+                        )
+                        reply_thread_message_ids.append(thread_message.id)
+                elif isinstance(run_output, Iterable):
+                    segments = list(run_output)
+                    _reply_to, body = split_reply(segments)
+                    if body:
+                        thread_message = await ctx.deps.thread_manager.record_outbound(
+                            target_address,
+                            agent_tentacle_id=agent.id,
+                            segments=body,
+                            raw="\n\n".join(str(segment) for segment in body),
+                        )
+                        reply_thread_message_ids.append(thread_message.id)
             else:
-                result = await agent.run(
+                run_result = await agent.run(
                     user_prompt,
                     conversation_address=target_address,
                     thread_id=thread_id,
@@ -774,23 +849,65 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     deferred_suspender=suspender,
                     capabilities=[summon],
                 )
-                if isinstance(result.output, str):
-                    output = result.output
-                    if output:
-                        await target_channel.feelers.markdown.present(
-                            target_address,
-                            output,
+                run_output: ChannelOutput = run_result.output
+                if isinstance(run_output, str):
+                    if run_output:
+                        thread_message = (
+                            await ctx.deps.thread_manager.record_outbound(
+                                target_address,
+                                agent_tentacle_id=agent.id,
+                                segments=[MarkdownSegment(data={"text": run_output})],
+                                message_text=run_output,
+                                raw=run_output,
+                            )
                         )
-                elif isinstance(result.output, Iterable):
+                        reply_thread_message_ids.append(thread_message.id)
+                        await ctx.deps.thread_manager.bind_assistant_replies(
+                            reply_thread_message_ids,
+                            run_id=run_result.run_id,
+                        )
+                        assistant_replies_bound = True
+                        message_id = await target_channel.feelers.markdown.present(
+                            target_address,
+                            run_output,
+                        )
+                        await ctx.deps.thread_manager.mark_presented(
+                            thread_message,
+                            message_id,
+                        )
+                elif isinstance(run_output, Iterable):
                     # A segment list is the only media-bearing reply: deliver it
                     # natively (channels without a media transport fall back to
                     # the joined text form in send_segments).
-                    await target_channel.feelers.segments.present(
-                        target_address, list(result.output)
+                    segments = list(run_output)
+                    _reply_to, body = split_reply(segments)
+                    thread_message = None
+                    if body:
+                        thread_message = (
+                            await ctx.deps.thread_manager.record_outbound(
+                                target_address,
+                                agent_tentacle_id=agent.id,
+                                segments=body,
+                                raw="\n\n".join(str(segment) for segment in body),
+                            )
+                        )
+                        reply_thread_message_ids.append(thread_message.id)
+                    await ctx.deps.thread_manager.bind_assistant_replies(
+                        reply_thread_message_ids,
+                        run_id=run_result.run_id,
                     )
+                    assistant_replies_bound = True
+                    message_id = await target_channel.feelers.segments.present(
+                        target_address, segments
+                    )
+                    if thread_message is not None:
+                        await ctx.deps.thread_manager.mark_presented(
+                            thread_message,
+                            message_id,
+                        )
                 # DeferredToolRequests / None: nothing to deliver here.
 
-            output = result.output
+            output = run_result.output
             if self.resume_batch_id is not None:
                 await ctx.deps.action_manager.mark_batch(
                     self.resume_batch_id,
@@ -798,17 +915,22 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     completed=True,
                 )
 
-            span.set_attribute("reception.run_id", result.run_id)
+            span.set_attribute("reception.run_id", run_result.run_id)
             span.set_attribute(
                 "reception.deferred", isinstance(output, DeferredToolRequests)
             )
+            if not assistant_replies_bound:
+                await ctx.deps.thread_manager.bind_assistant_replies(
+                    reply_thread_message_ids,
+                    run_id=run_result.run_id,
+                )
             if isinstance(output, DeferredToolRequests):
                 return End(
                     DeferredResult(
                         requests=output,
                         target=target,
                         run_name="reception",
-                        result=result,
+                        result=run_result,
                         batch_id=suspender.suspended_batch_id,
                     )
                 )
@@ -834,7 +956,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 TriageResult(
                     decision=decision,
                     target=target,
-                    result=result,
+                    result=run_result,
                 )
             )
 

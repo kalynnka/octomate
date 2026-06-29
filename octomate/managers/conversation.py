@@ -138,7 +138,7 @@ class ConversationManager:
         async with async_session() as session:
             conversation.runs.append(run)
             conversation.external_id = external_id
-            await session.merge(conversation)
+            conversation = await session.merge(conversation)
             await session.commit()
             await session.refresh(conversation)
 

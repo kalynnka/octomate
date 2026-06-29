@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import cast
 
 from pydantic_ai.messages import ModelMessage
@@ -19,16 +20,25 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
-from octomate.managers.thread import ThreadManager
+from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.channel import Handoff, Thread, ThreadKey
+from octomate.schemas.channel import (
+    ChannelActorKind,
+    Handoff,
+    MessageBinding,
+    Thread,
+    ThreadKey,
+    ThreadMessage,
+)
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
     ConversationPermissionMode,
+    UserProfile,
 )
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.runs import AgentRun
+from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import DeferredBatchStatus
 
@@ -114,6 +124,10 @@ class FakeConversationManager(ConversationManager):
 class FakeThreadManager(ThreadManager):
     threads_by_key: dict[ThreadKey, Thread] = field(default_factory=dict)
     handoffs: list[Handoff] = field(default_factory=list)
+    outbounds: list[ThreadMessage] = field(default_factory=list)
+    assistant_reply_bindings: list[tuple[list[uuid.UUID], str]] = field(
+        default_factory=list
+    )
 
     async def ensure_thread(
         self,
@@ -172,6 +186,61 @@ class FakeThreadManager(ThreadManager):
         thread.handoffs.append(handoff)
         self.handoffs.append(handoff)
         return handoff
+
+    async def record_outbound(
+        self,
+        thread_or_address: Thread | ChannelAddress | ThreadKey,
+        *,
+        agent_tentacle_id: str,
+        segments: list[MessageSegment],
+        platform_message_id: str | None = None,
+        reply_id: str = "",
+        timestamp: datetime | None = None,
+        sender: UserProfile | None = None,
+        actor_kind: ChannelActorKind = "agent",
+        message_text: str | None = None,
+        raw: str = "",
+    ) -> ThreadMessage:
+        if isinstance(thread_or_address, Thread):
+            thread = thread_or_address
+        else:
+            thread = await self.ensure_thread(thread_or_address)
+        message = ThreadMessage(
+            id=uuid7(),
+            thread_id=thread.id,
+            platform_message_id=platform_message_id,
+            reply_id=reply_id,
+            timestamp=timestamp,
+            direction="outbound",
+            actor_kind=actor_kind,
+            user_id="",
+            agent_tentacle_id=agent_tentacle_id,
+            sender=sender
+            or UserProfile(user_id=agent_tentacle_id, name=agent_tentacle_id),
+            segments=segments,
+            message_text=message_text or message_text_from_segments(segments),
+            raw=raw,
+        )
+        thread.messages.append(message)
+        self.outbounds.append(message)
+        return message
+
+    async def mark_presented(
+        self,
+        message: ThreadMessage,
+        platform_message_id: str | None,
+    ) -> ThreadMessage:
+        message.platform_message_id = platform_message_id
+        return message
+
+    async def bind_assistant_replies(
+        self,
+        thread_message_ids: list[uuid.UUID],
+        *,
+        run_id: str,
+    ) -> list[MessageBinding]:
+        self.assistant_reply_bindings.append((list(thread_message_ids), run_id))
+        return []
 
 
 @dataclass

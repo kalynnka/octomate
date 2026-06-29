@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 
 import pytest
 from pydantic_ai.messages import ModelRequest as RawModelRequest
+from pydantic_ai.messages import ModelResponse as RawModelResponse
+from pydantic_ai.messages import TextPart
 from pydantic_ai.messages import UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager
-from octomate.schemas.channel import ThreadMessage
+from octomate.schemas.channel import MessageBinding, ThreadMessage
 from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -204,4 +206,68 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
         await stored_message.model_messages
 
     assert [binding.position for binding in bindings] == [0, 1]
+    assert stored_message.model_messages[0].id == model_message.id
+
+
+async def test_assistant_reply_binding_uses_persisted_response() -> None:
+    manager = ThreadManager()
+    thread = await manager.ensure_thread(address())
+    reply = await manager.record_outbound(
+        thread,
+        agent_tentacle_id="inkling",
+        segments=[TextSegment(data={"text": "visible answer"})],
+        platform_message_id="bot-reply-1",
+    )
+
+    conversation_manager = ConversationManager()
+    conversation = await conversation_manager.ensure(
+        address(),
+        agent_tentacle_id="inkling",
+    )
+    run_id = "run-assistant-reply-binding"
+    await conversation_manager.record_agent_run(
+        conversation,
+        run_id=run_id,
+        messages=[
+            RawModelRequest(
+                parts=[UserPromptPart(content="question")],
+                run_id=run_id,
+                conversation_id=str(conversation.id),
+                timestamp=datetime.now(timezone.utc),
+            ),
+            RawModelResponse(
+                parts=[TextPart(content="visible answer")],
+                run_id=run_id,
+                conversation_id=str(conversation.id),
+                timestamp=datetime.now(timezone.utc),
+            ),
+        ],
+    )
+    model_message = (
+        await conversation_manager.search_messages(
+            conversation.id, "visible answer", role="assistant"
+        )
+    )[0]
+
+    bindings = await manager.bind_assistant_replies([reply.id], run_id=run_id)
+
+    async with async_session() as session:
+        stored_message = await session.one_or_none(
+            ThreadMessage,
+            expressions=[ThreadMessage["id"] == reply.id],
+        )
+        stored_binding = await session.one_or_none(
+            MessageBinding,
+            expressions=[
+                MessageBinding["thread_message_id"] == reply.id,
+                MessageBinding["model_message_id"] == model_message.id,
+                MessageBinding["kind"] == "assistant_reply",
+            ],
+        )
+        assert stored_message is not None
+        assert stored_binding is not None
+        await stored_message.model_messages
+
+    assert [binding.thread_message_id for binding in bindings] == [reply.id]
+    assert bindings[0].model_message_id == model_message.id
     assert stored_message.model_messages[0].id == model_message.id

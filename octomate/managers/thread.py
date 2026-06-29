@@ -19,6 +19,7 @@ from octomate.schemas.channel import (
 )
 from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.messages import ModelResponse
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
 
 
@@ -169,6 +170,22 @@ class ThreadManager:
         self.cache_thread(thread)
         return message
 
+    async def mark_presented(
+        self,
+        message: ThreadMessage,
+        platform_message_id: str | None,
+    ) -> ThreadMessage:
+        if platform_message_id is None:
+            return message
+        message.platform_message_id = platform_message_id
+        async with async_session() as session:
+            stored = await session.get(ThreadMessage, message.id)
+            if stored is None:
+                raise ValueError(f"thread message {message.id} does not exist")
+            stored.platform_message_id = platform_message_id
+            await session.commit()
+        return message
+
     async def pending_prompt_messages(
         self,
         thread: Thread,
@@ -277,6 +294,53 @@ class ThreadManager:
                 bindings.append(binding)
             await session.commit()
         return bindings
+
+    async def bind_assistant_replies(
+        self,
+        thread_message_ids: list[uuid.UUID],
+        *,
+        run_id: str,
+    ) -> list[MessageBinding]:
+        if not thread_message_ids:
+            return []
+        async with async_session() as session:
+            responses = await session.list(
+                ModelResponse,
+                limit=None,
+                order_bys=[ModelResponse["id"]],
+                expressions=[
+                    ModelResponse["run_id"] == run_id,
+                    ModelResponse["role"] == "assistant",
+                    ModelResponse["message_text"].is_not(None),
+                    ModelResponse["message_text"] != "",
+                ],
+            )
+        assistant_replies = list(responses)
+        if not assistant_replies:
+            return []
+        if len(assistant_replies) == len(thread_message_ids):
+            bindings: list[MessageBinding] = []
+            async with async_session() as session:
+                for thread_message_id, response in zip(
+                    thread_message_ids, assistant_replies, strict=True
+                ):
+                    binding = MessageBinding(
+                        thread_message_id=thread_message_id,
+                        model_message_id=response.id,
+                        kind="assistant_reply",
+                        run_id=run_id,
+                        position=0,
+                    )
+                    session.add(binding)
+                    bindings.append(binding)
+                await session.commit()
+            return bindings
+        return await self.bind_messages(
+            thread_message_ids,
+            assistant_replies[-1].id,
+            kind="assistant_reply",
+            run_id=run_id,
+        )
 
     async def search_chat_messages(
         self,

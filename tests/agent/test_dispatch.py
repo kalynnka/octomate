@@ -4,20 +4,34 @@ the real ConversationManager/DeferredActionManager over in-memory SQLite."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import cast
 
 import pytest
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
+from octomate.capabilities.agent import Agent
+from octomate.database import async_session
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.schemas.awakes import UserMessageSignal
+from octomate.schemas.channel import ThreadMessage
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.triage import DirectAnswerDecision, SummonDecision
+from octomate.tentacles.agent.inkling import InklingTentacle, inkling_toolset
+from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.base import Tentacle
 from tests.support.agents import FakeAgent
-from tests.support.channels import FakeChannelTentacle, MainOnlyChannelTentacle
+from tests.support.channels import (
+    FakeChannelTentacle,
+    MainOnlyChannelTentacle,
+    NativeMessage,
+    RecordingInk,
+)
+from tests.support.scenarios import mid_run_notice
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +89,27 @@ def _register_agents(octomate: Octomate, *agents: FakeAgent) -> None:
         octomate.connect(agent)
 
 
+class FailingMarkdownFeeler:
+    async def present(
+        self,
+        address: ChannelAddress,
+        markdown: str,
+    ) -> str | None:
+        raise RuntimeError("channel presentation failed")
+
+
+class FailingSendInk(RecordingInk):
+    async def send_message(
+        self,
+        chat_id: str,
+        chat_type: str,
+        messages: list[NativeMessage],
+        reply_to: str | None = None,
+        reply_in_thread: bool = False,
+    ) -> str | None:
+        raise RuntimeError("timeline presentation failed")
+
+
 async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     octomate = Octomate()
     agent = FakeAgent(
@@ -108,6 +143,137 @@ async def test_octomate_kick_dispatches_directly_to_registered_agent() -> None:
     assert channel.consumed == []
     assert agent.streams == []
     assert reception.streams == []
+
+
+async def test_direct_reply_records_and_binds_outbound_thread_message() -> None:
+    async def stream(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> AsyncIterator[str]:
+        yield "all done!"
+
+    model = FunctionModel(stream_function=stream, model_name="scripted")
+    octomate = Octomate()
+    agent = InklingTentacle(
+        "inkling",
+        octomate,
+        agent=cast(
+            Agent[None, InklingOutput],
+            Agent(
+                model,
+                deps_type=type(None),
+                output_type=[str],
+                toolsets=[inkling_toolset],
+            ),
+        ),
+        models={"deepseek:deepseek-v4-flash": model},
+        conversation_manager=octomate.conversations,
+    )
+    channel = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            receptions=[],
+        )
+    )
+    octomate.connect(agent)
+    octomate.connect(channel)
+
+    await octomate.kick(UserMessageSignal([_event(text="please answer")]))
+
+    conversation = await octomate.conversations.ensure(
+        _key(),
+        agent_tentacle_id="inkling",
+    )
+    model_message = (
+        await octomate.conversations.search_messages(
+            conversation.id, "all done", role="assistant"
+        )
+    )[0]
+    thread = await octomate.thread_manager.ensure_thread(_key())
+    chat_messages = await octomate.thread_manager.search_chat_messages(
+        thread.id,
+        "all done",
+        actor_kind="agent",
+    )
+    async with async_session() as session:
+        stored_message = await session.one_or_none(
+            ThreadMessage,
+            expressions=[ThreadMessage["id"] == chat_messages[0].id],
+        )
+        assert stored_message is not None
+        await stored_message.model_messages
+
+    assert channel.sent[0][2][0]["text"] == "all done!"
+    assert len(chat_messages) == 1
+    assert chat_messages[0].platform_message_id == "sent-1"
+    assert stored_message.model_messages[0].id == model_message.id
+
+
+async def test_direct_reply_persists_before_channel_presentation() -> None:
+    async def stream(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> AsyncIterator[str]:
+        yield "still persisted"
+
+    model = FunctionModel(stream_function=stream, model_name="scripted")
+    octomate = Octomate()
+    agent = InklingTentacle(
+        "inkling",
+        octomate,
+        agent=cast(
+            Agent[None, InklingOutput],
+            Agent(
+                model,
+                deps_type=type(None),
+                output_type=[str],
+                toolsets=[inkling_toolset],
+            ),
+        ),
+        models={"deepseek:deepseek-v4-flash": model},
+        conversation_manager=octomate.conversations,
+    )
+    channel = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            receptions=[],
+        )
+    )
+    channel.feelers.markdown = FailingMarkdownFeeler()
+    octomate.connect(agent)
+    octomate.connect(channel)
+
+    with pytest.raises(RuntimeError, match="channel presentation failed"):
+        await octomate.kick(UserMessageSignal([_event(text="please answer")]))
+
+    conversation = await octomate.conversations.ensure(
+        _key(),
+        agent_tentacle_id="inkling",
+    )
+    model_message = (
+        await octomate.conversations.search_messages(
+            conversation.id, "still persisted", role="assistant"
+        )
+    )[0]
+    thread = await octomate.thread_manager.ensure_thread(_key())
+    chat_messages = await octomate.thread_manager.search_chat_messages(
+        thread.id,
+        "still persisted",
+        actor_kind="agent",
+    )
+    async with async_session() as session:
+        stored_message = await session.one_or_none(
+            ThreadMessage,
+            expressions=[ThreadMessage["id"] == chat_messages[0].id],
+        )
+        assert stored_message is not None
+        await stored_message.model_messages
+
+    assert len(chat_messages) == 1
+    assert chat_messages[0].platform_message_id is None
+    assert stored_message.model_messages[0].id == model_message.id
 
 
 async def test_octomate_kick_builds_prompt_from_pending_thread_messages() -> None:
@@ -185,6 +351,74 @@ async def test_octomate_kick_streams_reception_result_when_enabled() -> None:
     assert reception.streams[0].history == []
     assert reception.streams[0].address.thread_id == "hint-thread"
     assert reception.streams[0].run_name == "reception"
+
+
+async def test_streamed_reception_records_result_output_without_timeline_source() -> None:
+    octomate = Octomate()
+    agent = FakeAgent(
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
+            model="test",
+            reason="debugging",
+            hint="debugging",
+            summon="Please continue debugging in reception.",
+        )
+    )
+    channel = FakeChannelTentacle(config=_streaming_config())
+    reception = FakeAgent(
+        id="other",
+        reception_script=mid_run_notice(
+            notice="first notice",
+            answer="final answer",
+        ),
+    )
+    _register_agents(octomate, agent, reception)
+    octomate.connect(channel)
+
+    await octomate.kick(UserMessageSignal([_event()]))
+
+    target_address = channel.consumed[0][0]
+    thread = await octomate.thread_manager.ensure_thread(target_address)
+    outbounds = [
+        message for message in thread.messages if message.direction == "outbound"
+    ]
+
+    assert [message.message_text for message in outbounds] == ["final answer"]
+    assert [message.platform_message_id for message in outbounds] == [None]
+
+
+async def test_streamed_reception_persists_when_timeline_presentation_fails() -> None:
+    octomate = Octomate()
+    agent = FakeAgent(
+        triage_output=SummonDecision(
+            action="summon",
+            agent_id="other",
+            model="test",
+            reason="debugging",
+            hint="debugging",
+            summon="Please continue debugging in reception.",
+        )
+    )
+    channel = FakeChannelTentacle(
+        ink=FailingSendInk(),
+        config=_streaming_config(),
+    )
+    reception = FakeAgent(id="other", reception_output="survives render failure")
+    _register_agents(octomate, agent, reception)
+    octomate.connect(channel)
+
+    await octomate.kick(UserMessageSignal([_event()]))
+
+    thread = await octomate.thread_manager.ensure_thread(_key(thread_id="hint-thread"))
+    chat_messages = await octomate.thread_manager.search_chat_messages(
+        thread.id,
+        "survives render failure",
+        actor_kind="agent",
+    )
+
+    assert len(chat_messages) == 1
+    assert chat_messages[0].platform_message_id is None
 
 
 async def test_octomate_kick_skips_triage_inside_flat_thread() -> None:

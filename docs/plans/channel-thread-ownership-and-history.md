@@ -458,19 +458,15 @@ Record visible agent output:
 
 - Non-streaming markdown and segment presentation.
 - Streaming timeline answer messages and rotations.
-- `send_message` mid-run events.
 
 Then reconcile output records to persisted assistant `ModelResponse`s:
 
 - `assistant_reply` for final replies.
-- `assistant_send` for send-tool output, with `tool_call_id`.
 
 Success checks:
 
 - A final assistant reply has a `ThreadMessage` related to its
   `ModelResponse`.
-- A mid-run send has a `ThreadMessage` relationship row with the correct
-  `tool_call_id`.
 - Streaming answer rotation records each visible output message without
   duplicating text.
 

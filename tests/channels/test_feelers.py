@@ -49,6 +49,7 @@ from octomate.tentacles.channel.slack import SlackTentacle
 from octomate.tentacles.channel.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
 
 from tests.support.channels import (
+    FakeChannelTentacle,
     NoopSegmentsFeeler,
     NoopTimeline,
     RecordingApprovalFeeler,
@@ -56,6 +57,7 @@ from tests.support.channels import (
     RecordingQuestionFeeler,
 )
 from tests.support.managers import FakeActionManager, FakePresentedBatch
+from tests.support.scenarios import mid_run_notice, play
 
 
 def _key(channel: str = "im") -> ChannelAddress:
@@ -229,6 +231,21 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         (approval.id, f"approval-{approval.id}"),
         (first.id, f"question-{first.id}"),
         (second.id, f"question-{second.id}"),
+    ]
+
+
+async def test_default_timeline_rotates_answer_messages() -> None:
+    channel = FakeChannelTentacle()
+    address = _key()
+
+    async with channel.feelers.timeline.open(address) as state:
+        await state.drive(
+            play(mid_run_notice(notice="first notice", answer="final answer"))
+        )
+
+    assert [sent[2][0]["text"] for sent in channel.sent] == [
+        "first notice",
+        "final answer",
     ]
 
 
