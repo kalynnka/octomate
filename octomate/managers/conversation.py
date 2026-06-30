@@ -5,10 +5,12 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Literal
 
+from arcanus.materia.sqlalchemy import selectinload
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 
 from octomate.database import async_session
+from octomate.schemas.channel import ThreadMessage
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -108,6 +110,16 @@ class ConversationManager:
         self.conversations.move_to_end(cache_key)
         while len(self.conversations) > self.cache_size:
             self.conversations.popitem(last=False)
+
+    async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
+        for conversation in self.conversations.values():
+            if conversation.id == conversation_id:
+                return conversation.thread_id
+        async with async_session() as session:
+            conversation = await session.get(Conversation, conversation_id)
+        if conversation is None:
+            return None
+        return conversation.thread_id
 
     async def record_agent_run(
         self,
@@ -264,3 +276,20 @@ class ConversationManager:
                 ],
             )
         return list(rows)
+
+    async def related_chat_messages(
+        self,
+        model_message_id: uuid.UUID,
+    ) -> list[ThreadMessage]:
+        async with async_session() as session:
+            message = await session.one_or_none(
+                ModelMessage,
+                options=[selectinload(ModelMessage["thread_messages"])],
+                expressions=[ModelMessage["id"] == model_message_id],
+            )
+            if message is None:
+                return []
+            return [
+                ThreadMessage.model_validate(thread_message)
+                for thread_message in message.thread_messages
+            ]

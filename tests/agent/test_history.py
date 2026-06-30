@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
-from pydantic_ai import RunContext
+from pydantic_ai import RunContext, RunUsage
 from pydantic_ai.messages import (
     BinaryContent,
     TextContent,
@@ -21,13 +21,16 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.messages import ModelRequest as RawModelRequest
 from pydantic_ai.messages import ModelResponse as RawModelResponse
+from pydantic_ai.models.test import TestModel
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.history import HistoryCapability
-from octomate.managers import ConversationManager
+from octomate.managers import ConversationManager, ThreadManager
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.schemas.segments import TextSegment
 
 
 def _send_args(*texts: str) -> dict[str, Any]:
@@ -147,6 +150,26 @@ def _key() -> ChannelAddress:
     )
 
 
+def _event(message_id: str, user_id: str, text: str) -> MessageEvent:
+    return MessageEvent(
+        tentacle_id="dev_ui",
+        message_id=message_id,
+        chat_type="private",
+        chat_id="alice",
+        user_id=user_id,
+        segments=[TextSegment(data={"text": text})],
+    )
+
+
+def _ctx(conversation_id: uuid.UUID) -> RunContext[Any]:
+    return RunContext(
+        deps=None,
+        model=TestModel(),
+        usage=RunUsage(),
+        conversation_id=str(conversation_id),
+    )
+
+
 async def _seed(manager: ConversationManager) -> Any:
     """One run: user turn, an assistant turn that thinks then sends, the tool
     return for that send, and a final assistant answer. conversation_id is stamped
@@ -257,12 +280,74 @@ async def test_history_tool_returns_messages_with_ids() -> None:
     conversation = await _seed(manager)
     capability = HistoryCapability(manager)
     assert capability.toolset is not None
-    search_history = capability.toolset.tools["search_history"].function
-    ctx = cast(RunContext[Any], SimpleNamespace(conversation_id=str(conversation.id)))
+    ctx = _ctx(conversation.id)
+    tools = await capability.toolset.get_tools(ctx)
 
-    hits = await search_history(ctx, "bug")
+    hits = await capability.toolset.call_tool(
+        "search_model_history",
+        {"query": "bug"},
+        ctx,
+        tools["search_model_history"],
+    )
     assert [m.message_text for m in hits] == [
         "find the auth bug",
         "the bug is in login",
     ]
     assert all(m.id is not None for m in hits)
+
+
+async def test_history_thread_tools_follow_conversation_thread_id() -> None:
+    conversation_manager = ConversationManager()
+    thread_manager = ThreadManager()
+    first = await thread_manager.record_inbound(
+        _event("m1", "alice", "stored while asleep")
+    )
+    await thread_manager.record_inbound(_event("m2", "bob", "wake now"))
+    thread = await thread_manager.ensure_thread(_key())
+    conversation = await conversation_manager.ensure(
+        _key(),
+        agent_tentacle_id="inkling",
+        thread_id=thread.id,
+    )
+    capability = HistoryCapability(conversation_manager, thread_manager)
+    assert capability.toolset is not None
+    ctx = _ctx(conversation.id)
+    tools = await capability.toolset.get_tools(ctx)
+
+    hits = await capability.toolset.call_tool(
+        "search_thread_history",
+        {"query": "asleep"},
+        ctx,
+        tools["search_thread_history"],
+    )
+    after = await capability.toolset.call_tool(
+        "read_thread_history_after",
+        {"message_id": str(first.id), "limit": 1},
+        ctx,
+        tools["read_thread_history_after"],
+    )
+
+    assert [message.message_text for message in hits] == ["stored while asleep"]
+    assert [message.message_text for message in after] == ["wake now"]
+
+
+async def test_history_thread_tools_raise_without_conversation_thread_id() -> None:
+    conversation_manager = ConversationManager()
+    capability = HistoryCapability(conversation_manager, ThreadManager())
+    conversation = await conversation_manager.ensure(
+        _key(),
+        agent_tentacle_id="inkling",
+    )
+    assert capability.toolset is not None
+
+    tools = await capability.toolset.get_tools(_ctx(conversation.id))
+
+    assert "search_model_history" in tools
+    assert "search_thread_history" in tools
+    with pytest.raises(ValueError, match="thread-backed conversation"):
+        await capability.toolset.call_tool(
+            "search_thread_history",
+            {"query": "anything"},
+            _ctx(conversation.id),
+            tools["search_thread_history"],
+        )

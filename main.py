@@ -85,7 +85,7 @@ def create_app() -> FastAPI:
             capabilities=[
                 TodoCapability(),
                 SendCapability(),
-                HistoryCapability(octomate.conversations),
+                HistoryCapability(octomate.conversations, octomate.thread_manager),
             ],
             system_prompt=SYSTEM_PROMPT,
             conversation_manager=octomate.conversations,

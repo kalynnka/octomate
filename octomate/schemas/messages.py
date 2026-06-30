@@ -4,9 +4,9 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
-from arcanus import BaseTransmuter, Transmuter
+from arcanus import BaseTransmuter, RelationCollection, Relationships, Transmuter
 from arcanus.base import Identity
 from arcanus.dataclass import dataclass as arcanus_dataclass
 from pydantic import (
@@ -33,6 +33,9 @@ from octomate.models.messages import ModelRequest as ModelRequestModel
 from octomate.models.messages import ModelResponse as ModelResponseModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.json import JsonObject
+
+if TYPE_CHECKING:
+    from octomate.schemas.channel import ThreadMessage
 
 # `metadata` is reserved on SQLAlchemy's DeclarativeBase, so the ORM column
 # lives on the `meta` Python attribute. arcanus' bless resolves ORM attributes
@@ -80,6 +83,7 @@ class ModelMessage(BaseTransmuter, ABC):
     conversation_id: str | None = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
+    thread_messages: RelationCollection["ThreadMessage"] = Relationships()
 
     @abstractmethod
     def _concrete_message(self) -> None:

@@ -4,6 +4,7 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
 
+from arcanus.materia.sqlalchemy import selectinload
 from sqlalchemy import or_
 
 from octomate.config.agents import AgentRouteModelName
@@ -19,7 +20,7 @@ from octomate.schemas.channel import (
 )
 from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.messages import ModelResponse
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
 
 
@@ -402,3 +403,18 @@ class ThreadManager:
                 ],
             )
         return list(rows)
+
+    async def related_model_messages(
+        self,
+        thread_message_id: uuid.UUID,
+    ) -> list[ModelRequest | ModelResponse]:
+        async with async_session() as session:
+            message = await session.get(
+                ThreadMessage,
+                thread_message_id,
+                options=[selectinload(ThreadMessage["model_messages"])],
+            )
+            if message is None:
+                return []
+            await message.model_messages
+        return list(message.model_messages)

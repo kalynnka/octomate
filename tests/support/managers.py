@@ -88,6 +88,12 @@ class FakeConversationManager(ConversationManager):
                 )
         return cast(Conversation, conversation)
 
+    async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
+        for conversation in self.store.values():
+            if conversation.id == conversation_id:
+                return conversation.thread_id
+        return None
+
     async def record_agent_run(
         self,
         conversation: Conversation,

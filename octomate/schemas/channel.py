@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
@@ -14,8 +14,10 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.models import channel as channel_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress, ChatType, UserProfile
-from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.segments import MessageSegment
+
+if TYPE_CHECKING:
+    from octomate.schemas.messages import ModelRequest, ModelResponse
 
 ThreadStatus = Literal["active", "closed"]
 ThreadMessageDirection = Literal["inbound", "outbound"]
@@ -69,7 +71,7 @@ class ThreadMessage(BaseTransmuter):
     raw: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    model_messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
+    model_messages: RelationCollection["ModelRequest | ModelResponse"] = Relationships()
 
 
 @sqlalchemy_materia.bless(channel_models.MessageBinding)
@@ -153,3 +155,18 @@ class Thread(BaseTransmuter):
         if handoff is None:
             return None
         return handoff.to_model
+
+
+from octomate.schemas.messages import (  # noqa: E402
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+)
+
+ThreadMessage.model_rebuild(
+    _types_namespace={
+        "ModelRequest": ModelRequest,
+        "ModelResponse": ModelResponse,
+    }
+)
+ModelMessage.model_rebuild(_types_namespace={"ThreadMessage": ThreadMessage})

@@ -326,13 +326,11 @@ The user-facing `history` capability should become chat-ledger first.
 
 Tools:
 
-- `search_history(query, actor_kind=None, limit=10)`: alias for
-  `search_chat_history`; searches `ThreadMessage.message_text` in the current
-  thread.
-- `search_chat_history(query, actor_kind=None, limit=10)`: explicit chat-ledger
-  name.
-- `read_history_before(thread_message_id, limit=10)` and
-  `read_history_after(thread_message_id, limit=10)`: page chat-ledger messages.
+- `search_thread_history(query, actor_kind=None, limit=10)`: explicit
+  thread-ledger name.
+- `read_thread_history_before(thread_message_id, limit=10)` and
+  `read_thread_history_after(thread_message_id, limit=10)`: page chat-ledger
+  messages.
 - `read_related_model_messages(thread_message_id)`: return
   `ThreadMessage.model_messages` for a chat message.
 
@@ -474,15 +472,14 @@ Success checks:
 
 Change tool behavior:
 
-- Keep `search_history` as a chat-history tool for compatibility.
-- Add explicit `search_chat_history`.
+- Add `search_thread_history`.
 - Add model-history tools under separate names.
 - Update instructions so agents know which ledger they are searching.
 
 Success checks:
 
 - Existing model-history tests move to `search_model_history`.
-- New chat-history tests prove `search_history` finds messages that never woke
+- New thread-history tests prove `search_thread_history` finds messages that never woke
   an agent.
 - Relationship tools can jump from a chat message to the model messages that
   used it.
