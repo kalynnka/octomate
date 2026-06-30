@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic_ai.models import infer_model
 from pydantic_ai.ui._web.app import _get_ui_html
 from pydantic_ai.ui.vercel_ai.request_types import RequestData
 
-from octomate.tentacles.channel.web.vercel.base import VercelTentacle
+from octomate.tentacles.channel.web.vercel.base import (
+    ROUTE_SEP,
+    ChatExtra,
+    VercelTentacle,
+)
 
 if TYPE_CHECKING:
     from octomate import Octomate
@@ -50,8 +53,11 @@ def build_vercel_router(
         responses={200: {"content": {"text/event-stream": {}}}},
         summary="Vercel AI Data Stream Protocol — drives react_graph",
     )
-    async def chat(body: RequestData) -> StreamingResponse:
-        return await channel.handle_request(body)
+    async def chat(body: RequestData, request: Request) -> StreamingResponse:
+        # The selected route id rides as a top-level `model` field the typed
+        # RequestData does not capture; read it from the raw body.
+        extra = ChatExtra.model_validate_json(await request.body())
+        return await channel.handle_request(body, selected_model=extra.model)
 
     @router.options("/api/chat", include_in_schema=False)
     async def chat_options() -> Response:
@@ -60,25 +66,17 @@ def build_vercel_router(
 
     @router.get("/api/configure", include_in_schema=False)
     async def configure() -> JSONResponse:
-        # Populates the chat UI's model + builtin-tool pickers. Our agent is
-        # wired internally (model + toolset are fixed) so we surface a single
-        # read-only entry showing the active agent and its underlying LLM.
-        # The UI still requires at least one model on init — an empty list
-        # makes it crash dereferencing the default. Whatever the user picks
-        # here is ignored on the server; this entry is informational.
-        agent = channel.graph_agent
-        assert agent.model is not None, "agent must be constructed with a model"
+        # The model picker lists every routable agent-model pair; the one the
+        # user selects drives the turn (see VercelTentacle.claim_selected_route).
         return JSONResponse(
             {
                 "models": [
                     {
-                        "id": channel.agent_id,
-                        "name": (
-                            f"{channel.agent_id} "
-                            f"({infer_model(agent.model).model_name})"
-                        ),
+                        "id": f"{reception.agent}{ROUTE_SEP}{reception.model}",
+                        "name": f"{reception.agent} · {reception.model}",
                         "builtinTools": [],
                     }
+                    for reception in channel.routable_receptions()
                 ],
                 "builtinTools": [],
             }

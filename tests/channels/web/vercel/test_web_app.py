@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator
 
 import pytest
 from fastapi.routing import APIRoute
-from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.ui.vercel_ai.request_types import (
     SubmitMessage,
@@ -17,36 +17,56 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.agent import Agent
-from octomate.config.channels import VercelChannelConfig
+from octomate.config.channels import AgentModelConfig, VercelChannelConfig
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.tentacles.agent.inkling import InklingTentacle
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.channel.base import ChannelTentacle
 from octomate.tentacles.channel.web.vercel import VercelTentacle, build_vercel_router
+from octomate.tentacles.channel.web.vercel.base import ROUTE_SEP
+from tests.support.agents import build_non_stream_agent, build_scripted_agent
 
-from tests.support.agents import build_scripted_agent
+# The dev UI drives one configured reception agent through octomate.kick.
+RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
 
 
-def _register(octomate: Octomate, agent: Agent[None, InklingOutput]) -> VercelTentacle:
+async def _register(
+    octomate: Octomate, agent: Agent[None, InklingOutput]
+) -> VercelTentacle:
+    assert agent.model is not None
     octomate.connect(
         InklingTentacle(
-            "reception",
+            "inkling",
             octomate,
             agent=agent,
-            conversation_manager=octomate.conversations,
+            models={RECEPTION_MODEL: agent.model},
         )
     )
     channel = octomate.connect(
-        VercelTentacle("dev_ui", octomate, config=VercelChannelConfig())
+        VercelTentacle(
+            "dev_ui",
+            octomate,
+            config=VercelChannelConfig(
+                receptions=[AgentModelConfig(agent="inkling", model=RECEPTION_MODEL)],
+            ),
+        )
     )
     assert isinstance(channel, VercelTentacle)
+    await channel.probe()
     return channel
 
 
-async def _post(channel: VercelTentacle, prompt: str) -> str:
+async def _post(
+    channel: VercelTentacle,
+    prompt: str,
+    *,
+    chat_id: str = "chat-1",
+    selected_model: str | None = None,
+) -> str:
     body = SubmitMessage(
-        id="chat-1",
+        id=chat_id,
         messages=[
             UIMessage(
                 id="m1",
@@ -55,7 +75,7 @@ async def _post(channel: VercelTentacle, prompt: str) -> str:
             )
         ],
     )
-    response = await channel.handle_request(body)
+    response = await channel.handle_request(body, selected_model=selected_model)
     parts: list[bytes] = []
     async for part in response.body_iterator:
         parts.append(part.encode() if isinstance(part, str) else bytes(part))
@@ -99,7 +119,7 @@ async def test_handle_request_streams_scripted_reply(
 ) -> None:
     octomate = Octomate()
     agent, _ = build_scripted_agent(["all done!"])
-    channel = _register(octomate, agent)
+    channel = await _register(octomate, agent)
 
     payload = await _post(channel, "hi there")
 
@@ -125,8 +145,118 @@ async def test_handle_request_streams_every_text_delta(
         output_type=[str, list[MessageSegment], DeferredToolRequests],
         system_prompt=SYSTEM_PROMPT,
     )
-    channel = _register(Octomate(), agent)
+    channel = await _register(Octomate(), agent)
 
     payload = await _post(channel, "write a poem")
 
     assert _streamed_text(payload) == "".join(tokens)
+
+
+async def test_handle_request_records_chat_ledger(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """The dev UI follows the channel pattern: the inbound user message and the
+    agent reply land in the shared thread ledger, not a separate history path."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["all done!"])
+    channel = await _register(octomate, agent)
+
+    await _post(channel, "hi there")
+
+    address = ChannelAddress(
+        channel_tentacle_id="dev_ui",
+        chat_type="private",
+        chat_id="dev",
+        user_id="dev",
+        thread_id="chat-1",
+    )
+    thread = await octomate.thread_manager.ensure(address)
+    messages = list(thread.messages)
+    inbound = [message for message in messages if message.direction == "inbound"]
+    outbound = [message for message in messages if message.direction == "outbound"]
+
+    assert [message.message_text for message in inbound] == ["hi there"]
+    assert [message.message_text for message in outbound] == ["all done!"]
+    assert thread.active_agent_tentacle_id == "inkling"
+
+
+async def _register_routes(
+    octomate: Octomate, agents: dict[str, Agent[None, InklingOutput]]
+) -> VercelTentacle:
+    receptions = []
+    for agent_id, agent in agents.items():
+        assert agent.model is not None
+        octomate.connect(
+            InklingTentacle(
+                agent_id, octomate, agent=agent, models={RECEPTION_MODEL: agent.model}
+            )
+        )
+        receptions.append(AgentModelConfig(agent=agent_id, model=RECEPTION_MODEL))
+    channel = octomate.connect(
+        VercelTentacle(
+            "dev_ui", octomate, config=VercelChannelConfig(receptions=receptions)
+        )
+    )
+    assert isinstance(channel, VercelTentacle)
+    await channel.probe()
+    return channel
+
+
+def _dev_thread_address(thread_id: str = "chat-1") -> ChannelAddress:
+    return ChannelAddress(
+        channel_tentacle_id="dev_ui",
+        chat_type="private",
+        chat_id="dev",
+        user_id="dev",
+        thread_id=thread_id,
+    )
+
+
+async def test_configure_lists_every_routable_reception() -> None:
+    octomate = Octomate()
+    inkling, _ = build_scripted_agent(["a"])
+    claude, _ = build_scripted_agent(["b"])
+    channel = await _register_routes(octomate, {"inkling": inkling, "claude": claude})
+
+    ids = {
+        f"{reception.agent}{ROUTE_SEP}{reception.model}"
+        for reception in channel.routable_receptions()
+    }
+    assert ids == {
+        f"inkling{ROUTE_SEP}{RECEPTION_MODEL}",
+        f"claude{ROUTE_SEP}{RECEPTION_MODEL}",
+    }
+
+
+async def test_selected_route_routes_to_and_owns_the_chosen_agent(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    inkling, _ = build_scripted_agent(["from inkling"])
+    claude, _ = build_scripted_agent(["from claude"])
+    channel = await _register_routes(octomate, {"inkling": inkling, "claude": claude})
+
+    payload = await _post(
+        channel, "hello", selected_model=f"claude{ROUTE_SEP}{RECEPTION_MODEL}"
+    )
+
+    assert "from claude" in payload
+    thread = await octomate.thread_manager.ensure(_dev_thread_address())
+    assert thread.active_agent_tentacle_id == "claude"
+
+
+async def test_unchanged_selection_does_not_re_handoff(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    channel = await _register_routes(
+        octomate,
+        {"inkling": build_non_stream_agent(), "claude": build_non_stream_agent()},
+    )
+    selected = f"claude{ROUTE_SEP}{RECEPTION_MODEL}"
+
+    await _post(channel, "one", selected_model=selected)
+    await _post(channel, "two", selected_model=selected)
+
+    thread = await octomate.thread_manager.ensure(_dev_thread_address())
+    assert [handoff.to_agent_tentacle_id for handoff in thread.handoffs] == ["claude"]
