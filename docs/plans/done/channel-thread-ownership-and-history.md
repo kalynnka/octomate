@@ -1,11 +1,30 @@
 # Plan: thread ownership and split histories
 
-> Status: in progress
-> Owner: @luhui
-> Created: 2026-06-24
+> Status: done · Owner: @luhui · Created: 2026-06-24
 > Supersedes the useful parts of
-> [cancelled/conversation-transcript.md](cancelled/conversation-transcript.md)
+> [../cancelled/conversation-transcript.md](../cancelled/conversation-transcript.md)
 > without reusing its overloaded "transcript" wording.
+
+## Outcome (landed)
+
+All eight units of work shipped; the full suite is green and all the focused
+tests below exist (including cold-reload handoff-ownership). Two pieces landed
+differently from the original proposal:
+
+- **No compatibility path — a clean identity redesign instead.** UoW 1/8
+  proposed keeping the denormalized address columns and a `ChannelAddress`
+  fallback during a low-risk transition. Instead a `Conversation` is now
+  identified purely by `(thread_id, agent_tentacle_id)`: the address columns
+  were dropped, `thread_id` is mandatory with a cascading FK, and
+  `ConversationKey` is `(thread_id, agent_id)`. The `ChannelAddress`/address-fallback
+  text in UoW 1, UoW 8, and "Hierarchy" is therefore **superseded**. (Existing
+  data was droppable, so the migration clears the table rather than backfilling.)
+- **Web/dev went through `octomate.kick` and gained a route picker.** Beyond
+  "move web/dev onto the channel pattern," the Vercel dev UI now dispatches
+  through `octomate.kick` (inline SSE via a per-request output sink), keys each
+  chat as its own thread, and exposes every routable agent-model pair in the
+  model picker — a pick claims thread ownership (hybrid: only on change) while
+  every route stays summon-able.
 
 ## AGENTS principles applied here
 
