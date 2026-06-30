@@ -11,7 +11,7 @@ from pydantic import ConfigDict, Field
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
-from octomate.models import channel as channel_models
+from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress, ChatType, UserProfile
 from octomate.schemas.segments import MessageSegment
@@ -52,7 +52,7 @@ class ThreadKey:
         )
 
 
-@sqlalchemy_materia.bless(channel_models.ThreadMessage)
+@sqlalchemy_materia.bless(thread_models.ThreadMessage)
 class ThreadMessage(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 
@@ -74,7 +74,7 @@ class ThreadMessage(BaseTransmuter):
     model_messages: RelationCollection["ModelRequest | ModelResponse"] = Relationships()
 
 
-@sqlalchemy_materia.bless(channel_models.MessageBinding)
+@sqlalchemy_materia.bless(thread_models.MessageBinding)
 class MessageBinding(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 
@@ -87,7 +87,7 @@ class MessageBinding(BaseTransmuter):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-@sqlalchemy_materia.bless(channel_models.Handoff)
+@sqlalchemy_materia.bless(thread_models.Handoff)
 class Handoff(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 
@@ -112,7 +112,7 @@ class Handoff(BaseTransmuter):
         return self.id > other.id
 
 
-@sqlalchemy_materia.bless(channel_models.Thread)
+@sqlalchemy_materia.bless(thread_models.Thread)
 class Thread(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 

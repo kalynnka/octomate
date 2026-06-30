@@ -16,7 +16,7 @@ from uuid_utils.compat import uuid7
 from octomate.models.base import Base
 
 if TYPE_CHECKING:
-    from octomate.models.channel import ThreadMessage
+    from octomate.models.thread import ThreadMessage
     from octomate.models.runs import AgentRun
 
 

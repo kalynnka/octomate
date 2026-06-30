@@ -35,7 +35,7 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
-    from octomate.schemas.channel import ThreadMessage
+    from octomate.schemas.thread import ThreadMessage
 
 # `metadata` is reserved on SQLAlchemy's DeclarativeBase, so the ORM column
 # lives on the `meta` Python attribute. arcanus' bless resolves ORM attributes

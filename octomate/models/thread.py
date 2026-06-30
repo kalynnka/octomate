@@ -152,6 +152,7 @@ class Thread(Base, TransmuterProxiedMixin):
     conversations: Mapped[list[Conversation]] = relationship(
         "Conversation",
         back_populates="thread",
+        cascade="all, delete-orphan",
         order_by="Conversation.id",
         lazy="selectin",
     )

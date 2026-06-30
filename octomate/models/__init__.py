@@ -1,5 +1,5 @@
 from octomate.models.base import Base
-from octomate.models.channel import (
+from octomate.models.thread import (
     Handoff,
     ThreadMessage,
     Thread,

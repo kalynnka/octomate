@@ -57,11 +57,11 @@ class ChannelAddress:
 
 
 class ConversationKey(NamedTuple):
-    """The real conversation key: a channel address plus the owning agent. Two
-    agents at the same address keep separate conversations, so the conversation a
-    `ConversationManager` resolves and caches is identified by both."""
+    """Identity of an agent conversation: the owning thread plus the agent. A
+    thread owns one conversation per agent, so every sender in a group thread
+    keys to the one conversation, independent of who woke it."""
 
-    address: ChannelAddress
+    thread_id: uuid.UUID
     agent_id: str
 
 
@@ -72,35 +72,43 @@ class Conversation(BaseTransmuter):
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     external_id: str | None = None
 
-    chat_type: ChatType = Field(frozen=True)
-    chat_id: str = Field(frozen=True)
-    channel_thread_id: str = Field(default="", frozen=True)
-    user_id: str = Field(frozen=True)
-    thread_id: uuid.UUID | None = None
-
-    channel_tentacle_id: str = Field(frozen=True)
-    agent_tentacle_id: str
+    thread_id: uuid.UUID = Field(
+        frozen=True,
+        description=(
+            "The owning thread; with agent_tentacle_id it is the conversation's "
+            "identity."
+        ),
+    )
+    agent_tentacle_id: str = Field(
+        frozen=True,
+        description=(
+            "The owning agent; with thread_id it is the conversation's identity."
+        ),
+    )
 
     name: str | None = None
     status: str = "active"
-    # Approval state for an external coding agent (Claude): the granted mode, and
-    # the tools the user allowed for the life of this conversation ("allow for
-    # session"), auto-approved without raising a card again.
-    permission_mode: ConversationPermissionMode = "default"
-    allowed_tools: list[str] = Field(default_factory=list)
+    permission_mode: ConversationPermissionMode = Field(
+        default="default",
+        description=(
+            "Approval mode granted to an external coding agent (Claude): prompt "
+            "every gated tool, auto-accept edits, or bypass gating."
+        ),
+    )
+    allowed_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Tools the user allowed for the life of this conversation ('allow for "
+            "session'), auto-approved without raising a card again."
+        ),
+    )
 
     runs: RelationCollection[AgentRun] = Relationships()
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
-    @cached_property
-    def address(self) -> ChannelAddress:
-        return ChannelAddress(
-            channel_tentacle_id=self.channel_tentacle_id,
-            chat_type=self.chat_type,
-            chat_id=self.chat_id,
-            user_id=self.user_id,
-            thread_id=self.channel_thread_id,
-        )
+    @property
+    def key(self) -> ConversationKey:
+        return ConversationKey(self.thread_id, self.agent_tentacle_id)
 
 
 class UserProfile(BaseModel):

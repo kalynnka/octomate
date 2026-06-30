@@ -11,7 +11,7 @@ from uuid_utils.compat import uuid7
 from octomate.models.base import Base
 
 if TYPE_CHECKING:
-    from octomate.models.channel import Thread
+    from octomate.models.thread import Thread
     from octomate.models.messages import ModelMessage
     from octomate.models.runs import AgentRun
 
@@ -20,11 +20,7 @@ class Conversation(Base, TransmuterProxiedMixin):
     __tablename__ = "conversations"
     __table_args__ = (
         UniqueConstraint(
-            "channel_tentacle_id",
-            "chat_type",
-            "chat_id",
-            "channel_thread_id",
-            "user_id",
+            "thread_id",
             "agent_tentacle_id",
             name="uq_conversations_conversation_key",
         ),
@@ -33,20 +29,16 @@ class Conversation(Base, TransmuterProxiedMixin):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
     external_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    chat_type: Mapped[str] = mapped_column(String, nullable=False)
-    chat_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    channel_thread_id: Mapped[str] = mapped_column(
-        String, nullable=False, default="", index=True
-    )
-    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    thread_id: Mapped[uuid.UUID | None] = mapped_column(
+    thread_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
-        ForeignKey("threads.id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("threads.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
+        comment=(
+            "The owning thread. A thread owns one conversation per agent, so "
+            "(thread_id, agent_tentacle_id) is the conversation's identity."
+        ),
     )
-
-    channel_tentacle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     agent_tentacle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
     name: Mapped[str | None] = mapped_column(String, nullable=True)
