@@ -4,9 +4,9 @@
 
 All schemas live under `octomate/schemas/` and are organized into four modules:
 
-| Module     | Purpose                                            |
-| ---------- | -------------------------------------------------- |
-| `session`  | Session identity and user profiles                 |
+| Module        | Purpose                                            |
+| ------------- | -------------------------------------------------- |
+| `conversation`| Agent-conversation identity and user profiles      |
 | `segments` | Message segment data types (text, image, at, etc.) |
 | `events`   | Inbound events from IM platforms                   |
 | `actions`  | Outbound actions toward IM platforms               |
@@ -22,13 +22,17 @@ IM Platform  ◀──actions/segments──  Tentacle  ◀──actions/segment
 
 ## Schemas
 
-### session.py
+### conversation.py
 
-| Schema        | Type       | Direction             | Summary                                                      |
-| ------------- | ---------- | --------------------- | ------------------------------------------------------------ |
-| `SessionKey`  | NamedTuple | internal              | Identifies a conversation (tentacle + user + optional group) |
-| `UserProfile` | Model      | IM → Tentacle → Agent | Sender profile: name, nickname, gender, age, title           |
-| `Anonymous`   | Model      | IM → Tentacle → Agent | Anonymous sender info in groups                              |
+A `Conversation` is an **agent conversation** — one agent's model context for a
+thread — not a human chat log. The user-facing chat ledger is the `Thread` /
+`ThreadMessage` rows owned by `ThreadManager`.
+
+| Schema            | Type       | Direction             | Summary                                                              |
+| ----------------- | ---------- | --------------------- | ------------------------------------------------------------------- |
+| `ChannelAddress`  | dataclass  | internal              | Delivery address: tentacle + chat + sender user + platform thread   |
+| `ConversationKey` | NamedTuple | internal              | Cache key for an agent conversation (channel address + owning agent) |
+| `UserProfile`     | Model      | IM → Tentacle → Agent | Sender profile: name, nickname, gender, age, title                  |
 
 ### segments.py
 

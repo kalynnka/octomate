@@ -64,9 +64,17 @@ class LarkChannelConfig(ChannelConfig):
     stream: LarkStreamConfig = Field(default_factory=LarkStreamConfig)
 
 
+class VercelStreamConfig(ChannelStreamConfig):
+    # The dev UI renders tokens as they arrive; stream every event straight
+    # through (the timeline feeler forwards raw events, so batching is moot).
+    enabled: bool = True
+    flush_interval: float = 0.0
+
+
 class VercelChannelConfig(ChannelConfig):
     type: Literal["vercel"] = "vercel"
     mention_only: Literal[False] = False  # The dev UI is always mention-free.
+    stream: ChannelStreamConfig = Field(default_factory=VercelStreamConfig)
 
 
 class NapcatChannelConfig(ChannelConfig):

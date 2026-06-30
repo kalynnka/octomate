@@ -9,7 +9,7 @@ from sqlalchemy import or_
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
-from octomate.schemas.channel import (
+from octomate.schemas.thread import (
     ChannelActorKind,
     Handoff,
     ThreadMessage,
