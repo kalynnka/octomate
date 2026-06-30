@@ -187,10 +187,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        if thread_id is None:
+            raise ValueError("agent run requires a thread_id to own its conversation")
         conversation = await self.octomate.conversations.ensure(
-            conversation_address,
+            thread_id,
             agent_tentacle_id=self.id,
-            thread_id=thread_id,
         )
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
@@ -387,8 +388,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     (
                         message
                         for message in recorded_run.messages
-                        if isinstance(message, ModelRequest)
-                        and message.role == "user"
+                        if isinstance(message, ModelRequest) and message.role == "user"
                     ),
                     None,
                 )
@@ -403,7 +403,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     kind="request_source",
                     run_id=recorded_run.id,
                 )
-                source_thread = await self.octomate.thread_manager.ensure_thread(
+                source_thread = await self.octomate.thread_manager.ensure(
                     source_thread_address or conversation_address
                 )
                 await self.octomate.thread_manager.advance_prompt_cursor(

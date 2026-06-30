@@ -100,7 +100,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 system_prompt=system_prompt,
             )
         self.agent = agent
-        self.conversation_manager = conversation_manager or ConversationManager()
+        # Default to the project-level manager so every agent conversation shares
+        # one source of truth with the thread ledger and the rest of Octomate; an
+        # explicit manager still wins.
+        self.conversation_manager = conversation_manager or octomate.conversations
         self.deferred_resolver = deferred_resolver
         self.description = description or self.description
         self._exit_stack = AsyncExitStack()
@@ -397,9 +400,12 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             capabilities=capabilities,
             spec=spec,
         )
-        # The react graph carries only the key + agent id; each node fetches the
-        # live conversation (and its history) from the ConversationManager, the
-        # single source of truth — no message-history copy is threaded here.
+        # The react graph carries only the thread/agent identity; each node fetches
+        # the live conversation (and its history) from the ConversationManager, the
+        # single source of truth — no message-history copy is threaded here. A
+        # conversation is owned by a thread, so the run needs one.
+        if thread_id is None:
+            raise ValueError("agent run requires a thread_id to own its conversation")
         state = ReactState(
             conversation_address=conversation_address,
             agent_tentacle_id=self.id,

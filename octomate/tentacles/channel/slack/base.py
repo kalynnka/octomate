@@ -27,6 +27,7 @@ from octomate.tentacles.channel.slack.feelers.approvals import (
     approval_submitted_blocks,
     approval_title,
 )
+from octomate.tentacles.channel.slack.feelers.output import SlackTimelineFeeler
 from octomate.tentacles.channel.slack.feelers.questions import (
     SlackAskQuestionFeeler,
     SlackQuestionActionValueAdapter,
@@ -35,7 +36,6 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     question_title,
     submitted_blocks,
 )
-from octomate.tentacles.channel.slack.feelers.output import SlackTimelineFeeler
 from octomate.tentacles.channel.slack.ink import SlackInk
 from octomate.tentacles.channel.slack.schema import (
     SlackApprovalActionBody,
@@ -354,12 +354,9 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             thread_id=thread_ts,
         )
         with sqlalchemy_materia():
-            # Pre-create the source conversation owned by the entry triage agent;
-            # the triage run would otherwise create it on the first message.
-            await self.octomate.conversations.ensure(
-                address,
-                agent_tentacle_id="triage",
-            )
+            # Pre-create the thread that owns this assistant chat's conversations;
+            # the first message would otherwise create it on ingest.
+            await self.octomate.thread_manager.ensure(address)
         logger.info("Channel %s: ensured Slack assistant thread %s", self.id, address)
 
     async def start_sub_thread(

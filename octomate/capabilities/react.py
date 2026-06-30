@@ -67,7 +67,7 @@ class ReactState:
 
     conversation_address: ChannelAddress
     agent_tentacle_id: str
-    thread_id: uuid.UUID | None = None
+    thread_id: uuid.UUID
     source_thread_address: ChannelAddress | None = None
     source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
 
@@ -113,9 +113,8 @@ class StartTurn(
     ) -> RunAgent[ReactOutputT, ReactDepsT]:
         if self.user_prompt is not None:
             conversation = await ctx.deps.conversation_manager.ensure(
-                ctx.state.conversation_address,
+                ctx.state.thread_id,
                 agent_tentacle_id=ctx.state.agent_tentacle_id,
-                thread_id=ctx.state.thread_id,
             )
             abandoned = await ctx.deps.conversation_manager.drop_trailing_deferral(
                 conversation
@@ -172,9 +171,8 @@ class RunAgent(
             resumed=self.deferred_results is not None,
         ) as span:
             conversation = await ctx.deps.conversation_manager.ensure(
-                ctx.state.conversation_address,
+                ctx.state.thread_id,
                 agent_tentacle_id=ctx.state.agent_tentacle_id,
-                thread_id=ctx.state.thread_id,
             )
             if ctx.deps.event_send_stream is None:
                 # builtin_tools and output_retries are deprecated run kwargs in
@@ -298,7 +296,7 @@ class RunAgent(
                 kind="request_source",
                 run_id=recorded_run.id,
             )
-            source_thread = await ctx.deps.thread_manager.ensure_thread(
+            source_thread = await ctx.deps.thread_manager.ensure(
                 ctx.state.source_thread_address or ctx.state.conversation_address
             )
             await ctx.deps.thread_manager.advance_prompt_cursor(

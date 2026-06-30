@@ -9,19 +9,19 @@ from sqlalchemy import or_
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
-from octomate.schemas.thread import (
-    ChannelActorKind,
-    Handoff,
-    ThreadMessage,
-    Thread,
-    ThreadKey,
-    MessageBinding,
-    MessageBindingKind,
-)
 from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
+from octomate.schemas.thread import (
+    ChannelActorKind,
+    Handoff,
+    MessageBinding,
+    MessageBindingKind,
+    Thread,
+    ThreadKey,
+    ThreadMessage,
+)
 
 
 def message_text_from_segments(segments: list[MessageSegment]) -> str | None:
@@ -46,7 +46,7 @@ class ThreadManager:
         self.cache_size = cache_size
         self.threads: OrderedDict[ThreadKey, Thread] = OrderedDict()
 
-    async def ensure_thread(
+    async def ensure(
         self,
         address_or_key: ChannelAddress | ThreadKey,
     ) -> Thread:
@@ -98,7 +98,7 @@ class ThreadManager:
         actor_kind: ChannelActorKind = "human",
         agent_tentacle_id: str | None = None,
     ) -> ThreadMessage:
-        thread = await self.ensure_thread(
+        thread = await self.ensure(
             ThreadKey(
                 channel_tentacle_id=event.tentacle_id,
                 chat_type=event.chat_type,
@@ -148,7 +148,7 @@ class ThreadManager:
         if isinstance(thread_or_address, Thread):
             thread = thread_or_address
         else:
-            thread = await self.ensure_thread(thread_or_address)
+            thread = await self.ensure(thread_or_address)
         message = ThreadMessage(
             thread_id=thread.id,
             platform_message_id=platform_message_id,
@@ -193,7 +193,7 @@ class ThreadManager:
         trigger_message_id: uuid.UUID,
         active_agent_id: str,
     ) -> list[ThreadMessage]:
-        cached = await self.ensure_thread(thread.key)
+        cached = await self.ensure(thread.key)
 
         async with async_session() as session:
             expressions = [
@@ -250,7 +250,7 @@ class ThreadManager:
         if isinstance(thread_or_address, Thread):
             thread = thread_or_address
         else:
-            thread = await self.ensure_thread(thread_or_address)
+            thread = await self.ensure(thread_or_address)
         handoff = Handoff(
             thread_id=thread.id,
             from_agent_tentacle_id=from_agent_tentacle_id,

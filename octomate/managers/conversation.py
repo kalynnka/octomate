@@ -10,9 +10,8 @@ from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 
 from octomate.database import async_session
-from octomate.schemas.channel import ThreadMessage
+from octomate.schemas.thread import ThreadMessage
 from octomate.schemas.conversation import (
-    ChannelAddress,
     Conversation,
     ConversationKey,
 )
@@ -21,16 +20,19 @@ from octomate.schemas.runs import AgentRun
 
 
 class ConversationManager:
-    """Resolves and persists `Conversation` entities, and owns their message
-    history.
+    """Resolves and persists agent `Conversation` entities, and owns their model
+    message history.
+
+    A `Conversation` is one agent's model context within a `Thread` — not a human
+    chat log; the user-facing chat ledger is `ThreadManager`'s `ThreadMessage`
+    rows. A thread owns one conversation per agent, so the identity is
+    `(thread_id, agent_tentacle_id)`: every sender in a group thread keys to the
+    same owning agent's conversation, regardless of who woke it.
 
     The cache is the `Conversation` schema object itself — its `messages`
     relation (an arcanus list) is the in-memory history. The database is the
     source of truth; writes keep the cached transmuter object coherent after the
-    commit. History is keyed by `ConversationKey` (a `ChannelAddress` + the
-    owning agent), the isolation boundary — a sub-thread reception, or a
-    different agent at the same address, gets its own conversation and never
-    inherits another's.
+    commit.
     """
 
     def __init__(self, *, cache_size: int = 256) -> None:
@@ -39,28 +41,18 @@ class ConversationManager:
 
     async def ensure(
         self,
-        address: ChannelAddress,
+        thread_id: uuid.UUID,
         *,
         agent_tentacle_id: str,
-        thread_id: uuid.UUID | None = None,
     ) -> Conversation:
-        """Resolve the conversation for `(address, agent_tentacle_id)`, creating
-        it if it does not yet exist. Its `conversation.messages` is the live
-        history. The owning agent is part of the key — two agents at the same
-        address keep separate conversations — so callers must always supply it."""
-        cache_key = ConversationKey(address, agent_tentacle_id)
+        """Resolve the conversation owned by `agent_tentacle_id` in `thread_id`,
+        creating it if it does not yet exist. Its `conversation.messages` is the
+        live model history. The owning agent is part of the identity — two agents
+        in the same thread keep separate conversations — so callers must always
+        supply it."""
+        cache_key = ConversationKey(thread_id, agent_tentacle_id)
         cached = self.conversations.get(cache_key)
         if cached is not None:
-            if thread_id is not None:
-                if cached.thread_id is None:
-                    cached.thread_id = thread_id
-                    async with async_session() as session:
-                        await session.merge(cached)
-                        await session.commit()
-                elif cached.thread_id != thread_id:
-                    raise ValueError(
-                        "conversation is already attached to a different thread"
-                    )
             self.conversations.move_to_end(cache_key)
             return cached
 
@@ -68,32 +60,16 @@ class ConversationManager:
             conversation = await session.one_or_none(
                 Conversation,
                 expressions=[
-                    Conversation["channel_tentacle_id"] == address.channel_tentacle_id,
-                    Conversation["chat_type"] == address.chat_type,
-                    Conversation["chat_id"] == address.chat_id,
-                    Conversation["user_id"] == address.user_id,
-                    Conversation["channel_thread_id"] == address.thread_id,
+                    Conversation["thread_id"] == thread_id,
                     Conversation["agent_tentacle_id"] == agent_tentacle_id,
                 ],
             )
             if conversation is None:
                 conversation = Conversation(
-                    channel_tentacle_id=address.channel_tentacle_id,
-                    chat_type=address.chat_type,
-                    chat_id=address.chat_id,
-                    user_id=address.user_id,
                     thread_id=thread_id,
-                    channel_thread_id=address.thread_id,
                     agent_tentacle_id=agent_tentacle_id,
                 )
                 session.add(conversation)
-            elif thread_id is not None:
-                if conversation.thread_id is None:
-                    conversation.thread_id = thread_id
-                elif conversation.thread_id != thread_id:
-                    raise ValueError(
-                        "conversation is already attached to a different thread"
-                    )
             await session.flush()
             await conversation.runs
             await conversation.messages
@@ -103,9 +79,7 @@ class ConversationManager:
         return conversation
 
     def cache_conversation(self, conversation: Conversation) -> None:
-        cache_key = ConversationKey(
-            conversation.address, conversation.agent_tentacle_id
-        )
+        cache_key = conversation.key
         self.conversations[cache_key] = conversation
         self.conversations.move_to_end(cache_key)
         while len(self.conversations) > self.cache_size:
@@ -165,7 +139,8 @@ class ConversationManager:
         """Persist an `allow for session` grant on the conversation, so the tool
         auto-approves on later turns."""
         cached = await self.ensure(
-            conversation.address, agent_tentacle_id=conversation.agent_tentacle_id
+            conversation.thread_id,
+            agent_tentacle_id=conversation.agent_tentacle_id,
         )
         if tool_name in cached.allowed_tools:
             return

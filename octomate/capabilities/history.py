@@ -21,7 +21,7 @@ from pydantic_ai.toolsets import (
 )
 
 from octomate.managers import ConversationManager, ThreadManager
-from octomate.schemas.channel import ChannelActorKind, ThreadMessage
+from octomate.schemas.thread import ChannelActorKind, ThreadMessage
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 
 MODEL_HISTORY_INSTRUCTIONS = """\

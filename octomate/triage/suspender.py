@@ -45,10 +45,11 @@ class HumanReviewSuspender:
             source_address=str(self.source_address),
             emit_on_stream=self.emit_on_stream,
         ) as span:
+            if self.thread_id is None:
+                raise ValueError("deferred review requires a thread_id")
             conversation = await self.conversation_manager.ensure(
-                self.target_address,
+                self.thread_id,
                 agent_tentacle_id=self.agent_tentacle_id,
-                thread_id=self.thread_id,
             )
             if self.emit_on_stream:
                 # On-stream round-trip: persist the batch and hand it back as one

@@ -26,9 +26,9 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
-from octomate.schemas.channel import Thread
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment, MessageSegment
+from octomate.schemas.thread import Thread
 from octomate.schemas.triage import (
     DirectAnswerDecision,
     ResponseTargetMode,
@@ -261,7 +261,7 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
             mode="main",
         )
         ctx.state.source_target = source_target
-        ctx.state.thread = await ctx.deps.thread_manager.ensure_thread(address)
+        ctx.state.thread = await ctx.deps.thread_manager.ensure(address)
         ctx.state.trigger_thread_message_id = self.signal.trigger_thread_message_id
 
         user_prompt = "\n\n".join(str(event) for event in self.signal.messages).strip()
@@ -540,9 +540,9 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                         reply_thread_message_ids,
                         run_id=result.run_id,
                     )
-                    message_id = await ctx.deps.channel(target).feelers.segments.present(
-                        target.address, output
-                    )
+                    message_id = await ctx.deps.channel(
+                        target
+                    ).feelers.segments.present(target.address, output)
                     if thread_message is not None:
                         await ctx.deps.thread_manager.mark_presented(
                             thread_message,
@@ -664,7 +664,7 @@ class PrepareReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 
         state.target = target
         if target.address is not None and state.thread is not None:
-            state.thread = await ctx.deps.thread_manager.ensure_thread(target.address)
+            state.thread = await ctx.deps.thread_manager.ensure(target.address)
         return RunReception()
 
 
@@ -707,9 +707,8 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
         thread_id = state.thread.id if state.thread else None
         if state.thread is not None and state.claim_handoff:
             target_conversation = await ctx.deps.conversation_manager.ensure(
-                target_address,
+                state.thread.id,
                 agent_tentacle_id=agent.id,
-                thread_id=state.thread.id,
             )
             latest_handoff = state.thread.latest_handoff
             target_model = model
@@ -852,14 +851,12 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                 run_output: ChannelOutput = run_result.output
                 if isinstance(run_output, str):
                     if run_output:
-                        thread_message = (
-                            await ctx.deps.thread_manager.record_outbound(
-                                target_address,
-                                agent_tentacle_id=agent.id,
-                                segments=[MarkdownSegment(data={"text": run_output})],
-                                message_text=run_output,
-                                raw=run_output,
-                            )
+                        thread_message = await ctx.deps.thread_manager.record_outbound(
+                            target_address,
+                            agent_tentacle_id=agent.id,
+                            segments=[MarkdownSegment(data={"text": run_output})],
+                            message_text=run_output,
+                            raw=run_output,
                         )
                         reply_thread_message_ids.append(thread_message.id)
                         await ctx.deps.thread_manager.bind_assistant_replies(
@@ -883,13 +880,11 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                     _reply_to, body = split_reply(segments)
                     thread_message = None
                     if body:
-                        thread_message = (
-                            await ctx.deps.thread_manager.record_outbound(
-                                target_address,
-                                agent_tentacle_id=agent.id,
-                                segments=body,
-                                raw="\n\n".join(str(segment) for segment in body),
-                            )
+                        thread_message = await ctx.deps.thread_manager.record_outbound(
+                            target_address,
+                            agent_tentacle_id=agent.id,
+                            segments=body,
+                            raw="\n\n".join(str(segment) for segment in body),
                         )
                         reply_thread_message_ids.append(thread_message.id)
                     await ctx.deps.thread_manager.bind_assistant_replies(
