@@ -24,6 +24,7 @@ from pydantic_ai.messages import ModelResponse as RawModelResponse
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.history import HistoryCapability
 from octomate.managers import ConversationManager, ThreadManager
@@ -31,6 +32,8 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.segments import TextSegment
+
+_THREAD = uuid7()
 
 
 def _send_args(*texts: str) -> dict[str, Any]:
@@ -174,7 +177,7 @@ async def _seed(manager: ConversationManager) -> Any:
     """One run: user turn, an assistant turn that thinks then sends, the tool
     return for that send, and a final assistant answer. conversation_id is stamped
     on each message exactly as pydantic-ai does for a real run."""
-    conversation = await manager.ensure(_key(), agent_tentacle_id="inkling")
+    conversation = await manager.ensure(_THREAD, agent_tentacle_id="inkling")
     cid = str(conversation.id)
     run_id = "run-1"
     ts = datetime.now(timezone.utc)
@@ -303,11 +306,10 @@ async def test_history_thread_tools_follow_conversation_thread_id() -> None:
         _event("m1", "alice", "stored while asleep")
     )
     await thread_manager.record_inbound(_event("m2", "bob", "wake now"))
-    thread = await thread_manager.ensure_thread(_key())
+    thread = await thread_manager.ensure(_key())
     conversation = await conversation_manager.ensure(
-        _key(),
+        thread.id,
         agent_tentacle_id="inkling",
-        thread_id=thread.id,
     )
     capability = HistoryCapability(conversation_manager, thread_manager)
     assert capability.toolset is not None
@@ -329,25 +331,3 @@ async def test_history_thread_tools_follow_conversation_thread_id() -> None:
 
     assert [message.message_text for message in hits] == ["stored while asleep"]
     assert [message.message_text for message in after] == ["wake now"]
-
-
-async def test_history_thread_tools_raise_without_conversation_thread_id() -> None:
-    conversation_manager = ConversationManager()
-    capability = HistoryCapability(conversation_manager, ThreadManager())
-    conversation = await conversation_manager.ensure(
-        _key(),
-        agent_tentacle_id="inkling",
-    )
-    assert capability.toolset is not None
-
-    tools = await capability.toolset.get_tools(_ctx(conversation.id))
-
-    assert "search_model_history" in tools
-    assert "search_thread_history" in tools
-    with pytest.raises(ValueError, match="thread-backed conversation"):
-        await capability.toolset.call_tool(
-            "search_thread_history",
-            {"query": "anything"},
-            _ctx(conversation.id),
-            tools["search_thread_history"],
-        )

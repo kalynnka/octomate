@@ -13,6 +13,8 @@ from typing import cast
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 
+from uuid_utils.compat import uuid7
+
 from octomate.capabilities.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
@@ -54,6 +56,7 @@ def _requests() -> DeferredToolRequests:
 
 async def test_human_review_suspender_persists_batch_and_records_id() -> None:
     address = _key()
+    thread_id = uuid7()
     requests = _requests()
     conversations = FakeConversationManager()
     action_manager = FakeActionManager()
@@ -77,6 +80,7 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
         target_address=address,
         target_mode="sub",
         decision=decision,
+        thread_id=thread_id,
     )
 
     assert suspender.suspended_batch_id is None
@@ -91,7 +95,7 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
     assert call.decision is decision
     assert call.requests is requests
     assert suspender.suspended_batch_id == call.batch_id
-    assert conversations.ensured == [(address, "inkling")]
+    assert conversations.ensured == [(thread_id, "inkling")]
 
 
 async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() -> None:
@@ -121,6 +125,7 @@ async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() 
         target_address=address,
         target_mode="sub",
         decision=None,
+        thread_id=uuid7(),
         emit_on_stream=True,
     )
 

@@ -35,10 +35,14 @@ from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.claude import base as claude_base
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from tests.support.managers import FakeConversation, FakeConversationManager
+from uuid_utils.compat import uuid7
 
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
 )
+
+
+_THREAD = uuid7()
 
 
 class FakeClaudeClient:
@@ -104,7 +108,7 @@ async def test_run_stream_events_proxies_events_and_persists(
 
     events = []
     async with tentacle.run_stream_events(
-        "fix it", conversation_address=KEY, run_name="reception"
+        "fix it", conversation_address=KEY, thread_id=_THREAD, run_name="reception"
     ) as stream:
         async for event in stream:
             events.append(event)
@@ -127,10 +131,10 @@ async def test_run_stream_events_proxies_events_and_persists(
 async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
-    conversations.store[(KEY, "claude")] = FakeConversation(external_id="prev-sess")
+    conversations.store[(_THREAD, "claude")] = FakeConversation(external_id="prev-sess")
     tentacle = _tentacle(conversations)
 
-    result = await tentacle.run("again", conversation_address=KEY)
+    result = await tentacle.run("again", conversation_address=KEY, thread_id=_THREAD)
 
     assert result.output == "done"
     options = FakeClaudeClient.last_options
@@ -182,7 +186,7 @@ async def test_run_with_output_type_returns_structured(
 
     result = await tentacle.run(
         "triage this",
-        conversation_address=KEY,
+        conversation_address=KEY, thread_id=_THREAD,
         output_type=TriageDecision,
     )
 
@@ -203,7 +207,7 @@ async def test_run_uses_literal_output_schema(
 
     result = await tentacle.run(
         "triage this",
-        conversation_address=KEY,
+        conversation_address=KEY, thread_id=_THREAD,
         output_type=Literal["accepted"],
     )
 
@@ -222,7 +226,7 @@ async def test_run_extracts_structured_candidate_from_union(
 
     result = await tentacle.run(
         "triage this",
-        conversation_address=KEY,
+        conversation_address=KEY, thread_id=_THREAD,
         output_type=TriageDecision | Literal["ignored"],
     )
 
@@ -242,7 +246,7 @@ async def test_run_rejects_deferred_output_type(
     with pytest.raises(ValueError, match="DeferredToolRequests"):
         await tentacle.run(
             "triage this",
-            conversation_address=KEY,
+            conversation_address=KEY, thread_id=_THREAD,
             output_type=[TriageDecision, DeferredToolRequests],
         )
 
@@ -254,7 +258,7 @@ async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None
         config=ClaudeCodeConfig(models={"opus"}),
     )
 
-    await tentacle.run("hi", conversation_address=KEY, model="opus")
+    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD, model="opus")
 
     assert getattr(FakeClaudeClient.last_options, "model", None) == "opus"
 

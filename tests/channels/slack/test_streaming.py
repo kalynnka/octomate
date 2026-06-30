@@ -35,7 +35,8 @@ from octomate.capabilities.events import (
     TodoCreatedEvent,
     TodoStatusChangedEvent,
 )
-from octomate.schemas.conversation import Conversation, ChannelAddress
+from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     CardData,
     CardSegment,
@@ -304,23 +305,21 @@ async def test_slack_consume_renders_action_batch_blocks() -> None:
     assert marked[approval.id] == "fallback-ts"
 
 
-async def test_slack_tentacle_ensures_assistant_thread_conversation() -> None:
-    class FakeConversations:
+async def test_slack_tentacle_ensures_assistant_thread() -> None:
+    class FakeThreads:
         def __init__(self) -> None:
-            self.calls: list[tuple[ChannelAddress, str | None]] = []
+            self.calls: list[ChannelAddress | ThreadKey] = []
 
         async def ensure(
             self,
-            address: ChannelAddress,
-            *,
-            agent_tentacle_id: str | None = None,
-        ) -> Conversation:
-            self.calls.append((address, agent_tentacle_id))
-            return cast(Conversation, SimpleNamespace())
+            address_or_key: ChannelAddress | ThreadKey,
+        ) -> Thread:
+            self.calls.append(address_or_key)
+            return cast(Thread, SimpleNamespace())
 
-    conversations = FakeConversations()
+    threads = FakeThreads()
     channel = slack_channel(FakeSlackInk())
-    channel.octomate = cast(Octomate, SimpleNamespace(conversations=conversations))
+    channel.octomate = cast(Octomate, SimpleNamespace(thread_manager=threads))
 
     await channel.on_assistant_thread_started(
         {
@@ -335,16 +334,15 @@ async def test_slack_tentacle_ensures_assistant_thread_conversation() -> None:
         }
     )
 
-    assert len(conversations.calls) == 1
-    address, agent_id = conversations.calls[0]
-    assert address == ChannelAddress(
-        channel_tentacle_id="slack",
-        chat_type="private",
-        chat_id="D1",
-        user_id="U1",
-        thread_id="1710000000.000100",
-    )
-    assert agent_id == "triage"
+    assert threads.calls == [
+        ChannelAddress(
+            channel_tentacle_id="slack",
+            chat_type="private",
+            chat_id="D1",
+            user_id="U1",
+            thread_id="1710000000.000100",
+        )
+    ]
 
 
 async def test_slack_timeline_alternates_plan_and_message() -> None:

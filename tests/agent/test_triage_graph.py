@@ -16,6 +16,7 @@ from octomate.capabilities.summon import SCRY_TOOL_NAME, SummonCapability
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
+from octomate.schemas.thread import Thread
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
@@ -102,14 +103,25 @@ def _source_target(address: ChannelAddress) -> ResponseTarget:
     )
 
 
+def _thread(address: ChannelAddress) -> Thread:
+    return Thread(
+        channel_tentacle_id=address.channel_tentacle_id,
+        chat_type=address.chat_type,
+        chat_id=address.chat_id,
+        thread_id=address.thread_id,
+    )
+
+
 def _state(
     address: ChannelAddress,
     *,
     user_prompt: str | None = "hi",
+    thread: Thread | None = None,
 ) -> TriageState:
     return TriageState(
         source_target=_source_target(address),
         user_prompt=user_prompt,
+        thread=thread,
     )
 
 
@@ -313,6 +325,7 @@ async def test_triage_graph_returns_deferred_result_when_triage_requests_input()
     None
 ):
     address = _key()
+    thread = _thread(address)
     requests = _requests()
     agent = FakeAgent(triage_output=requests)
     conversations = FakeConversationManager()
@@ -322,7 +335,7 @@ async def test_triage_graph_returns_deferred_result_when_triage_requests_input()
     result = (
         await triage_graph.run(
             RunTriage(),
-            state=_state(address),
+            state=_state(address, thread=thread),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im},
@@ -348,7 +361,7 @@ async def test_triage_graph_returns_deferred_result_when_triage_requests_input()
     assert [turn.run_name for turn in agent.turns] == ["triage"]
     assert [turn.prompt for turn in agent.turns] == ["hi"]
     # The suspender ensures the conversation when persisting the batch.
-    assert conversations.ensured == [(address, "inkling")]
+    assert conversations.ensured == [(thread.id, "inkling")]
     assert im.sub_threads == []
 
 
@@ -786,7 +799,7 @@ async def test_triage_graph_returns_deferred_result_when_streaming_reception_req
     result = (
         await triage_graph.run(
             RunTriage(),
-            state=_state(address, user_prompt="debug this"),
+            state=_state(address, user_prompt="debug this", thread=_thread(address)),
             deps=_deps(
                 conversations=conversations,
                 channels={"im": im},

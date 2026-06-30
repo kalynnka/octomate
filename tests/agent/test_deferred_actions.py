@@ -54,7 +54,7 @@ def _requests() -> DeferredToolRequests:
 async def _create_batch() -> DeferredActionBatch:
     address = _key()
     conversation = await ConversationManager().ensure(
-        address, agent_tentacle_id="inkling"
+        uuid7(), agent_tentacle_id="inkling"
     )
     return await DeferredActionManager().create_batch(
         conversation=conversation,

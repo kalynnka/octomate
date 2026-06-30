@@ -50,10 +50,12 @@ from tests.support.managers import (
     FakeConversationManager,
     FakePresentedBatch,
 )
+from uuid_utils.compat import uuid7
 
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
 )
+_THREAD = uuid7()
 
 
 @dataclass
@@ -188,7 +190,7 @@ def _build(
     dam = RecordingDeferredActions()
     conversations = FakeConversationManager()
     if conversation is not None:
-        conversations.store[(KEY, "claude")] = conversation
+        conversations.store[(_THREAD, "claude")] = conversation
     octomate = Octomate(
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, dam),
@@ -203,12 +205,12 @@ def _build(
 
 def _conversation(tentacle: ClaudeCodeTentacle) -> FakeConversation:
     convs = cast(FakeConversationManager, tentacle.octomate.conversations)
-    return convs.store[(KEY, "claude")]
+    return convs.store[(_THREAD, "claude")]
 
 
 async def _drain(tentacle: ClaudeCodeTentacle) -> None:
     async with tentacle.run_stream_events(
-        "do it", conversation_address=KEY, run_name="reception"
+        "do it", conversation_address=KEY, thread_id=_THREAD, run_name="reception"
     ) as stream:
         async for _event in stream:
             pass

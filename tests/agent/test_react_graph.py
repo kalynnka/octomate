@@ -15,6 +15,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import End, Graph, GraphRunContext
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import ActionBatchEvent
@@ -31,14 +32,13 @@ from octomate.capabilities.react import (
 )
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager
-from octomate.schemas.channel import MessageBinding, ThreadMessage
-from octomate.schemas.conversation import Conversation, ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest as OctomateModelRequest
 from octomate.schemas.segments import TextSegment
+from octomate.schemas.thread import MessageBinding, ThreadMessage
 from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
-
 from tests.support.agents import (
     ScriptedOutput,
     build_non_stream_agent,
@@ -62,9 +62,7 @@ class StubSuspender:
     event: ActionBatchEvent | None = None
     suspended: list[DeferredToolRequests] = field(default_factory=list)
 
-    async def suspend(
-        self, requests: DeferredToolRequests
-    ) -> ActionBatchEvent | None:
+    async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         self.suspended.append(requests)
         return self.event
 
@@ -76,6 +74,9 @@ def _key() -> ChannelAddress:
         chat_id="test",
         user_id="test",
     )
+
+
+_THREAD = uuid7()
 
 
 def _event(message_id: str, text: str, user_id: str = "test") -> MessageEvent:
@@ -124,7 +125,11 @@ def _ctx(
     deps: ReactDeps[ScriptedOutput, None],
 ) -> GraphRunContext[ReactState, ReactDeps[ScriptedOutput, None]]:
     return GraphRunContext(
-        state=ReactState(conversation_address=_key(), agent_tentacle_id="inkling"),
+        state=ReactState(
+            conversation_address=_key(),
+            agent_tentacle_id="inkling",
+            thread_id=_THREAD,
+        ),
         deps=deps,
     )
 
@@ -156,7 +161,7 @@ async def test_start_turn_drops_trailing_deferral_on_new_prompt() -> None:
 
     assert isinstance(nxt, RunAgent)
     assert nxt.user_prompt == "hi"
-    assert [address for address, _ in recorder.ensured] == [_key()]
+    assert [tid for tid, _ in recorder.ensured] == [_THREAD]
     assert len(recorder.dropped) == 1
 
     # Without a fresh prompt there is nothing to supersede: no conversation IO.
@@ -229,9 +234,9 @@ async def test_suspender_event_is_forwarded_on_stream() -> None:
     requests = _deferred_requests()
     batch_event = ActionBatchEvent(batch_id="b1")
     suspender = StubSuspender(event=batch_event)
-    send, receive = anyio.create_memory_object_stream[
-        ReactStreamEvent[ScriptedOutput]
-    ](10)
+    send, receive = anyio.create_memory_object_stream[ReactStreamEvent[ScriptedOutput]](
+        10
+    )
     deps = _deps(suspender=suspender)
     deps.event_send_stream = send
 
@@ -253,7 +258,11 @@ async def test_graph_ends_after_immediate_final_response() -> None:
 
     result = await _graph().run(
         StartTurn(user_prompt="just say done"),
-        state=ReactState(conversation_address=_key(), agent_tentacle_id="inkling"),
+        state=ReactState(
+            conversation_address=_key(),
+            agent_tentacle_id="inkling",
+            thread_id=_THREAD,
+        ),
         deps=deps,
     )
 
@@ -267,7 +276,11 @@ async def test_run_agent_records_new_messages_with_run_name() -> None:
 
     await _graph().run(
         StartTurn(user_prompt="just say done"),
-        state=ReactState(conversation_address=_key(), agent_tentacle_id="inkling"),
+        state=ReactState(
+            conversation_address=_key(),
+            agent_tentacle_id="inkling",
+            thread_id=_THREAD,
+        ),
         deps=deps,
     )
 
@@ -276,7 +289,7 @@ async def test_run_agent_records_new_messages_with_run_name() -> None:
     assert run_label.startswith("custom:")
     assert messages
     # The recorded turn lands in the conversation the next ensure() serves.
-    assert conversations.store[(_key(), "inkling")].messages == messages
+    assert conversations.store[(_THREAD, "inkling")].messages == messages
 
 
 async def test_run_agent_binds_request_sources_and_advances_cursor(
@@ -289,7 +302,7 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
         _event("m2", "second detail", user_id="other")
     )
     trigger = await thread_manager.record_inbound(_event("m3", "wake now"))
-    thread = await thread_manager.ensure_thread(address)
+    thread = await thread_manager.ensure(address)
     conversations = ConversationManager()
     agent = build_non_stream_agent()
 
@@ -311,9 +324,8 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
     )
 
     conversation = await conversations.ensure(
-        address,
+        thread.id,
         agent_tentacle_id="inkling",
-        thread_id=thread.id,
     )
     prompt_request = next(
         message
@@ -336,7 +348,7 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
         )
         assert stored_first is not None
         await stored_first.model_messages
-    fresh_thread = await ThreadManager().ensure_thread(address)
+    fresh_thread = await ThreadManager().ensure(address)
 
     assert [binding.thread_message_id for binding in bindings] == [
         first.id,
@@ -350,9 +362,9 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
 
 async def test_run_agent_streaming_sends_every_event_and_requires_result() -> None:
     agent, _ = build_scripted_agent(["all done!"])
-    send, receive = anyio.create_memory_object_stream[
-        ReactStreamEvent[ScriptedOutput]
-    ](100)
+    send, receive = anyio.create_memory_object_stream[ReactStreamEvent[ScriptedOutput]](
+        100
+    )
     deps = _deps(agent=agent)
     deps.event_send_stream = send
 
@@ -371,9 +383,7 @@ async def test_run_agent_streaming_sends_every_event_and_requires_result() -> No
         def stream_events(
             self, *args: object, **kwargs: object
         ) -> AsyncIterator[AgentRunResultEvent[ScriptedOutput]]:
-            async def no_events() -> AsyncIterator[
-                AgentRunResultEvent[ScriptedOutput]
-            ]:
+            async def no_events() -> AsyncIterator[AgentRunResultEvent[ScriptedOutput]]:
                 return
                 yield  # makes this an async generator
 
@@ -393,9 +403,7 @@ async def test_iter_react_graph_events_reraises_graph_error_after_drain() -> Non
     """A graph error is captured and re-raised in the consumer's own frame —
     the consumer is never cancelled mid-event by the failing background task."""
 
-    async def boom(
-        messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[str]:
+    async def boom(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
         raise RuntimeError("model boom")
         yield ""  # pragma: no cover - marks this an async generator
 
@@ -412,7 +420,11 @@ async def test_iter_react_graph_events_reraises_graph_error_after_drain() -> Non
     with pytest.raises(RuntimeError, match="model boom"):
         async for event in iter_react_graph_events(
             StartTurn(user_prompt="hi"),
-            state=ReactState(conversation_address=_key(), agent_tentacle_id="inkling"),
+            state=ReactState(
+                conversation_address=_key(),
+                agent_tentacle_id="inkling",
+                thread_id=_THREAD,
+            ),
             deps=deps,
         ):
             received.append(event)

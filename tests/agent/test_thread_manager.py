@@ -6,16 +6,15 @@ from datetime import datetime, timezone
 import pytest
 from pydantic_ai.messages import ModelRequest as RawModelRequest
 from pydantic_ai.messages import ModelResponse as RawModelResponse
-from pydantic_ai.messages import TextPart
-from pydantic_ai.messages import UserPromptPart
+from pydantic_ai.messages import TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager
-from octomate.schemas.channel import MessageBinding, ThreadMessage
 from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
+from octomate.schemas.thread import MessageBinding, ThreadMessage
 
 
 @pytest.fixture(autouse=True)
@@ -51,12 +50,12 @@ def event(message_id: str, user_id: str, text: str) -> MessageEvent:
 async def test_ensure_thread_ignores_sender_user_id() -> None:
     manager = ThreadManager()
 
-    alice_thread = await manager.ensure_thread(address("alice"))
-    bob_thread = await manager.ensure_thread(address("bob"))
+    alice_thread = await manager.ensure(address("alice"))
+    bob_thread = await manager.ensure(address("bob"))
     await manager.record_inbound(event("m1", "alice", "alpha"))
     await manager.record_inbound(event("m2", "bob", "beta"))
 
-    fresh_thread = await ThreadManager().ensure_thread(address("charlie"))
+    fresh_thread = await ThreadManager().ensure(address("charlie"))
 
     assert alice_thread.id == bob_thread.id == fresh_thread.id
     assert [message.user_id for message in fresh_thread.messages] == ["alice", "bob"]
@@ -64,7 +63,7 @@ async def test_ensure_thread_ignores_sender_user_id() -> None:
 
 async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> None:
     manager = ThreadManager()
-    thread = await manager.ensure_thread(address())
+    thread = await manager.ensure(address())
     human_message = await manager.record_inbound(event("m1", "alice", "human asks"))
     bot_message = await manager.record_inbound(
         event("m2", "bot", "bot adds detail"),
@@ -96,7 +95,7 @@ async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> 
     assert own_output.id not in {message.id for message in pending}
 
     stored = await manager.advance_prompt_cursor(thread, bot_message.id)
-    hot = await manager.ensure_thread(address())
+    hot = await manager.ensure(address())
     assert stored is not None
     assert hot.source_cursor_message_id == bot_message.id
 
@@ -113,7 +112,7 @@ async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> 
 
 async def test_pending_prompt_messages_ensures_thread() -> None:
     manager = ThreadManager()
-    thread = await manager.ensure_thread(address())
+    thread = await manager.ensure(address())
     trigger = await manager.record_inbound(event("m1", "alice", "wake now"))
 
     pending = await ThreadManager().pending_prompt_messages(
@@ -127,7 +126,7 @@ async def test_pending_prompt_messages_ensures_thread() -> None:
 
 async def test_record_handoff_syncs_active_owner_cache() -> None:
     manager = ThreadManager()
-    thread = await manager.ensure_thread(address())
+    thread = await manager.ensure(address())
 
     await manager.record_handoff(
         thread,
@@ -143,7 +142,7 @@ async def test_record_handoff_syncs_active_owner_cache() -> None:
         reason="Needs code work.",
     )
 
-    hot = await manager.ensure_thread(address())
+    hot = await manager.ensure(address())
 
     assert hot.active_agent_tentacle_id == "claude"
     assert hot.active_model == "sonnet"
@@ -155,7 +154,7 @@ async def test_record_handoff_syncs_active_owner_cache() -> None:
 
 async def test_chat_history_search_paging_and_message_bindings() -> None:
     manager = ThreadManager()
-    thread = await manager.ensure_thread(address())
+    thread = await manager.ensure(address())
     first = await manager.record_inbound(event("m1", "alice", "alpha first"))
     second = await manager.record_inbound(event("m2", "bob", "beta second"))
     third = await manager.record_inbound(event("m3", "alice", "alpha third"))
@@ -170,7 +169,7 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
 
     conversation_manager = ConversationManager()
     conversation = await conversation_manager.ensure(
-        address(),
+        thread.id,
         agent_tentacle_id="inkling",
     )
     run_id = "run-chat-binding"
@@ -186,9 +185,9 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
             )
         ],
     )
-    model_message = (await conversation_manager.search_messages(conversation.id, "alpha"))[
-        0
-    ]
+    model_message = (
+        await conversation_manager.search_messages(conversation.id, "alpha")
+    )[0]
 
     bindings = await manager.bind_messages(
         [first.id, second.id],
@@ -211,7 +210,7 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
 
 async def test_assistant_reply_binding_uses_persisted_response() -> None:
     manager = ThreadManager()
-    thread = await manager.ensure_thread(address())
+    thread = await manager.ensure(address())
     reply = await manager.record_outbound(
         thread,
         agent_tentacle_id="inkling",
@@ -221,7 +220,7 @@ async def test_assistant_reply_binding_uses_persisted_response() -> None:
 
     conversation_manager = ConversationManager()
     conversation = await conversation_manager.ensure(
-        address(),
+        thread.id,
         agent_tentacle_id="inkling",
     )
     run_id = "run-assistant-reply-binding"

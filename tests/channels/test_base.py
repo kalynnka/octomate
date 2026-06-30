@@ -26,7 +26,7 @@ from octomate.capabilities.events import (
     TodoCompletedEvent,
 )
 from octomate.schemas.awakes import UserMessageSignal
-from octomate.schemas.conversation import ChatType, ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -45,7 +45,6 @@ from octomate.tentacles.channel.base import (
     ChannelTentacle,
     DownloadedImage,
 )
-
 from tests.support.channels import (
     FakeChannelTentacle,
     FakeChromo,
@@ -60,9 +59,9 @@ from tests.support.scenarios import (
     action_batch,
     message_sent,
     mid_run_notice,
-    plan_tool_noise,
     plain_deferred_requests,
     plain_segments,
+    plan_tool_noise,
     play,
     segments_reply,
     showcase,
@@ -127,7 +126,7 @@ async def test_ingest_dispatches_event_to_octomate(
     assert event.self_id == "bot"
     assert event.sender.user_id == "alice"
 
-    thread = await octomate.thread_manager.ensure_thread(address)
+    thread = await octomate.thread_manager.ensure(address)
     assert thread.messages[-1].id == signal.trigger_thread_message_id
     assert thread.messages[-1].message_text == "hello"
 
@@ -168,7 +167,7 @@ async def test_group_mention_filter_records_unmentioned_events_before_ignore(
     assert isinstance(octomate, FakeOctomate)
     assert octomate.kicks == []
 
-    thread = await octomate.thread_manager.ensure_thread(
+    thread = await octomate.thread_manager.ensure(
         _key(chat_type="group", chat_id="lobby")
     )
     assert [message.message_text for message in thread.messages] == ["hello"]
@@ -207,7 +206,7 @@ async def test_next_mention_prompt_includes_stored_unmentioned_messages(
     assert isinstance(signal, UserMessageSignal)
     assert signal.trigger_thread_message_id is not None
 
-    thread = await octomate.thread_manager.ensure_thread(
+    thread = await octomate.thread_manager.ensure(
         _key(chat_type="group", chat_id="lobby")
     )
     pending = await octomate.thread_manager.pending_prompt_messages(
@@ -288,9 +287,9 @@ async def test_consume_renders_answer_and_drains_stream(
 ) -> None:
     drained = False
 
-    async def events() -> (
-        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
-    ):
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
         nonlocal drained
         # Thinking + tool passthrough exercise the dispatch; the Default timeline
         # (no streaming transport) drops them and only accumulates the answer text.
@@ -317,9 +316,9 @@ async def test_consume_renders_answer_and_drains_stream(
 async def test_consume_renders_raw_text_answer(
     channel: FakeChannelTentacle,
 ) -> None:
-    async def events() -> (
-        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
-    ):
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
         # The react graph streams the reply as raw text parts (no normalizer).
         yield PartStartEvent(index=0, part=TextPart(content="raw "))
         yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="answer"))
@@ -334,9 +333,9 @@ async def test_consume_renders_raw_text_answer(
 async def test_consume_falls_back_to_final_output_when_no_text_streamed(
     channel: FakeChannelTentacle,
 ) -> None:
-    async def events() -> (
-        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
-    ):
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
         # No streamed answer text — only the terminal result carries the reply.
         yield AgentRunResultEvent(AgentRunResult("just the final"))
 
@@ -387,9 +386,9 @@ async def test_consume_appends_todo_checklist_to_final_message(
         status="completed",
     )
 
-    async def events() -> (
-        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
-    ):
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
         yield TodoCompletedEvent(todo=todo)
         yield PartStartEvent(index=0, part=TextPart(content="done"))
 
@@ -418,11 +417,13 @@ async def test_consume_renders_and_marks_action_batch(
         args=ApprovalRequest(tool_name="do_thing"),
     )
     actions = RecordingDeferredActions()
-    channel = FakeChannelTentacle(id="chan1", octomate=FakeOctomate(deferred_actions=actions))
+    channel = FakeChannelTentacle(
+        id="chan1", octomate=FakeOctomate(deferred_actions=actions)
+    )
 
-    async def events() -> (
-        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
-    ):
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
         yield ActionBatchEvent(
             batch_id="b1", questions=[question], approvals=[approval]
         )
@@ -453,7 +454,9 @@ async def test_consume_renders_streamed_deferred_requests_once(
         args=ApprovalRequest(tool_name="do_thing"),
     )
     actions = RecordingDeferredActions()
-    channel = FakeChannelTentacle(id="chan1", octomate=FakeOctomate(deferred_actions=actions))
+    channel = FakeChannelTentacle(
+        id="chan1", octomate=FakeOctomate(deferred_actions=actions)
+    )
 
     await channel.consume(
         _key(),
@@ -491,9 +494,7 @@ async def test_drive_timeline_renders_message_sent_and_skips_the_tool(
     names = state.names()
     assert "tool_start" not in names
     assert "tool_end" not in names
-    sent = [
-        segment for name, segment in state.calls if name == "answer_segment"
-    ]
+    sent = [segment for name, segment in state.calls if name == "answer_segment"]
     assert any(str(segment) == "progress update" for segment in sent)
 
 
@@ -558,9 +559,9 @@ async def test_drive_timeline_keeps_draining_after_render_failure(
     state = ExplodingTimeline()
     drained = False
 
-    async def events() -> (
-        AsyncIterator[StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]]
-    ):
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
         nonlocal drained
         for event in streamed_text("a", "b"):
             yield event

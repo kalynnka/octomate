@@ -34,6 +34,7 @@ from tests.support.agents import (
     build_scripted_agent,
 )
 from tests.support.managers import FakeConversationManager
+from uuid_utils.compat import uuid7
 
 InklingTestEvent: TypeAlias = ReactStreamEvent[ScriptedOutput]
 
@@ -57,6 +58,9 @@ class StubSuspender:
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         self.suspended.append(requests)
         return None
+
+
+_THREAD = uuid7()
 
 
 def _test_conversation_address() -> ChannelAddress:
@@ -125,6 +129,7 @@ async def test_inkling_loop_emits_deferred_question_batch() -> None:
     async with tentacle.run_stream_events(
         "hi octomate",
         conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
         output_type=STR_OUTPUT,
     ) as stream:
         async for event in stream:
@@ -170,6 +175,7 @@ async def test_inkling_tentacle_invokes_suspender_on_deferred_request() -> None:
     async with tentacle.run_stream_events(
         "hi octomate",
         conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
         output_type=STR_OUTPUT,
         deferred_suspender=suspender,
     ) as stream:
@@ -195,6 +201,7 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
     async with tentacle.run_stream_events(
         "hi octomate",
         conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
         output_type=STR_OUTPUT,
     ) as stream:
         async for event in stream:
@@ -228,6 +235,7 @@ async def test_run_resumes_via_resume_turn_when_deferred_results_passed() -> Non
     first = await tentacle.run(
         "hi octomate",
         conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
         output_type=STR_OUTPUT,
     )
     assert isinstance(first.output, DeferredToolRequests)
@@ -236,6 +244,7 @@ async def test_run_resumes_via_resume_turn_when_deferred_results_passed() -> Non
     results.calls["call_ask_1"] = ["Ada"]
     resumed = await tentacle.run(
         conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
         output_type=STR_OUTPUT,
         deferred_tool_results=results,
     )
@@ -283,6 +292,7 @@ async def test_inkling_default_output_is_segments() -> None:
     result = await tentacle.run(
         "hi octomate",
         conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
         model=TestModel(
             call_tools=[],
             custom_output_args=[
@@ -308,6 +318,7 @@ async def test_inkling_loop_propagates_graph_error_streaming() -> None:
         async with tentacle.run_stream_events(
             "hi octomate",
             conversation_address=_test_conversation_address(),
+            thread_id=_THREAD,
         ) as stream:
             async for _ in stream:
                 pass
@@ -324,5 +335,6 @@ async def test_inkling_loop_propagates_graph_error_collected_run() -> None:
         await tentacle.run(
             "hi octomate",
             conversation_address=_test_conversation_address(),
+            thread_id=_THREAD,
             output_type=STR_OUTPUT,
         )

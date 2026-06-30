@@ -22,14 +22,6 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.channel import (
-    ChannelActorKind,
-    Handoff,
-    MessageBinding,
-    Thread,
-    ThreadKey,
-    ThreadMessage,
-)
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -39,6 +31,14 @@ from octomate.schemas.conversation import (
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment
+from octomate.schemas.thread import (
+    ChannelActorKind,
+    Handoff,
+    MessageBinding,
+    Thread,
+    ThreadKey,
+    ThreadMessage,
+)
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import DeferredBatchStatus
 
@@ -58,34 +58,26 @@ class FakeConversation:
 
 @dataclass
 class FakeConversationManager(ConversationManager):
-    store: dict[tuple[ChannelAddress, str | None], FakeConversation] = field(
+    store: dict[tuple[uuid.UUID, str | None], FakeConversation] = field(
         default_factory=dict
     )
-    ensured: list[tuple[ChannelAddress, str | None]] = field(default_factory=list)
+    ensured: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
     runs: list[tuple[FakeConversation, str, list[ModelMessage]]] = field(
         default_factory=list
     )
 
     async def ensure(
         self,
-        address: ChannelAddress,
+        thread_id: uuid.UUID,
         *,
         agent_tentacle_id: str | None = None,
-        thread_id: uuid.UUID | None = None,
     ) -> Conversation:
-        self.ensured.append((address, agent_tentacle_id))
-        store_key = (address, agent_tentacle_id)
+        self.ensured.append((thread_id, agent_tentacle_id))
+        store_key = (thread_id, agent_tentacle_id)
         conversation = self.store.get(store_key)
         if conversation is None:
             conversation = FakeConversation(thread_id=thread_id)
             self.store[store_key] = conversation
-        elif thread_id is not None:
-            if conversation.thread_id is None:
-                conversation.thread_id = thread_id
-            elif conversation.thread_id != thread_id:
-                raise ValueError(
-                    "conversation is already attached to a different thread"
-                )
         return cast(Conversation, conversation)
 
     async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
@@ -135,7 +127,7 @@ class FakeThreadManager(ThreadManager):
         default_factory=list
     )
 
-    async def ensure_thread(
+    async def ensure(
         self,
         address_or_key: ChannelAddress | ThreadKey,
     ) -> Thread:
@@ -174,7 +166,7 @@ class FakeThreadManager(ThreadManager):
         if isinstance(thread_or_address, Thread):
             thread = thread_or_address
         else:
-            thread = await self.ensure_thread(thread_or_address)
+            thread = await self.ensure(thread_or_address)
         handoff = Handoff(
             id=uuid7(),
             thread_id=thread.id,
@@ -210,7 +202,7 @@ class FakeThreadManager(ThreadManager):
         if isinstance(thread_or_address, Thread):
             thread = thread_or_address
         else:
-            thread = await self.ensure_thread(thread_or_address)
+            thread = await self.ensure(thread_or_address)
         message = ThreadMessage(
             id=uuid7(),
             thread_id=thread.id,

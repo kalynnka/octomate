@@ -14,10 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.database import async_session
 from octomate.managers import ConversationManager
 from octomate.models import Base
-from octomate.models.channel import ThreadMessage as ThreadMessageModel
-from octomate.models.channel import MessageBinding as MessageBindingModel
+from octomate.models.thread import ThreadMessage as ThreadMessageModel
+from octomate.models.thread import MessageBinding as MessageBindingModel
 from octomate.models.messages import ModelMessage as ModelMessageModel
-from octomate.schemas.channel import (
+from octomate.schemas.thread import (
     Handoff,
     ThreadMessage,
     Thread,
@@ -216,7 +216,7 @@ async def test_message_binding_round_trips_as_orm() -> None:
 
     manager = ConversationManager()
     conversation = await manager.ensure(
-        _address(user_id="alice"),
+        thread.id,
         agent_tentacle_id="inkling",
     )
     run_id = "run-binding"

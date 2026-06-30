@@ -196,10 +196,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         ],
     )
     conversation = Conversation(
-        chat_type="private",
-        chat_id="alice",
-        user_id="alice",
-        channel_tentacle_id="source",
+        thread_id=uuid7(),
         agent_tentacle_id="inkling",
     )
 
