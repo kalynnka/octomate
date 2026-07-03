@@ -35,7 +35,6 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, TriageDecision
 from octomate.types.deferred import (
-    DeferredActionKind,
     DeferredActionStatus,
     DeferredBatchStatus,
 )
@@ -104,12 +103,10 @@ class DeferredAction(BaseTransmuter):
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     batch_id: uuid.UUID | None = None
-    kind: DeferredActionKind
     status: DeferredActionStatus = "pending"
     tool_name: str
     tool_call_id: str
     position: int = 0
-    args: QuestionRequest | ApprovalRequest
     metadata: JsonObject = Field(
         default_factory=dict,
         validation_alias=AliasChoices("meta", "metadata"),
@@ -128,13 +125,14 @@ class DeferredAction(BaseTransmuter):
         return self.status in {"answered", "approved", "denied", "expired", "failed"}
 
 
+# `kind` and `args` live on the concrete variants, not the polymorphic-abstract base:
+# each variant pins `kind` to its discriminator literal and narrows `args` to the
+# concrete request. Keeping them off the base means there is no inherited field (nor
+# arcanus column attribute) for these to shadow.
 @sqlalchemy_materia.bless(deferred_models.DeferredQuestionAction)
 class DeferredQuestion(DeferredAction):
-    # Pydantic's direct discriminator requires literal branch values. Arcanus
-    # cannot use a generic transmuter base, so Pyright needs this narrow-field
-    # override suppressed for the concrete variant.
-    kind: Literal["question"] = "question"  # type: ignore[reportIncompatibleVariableOverride]
-    args: QuestionRequest  # type: ignore[reportIncompatibleVariableOverride]
+    kind: Literal["question"] = "question"
+    args: QuestionRequest
 
     def __lt__(self, other: DeferredQuestion) -> bool:
         return self.position < other.position
@@ -145,11 +143,8 @@ class DeferredQuestion(DeferredAction):
 
 @sqlalchemy_materia.bless(deferred_models.DeferredApprovalAction)
 class DeferredApproval(DeferredAction):
-    # Pydantic's direct discriminator requires literal branch values. Arcanus
-    # cannot use a generic transmuter base, so Pyright needs this narrow-field
-    # override suppressed for the concrete variant.
-    kind: Literal["approval"] = "approval"  # type: ignore[reportIncompatibleVariableOverride]
-    args: ApprovalRequest  # type: ignore[reportIncompatibleVariableOverride]
+    kind: Literal["approval"] = "approval"
+    args: ApprovalRequest
 
 
 DeferredActionVariant: TypeAlias = Annotated[

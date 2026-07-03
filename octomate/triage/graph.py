@@ -229,6 +229,7 @@ class TriageDeps:
 class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
     signal: AwakeSignal
 
+    @logfire.instrument("triage.awake", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
@@ -289,6 +290,7 @@ class Awake(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 
 @dataclass
 class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
+    @logfire.instrument("triage.route", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
@@ -364,6 +366,7 @@ class Route(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
     resume_batch_id: uuid.UUID | None = None
 
+    @logfire.instrument("triage.run_triage", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
@@ -611,6 +614,7 @@ class RunTriage(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 
 @dataclass
 class PrepareReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
+    @logfire.instrument("triage.prepare_reception", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
@@ -673,6 +677,7 @@ class PrepareReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
     resume_batch_id: uuid.UUID | None = None
 
+    @logfire.instrument("triage.run_reception", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],
@@ -967,6 +972,7 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
 class ResumeDeferred(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
     awake: DeferredActionBatchResponse
 
+    @logfire.instrument("triage.resume_deferred", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[TriageState, TriageDeps],

@@ -123,6 +123,7 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
                 ask_questions=ask_questions,
                 approvals=approvals,
                 deferred_actions=self.octomate.deferred_actions,
+                stream_config=config.stream,
             ),
             segments=DefaultSegmentsFeeler(ink=self.ink, chromo=self.chromo),
             approvals=approvals,

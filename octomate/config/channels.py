@@ -18,20 +18,24 @@ class AgentModelConfig(BaseModel):
 class ChannelStreamConfig(BaseModel):
     enabled: bool = False
     flush_interval: float = 0.5
-    min_chars: int = 120
+    min_chars: int = 20
     max_chars: int = 1000
     fold_threshold: int = 1500
 
 
 class SlackStreamConfig(ChannelStreamConfig):
+    # Slack streams via `chat.appendStream`, one API call per flush. `flush_interval`
+    # alone paces the edits (~2/s) — keep `min_chars` low so short answers stream on
+    # that cadence instead of being held until they reach 120 chars.
     enabled: bool = True
-    flush_interval: float = 0.0
+    flush_interval: float = 0.2
+    min_chars: int = 20
 
 
 class LarkStreamConfig(ChannelStreamConfig):
     enabled: bool = True
     flush_interval: float = 0.2
-    min_chars: int = 1
+    min_chars: int = 20
 
 
 class NapcatStreamConfig(ChannelStreamConfig):

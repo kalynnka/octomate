@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
 
+import logfire
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -89,6 +90,7 @@ class LarkMarkdownFeeler:
         self.ink = ink
         self.chromo = chromo
 
+    @logfire.instrument("lark.markdown.present", extract_args=False)
     async def present(
         self,
         address: ChannelAddress,

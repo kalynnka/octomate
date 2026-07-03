@@ -119,6 +119,17 @@ class SpyToolset(FunctionToolset[None]):
         return None
 
 
+class FailingToolset(FunctionToolset[None]):
+    """Stands in for a remote MCP server whose session fails to `initialize`,
+    raising when the agent tries to open it during warm-up."""
+
+    async def __aenter__(self) -> FailingToolset:
+        raise RuntimeError("Failed to initialize server session")
+
+    async def __aexit__(self, *args: Any) -> bool | None:
+        return None
+
+
 def _tentacle_with(toolset: AbstractToolset[None]) -> InklingTentacle:
     octomate = Octomate()
     agent: Agent[None, InklingOutput] = Agent(
@@ -139,3 +150,12 @@ async def test_entering_tentacle_enters_agent_toolsets_once() -> None:
         assert (spy.entered, spy.exited) == (1, 0)
 
     assert (spy.entered, spy.exited) == (1, 1)
+
+
+async def test_warm_up_failure_does_not_abort_startup() -> None:
+    tentacle = _tentacle_with(FailingToolset())
+
+    # A transient MCP `initialize` failure while warming must not propagate out of
+    # tentacle startup; the agent is left unentered so runs reconnect on demand.
+    async with tentacle:
+        pass

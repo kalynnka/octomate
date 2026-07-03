@@ -6,6 +6,8 @@ import re
 from abc import ABC, abstractmethod
 from uuid import UUID
 
+import logfire
+
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredApproval,
@@ -51,6 +53,7 @@ class PlainTextApprovalFeeler(ApprovalFeeler):
     def __init__(self, markdown: MarkdownFeeler) -> None:
         self.markdown = markdown
 
+    @logfire.instrument("plaintext.approvals.present", extract_args=False)
     async def present(
         self,
         address: ChannelAddress,
@@ -73,6 +76,7 @@ class PlainTextAskQuestionFeeler(QuestionFeeler):
     def __init__(self, markdown: MarkdownFeeler) -> None:
         self.markdown = markdown
 
+    @logfire.instrument("plaintext.ask_questions.present", extract_args=False)
     async def present(
         self,
         address: ChannelAddress,

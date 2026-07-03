@@ -23,6 +23,7 @@ from octomate.capabilities.events import (
     TodoDeletedEvent,
     TodoEvent,
 )
+from octomate.config.channels import ChannelStreamConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtSegment,
@@ -130,6 +131,7 @@ class SlackTimelineState(TimelineState):
     ask_questions: QuestionFeeler
     approvals: ApprovalFeeler
     deferred_actions: DeferredActionManager
+    answer_batcher: TextStreamBatcher
     recipient_user_id: str | None = None
     recipient_team_id: str | None = None
     message_id: IMMessageID | None = None
@@ -145,9 +147,6 @@ class SlackTimelineState(TimelineState):
     plan_stream: AsyncChatStream | None = None
     text_stream: AsyncChatStream | None = None
     last_message_id: IMMessageID | None = None
-    answer_batcher: TextStreamBatcher = field(
-        default_factory=lambda: TextStreamBatcher(flush_interval=0, min_chars=0)
-    )
 
     async def set_status(self, status: str) -> None:
         if status == self.last_status:
@@ -208,7 +207,9 @@ class SlackTimelineState(TimelineState):
             await self.complete_active_thinking()
             await self.finish_plan()
             await self.set_status(STATUS_WRITING)
-            self.answer_batcher = TextStreamBatcher(flush_interval=0, min_chars=0)
+            # Each text part is its own Slack message: clear the batcher's carried
+            # `full_text` so the previous message's length can't fold this one.
+            self.answer_batcher.reset()
             self.text_stream = await self.ink.start_stream(
                 self.channel,
                 self.thread_ts,
@@ -225,7 +226,6 @@ class SlackTimelineState(TimelineState):
         for update in self.answer_batcher.finish_all():
             await self.ink.append_stream(stream, update.delta_text)
         self.last_message_id = await self.ink.stop_stream(stream)
-        self.answer_batcher = TextStreamBatcher(flush_interval=0, min_chars=0)
 
     async def release_drained(self) -> None:
         for stream in [s for s in self.retired if not self.stream_has_inflight(s)]:
@@ -484,12 +484,14 @@ class SlackTimelineFeeler(TimelineFeeler):
         ask_questions: QuestionFeeler,
         approvals: ApprovalFeeler,
         deferred_actions: DeferredActionManager,
+        stream_config: ChannelStreamConfig,
     ) -> None:
         self.ink = ink
         self.chromo = chromo
         self.ask_questions = ask_questions
         self.approvals = approvals
         self.deferred_actions = deferred_actions
+        self.stream_config = stream_config
 
     @asynccontextmanager
     async def open(self, address: ChannelAddress) -> AsyncIterator[SlackTimelineState]:
@@ -506,6 +508,12 @@ class SlackTimelineFeeler(TimelineFeeler):
             ask_questions=self.ask_questions,
             approvals=self.approvals,
             deferred_actions=self.deferred_actions,
+            answer_batcher=TextStreamBatcher(
+                flush_interval=self.stream_config.flush_interval,
+                min_chars=self.stream_config.min_chars,
+                max_chars=self.stream_config.max_chars,
+                fold_threshold=self.stream_config.fold_threshold,
+            ),
             recipient_user_id=context.recipient_user_id,
             recipient_team_id=context.recipient_team_id,
         )

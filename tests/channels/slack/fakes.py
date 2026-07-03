@@ -254,6 +254,7 @@ def compose_slack_feelers(
             ask_questions=ask_questions,
             approvals=approvals,
             deferred_actions=actions,
+            stream_config=channel.config.stream,
         ),
         segments=DefaultSegmentsFeeler(ink=ink, chromo=chromo),
         approvals=approvals,

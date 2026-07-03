@@ -277,6 +277,13 @@ class TextStreamBatcher:
                 updates.append(update)
         return updates
 
+    def reset(self) -> None:
+        """Drop accumulated buffers so the same batcher can back the next message
+        without carrying over `full_text` (which drives the fold threshold). The
+        configured pacing (flush_interval/min_chars/...) is preserved."""
+        self.buffers.clear()
+        self.active_block_id = None
+
     def full_text(self, block_id: str = "answer") -> str:
         buffer = self.buffers.get(block_id)
         return buffer.full_text if buffer is not None else ""
@@ -785,8 +792,9 @@ async def present_markdown(
     reply_to = reply_to or address.thread_id or None
     first_message_id: IMMessageID | None = None
     with logfire.span(
-        "present_markdown",
+        "default.markdown.present",
         channel_id=address.channel_tentacle_id,
+        conversation_address=str(address),
         chat_type=chat_type,
         markdown_len=len(markdown),
     ) as span:
@@ -844,21 +852,28 @@ class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
         address: ChannelAddress,
         segments: list[MessageSegment],
     ) -> IMMessageID | None:
-        reply_to, body = split_reply(segments)
-        messages = await self.chromo.outbound_segments(body)
-        if not messages:
-            return None
-        chat_id = address.chat_id or address.user_id
-        first_message_id: IMMessageID | None = None
-        for message in messages:
-            message_id = await self.ink.send_message(
-                chat_id,
-                address.chat_type,
-                [message],
-                reply_to or address.thread_id or None,
-            )
-            first_message_id = first_message_id or message_id
-        return first_message_id
+        with logfire.span(
+            "default.segments.present",
+            channel_id=address.channel_tentacle_id,
+            conversation_address=str(address),
+            segments=len(segments),
+        ) as span:
+            reply_to, body = split_reply(segments)
+            messages = await self.chromo.outbound_segments(body)
+            if not messages:
+                return None
+            chat_id = address.chat_id or address.user_id
+            first_message_id: IMMessageID | None = None
+            for message in messages:
+                message_id = await self.ink.send_message(
+                    chat_id,
+                    address.chat_type,
+                    [message],
+                    reply_to or address.thread_id or None,
+                )
+                first_message_id = first_message_id or message_id
+            span.set_attribute("message_id", str(first_message_id))
+            return first_message_id
 
 
 @dataclass

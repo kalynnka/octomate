@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
+import logfire
 from pydantic import SecretStr
 from slack_sdk.models.messages.chunk import Chunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
@@ -150,6 +151,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
                 thread_ts = None
         return first_msg_id
 
+    @logfire.instrument("slack.start_stream", extract_args=["channel"])
     async def start_stream(
         self,
         channel: str,
@@ -173,9 +175,10 @@ class SlackInk(Ink[SlackOutboundMessage]):
         stream: AsyncChatStream,
         markdown_text: str,
     ) -> None:
-        for chunk in SLACK_MARKDOWN_CHUNKER.chunk(markdown_text):
-            # `chunks=()` forces slack-sdk to flush its internal text buffer.
-            await stream.append(markdown_text=chunk, chunks=())
+        with logfire.span("slack.append_stream", chars=len(markdown_text)):
+            for chunk in SLACK_MARKDOWN_CHUNKER.chunk(markdown_text):
+                # `chunks=()` forces slack-sdk to flush its internal text buffer.
+                await stream.append(markdown_text=chunk, chunks=())
 
     async def append_stream_chunks(
         self,
@@ -209,6 +212,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
             except Exception:
                 logger.warning("SlackInk: failed to stop stream", exc_info=True)
 
+    @logfire.instrument("slack.stop_stream", extract_args=False)
     async def stop_stream(
         self,
         stream: AsyncChatStream,

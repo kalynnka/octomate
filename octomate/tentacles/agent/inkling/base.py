@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AsyncExitStack
@@ -22,6 +24,7 @@ from pydantic_ai.agent.abstract import (
     AgentMetadata,
     RunOutputDataT,
 )
+from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
@@ -51,6 +54,8 @@ from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 if TYPE_CHECKING:
     from octomate.base import Octomate
 
+logger = logging.getLogger(__name__)
+
 InklingOutput: TypeAlias = str | list[MessageSegment] | DeferredToolRequests
 
 
@@ -68,6 +73,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     )
 
     _exit_stack: AsyncExitStack = field(init=False)
+    toolsets: list[AbstractToolset[None]] = field(init=False)
 
     def __init__(
         self,
@@ -107,12 +113,51 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self.deferred_resolver = deferred_resolver
         self.description = description or self.description
         self._exit_stack = AsyncExitStack()
+        self.toolsets = list(toolsets or [])
 
     async def __aenter__(self) -> Self:
         # Enter the wrapped pydantic-ai agent once for the tentacle's lifetime so
         # its MCP toolsets open + `initialize` a single warm session, reused across
         # every react-graph run instead of reconnecting per turn.
-        await self._exit_stack.enter_async_context(self.agent)
+        try:
+            await self._exit_stack.enter_async_context(self.agent)
+        except Exception:
+            logger.warning(
+                "Agent %s: failed to warm agent/MCP sessions at startup; "
+                "runs will reconnect on demand",
+                self.id,
+                exc_info=True,
+            )
+            return self
+        # Opening the session does not fetch each MCP server's tool list, so the
+        # first run would otherwise block on a multi-second `tools/list` before the
+        # first token. Prime the per-toolset caches now (concurrently), off the
+        # request path. Priming is best-effort too.
+        mcp_servers: list[MCPToolset[None]] = []
+
+        def collect(toolset: AbstractToolset[None]) -> None:
+            if isinstance(toolset, MCPToolset):
+                mcp_servers.append(toolset)
+
+        for toolset in self.toolsets:
+            toolset.apply(collect)
+        if mcp_servers:
+            try:
+                with logfire.span(
+                    "inkling.warm_mcp_tools",
+                    mcp_servers=[server.id for server in mcp_servers],
+                ):
+                    await asyncio.gather(
+                        *(server.list_tools() for server in mcp_servers),
+                        return_exceptions=True,
+                    )
+            except Exception:
+                logger.warning(
+                    "Agent %s: failed to prime MCP tool lists at startup; "
+                    "runs will list on demand",
+                    self.id,
+                    exc_info=True,
+                )
         return self
 
     async def __aexit__(self, *exc: object) -> None:

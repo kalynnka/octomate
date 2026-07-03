@@ -4,6 +4,7 @@ import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+import logfire
 from pydantic import JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
@@ -40,6 +41,7 @@ class SlackAskQuestionFeeler(QuestionFeeler):
     def __init__(self, ink: SlackInk) -> None:
         self.ink = ink
 
+    @logfire.instrument("slack.ask_questions.present", extract_args=False)
     async def present(
         self,
         address: ChannelAddress,

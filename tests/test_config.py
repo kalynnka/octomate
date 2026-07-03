@@ -78,7 +78,7 @@ def test_channel_config_parses_supported_channels() -> None:
     assert isinstance(config.channels.slack, SlackChannelConfig)
     assert isinstance(config.channels.lark, LarkChannelConfig)
     assert isinstance(config.channels.napcat, NapcatChannelConfig)
-    assert config.channels.slack.stream.flush_interval == 0
+    assert config.channels.slack.stream.flush_interval == 0.5
     assert config.channels.lark.stream.flush_interval == 0.2
     assert config.channels.lark.stream.min_chars == 1
     assert config.channels.napcat.stream.enabled is False
@@ -427,7 +427,7 @@ octomate:
 
     assert config.channels.slack is not None
     assert config.channels.slack.stream.enabled is False
-    assert config.channels.slack.stream.flush_interval == 0
+    assert config.channels.slack.stream.flush_interval == 0.5
 
     assert config.channels.lark is not None
     assert config.channels.lark.stream.enabled is False
