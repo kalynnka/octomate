@@ -9,6 +9,7 @@ from typing import Any, Iterable, Literal, TypeAlias, cast, overload
 
 import logfire
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
+from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import UserContent
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests
@@ -802,6 +803,12 @@ class RunReception(BaseNode[TriageState, TriageDeps, TriageGraphResult]):
                         target_address
                     ) as timeline_state:
                         await timeline_state.drive(stream_events())
+                except AgentRunError:
+                    # A model/provider failure (e.g. invalid Bedrock credentials)
+                    # surfaces here from the run stream itself, not the render. It
+                    # is the real cause — let it propagate instead of masking it as
+                    # a render warning and a generic "no result" error below.
+                    raise
                 except Exception:
                     logger.warning(
                         "Channel %s: timeline render failed",
