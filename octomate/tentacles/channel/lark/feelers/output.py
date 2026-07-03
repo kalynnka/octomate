@@ -48,6 +48,10 @@ from octomate.tentacles.channel.feelers.output import (
 from octomate.tentacles.channel.lark.chromo import LARK_STREAM_ELEMENT_ID, LarkChromo
 from octomate.tentacles.channel.lark.feelers import cards
 from octomate.tentacles.channel.lark.ink import LarkInk
+from octomate.tentacles.channel.lark.markdown import (
+    card_render_fallback_text,
+    preserve_markdown_tables_as_text,
+)
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
 
 if TYPE_CHECKING:
@@ -96,12 +100,23 @@ class LarkMarkdownFeeler:
         address: ChannelAddress,
         markdown: str,
     ) -> IMMessageID | None:
+        if not markdown:
+            return None
         chat_id = address.chat_id or address.user_id
         reply_to = address.thread_id if address.thread_id.startswith("om_") else None
-        return await self.ink.send_message(
+        message_id = await self.ink.send_message(
             chat_id,
             address.chat_type,
             self.chromo.outbound_markdown(markdown),
+            reply_to,
+            reply_in_thread=reply_to is not None,
+        )
+        if message_id is not None:
+            return message_id
+        return await self.ink.send_text_message(
+            chat_id,
+            address.chat_type,
+            card_render_fallback_text(markdown),
             reply_to,
             reply_in_thread=reply_to is not None,
         )
@@ -162,15 +177,25 @@ class LarkRunStateCards(TimelineState):
     todo_card_id: str | None = None
 
     async def post(self, card: JsonObject) -> str | None:
-        return await self.ink.send_message(
+        raw_card = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+        message_id = await self.ink.send_message(
             self.chat_id,
             self.chat_type,
             [
                 LarkOutboundMessage(
                     msg_type="interactive",
-                    content=json.dumps(card, ensure_ascii=False, separators=(",", ":")),
+                    content=raw_card,
                 )
             ],
+            self.reply_to,
+            reply_in_thread=self.reply_in_thread,
+        )
+        if message_id is not None:
+            return message_id
+        return await self.ink.send_text_message(
+            self.chat_id,
+            self.chat_type,
+            card_render_fallback_text(raw_card),
             self.reply_to,
             reply_in_thread=self.reply_in_thread,
         )
@@ -383,7 +408,7 @@ class LarkRunStateCards(TimelineState):
         self.saw_answer = True
         if not await self.ink.update_stream_card(
             card,
-            content=full_text,
+            content=preserve_markdown_tables_as_text(full_text),
             sequence=self.answer_sequence,
         ):
             raise RuntimeError("failed to update Lark answer card")

@@ -161,6 +161,34 @@ async def test_lark_consume_renders_image_and_card_segments(
     assert json.loads(interactive_contents[-1]) == {"header": {"title": "t"}}
 
 
+async def test_lark_card_segment_falls_back_to_raw_text_when_card_fails() -> None:
+    ink = FakeLarkInk()
+    ink.fail_interactive_send = True
+    channel = lark_channel(ink)
+    address = ChannelAddress(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="u1",
+        user_id="u1",
+    )
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield ResultSegmentEvent(
+            segment=CardSegment(data=CardData(payload={"header": {"title": "t"}}))
+        )
+
+    await drive(channel, address, events())
+
+    assert len(ink.created) == 1
+    _, _, msg_type, content = ink.created[0]
+    assert msg_type == "text"
+    text = json.loads(content)["text"]
+    assert "couldn't render this as a Lark card" in text
+    assert '"header":{"title":"t"}' in text
+
+
 async def test_lark_consume_renders_todo_checklist_card() -> None:
     ink = FakeLarkInk()
     channel = lark_channel(ink)
@@ -270,3 +298,26 @@ async def test_lark_timeline_opens_new_answer_card_after_mid_run_notice() -> Non
     # Both rounds' thinking and tool cards posted (and folded via patch).
     assert len(ink.created) == 4
     assert len(ink.patched) == 4
+
+
+async def test_lark_answer_stream_preserves_markdown_tables_as_text() -> None:
+    ink = FakeLarkInk()
+    channel = lark_channel(ink)
+    address = ChannelAddress(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="u1",
+        user_id="u1",
+    )
+    table = "| Name | Value |\n| --- | --- |\n| A | 1 |"
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=TextPart(content=table))
+        yield AgentRunResultEvent(AgentRunResult(table))
+
+    await drive(channel, address, events())
+
+    assert ink.stream_updates
+    assert ink.stream_updates[-1][1] == f"```text\n{table}\n```"

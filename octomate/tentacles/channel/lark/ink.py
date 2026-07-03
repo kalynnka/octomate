@@ -41,6 +41,13 @@ from octomate.tentacles.channel.lark.schema import (
 logger = logging.getLogger(__name__)
 
 
+def text_message(text: str) -> LarkOutboundMessage:
+    return LarkOutboundMessage(
+        msg_type="text",
+        content=json.dumps({"text": text}, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
 class LarkInk(Ink[LarkOutboundMessage]):
     app_id: str
     app_secret: SecretStr
@@ -209,6 +216,22 @@ class LarkInk(Ink[LarkOutboundMessage]):
             except Exception:
                 logger.warning("LarkInk: send_message failed", exc_info=True)
         return first_msg_id
+
+    async def send_text_message(
+        self,
+        chat_id: str,
+        chat_type: str,
+        text: str,
+        reply_to: str | None = None,
+        reply_in_thread: bool = False,
+    ) -> IMMessageID | None:
+        return await self.send_message(
+            chat_id,
+            chat_type,
+            [text_message(text)],
+            reply_to,
+            reply_in_thread=reply_in_thread,
+        )
 
     async def create_stream_card(
         self,

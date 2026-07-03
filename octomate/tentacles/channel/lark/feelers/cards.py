@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from pydantic import JsonValue
 
+from octomate.tentacles.channel.lark.markdown import preserve_markdown_tables_as_text
 from octomate.types.json import JsonObject
 
 
@@ -23,7 +24,10 @@ def header(title: str, *, template: str | None = None) -> JsonObject:
 
 
 def markdown(content: str, *, element_id: str | None = None) -> JsonObject:
-    element: JsonObject = {"tag": "markdown", "content": content}
+    element: JsonObject = {
+        "tag": "markdown",
+        "content": preserve_markdown_tables_as_text(content),
+    }
     if element_id is not None:
         element["element_id"] = element_id
     return element

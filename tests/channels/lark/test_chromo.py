@@ -219,6 +219,23 @@ def test_lark_chromo_renders_markdown_as_interactive_message() -> None:
     assert body["elements"] == [{"tag": "markdown", "content": "hello **lark**"}]
 
 
+def test_lark_chromo_preserves_markdown_tables_as_text() -> None:
+    chromo = LarkChromo()
+    table = "| Name | Value |\n| --- | --- |\n| A | 1 |"
+
+    messages = chromo.outbound_markdown(f"before\n\n{table}\n\nafter")
+    content = _loaded_json_object(messages[0].content)
+    body = content["body"]
+    assert isinstance(body, dict)
+
+    assert body["elements"] == [
+        {
+            "tag": "markdown",
+            "content": f"before\n\n```text\n{table}\n```\n\nafter",
+        }
+    ]
+
+
 def test_lark_chromo_builds_streaming_card_payload() -> None:
     chromo = LarkChromo()
 
@@ -250,3 +267,20 @@ def test_lark_chromo_builds_streaming_card_payload() -> None:
         "type": "card",
         "data": {"card_id": "card-1"},
     }
+
+
+def test_lark_chromo_streaming_card_preserves_markdown_tables_as_text() -> None:
+    chromo = LarkChromo()
+    table = "| Name | Value |\n| --- | --- |\n| A | 1 |"
+
+    data = _loaded_json_object(chromo.make_stream_card_data(table))
+    body = data["body"]
+    assert isinstance(body, dict)
+
+    assert body["elements"] == [
+        {
+            "tag": "markdown",
+            "content": f"```text\n{table}\n```",
+            "element_id": "octomate_answer",
+        }
+    ]

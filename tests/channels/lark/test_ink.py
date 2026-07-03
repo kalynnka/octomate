@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 
@@ -125,6 +126,28 @@ async def test_lark_tentacle_ignores_thread_id_as_reply_target() -> None:
 
     assert ink.replies == []
     assert ink.created[0][:2] == ("oc_group", "chat_id")
+
+
+async def test_lark_markdown_present_falls_back_to_raw_text_when_card_fails() -> None:
+    ink = FakeLarkInk()
+    ink.fail_interactive_send = True
+    channel = lark_channel(ink)
+    address = ChannelAddress(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="ou_user",
+        user_id="ou_user",
+    )
+
+    message_id = await channel.feelers.markdown.present(address, "| A | B |")
+
+    assert message_id == "created-1"
+    assert len(ink.created) == 1
+    receive_id, receive_id_type, msg_type, content = ink.created[0]
+    assert (receive_id, receive_id_type, msg_type) == ("ou_user", "open_id", "text")
+    text = json.loads(content)["text"]
+    assert "couldn't render this as a Lark card" in text
+    assert "| A | B |" in text
 
 
 async def test_lark_tentacle_message_callback_invokes_ingest() -> None:

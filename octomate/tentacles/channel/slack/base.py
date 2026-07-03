@@ -137,9 +137,9 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             self.app,
             self.app_token.get_secret_value(),
         )
-        # start_async returns once connected; the Slack SDK drives the socket on
-        # its own background tasks, so there is nothing to keep alive here.
-        await self.handler.start_async()
+        # start_async parks forever after connecting; the host still needs to
+        # enter the remaining channels in its lifespan stack.
+        await self.handler.connect_async()
         return self
 
     async def __aexit__(self, *exc: object) -> None:

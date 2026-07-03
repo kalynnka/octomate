@@ -39,6 +39,7 @@ class FakeLarkInk(LarkInk):
         self.finalized: list[tuple[LarkStreamCard, int]] = []
         self.patched: list[tuple[str, str]] = []
         self.uploaded: list[bytes] = []
+        self.fail_interactive_send = False
         self.fail_stream_create = False
         self.fail_stream_update = False
 
@@ -52,7 +53,9 @@ class FakeLarkInk(LarkInk):
         receive_id_type: str,
         msg_type: str,
         content: str,
-    ) -> str:
+    ) -> str | None:
+        if self.fail_interactive_send and msg_type == "interactive":
+            return None
         self.created.append((receive_id, receive_id_type, msg_type, content))
         return f"created-{len(self.created)}"
 
@@ -63,7 +66,9 @@ class FakeLarkInk(LarkInk):
         content: str,
         *,
         reply_in_thread: bool = False,
-    ) -> str:
+    ) -> str | None:
+        if self.fail_interactive_send and msg_type == "interactive":
+            return None
         self.replies.append((message_id, msg_type, content, reply_in_thread))
         return f"reply-{len(self.replies)}"
 
