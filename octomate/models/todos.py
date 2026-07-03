@@ -6,12 +6,19 @@ from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
-from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint, Uuid
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
-from octomate.models.messages import PydanticJSON
 from octomate.types.todos import TodoStatus
 
 if TYPE_CHECKING:
@@ -44,7 +51,7 @@ class Todo(Base, TransmuterProxiedMixin):
     # (matching the reference); cycle/blocking is validated in the toolset.
     parent_ref: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     depends_on: Mapped[JsonValue] = mapped_column(
-        PydanticJSON, nullable=False, default=list
+        JSON, nullable=False, default=list
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,

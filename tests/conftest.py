@@ -15,7 +15,11 @@ async def in_memory_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[AsyncEngine]:
     """An in-memory SQLite DB with all tables created, wired into `async_session`."""
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        json_serializer=database.json_serializer,
+        json_deserializer=database.json_deserializer,
+    )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

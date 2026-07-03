@@ -16,7 +16,6 @@ from octomate.models.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    PydanticJSON,
 )
 from octomate.models.runs import AgentRun
 from octomate.models.todos import Todo
@@ -36,6 +35,5 @@ __all__ = [
     "ModelMessage",
     "ModelRequest",
     "ModelResponse",
-    "PydanticJSON",
     "Todo",
 ]

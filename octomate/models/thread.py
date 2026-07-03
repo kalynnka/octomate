@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
 from sqlalchemy import (
+    JSON,
     DateTime,
     ForeignKey,
     Integer,
@@ -18,7 +19,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
-from octomate.models.messages import PydanticJSON
 
 if TYPE_CHECKING:
     from octomate.models.conversation import Conversation
@@ -193,8 +193,8 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         String, nullable=True, index=True
     )
 
-    sender: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
-    segments: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
+    sender: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
+    segments: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     message_text: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     raw: Mapped[str] = mapped_column(String, nullable=False, default="")
 

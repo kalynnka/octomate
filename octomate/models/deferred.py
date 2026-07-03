@@ -6,12 +6,11 @@ from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid, and_
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Uuid, and_
 from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
-from octomate.models.messages import PydanticJSON
 from octomate.types.deferred import (
     DeferredActionKind,
     DeferredActionStatus,
@@ -41,11 +40,11 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
         nullable=False,
         default="pending",
     )
-    source_address: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
-    target_address: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
+    source_address: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
+    target_address: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     target_mode: Mapped[str] = mapped_column(String, nullable=False, default="main")
-    decision: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=True)
-    requests: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
+    decision: Mapped[JsonValue] = mapped_column(JSON, nullable=True)
+    requests: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
@@ -119,13 +118,14 @@ class DeferredAction(Base, TransmuterProxiedMixin):
     tool_name: Mapped[str] = mapped_column(String, nullable=False, index=True)
     tool_call_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    args: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=False)
+    args: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     meta: Mapped[JsonValue] = mapped_column(
         "metadata",
-        PydanticJSON,
+        JSON,
         nullable=False,
+        default=dict,
     )
-    result: Mapped[JsonValue] = mapped_column(PydanticJSON, nullable=True)
+    result: Mapped[JsonValue] = mapped_column(JSON, nullable=True)
     platform_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
     responder_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(

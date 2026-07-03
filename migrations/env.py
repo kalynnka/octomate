@@ -6,7 +6,9 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-from octomate.models import Base  # noqa: F401 — registers all ORM tables on Base.metadata
+from octomate.models import (
+    Base,  # noqa: F401 — registers all ORM tables on Base.metadata
+)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -45,10 +47,6 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        # SQLite has no transactional/in-place ALTER for drop-column, constraint,
-        # or nullability changes; batch mode recreates the table so autogen and
-        # migrations work on it.
-        render_as_batch=True,
     )
 
     with context.begin_transaction():
