@@ -38,7 +38,8 @@ octomate:
   #     bot_token: xoxb-...
   #     app_token: xapp-...
   #     stream:
-  #       flush_interval: 0
+  #       flush_interval: 0.2
+  #       min_chars: 20
   #   lark:
   #     triage:
   #       agent: inkling
@@ -50,7 +51,7 @@ octomate:
   #     app_secret: ...
   #     stream:
   #       flush_interval: 0.2
-  #       min_chars: 1
+  #       min_chars: 20
   #   napcat:
   #     triage:
   #       agent: inkling

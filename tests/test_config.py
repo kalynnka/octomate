@@ -54,53 +54,59 @@ def test_channels_default_to_none() -> None:
 
 
 def test_channel_config_parses_supported_channels() -> None:
-    config = OctomateConfig(
-        channels={
-            "dev_ui": None,
-            "lark": None,
-            "napcat": None,
-            "slack": {
-                "app_id": "A-test",
-                "bot_token": "xoxb-test",
-                "app_token": "xapp-test",
-            },
-            "lark": {
-                "app_id": "cli-test",
-                "app_secret": "secret",
-            },
-            "napcat": {
-                "ws_url": "ws://127.0.0.1:3001",
-                "http_url": "http://127.0.0.1:3000",
-            },
+    config = OctomateConfig.model_validate(
+        {
+            "channels": {
+                "dev_ui": None,
+                "slack": {
+                    "app_id": "A-test",
+                    "bot_token": "xoxb-test",
+                    "app_token": "xapp-test",
+                },
+                "lark": {
+                    "app_id": "cli-test",
+                    "app_secret": "secret",
+                },
+                "napcat": {
+                    "ws_url": "ws://127.0.0.1:3001",
+                    "http_url": "http://127.0.0.1:3000",
+                },
+            }
         }
     )
 
     assert isinstance(config.channels.slack, SlackChannelConfig)
     assert isinstance(config.channels.lark, LarkChannelConfig)
     assert isinstance(config.channels.napcat, NapcatChannelConfig)
-    assert config.channels.slack.stream.flush_interval == 0.5
+    assert config.channels.slack.stream.flush_interval == 0.2
+    assert config.channels.slack.stream.min_chars == 20
     assert config.channels.lark.stream.flush_interval == 0.2
-    assert config.channels.lark.stream.min_chars == 1
+    assert config.channels.lark.stream.min_chars == 20
     assert config.channels.napcat.stream.enabled is False
 
 
 def test_channel_config_parses_agent_model_routes() -> None:
-    config = OctomateConfig(
-        agents={"claude": {"models": ["opus"]}},
-        channels={
-            "dev_ui": None,
-            "lark": None,
-            "napcat": None,
-            "slack": {
-                "app_id": "A-test",
-                "bot_token": "xoxb-test",
-                "app_token": "xapp-test",
-                "triage": {"agent": "inkling", "model": "deepseek:deepseek-v4-flash"},
-                "receptions": [
-                    {"agent": "inkling", "model": "deepseek:deepseek-v4-pro"},
-                    {"agent": "claude", "model": "opus"},
-                ],
-            }
+    config = OctomateConfig.model_validate(
+        {
+            "agents": {"claude": {"models": ["opus"]}},
+            "channels": {
+                "dev_ui": None,
+                "lark": None,
+                "napcat": None,
+                "slack": {
+                    "app_id": "A-test",
+                    "bot_token": "xoxb-test",
+                    "app_token": "xapp-test",
+                    "triage": {
+                        "agent": "inkling",
+                        "model": "deepseek:deepseek-v4-flash",
+                    },
+                    "receptions": [
+                        {"agent": "inkling", "model": "deepseek:deepseek-v4-pro"},
+                        {"agent": "claude", "model": "opus"},
+                    ],
+                },
+            },
         }
     )
 
@@ -145,29 +151,29 @@ def test_claude_code_config_defaults_to_fixed_model_set() -> None:
 
 def test_claude_code_config_validates_model_names() -> None:
     with pytest.raises(ValidationError, match="Input should be"):
-        ClaudeCodeConfig(models={"missing"})
+        ClaudeCodeConfig.model_validate({"models": {"missing"}})
 
 
 def test_claude_code_config_accepts_documented_model_aliases() -> None:
-    config = ClaudeCodeConfig(
-        models={"best", "opus[1m]", "sonnet[1m]", "opusplan[1m]"}
-    )
+    config = ClaudeCodeConfig(models={"best", "opus[1m]", "sonnet[1m]", "opusplan[1m]"})
 
     assert config.models == {"best", "opus[1m]", "sonnet[1m]", "opusplan[1m]"}
 
 
 def test_channel_agent_routes_must_reference_configured_agent() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig(
-            channels={
-                "slack": {
-                    "app_id": "A-test",
-                    "bot_token": "xoxb-test",
-                    "app_token": "xapp-test",
-                    "triage": {
-                        "agent": "ghost",
-                        "model": "deepseek:deepseek-v4-flash",
-                    },
+        OctomateConfig.model_validate(
+            {
+                "channels": {
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "triage": {
+                            "agent": "ghost",
+                            "model": "deepseek:deepseek-v4-flash",
+                        },
+                    }
                 }
             }
         )
@@ -180,40 +186,40 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
 
 def test_channel_agent_route_validation_reports_all_errors() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig(
-            agents={"claude": {"models": ["opus"]}},
-            channels={
-                "dev_ui": None,
-                "napcat": None,
-                "slack": {
-                    "app_id": "A-test",
-                    "bot_token": "xoxb-test",
-                    "app_token": "xapp-test",
-                    "triage": {
-                        "agent": "ghost",
-                        "model": "deepseek:deepseek-v4-flash",
+        OctomateConfig.model_validate(
+            {
+                "agents": {"claude": {"models": ["opus"]}},
+                "channels": {
+                    "dev_ui": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "triage": {
+                            "agent": "ghost",
+                            "model": "deepseek:deepseek-v4-flash",
+                        },
+                        "receptions": [
+                            {"agent": "inkling", "model": "openai:gpt-5.2"},
+                            {"agent": "claude", "model": "sonnet"},
+                        ],
                     },
-                    "receptions": [
-                        {"agent": "inkling", "model": "openai:gpt-5.2"},
-                        {"agent": "claude", "model": "sonnet"},
-                    ],
-                },
-                "lark": {
-                    "enabled": False,
-                    "app_id": "cli-test",
-                    "app_secret": "secret",
-                    "triage": {
-                        "agent": "nobody",
-                        "model": "deepseek:deepseek-v4-flash",
+                    "lark": {
+                        "enabled": False,
+                        "app_id": "cli-test",
+                        "app_secret": "secret",
+                        "triage": {
+                            "agent": "nobody",
+                            "model": "deepseek:deepseek-v4-flash",
+                        },
+                        "receptions": [],
                     },
-                    "receptions": [],
                 },
             },
         )
 
-    errors = {
-        tuple(error["loc"]): error["msg"] for error in exc_info.value.errors()
-    }
+    errors = {tuple(error["loc"]): error["msg"] for error in exc_info.value.errors()}
     assert errors == {
         (
             "channels",
@@ -246,17 +252,19 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
 
 def test_disabled_channel_agent_routes_are_validated() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig(
-            channels={
-                "slack": {
-                    "enabled": False,
-                    "app_id": "A-test",
-                    "bot_token": "xoxb-test",
-                    "app_token": "xapp-test",
-                    "triage": {
-                        "agent": "ghost",
-                        "model": "deepseek:deepseek-v4-flash",
-                    },
+        OctomateConfig.model_validate(
+            {
+                "channels": {
+                    "slack": {
+                        "enabled": False,
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "triage": {
+                            "agent": "ghost",
+                            "model": "deepseek:deepseek-v4-flash",
+                        },
+                    }
                 }
             }
         )
@@ -268,18 +276,20 @@ def test_disabled_channel_agent_routes_are_validated() -> None:
 
 def test_channel_claude_route_requires_claude_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig(
-            agents={"claude": None},
-            channels={
-                "dev_ui": None,
-                "lark": None,
-                "napcat": None,
-                "slack": {
-                    "app_id": "A-test",
-                    "bot_token": "xoxb-test",
-                    "app_token": "xapp-test",
-                    "receptions": [{"agent": "claude", "model": "opus"}],
-                }
+        OctomateConfig.model_validate(
+            {
+                "agents": {"claude": None},
+                "channels": {
+                    "dev_ui": None,
+                    "lark": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "receptions": [{"agent": "claude", "model": "opus"}],
+                    },
+                },
             }
         )
 
@@ -290,18 +300,20 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
 
 def test_channel_routes_require_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig(
-            agents={"claude": {"models": ["opus"]}},
-            channels={
-                "dev_ui": None,
-                "lark": None,
-                "napcat": None,
-                "slack": {
-                    "app_id": "A-test",
-                    "bot_token": "xoxb-test",
-                    "app_token": "xapp-test",
-                    "receptions": [{"agent": "claude"}],
-                }
+        OctomateConfig.model_validate(
+            {
+                "agents": {"claude": {"models": ["opus"]}},
+                "channels": {
+                    "dev_ui": None,
+                    "lark": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "receptions": [{"agent": "claude"}],
+                    },
+                },
             },
         )
     [error] = exc_info.value.errors()
@@ -311,20 +323,20 @@ def test_channel_routes_require_model() -> None:
 
 def test_channel_claude_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig(
-            agents={"claude": {"models": ["opus"]}},
-            channels={
-                "dev_ui": None,
-                "lark": None,
-                "napcat": None,
-                "slack": {
-                    "app_id": "A-test",
-                    "bot_token": "xoxb-test",
-                    "app_token": "xapp-test",
-                    "receptions": [
-                        {"agent": "claude", "model": "sonnet"}
-                    ],
-                }
+        OctomateConfig.model_validate(
+            {
+                "agents": {"claude": {"models": ["opus"]}},
+                "channels": {
+                    "dev_ui": None,
+                    "lark": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "receptions": [{"agent": "claude", "model": "sonnet"}],
+                    },
+                },
             },
         )
     [error] = exc_info.value.errors()
@@ -334,13 +346,15 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
 
 def test_channel_inkling_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig(
-            channels={
-                "slack": {
-                    "app_id": "A-test",
-                    "bot_token": "xoxb-test",
-                    "app_token": "xapp-test",
-                    "receptions": [{"agent": "inkling", "model": "openai:gpt-5.2"}],
+        OctomateConfig.model_validate(
+            {
+                "channels": {
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "receptions": [{"agent": "inkling", "model": "openai:gpt-5.2"}],
+                    }
                 }
             }
         )
@@ -356,10 +370,12 @@ def test_mcp_defaults_to_no_servers() -> None:
 
 
 def test_mcp_config_parses_servers() -> None:
-    config = OctomateConfig(
-        mcp={
-            "github": {"enabled": True, "token": "ghp_test", "read_only": True},
-            "linear": {"enabled": True, "token": "lin_test"},
+    config = OctomateConfig.model_validate(
+        {
+            "mcp": {
+                "github": {"enabled": True, "token": "ghp_test", "read_only": True},
+                "linear": {"enabled": True, "token": "lin_test"},
+            }
         }
     )
 
@@ -427,12 +443,13 @@ octomate:
 
     assert config.channels.slack is not None
     assert config.channels.slack.stream.enabled is False
-    assert config.channels.slack.stream.flush_interval == 0.5
+    assert config.channels.slack.stream.flush_interval == 0.2
+    assert config.channels.slack.stream.min_chars == 20
 
     assert config.channels.lark is not None
     assert config.channels.lark.stream.enabled is False
     assert config.channels.lark.stream.flush_interval == 0.2
-    assert config.channels.lark.stream.min_chars == 1
+    assert config.channels.lark.stream.min_chars == 20
 
     assert config.channels.napcat is not None
     assert config.channels.napcat.stream.enabled is False

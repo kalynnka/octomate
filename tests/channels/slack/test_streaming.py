@@ -3,6 +3,7 @@ action batches, and assistant-thread bootstrapping."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +55,7 @@ from octomate.tentacles.channel.slack.feelers.questions import (
 from octomate.types.json import JsonObject
 
 from tests.channels.slack.fakes import (
+    FakeSlackStream,
     FakeSlackInk,
     slack_channel,
     slack_key,
@@ -389,3 +391,70 @@ async def test_slack_timeline_alternates_plan_and_message() -> None:
     ]
     assert {chunk.id for chunk in second_tasks} == {"thinking-2", "call_logs_1"}
     assert second_plan.stopped
+
+
+async def test_slack_answer_deltas_coalesce_while_append_is_in_flight() -> None:
+    class SlowFirstAppendInk(FakeSlackInk):
+        def __init__(self) -> None:
+            super().__init__()
+            self.append_started = asyncio.Event()
+            self.release_append = asyncio.Event()
+            self.append_calls = 0
+
+        async def append_stream(
+            self, stream: FakeSlackStream, markdown_text: str
+        ) -> None:
+            self.append_calls += 1
+            if self.append_calls == 1:
+                self.append_started.set()
+                await self.release_append.wait()
+            await super().append_stream(stream, markdown_text)
+
+    ink = SlowFirstAppendInk()
+    channel = slack_channel(ink)
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=TextPart(content="a"))
+        await ink.append_started.wait()
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="b"))
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="c"))
+        ink.release_append.set()
+        yield FinalResult[ChannelOutput](output="abc")
+        yield AgentRunResultEvent(AgentRunResult("abc"))
+
+    message_id = await drive(channel, slack_key(), events())
+
+    assert message_id == "stream-ts"
+    text_streams = [stream for stream in ink.stream_objects if stream.appends]
+    assert len(text_streams) == 1
+    assert text_streams[0].appends == ["a", "bc"]
+
+
+async def test_slack_text_stream_rotates_before_slack_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [1000.0]
+    monkeypatch.setattr(slack_output.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(slack_output, "TEXT_STREAM_ROTATE_AFTER", 10.0)
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=TextPart(content="hello"))
+        await asyncio.sleep(0)
+        now[0] = 1011.0
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=" again"))
+        yield FinalResult[ChannelOutput](output="hello again")
+        yield AgentRunResultEvent(AgentRunResult("hello again"))
+
+    message_id = await drive(channel, slack_key(), events())
+
+    assert message_id == "stream-ts"
+    assert len(ink.stream_objects) == 2
+    assert ink.stream_objects[0].appends == ["hello"]
+    assert ink.stream_objects[0].stopped
+    assert ink.stream_objects[1].appends == [" again"]

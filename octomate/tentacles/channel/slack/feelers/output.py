@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import logging
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -55,7 +55,6 @@ if TYPE_CHECKING:
     )
 from octomate.types.todos import TodoStatus
 
-logger = logging.getLogger(__name__)
 DEFAULT_PLAN_TITLE = "Working..."
 
 # Slack's task display speaks pending/in_progress/complete; blocked todos show as
@@ -74,6 +73,7 @@ STATUS_WRITING = "Writing the response…"
 # Each task-chunk emit is one chat.appendStream call resending the step's full
 # details, so live thinking re-renders are paced rather than sent per delta.
 THINKING_FLUSH_INTERVAL = 1.0
+TEXT_STREAM_ROTATE_AFTER = 270.0
 
 # "plan" gathers all tasks into one plan block; "timeline" would render each
 # task as an independent inline item.
@@ -146,7 +146,20 @@ class SlackTimelineState(TimelineState):
     retired: list[AsyncChatStream] = field(default_factory=list)
     plan_stream: AsyncChatStream | None = None
     text_stream: AsyncChatStream | None = None
+    text_stream_started_at: float = 0.0
+    text_flush_task: asyncio.Task[None] | None = None
+    text_flush_event: asyncio.Event = field(default_factory=asyncio.Event)
+    text_flush_closed: bool = False
+    pending_text_delta: str = ""
     last_message_id: IMMessageID | None = None
+
+    def reset_text_flush_state(self) -> None:
+        self.text_flush_task = None
+        self.text_stream = None
+        self.text_stream_started_at = 0.0
+        self.pending_text_delta = ""
+        self.text_flush_closed = False
+        self.text_flush_event.clear()
 
     async def set_status(self, status: str) -> None:
         if status == self.last_status:
@@ -210,22 +223,63 @@ class SlackTimelineState(TimelineState):
             # Each text part is its own Slack message: clear the batcher's carried
             # `full_text` so the previous message's length can't fold this one.
             self.answer_batcher.reset()
+            self.reset_text_flush_state()
             self.text_stream = await self.ink.start_stream(
                 self.channel,
                 self.thread_ts,
                 recipient_user_id=self.recipient_user_id,
                 recipient_team_id=self.recipient_team_id,
             )
+            self.text_stream_started_at = time.monotonic()
+            self.text_flush_task = asyncio.create_task(self.flush_text_loop())
         return self.text_stream
 
+    async def flush_text_loop(self) -> None:
+        while True:
+            await self.text_flush_event.wait()
+            self.text_flush_event.clear()
+            while self.pending_text_delta:
+                markdown_text = self.pending_text_delta
+                self.pending_text_delta = ""
+                stream = self.text_stream
+                if stream is None:
+                    raise RuntimeError("Slack text stream is not open")
+                if (
+                    time.monotonic() - self.text_stream_started_at
+                    >= TEXT_STREAM_ROTATE_AFTER
+                ):
+                    self.text_stream = None
+                    await self.ink.stop_stream(stream)
+                    stream = await self.ink.start_stream(
+                        self.channel,
+                        self.thread_ts,
+                        recipient_user_id=self.recipient_user_id,
+                        recipient_team_id=self.recipient_team_id,
+                    )
+                    self.text_stream = stream
+                    self.text_stream_started_at = time.monotonic()
+                await self.ink.append_stream(stream, markdown_text)
+            if self.text_flush_closed:
+                return
+
     async def finish_text(self) -> None:
-        stream = self.text_stream
-        if stream is None:
+        if self.text_stream is None:
             return
-        self.text_stream = None
         for update in self.answer_batcher.finish_all():
-            await self.ink.append_stream(stream, update.delta_text)
-        self.last_message_id = await self.ink.stop_stream(stream)
+            self.pending_text_delta += update.delta_text
+            self.text_flush_event.set()
+        self.text_flush_closed = True
+        self.text_flush_event.set()
+        task = self.text_flush_task
+        stream: AsyncChatStream | None = None
+        try:
+            if task is not None:
+                await task
+            stream = self.text_stream
+        finally:
+            self.reset_text_flush_state()
+        if stream is not None:
+            self.last_message_id = await self.ink.stop_stream(stream)
 
     async def release_drained(self) -> None:
         for stream in [s for s in self.retired if not self.stream_has_inflight(s)]:
@@ -360,9 +414,10 @@ class SlackTimelineState(TimelineState):
     async def answer_delta(self, text: str) -> None:
         if not text:
             return
-        stream = await self.ensure_text_stream()
+        await self.ensure_text_stream()
         for update in self.answer_batcher.push_text(text):
-            await self.ink.append_stream(stream, update.delta_text)
+            self.pending_text_delta += update.delta_text
+            self.text_flush_event.set()
 
     async def answer_end(self) -> None:
         await self.finish_text()
