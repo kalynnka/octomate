@@ -142,6 +142,7 @@ class SlackTimelineState(TimelineState):
     todo_steps: dict[str, SlackStep] = field(default_factory=dict)
     skipped_tool_call_ids: set[str] = field(default_factory=set)
     last_status: str | None = None
+    status_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     step_streams: dict[str, AsyncChatStream] = field(default_factory=dict)
     retired: list[AsyncChatStream] = field(default_factory=list)
     plan_stream: AsyncChatStream | None = None
@@ -162,10 +163,26 @@ class SlackTimelineState(TimelineState):
         self.text_flush_event.clear()
 
     async def set_status(self, status: str) -> None:
+        # The status is a fire-and-forget UI hint: spawn the setStatus call so
+        # the drive loop never blocks on Slack's round-trip. Keep a reference
+        # (asyncio only weak-refs tasks, so an untracked one can be collected
+        # mid-flight) and drop it once the call settles.
         if status == self.last_status:
             return
         self.last_status = status
-        await self.ink.set_assistant_status(self.channel, self.thread_ts, status)
+        task = asyncio.create_task(
+            self.ink.set_assistant_status(self.channel, self.thread_ts, status)
+        )
+        self.status_tasks.add(task)
+        task.add_done_callback(self.status_tasks.discard)
+
+    async def join_status(self) -> None:
+        # Let the in-flight hints settle, then clear the status last so a late
+        # hint can't leave the thread stuck on a stale label.
+        if self.status_tasks:
+            await asyncio.gather(*self.status_tasks, return_exceptions=True)
+        self.last_status = ""
+        await self.ink.set_assistant_status(self.channel, self.thread_ts, "")
 
     async def ensure_plan_stream(
         self, *, title: str = DEFAULT_PLAN_TITLE
@@ -582,4 +599,4 @@ class SlackTimelineFeeler(TimelineFeeler):
             await state.release_drained()
             # The last text message is the final reply.
             state.message_id = state.last_message_id
-            await state.set_status("")
+            await state.join_status()
