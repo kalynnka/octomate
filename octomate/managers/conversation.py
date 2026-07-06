@@ -8,15 +8,17 @@ from typing import Literal
 from arcanus.materia.sqlalchemy import selectinload
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
+from sqlalchemy import insert, select
+from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
-from octomate.schemas.thread import ThreadMessage
 from octomate.schemas.conversation import (
     Conversation,
     ConversationKey,
 )
 from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun
+from octomate.schemas.thread import ThreadMessage
 
 
 class ConversationManager:
@@ -130,6 +132,75 @@ class ConversationManager:
 
         self.cache_conversation(conversation)
         return run
+
+    async def fork(
+        self,
+        source: Conversation,
+        target: Conversation,
+    ) -> AgentRun | None:
+        """Fork `source`'s full message history into `target` as one new run, so a
+        same-agent `teleport` resumes seamlessly against the copy.
+
+        The rows are copied at the database level — a bulk `INSERT` off a `SELECT` of
+        the source rows, keyed to fresh, order-preserving ids — so nothing round-trips
+        through Python message objects. The trailing deferred `ModelResponse` (the
+        pending `teleport` call) is copied like any other row, so the resume stays
+        valid. Fails fast if `target` already holds messages: copying onto an existing
+        history would splice two unrelated conversations."""
+        if target.messages:
+            raise ValueError(
+                f"fork target {target.id} already holds "
+                f"{len(target.messages)} messages; refusing to splice histories"
+            )
+        source_ids = [message.id for message in source.messages]
+        if not source_ids:
+            return None
+
+        run_id = str(uuid7())
+        async with async_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(*select(ModelMessage).selected_columns)
+                        .where(ModelMessage["id"].in_(source_ids))
+                        .order_by(ModelMessage["id"])
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not rows:
+                return None
+            # New uuid7 ids generated in source order stay monotonic, so the copied
+            # rows keep their ordering under the id-ordered messages relation.
+            cloned = [
+                {
+                    **row,
+                    "id": uuid7(),
+                    "run_id": run_id,
+                    "conversation_id": str(target.id),
+                }
+                for row in rows
+            ]
+            await session.execute(
+                insert(AgentRun).values(
+                    id=run_id,
+                    conversation_id=target.id,
+                    name="fork",
+                    started_at=rows[0]["timestamp"],
+                )
+            )
+            await session.execute(insert(ModelMessage), cloned)
+            await session.commit()
+
+            forked_run = await session.get(AgentRun, run_id)
+            refreshed = await session.get(Conversation, target.id)
+            if refreshed is not None:
+                await refreshed.runs
+                await refreshed.messages
+        if refreshed is not None:
+            self.cache_conversation(refreshed)
+        return forked_run
 
     async def grant_session_tool(
         self,

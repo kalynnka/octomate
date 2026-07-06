@@ -9,6 +9,10 @@ from octomate.config.agents import AgentRouteModelName
 
 TriageAction = Literal["direct_answer", "summon"]
 ResponseTargetMode = Literal["main", "sub"]
+# Where a summon lands: `here` transmits ownership of the current thread in place;
+# `thread` hands off into a new sub-thread of the current chat. (A brand-new DM and
+# cross-channel targets are parked — see docs/plans/self-routing-dispatch.md.)
+SummonDestination = Literal["here", "thread"]
 
 
 class SummonRouteKey(NamedTuple):
@@ -31,6 +35,7 @@ class SummonDecision(TriageDecisionBase):
     action: Literal["summon"]
     agent_id: str
     model: AgentRouteModelName
+    destination: SummonDestination = "thread"
     hint: str
     summon: str
 

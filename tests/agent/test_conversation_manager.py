@@ -244,3 +244,101 @@ async def test_drop_trailing_deferral_removes_from_cache_and_db() -> None:
     # The trailing message is now a request, not a deferral — nothing to drop.
     conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")
     assert await service.drop_trailing_deferral(conversation) is None
+
+
+async def test_fork_copies_history_preserving_trailing_deferral() -> None:
+    service = ConversationManager()
+    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    run_id = "run-src"
+    await service.record_agent_run(
+        source,
+        run_id=run_id,
+        messages=[
+            RawModelRequest(
+                parts=[UserPromptPart(content="hi")],
+                run_id=run_id,
+                timestamp=datetime.now(timezone.utc),
+            ),
+            RawModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="teleport",
+                        args={"hint": "let's take this to a thread"},
+                        tool_call_id="call_tp",
+                    )
+                ],
+                run_id=run_id,
+                timestamp=datetime.now(timezone.utc),
+                model_name="scripted",
+                finish_reason="tool_call",
+            ),
+        ],
+    )
+    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
+
+    target_thread = uuid7()
+    target = await service.ensure(target_thread, agent_tentacle_id="inkling")
+    run = await service.fork(source, target)
+    assert run is not None
+
+    # The target holds the forked history, including the trailing teleport deferral,
+    # so a resume against it is valid.
+    cold = await ConversationManager().ensure(target_thread, agent_tentacle_id="inkling")
+    assert [type(m).__name__ for m in cold.messages] == ["ModelRequest", "ModelResponse"]
+    # Non-trivial columns copy verbatim, not just id/parts.
+    assert list(cold.messages)[0].message_text == "hi"
+    last = list(cold.messages)[-1]
+    assert any(
+        isinstance(part, ToolCallPart) and part.tool_name == "teleport"
+        for part in last.parts
+    )
+    assert last.model_name == "scripted"
+    assert last.finish_reason == "tool_call"
+
+    # The origin is untouched — a fork, not a move.
+    origin = await ConversationManager().ensure(_thread(), agent_tentacle_id="inkling")
+    assert len(list(origin.messages)) == 2
+
+
+async def test_fork_rejects_non_empty_target() -> None:
+    service = ConversationManager()
+    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    await service.record_agent_run(
+        source,
+        run_id="run-src",
+        messages=[
+            RawModelResponse(
+                parts=[TextPart(content="hello")],
+                run_id="run-src",
+                timestamp=datetime.now(timezone.utc),
+                finish_reason="stop",
+            ),
+        ],
+    )
+    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
+
+    target_thread = uuid7()
+    target = await service.ensure(target_thread, agent_tentacle_id="inkling")
+    await service.record_agent_run(
+        target,
+        run_id="run-existing",
+        messages=[
+            RawModelResponse(
+                parts=[TextPart(content="prior")],
+                run_id="run-existing",
+                timestamp=datetime.now(timezone.utc),
+                finish_reason="stop",
+            ),
+        ],
+    )
+    target = await service.ensure(target_thread, agent_tentacle_id="inkling")
+
+    with pytest.raises(ValueError, match="splice histories"):
+        await service.fork(source, target)
+
+
+async def test_fork_empty_source_is_noop() -> None:
+    service = ConversationManager()
+    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    target = await service.ensure(uuid7(), agent_tentacle_id="inkling")
+    assert await service.fork(source, target) is None
