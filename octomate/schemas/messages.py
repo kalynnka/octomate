@@ -27,7 +27,6 @@ from pydantic_ai.messages import (
 )
 from uuid_utils.compat import uuid7
 
-from octomate.constants import SEND_TOOL_NAME
 from octomate.models.messages import ModelMessage as ModelMessageModel
 from octomate.models.messages import ModelRequest as ModelRequestModel
 from octomate.models.messages import ModelResponse as ModelResponseModel
@@ -36,6 +35,12 @@ from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
     from octomate.schemas.thread import ThreadMessage
+
+# The message-send tool's name. Owned at the message-schema boundary, where a
+# send call is recognized in run history, so the `send` capability that registers
+# the tool and the feelers projection that renders it share one value without the
+# schema layer importing the capability layer.
+SEND_TOOL_NAME = "send_message"
 
 # `metadata` is reserved on SQLAlchemy's DeclarativeBase, so the ORM column
 # lives on the `meta` Python attribute. arcanus' bless resolves ORM attributes

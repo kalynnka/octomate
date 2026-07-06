@@ -26,16 +26,23 @@ from pydantic_ai.tools import DeferredToolRequests
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import (
-    DirectAnswerDecision,
-    TriageDecision,
-    TriageDecisionAdapter,
-)
+from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.claude import base as claude_base
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from tests.support.managers import FakeConversation, FakeConversationManager
 from uuid_utils.compat import uuid7
+
+SummonDecisionAdapter = TypeAdapter(SummonDecision)
+
+_SUMMON_OUTPUT = {
+    "action": "summon",
+    "reason": "needs the coder",
+    "agent_id": "inkling",
+    "model": "opus",
+    "hint": "help with code",
+    "summon": "please take over",
+}
 
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
@@ -108,7 +115,7 @@ async def test_run_stream_events_proxies_events_and_persists(
 
     events = []
     async with tentacle.run_stream_events(
-        "fix it", conversation_address=KEY, thread_id=_THREAD, run_name="reception"
+        "fix it", conversation_address=KEY, thread_id=_THREAD, run_name="react"
     ) as stream:
         async for event in stream:
             events.append(event)
@@ -143,7 +150,7 @@ async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> Non
 
 class StructuredClaudeClient(FakeClaudeClient):
     """A run that returns a JSON structured result (an `output_format` run),
-    e.g. Claude acting as the triage agent emitting a TriageDecision."""
+    e.g. Claude acting as a dispatch agent emitting a SummonDecision."""
 
     async def receive_response(self) -> AsyncIterator[Message]:
         yield AssistantMessage(content=[TextBlock(text="deciding")], model="m")
@@ -155,12 +162,7 @@ class StructuredClaudeClient(FakeClaudeClient):
             num_turns=1,
             session_id="s1",
             result="",
-            structured_output={
-                "action": "direct_answer",
-                "target_id": "im",
-                "answer": "hi there",
-                "reason": "simple answer",
-            },
+            structured_output=_SUMMON_OUTPUT,
         )
 
 
@@ -187,15 +189,15 @@ async def test_run_with_output_type_returns_structured(
     result = await tentacle.run(
         "triage this",
         conversation_address=KEY, thread_id=_THREAD,
-        output_type=TriageDecision,
+        output_type=SummonDecision,
     )
 
-    assert isinstance(result.output, DirectAnswerDecision)
-    assert result.output.action == "direct_answer"
-    assert result.output.answer == "hi there"
+    assert isinstance(result.output, SummonDecision)
+    assert result.output.action == "summon"
+    assert result.output.agent_id == "inkling"
     assert getattr(StructuredClaudeClient.last_options, "output_format", None) == {
         "type": "json_schema",
-        "schema": TriageDecisionAdapter.json_schema(),
+        "schema": SummonDecisionAdapter.json_schema(),
     }
 
 
@@ -227,13 +229,13 @@ async def test_run_extracts_structured_candidate_from_union(
     result = await tentacle.run(
         "triage this",
         conversation_address=KEY, thread_id=_THREAD,
-        output_type=TriageDecision | Literal["ignored"],
+        output_type=SummonDecision | Literal["ignored"],
     )
 
-    assert isinstance(result.output, DirectAnswerDecision)
+    assert isinstance(result.output, SummonDecision)
     assert getattr(StructuredClaudeClient.last_options, "output_format", None) == {
         "type": "json_schema",
-        "schema": TypeAdapter(TriageDecision | Literal["ignored"]).json_schema(),
+        "schema": TypeAdapter(SummonDecision | Literal["ignored"]).json_schema(),
     }
 
 
@@ -247,7 +249,7 @@ async def test_run_rejects_deferred_output_type(
         await tentacle.run(
             "triage this",
             conversation_address=KEY, thread_id=_THREAD,
-            output_type=[TriageDecision, DeferredToolRequests],
+            output_type=[SummonDecision, DeferredToolRequests],
         )
 
 
@@ -279,16 +281,11 @@ def test_configured_model_names_are_exposed() -> None:
 
 def test_build_structured_result_validates_into_model() -> None:
     accumulator = ClaudeRunAccumulator()
-    accumulator.structured_output = {
-        "action": "direct_answer",
-        "target_id": "im",
-        "answer": "done",
-        "reason": "simple answer",
-    }
+    accumulator.structured_output = _SUMMON_OUTPUT
 
     result = accumulator.build_structured_result(
-        TriageDecisionAdapter, run_id="r1", conversation_id="c1"
+        SummonDecisionAdapter, run_id="r1", conversation_id="c1"
     )
 
-    assert isinstance(result.output, DirectAnswerDecision)
-    assert result.output.action == "direct_answer"
+    assert isinstance(result.output, SummonDecision)
+    assert result.output.action == "summon"

@@ -24,7 +24,7 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.schemas.triage import SummonDecision
-from octomate.triage.suspender import HumanReviewSuspender
+from octomate.reflex.suspender import HumanReviewSuspender
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeActionManager,
@@ -75,7 +75,7 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
         action_manager=cast(DeferredActionManager, action_manager),
         conversation_manager=conversations,
         agent_tentacle_id="inkling",
-        run_name="reception",
+        run_name="react",
         source_address=address,
         target_address=address,
         target_mode="sub",
@@ -88,7 +88,7 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
 
     assert len(action_manager.create_calls) == 1
     call = action_manager.create_calls[0]
-    assert call.run_name == "reception"
+    assert call.run_name == "react"
     assert call.source_address == address
     assert call.target_address == address
     assert call.target_mode == "sub"
@@ -120,7 +120,7 @@ async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() 
         ),
         conversation_manager=FakeConversationManager(),
         agent_tentacle_id="inkling",
-        run_name="reception",
+        run_name="react",
         source_address=address,
         target_address=address,
         target_mode="sub",

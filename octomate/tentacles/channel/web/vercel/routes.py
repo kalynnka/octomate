@@ -72,11 +72,11 @@ def build_vercel_router(
             {
                 "models": [
                     {
-                        "id": f"{reception.agent}{ROUTE_SEP}{reception.model}",
-                        "name": f"{reception.agent} · {reception.model}",
+                        "id": f"{agent_config.agent}{ROUTE_SEP}{agent_config.model}",
+                        "name": f"{agent_config.agent} · {agent_config.model}",
                         "builtinTools": [],
                     }
-                    for reception in channel.routable_receptions()
+                    for agent_config in channel.routable_agents()
                 ],
                 "builtinTools": [],
             }

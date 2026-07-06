@@ -45,10 +45,7 @@ def test_channels_default_to_none() -> None:
     assert channels.lark is None
     assert channels.napcat is None
     assert channels.dev_ui is not None
-    assert channels.dev_ui.triage == AgentModelConfig(
-        model="deepseek:deepseek-v4-flash"
-    )
-    assert channels.dev_ui.receptions == [
+    assert channels.dev_ui.agents == [
         AgentModelConfig(model="deepseek:deepseek-v4-pro")
     ]
 
@@ -97,11 +94,7 @@ def test_channel_config_parses_agent_model_routes() -> None:
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
-                    "triage": {
-                        "agent": "inkling",
-                        "model": "deepseek:deepseek-v4-flash",
-                    },
-                    "receptions": [
+                    "agents": [
                         {"agent": "inkling", "model": "deepseek:deepseek-v4-pro"},
                         {"agent": "claude", "model": "opus"},
                     ],
@@ -111,10 +104,7 @@ def test_channel_config_parses_agent_model_routes() -> None:
     )
 
     assert config.channels.slack is not None
-    assert config.channels.slack.triage == AgentModelConfig(
-        agent="inkling", model="deepseek:deepseek-v4-flash"
-    )
-    assert config.channels.slack.receptions == [
+    assert config.channels.slack.agents == [
         AgentModelConfig(agent="inkling", model="deepseek:deepseek-v4-pro"),
         AgentModelConfig(agent="claude", model="opus"),
     ]
@@ -169,10 +159,12 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "triage": {
-                            "agent": "ghost",
-                            "model": "deepseek:deepseek-v4-flash",
-                        },
+                        "agents": [
+                            {
+                                "agent": "ghost",
+                                "model": "deepseek:deepseek-v4-flash",
+                            }
+                        ],
                     }
                 }
             }
@@ -180,7 +172,7 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
 
     [error] = exc_info.value.errors()
     assert error["type"] == "channel_agent_route"
-    assert error["loc"] == ("channels", "slack", "triage", "agent")
+    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
     assert error["msg"] == "'ghost' does not match a configured agent tentacle"
 
 
@@ -196,11 +188,8 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "triage": {
-                            "agent": "ghost",
-                            "model": "deepseek:deepseek-v4-flash",
-                        },
-                        "receptions": [
+                        "agents": [
+                            {"agent": "ghost", "model": "deepseek:deepseek-v4-flash"},
                             {"agent": "inkling", "model": "openai:gpt-5.2"},
                             {"agent": "claude", "model": "sonnet"},
                         ],
@@ -209,11 +198,9 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
                         "enabled": False,
                         "app_id": "cli-test",
                         "app_secret": "secret",
-                        "triage": {
-                            "agent": "nobody",
-                            "model": "deepseek:deepseek-v4-flash",
-                        },
-                        "receptions": [],
+                        "agents": [
+                            {"agent": "nobody", "model": "deepseek:deepseek-v4-flash"},
+                        ],
                     },
                 },
             },
@@ -224,27 +211,29 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
         (
             "channels",
             "slack",
-            "triage",
+            "agents",
+            0,
             "agent",
         ): "'ghost' does not match a configured agent tentacle",
         (
             "channels",
             "slack",
-            "receptions",
-            0,
+            "agents",
+            1,
             "model",
         ): "'openai:gpt-5.2' is not configured in agents.inkling.models",
         (
             "channels",
             "slack",
-            "receptions",
-            1,
+            "agents",
+            2,
             "model",
         ): "'sonnet' is not configured in agents.claude.models",
         (
             "channels",
             "lark",
-            "triage",
+            "agents",
+            0,
             "agent",
         ): "'nobody' does not match a configured agent tentacle",
     }
@@ -260,17 +249,19 @@ def test_disabled_channel_agent_routes_are_validated() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "triage": {
-                            "agent": "ghost",
-                            "model": "deepseek:deepseek-v4-flash",
-                        },
+                        "agents": [
+                            {
+                                "agent": "ghost",
+                                "model": "deepseek:deepseek-v4-flash",
+                            }
+                        ],
                     }
                 }
             }
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "triage", "agent")
+    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
     assert error["msg"] == "'ghost' does not match a configured agent tentacle"
 
 
@@ -287,14 +278,14 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "receptions": [{"agent": "claude", "model": "opus"}],
+                        "agents": [{"agent": "claude", "model": "opus"}],
                     },
                 },
             }
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "receptions", 0, "agent")
+    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
     assert error["msg"] == "'claude' does not match a configured agent tentacle"
 
 
@@ -311,13 +302,13 @@ def test_channel_routes_require_model() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "receptions": [{"agent": "claude"}],
+                        "agents": [{"agent": "claude"}],
                     },
                 },
             },
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "receptions", 0, "model")
+    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
     assert error["msg"] == "Field required"
 
 
@@ -334,13 +325,13 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "receptions": [{"agent": "claude", "model": "sonnet"}],
+                        "agents": [{"agent": "claude", "model": "sonnet"}],
                     },
                 },
             },
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "receptions", 0, "model")
+    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
     assert error["msg"] == "'sonnet' is not configured in agents.claude.models"
 
 
@@ -353,13 +344,13 @@ def test_channel_inkling_routes_must_reference_configured_model() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "receptions": [{"agent": "inkling", "model": "openai:gpt-5.2"}],
+                        "agents": [{"agent": "inkling", "model": "openai:gpt-5.2"}],
                     }
                 }
             }
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "receptions", 0, "model")
+    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
     assert error["msg"] == "'openai:gpt-5.2' is not configured in agents.inkling.models"
 
 

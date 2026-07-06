@@ -39,7 +39,7 @@ from octomate.schemas.thread import (
     ThreadKey,
     ThreadMessage,
 )
-from octomate.schemas.triage import ResponseTargetMode, TriageDecision
+from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.types.deferred import DeferredBatchStatus
 
 
@@ -249,7 +249,7 @@ class CreateBatchCall:
     source_address: ChannelAddress
     target_address: ChannelAddress
     target_mode: ResponseTargetMode
-    decision: TriageDecision | None
+    decision: SummonDecision | None
     requests: DeferredToolRequests
     batch_id: uuid.UUID
 
@@ -273,9 +273,9 @@ class FakeDeferredBatch:
     deferred_results: DeferredToolResults
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     agent_tentacle_id: str = "inkling"
-    run_name: str | None = "triage"
+    run_name: str | None = "react"
     target_mode: ResponseTargetMode = "main"
-    decision: TriageDecision | None = None
+    decision: SummonDecision | None = None
     status: DeferredBatchStatus = "resolved"
     completed: bool = True
 
@@ -302,7 +302,7 @@ class FakeActionManager:
         source_address: ChannelAddress,
         target_address: ChannelAddress,
         target_mode: ResponseTargetMode,
-        decision: TriageDecision | None,
+        decision: SummonDecision | None,
         requests: DeferredToolRequests,
     ) -> FakePresentedBatch:
         batch = self.presented_batch or FakePresentedBatch()

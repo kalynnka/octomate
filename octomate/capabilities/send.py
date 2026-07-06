@@ -25,7 +25,7 @@ from pydantic_ai.messages import FunctionToolResultEvent, ToolReturn, ToolReturn
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from octomate.capabilities.events import MessageSentEvent
-from octomate.constants import SEND_TOOL_NAME
+from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 
 SEND_INSTRUCTION = """\

@@ -210,7 +210,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         action_manager=cast(DeferredActionManager, manager),
         conversation=conversation,
         agent_tentacle_id="inkling",
-        run_name="reception",
+        run_name="react",
         source_address=source_address,
         target_address=target_address,
         target_mode="sub",

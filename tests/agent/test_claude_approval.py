@@ -74,7 +74,7 @@ class FakeFeelers:
 class FakeChannel:
     feelers: FakeFeelers
     config: ChannelConfig = field(
-        default_factory=lambda: ChannelConfig(type="fake", receptions=[])
+        default_factory=lambda: ChannelConfig(type="fake", agents=[])
     )
 
 
@@ -210,7 +210,7 @@ def _conversation(tentacle: ClaudeCodeTentacle) -> FakeConversation:
 
 async def _drain(tentacle: ClaudeCodeTentacle) -> None:
     async with tentacle.run_stream_events(
-        "do it", conversation_address=KEY, thread_id=_THREAD, run_name="reception"
+        "do it", conversation_address=KEY, thread_id=_THREAD, run_name="react"
     ) as stream:
         async for _event in stream:
             pass

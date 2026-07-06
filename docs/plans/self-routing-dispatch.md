@@ -78,7 +78,7 @@ with a plain-words statement of what they actually do** (see §4):
 |---|---|---|
 | `scry` | list the other agents you can hand off to | reveal the validated route catalog |
 | `summon` | hand this conversation to **another agent** (they own it, continue from a brief) | **handoff brief** — history can't cross runtimes |
-| `teleport` | move this conversation to a **new place**, keep handling it yourself | **copy the history forward** (`clone_into`) + resume |
+| `teleport` | move this conversation to a **new place**, keep handling it yourself | **copy the history forward** (`fork`) + resume |
 
 **One operation, two mechanisms.** Continuing a conversation elsewhere is a single idea,
 carried out two ways by whether ownership changes:
@@ -120,7 +120,7 @@ enforced in §4:
 - **`summon` gains a `destination`** (`here | thread`), incl. **`here` = transmit
   current-thread ownership**.
 - **`teleport`** — same agent continues in a **new sub-thread of the current chat** by
-  copying history forward (`clone_into` + deferred-resume).
+  copying history forward (`fork` + deferred-resume).
 - Simplify the durable-resume path to a single run kind (no `triage`/`reception` split).
 
 **Out of scope (parked — the remaining prerequisites)**
@@ -235,18 +235,20 @@ add `teleport`. Add `TELEPORT_TOOL_NAME = "teleport"` to `octomate/constants.py`
   ([graph.py:309-334](../../octomate/triage/graph.py#L309-L334)). `summon` **hands off —
   it never copies history** (cross-runtime). Replaces today's forced `mode="sub"`
   ([graph.py:606-607](../../octomate/triage/graph.py#L606-L607)).
-- **`ConversationManager.clone_into(source, target)`** — copy history into `target`
-  (created via `ensure`) as one cloned `AgentRun`, mirroring `record_agent_run`'s
-  `vars(m)` re-blessing ([conversation.py:98](../../octomate/managers/conversation.py#L98)),
-  then `refresh`. **Preserve the trailing deferred `ModelResponse`** (the `teleport`
-  call) so the resume is valid — do *not* `drop_trailing_deferral` here. Copy todo rows
-  too (keyed by `conversation_id`); memory keys derive from `thread_id` and are not
-  carried. **Fail fast if the target conversation is non-empty** — copying onto existing
-  messages splices two histories. (v1's target is always a freshly-opened sub-thread, so
-  this holds trivially; it's the invariant that keeps a future `dm` target honest.)
+- **`ConversationManager.fork(source, target)`** — copy history into `target` at the
+  database level: a bulk `INSERT` off a `SELECT` of the source rows (built with the
+  Arcanus schema class — `select`/`insert(ModelMessage)`, no ORM-model import), keyed to
+  fresh order-preserving `uuid7` ids under one new `AgentRun`, then reload + re-cache the
+  target. Nothing round-trips through Python message objects; the trailing deferred
+  `ModelResponse` (the `teleport` call) is copied like any other row, so the resume is
+  valid. Copy todo rows too (keyed by `conversation_id`); memory keys derive from
+  `thread_id` and are not carried. **Fail fast if the target conversation is non-empty** —
+  copying onto existing messages splices two histories. (v1's target is always a
+  freshly-opened sub-thread, so this holds trivially; it's the invariant that keeps a
+  future `dm` target honest.)
 - **`Teleport` node** — `materialize("thread")` (§3). If it falls back to `here`
   (`main_only`, or already in a thread), resolve the call as "staying here" (no copy).
-  Else `clone_into(current → target)`, build `DeferredToolResults` resolving the
+  Else `fork(current → target)`, build `DeferredToolResults` resolving the
   `teleport` call, re-enter `RunAgent` with `conversation_key=target` + the results →
   run2 resumes via react `ResumeTurn → RunAgent` ([react.py:130-148](../../octomate/capabilities/react.py#L130-L148))
   against the copied history and delivers to the sub-thread.
@@ -272,7 +274,7 @@ passes `decision=None` (the suspender already accepts `None`); handoff batches k
 - **Unit:**
   - `teleport` raises `CallDeferred({"kind":"teleport","hint":…})`; suspender returns
     `None` for a teleport but still persists a batch for questions.
-  - `ConversationManager.clone_into` duplicates history **including the trailing
+  - `ConversationManager.fork` duplicates history **including the trailing
     deferred `ModelResponse`** and todos; a resume against the copy is valid; a non-empty
     target raises.
   - `materialize("thread")` returns `here` on `main_only`/already-threaded, else a
@@ -316,7 +318,7 @@ passes `decision=None` (the suspender already accepts `None`); handoff batches k
 - **`summon` doesn't hard-stop the run** — decision read post-run
   ([graph.py:945](../../octomate/triage/graph.py#L945)); a model that keeps talking after
   `summon` emits stray text before handoff. Acceptable today.
-- **History duplication** — `clone_into` physically copies messages; a lineage pointer
+- **History duplication** — `fork` physically copies messages; a lineage pointer
   is a later optimization.
 - **Origin conversation after a `teleport`** — left intact (teleport copies history
   forward; the origin is a relocated stub); optionally mark it relocated.
@@ -325,5 +327,5 @@ passes `decision=None` (the suspender already accepts `None`); handoff batches k
 - **Parked destinations** — a brand-new `dm` (idempotent `conversations.open`, needs
   owner/copy reconciliation) and cross-*channel*/platform targets (need the identity
   registry, [cancelled/channel-retargeting.md](cancelled/channel-retargeting.md) §0b).
-  The `clone_into` non-empty guard (§5) and the derived-ownership model are what will
+  The `fork` non-empty guard (§5) and the derived-ownership model are what will
   keep them safe when unparked.

@@ -10,7 +10,7 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.schemas.deferred import DeferredActionBatch
-from octomate.schemas.triage import ResponseTargetMode, TriageDecision
+from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.tentacles.channel.feelers.deferred import (
     ApprovalFeeler,
     QuestionFeeler,
@@ -45,7 +45,7 @@ class Feelers:
         source_address: ChannelAddress,
         target_address: ChannelAddress,
         target_mode: ResponseTargetMode,
-        decision: TriageDecision | None,
+        decision: SummonDecision | None,
         requests: DeferredToolRequests,
     ) -> DeferredActionBatch:
         with logfire.span(

@@ -1,0 +1,712 @@
+"""The collapsed dispatch graph at the node level: Awake, Route, React,
+Handoff, and ResumeDeferred — driven with the canonical fake
+agent/channel/managers. End-to-end behavior lives in test_dispatch.py."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
+from typing import cast
+
+import pytest
+from pydantic_ai import RunContext
+from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+
+from octomate.capabilities.gate import SCRY_TOOL_NAME, GateCapability
+from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
+from octomate.managers.deferred import DeferredActionManager
+from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
+from octomate.schemas.thread import Thread
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.deferred import DeferredQuestion
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import TextSegment
+from octomate.schemas.triage import SummonDestination
+from octomate.reflex import (
+    DeferredResult,
+    SummonDecision,
+    ResponseTarget,
+    ReflexDeps,
+    ReflexState,
+    reflex_graph,
+)
+from octomate.reflex.graph import (
+    Awake,
+    ResumeDeferred,
+    Route,
+    React,
+)
+from octomate.tentacles.channel.feelers.output import TimelineState
+from tests.support.agents import FakeAgent, RecordedRun
+from tests.support.channels import FakeChannelTentacle
+from tests.support.managers import (
+    FakeActionManager,
+    FakeThreadManager,
+    FakeConversationManager,
+    FakeDeferredBatch,
+    FakePresentedBatch,
+)
+
+FAKE_CONTEXT = cast(RunContext[None], None)
+
+
+def _channel(*, stream: bool = True) -> FakeChannelTentacle:
+    return FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=stream),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+
+
+class DroppingTimelineState(TimelineState):
+    async def drive(self, stream: AsyncIterator[object]) -> None:
+        return  # abandon the reception stream without draining it
+
+
+class DroppingTimelineFeeler:
+    @asynccontextmanager
+    async def open(self, address: ChannelAddress) -> AsyncGenerator[DroppingTimelineState]:
+        yield DroppingTimelineState()
+
+
+class DroppingChannel(FakeChannelTentacle):
+    """A channel whose timeline abandons the reception stream without producing a
+    result (exercises the fail-fast guard)."""
+
+    def __init__(self, *, config: ChannelConfig) -> None:
+        super().__init__(config=config)
+        self.feelers.timeline = DroppingTimelineFeeler()
+
+
+def _key(thread_id: str = "") -> ChannelAddress:
+    return ChannelAddress(
+        channel_tentacle_id="im",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+        thread_id=thread_id,
+    )
+
+
+def _source_target(address: ChannelAddress) -> ResponseTarget:
+    return ResponseTarget(
+        channel_id="im",
+        address=address,
+        thread_strategy="flat_thread",
+        mode="main",
+    )
+
+
+def _thread(address: ChannelAddress) -> Thread:
+    return Thread(
+        channel_tentacle_id=address.channel_tentacle_id,
+        chat_type=address.chat_type,
+        chat_id=address.chat_id,
+        thread_id=address.thread_id,
+    )
+
+
+def _state(
+    address: ChannelAddress,
+    *,
+    user_prompt: str | None = "hi",
+    thread: Thread | None = None,
+) -> ReflexState:
+    return ReflexState(
+        source_target=_source_target(address),
+        user_prompt=user_prompt,
+        thread=thread,
+    )
+
+
+def _deps(
+    *,
+    conversations: FakeConversationManager,
+    channels: dict[str, FakeChannelTentacle],
+    agent: FakeAgent,
+    action_manager: FakeActionManager | None = None,
+) -> ReflexDeps:
+    return ReflexDeps(
+        channels=dict(channels),
+        agents={"inkling": agent, "other": agent, agent.id: agent},
+        conversation_manager=conversations,
+        thread_manager=FakeThreadManager(),
+        action_manager=cast(
+            DeferredActionManager, action_manager or FakeActionManager()
+        ),
+    )
+
+
+def _requests() -> DeferredToolRequests:
+    return DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "What should I clarify?"}]},
+                tool_call_id="call_question",
+            )
+        ]
+    )
+
+
+def _deferred_results() -> DeferredToolResults:
+    results = DeferredToolResults()
+    results.calls["call_question"] = ["please answer directly"]
+    return results
+
+
+def _summon(
+    agent_id: str = "other",
+    destination: SummonDestination = "thread",
+) -> SummonDecision:
+    return SummonDecision(
+        action="summon",
+        agent_id=agent_id,
+        model="test",
+        destination=destination,
+        reason="needs work",
+        hint="Working on it",
+        summon="Please debug this in reception.",
+    )
+
+
+def _summon_deps(
+    im: FakeChannelTentacle, entry: FakeAgent, second: FakeAgent
+) -> ReflexDeps:
+    return ReflexDeps(
+        channels={"im": im},
+        agents={entry.id: entry, second.id: second},
+        conversation_manager=FakeConversationManager(),
+        thread_manager=FakeThreadManager(),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
+    )
+
+
+def _two_reception_config(*, stream: bool) -> ChannelConfig:
+    return ChannelConfig(
+        type="fake",
+        stream=ChannelStreamConfig(enabled=stream),
+        agents=[
+            AgentModelConfig(agent="other", model="test"),
+            AgentModelConfig(agent="second", model="test"),
+        ],
+    )
+
+
+def _recorded_gate_capability(run: RecordedRun) -> GateCapability:
+    gates = [
+        capability
+        for capability in run.capabilities
+        if isinstance(capability, GateCapability)
+    ]
+    assert len(gates) == 1
+    return gates[0]
+
+
+def test_available_routes_skip_disconnected_reception_agents() -> None:
+    channel = FakeChannelTentacle(
+        id="chan1",
+        config=ChannelConfig(
+            type="fake",
+            agents=[
+                AgentModelConfig(agent="claude", model="opus"),
+                AgentModelConfig(agent="other", model="test"),
+            ],
+        ),
+    )
+    other = FakeAgent(id="other")
+    deps = ReflexDeps(
+        channels={"chan1": channel},
+        agents={"other": other},
+        conversation_manager=FakeConversationManager(),
+        thread_manager=FakeThreadManager(),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
+    )
+
+    routes = deps.available_routes["chan1"]
+
+    assert [(route.agent_id, route.model) for route in routes] == [("other", "test")]
+    assert deps.available_routes["chan1"] is routes
+
+
+async def test_route_runs_entry_agent_directly() -> None:
+    # No triage screen: Route dispatches a fresh message straight to the channel's
+    # default agent, which answers in one reception run.
+    address = _key()
+    agent = FakeAgent(id="other", reception_output="hello")
+    conversations = FakeConversationManager()
+    im = _channel()
+
+    result = (
+        await reflex_graph.run(
+            Route(),
+            state=_state(address, user_prompt="hi"),
+            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert result.result is not None and result.result.output == "hello"
+    assert [stream.run_name for stream in agent.streams] == ["react"]
+    assert agent.turns == []
+    assert im.consumed[0][0] == address
+    assert im.sent[-1][2][0]["text"] == "hello"
+
+
+async def test_route_entry_run_claims_no_ownership() -> None:
+    address = _key()
+    agent = FakeAgent(id="other", reception_output="hello")
+    thread = _thread(address)
+    conversations = FakeConversationManager()
+    im = _channel()
+
+    await reflex_graph.run(
+        Route(),
+        state=_state(address, user_prompt="hi", thread=thread),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    assert list(thread.handoffs) == []
+
+
+async def test_reception_mounts_gate_capability() -> None:
+    address = _key()
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    target = _source_target(address)
+
+    await reflex_graph.run(
+        React(),
+        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    gate = _recorded_gate_capability(agent.turns[0])
+    assert gate.toolset is not None
+    scry = gate.toolset.tools[SCRY_TOOL_NAME].function
+    assert await scry(FAKE_CONTEXT) == []
+
+
+async def test_reception_allow_here_false_on_group_main() -> None:
+    # A group main channel refuses `summon here` (Case 1): the mounted gate is built
+    # with allow_here=False so the model is steered to a thread.
+    address = ChannelAddress(
+        channel_tentacle_id="im",
+        chat_type="group",
+        chat_id="team",
+        user_id="alice",
+        thread_id="",
+    )
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    target = ResponseTarget(
+        channel_id="im", address=address, thread_strategy="flat_thread", mode="main"
+    )
+
+    await reflex_graph.run(
+        React(),
+        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    assert _recorded_gate_capability(agent.turns[0]).allow_here is False
+
+
+async def test_reception_summons_another_agent_into_sub_thread() -> None:
+    address = _key()
+    entry = FakeAgent(
+        id="other",
+        reception_summon=_summon(agent_id="second"),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[
+                AgentModelConfig(agent="other", model="test"),
+                AgentModelConfig(agent="second", model="test"),
+            ],
+        )
+    )
+    conversations = FakeConversationManager()
+    target = _source_target(address)
+
+    result = (
+        await reflex_graph.run(
+            React(),
+            state=ReflexState(source_target=target, target=target, decision=_summon()),
+            deps=ReflexDeps(
+                channels={"im": im},
+                agents={"other": entry, "second": second},
+                conversation_manager=conversations,
+                thread_manager=FakeThreadManager(),
+                action_manager=cast(DeferredActionManager, FakeActionManager()),
+            ),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert isinstance(result.decision, SummonDecision)
+    assert result.decision.agent_id == "second"
+    assert [turn.prompt for turn in second.turns] == ["Please debug this in reception."]
+    assert im.sub_threads[0][1] == "Working on it"
+
+
+async def test_summon_here_takes_over_current_conversation() -> None:
+    # A `here` summon materializes no new surface: the summoned agent runs in the
+    # current conversation (Handoff's here branch).
+    address = _key()
+    entry = FakeAgent(
+        id="other",
+        reception_summon=_summon(agent_id="second", destination="here"),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="took over", allow_reception_run=True)
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    target = _source_target(address)
+
+    result = (
+        await reflex_graph.run(
+            React(),
+            state=ReflexState(
+                source_target=target, target=target, decision=_summon(), thread=_thread(address)
+            ),
+            deps=_summon_deps(im, entry, second),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert im.sub_threads == []
+    assert second.turns[0].address == address
+
+
+async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
+    class FailingSubThreadChannel(FakeChannelTentacle):
+        async def start_sub_thread(
+            self, address: ChannelAddress, hint_text: str
+        ) -> ChannelAddress:
+            raise RuntimeError("platform refused the thread")
+
+    address = _key()
+    entry = FakeAgent(
+        id="other",
+        reception_summon=_summon(agent_id="second", destination="thread"),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    im = FailingSubThreadChannel(config=_two_reception_config(stream=False))
+    target = _source_target(address)
+
+    result = (
+        await reflex_graph.run(
+            React(),
+            state=ReflexState(
+                source_target=target, target=target, decision=_summon(), thread=_thread(address)
+            ),
+            deps=_summon_deps(im, entry, second),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert result.target.mode == "main"
+    assert second.turns[0].address == address
+
+
+async def test_reception_returns_deferred_result_on_human_question() -> None:
+    address = _key()
+    requests = _requests()
+    decision = _summon()
+    agent = FakeAgent(id="other", reception_output=requests)
+    conversations = FakeConversationManager()
+    action_manager = FakeActionManager(
+        presented_batch=FakePresentedBatch(
+            questions=[
+                DeferredQuestion(
+                    tool_name="ask_questions",
+                    tool_call_id="call_question",
+                    position=0,
+                    args={"question": "What should I clarify?"},
+                    metadata={},
+                )
+            ]
+        )
+    )
+    im = _channel(stream=True)
+    target = _source_target(address)
+
+    result = (
+        await reflex_graph.run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=decision,
+                thread=_thread(address),
+            ),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                action_manager=action_manager,
+            ),
+        )
+    ).output
+
+    assert isinstance(result, DeferredResult)
+    assert result.run_name == "react"
+    assert result.requests is requests
+    assert result.batch_id == action_manager.create_calls[0].batch_id
+
+
+async def test_reception_fails_fast_when_stream_produces_no_result() -> None:
+    address = _key()
+    agent = FakeAgent(id="other", reception_output="done")
+    conversations = FakeConversationManager()
+    im = DroppingChannel(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=True),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    target = _source_target(address)
+
+    with pytest.raises(RuntimeError, match="completed without a result"):
+        await reflex_graph.run(
+            React(),
+            state=ReflexState(source_target=target, target=target, decision=_summon()),
+            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+        )
+
+
+async def test_route_runs_in_place_inside_flat_thread() -> None:
+    address = _key(thread_id="existing-thread")
+    agent = FakeAgent(id="other", reception_output="done")
+    conversations = FakeConversationManager()
+    im = _channel()
+
+    result = (
+        await reflex_graph.run(
+            Route(),
+            state=_state(address, user_prompt="continue"),
+            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert result.target.mode == "sub"
+    assert agent.streams[0].address == address
+    assert agent.streams[0].run_name == "react"
+    assert im.sub_threads == []
+    assert im.consumed[0][0] == address
+
+
+async def test_awake_short_circuits_on_empty_signal() -> None:
+    agent = FakeAgent()
+    conversations = FakeConversationManager()
+    im = _channel()
+
+    result = (
+        await reflex_graph.run(
+            Awake(signal=UserMessageSignal([])),
+            state=ReflexState(),
+            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert result.decision is None
+    assert agent.turns == []
+    assert im.sent == []
+
+
+async def test_awake_short_circuits_on_empty_prompt() -> None:
+    class BlankEvent(MessageEvent):
+        def __str__(self) -> str:
+            return "   "
+
+    agent = FakeAgent()
+    conversations = FakeConversationManager()
+    im = _channel()
+    event = BlankEvent(
+        tentacle_id="im",
+        message_id="m1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+        segments=[],
+    )
+
+    result = (
+        await reflex_graph.run(
+            Awake(signal=UserMessageSignal([event])),
+            state=ReflexState(),
+            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert result.decision is None
+    assert agent.turns == []
+    assert im.sent == []
+
+
+async def test_awake_raises_for_unknown_channel_or_agent() -> None:
+    agent = FakeAgent()
+    conversations = FakeConversationManager()
+    im = _channel()
+    event = MessageEvent(
+        tentacle_id="ghost",
+        message_id="m1",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+        segments=[TextSegment(data={"text": "hi"})],
+    )
+
+    with pytest.raises(ValueError, match="unknown channel"):
+        await reflex_graph.run(
+            Awake(signal=UserMessageSignal([event])),
+            state=ReflexState(),
+            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+        )
+
+
+async def test_resume_routes_reception_batch_to_run_reception() -> None:
+    address = _key(thread_id="hint-thread")
+    deferred_results = _deferred_results()
+    batch = FakeDeferredBatch(
+        source_address=_key(),
+        target_address=address,
+        requests=_requests(),
+        deferred_results=deferred_results,
+        run_name="react",
+        target_mode="sub",
+    )
+    agent = FakeAgent(id="other", reception_output="resumed answer")
+    conversations = FakeConversationManager()
+    action_manager = FakeActionManager(batch=batch)
+    im = _channel()
+
+    result = (
+        await reflex_graph.run(
+            ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
+            state=ReflexState(),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                action_manager=action_manager,
+            ),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert result.result is not None and result.result.output == "resumed answer"
+    assert agent.streams[0].prompt is None
+    assert agent.streams[0].address == address
+    assert [stream.deferred_results for stream in agent.streams] == [deferred_results]
+    assert action_manager.marked == [
+        (batch.id, "resuming", False),
+        (batch.id, "completed", True),
+    ]
+
+
+async def test_resume_returns_result_for_already_completed_batch() -> None:
+    address = _key(thread_id="hint-thread")
+    decision = SummonDecision(
+        action="summon",
+        agent_id="inkling",
+        model="test",
+        reason="resumed",
+        hint="resumed",
+        summon="",
+    )
+    batch = FakeDeferredBatch(
+        source_address=_key(),
+        target_address=address,
+        requests=_requests(),
+        deferred_results=_deferred_results(),
+        run_name="react",
+        target_mode="sub",
+        decision=decision,
+        status="completed",
+    )
+    agent = FakeAgent()
+    conversations = FakeConversationManager()
+    action_manager = FakeActionManager(batch=batch)
+    im = _channel()
+
+    result = (
+        await reflex_graph.run(
+            ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
+            state=ReflexState(),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                action_manager=action_manager,
+            ),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert result.decision == decision
+    assert agent.streams == []
+    assert action_manager.marked == []
+
+
+async def test_resume_keeps_incomplete_reception_batch_deferred() -> None:
+    address = _key(thread_id="hint-thread")
+    batch = FakeDeferredBatch(
+        source_address=_key(),
+        target_address=address,
+        requests=_requests(),
+        deferred_results=_deferred_results(),
+        run_name="react",
+        target_mode="sub",
+        status="pending",
+        completed=False,
+    )
+    agent = FakeAgent()
+    conversations = FakeConversationManager()
+    action_manager = FakeActionManager(batch=batch)
+    im = _channel()
+
+    result = (
+        await reflex_graph.run(
+            ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
+            state=ReflexState(),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                action_manager=action_manager,
+            ),
+        )
+    ).output
+
+    assert isinstance(result, DeferredResult)
+    assert result.run_name == "react"
+    assert result.requests is batch.requests
+    assert agent.streams == []
+    assert action_manager.marked == []

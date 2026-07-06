@@ -1,7 +1,7 @@
 """The canonical fake agents.
 
 `FakeAgent` stands in for an `AgentTentacle` at the tentacle level: it records
-run/stream calls and plays scripted outputs (a `TriageDecision`, deferred
+run/stream calls and plays scripted outputs (a channel answer, deferred
 requests, or a scenarios event script). The `Scripted*` builders operate at the
 model level instead — they build real pydantic-ai agents around a scripted
 `FunctionModel`, for tests that drive the actual react graph.
@@ -21,7 +21,13 @@ from pydantic_ai import (
     AgentRunResultEvent,
     RunContext,
 )
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, UserContent
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    UserContent,
+)
 from pydantic_ai.models import Model
 from pydantic_ai.models.function import (
     AgentInfo,
@@ -36,13 +42,14 @@ from octomate import Octomate
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredSuspender
 from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
-from octomate.capabilities.summon import SUMMON_TOOL_NAME, SummonCapability
-from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import (
-    DirectAnswerDecision,
-    SummonDecision,
-    TriageDecision,
+from octomate.capabilities.gate import (
+    SUMMON_TOOL_NAME,
+    TELEPORT_KIND,
+    TELEPORT_TOOL_NAME,
+    GateCapability,
 )
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
@@ -51,8 +58,24 @@ from octomate.types.json import JsonObject
 
 from tests.support.scenarios import plain_answer, play
 
-FakeRunOutput = TriageDecision | ChannelOutput
+FakeRunOutput = ChannelOutput
 ScriptedOutput = str | DeferredToolRequests
+
+
+def _teleport_requests(hint: str) -> DeferredToolRequests:
+    """A reception run's `teleport` deferral — the suspender skips it and the graph
+    forks + resumes. On the resumed run (deferred results present) the fake answers
+    normally, so a teleport turn does not loop."""
+    return DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name=TELEPORT_TOOL_NAME,
+                args={"hint": hint},
+                tool_call_id="call_teleport",
+            )
+        ],
+        metadata={"call_teleport": {"kind": TELEPORT_KIND, "hint": hint}},
+    )
 
 
 @dataclass
@@ -79,16 +102,11 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     id: str = "inkling"
     description: str = "fake agent"
     octomate: Octomate | None = None
-    triage_output: TriageDecision | ChannelOutput = field(
-        default_factory=lambda: DirectAnswerDecision(
-            action="direct_answer",
-            target_id="im",
-            answer="handled",
-            reason="handled",
-        )
-    )
     reception_output: ChannelOutput = "handled"
     reception_summon: SummonDecision | None = None
+    # When set, the first reception run emits a `teleport` deferral with this hint;
+    # the resumed run (deferred results present) falls through to `reception_output`.
+    reception_teleport: str | None = None
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
     allow_reception_run: bool = False
     models: dict[str, Model | str] = field(
@@ -134,20 +152,19 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 capabilities=list(capabilities or []),
             )
         )
-        if run_name == "reception":
-            if not self.allow_reception_run:
-                raise AssertionError("reception should use run_stream_events")
-            output: FakeRunOutput = self.reception_output
-            summon_decision = self.reception_summon
+        if not self.allow_reception_run:
+            raise AssertionError("reception should use run_stream_events")
+        if self.reception_teleport is not None and deferred_tool_results is None:
+            output: FakeRunOutput = _teleport_requests(self.reception_teleport)
         else:
-            output = self.triage_output
-            summon_decision = output if isinstance(output, SummonDecision) else None
+            output = self.reception_output
+        summon_decision = self.reception_summon
         if summon_decision is not None:
             summon = next(
                 (
                     capability
                     for capability in capabilities or []
-                    if isinstance(capability, SummonCapability)
+                    if isinstance(capability, GateCapability)
                 ),
                 None,
             )
@@ -160,6 +177,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 cast(RunContext[None], None),
                 agent_id=summon_decision.agent_id,
                 model=summon_decision.model,
+                destination=summon_decision.destination,
                 reason=summon_decision.reason,
                 hint=summon_decision.hint,
                 summon=summon_decision.summon,
@@ -208,7 +226,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                     (
                         capability
                         for capability in capabilities or []
-                        if isinstance(capability, SummonCapability)
+                        if isinstance(capability, GateCapability)
                     ),
                     None,
                 )
@@ -221,6 +239,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                     cast(RunContext[None], None),
                     agent_id=summon_decision.agent_id,
                     model=summon_decision.model,
+                    destination=summon_decision.destination,
                     reason=summon_decision.reason,
                     hint=summon_decision.hint,
                     summon=summon_decision.summon,
@@ -229,7 +248,11 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
 
             return ReactEventStream(summon_events())
 
-        output = self.reception_output
+        output: ChannelOutput | DeferredToolRequests
+        if self.reception_teleport is not None and deferred_tool_results is None:
+            output = _teleport_requests(self.reception_teleport)
+        else:
+            output = self.reception_output
         if isinstance(output, DeferredToolRequests):
 
             async def deferred_events() -> AsyncGenerator[

@@ -56,8 +56,8 @@ from octomate.capabilities.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
-from octomate.constants import SEND_TOOL_NAME
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
 from octomate.schemas.todos import Todo
 from octomate.tentacles.agent.inkling.tools import ASK_QUESTIONS_TOOL_NAME

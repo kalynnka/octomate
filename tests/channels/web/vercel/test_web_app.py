@@ -49,7 +49,7 @@ async def _register(
             "dev_ui",
             octomate,
             config=VercelChannelConfig(
-                receptions=[AgentModelConfig(agent="inkling", model=RECEPTION_MODEL)],
+                agents=[AgentModelConfig(agent="inkling", model=RECEPTION_MODEL)],
             ),
         )
     )
@@ -194,7 +194,7 @@ async def _register_routes(
         receptions.append(AgentModelConfig(agent=agent_id, model=RECEPTION_MODEL))
     channel = octomate.connect(
         VercelTentacle(
-            "dev_ui", octomate, config=VercelChannelConfig(receptions=receptions)
+            "dev_ui", octomate, config=VercelChannelConfig(agents=receptions)
         )
     )
     assert isinstance(channel, VercelTentacle)
@@ -212,15 +212,15 @@ def _dev_thread_address(thread_id: str = "chat-1") -> ChannelAddress:
     )
 
 
-async def test_configure_lists_every_routable_reception() -> None:
+async def test_configure_lists_every_routable_agent() -> None:
     octomate = Octomate()
     inkling, _ = build_scripted_agent(["a"])
     claude, _ = build_scripted_agent(["b"])
     channel = await _register_routes(octomate, {"inkling": inkling, "claude": claude})
 
     ids = {
-        f"{reception.agent}{ROUTE_SEP}{reception.model}"
-        for reception in channel.routable_receptions()
+        f"{agent_config.agent}{ROUTE_SEP}{agent_config.model}"
+        for agent_config in channel.routable_agents()
     }
     assert ids == {
         f"inkling{ROUTE_SEP}{RECEPTION_MODEL}",

@@ -6,8 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from octomate.config.agents import AgentRouteModelName
 
-DEFAULT_TRIAGE_MODEL: AgentRouteModelName = "deepseek:deepseek-v4-flash"
-DEFAULT_RECEPTION_MODEL: AgentRouteModelName = "deepseek:deepseek-v4-pro"
+DEFAULT_AGENT_MODEL: AgentRouteModelName = "deepseek:deepseek-v4-pro"
 
 
 class AgentModelConfig(BaseModel):
@@ -47,10 +46,9 @@ class ChannelConfig(BaseModel):
     mention_only: bool = True
     enabled: bool = True
     stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)
-    triage: AgentModelConfig = AgentModelConfig(model=DEFAULT_TRIAGE_MODEL)
-    receptions: list[AgentModelConfig] = [
-        AgentModelConfig(model=DEFAULT_RECEPTION_MODEL)
-    ]
+    # The agents this channel can dispatch to: agents[0] is the default entry agent;
+    # all of them are summon candidates.
+    agents: list[AgentModelConfig] = [AgentModelConfig(model=DEFAULT_AGENT_MODEL)]
 
 
 class SlackChannelConfig(ChannelConfig):

@@ -7,7 +7,7 @@ Two complementary hooks (keep both):
   is resumed later by feeding the collected results back through a fresh run.
 
 The concrete, channel-coupled suspender (`HumanReviewSuspender`) lives in the
-triage layer (`octomate.triage.suspender`) so the harness never imports
+triage layer (`octomate.reflex.suspender`) so the harness never imports
 channels.
 """
 

@@ -21,11 +21,11 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel.base import ChannelTentacle
-from octomate.triage import (
+from octomate.reflex import (
     Awake,
-    TriageDeps,
-    TriageState,
-    triage_graph,
+    ReflexDeps,
+    ReflexState,
+    reflex_graph,
 )
 
 TentacleT = TypeVar("TentacleT", bound=Tentacle)
@@ -96,10 +96,10 @@ class Octomate:
                     span.set_attribute("resolved_live", agent.id)
                     return
             with sqlalchemy_materia():
-                await triage_graph.run(
+                await reflex_graph.run(
                     Awake(signal=signal),
-                    state=TriageState(),
-                    deps=TriageDeps(
+                    state=ReflexState(),
+                    deps=ReflexDeps(
                         agents=self.agents,
                         channels=self.channels,
                         conversation_manager=self.conversations,

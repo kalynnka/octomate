@@ -216,13 +216,13 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
         # it changes; otherwise an in-thread summon owner stands (hybrid).
         self.selected_routes: dict[str, str] = {}
 
-    def routable_receptions(self) -> list[AgentModelConfig]:
-        """The agent-model routes the UI offers and reception can summon — the
-        configured receptions whose agent is registered."""
+    def routable_agents(self) -> list[AgentModelConfig]:
+        """The agent-model routes the UI offers and can summon — the configured
+        agents whose agent tentacle is registered."""
         return [
-            reception
-            for reception in self.config.receptions
-            if reception.agent in self.octomate.agents
+            agent_config
+            for agent_config in self.config.agents
+            if agent_config.agent in self.octomate.agents
         ]
 
     async def claim_selected_route(
@@ -230,16 +230,16 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
     ) -> None:
         """Hybrid routing: a UI route pick claims thread ownership only when it
         changes from the last pick for this chat — otherwise an in-thread summon
-        owner stands. The chosen agent stays summon-able like any reception."""
+        owner stands. The chosen agent stays summon-able like any other."""
         if selected_model is None or selected_model == self.selected_routes.get(
             chat_id
         ):
             return
         chosen = next(
             (
-                reception
-                for reception in self.routable_receptions()
-                if f"{reception.agent}{ROUTE_SEP}{reception.model}" == selected_model
+                agent_config
+                for agent_config in self.routable_agents()
+                if f"{agent_config.agent}{ROUTE_SEP}{agent_config.model}" == selected_model
             ),
             None,
         )

@@ -17,7 +17,7 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.schemas.triage import ResponseTargetMode, TriageDecision
+from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.types.deferred import DeferredBatchStatus
 
 
@@ -31,7 +31,7 @@ class DeferredActionManager:
         source_address: ChannelAddress,
         target_address: ChannelAddress,
         target_mode: ResponseTargetMode,
-        decision: TriageDecision | None,
+        decision: SummonDecision | None,
         requests: DeferredToolRequests,
     ) -> DeferredActionBatch:
         with logfire.span("deferred.create_batch", run_name=run_name) as span:

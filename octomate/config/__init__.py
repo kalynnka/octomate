@@ -92,12 +92,9 @@ class OctomateConfig(BaseSettings):
             if channel is None:
                 continue
             routes: list[tuple[tuple[str | int, ...], AgentModelConfig]] = [
-                (("triage",), channel.triage)
+                (("agents", index), agent_config)
+                for index, agent_config in enumerate(channel.agents)
             ]
-            routes.extend(
-                (("receptions", index), reception)
-                for index, reception in enumerate(channel.receptions)
-            )
             for route_location, route in routes:
                 if route.agent not in agent_ids:
                     errors.append(

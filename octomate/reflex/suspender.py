@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Literal
 
 import logfire
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import ActionBatchEvent
+from octomate.capabilities.gate import TELEPORT_KIND
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import ResponseTargetMode, TriageDecision
+from octomate.schemas.triage import ResponseTargetMode, RunName, SummonDecision
 from octomate.tentacles.channel.base import ChannelTentacle
+
+
+@dataclass(frozen=True)
+class TeleportRequest:
+    """A `teleport` deferral, classified out of a run's `DeferredToolRequests` by its
+    declared metadata kind — the graph resolves this call and relocates the run."""
+
+    tool_call_id: str
+    hint: str
 
 
 @dataclass
@@ -27,16 +36,30 @@ class HumanReviewSuspender:
     action_manager: DeferredActionManager
     conversation_manager: ConversationManager
     agent_tentacle_id: str
-    run_name: Literal["triage", "reception"]
+    run_name: RunName
     source_address: ChannelAddress
     target_address: ChannelAddress
     target_mode: ResponseTargetMode
-    decision: TriageDecision | None
+    decision: SummonDecision | None
     thread_id: uuid.UUID | None = None
     emit_on_stream: bool = False
     suspended_batch_id: uuid.UUID | None = field(default=None, init=False)
+    # Set when a run deferred a `teleport` (classified by metadata kind); the dispatch
+    # graph reads this to route to its Teleport node instead of persisting a batch.
+    teleport: TeleportRequest | None = field(default=None, init=False)
 
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
+        # `teleport` declares kind="teleport" in its CallDeferred metadata — the graph
+        # resolves it (fork + resume), not a human. Classify by the declared kind (not
+        # a tool name), stash it typed, and let run1 end so it bubbles to the dispatch.
+        for call in requests.calls:
+            meta = requests.metadata.get(call.tool_call_id, {})
+            if meta.get("kind") == TELEPORT_KIND:
+                self.teleport = TeleportRequest(
+                    tool_call_id=call.tool_call_id,
+                    hint=str(meta.get("hint") or ""),
+                )
+                return None
         with logfire.span(
             "suspend_for_review",
             run_name=self.run_name,

@@ -59,7 +59,7 @@ async def _create_batch() -> DeferredActionBatch:
     return await DeferredActionManager().create_batch(
         conversation=conversation,
         agent_tentacle_id="inkling",
-        run_name="reception",
+        run_name="react",
         source_address=address,
         target_address=address,
         target_mode="main",
@@ -85,7 +85,7 @@ def test_deferred_action_batch_accepts_validated_actions() -> None:
     batch = DeferredActionBatch(
         conversation_id=uuid7(),
         agent_tentacle_id="inkling",
-        run_name="reception",
+        run_name="react",
         source_address=address,
         target_address=address,
         target_mode="main",
