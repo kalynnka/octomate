@@ -1,3 +1,11 @@
+> **⚠️ RETIRED / SUPERSEDED (2026-07-06).** This plan predates the triage→dispatcher
+> refactor now on `main` — `summon`, thread-ownership (`active_agent_tentacle_id`),
+> and target materialization (`start_sub_thread`) all landed, so its "collapse the
+> cheap triage screen" framing is stale. The continuing direction lives in
+> [../self-routing-dispatch.md](../self-routing-dispatch.md). **Kept for the design
+> history** — the cross-platform identity-map / materializability analysis in §0b is
+> still the reference for the parked cross-channel work. Not executed as written.
+
 # Plan: M2 — sticky channel re-targeting (`switch_target`) + triage collapse
 
 > **Status:** designed · **Owner:** @luhui · **Created:** 2026-06-16

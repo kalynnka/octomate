@@ -1,3 +1,12 @@
+> **⚠️ RETIRED / SUPERSEDED (2026-07-06).** Written against the *old* triage (a cheap
+> pre-model screen). `main` has since grown a real dispatcher — `summon`,
+> thread-ownership, and sub-thread materialization already work — so "delete the
+> triage graph, go single react loop" no longer fits: cross-agent handoff can't use
+> this plan's clone+resume trick (Claude/Codex resume via their own session, not
+> replayed pydantic-ai history). The continuing direction — keep a *slim* dispatcher,
+> drop only the redundant screen call, route via `summon`/`switch` — lives in
+> [../self-routing-dispatch.md](../self-routing-dispatch.md). Not executed as written.
+
 # Plan: remove the triage graph → dispatch straight to the react graph + minimal in-channel `switch_to_thread`
 
 > **Status:** proposed · **Owner:** @luhui · **Created:** 2026-06-16
