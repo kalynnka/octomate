@@ -41,6 +41,7 @@ from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import (
     ScriptedOutput,
+    ScriptedTurn,
     build_non_stream_agent,
     build_scripted_agent,
 )
@@ -358,6 +359,72 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
     assert {binding.run_id for binding in bindings} == {list(conversation.runs)[0].id}
     assert stored_first.model_messages[0].id == prompt_request.id
     assert fresh_thread.source_cursor_message_id == trigger.id
+
+
+async def test_deferred_resume_loop_skips_source_binding(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    # A deferred tool resolved in-process loops back to RunAgent with results and
+    # no user prompt. The prompt-source binding belongs to the user-prompt turn;
+    # the loop-back must skip it, not crash on the missing user ModelRequest.
+    address = _key()
+    thread_manager = ThreadManager()
+    trigger = await thread_manager.record_inbound(_event("m1", "please ask"))
+    thread = await thread_manager.ensure(address)
+    conversations = ConversationManager()
+    agent, _ = build_scripted_agent(
+        [
+            ScriptedTurn(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "?"}]},
+                tool_call_id="call_ask_1",
+            ),
+            "all done!",
+        ]
+    )
+    results = DeferredToolResults()
+    results.calls["call_ask_1"] = ["Ada"]
+    resolver = StubResolver(results)
+
+    events = [
+        event
+        async for event in iter_react_graph_events(
+            StartTurn(user_prompt="please ask"),
+            state=ReactState(
+                conversation_address=address,
+                agent_tentacle_id="inkling",
+                thread_id=thread.id,
+                source_thread_address=address,
+                source_thread_message_ids=[trigger.id],
+            ),
+            deps=ReactDeps(
+                agent=agent,
+                conversation_manager=conversations,
+                agent_deps=None,
+                thread_manager=thread_manager,
+                resolver=resolver,
+            ),
+        )
+    ]
+
+    result_events = [e for e in events if isinstance(e, AgentRunResultEvent)]
+    assert result_events[-1].result.output == "all done!"
+
+    conversation = await conversations.ensure(thread.id, agent_tentacle_id="inkling")
+    prompt_request = next(
+        message
+        for message in conversation.messages
+        if isinstance(message, OctomateModelRequest) and message.role == "user"
+    )
+    async with async_session() as session:
+        bindings = await session.list(
+            MessageBinding,
+            limit=None,
+            expressions=[MessageBinding["kind"] == "request_source"],
+        )
+    # Bound exactly once, to the prompt turn's request; the loop-back added none.
+    assert [binding.thread_message_id for binding in bindings] == [trigger.id]
+    assert {binding.model_message_id for binding in bindings} == {prompt_request.id}
 
 
 async def test_run_agent_streaming_sends_every_event_and_requires_result() -> None:

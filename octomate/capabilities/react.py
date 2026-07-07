@@ -271,7 +271,11 @@ class RunAgent(
                 messages=new_messages,
                 name=ctx.deps.run_name,
             )
-        if ctx.state.source_thread_message_ids:
+        # Only the turn that folds the pending messages into a user prompt binds
+        # them. A deferred resume or in-process resolver loop-back re-enters
+        # RunAgent with results and no user prompt, so its recorded messages carry
+        # no user ModelRequest — the binding already happened on the prompt turn.
+        if ctx.state.source_thread_message_ids and self.deferred_results is None:
             if recorded_run is None:
                 raise RuntimeError(
                     "prompt-source bindings require a persisted agent run"
