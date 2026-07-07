@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
 from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -32,7 +32,6 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import CardData, CardSegment, ImageData, ImageSegment
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import ChannelOutput
-from octomate.tentacles.channel.lark.feelers import output as lark_output
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 from tests.support.channels import (
@@ -86,11 +85,25 @@ async def test_lark_consume_renders_timeline_per_event() -> None:
     assert message_id == "stream-1"
 
 
-async def test_lark_consume_renders_thinking_deltas_live(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(lark_output, "THINKING_FLUSH_INTERVAL", 0.0)
-    ink = FakeLarkInk()
+async def test_lark_thinking_patches_coalesce_off_the_drive_loop() -> None:
+    # A live thinking re-render runs on a background flush task, so deltas that
+    # arrive while a (slow) card patch is in flight coalesce into the next patch
+    # instead of blocking the drive loop; the block still folds with the full text.
+    class SlowFirstPatchInk(FakeLarkInk):
+        def __init__(self) -> None:
+            super().__init__()
+            self.patch_started = asyncio.Event()
+            self.release_patch = asyncio.Event()
+            self.patch_calls = 0
+
+        async def patch_card(self, message_id: str, content: str) -> bool:
+            self.patch_calls += 1
+            if self.patch_calls == 1:
+                self.patch_started.set()
+                await self.release_patch.wait()
+            return await super().patch_card(message_id, content)
+
+    ink = SlowFirstPatchInk()
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
@@ -103,19 +116,23 @@ async def test_lark_consume_renders_thinking_deltas_live(
         StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
     ]:
         yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        # The first live patch ("checking") is now in flight on the flush task.
+        await ink.patch_started.wait()
         yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" the"))
         yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" docs"))
+        ink.release_patch.set()
         yield PartStartEvent(index=1, part=TextPart(content="done"))
         yield AgentRunResultEvent(AgentRunResult("done"))
 
     await drive(channel, address, events())
 
-    # The thinking card patches live with the accumulating text ("Thinking…"),
-    # then folds into a "Thought for Ns" collapsible panel with the full text
-    # once the answer starts.
     live = [content for _id, content in ink.patched if "Thinking…" in content]
-    assert ["checking" in content for content in live] == [True, True, True]
+    # The first patch carried just "checking"; the " the"/" docs" deltas that
+    # arrived while it was in flight coalesced into a single follow-up patch.
+    assert "checking" in live[0]
+    assert "docs" not in live[0]
     assert "checking the docs" in live[-1]
+    # It still folds into a "Thought for Ns" collapsible panel with the full text.
     folded = [content for _id, content in ink.patched if "Thought for" in content]
     assert folded and "checking the docs" in folded[0]
 

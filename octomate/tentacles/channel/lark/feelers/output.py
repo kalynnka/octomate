@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -68,10 +69,6 @@ OutputT = TypeVar(
 )
 
 THINKING_HEADER = "Thinking"
-
-# Each live thinking re-render is one card-patch API call, so updates are
-# paced rather than sent per delta.
-THINKING_FLUSH_INTERVAL = 1.0
 
 
 def format_tool_arguments(_tool_name: str, args: dict[str, Any]) -> str:
@@ -169,8 +166,11 @@ class LarkRunStateCards(TimelineState):
 
     thinking_card_id: str | None = None
     thinking_text: str = ""
-    thinking_emitted_at: float = 0.0
+    thinking_patched_len: int = 0
     thinking_started_at: float = 0.0
+    thinking_flush_task: asyncio.Task[None] | None = None
+    thinking_flush_event: asyncio.Event = field(default_factory=asyncio.Event)
+    thinking_flush_closed: bool = False
     tool_cards: dict[str, tuple[str | None, str, str]] = field(default_factory=dict)
     skipped: set[str] = field(default_factory=set)
     todos: dict[str, Todo] = field(default_factory=dict)
@@ -229,11 +229,14 @@ class LarkRunStateCards(TimelineState):
         await self.begin_entry()
         await self.fold_thinking()
         self.thinking_text = ""
+        self.thinking_patched_len = 0
         self.thinking_started_at = time.monotonic()
         self.thinking_card_id = await self.post(
             cards.card_v2([cards.markdown(f"**{THINKING_HEADER}…**")])
         )
-        self.thinking_emitted_at = self.thinking_started_at
+        self.thinking_flush_closed = False
+        self.thinking_flush_event.clear()
+        self.thinking_flush_task = asyncio.create_task(self.flush_thinking_loop())
 
     async def thinking_delta(self, text: str) -> None:
         if not text:
@@ -241,27 +244,49 @@ class LarkRunStateCards(TimelineState):
         if self.thinking_card_id is None:
             await self.thinking_start()
         self.thinking_text += text
-        now = time.monotonic()
-        if (
-            self.thinking_card_id is not None
-            and now - self.thinking_emitted_at >= THINKING_FLUSH_INTERVAL
-        ):
-            self.thinking_emitted_at = now
-            live = cards.card_v2(
-                [cards.markdown(f"**{THINKING_HEADER}…**\n\n{self.thinking_text}")]
-            )
-            await self.ink.patch_card(
-                self.thinking_card_id,
-                json.dumps(live, ensure_ascii=False, separators=(",", ":")),
-            )
+        self.thinking_flush_event.set()
+
+    async def flush_thinking_loop(self) -> None:
+        """Re-render the live thinking card off the drive loop. Each patch replaces
+        the whole card, so a signal coalesces to one patch of the latest text while
+        the drive loop keeps consuming events — the answer no longer waits behind a
+        burst of ~1s thinking patches. `fold_thinking` closes and drains this."""
+        while True:
+            await self.thinking_flush_event.wait()
+            self.thinking_flush_event.clear()
+            # `fold_thinking` closes the loop and then re-renders the full text as
+            # the folded panel, so on close there is nothing left to patch live.
+            if self.thinking_flush_closed:
+                return
+            while (
+                self.thinking_card_id is not None
+                and len(self.thinking_text) > self.thinking_patched_len
+            ):
+                card_id = self.thinking_card_id
+                text = self.thinking_text
+                self.thinking_patched_len = len(text)
+                live = cards.card_v2(
+                    [cards.markdown(f"**{THINKING_HEADER}…**\n\n{text}")]
+                )
+                await self.ink.patch_card(
+                    card_id,
+                    json.dumps(live, ensure_ascii=False, separators=(",", ":")),
+                )
 
     async def fold_thinking(self) -> None:
         if self.thinking_card_id is None:
             return
+        self.thinking_flush_closed = True
+        self.thinking_flush_event.set()
+        task = self.thinking_flush_task
+        self.thinking_flush_task = None
+        if task is not None:
+            await task
         card_id = self.thinking_card_id
         body = self.thinking_text.strip() or "_No detail_"
         self.thinking_card_id = None
         self.thinking_text = ""
+        self.thinking_patched_len = 0
         elapsed = max(1, round(time.monotonic() - self.thinking_started_at))
         folded = cards.card_v2(
             [

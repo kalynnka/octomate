@@ -70,9 +70,6 @@ THINKING_TITLE = "Thinking"
 STATUS_THINKING = "Thinking…"
 STATUS_WRITING = "Writing the response…"
 
-# Each task-chunk emit is one chat.appendStream call resending the step's full
-# details, so live thinking re-renders are paced rather than sent per delta.
-THINKING_FLUSH_INTERVAL = 1.0
 TEXT_STREAM_ROTATE_AFTER = 270.0
 
 # "plan" gathers all tasks into one plan block; "timeline" would render each
@@ -137,7 +134,10 @@ class SlackTimelineState(TimelineState):
     message_id: IMMessageID | None = None
     thinking_seq: int = 0
     active_thinking: SlackStep | None = None
-    thinking_emitted_at: float = 0.0
+    thinking_flush_task: asyncio.Task[None] | None = None
+    thinking_flush_event: asyncio.Event = field(default_factory=asyncio.Event)
+    thinking_flush_closed: bool = False
+    thinking_emitted_len: int = 0
     tool_steps: dict[str, SlackStep] = field(default_factory=dict)
     todo_steps: dict[str, SlackStep] = field(default_factory=dict)
     skipped_tool_call_ids: set[str] = field(default_factory=set)
@@ -307,6 +307,12 @@ class SlackTimelineState(TimelineState):
         step = self.active_thinking
         if step is None:
             return
+        self.thinking_flush_closed = True
+        self.thinking_flush_event.set()
+        task = self.thinking_flush_task
+        self.thinking_flush_task = None
+        if task is not None:
+            await task
         self.active_thinking = None
         elapsed = max(1, round(time.monotonic() - step.started_at))
         step.title = f"Thought for {elapsed}s"
@@ -324,7 +330,10 @@ class SlackTimelineState(TimelineState):
         self.active_thinking = step
         await self.set_status(STATUS_THINKING)
         await self.emit(step)
-        self.thinking_emitted_at = time.monotonic()
+        self.thinking_emitted_len = 0
+        self.thinking_flush_closed = False
+        self.thinking_flush_event.clear()
+        self.thinking_flush_task = asyncio.create_task(self.flush_thinking_loop())
 
     async def thinking_delta(self, text: str) -> None:
         if self.active_thinking is None:
@@ -336,10 +345,29 @@ class SlackTimelineState(TimelineState):
             step.sections[-1] += text
         else:
             step.sections.append(text)
-        now = time.monotonic()
-        if now - self.thinking_emitted_at >= THINKING_FLUSH_INTERVAL:
-            self.thinking_emitted_at = now
-            await self.emit(step)
+        self.thinking_flush_event.set()
+
+    async def flush_thinking_loop(self) -> None:
+        """Emit the live thinking step off the drive loop: each emit is one
+        chat.appendStream resending the step's text, so a signal coalesces to one
+        append of the latest text while the drive loop keeps consuming events —
+        tool/answer work no longer waits behind a burst of ~1s thinking appends.
+        `complete_active_thinking` closes and drains this before the step folds."""
+        while True:
+            await self.thinking_flush_event.wait()
+            self.thinking_flush_event.clear()
+            # complete_active_thinking closes the loop, then re-emits the finished
+            # step; on close there is nothing left to append live.
+            if self.thinking_flush_closed:
+                return
+            step = self.active_thinking
+            while step is not None:
+                details = step.details or ""
+                if len(details) <= self.thinking_emitted_len:
+                    break
+                self.thinking_emitted_len = len(details)
+                await self.emit(step)
+                step = self.active_thinking
 
     async def start_tool(
         self,

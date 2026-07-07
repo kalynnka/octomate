@@ -26,7 +26,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.result import FinalResult
-from slack_sdk.models.messages.chunk import TaskUpdateChunk
+from slack_sdk.models.messages.chunk import Chunk, TaskUpdateChunk
 
 from octomate import Octomate
 from octomate.capabilities.events import (
@@ -140,19 +140,45 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
     assert ink.statuses[-1] == ""
 
 
-async def test_slack_consume_renders_thinking_deltas_live(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(slack_output, "THINKING_FLUSH_INTERVAL", 0.0)
-    ink = FakeSlackInk()
+async def test_slack_thinking_appends_coalesce_off_the_drive_loop() -> None:
+    # A live thinking re-render runs on a background flush task, so deltas that
+    # arrive while a (slow) appendStream is in flight coalesce into the next
+    # append instead of blocking the drive loop; the step still folds with the
+    # full text.
+    class SlowFirstThinkingInk(FakeSlackInk):
+        def __init__(self) -> None:
+            super().__init__()
+            self.thinking_started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.blocked = False
+
+        async def append_stream_chunks(
+            self, stream: FakeSlackStream, chunks: list[Chunk]
+        ) -> None:
+            chunk = chunks[0]
+            if (
+                not self.blocked
+                and isinstance(chunk, TaskUpdateChunk)
+                and chunk.details
+                and "checking" in chunk.details
+            ):
+                self.blocked = True
+                self.thinking_started.set()
+                await self.release.wait()
+            await super().append_stream_chunks(stream, chunks)
+
+    ink = SlowFirstThinkingInk()
     channel = slack_channel(ink)
 
     async def events() -> AsyncIterator[
         StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
     ]:
         yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        # The first live append ("checking") is now in flight on the flush task.
+        await ink.thinking_started.wait()
         yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" the"))
         yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" docs"))
+        ink.release.set()
         yield PartStartEvent(index=1, part=TextPart(content="done"))
         yield FinalResult[ChannelOutput](output="done")
         yield AgentRunResultEvent(AgentRunResult("done"))
@@ -166,17 +192,14 @@ async def test_slack_consume_renders_thinking_deltas_live(
         if isinstance(chunk, TaskUpdateChunk) and chunk.id == "thinking-1"
     ]
     live = [
-        chunk
+        chunk.details
         for chunk in thinking_chunks
         if chunk.status == "in_progress" and chunk.details
     ]
-    assert [chunk.details for chunk in live] == [
-        "checking",
-        "checking the",
-        "checking the docs",
-    ]
-    # Once complete the thinking task retitles to "Thought for …" but keeps its
-    # body so Slack can collapse it natively.
+    # The first append carried "checking"; the " the"/" docs" deltas that arrived
+    # while it was in flight coalesced into a single follow-up append.
+    assert live == ["checking", "checking the docs"]
+    # It still folds into a "Thought for …" task keeping the full details.
     assert thinking_chunks[-1].status == "complete"
     assert thinking_chunks[-1].details == "checking the docs"
     assert thinking_chunks[-1].title.startswith("Thought for")
