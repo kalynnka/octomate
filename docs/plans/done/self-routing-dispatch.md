@@ -1,10 +1,36 @@
 # Plan: self-routing dispatch — merge triage+reception into one run; route via the `gate` toolset (`scry` · `summon` · `teleport`)
 
-> **Status:** proposed · **Owner:** @luhui · **Created:** 2026-07-06
-> **Supersedes:** [cancelled/channel-retargeting.md](cancelled/channel-retargeting.md)
-> (M2 sticky re-home) and [cancelled/triage-collapse-inchannel-switch.md](cancelled/triage-collapse-inchannel-switch.md)
+> **Status:** done · **Owner:** @luhui · **Created:** 2026-07-06 · **Completed:** 2026-07-06
+> **Supersedes:** [../cancelled/channel-retargeting.md](../cancelled/channel-retargeting.md)
+> (M2 sticky re-home) and [../cancelled/triage-collapse-inchannel-switch.md](../cancelled/triage-collapse-inchannel-switch.md)
 > (single-react-loop collapse). Both predated the triage→dispatcher refactor now on
 > `main`; this plan is the corrected direction.
+
+## Outcome (landed)
+
+Shipped in `337215c` (`ConversationManager.fork` + `SummonDestination`) and `50b90f0`
+(the dispatch collapse); **341 passed, 13 skipped**. Every in-scope goal is delivered;
+the `dm` and cross-channel destinations stay parked exactly as written below.
+
+The implementation diverged from this doc's vocabulary — read the body with this map:
+
+- **Package `triage/` → `reflex/`.** Nodes `RunTriage` / `RunReception` / `PrepareReception`
+  / `RunAgent` became **`Route` / `React` / `Handoff`**, plus `Teleport` and `ResumeDeferred`.
+  Graph: `Awake → Route → React ⟳ {Handoff | Teleport} → End`, plus `ResumeDeferred`.
+- **`teleport` is classified by its CallDeferred metadata `kind`, not by tool name** —
+  §6's tool-name detection was superseded, so dispatch never matches on a tool name.
+- **The `constants` module was removed, not added to** (§4): `TELEPORT_KIND` lives in
+  `capabilities/gate.py` beside the tool that emits it, and `SEND_TOOL_NAME` moved to
+  `schemas/messages.py`.
+- **Durable resume keeps richer run names**, not one collapsed kind (§7): each run is
+  named by how the react loop was entered — `react` / `summon` / `teleport` / `resume`.
+- **`materialize(destination)` was inlined** into `Handoff` and `Teleport` rather than
+  extracted (§3) — two call sites did not earn a shared helper.
+- The decision dataclasses `DirectAnswerDecision` / `TriageDecision` / `TriageAction` /
+  `TriageDecisionBase` / `TriageDecisionAdapter` are gone; `SummonDecision` is the only one.
+
+Inline source links below point at the pre-implementation `triage/` tree and its line
+numbers; follow the map above for the shipped names.
 
 ## TL;DR
 
@@ -32,9 +58,9 @@ ownership** and continuing the conversation on a new surface. Two facts make a
 dispatch tier load-bearing:
 
 1. **A cross-agent handoff cannot copy history forward.** Claude resumes via its own
-   `session_id` (`resume=`, [claude-agent-integration.md](claude-agent-integration.md)
+   `session_id` (`resume=`, [claude-agent-integration.md](../claude-agent-integration.md)
    Phase 3); Codex via its own SDK thread id
-   ([codex-tentacle-pydantic-ai-adaptation.md](codex-tentacle-pydantic-ai-adaptation.md)).
+   ([codex-tentacle-pydantic-ai-adaptation.md](../codex-tentacle-pydantic-ai-adaptation.md)).
    You cannot clone inkling's pydantic-ai `ModelMessage` history into a Claude
    conversation and "resume the pending tool call." A cross-agent handoff is
    *inherently* **brief + fresh run** — exactly what `summon`'s `decision.summon`
@@ -130,7 +156,7 @@ enforced in §4:
   together with the cross-channel work.
 - **Cross-*channel* / cross-*platform*** continuation — a destination on a *different*
   `channel_tentacle_id` (Slack `Dxxx` vs Lark `open_id`). Needs the identity registry in
-  [cancelled/channel-retargeting.md](cancelled/channel-retargeting.md) §0b.
+  [../cancelled/channel-retargeting.md](../cancelled/channel-retargeting.md) §0b.
 - So the **only surface v1 opens is a sub-thread of the current chat**; `here` (summon)
   reuses the current one.
 
@@ -144,7 +170,7 @@ Rework [triage/graph.py](../../octomate/triage/graph.py):
   ([graph.py:366-612](../../octomate/triage/graph.py#L366-L612)). Direct answers become
   ordinary agent output (`str` / `list[MessageSegment]`); cross-posting a direct answer
   to another channel is the already-shipped `send_message(target=…)` job
-  ([done/send-toolset.md](done/send-toolset.md)), so `DirectAnswerDecision` and its
+  ([send-toolset.md](send-toolset.md)), so `DirectAnswerDecision` and its
   `target_id` are removed.
 - **`RunAgent`** (merged from `RunReception`) runs the resolved agent once with the
   `gate` toolset, streaming/delivering via the existing delivery code
@@ -326,6 +352,6 @@ passes `decision=None` (the suspender already accepts `None`); handoff batches k
   surface exposes tool name + `tool_call_id` + args.
 - **Parked destinations** — a brand-new `dm` (idempotent `conversations.open`, needs
   owner/copy reconciliation) and cross-*channel*/platform targets (need the identity
-  registry, [cancelled/channel-retargeting.md](cancelled/channel-retargeting.md) §0b).
+  registry, [../cancelled/channel-retargeting.md](../cancelled/channel-retargeting.md) §0b).
   The `fork` non-empty guard (§5) and the derived-ownership model are what will
   keep them safe when unparked.
