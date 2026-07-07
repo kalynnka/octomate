@@ -19,6 +19,7 @@ from octomate.tentacles.agent.inkling import (
     inkling_toolset,
 )
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.base import TentacleLogFormatter
 from octomate.tentacles.channel.lark import LarkTentacle
 from octomate.tentacles.channel.napcat import NapcatTentacle
 from octomate.tentacles.channel.slack import SlackTentacle
@@ -58,9 +59,14 @@ def create_app() -> FastAPI:
     logfire.instrument_httpx()
     logfire.instrument_sqlalchemy()
 
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(logging.Formatter(config.logging.format))
+    octomate = Octomate()
 
+    console_handler = logging.StreamHandler()
+    # Tint the level + each tentacle's header, but only on a real terminal so the
+    # ANSI codes don't leak into piped/redirected logs.
+    console_handler.setFormatter(
+        TentacleLogFormatter(octomate, colorize=console_handler.stream.isatty())
+    )
     logging.basicConfig(
         level=config.logging.level,
         handlers=[console_handler, logfire.LogfireLoggingHandler()],
@@ -69,7 +75,6 @@ def create_app() -> FastAPI:
     logger = logging.getLogger("octomate.main")
 
     registry = ProviderRegistry(config.providers)
-    octomate = Octomate()
     octomate.connect(
         InklingTentacle(
             "inkling",

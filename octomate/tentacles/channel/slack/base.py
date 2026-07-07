@@ -71,6 +71,11 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
     ink: SlackInk
     chromo: SlackChromo
 
+    @property
+    def log_names(self) -> tuple[str, ...]:
+        # The Slack SDKs log socket/connection activity under their own loggers.
+        return (*super().log_names, "slack_bolt", "slack_sdk")
+
     def __init__(
         self,
         id: str,

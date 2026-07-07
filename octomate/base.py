@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import colorsys
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -9,10 +10,18 @@ from typing import TypeVar
 
 import logfire
 from fastapi import APIRouter, FastAPI, Request, Response
+from rich.color import Color
+from rich.style import Style
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.thread import ThreadManager
+from octomate.reflex import (
+    Awake,
+    ReflexDeps,
+    ReflexState,
+    reflex_graph,
+)
 from octomate.schemas.awakes import (
     AwakeSignal,
     DeferredActionBatchResponse,
@@ -22,12 +31,6 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel.base import ChannelTentacle
-from octomate.reflex import (
-    Awake,
-    ReflexDeps,
-    ReflexState,
-    reflex_graph,
-)
 
 TentacleT = TypeVar("TentacleT", bound=Tentacle)
 logger = logging.getLogger(__name__)
@@ -36,6 +39,27 @@ logger = logging.getLogger(__name__)
 # completes, an unbounded probe). Past this, the host gives up on that tentacle
 # and serves the rest rather than never finishing startup.
 TENTACLE_START_TIMEOUT = 30.0
+
+GOLDEN_RATIO_CONJUGATE = 0.618033988749895
+
+
+def log_style_for_index(index: int) -> Style:
+    """A distinct, evenly-spread console color per connection index — golden-ratio
+    hue stepping keeps successive tentacles far apart on the color wheel without a
+    fixed palette."""
+    hue = (index * GOLDEN_RATIO_CONJUGATE) % 1.0
+    red, green, blue = colorsys.hsv_to_rgb(hue, 0.6, 1.0)
+    return Style(color=Color.from_rgb(red * 255, green * 255, blue * 255), bold=True)
+
+
+def short_log_name(name: str) -> str:
+    """Trim our package prefix to the subsystem so shared logger tags stay short —
+    `octomate.reflex.graph` -> `reflex`, `octomate.tentacles.channel.base` ->
+    `channel`. Library loggers are left as-is."""
+    for prefix in ("octomate.tentacles.", "octomate."):
+        if name.startswith(prefix):
+            return name[len(prefix) :].split(".")[0]
+    return name
 
 
 @dataclass
@@ -56,12 +80,18 @@ class Octomate:
             tentacle.octomate = self
             if tentacle.id in self.channels:
                 raise ValueError(f"channel {tentacle.id!r} already connected")
+            tentacle.log_color = log_style_for_index(
+                len(self.agents) + len(self.channels)
+            )
             self.channels[tentacle.id] = tentacle
             return tentacle
         if isinstance(tentacle, AgentTentacle):
             tentacle.octomate = self
             if tentacle.id in self.agents:
                 raise ValueError(f"agent {tentacle.id!r} already connected")
+            tentacle.log_color = log_style_for_index(
+                len(self.agents) + len(self.channels)
+            )
             self.agents[tentacle.id] = tentacle
             return tentacle
         logger.warning(
@@ -70,6 +100,18 @@ class Octomate:
             type(tentacle).__name__,
         )
         return tentacle
+
+    def log_tag(self, logger_name: str) -> tuple[str, Style | None]:
+        """A short display tag for a logger plus its color: the owning tentacle's
+        id and dispatched color, or the logger name with our package prefix
+        trimmed (and no color) for shared/library loggers."""
+        for tentacle in (*self.agents.values(), *self.channels.values()):
+            if any(
+                logger_name == prefix or logger_name.startswith(f"{prefix}.")
+                for prefix in tentacle.log_names
+            ):
+                return tentacle.id, tentacle.log_color
+        return short_log_name(logger_name), None
 
     def include_router(self, router: APIRouter) -> APIRouter:
         self.routers.append(router)

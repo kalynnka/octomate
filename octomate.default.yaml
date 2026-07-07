@@ -11,7 +11,6 @@ octomate:
 
   logging:
     level: ~   # default: INFO
-    format: ~
 
   # Observability. send_to_logfire is opt-in: it only ships when true AND a
   # LOGFIRE_TOKEN is present. scrub redacts identifier attributes (conversation

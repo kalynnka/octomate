@@ -77,6 +77,10 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
     ws_client: lark_oapi.ws.Client
     ping_task: asyncio.Task[None] | None
 
+    @property
+    def log_names(self) -> tuple[str, ...]:
+        return (*super().log_names, "Lark")  # the lark-oapi SDK logger
+
     def __init__(
         self,
         id: str,
@@ -125,6 +129,10 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
 
     async def __aenter__(self) -> Self:
         await super().__aenter__()
+        # lark-oapi attaches its own stdout handler to the "Lark" logger and also
+        # propagates, so its records would print twice; drop that handler so they
+        # surface once through the host's console handler in our format.
+        logging.getLogger("Lark").handlers.clear()
         logger.info("Channel %s: starting Lark WebSocket client", self.id)
         # lark-oapi exposes a blocking public start(), but its WebSocket client
         # is async internally. Run those internals on Octomate's event loop so

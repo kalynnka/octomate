@@ -9,7 +9,6 @@ LogLevel = Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"]
 
 class LoggingConfig(BaseModel):
     level: LogLevel = "INFO"
-    format: str = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 
     @field_validator("level", mode="before")
     @classmethod
