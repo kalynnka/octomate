@@ -881,6 +881,9 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             )
 
         await ctx.deps.action_manager.mark_batch(batch.id, "resuming")
+        # The resumed agent run continues the batch's conversation, so bind the
+        # thread that owns it (React reads state.thread for the run's thread_id).
+        state.thread = await ctx.deps.thread_manager.ensure(batch.target_address)
         state.user_prompt = None
         state.run_name = "resume"
         logfire.info("resume routes to React", batch_id=str(batch.id))

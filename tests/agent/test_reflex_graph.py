@@ -624,6 +624,9 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
     assert result.result is not None and result.result.output == "resumed answer"
     assert agent.streams[0].prompt is None
     assert agent.streams[0].address == address
+    # The resumed run must carry the batch conversation's thread; without it the
+    # agent run fails fast ("requires a thread_id to own its conversation").
+    assert agent.streams[0].thread_id is not None
     assert [stream.deferred_results for stream in agent.streams] == [deferred_results]
     assert action_manager.marked == [
         (batch.id, "resuming", False),
