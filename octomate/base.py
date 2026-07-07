@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -30,6 +31,11 @@ from octomate.reflex import (
 
 TentacleT = TypeVar("TentacleT", bound=Tentacle)
 logger = logging.getLogger(__name__)
+
+# Backstop for a tentacle whose startup hangs (a WebSocket connect that never
+# completes, an unbounded probe). Past this, the host gives up on that tentacle
+# and serves the rest rather than never finishing startup.
+TENTACLE_START_TIMEOUT = 30.0
 
 
 @dataclass
@@ -118,10 +124,31 @@ class Octomate:
                 # are warm before channels start ingesting; the stack tears
                 # everything down in reverse on shutdown.
                 async with AsyncExitStack() as stack:
-                    for agent in self.agents.values():
-                        await stack.enter_async_context(agent)
-                    for channel in self.channels.values():
-                        await stack.enter_async_context(channel)
+
+                    async def start(tentacle: Tentacle) -> None:
+                        # Isolate + time-bound each start so one slow or hung
+                        # tentacle can't stall the others' startup. A failed start
+                        # is logged and skipped, not fatal — the rest still serve.
+                        try:
+                            await asyncio.wait_for(
+                                stack.enter_async_context(tentacle),
+                                timeout=TENTACLE_START_TIMEOUT,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Tentacle %s failed to start; serving without it",
+                                tentacle.id,
+                            )
+
+                    # Agents first (concurrently), then channels (concurrently), so
+                    # tools are warm before channels ingest without any one tentacle
+                    # blocking the group.
+                    await asyncio.gather(
+                        *(start(agent) for agent in self.agents.values())
+                    )
+                    await asyncio.gather(
+                        *(start(channel) for channel in self.channels.values())
+                    )
                     yield
 
         app = FastAPI(title=title, docs_url="/docs", redoc_url=None, lifespan=lifespan)

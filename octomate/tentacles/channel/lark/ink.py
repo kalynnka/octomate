@@ -52,7 +52,6 @@ class LarkInk(Ink[LarkOutboundMessage]):
     app_id: str
     app_secret: SecretStr
     client: lark.Client
-    sync_http: httpx.Client
 
     def __init__(self, app_id: str, app_secret: SecretStr) -> None:
         self.app_id = app_id
@@ -63,29 +62,29 @@ class LarkInk(Ink[LarkOutboundMessage]):
             .app_secret(app_secret.get_secret_value())
             .build()
         )
-        self.sync_http = httpx.Client(base_url="https://open.feishu.cn")
-        self._authenticate()
-
-    def _authenticate(self) -> None:
-        resp = self.sync_http.post(
-            "/open-apis/auth/v3/tenant_access_token/internal",
-            json={
-                "app_id": self.app_id,
-                "app_secret": self.app_secret.get_secret_value(),
-            },
-        )
-        resp.raise_for_status()
-        token = resp.json().get("tenant_access_token")
-        if not token:
-            raise RuntimeError("LarkInk: failed to obtain tenant_access_token")
-        self.sync_http.headers["Authorization"] = f"Bearer {token}"
 
     async def inspect(self) -> LarkUserProfile:
-        # The bot-info endpoint has no async SDK method; reuse the authenticated
-        # sync client. Runs once at startup (probe), so the brief block is fine.
-        resp = self.sync_http.get("/open-apis/bot/v3/info")
-        resp.raise_for_status()
-        bot = resp.json().get("bot", {})
+        # The bot-info endpoint has no async SDK method, so call it over async
+        # httpx. A sync client here would block Octomate's event loop — freezing
+        # the startup probe and every channel entered after Lark in the lifespan.
+        async with httpx.AsyncClient(base_url="https://open.feishu.cn") as http:
+            token_resp = await http.post(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                json={
+                    "app_id": self.app_id,
+                    "app_secret": self.app_secret.get_secret_value(),
+                },
+            )
+            token_resp.raise_for_status()
+            token = token_resp.json().get("tenant_access_token")
+            if not token:
+                raise RuntimeError("LarkInk: failed to obtain tenant_access_token")
+            resp = await http.get(
+                "/open-apis/bot/v3/info",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            resp.raise_for_status()
+            bot = resp.json().get("bot", {})
         if not bot:
             raise RuntimeError("LarkInk: inspect failed, no bot info returned")
         return LarkUserProfile(
@@ -421,6 +420,3 @@ class LarkInk(Ink[LarkOutboundMessage]):
             logger.warning("LarkInk: reply message failed: %s %s", resp.code, resp.msg)
             return None
         return resp.data.message_id if resp.data else None
-
-    def close(self) -> None:
-        self.sync_http.close()

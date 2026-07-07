@@ -56,6 +56,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Startup MCP warming is best-effort; cap it so a stuck MCP server (one that
+# connects but never answers `initialize`/`tools/list`) degrades to warming on
+# demand instead of hanging the host's startup.
+MCP_WARM_TIMEOUT = 20.0
+
 InklingOutput: TypeAlias = str | list[MessageSegment] | DeferredToolRequests
 
 
@@ -120,11 +125,14 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # its MCP toolsets open + `initialize` a single warm session, reused across
         # every react-graph run instead of reconnecting per turn.
         try:
-            await self._exit_stack.enter_async_context(self.agent)
+            await asyncio.wait_for(
+                self._exit_stack.enter_async_context(self.agent),
+                timeout=MCP_WARM_TIMEOUT,
+            )
         except Exception:
             logger.warning(
-                "Agent %s: failed to warm agent/MCP sessions at startup; "
-                "runs will reconnect on demand",
+                "Agent %s: failed to warm agent/MCP sessions at startup "
+                "(a stuck MCP server times out here); runs will reconnect on demand",
                 self.id,
                 exc_info=True,
             )
@@ -147,9 +155,12 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                     "inkling.warm_mcp_tools",
                     mcp_servers=[server.id for server in mcp_servers],
                 ):
-                    await asyncio.gather(
-                        *(server.list_tools() for server in mcp_servers),
-                        return_exceptions=True,
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *(server.list_tools() for server in mcp_servers),
+                            return_exceptions=True,
+                        ),
+                        timeout=MCP_WARM_TIMEOUT,
                     )
             except Exception:
                 logger.warning(
