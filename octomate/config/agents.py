@@ -60,9 +60,14 @@ class ClaudeCodeConfig(BaseModel):
     )
     max_turns: int | None = None
     ssh: ClaudeSSHConfig | None = None
-    # Seconds to wait for a human approval/answer before the card expires and the
-    # pending tool is denied (so the live run unblocks). None waits indefinitely.
-    approval_timeout: float | None = None
+    approval_timeout: float | None = Field(
+        default=None,
+        description=(
+            "Seconds to wait for a human approval/answer before the card expires "
+            "and the pending tool is denied (so the live run unblocks). None waits "
+            "indefinitely."
+        ),
+    )
 
 
 class AgentsConfig(BaseModel):

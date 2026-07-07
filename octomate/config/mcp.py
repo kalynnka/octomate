@@ -17,7 +17,7 @@ class LinearMcpConfig(BaseModel):
 
 
 class McpConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     github: GitHubMcpConfig | None = None
     linear: LinearMcpConfig | None = None

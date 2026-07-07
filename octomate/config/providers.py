@@ -68,7 +68,7 @@ class BedrockProviderConfig(BaseModel):
 
 
 class ProvidersConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     openai: OpenAIProviderConfig | None = None
     deepseek: DeepSeekProviderConfig | None = None

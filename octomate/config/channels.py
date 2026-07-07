@@ -46,9 +46,13 @@ class ChannelConfig(BaseModel):
     mention_only: bool = True
     enabled: bool = True
     stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)
-    # The agents this channel can dispatch to: agents[0] is the default entry agent;
-    # all of them are summon candidates.
-    agents: list[AgentModelConfig] = [AgentModelConfig(model=DEFAULT_AGENT_MODEL)]
+    agents: list[AgentModelConfig] = Field(
+        default_factory=lambda: [AgentModelConfig(model=DEFAULT_AGENT_MODEL)],
+        description=(
+            "The agents this channel can dispatch to: agents[0] is the default "
+            "entry agent; all of them are summon candidates."
+        ),
+    )
 
 
 class SlackChannelConfig(ChannelConfig):
@@ -91,11 +95,15 @@ class NapcatChannelConfig(ChannelConfig):
 
 
 class ChannelsConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     slack: SlackChannelConfig | None = None
     lark: LarkChannelConfig | None = None
     napcat: NapcatChannelConfig | None = None
-    # The dev UI ships on by default; disable it with `enabled: false` or `null`.
-    # Keyed `dev_ui` to match the channel id it is registered under.
-    dev_ui: VercelChannelConfig | None = Field(default_factory=VercelChannelConfig)
+    dev_ui: VercelChannelConfig | None = Field(
+        default_factory=VercelChannelConfig,
+        description=(
+            "The dev UI ships on by default; disable it with `enabled: false` or "
+            "`null`. Keyed `dev_ui` to match the channel id it is registered under."
+        ),
+    )
