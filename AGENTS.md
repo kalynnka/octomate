@@ -55,6 +55,10 @@
 1. Always leverage Arcanus for database persistence. Application code should use Pydantic schema/transmuter types and Arcanus session APIs; do not import, query, update, or delete ORM models directly unless you are defining the schema/model mapping itself.
 2. Prefer ORM-style persistence through loaded transmuter objects. When an object is already in the session, mutate its typed attributes and commit instead of issuing manual SQL `update()` calls or copying the transmuter to mirror the change.
 
+## Observability
+
+1. When investigating with Logfire (the `logfire` MCP tools — trace/SQL queries, dashboards, alerts), delegate the Logfire work to a sub-agent running a cheaper model or lower reasoning effort — Sonnet under Claude Code, a lower effort setting under Codex — instead of spending the main model's budget on it. Hand the sub-agent the specific question (trace id, time range, what to find) and keep only its conclusion.
+
 ## Architecture
 
 1. Web APIs are FastAPI routers owned by the single project-level Octomate instance; do not force web routes into the channel tentacle lifecycle.
