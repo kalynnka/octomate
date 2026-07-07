@@ -20,7 +20,6 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.tentacles.channel.base import Chromo
-from octomate.tentacles.channel.lark.markdown import preserve_markdown_tables_as_text
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.types.json import JsonObject
 
@@ -90,10 +89,9 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
     def outbound_markdown(self, text: str) -> list[LarkOutboundMessage]:
         if not text:
             return []
-        content = preserve_markdown_tables_as_text(text)
         payload = {
             "schema": "2.0",
-            "body": {"elements": [{"tag": "markdown", "content": content}]},
+            "body": {"elements": [{"tag": "markdown", "content": text}]},
         }
         return [LarkOutboundMessage(msg_type="interactive", content=json.dumps(payload))]
 
@@ -117,7 +115,6 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
         *,
         element_id: str = LARK_STREAM_ELEMENT_ID,
     ) -> str:
-        content = preserve_markdown_tables_as_text(text)
         payload = {
             "schema": "2.0",
             "config": {
@@ -143,7 +140,7 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": content,
+                        "content": text,
                         "element_id": element_id,
                     }
                 ]
