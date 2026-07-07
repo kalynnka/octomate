@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
+import weakref
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from typing import (
@@ -62,6 +64,7 @@ from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.agent.claude.transport import SSHTransport
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
@@ -80,8 +83,9 @@ SDK_PERMISSION_MODE: dict[ConversationPermissionMode, PermissionMode] = {
 class ClaudeCodeTentacle(AgentTentacle[str, None]):
     """Claude Agent SDK runner exposed as an Octomate agent tentacle.
 
-    A run drives a `ClaudeSDKClient` locally (SSH transport lands later),
-    translating its message stream through `ClaudeRunAccumulator` into live
+    A run drives a `ClaudeSDKClient` — a local subprocess, or the remote
+    `SSHTransport` when `config.ssh` is set — translating its message
+    stream through `ClaudeRunAccumulator` into live
     stream events (proxied to the channel feelers) and persisted
     `ModelMessage`s. The Claude session id is stored on the conversation as
     `external_id` and replayed via `resume=` so Claude owns its own
@@ -113,6 +117,13 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.config = config
         self.description = description or self.description
         self.pending = {}
+        # One live Claude client per conversation (keyed by thread_id — this
+        # tentacle owns one agent id, so a thread names its conversation): a new
+        # turn interrupts the prior run for the same thread (Phase 6). Weak values
+        # so a finished run's client drops out on its own once it is collected.
+        self.live_clients: weakref.WeakValueDictionary[uuid.UUID, ClaudeSDKClient] = (
+            weakref.WeakValueDictionary()
+        )
         self.models = {model: model for model in config.models}
 
     async def _await_human(
@@ -172,6 +183,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             if not future.done():
                 future.cancel()
         self.pending.clear()
+        # Interrupt any run still streaming so its client/transport tears down
+        # instead of orphaning a subprocess or SSH connection at shutdown.
+        for client in self.live_clients.values():
+            with contextlib.suppress(Exception):
+                await client.interrupt()
+        self.live_clients.clear()
 
     async def _iter_events(
         self,
@@ -343,30 +360,45 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             },
             output_format=output_format,
         )
+        if isinstance(user_prompt, str):
+            prompt_text = user_prompt
+        elif user_prompt:
+            prompt_text = "\n".join(
+                part for part in user_prompt if isinstance(part, str)
+            )
+        else:
+            prompt_text = ""
+        if not prompt_text:
+            raise ValueError("ClaudeCodeTentacle requires a non-empty text prompt")
+        if isinstance(instructions, str):
+            prompt_text = "\n\n".join([instructions, prompt_text])
+
+        transport = (
+            SSHTransport(prompt_text, options, ssh=self.config.ssh)
+            if self.config.ssh is not None
+            else None
+        )
         with logfire.span(
             "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
             agent_id=self.id,
             run_name=run_name or "claude",
             conversation_address=str(conversation_address),
+            transport=(
+                f"ssh:{self.config.ssh.host}"
+                if self.config.ssh is not None
+                else "local"
+            ),
         ):
-            async with ClaudeSDKClient(options=options) as client:
-                if isinstance(user_prompt, str):
-                    prompt_text = user_prompt
-                elif user_prompt:
-                    prompt_text = "\n".join(
-                        part for part in user_prompt if isinstance(part, str)
-                    )
-                else:
-                    prompt_text = ""
-                if not prompt_text:
-                    raise ValueError(
-                        "ClaudeCodeTentacle requires a non-empty text prompt"
-                    )
-                instruction_parts: list[str] = []
-                if isinstance(instructions, str):
-                    instruction_parts.append(instructions)
-                if instruction_parts:
-                    prompt_text = "\n\n".join([*instruction_parts, prompt_text])
+            async with ClaudeSDKClient(options=options, transport=transport) as client:
+                # One live run per conversation: register this client and interrupt
+                # any prior run for the same thread so a mid-run follow-up supersedes
+                # it. The weak-value map drops this entry once the run ends and the
+                # client is collected — no manual deregistration.
+                previous = self.live_clients.get(thread_id)
+                self.live_clients[thread_id] = client
+                if previous is not None and previous is not client:
+                    with contextlib.suppress(Exception):
+                        await previous.interrupt()
                 await client.query(prompt_text)
                 async for message in client.receive_response():
                     for event in accumulator.consume(message):

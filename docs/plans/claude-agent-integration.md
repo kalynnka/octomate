@@ -1,9 +1,9 @@
 # Claude Agent Integration — Implementation Plan
 
-**Status:** Phases 0–4 shipped on `feat/claude-agent-tentacle`. Phase 3's session
-resume reuses the conversation's existing `external_id` column (no separate
-`agent_session_id`); the raw-transcript audit blob is still deferred. Phases 5
-(SSH) and 6 (lifecycle) remain.
+**Status:** Phases 0–6 shipped. Phases 5 (SSH) + 6 (lifecycle) landed on
+`feat/claude-ssh-and-lifecycle`. Phase 3's session resume reuses the conversation's
+existing `external_id` column (no separate `agent_session_id`); the raw-transcript
+audit blob is still deferred. Pattern 2 (native-run → web replay) remains a follow-up.
 **Scope:** integrate the Claude Agent SDK (`claude-agent-sdk`, installed `0.1.80`; CLI `2.1.177`) into octomate in two ways.
 
 - **Pattern 1 — routable Claude agent tentacle (build now).** Triage dispatches "let Claude do X" to a Claude agent that runs the SDK locally or on a remote host over SSH, and streams adapted events back to the originating channel.
@@ -74,7 +74,7 @@ Reuse wins because (a) the live channel render already requires a Claude→pydan
 Each phase is independently verifiable. Build order: **0 → 1 → 2 → 3 → 4 → 5 → 6** (Phase 5/SSH is independent and can move earlier if remote testing is needed sooner).
 
 ### Phase 0 — Config + tentacle skeleton
-- `ClaudeCodeConfig` (`cwd`, `model`, `max_turns`, `description`, `transport: local|ssh`, and a `ClaudeSSHConfig` `ssh` block required when `transport='ssh'`); opt-in `claude` field on `AgentsConfig`.
+- `ClaudeCodeConfig` (`cwd`, `model`, `max_turns`, `description`, and an opt-in `ssh` (`ClaudeSSHConfig`) block — null runs `claude` locally, a block runs it on that remote host); opt-in `claude` field on `AgentsConfig`. (Shipped without a separate `transport` selector — `ssh` set *is* the switch.)
 - `ClaudeCodeTentacle` skeleton: the two abstract methods (`run`, `run_stream_events`) raising `NotImplementedError`, `__aenter__/__aexit__`, an in-memory session map.
 - Register in `main.py`.
 
@@ -122,20 +122,43 @@ Implemented at `permission_mode="default"`, so gated tools and questions route t
 
 **Documented caveat (deferred to Phase 6):** answered against a *live* in-process session → not durable across an octomate restart (unlike inkling deferrals). The durable path is *session resume*, not a durable prompt: persist `external_id` early + on a stale-card answer resume `resume=external_id` so Claude replays its transcript and re-asks (mirrors VS Code). Also pending: interrupt the live run on a new inbound message (one run per `ConversationKey`), and withdraw/disable stale cards on expiry/shutdown (feelers need an edit/withdraw method — currently `present`-only).
 
-### Phase 5 — Remote SSH transport
-- Port `SSHTransport` from `archive` (interface verified byte-for-byte against the `0.1.80` `Transport` ABC). Spawns `ssh -T host 'cd … && export … && claude … --output-format stream-json --input-format stream-json --permission-prompt-tool stdio'` via `asyncio.create_subprocess_exec`; system `ssh`, no in-process SSH lib.
-- Inject when `ssh` is configured; `transport=None` stays the local path.
-- `openssh-client` in Dockerfile, `~/.ssh` mount in compose.
-- Isolated in `transport.py`; depends on SDK-private `claude_agent_sdk._internal.transport.Transport` (pin to `0.1.80`).
+### Phase 5 — Remote SSH transport ✅ shipped
+**Shipped differently than "port the archive transport."** The archive's `SSHTransport`
+was a standalone `Transport` with a *hardcoded* `claude code …` command — stale against
+`0.1.80`, and it would drop the SDK's option→flag mapping (`--model`, `--resume`,
+`--permission-mode`, `--allowedTools`, `--max-turns`, …). Instead `octomate/tentacles/agent/claude/transport.py`
+**subclasses the SDK's `SubprocessCLITransport`** and overrides only `_build_command()`
+to wrap the SDK's own full command in `ssh -T … host 'cd … && export … && <cmd>'`. This
+reuses the option mapping *and* the stream-json control protocol (read/write/close)
+verbatim; the local version probe is no-op'd (the CLI lives on the remote) and the local
+cwd is cleared so `ssh` isn't chdir'd into a remote-only path. A `can_use_tool` callback
+adds `--permission-prompt-tool stdio` itself, because the client applies that default to
+its *own* transport but not to a pre-constructed one (`client.py:_connect_inner`).
+- Injected by the tentacle when `config.ssh` is set; a null `ssh` stays local (`transport=None`).
+- `openssh-client` in the Dockerfile + `~/.ssh` mount in compose were already present.
+- Couples to SDK-private `SubprocessCLITransport` — pinned to `0.1.80`; an SDK bump touches
+  only `transport.py`.
+- **Tests:** `tests/agent/test_claude_transport.py` (unit — ssh-wrap, remote binary, tilde
+  cwd, identity/options threading, stdio flag with/without `can_use_tool`) + wiring tests in
+  `test_claude_tentacle.py` (local → no custom transport; ssh → an `SSHTransport`).
 
-**Success:** with `ssh` set, identical flows run `claude` on the remote host; events/persistence stream back unchanged.
+**Success:** with `ssh` set, the tentacle drives `claude` on the remote host; events/
+persistence stream back unchanged. (End-to-end against a live host is manual — no remote in CI.)
 
-### Phase 6 — Lifecycle polish
-- One active run per `ConversationKey`; a new inbound message `interrupt()`s the live client and cleans up.
-- Optional thread-continuation seeding (resume the same session for follow-ups in a freshly opened thread).
-- **Worktree isolation explicitly deferred.**
+### Phase 6 — Lifecycle polish ✅ shipped
+- **One live run per conversation** — the tentacle keeps `live_clients:
+  WeakValueDictionary[thread_id, ClaudeSDKClient]` (a thread names the conversation, since a
+  tentacle owns one agent id). A new turn registers its client and `interrupt()`s the prior
+  run for that thread, so a mid-run follow-up supersedes it. Weak values mean a finished
+  run's client drops out on its own once collected — no manual deregistration.
+- **Shutdown cleanup** — `__aexit__` interrupts every still-live client (alongside cancelling
+  parked approval futures), so no subprocess/SSH connection is orphaned at shutdown.
+- **Tests:** `test_claude_tentacle.py` — a second run on a live thread interrupts the first
+  and both deregister; `__aexit__` interrupts a live run.
+- Thread-continuation seeding and **worktree isolation remain deferred** (session resume via
+  `external_id` already gives follow-up continuity).
 
-**Success:** mid-run message interrupts cleanly; no orphaned clients/transports.
+**Success:** a mid-run message interrupts the prior run cleanly; no orphaned clients/transports.
 
 ---
 

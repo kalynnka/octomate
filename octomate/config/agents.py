@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal, Self, TypeAlias
+from typing import Literal, TypeAlias
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from pydantic_ai.models import KnownModelName
 
 from octomate.config.models import ModelConfig
@@ -30,11 +30,11 @@ class InklingConfig(BaseModel):
 
 
 class ClaudeSSHConfig(BaseModel):
-    """Remote-host settings for `transport='ssh'`.
+    """Remote-host settings for the Claude tentacle.
 
-    The tentacle spawns `claude` on `host` (via the system `ssh` binary) instead
-    of a local subprocess. Wired in a later phase; the shape is declared here so
-    config stays stable.
+    When `ClaudeCodeConfig.ssh` is set, the tentacle spawns `claude` on `host`
+    (via the system `ssh` binary) instead of a local subprocess; leaving it null
+    keeps the run local.
     """
 
     host: str
@@ -49,8 +49,8 @@ class ClaudeCodeConfig(BaseModel):
     Opt-in: `agents.claude` is null by default, so the agent is absent unless a
     block is supplied. `models` maps route model names to Claude CLI model
     strings (not `ModelConfig`s, since the SDK builds the model, not the
-    provider registry). `transport` selects where `claude` runs — a local
-    subprocess, or a remote host over SSH (which requires an `ssh` block).
+    provider registry). `ssh` selects where `claude` runs — null is a local
+    subprocess; a block runs it on that remote host over SSH.
     """
 
     cwd: str = "."
@@ -59,19 +59,10 @@ class ClaudeCodeConfig(BaseModel):
         min_length=1,
     )
     max_turns: int | None = None
-    transport: Literal["local", "ssh"] = "local"
     ssh: ClaudeSSHConfig | None = None
     # Seconds to wait for a human approval/answer before the card expires and the
     # pending tool is denied (so the live run unblocks). None waits indefinitely.
     approval_timeout: float | None = None
-
-    @model_validator(mode="after")
-    def validate_config(self) -> Self:
-        if self.transport == "ssh" and self.ssh is None:
-            raise ValueError(
-                "claude.transport='ssh' requires an `ssh` (ClaudeSSHConfig) block"
-            )
-        return self
 
 
 class AgentsConfig(BaseModel):

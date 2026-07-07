@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Literal
+import asyncio
+import gc
+from collections.abc import AsyncIterator, Callable
+from typing import ClassVar, Literal
 
 import pytest
 from claude_agent_sdk import (
@@ -24,8 +26,9 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate import Octomate
-from octomate.config.agents import ClaudeCodeConfig
+from octomate.config.agents import ClaudeCodeConfig, ClaudeSSHConfig
 from octomate.schemas.conversation import ChannelAddress
+from octomate.tentacles.agent.claude.transport import SSHTransport
 from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.claude import base as claude_base
@@ -58,9 +61,11 @@ class FakeClaudeClient:
 
     last_options: object = None
     last_prompt: str | None = None
+    last_transport: object = None
 
     def __init__(self, options: object = None, transport: object = None) -> None:
         FakeClaudeClient.last_options = options
+        FakeClaudeClient.last_transport = transport
 
     async def __aenter__(self) -> FakeClaudeClient:
         return self
@@ -265,6 +270,34 @@ async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None
     assert getattr(FakeClaudeClient.last_options, "model", None) == "opus"
 
 
+async def test_local_transport_passes_no_custom_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())  # default: no ssh block → local
+
+    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
+
+    # A local run lets the SDK build its own subprocess transport.
+    assert FakeClaudeClient.last_transport is None
+
+
+async def test_ssh_transport_wired_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    tentacle = _tentacle(
+        FakeConversationManager(),
+        config=ClaudeCodeConfig(ssh=ClaudeSSHConfig(host="user@box")),
+    )
+
+    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
+
+    transport = FakeClaudeClient.last_transport
+    assert isinstance(transport, SSHTransport)
+    assert transport.ssh.host == "user@box"
+
+
 def test_configured_model_names_are_exposed() -> None:
     tentacle = _tentacle(
         FakeConversationManager(),
@@ -289,3 +322,107 @@ def test_build_structured_result_validates_into_model() -> None:
 
     assert isinstance(result.output, SummonDecision)
     assert result.output.action == "summon"
+
+
+class GatedClaudeClient(FakeClaudeClient):
+    """A client whose stream blocks mid-run until released or interrupted, so two
+    runs on the same conversation can overlap deterministically (Phase 6)."""
+
+    instances: ClassVar[list[GatedClaudeClient]] = []
+
+    def __init__(self, options: object = None, transport: object = None) -> None:
+        super().__init__(options, transport)
+        self.interrupted = False
+        self.released = asyncio.Event()
+        GatedClaudeClient.instances.append(self)
+
+    async def interrupt(self) -> None:
+        self.interrupted = True
+        self.released.set()
+
+    async def receive_response(self) -> AsyncIterator[Message]:
+        yield AssistantMessage(content=[TextBlock(text="working")], model="m")
+        await self.released.wait()
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+            result="done",
+        )
+
+
+async def _drive(tentacle: ClaudeCodeTentacle, prompt: str) -> None:
+    async with tentacle.run_stream_events(
+        prompt, conversation_address=KEY, thread_id=_THREAD
+    ) as stream:
+        async for _event in stream:
+            pass
+
+
+async def _spin_until(predicate: Callable[[], object]) -> None:
+    for _ in range(100000):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("condition not reached")
+
+
+async def test_new_run_interrupts_the_prior_live_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    GatedClaudeClient.instances = []
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", GatedClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    first = asyncio.ensure_future(_drive(tentacle, "first"))
+    await _spin_until(lambda: tentacle.live_clients.get(_THREAD) is not None)
+    client_a = GatedClaudeClient.instances[0]
+
+    # A second turn on the same thread supersedes the first: its client is
+    # interrupted so the parked run unblocks and ends.
+    second = asyncio.ensure_future(_drive(tentacle, "second"))
+    await _spin_until(lambda: client_a.interrupted)
+
+    # Release everything so both runs reach their terminal result.
+    for instance in GatedClaudeClient.instances:
+        instance.released.set()
+    await asyncio.gather(first, second)
+
+    assert client_a.interrupted
+    # B superseded A: the live entry for the thread is now B's client.
+    assert tentacle.live_clients.get(_THREAD) is GatedClaudeClient.instances[1]
+
+
+async def test_shutdown_interrupts_live_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    GatedClaudeClient.instances = []
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", GatedClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    run = asyncio.ensure_future(_drive(tentacle, "hi"))
+    await _spin_until(lambda: tentacle.live_clients.get(_THREAD) is not None)
+    client = GatedClaudeClient.instances[0]
+
+    await tentacle.__aexit__()
+
+    assert client.interrupted
+    assert len(tentacle.live_clients) == 0
+    await run
+
+
+async def test_completed_run_releases_its_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
+
+    # Weak-value map: a finished run's client is unreferenced, so its entry drops
+    # on its own — no manual deregistration.
+    gc.collect()
+    assert len(tentacle.live_clients) == 0
