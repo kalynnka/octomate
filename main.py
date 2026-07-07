@@ -11,7 +11,7 @@ from octomate.capabilities.history import HistoryCapability
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
-from octomate.providers import ProviderRegistry
+from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
@@ -72,14 +72,17 @@ def create_app() -> FastAPI:
         handlers=[console_handler, logfire.LogfireLoggingHandler()],
         force=True,
     )
-    # httpx logs every request at INFO and Logfire already traces HTTP, so quiet
-    # it by default; per-logger overrides from config win.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    registry = ProviderRegistry(config.providers)
+    # httpx logs every request at INFO; keep the LLM-provider round-trips and drop
+    # the rest (Lark cardkit streaming PUTs especially). Logfire still traces every
+    # request regardless. Per-logger overrides from config win.
+    httpx_logger = logging.getLogger("httpx")
+    httpx_logger.setLevel(logging.INFO)
+    httpx_logger.addFilter(ProviderHttpLogFilter(registry))
     for name, level in config.logging.loggers.items():
         logging.getLogger(name).setLevel(level)
     logger = logging.getLogger("octomate.main")
 
-    registry = ProviderRegistry(config.providers)
     octomate.connect(
         InklingTentacle(
             "inkling",

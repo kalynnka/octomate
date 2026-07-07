@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import SecretStr
 from pydantic_ai.models import Model, parse_model_id
@@ -50,6 +52,9 @@ class ProviderRegistry:
     def __init__(self, config: ProvidersConfig) -> None:
         self.config = config
         self.providers: dict[str, Provider[Any]] = {}
+        # Hosts of the built providers' base URLs, kept in step with `providers`;
+        # the allowlist behind `ProviderHttpLogFilter` for httpx's LLM request logs.
+        self.provider_hosts: set[str] = set()
 
     def build_model(self, model: ModelConfig) -> Model:
         provider_name = model.provider
@@ -63,6 +68,8 @@ class ProviderRegistry:
         if provider is None:
             provider = self.build_provider(provider_name)
             self.providers[provider_name] = provider
+            if host := urlsplit(provider.base_url).hostname:
+                self.provider_hosts.add(host)
         _, model_name = parse_model_id(model.name)
         # Provider defaults are the base; the per-model `settings` overrides them.
         merged = merge_model_settings(
@@ -145,3 +152,22 @@ class ProviderRegistry:
                     )
                 )
         raise ValueError(f"unsupported model provider {name!r}")
+
+
+class ProviderHttpLogFilter(logging.Filter):
+    """Keep httpx's INFO request logs only for LLM-provider calls, so their
+    round-trips stay visible while other httpx traffic (e.g. Lark cardkit
+    streaming PUTs) is dropped. Warnings and errors always pass. httpx logs each
+    request as `HTTP Request: <method> <url> "..."`, so the URL is the second
+    positional arg; its host is matched against the built providers'."""
+
+    def __init__(self, registry: ProviderRegistry) -> None:
+        super().__init__()
+        self.registry = registry
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        args = record.args
+        url = args[1] if isinstance(args, tuple) and len(args) >= 2 else None
+        return getattr(url, "host", None) in self.registry.provider_hosts

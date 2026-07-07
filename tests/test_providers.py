@@ -8,6 +8,9 @@ config level.
 
 from __future__ import annotations
 
+import logging
+
+import httpx
 import pytest
 from pydantic import SecretStr, ValidationError
 from pydantic_ai.models import KnownModelName, parse_model_id
@@ -27,7 +30,7 @@ from octomate.config import (
     ProvidersConfig,
     VertexProviderConfig,
 )
-from octomate.providers import ProviderRegistry
+from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 
 
 def make_registry() -> ProviderRegistry:
@@ -185,3 +188,46 @@ def test_vertex_config_defaults_to_global_location() -> None:
     # Vertex needs ADC to construct, so assert the config default that preserves
     # the prior GoogleProvider(location="global") behavior instead of building.
     assert VertexProviderConfig().location == "global"
+
+
+def test_provider_hosts_from_built_providers() -> None:
+    registry = make_registry()
+    assert registry.provider_hosts == set()  # nothing built yet
+    registry.build_model(ModelConfig(name="openai:gpt-5.2"))
+    registry.build_model(ModelConfig(name="deepseek:deepseek-chat"))
+    assert registry.provider_hosts == {"api.openai.com", "api.deepseek.com"}
+
+
+def httpx_request_record(level: int, method: str, url: str) -> logging.LogRecord:
+    # Mirrors httpx's own request log call so the filter reads the URL from args[1].
+    return logging.LogRecord(
+        "httpx",
+        level,
+        __file__,
+        1,
+        'HTTP Request: %s %s "%s %d %s"',
+        (method, httpx.URL(url), "HTTP/1.1", 200, "OK"),
+        None,
+    )
+
+
+def test_http_log_filter_keeps_providers_and_drops_others() -> None:
+    registry = make_registry()
+    registry.build_model(ModelConfig(name="deepseek:deepseek-chat"))
+    log_filter = ProviderHttpLogFilter(registry)
+
+    provider_call = httpx_request_record(
+        logging.INFO, "POST", "https://api.deepseek.com/v1/chat/completions"
+    )
+    lark_call = httpx_request_record(
+        logging.INFO, "PUT", "https://open.feishu.cn/open-apis/cardkit/v1/cards/x"
+    )
+    lark_warning = httpx_request_record(
+        logging.WARNING, "PUT", "https://open.feishu.cn/open-apis/cardkit/v1/cards/x"
+    )
+    no_args = logging.LogRecord("httpx", logging.INFO, __file__, 1, "msg", None, None)
+
+    assert log_filter.filter(provider_call) is True
+    assert log_filter.filter(lark_call) is False
+    assert log_filter.filter(lark_warning) is True  # warnings always pass
+    assert log_filter.filter(no_args) is False  # unparseable request records drop
