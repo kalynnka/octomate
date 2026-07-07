@@ -11,6 +11,7 @@ from octomate.capabilities.history import HistoryCapability
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
+from octomate.database import engine as db_engine
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.inkling import (
@@ -57,7 +58,7 @@ def create_app() -> FastAPI:
     )
     logfire.instrument_pydantic_ai()
     logfire.instrument_httpx()
-    logfire.instrument_sqlalchemy()
+    logfire.instrument_sqlalchemy(engine=db_engine())
 
     octomate = Octomate()
 
