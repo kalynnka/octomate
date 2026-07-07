@@ -72,6 +72,11 @@ def create_app() -> FastAPI:
         handlers=[console_handler, logfire.LogfireLoggingHandler()],
         force=True,
     )
+    # httpx logs every request at INFO and Logfire already traces HTTP, so quiet
+    # it by default; per-logger overrides from config win.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    for name, level in config.logging.loggers.items():
+        logging.getLogger(name).setLevel(level)
     logger = logging.getLogger("octomate.main")
 
     registry = ProviderRegistry(config.providers)

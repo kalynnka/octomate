@@ -1,19 +1,22 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, BeforeValidator, Field
 
-LogLevel = Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"]
+LogLevel = Annotated[
+    Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"],
+    BeforeValidator(lambda level: level.upper() if isinstance(level, str) else level),
+]
 
 
 class LoggingConfig(BaseModel):
     level: LogLevel = "INFO"
-
-    @field_validator("level", mode="before")
-    @classmethod
-    def normalize_level(cls, value: str | None) -> str | None:
-        return value.upper() if isinstance(value, str) else value
+    loggers: dict[str, LogLevel] = Field(
+        default_factory=dict,
+        description="Per-logger level overrides applied on top of `level` — e.g. "
+        "`{httpx: WARNING}` to quiet a chatty library.",
+    )
 
 
 class LogfireConfig(BaseModel):
