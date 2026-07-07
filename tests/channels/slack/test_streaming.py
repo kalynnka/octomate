@@ -98,6 +98,11 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
                 tool_name="ask_questions", content={"ok": True}, tool_call_id="call_q"
             )
         )
+        # teleport is internal routing (deferred, no result) — skipped from the
+        # timeline; its call id must not surface as a task chunk below.
+        yield FunctionToolCallEvent(
+            ToolCallPart(tool_name="teleport", args={"hint": "x"}, tool_call_id="call_tp")
+        )
         yield FunctionToolCallEvent(
             ToolCallPart(tool_name="lookup", args={"query": "x"}, tool_call_id="call_1")
         )
@@ -196,10 +201,11 @@ async def test_slack_thinking_appends_coalesce_off_the_drive_loop() -> None:
         for chunk in thinking_chunks
         if chunk.status == "in_progress" and chunk.details
     ]
-    # The first append carried "checking"; the " the"/" docs" deltas that arrived
-    # while it was in flight coalesced into a single follow-up append.
-    assert live == ["checking", "checking the docs"]
-    # It still folds into a "Thought for …" task keeping the full details.
+    # One live append ("checking"): the " the"/" docs" deltas that arrived while it
+    # was in flight coalesced (no per-delta blocking append) and land in the folded
+    # completion rather than another live append.
+    assert live == ["checking"]
+    # It folds into a "Thought for …" task keeping the full details.
     assert thinking_chunks[-1].status == "complete"
     assert thinking_chunks[-1].details == "checking the docs"
     assert thinking_chunks[-1].title.startswith("Thought for")

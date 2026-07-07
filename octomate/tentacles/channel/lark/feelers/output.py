@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -37,6 +36,7 @@ from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.feelers.output import (
     IMMessageID,
     JsonValue,
+    StreamFlusher,
     TextStreamBatcher,
     TimelineFeeler,
     TimelineState,
@@ -49,10 +49,6 @@ from octomate.tentacles.channel.feelers.output import (
 from octomate.tentacles.channel.lark.chromo import LARK_STREAM_ELEMENT_ID, LarkChromo
 from octomate.tentacles.channel.lark.feelers import cards
 from octomate.tentacles.channel.lark.ink import LarkInk
-from octomate.tentacles.channel.lark.markdown import (
-    card_render_fallback_text,
-    preserve_markdown_tables_as_text,
-)
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
 
 if TYPE_CHECKING:
@@ -69,6 +65,13 @@ OutputT = TypeVar(
 )
 
 THINKING_HEADER = "Thinking"
+CARD_RENDER_FALLBACK_HINT = (
+    "I couldn't render this as a Lark card, so here's the raw message:"
+)
+
+
+def card_render_fallback_text(raw_message: str) -> str:
+    return f"{CARD_RENDER_FALLBACK_HINT}\n\n{raw_message}"
 
 
 def format_tool_arguments(_tool_name: str, args: dict[str, Any]) -> str:
@@ -163,18 +166,22 @@ class LarkRunStateCards(TimelineState):
     answer_message_id: IMMessageID | None = None
     answer_sequence: int = 0
     saw_answer: bool = False
+    answer_sent_len: int = 0
+    answer_flusher: StreamFlusher = field(init=False)
 
     thinking_card_id: str | None = None
     thinking_text: str = ""
     thinking_patched_len: int = 0
     thinking_started_at: float = 0.0
-    thinking_flush_task: asyncio.Task[None] | None = None
-    thinking_flush_event: asyncio.Event = field(default_factory=asyncio.Event)
-    thinking_flush_closed: bool = False
+    thinking_flusher: StreamFlusher = field(init=False)
     tool_cards: dict[str, tuple[str | None, str, str]] = field(default_factory=dict)
     skipped: set[str] = field(default_factory=set)
     todos: dict[str, Todo] = field(default_factory=dict)
     todo_card_id: str | None = None
+
+    def __post_init__(self) -> None:
+        self.thinking_flusher = StreamFlusher(self.flush_thinking)
+        self.answer_flusher = StreamFlusher(self.flush_answer)
 
     async def post(self, card: JsonObject) -> str | None:
         raw_card = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
@@ -204,10 +211,9 @@ class LarkRunStateCards(TimelineState):
         """The mid-run notice streamed into the answer card — finalize it so
         the next answer text (and todo checklist) opens a fresh card below the
         new activity instead of updating one stranded above it."""
-        # Flush first: a short notice may still sit in the batcher without
-        # having created the card yet.
-        for update in self.answer_batcher.finish_all():
-            await self.push_answer(update.full_text)
+        # Drain first: a short notice may still sit in the batcher without having
+        # created the card yet.
+        await self.drain_answer()
         if self.answer_card is None:
             return
         self.answer_sequence += 1
@@ -217,6 +223,7 @@ class LarkRunStateCards(TimelineState):
         self.answer_card = None
         self.answer_message_id = None
         self.answer_sequence = 0
+        self.answer_sent_len = 0
         self.todo_card_id = None
         self.answer_batcher = TextStreamBatcher(
             flush_interval=self.answer_batcher.flush_interval,
@@ -234,9 +241,6 @@ class LarkRunStateCards(TimelineState):
         self.thinking_card_id = await self.post(
             cards.card_v2([cards.markdown(f"**{THINKING_HEADER}…**")])
         )
-        self.thinking_flush_closed = False
-        self.thinking_flush_event.clear()
-        self.thinking_flush_task = asyncio.create_task(self.flush_thinking_loop())
 
     async def thinking_delta(self, text: str) -> None:
         if not text:
@@ -244,44 +248,29 @@ class LarkRunStateCards(TimelineState):
         if self.thinking_card_id is None:
             await self.thinking_start()
         self.thinking_text += text
-        self.thinking_flush_event.set()
+        self.thinking_flusher.signal()
 
-    async def flush_thinking_loop(self) -> None:
-        """Re-render the live thinking card off the drive loop. Each patch replaces
-        the whole card, so a signal coalesces to one patch of the latest text while
-        the drive loop keeps consuming events — the answer no longer waits behind a
-        burst of ~1s thinking patches. `fold_thinking` closes and drains this."""
-        while True:
-            await self.thinking_flush_event.wait()
-            self.thinking_flush_event.clear()
-            # `fold_thinking` closes the loop and then re-renders the full text as
-            # the folded panel, so on close there is nothing left to patch live.
-            if self.thinking_flush_closed:
-                return
-            while (
-                self.thinking_card_id is not None
-                and len(self.thinking_text) > self.thinking_patched_len
-            ):
-                card_id = self.thinking_card_id
-                text = self.thinking_text
-                self.thinking_patched_len = len(text)
-                live = cards.card_v2(
-                    [cards.markdown(f"**{THINKING_HEADER}…**\n\n{text}")]
-                )
-                await self.ink.patch_card(
-                    card_id,
-                    json.dumps(live, ensure_ascii=False, separators=(",", ":")),
-                )
+    async def flush_thinking(self) -> None:
+        """Re-render the live thinking card off the drive loop: each patch replaces
+        the whole card with the latest text (`fold_thinking` then closes the flusher
+        and re-renders as the folded panel)."""
+        if (
+            self.thinking_card_id is None
+            or len(self.thinking_text) <= self.thinking_patched_len
+        ):
+            return
+        card_id = self.thinking_card_id
+        text = self.thinking_text
+        self.thinking_patched_len = len(text)
+        live = cards.card_v2([cards.markdown(f"**{THINKING_HEADER}…**\n\n{text}")])
+        await self.ink.patch_card(
+            card_id, json.dumps(live, ensure_ascii=False, separators=(",", ":"))
+        )
 
     async def fold_thinking(self) -> None:
         if self.thinking_card_id is None:
             return
-        self.thinking_flush_closed = True
-        self.thinking_flush_event.set()
-        task = self.thinking_flush_task
-        self.thinking_flush_task = None
-        if task is not None:
-            await task
+        await self.thinking_flusher.drain()
         card_id = self.thinking_card_id
         body = self.thinking_text.strip() or "_No detail_"
         self.thinking_card_id = None
@@ -361,8 +350,25 @@ class LarkRunStateCards(TimelineState):
             return
         await self.fold_thinking()
         self.noticed = True
-        for update in self.answer_batcher.push_text(text):
-            await self.push_answer(update.full_text)
+        self.answer_batcher.push_text(text)
+        self.answer_flusher.signal()
+
+    async def flush_answer(self) -> None:
+        """Push the answer card off the drive loop: each cardkit update is one ~2s
+        round-trip, so signals coalesce to one update of the latest text while the
+        drive loop keeps draining tokens — no backpressure on generation, and the
+        card stays caught up instead of trailing seconds behind."""
+        full_text = self.answer_batcher.full_text()
+        if len(full_text) <= self.answer_sent_len:
+            return
+        self.answer_sent_len = len(full_text)
+        await self.push_answer(full_text)
+
+    async def drain_answer(self) -> None:
+        """Stop the flusher and push the final text, so the settled card holds the
+        complete answer (a mid-run notice that never opened a card lands here too)."""
+        await self.answer_flusher.drain()
+        await self.flush_answer()
 
     async def answer_segment(self, segment: MessageSegment) -> None:
         match segment:
@@ -433,15 +439,14 @@ class LarkRunStateCards(TimelineState):
         self.saw_answer = True
         if not await self.ink.update_stream_card(
             card,
-            content=preserve_markdown_tables_as_text(full_text),
+            content=full_text,
             sequence=self.answer_sequence,
         ):
             raise RuntimeError("failed to update Lark answer card")
 
     async def finish(self, result_event: AgentRunResultEvent[OutputT] | None) -> None:
         await self.fold_thinking()
-        for update in self.answer_batcher.finish_all():
-            await self.push_answer(update.full_text)
+        await self.drain_answer()
         if (
             not self.saw_answer
             and result_event is not None

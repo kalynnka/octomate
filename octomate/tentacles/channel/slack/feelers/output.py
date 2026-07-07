@@ -33,6 +33,7 @@ from octomate.schemas.segments import (
 )
 from octomate.tentacles.channel.feelers.output import (
     IMMessageID,
+    StreamFlusher,
     TextStreamBatcher,
     TimelineFeeler,
     TimelineState,
@@ -134,10 +135,8 @@ class SlackTimelineState(TimelineState):
     message_id: IMMessageID | None = None
     thinking_seq: int = 0
     active_thinking: SlackStep | None = None
-    thinking_flush_task: asyncio.Task[None] | None = None
-    thinking_flush_event: asyncio.Event = field(default_factory=asyncio.Event)
-    thinking_flush_closed: bool = False
     thinking_emitted_len: int = 0
+    thinking_flusher: StreamFlusher = field(init=False)
     tool_steps: dict[str, SlackStep] = field(default_factory=dict)
     todo_steps: dict[str, SlackStep] = field(default_factory=dict)
     skipped_tool_call_ids: set[str] = field(default_factory=set)
@@ -148,19 +147,18 @@ class SlackTimelineState(TimelineState):
     plan_stream: AsyncChatStream | None = None
     text_stream: AsyncChatStream | None = None
     text_stream_started_at: float = 0.0
-    text_flush_task: asyncio.Task[None] | None = None
-    text_flush_event: asyncio.Event = field(default_factory=asyncio.Event)
-    text_flush_closed: bool = False
     pending_text_delta: str = ""
+    text_flusher: StreamFlusher = field(init=False)
     last_message_id: IMMessageID | None = None
 
+    def __post_init__(self) -> None:
+        self.thinking_flusher = StreamFlusher(self.flush_thinking)
+        self.text_flusher = StreamFlusher(self.flush_text)
+
     def reset_text_flush_state(self) -> None:
-        self.text_flush_task = None
         self.text_stream = None
         self.text_stream_started_at = 0.0
         self.pending_text_delta = ""
-        self.text_flush_closed = False
-        self.text_flush_event.clear()
 
     async def set_status(self, status: str) -> None:
         # The status is a fire-and-forget UI hint: spawn the setStatus call so
@@ -248,53 +246,41 @@ class SlackTimelineState(TimelineState):
                 recipient_team_id=self.recipient_team_id,
             )
             self.text_stream_started_at = time.monotonic()
-            self.text_flush_task = asyncio.create_task(self.flush_text_loop())
         return self.text_stream
 
-    async def flush_text_loop(self) -> None:
-        while True:
-            await self.text_flush_event.wait()
-            self.text_flush_event.clear()
-            while self.pending_text_delta:
-                markdown_text = self.pending_text_delta
-                self.pending_text_delta = ""
-                stream = self.text_stream
-                if stream is None:
-                    raise RuntimeError("Slack text stream is not open")
-                if (
-                    time.monotonic() - self.text_stream_started_at
-                    >= TEXT_STREAM_ROTATE_AFTER
-                ):
-                    self.text_stream = None
-                    await self.ink.stop_stream(stream)
-                    stream = await self.ink.start_stream(
-                        self.channel,
-                        self.thread_ts,
-                        recipient_user_id=self.recipient_user_id,
-                        recipient_team_id=self.recipient_team_id,
-                    )
-                    self.text_stream = stream
-                    self.text_stream_started_at = time.monotonic()
-                await self.ink.append_stream(stream, markdown_text)
-            if self.text_flush_closed:
-                return
+    async def flush_text(self) -> None:
+        """Append the buffered answer text off the drive loop (one chat.appendStream
+        per pass, resending nothing), rotating the stream before Slack expires it.
+        Deltas that arrive mid-append coalesce into the next pass."""
+        if not self.pending_text_delta:
+            return
+        markdown_text = self.pending_text_delta
+        self.pending_text_delta = ""
+        stream = self.text_stream
+        if stream is None:
+            raise RuntimeError("Slack text stream is not open")
+        if time.monotonic() - self.text_stream_started_at >= TEXT_STREAM_ROTATE_AFTER:
+            self.text_stream = None
+            await self.ink.stop_stream(stream)
+            stream = await self.ink.start_stream(
+                self.channel,
+                self.thread_ts,
+                recipient_user_id=self.recipient_user_id,
+                recipient_team_id=self.recipient_team_id,
+            )
+            self.text_stream = stream
+            self.text_stream_started_at = time.monotonic()
+        await self.ink.append_stream(stream, markdown_text)
 
     async def finish_text(self) -> None:
         if self.text_stream is None:
             return
         for update in self.answer_batcher.finish_all():
             self.pending_text_delta += update.delta_text
-            self.text_flush_event.set()
-        self.text_flush_closed = True
-        self.text_flush_event.set()
-        task = self.text_flush_task
-        stream: AsyncChatStream | None = None
-        try:
-            if task is not None:
-                await task
-            stream = self.text_stream
-        finally:
-            self.reset_text_flush_state()
+        await self.text_flusher.drain()
+        await self.flush_text()
+        stream = self.text_stream
+        self.reset_text_flush_state()
         if stream is not None:
             self.last_message_id = await self.ink.stop_stream(stream)
 
@@ -307,12 +293,7 @@ class SlackTimelineState(TimelineState):
         step = self.active_thinking
         if step is None:
             return
-        self.thinking_flush_closed = True
-        self.thinking_flush_event.set()
-        task = self.thinking_flush_task
-        self.thinking_flush_task = None
-        if task is not None:
-            await task
+        await self.thinking_flusher.drain()
         self.active_thinking = None
         elapsed = max(1, round(time.monotonic() - step.started_at))
         step.title = f"Thought for {elapsed}s"
@@ -331,9 +312,6 @@ class SlackTimelineState(TimelineState):
         await self.set_status(STATUS_THINKING)
         await self.emit(step)
         self.thinking_emitted_len = 0
-        self.thinking_flush_closed = False
-        self.thinking_flush_event.clear()
-        self.thinking_flush_task = asyncio.create_task(self.flush_thinking_loop())
 
     async def thinking_delta(self, text: str) -> None:
         if self.active_thinking is None:
@@ -345,29 +323,22 @@ class SlackTimelineState(TimelineState):
             step.sections[-1] += text
         else:
             step.sections.append(text)
-        self.thinking_flush_event.set()
+        self.thinking_flusher.signal()
 
-    async def flush_thinking_loop(self) -> None:
+    async def flush_thinking(self) -> None:
         """Emit the live thinking step off the drive loop: each emit is one
-        chat.appendStream resending the step's text, so a signal coalesces to one
-        append of the latest text while the drive loop keeps consuming events —
-        tool/answer work no longer waits behind a burst of ~1s thinking appends.
-        `complete_active_thinking` closes and drains this before the step folds."""
-        while True:
-            await self.thinking_flush_event.wait()
-            self.thinking_flush_event.clear()
-            # complete_active_thinking closes the loop, then re-emits the finished
-            # step; on close there is nothing left to append live.
-            if self.thinking_flush_closed:
-                return
-            step = self.active_thinking
-            while step is not None:
-                details = step.details or ""
-                if len(details) <= self.thinking_emitted_len:
-                    break
-                self.thinking_emitted_len = len(details)
-                await self.emit(step)
-                step = self.active_thinking
+        chat.appendStream resending the step's latest text; signals coalesce so
+        tool/answer work never waits behind a burst of ~1s thinking appends.
+        `complete_active_thinking` closes the flusher, then re-emits the folded
+        step."""
+        step = self.active_thinking
+        if step is None:
+            return
+        details = step.details or ""
+        if len(details) <= self.thinking_emitted_len:
+            return
+        self.thinking_emitted_len = len(details)
+        await self.emit(step)
 
     async def start_tool(
         self,
@@ -460,9 +431,11 @@ class SlackTimelineState(TimelineState):
         if not text:
             return
         await self.ensure_text_stream()
-        for update in self.answer_batcher.push_text(text):
+        updates = self.answer_batcher.push_text(text)
+        for update in updates:
             self.pending_text_delta += update.delta_text
-            self.text_flush_event.set()
+        if updates:
+            self.text_flusher.signal()
 
     async def answer_end(self) -> None:
         await self.finish_text()

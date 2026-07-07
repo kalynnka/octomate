@@ -16,6 +16,7 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     PartStartEvent,
     TextPart,
+    TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
     ToolCallPart,
@@ -127,12 +128,13 @@ async def test_lark_thinking_patches_coalesce_off_the_drive_loop() -> None:
     await drive(channel, address, events())
 
     live = [content for _id, content in ink.patched if "Thinking…" in content]
-    # The first patch carried just "checking"; the " the"/" docs" deltas that
-    # arrived while it was in flight coalesced into a single follow-up patch.
+    # Exactly one live patch ("checking"): the " the"/" docs" deltas that arrived
+    # while it was in flight coalesced (no per-delta blocking patch) and land in
+    # the folded panel rather than another live patch.
+    assert len(live) == 1
     assert "checking" in live[0]
     assert "docs" not in live[0]
-    assert "checking the docs" in live[-1]
-    # It still folds into a "Thought for Ns" collapsible panel with the full text.
+    # It folds into a "Thought for Ns" collapsible panel with the full text.
     folded = [content for _id, content in ink.patched if "Thought for" in content]
     assert folded and "checking the docs" in folded[0]
 
@@ -317,7 +319,7 @@ async def test_lark_timeline_opens_new_answer_card_after_mid_run_notice() -> Non
     assert len(ink.patched) == 4
 
 
-async def test_lark_answer_stream_preserves_markdown_tables_as_text() -> None:
+async def test_lark_answer_stream_renders_markdown_tables_verbatim() -> None:
     ink = FakeLarkInk()
     channel = lark_channel(ink)
     address = ChannelAddress(
@@ -336,5 +338,61 @@ async def test_lark_answer_stream_preserves_markdown_tables_as_text() -> None:
 
     await drive(channel, address, events())
 
+    # The table streams into the card as-is, for Lark's markdown to render.
     assert ink.stream_updates
-    assert ink.stream_updates[-1][1] == f"```text\n{table}\n```"
+    assert ink.stream_updates[-1][1] == table
+
+
+async def test_lark_answer_updates_coalesce_off_the_drive_loop() -> None:
+    # Answer-card updates run on a background flush task, so deltas that arrive
+    # while a (slow) cardkit update is in flight coalesce into the next update
+    # instead of blocking the drive loop (which would backpressure generation).
+    class SlowFirstUpdateInk(FakeLarkInk):
+        def __init__(self) -> None:
+            super().__init__()
+            self.update_started = asyncio.Event()
+            self.release_update = asyncio.Event()
+            self.update_calls = 0
+
+        async def update_stream_card(
+            self, card: object, *, content: str, sequence: int
+        ) -> bool:
+            self.update_calls += 1
+            if self.update_calls == 1:
+                self.update_started.set()
+                await self.release_update.wait()
+            return await super().update_stream_card(
+                card,  # type: ignore[arg-type]
+                content=content,
+                sequence=sequence,
+            )
+
+    ink = SlowFirstUpdateInk()
+    channel = lark_channel(ink)
+    address = ChannelAddress(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="u1",
+        user_id="u1",
+    )
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=TextPart(content="A"))
+        # The first update ("A") is now in flight on the flush task.
+        await ink.update_started.wait()
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="B"))
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="C"))
+        ink.release_update.set()
+        yield AgentRunResultEvent(AgentRunResult("ABC"))
+
+    await drive(channel, address, events())
+
+    contents = [content for _card, content, _seq in ink.stream_updates]
+    # First update carried "A"; "B"/"C" that arrived while it was in flight
+    # coalesced into a single follow-up update of the full "ABC" — the "AB"
+    # intermediate state is skipped, never sent.
+    assert contents[0] == "A"
+    assert contents[-1] == "ABC"
+    assert "AB" not in contents

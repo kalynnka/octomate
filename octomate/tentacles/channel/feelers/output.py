@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Iterable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import (
@@ -56,6 +57,7 @@ from octomate.capabilities.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
+from octomate.capabilities.gate import TELEPORT_TOOL_NAME
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
@@ -298,6 +300,43 @@ class TextStreamBatcher:
         return self.clock() - buffer.last_flush_at >= self.flush_interval
 
 
+class StreamFlusher:
+    """Single-flight background flusher for streaming renders (thinking/answer,
+    on every channel). `signal()` wakes a lone background task that runs the
+    `flush` callback — which sends whatever has accumulated; deltas that arrive
+    while a flush is in flight coalesce into the next pass, so the drive loop
+    never blocks on a slow platform round-trip. `drain()` stops the task; the
+    caller sends any final/settled state itself afterwards."""
+
+    def __init__(self, flush: Callable[[], Awaitable[None]]) -> None:
+        self.flush = flush
+        self.task: asyncio.Task[None] | None = None
+        self.event = asyncio.Event()
+        self.closed = False
+
+    def signal(self) -> None:
+        if self.task is None or self.task.done():
+            self.closed = False
+            self.event.clear()
+            self.task = asyncio.create_task(self.run())
+        self.event.set()
+
+    async def run(self) -> None:
+        while True:
+            await self.event.wait()
+            self.event.clear()
+            if self.closed:
+                return
+            await self.flush()
+
+    async def drain(self) -> None:
+        self.closed = True
+        self.event.set()
+        if self.task is not None:
+            await self.task
+            self.task = None
+
+
 def render_stream_event_delta(
     event: AgentStreamEvent | AgentRunResultEvent[OutputT],
 ) -> StreamEventDelta | None:
@@ -397,6 +436,7 @@ SKIPPED_PLAN_TOOL_NAMES = frozenset(
         ASK_QUESTIONS_TOOL_NAME,
         DEFAULT_OUTPUT_TOOL_NAME,
         SEND_TOOL_NAME,
+        TELEPORT_TOOL_NAME,  # Teleport is internal routing plumbing (relocate the conversation)
     }
 )
 MAX_TASK_DETAIL_CHARS = 2000
@@ -639,7 +679,10 @@ class TimelineState:
         """Render a deferred-action batch as a unit, then record each presented
         action's platform message id."""
         if event.questions:
-            message_ids = await self.ask_questions.present(self.address, event.questions)
+            message_ids = await self.ask_questions.present(
+                self.address,
+                event.questions,
+            )
             for action in event.questions:
                 await self.deferred_actions.mark_action_presented(
                     action.id, message_ids.get(action.id)
