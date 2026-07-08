@@ -37,6 +37,7 @@ dependencies = [
     "rapidfuzz>=3",
     "logfire[httpx,sqlalchemy]>=4.29.0",
     "rich>=13",
+    "openai-codex>=0.1.0b3",
 ]
 
 [tool.ruff.lint.per-file-ignores]

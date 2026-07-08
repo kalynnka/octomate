@@ -14,6 +14,7 @@ from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
+from octomate.tentacles.agent.codex import CodexTentacle
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
     build_mcp_toolsets,
@@ -107,6 +108,15 @@ def create_app() -> FastAPI:
 
     if (claude_config := config.agents.claude) is not None:
         octomate.connect(ClaudeCodeTentacle("claude", octomate, config=claude_config))
+
+    if (codex_config := config.agents.codex) is not None and codex_config.enabled:
+        octomate.connect(
+            CodexTentacle(
+                "codex",
+                octomate,
+                config=codex_config,
+            )
+        )
 
     if (channel_config := config.channels.slack) is not None and channel_config.enabled:
         octomate.connect(

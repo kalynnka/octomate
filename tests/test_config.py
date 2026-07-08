@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from openai_codex import CodexConfig as CodexSdkConfig
 import pytest
 from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
@@ -10,6 +11,7 @@ from octomate.config import (
     AgentModelConfig,
     ChannelsConfig,
     ClaudeCodeConfig,
+    CodexConfig,
     GitHubMcpConfig,
     LarkChannelConfig,
     LinearMcpConfig,
@@ -85,7 +87,10 @@ def test_channel_config_parses_supported_channels() -> None:
 def test_channel_config_parses_agent_model_routes() -> None:
     config = OctomateConfig.model_validate(
         {
-            "agents": {"claude": {"models": ["opus"]}},
+            "agents": {
+                "claude": {"models": ["opus"]},
+                "codex": {"models": ["gpt-5.3-codex"]},
+            },
             "channels": {
                 "dev_ui": None,
                 "lark": None,
@@ -97,6 +102,7 @@ def test_channel_config_parses_agent_model_routes() -> None:
                     "agents": [
                         {"agent": "inkling", "model": "deepseek:deepseek-v4-pro"},
                         {"agent": "claude", "model": "opus"},
+                        {"agent": "codex", "model": "gpt-5.3-codex"},
                     ],
                 },
             },
@@ -107,6 +113,7 @@ def test_channel_config_parses_agent_model_routes() -> None:
     assert config.channels.slack.agents == [
         AgentModelConfig(agent="inkling", model="deepseek:deepseek-v4-pro"),
         AgentModelConfig(agent="claude", model="opus"),
+        AgentModelConfig(agent="codex", model="gpt-5.3-codex"),
     ]
 
 
@@ -148,6 +155,104 @@ def test_claude_code_config_accepts_documented_model_aliases() -> None:
     config = ClaudeCodeConfig(models={"best", "opus[1m]", "sonnet[1m]", "opusplan[1m]"})
 
     assert config.models == {"best", "opus[1m]", "sonnet[1m]", "opusplan[1m]"}
+
+
+def test_codex_config_defaults_to_current_model_set() -> None:
+    config = CodexConfig()
+
+    assert config.models == {
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.3-codex",
+        "gpt-5.1-codex-mini",
+    }
+    assert config.approval_mode == "user"
+
+
+def test_codex_config_rejects_stale_model_aliases() -> None:
+    with pytest.raises(ValidationError, match="Input should be"):
+        CodexConfig.model_validate({"models": {"gpt-5-codex"}})
+
+
+def test_codex_config_parses_sdk_runtime_config() -> None:
+    config = CodexConfig.model_validate(
+        {
+            "runtime": {
+                "codex_bin": "/opt/codex",
+                "launch_args_override": [
+                    "codex",
+                    "app-server",
+                    "--listen",
+                    "stdio://",
+                ],
+                "config_overrides": ["model_provider=openai"],
+                "cwd": "/repo",
+                "env": {"CODEX_HOME": "/tmp/codex"},
+                "client_name": "octomate-test",
+                "client_title": "Octomate Test",
+                "client_version": "test-version",
+                "experimental_api": False,
+            }
+        }
+    )
+
+    assert isinstance(config.runtime, CodexSdkConfig)
+    assert config.runtime.codex_bin == "/opt/codex"
+    assert config.runtime.launch_args_override == (
+        "codex",
+        "app-server",
+        "--listen",
+        "stdio://",
+    )
+    assert config.runtime.config_overrides == ("model_provider=openai",)
+    assert config.runtime.cwd == "/repo"
+    assert config.runtime.env == {"CODEX_HOME": "/tmp/codex"}
+    assert config.runtime.client_name == "octomate-test"
+    assert config.runtime.client_title == "Octomate Test"
+    assert config.runtime.client_version == "test-version"
+    assert config.runtime.experimental_api is False
+
+
+def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
+    config = CodexConfig.model_validate(
+        {
+            "approval_mode": "auto_review",
+            "sandbox": "read_only",
+            "base_instructions": "stay concise",
+            "developer_instructions": "work carefully",
+            "ephemeral": True,
+            "model_provider": "openai",
+            "personality": "pragmatic",
+            "effort": "xhigh",
+            "summary": "detailed",
+        }
+    )
+
+    assert config.approval_mode == "auto_review"
+    assert config.sandbox == "read_only"
+    assert config.base_instructions == "stay concise"
+    assert config.developer_instructions == "work carefully"
+    assert config.ephemeral is True
+    assert config.model_provider == "openai"
+    assert config.personality == "pragmatic"
+    assert config.effort == "xhigh"
+    assert config.summary == "detailed"
+
+    user_config = CodexConfig.model_validate({"approval_mode": "user"})
+    assert user_config.approval_mode == "user"
+
+
+def test_codex_config_validates_sdk_setting_names() -> None:
+    with pytest.raises(ValidationError, match="Input should be"):
+        CodexConfig.model_validate(
+            {
+                "approval_mode": "never",
+                "sandbox": "workspace-write",
+                "effort": "extreme",
+                "summary": "verbose",
+                "personality": "spicy",
+            }
+        )
 
 
 def test_channel_agent_routes_must_reference_configured_agent() -> None:
@@ -333,6 +438,52 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
     [error] = exc_info.value.errors()
     assert error["loc"] == ("channels", "slack", "agents", 0, "model")
     assert error["msg"] == "'sonnet' is not configured in agents.claude.models"
+
+
+def test_channel_codex_routes_must_reference_configured_model() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig.model_validate(
+            {
+                "agents": {"codex": {"models": ["gpt-5.3-codex"]}},
+                "channels": {
+                    "dev_ui": None,
+                    "lark": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "agents": [{"agent": "codex", "model": "gpt-5.5"}],
+                    },
+                },
+            },
+        )
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
+    assert error["msg"] == "'gpt-5.5' is not configured in agents.codex.models"
+
+
+def test_channel_codex_route_requires_enabled_agent_config() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig.model_validate(
+            {
+                "agents": {"codex": {"enabled": False}},
+                "channels": {
+                    "dev_ui": None,
+                    "lark": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "agents": [{"agent": "codex", "model": "gpt-5.3-codex"}],
+                    },
+                },
+            },
+        )
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["msg"] == "'codex' does not match a configured agent tentacle"
 
 
 def test_channel_inkling_routes_must_reference_configured_model() -> None:

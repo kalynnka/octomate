@@ -8,6 +8,35 @@ octomate:
           settings:
             thinking: medium
         - name: deepseek:deepseek-v4-pro
+    # Anthropic Claude Code agent (opt-in; omitted => absent). Runs the Claude
+    # Agent SDK locally, or on a remote host when `ssh` is set. List it in a
+    # channel's `agents:` to make it a summon candidate.
+    # claude:
+    #   cwd: .
+    #   models: [opus, sonnet, haiku]   # opus => Opus 4.8
+    #   # max_turns: ~
+    #   # approval_timeout: ~   # seconds to wait for a human approval; ~ = forever
+    #   # ssh:                  # run `claude` on a remote host instead of locally
+    #   #   host: my-host
+    #   #   identity_file: ~/.ssh/id_ed25519
+    # OpenAI Codex agent (opt-in; omitted => absent). Runs Codex through the
+    # openai-codex SDK. List it in a channel's `agents:` to make it a summon
+    # candidate.
+    # codex:
+    #   enabled: true
+    #   cwd: .
+    #   runtime:
+    #     # codex_bin: /opt/bin/codex
+    #     config_overrides: []
+    #   models: [gpt-5.5, gpt-5.5-pro, gpt-5.3-codex, gpt-5.1-codex-mini]
+    #   approval_mode: user        # user | auto_review | deny_all
+    #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
+    #   sandbox: workspace_write   # read_only | workspace_write | full_access
+    #   effort: ~                  # none | minimal | low | medium | high | xhigh
+    #   summary: ~                 # auto | concise | detailed | none
+    #   personality: ~             # none | friendly | pragmatic
+    #   max_clients: 8             # warm app-server processes kept in the pool; ~ = unbounded
+    #   client_idle_ttl: 600       # seconds an idle pooled client lives; ~ = until shutdown
 
   logging:
     level: ~   # default: INFO
@@ -27,12 +56,11 @@ octomate:
   channels: {}
   # channels:
   #   slack:
-  #     triage:
-  #       agent: inkling
-  #       model: deepseek:deepseek-v4-flash
-  #     receptions:
+  #     agents:
   #       - agent: inkling
-  #         model: deepseek:deepseek-v4-pro
+  #         model: deepseek:deepseek-v4-flash
+  #       - agent: codex
+  #         model: gpt-5.5-codex
   #     app_id: A...
   #     bot_token: xoxb-...
   #     app_token: xapp-...
@@ -40,24 +68,24 @@ octomate:
   #       flush_interval: 0.2
   #       min_chars: 20
   #   lark:
-  #     triage:
-  #       agent: inkling
-  #       model: deepseek:deepseek-v4-flash
-  #     receptions:
+  #     agents:
+  #       - agent: inkling
+  #         model: deepseek:deepseek-v4-flash
   #       - agent: claude
   #         model: opus
+  #       - agent: codex
+  #         model: gpt-5.5-codex
   #     app_id: cli_...
   #     app_secret: ...
   #     stream:
   #       flush_interval: 0.2
   #       min_chars: 20
   #   napcat:
-  #     triage:
-  #       agent: inkling
-  #       model: deepseek:deepseek-v4-flash
-  #     receptions:
+  #     agents:
   #       - agent: inkling
-  #         model: deepseek:deepseek-v4-pro
+  #         model: deepseek:deepseek-v4-flash
+  #       - agent: codex
+  #         model: gpt-5.5-codex
   #     stream:
   #       enabled: false
   #     ws_url: ws://127.0.0.1:3001

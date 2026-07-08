@@ -13,14 +13,14 @@ so the instruction opens with plain words for what they actually do:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelRetry
-from pydantic_ai.models import KnownModelName
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
-from octomate.config.agents import ClaudeCodeModelName
+from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.triage import (
     SummonDecision,
     SummonDestination,
@@ -87,6 +87,20 @@ class GateCapability(AbstractCapability[None]):
             route for route in self.routes if route.agent_id != self.current_agent_id
         ]
         self.route_keys = {route.key for route in self.summonable_routes}
+        # Constrain the summon args to the routes actually on offer. Left as their
+        # declared types, pydantic-ai renders `model`'s full union — the ~500-entry
+        # KnownModelName literal — into the tool schema, drowning the real routes and
+        # tempting a weak entry model to pick a plausible-but-unrouteable id. Build a
+        # `Literal` of the live route values at runtime and stamp it on the tool's
+        # signature so the model only ever sees the handful that route.
+        route_agent_ids = tuple(
+            dict.fromkeys(route.agent_id for route in self.summonable_routes)
+        )
+        route_models = tuple(
+            dict.fromkeys(str(route.model) for route in self.summonable_routes)
+        )
+        agent_id_type = Literal[route_agent_ids] if route_agent_ids else str
+        model_type = Literal[route_models] if route_models else str
         toolset: FunctionToolset[None] = FunctionToolset(id=GATE_TOOLSET_ID)
 
         @toolset.tool(name=SCRY_TOOL_NAME)
@@ -94,11 +108,10 @@ class GateCapability(AbstractCapability[None]):
             """Reveal the Octomate agent tentacles that can be summoned from you."""
             return self.summonable_routes
 
-        @toolset.tool(name=SUMMON_TOOL_NAME)
         async def summon(
             ctx: RunContext[None],
             agent_id: str,
-            model: KnownModelName | ClaudeCodeModelName,
+            model: AgentRouteModelName,
             destination: SummonDestination,
             hint: str,
             reason: str,
@@ -140,13 +153,20 @@ class GateCapability(AbstractCapability[None]):
                     f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
                 )
             if decision.key not in self.route_keys:
+                available = "\n".join(str(route) for route in self.summonable_routes)
                 raise ModelRetry(
-                    "Invalid summon route "
-                    f"(agent_id={agent_id!r}, model={decision.model!r}). "
-                    f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
+                    f"Invalid summon route (agent_id={agent_id!r}, "
+                    f"model={decision.model!r}). Copy an agent_id and model exactly "
+                    f"from one of these routes:\n{available}"
                 )
             self.decision = decision
             return f"Summoning {agent_id} ({decision.model}) → {destination}."
+
+        # Stamp the runtime `Literal`s onto the signature before registration so the
+        # generated tool schema offers only the live routes, not every known model.
+        summon.__annotations__["agent_id"] = agent_id_type
+        summon.__annotations__["model"] = model_type
+        toolset.tool(name=SUMMON_TOOL_NAME, retries=3)(summon)
 
         @toolset.tool(name=TELEPORT_TOOL_NAME)
         async def teleport(ctx: RunContext[None], hint: str) -> str:
