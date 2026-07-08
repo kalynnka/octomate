@@ -12,6 +12,7 @@ from claude_agent_sdk import (
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
+    StreamEvent,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -37,11 +38,14 @@ from pydantic_ai.messages import (
     ModelResponsePart,
     NativeToolCallPart,
     NativeToolReturnPart,
+    PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
     RetryPromptPart,
     TextPart,
+    TextPartDelta,
     ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
     UserContent,
@@ -133,22 +137,36 @@ def normalize_tool_result_content(
 
 
 @dataclass
+class StreamingBlock:
+    """A text/thinking part being streamed live from Claude partial messages.
+
+    `index` is the pydantic-ai part index used across its `PartStart`/`PartDelta`/
+    `PartEnd` events; `part` accumulates the delta text so its `.content` matches
+    the block Claude finalizes."""
+
+    index: int
+    part: TextPart | ThinkingPart
+
+
+@dataclass
 class ClaudeRunAccumulator:
     """Translates a Claude Agent SDK message stream into Octomate's two
     projections of a run, so a routed Claude run renders in the channel exactly
     like a native one:
 
-    - **live stream events** — pydantic-ai `PartStart`/`PartEnd` + tool
-      call/result events the channel feelers/timeline render as the run proceeds
-      (proxying the Claude run to Slack/Lark/web). Ephemeral, never persisted.
+    - **live stream events** — pydantic-ai `PartStart`/`PartDelta`/`PartEnd` +
+      tool call/result events the channel feelers/timeline render as the run
+      proceeds (proxying the Claude run to Slack/Lark/web). Ephemeral, never
+      persisted.
     - **messages** — the run as pydantic-ai `ModelMessage`s, persisted via
       `record_agent_run`; the reply and its web replay render from these.
 
-    Claude emits whole content blocks (no token deltas), so each block maps to a
-    single start/end event pair (text, thinking) or one tool call/result event.
-    Tool results arrive in later `UserMessage`s and are correlated back to their
-    call by `tool_use_id` to recover the tool name pydantic-ai's `ToolReturnPart`
-    requires.
+    With `include_partial_messages`, Claude streams the raw Anthropic
+    `content_block_*` events, so text and thinking render token-by-token via
+    `StreamEvent`s; the completed `AssistantMessage` then supplies persistence
+    (and renders tool calls, which are not streamed). Tool results arrive in later
+    `UserMessage`s and are correlated back to their call by `tool_use_id` to
+    recover the tool name pydantic-ai's `ToolReturnPart` requires.
     """
 
     messages: list[ModelMessage] = field(default_factory=list)
@@ -163,6 +181,14 @@ class ClaudeRunAccumulator:
     structured_output: object | None = None
     tool_names: dict[str, str] = field(default_factory=dict)
     part_index: int = 0
+    # In-flight streamed parts for the current message, keyed by Anthropic
+    # content-block index.
+    streaming_blocks: dict[int, StreamingBlock] = field(default_factory=dict)
+    # Set once any text/thinking block has streamed via partials. While true, the
+    # completed `AssistantMessage` persists those blocks but does not re-render
+    # them (partials already did) — robust to however the SDK interleaves partial
+    # and complete messages.
+    streaming_active: bool = False
 
     def begin(self, user_prompt: str | Sequence[UserContent] | None) -> None:
         if user_prompt:
@@ -171,7 +197,9 @@ class ClaudeRunAccumulator:
             )
 
     def consume(self, message: Message) -> Iterator[StreamEvents[str]]:
-        if isinstance(message, AssistantMessage):
+        if isinstance(message, StreamEvent):
+            yield from self._consume_stream_event(message)
+        elif isinstance(message, AssistantMessage):
             yield from self._consume_assistant(message)
         elif isinstance(message, UserMessage):
             yield from self._consume_tool_results(message)
@@ -214,6 +242,88 @@ class ClaudeRunAccumulator:
         self.part_index += 1
         return index
 
+    def _consume_stream_event(
+        self, message: StreamEvent
+    ) -> Iterator[StreamEvents[str]]:
+        """Render Claude's raw Anthropic `content_block_*` stream as live token
+        deltas. Text/thinking blocks emit `PartStart`/`PartDelta`/`PartEnd` here;
+        the completed `AssistantMessage` then persists them without re-rendering
+        (tracked in `streamed_indices`). Tool-use blocks are left to the completed
+        message, which renders them as function-tool calls."""
+        event = message.event
+        event_type = event.get("type")
+        if event_type == "message_start":
+            # A fresh assistant message: its content-block indices restart at 0.
+            self.streaming_blocks.clear()
+            return
+        if event_type == "content_block_start":
+            index = event.get("index")
+            block = event.get("content_block") or {}
+            block_type = block.get("type")
+            if not isinstance(index, int):
+                return
+            # Start empty and let the deltas fill the part; the completed message
+            # supplies the authoritative content for persistence. Seeding from the
+            # start event would double-count the first chunk in the live view.
+            if block_type == "text":
+                part: TextPart | ThinkingPart = TextPart(content="")
+            elif block_type == "thinking":
+                part = ThinkingPart(content="", provider_name=CLAUDE_PROVIDER_NAME)
+            else:
+                return
+            self.streaming_active = True
+            stream_index = self._take_index()
+            self.streaming_blocks[index] = StreamingBlock(
+                index=stream_index, part=part
+            )
+            yield PartStartEvent(index=stream_index, part=part)
+            return
+        if event_type == "content_block_delta":
+            index = event.get("index")
+            state = (
+                self.streaming_blocks.get(index) if isinstance(index, int) else None
+            )
+            if state is None:
+                return
+            delta = event.get("delta") or {}
+            delta_type = delta.get("type")
+            if delta_type == "text_delta" and isinstance(state.part, TextPart):
+                text = str(delta.get("text", ""))
+                state.part.content += text
+                yield PartDeltaEvent(
+                    index=state.index,
+                    delta=TextPartDelta(text, provider_name=CLAUDE_PROVIDER_NAME),
+                )
+            elif delta_type == "thinking_delta" and isinstance(
+                state.part, ThinkingPart
+            ):
+                text = str(delta.get("thinking", ""))
+                state.part.content += text
+                yield PartDeltaEvent(
+                    index=state.index,
+                    delta=ThinkingPartDelta(
+                        content_delta=text, provider_name=CLAUDE_PROVIDER_NAME
+                    ),
+                )
+            elif delta_type == "signature_delta" and isinstance(
+                state.part, ThinkingPart
+            ):
+                yield PartDeltaEvent(
+                    index=state.index,
+                    delta=ThinkingPartDelta(
+                        signature_delta=str(delta.get("signature", "")),
+                        provider_name=CLAUDE_PROVIDER_NAME,
+                    ),
+                )
+            return
+        if event_type == "content_block_stop":
+            index = event.get("index")
+            if not isinstance(index, int):
+                return
+            state = self.streaming_blocks.pop(index, None)
+            if state is not None:
+                yield PartEndEvent(index=state.index, part=state.part)
+
     def _consume_assistant(
         self, message: AssistantMessage
     ) -> Iterator[StreamEvents[str]]:
@@ -223,9 +333,12 @@ class ClaudeRunAccumulator:
                 text = TextPart(content=block.text)
                 parts.append(text)
                 self.result_text = block.text
-                index = self._take_index()
-                yield PartStartEvent(index=index, part=text)
-                yield PartEndEvent(index=index, part=text)
+                # Partials already streamed the text live; this pass only persists
+                # it. Only render here when partials are off (the fallback path).
+                if not self.streaming_active:
+                    index = self._take_index()
+                    yield PartStartEvent(index=index, part=text)
+                    yield PartEndEvent(index=index, part=text)
             elif isinstance(block, ThinkingBlock):
                 thinking = ThinkingPart(
                     content=block.thinking,
@@ -233,9 +346,10 @@ class ClaudeRunAccumulator:
                     provider_name=CLAUDE_PROVIDER_NAME,
                 )
                 parts.append(thinking)
-                index = self._take_index()
-                yield PartStartEvent(index=index, part=thinking)
-                yield PartEndEvent(index=index, part=thinking)
+                if not self.streaming_active:
+                    index = self._take_index()
+                    yield PartStartEvent(index=index, part=thinking)
+                    yield PartEndEvent(index=index, part=thinking)
             elif isinstance(block, ToolUseBlock):
                 call = ToolCallPart(
                     tool_name=block.name,

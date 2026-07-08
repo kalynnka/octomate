@@ -60,7 +60,11 @@ from octomate.schemas.conversation import (
     Conversation,
     ConversationPermissionMode,
 )
-from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
+from octomate.schemas.deferred import (
+    MAX_QUESTION_CHOICES,
+    DeferredActionBatch,
+    QuestionRequest,
+)
 from octomate.schemas.messages import ModelRequest
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
@@ -311,7 +315,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                                     choices=[
                                         str(option.get("label", ""))
                                         for option in item.get("options", [])
-                                    ]
+                                    ][:MAX_QUESTION_CHOICES]
                                     or None,
                                     hint=str(item.get("header", "")),
                                 )
@@ -359,6 +363,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 ]
             },
             output_format=output_format,
+            # Stream partial assistant messages so the accumulator can emit token
+            # deltas (typewriter) instead of whole blocks; see ClaudeRunAccumulator.
+            include_partial_messages=True,
         )
         if isinstance(user_prompt, str):
             prompt_text = user_prompt

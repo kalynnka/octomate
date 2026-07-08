@@ -7,6 +7,7 @@ from claude_agent_sdk import (
     ResultMessage,
     ServerToolResultBlock,
     ServerToolUseBlock,
+    StreamEvent,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -21,11 +22,14 @@ from pydantic_ai.messages import (
     ModelResponse,
     NativeToolCallPart,
     NativeToolReturnPart,
+    PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
     RetryPromptPart,
     TextPart,
+    TextPartDelta,
     ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -385,6 +389,162 @@ def test_map_usage_maps_cache_names_and_preserves_extra_counts() -> None:
     assert usage.cache_read_tokens == 1
     # Unknown integer counts are preserved; already-mapped names don't double up.
     assert usage.details == {"some_new_count": 9}
+
+
+def stream_event(event: dict[str, object]) -> StreamEvent:
+    return StreamEvent(uuid="u", session_id="s", event=event)
+
+
+def test_adapter_streams_partial_text_as_token_deltas() -> None:
+    acc = ClaudeRunAccumulator()
+    acc.begin("say hi")
+
+    events = list(acc.consume(stream_event({"type": "message_start"})))
+    events += list(
+        acc.consume(
+            stream_event(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                }
+            )
+        )
+    )
+    for chunk in ("Hello ", "world"):
+        events += list(
+            acc.consume(
+                stream_event(
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": chunk},
+                    }
+                )
+            )
+        )
+    events += list(
+        acc.consume(stream_event({"type": "content_block_stop", "index": 0}))
+    )
+    # The completed message persists the block but must NOT re-render it.
+    events += list(
+        acc.consume(
+            AssistantMessage(content=[TextBlock(text="Hello world")], model="m")
+        )
+    )
+
+    assert [type(event).__name__ for event in events] == [
+        "PartStartEvent",
+        "PartDeltaEvent",
+        "PartDeltaEvent",
+        "PartEndEvent",
+    ]
+    start = events[0]
+    assert isinstance(start, PartStartEvent)
+    # The started part is mutated in place as deltas arrive, so it accumulates the
+    # full text (the channel consumes the empty PartStart before the deltas land).
+    assert isinstance(start.part, TextPart) and start.part.content == "Hello world"
+    first_delta = events[1]
+    assert isinstance(first_delta, PartDeltaEvent)
+    assert isinstance(first_delta.delta, TextPartDelta)
+    assert first_delta.delta.content_delta == "Hello "
+    second_delta = events[2]
+    assert isinstance(second_delta, PartDeltaEvent)
+    assert isinstance(second_delta.delta, TextPartDelta)
+    assert second_delta.delta.content_delta == "world"
+
+    # Persisted exactly once, with the full text, off the completed message.
+    responses = [m for m in acc.messages if isinstance(m, ModelResponse)]
+    assert len(responses) == 1
+    [text_part] = responses[0].parts
+    assert isinstance(text_part, TextPart) and text_part.content == "Hello world"
+
+
+def test_adapter_streams_partial_thinking_with_signature() -> None:
+    acc = ClaudeRunAccumulator()
+
+    events = list(acc.consume(stream_event({"type": "message_start"})))
+    events += list(
+        acc.consume(
+            stream_event(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "thinking", "thinking": ""},
+                }
+            )
+        )
+    )
+    events += list(
+        acc.consume(
+            stream_event(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "weigh it"},
+                }
+            )
+        )
+    )
+    events += list(
+        acc.consume(
+            stream_event(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "signature_delta", "signature": "sig"},
+                }
+            )
+        )
+    )
+    events += list(
+        acc.consume(stream_event({"type": "content_block_stop", "index": 0}))
+    )
+    events += list(
+        acc.consume(
+            AssistantMessage(
+                content=[ThinkingBlock(thinking="weigh it", signature="sig")],
+                model="m",
+            )
+        )
+    )
+
+    kinds = [type(event).__name__ for event in events]
+    assert kinds == [
+        "PartStartEvent",
+        "PartDeltaEvent",
+        "PartDeltaEvent",
+        "PartEndEvent",
+    ]
+    content_delta = events[1]
+    assert isinstance(content_delta, PartDeltaEvent)
+    assert isinstance(content_delta.delta, ThinkingPartDelta)
+    assert content_delta.delta.content_delta == "weigh it"
+    signature_delta = events[2]
+    assert isinstance(signature_delta, PartDeltaEvent)
+    assert isinstance(signature_delta.delta, ThinkingPartDelta)
+    assert signature_delta.delta.signature_delta == "sig"
+    # Persisted once from the completed message, carrying its signature.
+    responses = [m for m in acc.messages if isinstance(m, ModelResponse)]
+    assert len(responses) == 1
+    [thinking_part] = responses[0].parts
+    assert isinstance(thinking_part, ThinkingPart)
+    assert thinking_part.content == "weigh it" and thinking_part.signature == "sig"
+
+
+def test_adapter_falls_back_to_block_render_without_partial_stream() -> None:
+    # No partial StreamEvents (e.g. a cached turn): the completed message must
+    # still render the text as a start/end pair so nothing is silently dropped.
+    acc = ClaudeRunAccumulator()
+    events = list(
+        acc.consume(
+            AssistantMessage(content=[TextBlock(text="instant")], model="m")
+        )
+    )
+    assert [type(event).__name__ for event in events] == [
+        "PartStartEvent",
+        "PartEndEvent",
+    ]
 
     empty = map_usage(None)
     assert empty.input_tokens == 0 and empty.output_tokens == 0

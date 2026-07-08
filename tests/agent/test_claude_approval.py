@@ -30,6 +30,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import Message, ToolPermissionContext
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
@@ -38,6 +39,7 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
+    MAX_QUESTION_CHOICES,
     ApprovalRequest,
     DeferredApproval,
     DeferredQuestion,
@@ -100,6 +102,9 @@ class ScriptedClaudeClient:
     mode: str = "approval"
     last_options: ClaudeAgentOptions | None = None
     decisions: list[object] = []
+    # Option labels the AskUserQuestion hook is fed; overridden to exercise
+    # truncation when a question offers more than the choice cap.
+    question_option_labels: list[str] = ["A", "B"]
 
     def __init__(
         self, options: ClaudeAgentOptions | None = None, transport: object = None
@@ -158,8 +163,8 @@ class ScriptedClaudeClient:
                             {
                                 "question": "Pick one",
                                 "options": [
-                                    {"label": "A", "description": ""},
-                                    {"label": "B", "description": ""},
+                                    {"label": label, "description": ""}
+                                    for label in self.question_option_labels
                                 ],
                             }
                         ]
@@ -388,6 +393,38 @@ async def test_ask_user_question_hook_feeds_answer_back(
         "permissionDecisionReason"
     ]
     assert "A" in reason and "Pick one" in reason
+
+
+async def test_ask_user_question_truncates_choices_to_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Claude's AskUserQuestion may offer up to 4 options; octomate caps a question's
+    # choices, so the card presents (no validation crash) with only the cap kept.
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
+    monkeypatch.setattr(
+        ScriptedClaudeClient, "question_option_labels", ["A", "B", "C", "D"]
+    )
+    question = DeferredQuestion(
+        tool_name="AskUserQuestion",
+        tool_call_id="q1",
+        position=0,
+        args={"question": "Pick one", "choices": ["A", "B", "C"], "hint": ""},
+    )
+    tentacle, _dam, feelers = _build(FakePresentedBatch(questions=[question]))
+
+    task = asyncio.ensure_future(_drain(tentacle))
+    batch_id = await _wait_for_pending(tentacle)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
+    )
+    await task
+
+    [presented] = feelers.requests
+    args = cast(DeferredToolRequests, presented).calls[0].args_as_dict()
+    choices = args["questions"][0]["choices"]
+    assert choices == ["A", "B", "C"]
+    assert len(choices) == MAX_QUESTION_CHOICES
 
 
 async def test_kick_routes_response_to_live_waiter() -> None:

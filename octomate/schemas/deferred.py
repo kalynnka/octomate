@@ -41,15 +41,24 @@ from octomate.types.deferred import (
 from octomate.types.json import JsonObject
 
 
+# Max suggested choices a question may carry — octomate keeps question cards to a
+# small, consistent set. It bounds what the inkling ask tool may suggest, and
+# bridged agents whose native tool offers more (Claude's `AskUserQuestion` allows
+# up to 4) are truncated to fit. Channels render each choice as a button; the user
+# can always answer with free text, so this is guidance, not a hard UI limit.
+MAX_QUESTION_CHOICES = 3
+
+
 class QuestionRequest(TypedDict):
     question: str
     choices: NotRequired[
         Annotated[
             list[str] | None,
             Field(
-                max_length=3,
+                max_length=MAX_QUESTION_CHOICES,
                 description=(
-                    "Up to 3 suggested choices. The user can still answer with text."
+                    f"Up to {MAX_QUESTION_CHOICES} suggested choices. The user can "
+                    "still answer with text."
                 ),
             ),
         ]
