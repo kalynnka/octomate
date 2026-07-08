@@ -24,7 +24,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator, map_usage
 
 
 def test_adapter_maps_a_full_turn_to_messages_and_events() -> None:
@@ -148,3 +148,76 @@ def test_adapter_build_result_synthesizes_agent_run_result() -> None:
     assert result.output == "hello"
     assert result.run_id == "run-1"
     assert result.all_messages() == acc.messages
+
+
+def test_adapter_fills_response_provenance_usage_and_signature() -> None:
+    acc = ClaudeRunAccumulator()
+    list(
+        acc.consume(
+            AssistantMessage(
+                content=[
+                    ThinkingBlock(thinking="hmm", signature="sig-xyz"),
+                    TextBlock(text="done"),
+                ],
+                model="claude-opus-4-8",
+                usage={
+                    "input_tokens": 120,
+                    "output_tokens": 34,
+                    "cache_creation_input_tokens": 10,
+                    "cache_read_input_tokens": 5,
+                    "service_tier": "standard",  # non-int → ignored
+                },
+                message_id="msg_01ABC",
+                stop_reason="end_turn",
+                parent_tool_use_id="task_1",
+            )
+        )
+    )
+
+    turn = acc.messages[-1]
+    assert isinstance(turn, ModelResponse)
+
+    # Thinking signatures survive with their provider (required for round-trip).
+    thinking = turn.parts[0]
+    assert isinstance(thinking, ThinkingPart)
+    assert thinking.signature == "sig-xyz"
+    assert thinking.provider_name == "anthropic"
+
+    # Response provenance is filled from the Claude message.
+    assert turn.provider_name == "anthropic"
+    assert turn.provider_response_id == "msg_01ABC"
+    assert turn.finish_reason == "stop"
+    assert turn.provider_details == {
+        "finish_reason": "end_turn",
+        "parent_tool_use_id": "task_1",
+    }
+
+    # Usage maps onto RequestUsage, Anthropic cache names included.
+    assert turn.usage.input_tokens == 120
+    assert turn.usage.output_tokens == 34
+    assert turn.usage.cache_write_tokens == 10
+    assert turn.usage.cache_read_tokens == 5
+    assert turn.usage.details == {}
+
+
+def test_map_usage_maps_cache_names_and_preserves_extra_counts() -> None:
+    usage = map_usage(
+        {
+            "input_tokens": 7,
+            "output_tokens": 3,
+            "cache_creation_input_tokens": 2,
+            "cache_read_input_tokens": 1,
+            "some_new_count": 9,
+            "service_tier": "standard",  # non-int → dropped
+        }
+    )
+    assert usage.input_tokens == 7
+    assert usage.output_tokens == 3
+    assert usage.cache_write_tokens == 2
+    assert usage.cache_read_tokens == 1
+    # Unknown integer counts are preserved; already-mapped names don't double up.
+    assert usage.details == {"some_new_count": 9}
+
+    empty = map_usage(None)
+    assert empty.input_tokens == 0 and empty.output_tokens == 0
+    assert empty.cache_write_tokens == 0 and empty.cache_read_tokens == 0

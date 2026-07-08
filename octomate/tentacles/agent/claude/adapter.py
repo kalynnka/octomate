@@ -25,6 +25,7 @@ from pydantic_ai import AgentRunResult
 # needs (message history + run/conversation id); pinned with the SDK version.
 from pydantic_ai._agent_graph import GraphAgentState
 from pydantic_ai.messages import (
+    FinishReason,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelMessage,
@@ -42,10 +43,54 @@ from pydantic_ai.messages import (
     UserContent,
     UserPromptPart,
 )
+from pydantic_ai.usage import RequestUsage
 
 from octomate.capabilities.events import StreamEvents
 
 StructuredOutputT = TypeVar("StructuredOutputT")
+
+# The Claude Agent SDK runs against Anthropic; naming the provider lets pydantic-ai
+# round-trip the thinking `signature` and keep the provenance fields honest.
+CLAUDE_PROVIDER_NAME = "anthropic"
+
+# Claude stop reasons → pydantic-ai's OpenTelemetry-normalized FinishReason, mirroring
+# pydantic_ai.models.anthropic._FINISH_REASON_MAP so a forked/replayed Claude run reads
+# the same way a native pydantic-ai run does.
+FINISH_REASON_MAP: dict[str, FinishReason] = {
+    "compaction": "stop",
+    "end_turn": "stop",
+    "max_tokens": "length",
+    "model_context_window_exceeded": "length",
+    "stop_sequence": "stop",
+    "tool_use": "tool_call",
+    "pause_turn": "stop",
+    "refusal": "content_filter",
+}
+
+
+def map_usage(raw: dict[str, object] | None) -> RequestUsage:
+    """Project a Claude usage block onto pydantic-ai's RequestUsage.
+
+    Anthropic names its cache counts differently (`cache_creation`/`cache_read` →
+    RequestUsage's `cache_write`/`cache_read`); any other integer counts are kept
+    verbatim in `details` so nothing is silently dropped.
+    """
+    if not raw:
+        return RequestUsage()
+    counts = {key: value for key, value in raw.items() if isinstance(value, int)}
+    primary = {
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    }
+    return RequestUsage(
+        input_tokens=counts.get("input_tokens", 0),
+        output_tokens=counts.get("output_tokens", 0),
+        cache_write_tokens=counts.get("cache_creation_input_tokens", 0),
+        cache_read_tokens=counts.get("cache_read_input_tokens", 0),
+        details={key: value for key, value in counts.items() if key not in primary},
+    )
 
 
 @dataclass
@@ -138,7 +183,11 @@ class ClaudeRunAccumulator:
                 yield PartStartEvent(index=index, part=text)
                 yield PartEndEvent(index=index, part=text)
             elif isinstance(block, ThinkingBlock):
-                thinking = ThinkingPart(content=block.thinking)
+                thinking = ThinkingPart(
+                    content=block.thinking,
+                    signature=block.signature,
+                    provider_name=CLAUDE_PROVIDER_NAME,
+                )
                 parts.append(thinking)
                 index = self._take_index()
                 yield PartStartEvent(index=index, part=thinking)
@@ -153,7 +202,28 @@ class ClaudeRunAccumulator:
                 self.tool_names[block.id] = block.name
                 yield FunctionToolCallEvent(part=call)
         if parts:
-            self.messages.append(ModelResponse(parts=parts, model_name=message.model))
+            provider_details: dict[str, str] = {}
+            if message.stop_reason:
+                provider_details["finish_reason"] = message.stop_reason
+            if message.parent_tool_use_id:
+                provider_details["parent_tool_use_id"] = message.parent_tool_use_id
+            if message.error:
+                provider_details["error"] = message.error
+            self.messages.append(
+                ModelResponse(
+                    parts=parts,
+                    model_name=message.model,
+                    usage=map_usage(message.usage),
+                    provider_name=CLAUDE_PROVIDER_NAME,
+                    provider_response_id=message.message_id,
+                    finish_reason=(
+                        FINISH_REASON_MAP.get(message.stop_reason)
+                        if message.stop_reason
+                        else None
+                    ),
+                    provider_details=provider_details or None,
+                )
+            )
 
     def _consume_tool_results(
         self, message: UserMessage
