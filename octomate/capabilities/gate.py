@@ -40,21 +40,33 @@ GATE_TOOLSET_ID = "gate"
 GATE_INSTRUCTION = """\
 ## Gate — decide where this conversation goes and who handles it
 
-In plain terms, these tools route the conversation. If you can just answer, do that
-and call none of them. Otherwise:
+These tools route the conversation. Default to handling it yourself: if you can answer
+well or do the work, do it and call none of them. Routing is the exception — reach for a
+tool only when one of the signals below clearly fires.
 
-- `scry`: list the other agents you can hand off to (their names and what each is good
-  at). Call it first to choose a valid `summon` target.
-- `summon`: hand this conversation to another agent. They become its owner and continue
-  from a self-contained brief you write. Use when a different agent is clearly better
-  suited. Copy `agent_id` and `model` exactly from one `scry` route, and choose
-  `destination`: `here` hands it over in this same conversation, `thread` hands it off
-  into a new sub-thread of the current chat.
-- `teleport`: move this conversation into a new sub-thread of the current chat and keep
-  handling it yourself; everything said so far comes with you. Use for multi-step or
-  long-running work that deserves its own thread.
+### `summon` — hand off to another agent
+Summon transfers the conversation to a specialist who takes over this turn *and its
+follow-ups*: a real, sticky handoff, so the bar is high. Summon only when:
+- The request needs a capability you lack — e.g. running or editing code in a real
+  repository or environment, or a domain another agent is described for.
+- It is substantial specialist work another agent would do markedly better, not
+  something you can handle from what you already know.
 
-The current agent is not a valid summon target.
+Do NOT summon when:
+- You can already answer or do it — length or a technical-sounding topic is not a reason.
+- You are only mildly unsure — ask the user a clarifying question instead.
+- No route clearly fits — handle it yourself or ask; never summon on a guess.
+
+When one fires, call `scry` first to see the agents and what each is for, pick the one
+whose description clearly matches, and `summon` it — copying its `agent_id` and `model`
+exactly from that route, and writing a self-contained brief since the other agent may not
+see this chat. Choose `destination`: `here` hands over this same conversation; `thread`
+opens a new sub-thread of the current chat. Youself are not a valid summon target.
+
+### `teleport` — relocate yourself
+Move this conversation into a new sub-thread that *you* keep handling, carrying everything
+said so far. Use it for multi-step or long-running work that deserves its own thread but
+that you are the right one to do — no other agent involved.
 """
 
 
@@ -92,7 +104,22 @@ class GateCapability(AbstractCapability[None]):
             reason: str,
             summon: str,
         ) -> str:
-            """Ask another Octomate agent to continue this request."""
+            """Hand this conversation to another Octomate agent, who takes it over.
+
+            Args:
+                agent_id: The target agent, copied exactly from a `scry` route.
+                model: That route's model, copied exactly.
+                destination: `here` to hand over this same conversation, or `thread` to
+                    open a new sub-thread of the current chat and hand off there.
+                hint: A short, user-facing note announcing the handoff; used as the
+                    opener when a new `thread` is started.
+                reason: One line on why this agent fits — recorded with the handoff, not
+                    shown to the user as the reply.
+                summon: The self-contained brief the other agent starts from. It becomes
+                    their opening prompt and they cannot see this conversation, so give
+                    the goal, the relevant context and decisions, what's been tried, and
+                    what a finished result looks like.
+            """
             if destination == "here" and not self.allow_here:
                 raise ModelRetry(
                     "Cannot take over a group's main channel in place. "
