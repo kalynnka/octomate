@@ -33,6 +33,8 @@ from pydantic_ai.messages import (
     ModelRequestPart,
     ModelResponse,
     ModelResponsePart,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     PartEndEvent,
     PartStartEvent,
     RetryPromptPart,
@@ -43,7 +45,7 @@ from pydantic_ai.messages import (
     UserContent,
     UserPromptPart,
 )
-from pydantic_ai.usage import RequestUsage
+from pydantic_ai.usage import RequestUsage, RunUsage
 
 from octomate.capabilities.events import StreamEvents
 
@@ -113,6 +115,9 @@ class ClaudeRunAccumulator:
     """
 
     messages: list[ModelMessage] = field(default_factory=list)
+    # Aggregated like a native pydantic-ai run: each response's RequestUsage summed in,
+    # one request counted per response. Surfaces via AgentRunResult.usage().
+    usage: RunUsage = field(default_factory=RunUsage)
     result_text: str = ""
     session_id: str | None = None
     # Set when the run was driven with an `output_format` schema: the SDK's
@@ -144,6 +149,7 @@ class ClaudeRunAccumulator:
     def build_result(self, run_id: str, conversation_id: str) -> AgentRunResult[str]:
         state = GraphAgentState(
             message_history=self.messages,
+            usage=self.usage,
             run_id=run_id,
             conversation_id=conversation_id,
         )
@@ -160,6 +166,7 @@ class ClaudeRunAccumulator:
         output = output_adapter.validate_python(self.structured_output)
         state = GraphAgentState(
             message_history=self.messages,
+            usage=self.usage,
             run_id=run_id,
             conversation_id=conversation_id,
         )
@@ -192,7 +199,7 @@ class ClaudeRunAccumulator:
                 index = self._take_index()
                 yield PartStartEvent(index=index, part=thinking)
                 yield PartEndEvent(index=index, part=thinking)
-            elif isinstance(block, (ToolUseBlock, ServerToolUseBlock)):
+            elif isinstance(block, ToolUseBlock):
                 call = ToolCallPart(
                     tool_name=block.name,
                     args=block.input,
@@ -201,6 +208,46 @@ class ClaudeRunAccumulator:
                 parts.append(call)
                 self.tool_names[block.id] = block.name
                 yield FunctionToolCallEvent(part=call)
+            elif isinstance(block, ServerToolUseBlock):
+                # Server-side tools (advisor, web_search, …) are run by the API, so
+                # they persist as native parts a forked pydantic-ai agent reads as
+                # already-executed rather than as a pending function call. The live
+                # event stays the function-tool event the channels already render.
+                self.tool_names[block.id] = block.name
+                parts.append(
+                    NativeToolCallPart(
+                        tool_name=block.name,
+                        args=block.input,
+                        tool_call_id=block.id,
+                        provider_name=CLAUDE_PROVIDER_NAME,
+                    )
+                )
+                yield FunctionToolCallEvent(
+                    part=ToolCallPart(
+                        tool_name=block.name,
+                        args=block.input,
+                        tool_call_id=block.id,
+                    )
+                )
+            elif isinstance(block, ServerToolResultBlock):
+                # A server tool's result rides in the same assistant message as its
+                # call, so it belongs to this ModelResponse — not a later ModelRequest.
+                name = self.tool_names.get(block.tool_use_id, "")
+                parts.append(
+                    NativeToolReturnPart(
+                        tool_name=name,
+                        content=block.content,
+                        tool_call_id=block.tool_use_id,
+                        provider_name=CLAUDE_PROVIDER_NAME,
+                    )
+                )
+                yield FunctionToolResultEvent(
+                    part=ToolReturnPart(
+                        tool_name=name,
+                        content=block.content,
+                        tool_call_id=block.tool_use_id,
+                    )
+                )
         if parts:
             provider_details: dict[str, str] = {}
             if message.stop_reason:
@@ -209,11 +256,16 @@ class ClaudeRunAccumulator:
                 provider_details["parent_tool_use_id"] = message.parent_tool_use_id
             if message.error:
                 provider_details["error"] = message.error
+            response_usage = map_usage(message.usage)
+            # Match native pydantic-ai run accounting (see _agent_graph): sum each
+            # response's usage into the run usage, one request counted per response.
+            self.usage.incr(response_usage)
+            self.usage.requests += 1
             self.messages.append(
                 ModelResponse(
                     parts=parts,
                     model_name=message.model,
-                    usage=map_usage(message.usage),
+                    usage=response_usage,
                     provider_name=CLAUDE_PROVIDER_NAME,
                     provider_response_id=message.message_id,
                     finish_reason=(
@@ -246,14 +298,6 @@ class ClaudeRunAccumulator:
                         content=block.content if block.content is not None else "",
                         tool_call_id=block.tool_use_id,
                     )
-                parts.append(part)
-                yield FunctionToolResultEvent(part=part)
-            elif isinstance(block, ServerToolResultBlock):
-                part = ToolReturnPart(
-                    tool_name=self.tool_names.get(block.tool_use_id, ""),
-                    content=block.content,
-                    tool_call_id=block.tool_use_id,
-                )
                 parts.append(part)
                 yield FunctionToolResultEvent(part=part)
         if parts:

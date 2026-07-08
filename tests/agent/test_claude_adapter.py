@@ -3,6 +3,8 @@ from __future__ import annotations
 from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
+    ServerToolResultBlock,
+    ServerToolUseBlock,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -14,6 +16,8 @@ from pydantic_ai.messages import (
     FunctionToolResultEvent,
     ModelRequest,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     PartEndEvent,
     PartStartEvent,
     RetryPromptPart,
@@ -150,6 +154,47 @@ def test_adapter_build_result_synthesizes_agent_run_result() -> None:
     assert result.all_messages() == acc.messages
 
 
+def test_adapter_run_usage_aggregates_like_a_native_run() -> None:
+    acc = ClaudeRunAccumulator()
+    acc.begin("go")
+    list(
+        acc.consume(
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Read", input={})],
+                model="m",
+                usage={"input_tokens": 100, "output_tokens": 10},
+            )
+        )
+    )
+    # A tool result is a ModelRequest, not a response — it must not count as a request.
+    list(
+        acc.consume(
+            UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="ok")])
+        )
+    )
+    list(
+        acc.consume(
+            AssistantMessage(
+                content=[TextBlock(text="done")],
+                model="m",
+                usage={
+                    "input_tokens": 120,
+                    "output_tokens": 5,
+                    "cache_read_input_tokens": 40,
+                },
+            )
+        )
+    )
+
+    # AgentRunResult.usage reports the aggregated RunUsage, exactly as a native
+    # pydantic-ai run does — summed tokens, one request per model response.
+    run_usage = acc.build_result(run_id="run-1", conversation_id="conv-1").usage
+    assert run_usage.requests == 2
+    assert run_usage.input_tokens == 220
+    assert run_usage.output_tokens == 15
+    assert run_usage.cache_read_tokens == 40
+
+
 def test_adapter_fills_response_provenance_usage_and_signature() -> None:
     acc = ClaudeRunAccumulator()
     list(
@@ -198,6 +243,54 @@ def test_adapter_fills_response_provenance_usage_and_signature() -> None:
     assert turn.usage.cache_write_tokens == 10
     assert turn.usage.cache_read_tokens == 5
     assert turn.usage.details == {}
+
+
+def test_adapter_maps_server_tools_to_native_parts() -> None:
+    acc = ClaudeRunAccumulator()
+    events = list(
+        acc.consume(
+            AssistantMessage(
+                content=[
+                    ServerToolUseBlock(id="s1", name="web_search", input={"query": "x"}),
+                    ServerToolResultBlock(tool_use_id="s1", content={"results": []}),
+                    TextBlock(text="here you go"),
+                ],
+                model="claude-opus-4-8",
+            )
+        )
+    )
+
+    # Live stream still renders server tools through the function-tool events the
+    # channels already handle (call + result), then the text part.
+    assert [type(e) for e in events] == [
+        FunctionToolCallEvent,
+        FunctionToolResultEvent,
+        PartStartEvent,
+        PartEndEvent,
+    ]
+
+    # Persisted parts are native — a fork reads them as already-executed, both in the
+    # same ModelResponse (the result rides the assistant message, not a ModelRequest).
+    turn = acc.messages[-1]
+    assert isinstance(turn, ModelResponse)
+    assert [type(p) for p in turn.parts] == [
+        NativeToolCallPart,
+        NativeToolReturnPart,
+        TextPart,
+    ]
+
+    native_call = turn.parts[0]
+    assert isinstance(native_call, NativeToolCallPart)
+    assert native_call.tool_name == "web_search"
+    assert native_call.tool_call_id == "s1"
+    assert native_call.provider_name == "anthropic"
+
+    native_return = turn.parts[1]
+    assert isinstance(native_return, NativeToolReturnPart)
+    assert native_return.tool_name == "web_search"  # recovered from the call by id
+    assert native_return.tool_call_id == "s1"
+    assert native_return.content == {"results": []}
+    assert native_return.provider_name == "anthropic"
 
 
 def test_map_usage_maps_cache_names_and_preserves_extra_counts() -> None:
