@@ -204,6 +204,61 @@ async def test_record_run_syncs_cached_history() -> None:
     assert len(list(hot.messages)) == 2
 
 
+async def test_record_second_run_keeps_prior_run_messages() -> None:
+    # Recording a second run through the same live conversation reference persists
+    # only the new run rather than re-merging the whole conversation graph (which
+    # could null a NOT NULL run_id). Both runs and all their messages survive, and
+    # the passed reference is never mutated.
+    service = ConversationManager()
+    first = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    await service.record_agent_run(
+        first,
+        run_id="run-1",
+        messages=[
+            RawModelRequest(
+                parts=[UserPromptPart(content="first")],
+                run_id="run-1",
+                timestamp=datetime.now(timezone.utc),
+            ),
+            RawModelResponse(
+                parts=[TextPart(content="one")],
+                run_id="run-1",
+                timestamp=datetime.now(timezone.utc),
+                finish_reason="stop",
+            ),
+        ],
+    )
+
+    # The next turn records again through the SAME cached conversation reference
+    # (as a live tentacle holds it), whose run collection is stale vs the DB.
+    await service.record_agent_run(
+        first,
+        run_id="run-2",
+        messages=[
+            RawModelRequest(
+                parts=[UserPromptPart(content="second")],
+                run_id="run-2",
+                timestamp=datetime.now(timezone.utc),
+            ),
+            RawModelResponse(
+                parts=[TextPart(content="two")],
+                run_id="run-2",
+                timestamp=datetime.now(timezone.utc),
+                finish_reason="stop",
+            ),
+        ],
+    )
+
+    # The passed conversation reference is never mutated (no run appended to it),
+    # so its collections can't go stale and drive a graph re-merge.
+    assert list(first.runs) == []
+
+    fresh = ConversationManager()
+    reloaded = await fresh.ensure(_thread(), agent_tentacle_id="inkling")
+    assert {run.id for run in reloaded.runs} == {"run-1", "run-2"}
+    assert len(list(reloaded.messages)) == 4
+
+
 async def test_drop_trailing_deferral_removes_from_cache_and_db() -> None:
     service = ConversationManager()
     conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")

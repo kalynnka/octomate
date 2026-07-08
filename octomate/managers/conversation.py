@@ -124,13 +124,27 @@ class ConversationManager:
             messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
         )
         async with async_session() as session:
-            conversation.runs.append(run)
-            conversation.external_id = external_id
-            conversation = await session.merge(conversation)
+            # Persist only the new run and its messages, then reload the
+            # conversation to re-sync the cache. Re-merging the whole cached
+            # conversation graph (its prior runs and their message collections) can
+            # make SQLAlchemy believe a message was dropped from a stale run
+            # collection and null its NOT NULL `run_id`, raising an IntegrityError;
+            # adding just the new run sidesteps that reconciliation entirely. The
+            # cached `conversation` is detached, so it can't be refreshed in place —
+            # the freshly loaded copy becomes the coherent cache the next ensure()
+            # returns.
+            session.add(run)
+            reloaded = await session.one_or_none(
+                Conversation, expressions=[Conversation["id"] == conversation.id]
+            )
+            if reloaded is not None:
+                reloaded.external_id = external_id
             await session.commit()
-            await session.refresh(conversation)
+            if reloaded is not None:
+                await reloaded.runs
+                await reloaded.messages
+                self.cache_conversation(reloaded)
 
-        self.cache_conversation(conversation)
         return run
 
     async def fork(
