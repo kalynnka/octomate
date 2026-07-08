@@ -274,6 +274,36 @@ def test_adapter_maps_reasoning_delta_to_thinking_part() -> None:
     assert thinking.content == "checking"
 
 
+def test_adapter_suppresses_empty_reasoning_item() -> None:
+    acc = CodexRunAccumulator()
+
+    # Codex often emits a reasoning item with no text (summaries off / short turn).
+    events = list(
+        acc.consume(
+            notification(
+                "item/completed",
+                ItemCompletedNotification(
+                    completed_at_ms=1,
+                    item=ThreadItem.model_validate(
+                        {
+                            "id": "reasoning-1",
+                            "content": [],
+                            "summary": [],
+                            "type": "reasoning",
+                        }
+                    ),
+                    thread_id="thread-1",
+                    turn_id="turn-1",
+                ),
+            )
+        )
+    )
+
+    # No thinking part is emitted or persisted for an empty reasoning item.
+    assert events == []
+    assert acc.messages == []
+
+
 def test_adapter_maps_command_item_to_native_tool_parts() -> None:
     acc = CodexRunAccumulator()
 

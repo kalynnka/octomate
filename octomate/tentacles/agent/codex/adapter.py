@@ -608,7 +608,19 @@ class CodexRunAccumulator:
         self, item: ReasoningThreadItem, event: JsonObject
     ) -> Iterator[StreamEvents[str]]:
         state = self.streaming_parts.pop(item.id, None)
-        content = "\n".join([*(item.content or []), *(item.summary or [])])
+        reasoning = "\n".join([*(item.content or []), *(item.summary or [])])
+        streamed = (
+            state.part.content
+            if state is not None and isinstance(state.part, ThinkingPart)
+            else ""
+        )
+        content = reasoning or streamed
+        if not content:
+            # Codex emits a reasoning item even when it carries no reasoning text
+            # (summaries disabled, or a short turn with no streamed reasoning). Don't
+            # surface an empty thinking block; keep the raw event for replay.
+            self.pending_events.append(event)
+            return
         if state is None or not isinstance(state.part, ThinkingPart):
             part = ThinkingPart(
                 content=content,
@@ -618,7 +630,7 @@ class CodexRunAccumulator:
             state = StreamingPartState(index=self.take_part_index(), part=part)
             yield PartStartEvent(index=state.index, part=part)
         else:
-            state.part.content = content or state.part.content
+            state.part.content = content
         state.events.append(event)
         yield PartEndEvent(index=state.index, part=state.part)
         self.messages.append(
