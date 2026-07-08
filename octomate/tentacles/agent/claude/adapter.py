@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pydantic import TypeAdapter
 
@@ -25,6 +26,7 @@ from pydantic_ai import AgentRunResult
 # needs (message history + run/conversation id); pinned with the SDK version.
 from pydantic_ai._agent_graph import GraphAgentState
 from pydantic_ai.messages import (
+    BinaryContent,
     FinishReason,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -93,6 +95,41 @@ def map_usage(raw: dict[str, object] | None) -> RequestUsage:
         cache_read_tokens=counts.get("cache_read_input_tokens", 0),
         details={key: value for key, value in counts.items() if key not in primary},
     )
+
+
+def normalize_tool_result_content(
+    content: str | list[dict[str, Any]] | None,
+) -> str | list[str | BinaryContent | dict[str, Any]]:
+    """Normalize a Claude tool result into pydantic-ai's tool-return shape.
+
+    A string result stays a string. A block list (Anthropic text/image blocks)
+    becomes a list of `str` and `BinaryContent`, so a forked pydantic-ai agent and
+    the replay renderer see real files instead of a raw base64 dict dumped into the
+    result text. Blocks that aren't plain text or a base64 image are kept verbatim.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    items: list[str | BinaryContent | dict[str, Any]] = []
+    for block in content:
+        source = block.get("source")
+        if block.get("type") == "text":
+            items.append(str(block.get("text", "")))
+        elif (
+            block.get("type") == "image"
+            and isinstance(source, dict)
+            and source.get("type") == "base64"
+        ):
+            items.append(
+                BinaryContent(
+                    data=base64.b64decode(source.get("data", "")),
+                    media_type=str(source.get("media_type", "application/octet-stream")),
+                )
+            )
+        else:
+            items.append(block)
+    return items
 
 
 @dataclass
@@ -295,7 +332,7 @@ class ClaudeRunAccumulator:
                 else:
                     part = ToolReturnPart(
                         tool_name=name,
-                        content=block.content if block.content is not None else "",
+                        content=normalize_tool_result_content(block.content),
                         tool_call_id=block.tool_use_id,
                     )
                 parts.append(part)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
@@ -12,6 +14,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from pydantic_ai.messages import (
+    BinaryContent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelRequest,
@@ -28,7 +31,11 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator, map_usage
+from octomate.tentacles.agent.claude.adapter import (
+    ClaudeRunAccumulator,
+    map_usage,
+    normalize_tool_result_content,
+)
 
 
 def test_adapter_maps_a_full_turn_to_messages_and_events() -> None:
@@ -243,6 +250,74 @@ def test_adapter_fills_response_provenance_usage_and_signature() -> None:
     assert turn.usage.cache_write_tokens == 10
     assert turn.usage.cache_read_tokens == 5
     assert turn.usage.details == {}
+
+
+def test_normalize_tool_result_content_text_and_image() -> None:
+    assert normalize_tool_result_content("hi") == "hi"
+    assert normalize_tool_result_content(None) == ""
+
+    png = base64.b64encode(b"PNGDATA").decode()
+    items = normalize_tool_result_content(
+        [
+            {"type": "text", "text": "here is the screenshot"},
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": png},
+            },
+            {"type": "weird", "payload": 1},  # unknown block kept verbatim
+        ]
+    )
+    assert isinstance(items, list)
+    assert items[0] == "here is the screenshot"
+    image = items[1]
+    assert isinstance(image, BinaryContent)
+    assert image.media_type == "image/png"
+    assert image.data == b"PNGDATA"
+    assert items[2] == {"type": "weird", "payload": 1}
+
+
+def test_adapter_tool_result_image_becomes_binary_content() -> None:
+    acc = ClaudeRunAccumulator()
+    list(
+        acc.consume(
+            AssistantMessage(
+                content=[ToolUseBlock(id="t1", name="Read", input={})], model="m"
+            )
+        )
+    )
+    png = base64.b64encode(b"PNGDATA").decode()
+    list(
+        acc.consume(
+            UserMessage(
+                content=[
+                    ToolResultBlock(
+                        tool_use_id="t1",
+                        content=[
+                            {"type": "text", "text": "screenshot:"},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": png,
+                                },
+                            },
+                        ],
+                    )
+                ]
+            )
+        )
+    )
+
+    request = acc.messages[-1]
+    assert isinstance(request, ModelRequest)
+    ret = request.parts[0]
+    assert isinstance(ret, ToolReturnPart)
+    # The image is a real file part, not a base64 blob dumped into the result text.
+    assert ret.model_response_str() == "screenshot:"
+    assert len(ret.files) == 1
+    assert isinstance(ret.files[0], BinaryContent)
+    assert ret.files[0].data == b"PNGDATA"
 
 
 def test_adapter_maps_server_tools_to_native_parts() -> None:
