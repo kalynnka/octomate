@@ -1,9 +1,13 @@
 # Claude Agent Integration — Implementation Plan
 
-**Status:** Phases 0–6 shipped. Phases 5 (SSH) + 6 (lifecycle) landed on
-`feat/claude-ssh-and-lifecycle`. Phase 3's session resume reuses the conversation's
-existing `external_id` column (no separate `agent_session_id`); the raw-transcript
-audit blob is still deferred. Pattern 2 (native-run → web replay) remains a follow-up.
+**Status:** done (moved to `done/` 2026-07-08). Phases 0–6 shipped; Phases 5 (SSH)
++ 6 (lifecycle) landed on `feat/claude-ssh-and-lifecycle`. Phase 3's session resume
+reuses the conversation's existing `external_id` column (no separate
+`agent_session_id`). The raw-transcript audit blob (Phase 3, §Persistence) is
+**retired, not deferred**: rather than hedge a lossy adapter with a raw copy, the
+message adapter was made faithful — provenance, usage, thinking signatures, and
+native server-tool parts (commits `c41229b`, `7eea16d`) — so a separate lossless
+transcript earns nothing. Pattern 2 (native-run → web replay) remains a follow-up.
 **Scope:** integrate the Claude Agent SDK (`claude-agent-sdk`, installed `0.1.80`; CLI `2.1.177`) into octomate in two ways.
 
 - **Pattern 1 — routable Claude agent tentacle (build now).** Triage dispatches "let Claude do X" to a Claude agent that runs the SDK locally or on a remote host over SSH, and streams adapted events back to the originating channel.

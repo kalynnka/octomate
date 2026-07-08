@@ -61,7 +61,7 @@ When one fires, call `scry` first to see the agents and what each is for, pick t
 whose description clearly matches, and `summon` it — copying its `agent_id` and `model`
 exactly from that route, and writing a self-contained brief since the other agent may not
 see this chat. Choose `destination`: `here` hands over this same conversation; `thread`
-opens a new sub-thread of the current chat. Youself are not a valid summon target.
+opens a new sub-thread of the current chat. You yourself are not a valid summon target.
 
 ### `teleport` — relocate yourself
 Move this conversation into a new sub-thread that *you* keep handling, carrying everything
