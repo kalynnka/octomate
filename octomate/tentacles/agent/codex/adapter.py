@@ -84,6 +84,17 @@ CODEX_FINISH_REASON_MAP: dict[TurnStatus, FinishReason] = {
 
 json_object_adapter = TypeAdapter(JsonObject)
 
+# Codex thread items that are genuine tool activity, rendered as tool call/return.
+# Everything else — agent/user messages, reasoning, plans, and unknown items — is
+# content or telemetry, so it is never turned into a fabricated tool.
+TOOL_ITEM_TYPES: tuple[type[BaseModel], ...] = (
+    CommandExecutionThreadItem,
+    FileChangeThreadItem,
+    McpToolCallThreadItem,
+    DynamicToolCallThreadItem,
+    WebSearchThreadItem,
+)
+
 
 @dataclass
 class StreamingPartState:
@@ -425,7 +436,13 @@ class CodexRunAccumulator:
             )
             yield PartStartEvent(index=self.streaming_parts[item.id].index, part=part)
             return
-        yield from self.start_native_tool(item, event)
+        if isinstance(item, TOOL_ITEM_TYPES):
+            yield from self.start_native_tool(item, event)
+            return
+        # Agent/user messages, reasoning, and unknown items are not tools: their text
+        # or thinking arrives via the delta/completion handlers, so just keep the raw
+        # event for replay metadata rather than fabricating a tool call.
+        self.pending_events.append(event)
 
     def start_native_tool(
         self, item: BaseModel, event: JsonObject
@@ -556,7 +573,9 @@ class CodexRunAccumulator:
         elif isinstance(item, WebSearchThreadItem):
             yield from self.complete_native_tool(item, event, outcome="success")
         else:
-            yield from self.complete_native_tool(item, event, outcome="success")
+            # User-message echoes and any other non-tool item: preserve the raw event
+            # in metadata, but don't fabricate a tool call/return — they are messages.
+            self.pending_events.append(event)
 
     def complete_agent_message(
         self, item: AgentMessageThreadItem, event: JsonObject

@@ -580,6 +580,61 @@ def test_adapter_maps_plan_delta_to_thinking_part() -> None:
     assert thinking.content == "1. inspect\n2. patch"
 
 
+def test_adapter_does_not_render_message_items_as_tools() -> None:
+    acc = CodexRunAccumulator()
+    acc.begin("say hi")
+    user_item = ThreadItem.model_validate(
+        {
+            "id": "um-1",
+            "type": "userMessage",
+            "content": [{"type": "text", "text": "say hi"}],
+        }
+    )
+
+    events = list(
+        acc.consume(
+            notification(
+                "item/started",
+                ItemStartedNotification(
+                    item=user_item,
+                    started_at_ms=1,
+                    thread_id="thread-1",
+                    turn_id="turn-1",
+                ),
+            )
+        )
+    )
+    events += list(
+        acc.consume(
+            notification(
+                "item/completed",
+                ItemCompletedNotification(
+                    completed_at_ms=2,
+                    item=user_item,
+                    thread_id="thread-1",
+                    turn_id="turn-1",
+                ),
+            )
+        )
+    )
+
+    # A user-message item is content, not a tool: no tool call/return events fire,
+    # and no tool parts are persisted for it.
+    assert not [
+        event
+        for event in events
+        if isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent))
+    ]
+    assert all(
+        not isinstance(part, (NativeToolCallPart, NativeToolReturnPart))
+        for message in acc.messages
+        for part in message.parts
+    )
+    # Only the prompt from begin() is recorded; the echo adds no response message.
+    assert [m for m in acc.messages if isinstance(m, ModelRequest)]
+    assert not [m for m in acc.messages if isinstance(m, ModelResponse)]
+
+
 def test_adapter_maps_usage_and_turn_completion() -> None:
     acc = CodexRunAccumulator()
 
