@@ -282,6 +282,19 @@ async def test_local_transport_passes_no_custom_transport(
     assert FakeClaudeClient.last_transport is None
 
 
+async def test_run_tags_sdk_session_as_cli_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
+
+    assert getattr(FakeClaudeClient.last_options, "env", None) == {
+        "CLAUDE_CODE_ENTRYPOINT": "cli"
+    }
+
+
 async def test_ssh_transport_wired_when_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

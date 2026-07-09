@@ -366,6 +366,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # Stream partial assistant messages so the accumulator can emit token
             # deltas (typewriter) instead of whole blocks; see ClaudeRunAccumulator.
             include_partial_messages=True,
+            # Native Claude clients hide sdk-py transcripts from history. Tag these
+            # user-routed sessions like CLI runs so they stay visible there too.
+            env={"CLAUDE_CODE_ENTRYPOINT": "cli"},
         )
         if isinstance(user_prompt, str):
             prompt_text = user_prompt
