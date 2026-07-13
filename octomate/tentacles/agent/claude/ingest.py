@@ -13,6 +13,10 @@ from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
 if TYPE_CHECKING:
     from octomate import Octomate
 
+    # Runtime dependency runs the other way (restore imports this module's
+    # CLAUDE_NATIVE_ID); the injected instance only needs its type here.
+    from octomate.tentacles.agent.claude.restore import ClaudeSessionRestore
+
 logger = logging.getLogger(__name__)
 
 # Synthetic channel/agent id marking a thread as ingested from a native Claude client
@@ -37,8 +41,9 @@ class ClaudeHookIngest:
     restore binds its rebuilt runs against.
     """
 
-    def __init__(self, octomate: Octomate) -> None:
+    def __init__(self, octomate: Octomate, restore: ClaudeSessionRestore) -> None:
         self.octomate = octomate
+        self.restore = restore
         # Serialize a session's events so the existence check and the write can't race
         # (Claude fires the next event without waiting for our commit). Dropped at
         # SessionEnd so the map does not grow unbounded.
@@ -56,6 +61,13 @@ class ClaudeHookIngest:
                         await self.record_answer(event, event.last_assistant_message)
                 case "SessionEnd":
                     self.locks.pop(event.session_id, None)
+                    # The session is over, so its transcript is complete: rebuild the
+                    # full model timeline in the background, ready before anyone opens
+                    # it. Deduped, so a web open landing meanwhile joins this rebuild.
+                    if event.transcript_path is not None:
+                        self.restore.restore_in_background(
+                            event.session_id, event.transcript_path
+                        )
 
     async def session_thread(self, session_id: str) -> Thread:
         return await self.octomate.thread_manager.ensure(

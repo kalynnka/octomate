@@ -3,8 +3,12 @@ from __future__ import annotations
 import base64
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
+from anthropic.types import Message as AnthropicMessage
+from anthropic.types import TextBlock as AnthropicTextBlock
+from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
+from anthropic.types import ToolUseBlock as AnthropicToolUseBlock
 from pydantic import TypeAdapter
 
 from claude_agent_sdk import (
@@ -19,7 +23,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
-from claude_agent_sdk.types import Message
+from claude_agent_sdk.types import ContentBlock, Message
 from pydantic_ai import AgentRunResult
 
 # GraphAgentState is private pydantic-ai internals. A Claude run produces no real
@@ -54,6 +58,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RequestUsage, RunUsage
 
 from octomate.capabilities.events import StreamEvents
+from octomate.tentacles.agent.claude.transcript import (
+    TranscriptAssistantLine,
+    TranscriptUserLine,
+    TranscriptUserMessage,
+)
 
 StructuredOutputT = TypeVar("StructuredOutputT")
 
@@ -128,12 +137,66 @@ def normalize_tool_result_content(
             items.append(
                 BinaryContent(
                     data=base64.b64decode(source.get("data", "")),
-                    media_type=str(source.get("media_type", "application/octet-stream")),
+                    media_type=str(
+                        source.get("media_type", "application/octet-stream")
+                    ),
                 )
             )
         else:
             items.append(block)
     return items
+
+
+def assistant_message_from_transcript(message: AnthropicMessage) -> AssistantMessage:
+    """The SDK `AssistantMessage` `consume` expects, built from a transcript's typed
+    anthropic message — so a session replayed off disk feeds the same translation a
+    live SDK run does. Text, thinking, and tool-use blocks carry over; block kinds a
+    replay does not need (redacted thinking, server tools) are dropped."""
+    content: list[ContentBlock] = []
+    for block in message.content:
+        if isinstance(block, AnthropicTextBlock):
+            content.append(TextBlock(text=block.text))
+        elif isinstance(block, AnthropicThinkingBlock):
+            content.append(
+                ThinkingBlock(thinking=block.thinking, signature=block.signature)
+            )
+        elif isinstance(block, AnthropicToolUseBlock):
+            content.append(
+                ToolUseBlock(
+                    id=block.id,
+                    name=block.name,
+                    input=cast("dict[str, Any]", block.input),
+                )
+            )
+    return AssistantMessage(
+        content=content,
+        model=message.model,
+        usage=message.usage.model_dump(),
+        stop_reason=message.stop_reason,
+        message_id=message.id,
+    )
+
+
+def user_message_from_transcript(message: TranscriptUserMessage) -> UserMessage:
+    """The SDK `UserMessage` `consume` expects, built from a transcript's typed user
+    message. Only tool-result blocks matter to the run timeline (a plain prompt is
+    seeded via `begin`, not consumed), so other content is left out."""
+    content = message.content
+    if isinstance(content, str):
+        return UserMessage(content=content)
+    blocks: list[ContentBlock] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            blocks.append(
+                ToolResultBlock(
+                    tool_use_id=str(block.get("tool_use_id", "")),
+                    content=cast(
+                        "str | list[dict[str, Any]] | None", block.get("content")
+                    ),
+                    is_error=cast("bool | None", block.get("is_error")),
+                )
+            )
+    return UserMessage(content=blocks)
 
 
 @dataclass
@@ -196,8 +259,21 @@ class ClaudeRunAccumulator:
                 ModelRequest(parts=[UserPromptPart(content=user_prompt)])
             )
 
-    def consume(self, message: Message) -> Iterator[StreamEvents[str]]:
-        if isinstance(message, StreamEvent):
+    def consume(
+        self, message: Message | TranscriptAssistantLine | TranscriptUserLine
+    ) -> Iterator[StreamEvents[str]]:
+        """Translate one message into the run's projections. Accepts both the SDK's
+        live message stream and a transcript's typed lines (transcript.py) — a replay
+        off disk converts to the SDK shape and shares this one translation."""
+        if isinstance(message, TranscriptAssistantLine):
+            yield from self._consume_assistant(
+                assistant_message_from_transcript(message.message)
+            )
+        elif isinstance(message, TranscriptUserLine):
+            yield from self._consume_tool_results(
+                user_message_from_transcript(message.message)
+            )
+        elif isinstance(message, StreamEvent):
             yield from self._consume_stream_event(message)
         elif isinstance(message, AssistantMessage):
             yield from self._consume_assistant(message)
@@ -273,16 +349,12 @@ class ClaudeRunAccumulator:
                 return
             self.streaming_active = True
             stream_index = self._take_index()
-            self.streaming_blocks[index] = StreamingBlock(
-                index=stream_index, part=part
-            )
+            self.streaming_blocks[index] = StreamingBlock(index=stream_index, part=part)
             yield PartStartEvent(index=stream_index, part=part)
             return
         if event_type == "content_block_delta":
             index = event.get("index")
-            state = (
-                self.streaming_blocks.get(index) if isinstance(index, int) else None
-            )
+            state = self.streaming_blocks.get(index) if isinstance(index, int) else None
             if state is None:
                 return
             delta = event.get("delta") or {}

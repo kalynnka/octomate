@@ -73,6 +73,7 @@ from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agent.claude.hooks import CLAUDE_HOOK_PATH, ClaudeHookInput
 from octomate.tentacles.agent.claude.ingest import ClaudeHookIngest
+from octomate.tentacles.agent.claude.restore import ClaudeSessionRestore
 from octomate.tentacles.agent.claude.transport import SSHTransport
 from octomate.types.json import JsonObject
 
@@ -143,10 +144,17 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         return (self.hook_router,)
 
     @cached_property
+    def session_restore(self) -> ClaudeSessionRestore:
+        """Rebuilds native sessions' full model timelines from their transcripts.
+        Shared (cached) so the fire-and-forget rebuild a finished session triggers and
+        a later web open dedup against one another's in-flight work."""
+        return ClaudeSessionRestore(self.octomate)
+
+    @cached_property
     def hook_router(self) -> APIRouter:
         """The route behind `routers()`; cached so it is built once. The ingest reads
         the same managers this tentacle writes, through the already-bound `octomate`."""
-        ingest = ClaudeHookIngest(self.octomate)
+        ingest = ClaudeHookIngest(self.octomate, self.session_restore)
         router = APIRouter(tags=["claude"])
 
         @router.post(

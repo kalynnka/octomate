@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from anthropic.types import ContentBlockParam, Message as AnthropicMessage
+from anthropic.types import Message as AnthropicMessage
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from octomate.types.json import JsonObject
@@ -32,7 +32,10 @@ class TranscriptSessionLine(TranscriptSchema):
 
 class TranscriptUserMessage(TranscriptSchema):
     role: Literal["user"]
-    content: str | list[ContentBlockParam]
+    # Raw blocks, not anthropic `ContentBlockParam`: the input-block union's smart
+    # validation lazily wraps a tool-result's inner string content in a char-by-char
+    # `ValidatorIterator`, corrupting it. Plain dicts round-trip faithfully.
+    content: str | list[JsonObject]
 
 
 class TranscriptUserLine(TranscriptSessionLine):
