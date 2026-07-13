@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal, TypeAlias, cast
 
 import anyio
 from anyio.streams.memory import MemoryObjectSendStream
+from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from pydantic_ai import AgentRunResultEvent
@@ -215,6 +216,13 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
         # Last route the UI picker selected, per chat. A pick only re-routes when
         # it changes; otherwise an in-thread summon owner stands (hybrid).
         self.selected_routes: dict[str, str] = {}
+
+    def routers(self) -> tuple[APIRouter]:
+        """The dev-UI HTTP surface, mounted by `Octomate.connect`."""
+        # Local import: routes.py imports this module, so a module-level import cycles.
+        from octomate.tentacles.channel.web.vercel.routes import build_vercel_router
+
+        return (build_vercel_router(self.octomate, channel_id=self.id),)
 
     def routable_agents(self) -> list[AgentModelConfig]:
         """The agent-model routes the UI offers and can summon — the configured

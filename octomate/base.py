@@ -84,8 +84,7 @@ class Octomate:
                 len(self.agents) + len(self.channels)
             )
             self.channels[tentacle.id] = tentacle
-            return tentacle
-        if isinstance(tentacle, AgentTentacle):
+        elif isinstance(tentacle, AgentTentacle):
             tentacle.octomate = self
             if tentacle.id in self.agents:
                 raise ValueError(f"agent {tentacle.id!r} already connected")
@@ -93,12 +92,16 @@ class Octomate:
                 len(self.agents) + len(self.channels)
             )
             self.agents[tentacle.id] = tentacle
+        else:
+            logger.warning(
+                "Skipping unknown tentacle %s (%s)",
+                tentacle.id,
+                type(tentacle).__name__,
+            )
             return tentacle
-        logger.warning(
-            "Skipping unknown tentacle %s (%s)",
-            tentacle.id,
-            type(tentacle).__name__,
-        )
+        # Mount the tentacle's HTTP surface now that it is bound and registered — a
+        # router builder like the Vercel one looks itself up in `self.channels`.
+        self.routers.extend(tentacle.routers())
         return tentacle
 
     def log_tag(self, logger_name: str) -> tuple[str, Style | None]:
@@ -112,10 +115,6 @@ class Octomate:
             ):
                 return tentacle.id, tentacle.log_color
         return short_log_name(logger_name), None
-
-    def include_router(self, router: APIRouter) -> APIRouter:
-        self.routers.append(router)
-        return router
 
     async def kick(
         self,

@@ -25,7 +25,7 @@ from octomate.tentacles.base import TentacleLogFormatter
 from octomate.tentacles.channel.lark import LarkTentacle
 from octomate.tentacles.channel.napcat import NapcatTentacle
 from octomate.tentacles.channel.slack import SlackTentacle
-from octomate.tentacles.channel.web.vercel import VercelTentacle, build_vercel_router
+from octomate.tentacles.channel.web.vercel import VercelTentacle
 
 config = OctomateConfig()
 
@@ -107,7 +107,13 @@ def create_app() -> FastAPI:
     )
 
     if (claude_config := config.agents.claude) is not None:
-        octomate.connect(ClaudeCodeTentacle("claude", octomate, config=claude_config))
+        octomate.connect(
+            ClaudeCodeTentacle(
+                "claude",
+                octomate,
+                config=claude_config,
+            )
+        )
 
     if (codex_config := config.agents.codex) is not None and codex_config.enabled:
         octomate.connect(
@@ -157,7 +163,6 @@ def create_app() -> FastAPI:
                 config=channel_config,
             )
         )
-        octomate.include_router(build_vercel_router(octomate, channel_id="dev_ui"))
         logger.info(
             "Dev UI (vercel) enabled — open http://%s:%d/",
             config.host,

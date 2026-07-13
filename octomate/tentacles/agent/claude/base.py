@@ -6,6 +6,7 @@ import uuid
 import weakref
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     ClassVar,
@@ -14,6 +15,8 @@ from typing import (
 )
 
 import logfire
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
@@ -68,6 +71,8 @@ from octomate.schemas.deferred import (
 from octomate.schemas.messages import ModelRequest
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.agent.claude.hooks import CLAUDE_HOOK_PATH, ClaudeHookInput
+from octomate.tentacles.agent.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.agent.claude.transport import SSHTransport
 from octomate.types.json import JsonObject
 
@@ -129,6 +134,32 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             weakref.WeakValueDictionary()
         )
         self.models = {model: model for model in config.models}
+
+    def routers(self) -> tuple[APIRouter]:
+        """The tentacle's HTTP surface, mounted by `Octomate.connect`: the hook router
+        native Claude clients (app / CLI / VSCode) POST their session events into.
+        `claude_hook_settings` is the client-side fragment that points a session at it.
+        """
+        return (self.hook_router,)
+
+    @cached_property
+    def hook_router(self) -> APIRouter:
+        """The route behind `routers()`; cached so it is built once. The ingest reads
+        the same managers this tentacle writes, through the already-bound `octomate`."""
+        ingest = ClaudeHookIngest(self.octomate)
+        router = APIRouter(tags=["claude"])
+
+        @router.post(
+            CLAUDE_HOOK_PATH,
+            summary="Claude Code hook pipe — streams a native session's human ledger in",
+        )
+        async def receive_hook(event: ClaudeHookInput) -> JSONResponse:
+            await ingest.handle(event)
+            # Claude Code reads the JSON body as the hook's decision; an empty object
+            # decides nothing, which is what an observer should do.
+            return JSONResponse({})
+
+        return router
 
     async def _await_human(
         self,

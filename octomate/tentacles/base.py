@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Generic, Self, TypeVar
 
+from fastapi import APIRouter
 from rich.style import Style
 
 if TYPE_CHECKING:
@@ -38,6 +39,13 @@ class Tentacle(Generic[TentaclePrimaryT, TentacleSecondaryT]):
         module tree by default. Channels with a chatty SDK extend this to claim
         the SDK's loggers too, so those lines share the tentacle's color."""
         return (type(self).__module__.rsplit(".", 1)[0],)
+
+    def routers(self) -> tuple[APIRouter, ...]:
+        """FastAPI routers the host mounts when this tentacle is connected — empty by
+        default. A tentacle that exposes an HTTP surface (e.g. an inbound hook
+        endpoint) overrides this. Mounting happens at connect time, off the tentacle's
+        async lifecycle: the routes are owned by the Octomate app, not the tentacle."""
+        return ()
 
     async def __aenter__(self) -> Self:
         """Start any long-lived platform resources owned by the tentacle."""
