@@ -161,6 +161,9 @@ def test_codex_config_defaults_to_current_model_set() -> None:
     config = CodexConfig()
 
     assert config.models == {
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-5.5-pro",
         "gpt-5.3-codex",

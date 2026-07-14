@@ -22,6 +22,9 @@ ClaudeCodeModelName: TypeAlias = Literal[
 # Codex takes a free-form model string in `thread_start(model=...)`; these are the
 # route-name labels the config and channel `agents` lists select from.
 CodexModelName: TypeAlias = Literal[
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.5-pro",
     "gpt-5.3-codex",
@@ -126,7 +129,15 @@ class CodexConfig(BaseModel):
         ),
     )
     models: set[CodexModelName] = Field(
-        default={"gpt-5.5", "gpt-5.5-pro", "gpt-5.3-codex", "gpt-5.1-codex-mini"},
+        default={
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.3-codex",
+            "gpt-5.1-codex-mini",
+        },
         min_length=1,
         description="Codex model route labels this agent exposes to channels.",
     )
