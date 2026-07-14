@@ -39,7 +39,9 @@ from octomate.capabilities.events import (
     ResultSegmentEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
+    TodoDeletedEvent,
     TodoStatusChangedEvent,
+    TodoUpdatedEvent,
 )
 from octomate.capabilities.react import ReactStreamEvent
 from octomate.schemas.deferred import (
@@ -607,8 +609,11 @@ def showcase(
     image_file: str | None = None,
     card_payload: JsonObject | None = None,
 ) -> ChannelScript:
-    """Thinking + tools + todos + segment reply — the visual-inspection script."""
+    """Thinking, tools, display events, and segments for visual inspection."""
     plan, docs = scenario_todos()
+    pending_plan = plan.model_copy(update={"status": "pending"})
+    pending_docs = docs.model_copy(update={"status": "pending"})
+    updated_docs = pending_docs.model_copy(update={"content": "Find current docs"})
     segments = reply_segments(image_file=image_file, card_payload=card_payload)
     return [
         PartStartEvent(index=0, part=ThinkingPart(content="Planning the showcase")),
@@ -628,13 +633,18 @@ def showcase(
                 tool_call_id="call_lookup_1",
             )
         ),
-        TodoCreatedEvent(todo=plan.model_copy(update={"status": "pending"})),
-        TodoCreatedEvent(todo=docs.model_copy(update={"status": "pending"})),
+        TodoCreatedEvent(todo=pending_plan),
+        TodoCreatedEvent(todo=pending_docs),
+        TodoUpdatedEvent(todo=updated_docs, previous=pending_docs),
         TodoStatusChangedEvent(
             todo=docs,
-            previous=docs.model_copy(update={"status": "pending"}),
+            previous=updated_docs,
         ),
         TodoCompletedEvent(todo=plan),
+        TodoDeletedEvent(todo=docs),
+        MessageSentEvent(
+            segments=[MarkdownSegment(data={"text": "Showcase events rendered."})]
+        ),
         *segment_result_events(segments, index=1),
         FinalResult[ChannelOutput](output=segments),
         AgentRunResultEvent(AgentRunResult(segments)),

@@ -514,8 +514,11 @@ async def test_drive_timeline_dispatches_each_event_kind(
         "tool_end",
         "todo",  # created x2
         "todo",
+        "todo",  # updated
         "todo",  # status changed
         "todo",  # completed
+        "todo",  # deleted
+        "answer_segment",  # mid-run message
         "answer_segment",  # markdown + card segments
         "answer_segment",
     ]
