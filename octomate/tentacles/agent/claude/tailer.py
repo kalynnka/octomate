@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import anyio
+import logfire
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import ValidationError
 from watchfiles import awatch
@@ -15,9 +16,12 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import Conversation
-from octomate.schemas.thread import ThreadKey
+from octomate.schemas.messages import ModelRequest
+from octomate.schemas.runs import ExternalAgentRun
+from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage, ThreadMessageDirection
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID
+from octomate.tentacles.agent.claude.locks import SessionLocks
 from octomate.tentacles.agent.claude.restore import (
     prompt_text,
     stamp,
@@ -35,6 +39,11 @@ logger = logging.getLogger(__name__)
 # drop-on-full, so a session nobody is watching never backpressures the tailer.
 # Durability rests entirely on the `ExternalAgentRun` sink, never on a consumer existing.
 LIVE_STREAM_BUFFER = 256
+
+# Bound the wait for the session lock when committing a turn, so a wedged hook holder
+# can't hang the follow loop (and, through `finalize`, shutdown). A turn that can't
+# commit in time is simply left for recovery — the durable sink is idempotent.
+COMMIT_LOCK_TIMEOUT = 30.0
 
 
 @dataclass
@@ -92,10 +101,18 @@ class ClaudeTranscriptTailer:
         self,
         conversation_manager: ConversationManager,
         thread_manager: ThreadManager,
+        locks: SessionLocks | None = None,
     ) -> None:
         self.conversation_manager = conversation_manager
         self.thread_manager = thread_manager
+        # Per-session locks, shared with the hook ingest when wired together, so a turn's
+        # run/ledger commit here can't interleave with the hooks' ledger writes for the
+        # same session. Its own registry when the tailer runs standalone.
+        self.locks = locks if locks is not None else SessionLocks()
         self.sessions: dict[str, TailState] = {}
+
+    def is_following(self, session_id: str) -> bool:
+        return session_id in self.sessions
 
     def start(
         self, session_id: str, transcript_path: Path, *, offset: int = 0
@@ -159,26 +176,31 @@ class ClaudeTranscriptTailer:
     async def follow(self, state: TailState) -> None:
         """The per-session loop: catch up on what is already on disk, then pump on every
         directory change until `finalize` stops it, and drain once more to EOF."""
-        try:
-            # Own a materia context: a long-lived follow task outlives the request that
-            # started it, mirroring the restore task boundary.
-            with sqlalchemy_materia():
-                await self.prepare(state)
-                await self.pump(state)
-                async for _ in awatch(
-                    state.transcript_path.parent,
-                    stop_event=state.stop_event,
-                    recursive=False,
-                ):
+        with logfire.span(
+            "claude.tailer.follow [{session_id}]",
+            session_id=state.session_id,
+            start_offset=state.offset,
+        ):
+            try:
+                # Own a materia context: a long-lived follow task outlives the request
+                # that started it, mirroring the restore task boundary.
+                with sqlalchemy_materia():
+                    await self.prepare(state)
                     await self.pump(state)
-                await self.pump(state)  # final drain to EOF
-                await self.close_turn(state)  # commit the trailing turn
-        except Exception:
-            logger.exception(
-                "Claude transcript tailer for session %s crashed", state.session_id
-            )
-        finally:
-            state.send_stream.close()
+                    async for _ in awatch(
+                        state.transcript_path.parent,
+                        stop_event=state.stop_event,
+                        recursive=False,
+                    ):
+                        await self.pump(state)
+                    await self.pump(state)  # final drain to EOF
+                    await self.close_turn(state)  # commit the trailing turn
+            except Exception:
+                logger.exception(
+                    "Claude transcript tailer for session %s crashed", state.session_id
+                )
+            finally:
+                state.send_stream.close()
 
     async def prepare(self, state: TailState) -> None:
         """Resolve the session's conversation and seed the committed-turn guard from it,
@@ -280,27 +302,96 @@ class ClaudeTranscriptTailer:
         )
 
     async def close_turn(self, state: TailState) -> None:
-        """Commit the open turn as an `ExternalAgentRun` with its byte range. Idempotent
-        by `prompt_id`, so a re-driven overlap after a resume is a safe no-op."""
+        """Commit the open turn as an `ExternalAgentRun` with its byte range, then bind
+        the turn's human-ledger rows to it. Idempotent by `prompt_id`, so a re-driven
+        overlap after a resume is a safe no-op. Held under the session lock so the commit
+        can't interleave with the hooks' ledger writes for the same turn."""
         turn = state.open_turn
         state.open_turn = None
         if turn is None or turn.prompt_id in state.recorded:
             return
         conversation = state.conversation
         assert conversation is not None
-        run = await self.conversation_manager.record_external_run(
-            conversation,
-            run_id=turn.prompt_id,
-            messages=turn.accumulator.messages,
-            name=CLAUDE_NATIVE_ID,
-            external_session_id=state.session_id,
-            source=turn.source,
+        with logfire.span(
+            "claude.tailer.commit_turn {prompt_id} [{session_id}]",
+            prompt_id=turn.prompt_id,
+            session_id=state.session_id,
             start_offset=turn.start_offset,
             end_offset=turn.end_offset,
-            last_line_uuid=turn.last_line_uuid,
+            messages=len(turn.accumulator.messages),
+        ) as span:
+            try:
+                async with self.locks.hold(
+                    state.session_id, timeout=COMMIT_LOCK_TIMEOUT
+                ):
+                    run = await self.conversation_manager.record_external_run(
+                        conversation,
+                        run_id=turn.prompt_id,
+                        messages=turn.accumulator.messages,
+                        name=CLAUDE_NATIVE_ID,
+                        external_session_id=state.session_id,
+                        source=turn.source,
+                        start_offset=turn.start_offset,
+                        end_offset=turn.end_offset,
+                        last_line_uuid=turn.last_line_uuid,
+                    )
+                    span.set_attribute("committed", run is not None)
+                    if run is None:
+                        return
+                    state.recorded.add(turn.prompt_id)
+                    await self.bind_ledger(
+                        state.session_id, run, turn.accumulator.result_text
+                    )
+            except TimeoutError:
+                span.set_attribute("timed_out", True)
+                logger.warning(
+                    "Claude tailer timed out on the session lock committing turn %s of "
+                    "session %s; leaving it for recovery",
+                    turn.prompt_id,
+                    state.session_id,
+                )
+
+    async def bind_ledger(
+        self, session_id: str, run: ExternalAgentRun, answer: str
+    ) -> None:
+        """Cross-reference the live human ledger (the hooks' inbound prompt / outbound
+        answer, keyed by `prompt_id = run.id`) to this rebuilt run. Reuse-only: the hooks
+        own writing those rows, so a row not yet written is simply left unbound for a
+        later re-drive, never created here."""
+        thread = await self.thread_manager.ensure(
+            ThreadKey(CLAUDE_NATIVE_ID, "private", session_id, "")
         )
-        if run is not None:
-            state.recorded.add(turn.prompt_id)
+        prompt_request = next(
+            (
+                message
+                for message in run.messages
+                if isinstance(message, ModelRequest) and message.role == "user"
+            ),
+            None,
+        )
+        inbound = self.existing_message(thread, run.id, "inbound")
+        if prompt_request is not None and inbound is not None:
+            await self.thread_manager.bind_messages(
+                [inbound.id], prompt_request.id, kind="request_source", run_id=run.id
+            )
+        outbound = self.existing_message(thread, run.id, "outbound")
+        if answer and outbound is not None:
+            await self.thread_manager.bind_assistant_replies(
+                [outbound.id], run_id=run.id
+            )
+
+    def existing_message(
+        self, thread: Thread, prompt_id: str, direction: ThreadMessageDirection
+    ) -> ThreadMessage | None:
+        return next(
+            (
+                message
+                for message in thread.messages
+                if message.platform_message_id == prompt_id
+                and message.direction == direction
+            ),
+            None,
+        )
 
     def emit(self, state: TailState, event: StreamEvents[str]) -> None:
         try:

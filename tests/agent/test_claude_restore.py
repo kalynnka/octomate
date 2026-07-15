@@ -18,6 +18,7 @@ from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import MessageBinding, ThreadKey
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.agent.claude.restore import ClaudeSessionRestore
+from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer
 from octomate.types.json import JsonObject
 
 SESSION_ID = "sess-1"
@@ -250,7 +251,9 @@ async def test_rebuild_reuses_the_live_ledger_rows(tmp_path: Path) -> None:
     write_transcript(transcript)
     octomate = Octomate()
 
-    ingest = ClaudeHookIngest(octomate, ClaudeSessionRestore(octomate))
+    ingest = ClaudeHookIngest(
+        octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    )
     await ingest.record_prompt(_hook("p1", prompt="list the files"), "list the files")
     await ingest.record_answer(_hook("p1"), "Done.")
 
@@ -333,34 +336,6 @@ async def test_rebuild_failure_is_captured_not_raised(tmp_path: Path) -> None:
     assert outcome.status == "failed"
     assert outcome.error is not None
     assert restore.status(SESSION_ID) == "failed"
-
-
-async def test_session_end_fires_the_background_rebuild(tmp_path: Path) -> None:
-    """The SessionEnd hook fire-and-forgets the rebuild; a later open joins its result
-    via the same restore instance."""
-    transcript = tmp_path / f"{SESSION_ID}.jsonl"
-    write_transcript(transcript)
-    octomate = Octomate()
-    restore = ClaudeSessionRestore(octomate)
-    ingest = ClaudeHookIngest(octomate, restore)
-
-    from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
-
-    await ingest.handle(
-        ClaudeHookInput.model_validate(
-            {
-                "hook_event_name": "SessionEnd",
-                "session_id": SESSION_ID,
-                "transcript_path": str(transcript),
-                "reason": "other",
-            }
-        )
-    )
-    # The trigger is fire-and-forget; join the in-flight task the way a web open would.
-    outcome = await restore.restore(SESSION_ID, transcript)
-
-    assert outcome.status == "done"
-    assert await conversation_runs(octomate) == ["p1", "p2"]
 
 
 def _hook(prompt_id: str, **body: JsonValue):

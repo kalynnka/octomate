@@ -15,8 +15,6 @@ from typing import (
 )
 
 import logfire
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
@@ -30,6 +28,8 @@ from claude_agent_sdk import (
     PreToolUseHookInput,
     ToolPermissionContext,
 )
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from pydantic import TypeAdapter
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_ai import (
@@ -73,7 +73,9 @@ from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agent.claude.hooks import CLAUDE_HOOK_PATH, ClaudeHookInput
 from octomate.tentacles.agent.claude.ingest import ClaudeHookIngest
+from octomate.tentacles.agent.claude.locks import SessionLocks
 from octomate.tentacles.agent.claude.restore import ClaudeSessionRestore
+from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.agent.claude.transport import SSHTransport
 from octomate.types.json import JsonObject
 
@@ -135,6 +137,28 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             weakref.WeakValueDictionary()
         )
         self.models = {model: model for model in config.models}
+        # Per-session locks shared by the hook ingest and the transcript tailer, so a
+        # session's ledger writes (hooks) and run commits (tailer) serialize.
+        self.session_locks = SessionLocks()
+        # Rebuilds native sessions' full model timelines from their transcripts — the
+        # manual recovery engine, run on demand when a session is opened; live ingest
+        # goes through `session_tailer`.
+        self.session_restore = ClaudeSessionRestore(self.octomate)
+        # Follows live native sessions' transcripts, recording each turn's run and
+        # streaming its events — one follow loop per session, shared by the hook
+        # lifecycle and any stream consumer.
+        self.session_tailer = ClaudeTranscriptTailer(
+            self.octomate.conversations,
+            self.octomate.thread_manager,
+            self.session_locks,
+        )
+        # Live hook ingest: writes the human ledger and drives the tailer's lifecycle.
+        # Reads the same managers this tentacle writes, through the bound `octomate`.
+        self.session_ingest = ClaudeHookIngest(
+            self.octomate,
+            self.session_tailer,
+            self.session_locks,
+        )
 
     def routers(self) -> tuple[APIRouter]:
         """The tentacle's HTTP surface, mounted by `Octomate.connect`: the hook router
@@ -144,17 +168,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         return (self.hook_router,)
 
     @cached_property
-    def session_restore(self) -> ClaudeSessionRestore:
-        """Rebuilds native sessions' full model timelines from their transcripts.
-        Shared (cached) so the fire-and-forget rebuild a finished session triggers and
-        a later web open dedup against one another's in-flight work."""
-        return ClaudeSessionRestore(self.octomate)
-
-    @cached_property
     def hook_router(self) -> APIRouter:
-        """The route behind `routers()`; cached so it is built once. The ingest reads
-        the same managers this tentacle writes, through the already-bound `octomate`."""
-        ingest = ClaudeHookIngest(self.octomate, self.session_restore)
+        """The route behind `routers()`; cached so it is built once."""
         router = APIRouter(tags=["claude"])
 
         @router.post(
@@ -162,7 +177,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             summary="Claude Code hook pipe — streams a native session's human ledger in",
         )
         async def receive_hook(event: ClaudeHookInput) -> JSONResponse:
-            await ingest.handle(event)
+            await self.session_ingest.handle(event)
             # Claude Code reads the JSON body as the hook's decision; an empty object
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
@@ -232,6 +247,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             with contextlib.suppress(Exception):
                 await client.interrupt()
         self.live_clients.clear()
+        # Cancel any live transcript follow loops.
+        await self.session_tailer.shutdown()
 
     async def _iter_events(
         self,

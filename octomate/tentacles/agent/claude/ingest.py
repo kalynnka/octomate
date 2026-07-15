@@ -1,21 +1,23 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
+
+import logfire
 
 from octomate.schemas.conversation import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessageDirection
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
+from octomate.tentacles.agent.claude.locks import SessionLocks
 
 if TYPE_CHECKING:
     from octomate import Octomate
 
-    # Runtime dependency runs the other way (restore imports this module's
+    # Runtime dependency runs the other way (the tailer imports this module's
     # CLAUDE_NATIVE_ID); the injected instance only needs its type here.
-    from octomate.tentacles.agent.claude.restore import ClaudeSessionRestore
+    from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer
 
 logger = logging.getLogger(__name__)
 
@@ -29,45 +31,101 @@ NATIVE_USER = UserProfile(user_id="native", name="native")
 
 
 class ClaudeHookIngest:
-    """Live human-ledger ingest for a native Claude Code session.
+    """Live human-ledger ingest for a native Claude Code session, and the lifecycle that
+    starts and finalizes its transcript tailer.
 
     Each turn's prompt (`UserPromptSubmit`) and answer (`Stop.last_assistant_message`)
     are written as inbound/outbound `ThreadMessage`s — a complete, lossless chat log,
-    visible the moment the session runs. Nothing else is persisted live: model messages
-    need thinking and usage the events do not carry, so the full run timeline is rebuilt
-    from the transcript on restore. No transcript is read here.
+    visible the moment the session runs. The events carry no thinking or usage, so the
+    full model timeline comes from the `ClaudeTranscriptTailer`, which this starts on the
+    first prompt (`SessionStart` is not delivered to http hooks) and finalizes at
+    `SessionEnd`. No transcript is read here.
 
-    Both rows are stamped `platform_message_id = prompt_id`, the stable per-turn key
-    restore binds its rebuilt runs against.
+    Both ledger rows are stamped `platform_message_id = prompt_id`, the stable per-turn
+    key the tailer binds its rebuilt runs against.
     """
 
-    def __init__(self, octomate: Octomate, restore: ClaudeSessionRestore) -> None:
+    def __init__(
+        self,
+        octomate: Octomate,
+        tailer: ClaudeTranscriptTailer,
+        locks: SessionLocks | None = None,
+    ) -> None:
         self.octomate = octomate
-        self.restore = restore
+        self.tailer = tailer
         # Serialize a session's events so the existence check and the write can't race
-        # (Claude fires the next event without waiting for our commit). Dropped at
-        # SessionEnd so the map does not grow unbounded.
-        self.locks: dict[str, asyncio.Lock] = {}
+        # (Claude fires the next event without waiting for our commit). Shared with the
+        # tailer so its run/ledger commits serialize against these writes too; the
+        # registry reclaims a session's lock on its own once no one holds it.
+        self.locks = locks if locks is not None else SessionLocks()
 
     async def handle(self, event: ClaudeHookInput) -> None:
-        lock = self.locks.setdefault(event.session_id, asyncio.Lock())
-        async with lock:
-            match event.hook_event_name:
-                case "UserPromptSubmit":
-                    if event.prompt:
-                        await self.record_prompt(event, event.prompt)
-                case "Stop":
-                    if event.last_assistant_message:
-                        await self.record_answer(event, event.last_assistant_message)
-                case "SessionEnd":
-                    self.locks.pop(event.session_id, None)
-                    # The session is over, so its transcript is complete: rebuild the
-                    # full model timeline in the background, ready before anyone opens
-                    # it. Deduped, so a web open landing meanwhile joins this rebuild.
-                    if event.transcript_path is not None:
-                        self.restore.restore_in_background(
-                            event.session_id, event.transcript_path
-                        )
+        match event.hook_event_name:
+            case "SessionStart":
+                await self.on_session_start(event)
+            case "UserPromptSubmit":
+                await self.on_user_prompt_submit(event)
+            case "Stop":
+                await self.on_stop(event)
+            case "SessionEnd":
+                await self.on_session_end(event)
+
+    @logfire.instrument(
+        "claude.hook SessionStart [{event.session_id}]", extract_args=["event"]
+    )
+    async def on_session_start(self, event: ClaudeHookInput) -> None:
+        async with self.locks.hold(event.session_id):
+            await self.start_session(event)
+
+    @logfire.instrument(
+        "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
+    )
+    async def on_user_prompt_submit(self, event: ClaudeHookInput) -> None:
+        # SessionStart is not delivered to http hooks, so the first prompt starts the
+        # tailer if it is not already following (self-heal).
+        async with self.locks.hold(event.session_id):
+            await self.start_session(event)
+            if event.prompt:
+                await self.record_prompt(event, event.prompt)
+
+    @logfire.instrument("claude.hook Stop [{event.session_id}]", extract_args=["event"])
+    async def on_stop(self, event: ClaudeHookInput) -> None:
+        async with self.locks.hold(event.session_id):
+            if event.last_assistant_message:
+                await self.record_answer(event, event.last_assistant_message)
+
+    @logfire.instrument(
+        "claude.hook SessionEnd [{event.session_id}]", extract_args=["event"]
+    )
+    async def on_session_end(self, event: ClaudeHookInput) -> None:
+        # Finalize outside any lock: it awaits the follow loop's own last commit, which
+        # takes the session lock — holding it here would deadlock.
+        await self.tailer.finalize(event.session_id)
+
+    async def start_session(self, event: ClaudeHookInput) -> None:
+        """Ensure the session's skeleton (thread + conversation) and start its transcript
+        tailer, once per session. Ensuring the skeleton here — under the session lock,
+        before the follow loop runs — is what keeps the tailer's own `ensure` a cache hit
+        rather than a write that could race the hooks' first-sighting create.
+
+        Requires the transcript directory to exist (the tailer's watch needs it); a hook
+        carrying no usable path leaves the tailer unstarted, and the ledger still writes.
+        """
+        path = event.transcript_path
+        if self.tailer.is_following(event.session_id) or path is None:
+            return
+        if not path.parent.is_dir():
+            return
+        thread = await self.session_thread(event.session_id)
+        await self.octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+        )
+        self.tailer.start(event.session_id, path)
+        logfire.info(
+            "claude.tailer started for session {session_id}",
+            session_id=event.session_id,
+            transcript_path=str(path),
+        )
 
     async def session_thread(self, session_id: str) -> Thread:
         return await self.octomate.thread_manager.ensure(

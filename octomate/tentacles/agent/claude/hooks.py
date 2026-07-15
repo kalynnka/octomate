@@ -6,11 +6,15 @@ from typing import Literal, TypedDict
 from pydantic import BaseModel, ConfigDict
 
 # The events this pipe registers and acts on. `UserPromptSubmit` and `Stop` carry the
-# turn's prompt and answer — the whole human ledger — and `SessionEnd` bounds the
-# session's lifecycle. Tool-lifecycle and message-display events are model-timeline
-# detail rebuilt from the transcript on restore, not ingested live.
-HandledHookEvent = Literal["UserPromptSubmit", "Stop", "SessionEnd"]
+# turn's prompt and answer — the whole human ledger — while `SessionStart` and
+# `SessionEnd` bound the session so the transcript tailer can start and finalize. Tool-
+# lifecycle and message-display events are model-timeline detail the tailer reads off the
+# transcript, not ingested from the events.
+HandledHookEvent = Literal[
+    "SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"
+]
 HANDLED_HOOK_EVENTS: tuple[HandledHookEvent, ...] = (
+    "SessionStart",
     "UserPromptSubmit",
     "Stop",
     "SessionEnd",

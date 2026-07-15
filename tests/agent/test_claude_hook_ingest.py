@@ -16,7 +16,7 @@ from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
-from octomate.tentacles.agent.claude.restore import ClaudeSessionRestore
+from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer
 
 SESSION_ID = "sess-1"
 SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "private", SESSION_ID, "")
@@ -62,7 +62,7 @@ async def ledger(octomate: Octomate) -> list[tuple[str, str | None, str | None]]
 
 async def test_a_turn_writes_inbound_and_outbound_tagged_by_prompt_id() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeSessionRestore(octomate))
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
 
     await submit(ingest, "p1", "list the files")
     await stop(ingest, "p1", "Here are the files.")
@@ -75,7 +75,7 @@ async def test_a_turn_writes_inbound_and_outbound_tagged_by_prompt_id() -> None:
 
 async def test_multiple_turns_accumulate_in_order() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeSessionRestore(octomate))
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
 
     await submit(ingest, "p1", "first")
     await stop(ingest, "p1", "first done")
@@ -92,7 +92,7 @@ async def test_multiple_turns_accumulate_in_order() -> None:
 
 async def test_refiring_events_is_idempotent() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeSessionRestore(octomate))
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
 
     await submit(ingest, "p1", "list the files")
     await submit(ingest, "p1", "list the files")  # retry
@@ -107,7 +107,7 @@ async def test_refiring_events_is_idempotent() -> None:
 
 async def test_crash_before_stop_leaves_a_clean_inbound_only_turn() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeSessionRestore(octomate))
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
 
     await submit(ingest, "p1", "do a thing")
     # no Stop — the session died mid-turn
@@ -119,7 +119,7 @@ async def test_no_model_frame_is_written_live() -> None:
     """The human ledger is the whole live footprint: no conversation, run, or model
     message — those are rebuilt from the transcript on restore (UoW-B)."""
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeSessionRestore(octomate))
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
 
     await submit(ingest, "p1", "hello")
     await stop(ingest, "p1", "hi")
@@ -135,7 +135,7 @@ async def test_no_model_frame_is_written_live() -> None:
 
 async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeSessionRestore(octomate))
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
 
     await ingest.handle(hook("UserPromptSubmit", "p1", prompt=""))
     await ingest.handle(hook("Stop", "p1", last_assistant_message=""))
@@ -143,25 +143,28 @@ async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
     assert await ledger(octomate) == []
 
 
-async def test_session_end_releases_the_lock() -> None:
+async def test_session_locks_self_clean_and_session_end_finalizes() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeSessionRestore(octomate))
+    ingest = ClaudeHookIngest(
+        octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    )
 
     await submit(ingest, "p1", "hello")
-    assert SESSION_ID in ingest.locks
-    # No transcript_path, so no background rebuild spawns — this asserts only the
-    # lock lifecycle (the SessionEnd → restore trigger is covered in the restore test).
+    # The lock registry reclaims a key once no task holds it, so a completed turn leaves
+    # nothing behind — no manual dismissal, no unbounded growth.
+    assert len(ingest.locks.by_session) == 0
+    # SessionEnd finalizes the (unstarted here) tailer without error.
     await ingest.handle(
         ClaudeHookInput.model_validate(
             {"hook_event_name": "SessionEnd", "session_id": SESSION_ID, "reason": "x"}
         )
     )
-    assert SESSION_ID not in ingest.locks
+    assert len(ingest.locks.by_session) == 0
 
 
 async def test_unhandled_events_are_ignored() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeSessionRestore(octomate))
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
 
     await ingest.handle(
         hook("PreToolUse", "p1", tool_name="Bash", tool_input={"command": "ls"})

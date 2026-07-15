@@ -15,9 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.events import StreamEvents
+from octomate.database import async_session
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.thread import ThreadKey
-from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID
+from octomate.schemas.thread import MessageBinding, ThreadKey
+from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
+from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
+from octomate.tentacles.agent.claude.locks import SessionLocks
 from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer, TailState
 from octomate.types.json import JsonObject
 
@@ -279,6 +282,70 @@ async def test_live_append_is_picked_up_by_the_watch(tmp_path: Path) -> None:
 
     await tailer.finalize(SESSION_ID)
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
+
+
+def wired(octomate: Octomate) -> tuple[ClaudeHookIngest, ClaudeTranscriptTailer]:
+    """The ingest + tailer as the tentacle wires them: sharing one per-session lock
+    registry so hook ledger writes and tailer run commits serialize."""
+    locks = SessionLocks()
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.thread_manager, locks
+    )
+    return ClaudeHookIngest(octomate, tailer, locks), tailer
+
+
+def hook_event(
+    name: str, prompt_id: str | None = None, transcript: Path | None = None, **body: str
+) -> ClaudeHookInput:
+    return ClaudeHookInput.model_validate(
+        {
+            "hook_event_name": name,
+            "session_id": SESSION_ID,
+            **({"prompt_id": prompt_id} if prompt_id is not None else {}),
+            **({"transcript_path": str(transcript)} if transcript is not None else {}),
+            **body,
+        }
+    )
+
+
+async def test_full_lifecycle_records_runs_and_binds_the_ledger(tmp_path: Path) -> None:
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE)
+    octomate = Octomate()
+    ingest, _ = wired(octomate)
+
+    # Turn one: the first prompt starts the tailer (no SessionStart on http hooks); the
+    # hooks write its human ledger.
+    await ingest.handle(
+        hook_event("UserPromptSubmit", "p1", transcript, prompt="list the files")
+    )
+    await ingest.handle(hook_event("Stop", "p1", last_assistant_message="Done."))
+    # Turn two arrives, then ends the session — finalize drains the whole file.
+    with transcript.open("ab") as handle:
+        handle.write(b"".join(line_bytes(record) for record in TURN_TWO))
+    await ingest.handle(
+        hook_event("UserPromptSubmit", "p2", transcript, prompt="now commit")
+    )
+    await ingest.handle(hook_event("Stop", "p2", last_assistant_message="Committed."))
+    await ingest.handle(hook_event("SessionEnd", transcript=transcript, reason="other"))
+
+    # Both turns recorded as external runs.
+    assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
+
+    # The hooks wrote the human ledger for both turns.
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    ledger = {(m.direction, m.platform_message_id) for m in thread.messages}
+    assert {("inbound", "p1"), ("outbound", "p1")} <= ledger
+    assert {("inbound", "p2"), ("outbound", "p2")} <= ledger
+
+    # And the tailer bound those rows to their runs.
+    async with async_session() as session:
+        bindings = await session.list(MessageBinding, limit=None, order_bys=[])
+    assert sorted({binding.kind for binding in bindings}) == [
+        "assistant_reply",
+        "request_source",
+    ]
+    assert {binding.run_id for binding in bindings} == {"p1", "p2"}
 
 
 async def test_line_split_across_pumps_is_not_half_parsed(tmp_path: Path) -> None:
