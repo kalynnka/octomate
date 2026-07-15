@@ -190,11 +190,6 @@ class ClaudeSessionRestore:
         a web open reviewing the session."""
         return await self.task(session_id, transcript_path)
 
-    def restore_in_background(self, session_id: str, transcript_path: Path) -> None:
-        """Start (or join) the rebuild without awaiting it — a fire-and-forget trigger
-        when a run finishes, so the timeline is warm before anyone opens it."""
-        self.task(session_id, transcript_path)
-
     def task(
         self, session_id: str, transcript_path: Path
     ) -> asyncio.Task[RestoreOutcome]:
