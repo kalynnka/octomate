@@ -82,6 +82,7 @@ class RebuildTurn:
     prompt_id: str
     prompt_text: str
     started_at: datetime | None
+    source: str | None = None  # the transcript `entrypoint` (claude-vscode / cli / …)
     records: list[TranscriptRecord] = field(default_factory=list)
 
 
@@ -133,6 +134,7 @@ def split_turns(lines: list[TranscriptLine]) -> list[RebuildTurn]:
                         prompt_id=line.prompt_id,
                         prompt_text=prompt_text(line.message),
                         started_at=line.timestamp,
+                        source=line.entrypoint,
                     )
                 )
             elif turns:
@@ -267,12 +269,13 @@ class ClaudeSessionRestore:
                 pass
             stamp(accumulator.messages[written:], line.timestamp)
 
-        run = await self.octomate.conversations.record_agent_run(
+        run = await self.octomate.conversations.record_external_run(
             conversation,
             run_id=turn.prompt_id,
             messages=accumulator.messages,
             name=CLAUDE_NATIVE_ID,
-            external_id=session_id,
+            external_session_id=session_id,
+            source=turn.source,
         )
         if run is None:
             return None

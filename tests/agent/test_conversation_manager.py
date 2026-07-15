@@ -20,6 +20,7 @@ import uuid
 from uuid_utils.compat import uuid7
 
 from octomate.managers import ConversationManager
+from octomate.schemas.runs import AgentRun, ExternalAgentRun
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +114,61 @@ async def test_record_run_creates_run_and_persists_messages() -> None:
     kinds = {type(m).__name__ for m in listed}
     assert kinds == {"ModelRequest", "ModelResponse"}
     assert len(list(reloaded.messages)) == 2
+
+
+async def test_external_run_reads_back_as_its_variant() -> None:
+    """record_external_run persists the `external` variant with its transcript
+    coordinates; record_agent_run stays `octomate`. A fresh manager reads each back as
+    its type from the one polymorphic table."""
+    service = ConversationManager()
+    conversation = await service.ensure(_thread(), agent_tentacle_id="claude-native")
+
+    def _msgs(run_id: str) -> list[RawModelRequest | RawModelResponse]:
+        return [
+            RawModelRequest(
+                parts=[UserPromptPart(content="hi")],
+                run_id=run_id,
+                timestamp=datetime.now(timezone.utc),
+            ),
+            RawModelResponse(
+                parts=[TextPart(content="hello")],
+                run_id=run_id,
+                timestamp=datetime.now(timezone.utc),
+                finish_reason="stop",
+            ),
+        ]
+
+    await service.record_agent_run(
+        conversation, run_id="oct", messages=_msgs("oct"), name="inkling"
+    )
+    await service.record_external_run(
+        conversation,
+        run_id="ext",
+        messages=_msgs("ext"),
+        name="claude-native",
+        external_session_id="sess-9",
+        source="claude-vscode",
+        start_offset=0,
+        end_offset=42,
+        last_line_uuid="u-last",
+    )
+
+    fresh = ConversationManager()
+    reloaded = await fresh.ensure(_thread(), agent_tentacle_id="claude-native")
+    by_id = {run.id: run for run in reloaded.runs}
+
+    octomate_run = by_id["oct"]
+    assert isinstance(octomate_run, AgentRun)
+    assert not isinstance(octomate_run, ExternalAgentRun)
+
+    external_run = by_id["ext"]
+    assert isinstance(external_run, ExternalAgentRun)
+    assert external_run.external_session_id == "sess-9"
+    assert external_run.source == "claude-vscode"
+    assert (external_run.start_offset, external_run.end_offset) == (0, 42)
+    assert external_run.last_line_uuid == "u-last"
+    # session_id doubles as the conversation's resumable handle.
+    assert reloaded.external_id == "sess-9"
 
 
 async def test_record_run_preserves_finish_reason() -> None:
@@ -338,8 +394,13 @@ async def test_fork_copies_history_preserving_trailing_deferral() -> None:
 
     # The target holds the forked history, including the trailing teleport deferral,
     # so a resume against it is valid.
-    cold = await ConversationManager().ensure(target_thread, agent_tentacle_id="inkling")
-    assert [type(m).__name__ for m in cold.messages] == ["ModelRequest", "ModelResponse"]
+    cold = await ConversationManager().ensure(
+        target_thread, agent_tentacle_id="inkling"
+    )
+    assert [type(m).__name__ for m in cold.messages] == [
+        "ModelRequest",
+        "ModelResponse",
+    ]
     # Non-trivial columns copy verbatim, not just id/parts.
     assert list(cold.messages)[0].message_text == "hi"
     last = list(cold.messages)[-1]

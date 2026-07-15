@@ -13,7 +13,7 @@ from uuid_utils.compat import uuid7
 from octomate.models.conversation import Conversation as ConversationModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
-from octomate.schemas.runs import AgentRun
+from octomate.schemas.runs import AgentRun, ExternalAgentRun
 
 ChatType = Literal["private", "group"]
 
@@ -103,7 +103,7 @@ class Conversation(BaseTransmuter):
         ),
     )
 
-    runs: RelationCollection[AgentRun] = Relationships()
+    runs: RelationCollection[AgentRun | ExternalAgentRun] = Relationships()
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
     @property

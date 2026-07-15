@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.database import async_session
 from octomate.schemas.messages import ModelResponse
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import MessageBinding, ThreadKey
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.agent.claude.restore import ClaudeSessionRestore
@@ -182,6 +183,11 @@ async def test_rebuild_reconstructs_full_fidelity(tmp_path: Path) -> None:
         thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
     )
     first = next(run for run in conversation.runs if run.id == "p1")
+    # A native run reads back as the external variant, carrying its session + source.
+    assert isinstance(first, ExternalAgentRun)
+    assert first.external_session_id == SESSION_ID
+    assert first.source == "cli"  # the transcript entrypoint
+
     kinds = [type(message).__name__ for message in first.messages]
     assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
 

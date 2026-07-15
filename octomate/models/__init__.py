@@ -17,12 +17,13 @@ from octomate.models.messages import (
     ModelRequest,
     ModelResponse,
 )
-from octomate.models.runs import AgentRun
+from octomate.models.runs import AgentRun, ExternalAgentRun
 from octomate.models.todos import Todo
 
 __all__ = [
     "AgentRun",
     "Base",
+    "ExternalAgentRun",
     "Handoff",
     "ThreadMessage",
     "MessageBinding",

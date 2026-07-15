@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
-from typing import Literal
+from typing import Literal, TypeVar
 
 from arcanus.materia.sqlalchemy import selectinload
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
@@ -17,8 +17,10 @@ from octomate.schemas.conversation import (
     ConversationKey,
 )
 from octomate.schemas.messages import ModelMessage, ModelResponse
-from octomate.schemas.runs import AgentRun
+from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import ThreadMessage
+
+RunT = TypeVar("RunT", bound=AgentRun)
 
 
 class ConversationManager:
@@ -112,30 +114,78 @@ class ConversationManager:
         session)."""
         if not messages:
             return None
-        # Shallow `vars(m)` per message lets pydantic route each dict through
-        # the blessed `ModelRequest | ModelResponse` discriminated union;
-        # passing the raw pydantic-ai dataclass instance directly is rejected
-        # since it isn't an instance of our blessed subclass.
         run = AgentRun(
             id=run_id,
             conversation_id=conversation.id,
             name=name,
             started_at=messages[0].timestamp,
+            # Shallow `vars(m)` dicts, so pydantic routes each through the blessed
+            # `ModelRequest | ModelResponse` union at construction — the raw pydantic-ai
+            # dataclass is rejected, not being an instance of our blessed subclass.
             messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
         )
+        return await self.persist_run(
+            run, conversation_id=conversation.id, external_id=external_id
+        )
+
+    async def record_external_run(
+        self,
+        conversation: Conversation,
+        run_id: str,
+        messages: Sequence[PydanticModelMessage],
+        *,
+        name: str | None = None,
+        external_session_id: str,
+        source: str | None = None,
+        start_offset: int | None = None,
+        end_offset: int | None = None,
+        last_line_uuid: str | None = None,
+    ) -> ExternalAgentRun | None:
+        """Persist a run rebuilt from an external runtime's transcript (native Claude)
+        as the `external` variant, carrying its transcript coordinates.
+        `external_session_id` doubles as the conversation's resumable handle
+        (`external_id`)."""
+        if not messages:
+            return None
+        run = ExternalAgentRun(
+            id=run_id,
+            conversation_id=conversation.id,
+            name=name,
+            started_at=messages[0].timestamp,
+            messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
+            external_session_id=external_session_id,
+            source=source,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            last_line_uuid=last_line_uuid,
+        )
+        return await self.persist_run(
+            run, conversation_id=conversation.id, external_id=external_session_id
+        )
+
+    async def persist_run(
+        self,
+        run: RunT,
+        *,
+        conversation_id: uuid.UUID,
+        external_id: str | None,
+    ) -> RunT:
+        """Persist a freshly built run and re-sync the cached conversation.
+        `external_id`, when given, updates the resumable agent-session handle in the
+        same commit.
+
+        Persist only the new run and its messages, then reload the conversation to
+        re-sync the cache. Re-merging the whole cached conversation graph (its prior
+        runs and their message collections) can make SQLAlchemy believe a message was
+        dropped from a stale run collection and null its NOT NULL `run_id`, raising an
+        IntegrityError; adding just the new run sidesteps that reconciliation entirely.
+        The cached `conversation` is detached, so it can't be refreshed in place — the
+        freshly loaded copy becomes the coherent cache the next ensure() returns.
+        """
         async with async_session() as session:
-            # Persist only the new run and its messages, then reload the
-            # conversation to re-sync the cache. Re-merging the whole cached
-            # conversation graph (its prior runs and their message collections) can
-            # make SQLAlchemy believe a message was dropped from a stale run
-            # collection and null its NOT NULL `run_id`, raising an IntegrityError;
-            # adding just the new run sidesteps that reconciliation entirely. The
-            # cached `conversation` is detached, so it can't be refreshed in place —
-            # the freshly loaded copy becomes the coherent cache the next ensure()
-            # returns.
             session.add(run)
             reloaded = await session.one_or_none(
-                Conversation, expressions=[Conversation["id"] == conversation.id]
+                Conversation, expressions=[Conversation["id"] == conversation_id]
             )
             if reloaded is not None:
                 reloaded.external_id = external_id
@@ -144,7 +194,6 @@ class ConversationManager:
                 await reloaded.runs
                 await reloaded.messages
                 self.cache_conversation(reloaded)
-
         return run
 
     async def fork(
