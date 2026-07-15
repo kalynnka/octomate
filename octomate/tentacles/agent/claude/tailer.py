@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
@@ -10,6 +11,7 @@ import anyio
 import logfire
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import ValidationError
+from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from watchfiles import awatch
 
 from octomate.capabilities.events import StreamEvents
@@ -17,21 +19,21 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import ExternalAgentRun
+from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage, ThreadMessageDirection
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID
+from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, NATIVE_USER
 from octomate.tentacles.agent.claude.locks import SessionLocks
-from octomate.tentacles.agent.claude.restore import (
-    prompt_text,
-    stamp,
-    transcript_line_adapter,
-)
 from octomate.tentacles.agent.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptLine,
     TranscriptUserLine,
+    locate_transcript,
+    prompt_text,
+    transcript_line_adapter,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +56,16 @@ IDLE_TIMEOUT = 30 * 60.0
 IDLE_POLL_MS = 60_000
 
 
+def stamp(messages: list[PydanticModelMessage], timestamp: datetime | None) -> None:
+    """Date the messages a transcript record produced by that record's own clock — the
+    accumulator stamps `now`, which is wrong for a run replayed off disk
+    (`AgentRun.started_at` and ordering both read from these)."""
+    if timestamp is None:
+        return
+    for message in messages:
+        message.timestamp = timestamp
+
+
 @dataclass
 class OpenTurn:
     """The turn currently being assembled off the live tail — its accumulator fed line
@@ -62,6 +74,7 @@ class OpenTurn:
     `finalize`."""
 
     prompt_id: str
+    prompt_text: str  # the human's clean prompt, for creating the inbound ledger row
     source: str | None  # the transcript `entrypoint` (claude-vscode / cli / …)
     start_offset: int  # byte offset of this turn's opening prompt line
     end_offset: int  # byte offset past the last line folded in
@@ -194,6 +207,51 @@ class ClaudeTranscriptTailer:
                 pass
         self.sessions.clear()
 
+    async def recover(
+        self, session_id: str, transcript_path: Path | None = None
+    ) -> list[str]:
+        """Re-tail a session's transcript once, from the last committed offset, recording
+        any turns not yet persisted — the manual recovery path for a session Octomate
+        watched only partially or never (down during the run, hooks not wired). Runs the
+        same assembly as the live follow loop, so it rebuilds the model timeline and the
+        human ledger identically. Idempotent by `prompt_id` — re-running, or overlapping a
+        live follow, is a safe no-op. Resolves a moved slug when no path is given; returns
+        the ids of the turns it recovered."""
+        path = transcript_path or locate_transcript(session_id)
+        if path is None:
+            return []
+        with logfire.span("claude.tailer.recover [{session_id}]", session_id=session_id):
+            # Own a materia context, mirroring the follow task's boundary.
+            with sqlalchemy_materia():
+                conversation = await self.ensure_session(session_id)
+                committed = {run.id for run in conversation.runs}
+                start = max(
+                    (
+                        run.end_offset or 0
+                        for run in conversation.runs
+                        if isinstance(run, ExternalAgentRun)
+                    ),
+                    default=0,
+                )
+                state = self.new_state(session_id, path, start)
+                state.conversation = conversation
+                state.recorded = set(committed)
+                try:
+                    await self.pump(state)  # read [start .. EOF), committing on boundaries
+                    await self.close_turn(state)  # commit the trailing turn
+                finally:
+                    state.send_stream.close()
+                fresh = await self.ensure_session(session_id)
+                recovered = sorted(
+                    (
+                        run
+                        for run in fresh.runs
+                        if isinstance(run, ExternalAgentRun) and run.id not in committed
+                    ),
+                    key=lambda run: run.start_offset or 0,
+                )
+                return [run.id for run in recovered]
+
     async def follow(self, state: TailState) -> None:
         """The per-session loop: catch up on what is already on disk, then pump on every
         directory change until `finalize` stops it, and drain once more to EOF."""
@@ -289,10 +347,9 @@ class ClaudeTranscriptTailer:
     async def process_line(
         self, state: TailState, line: TranscriptLine, start: int, end: int
     ) -> None:
-        """Route one typed line by the same rule `split_turns` applies whole-file: a
-        `prompt_source` user line opens a turn (closing the previous one); other user
-        (tool-result) and assistant lines fold into the open turn; sub-agent lines are
-        skipped."""
+        """Route one typed line: a `prompt_source` user line opens a turn (closing the
+        previous one); other user (tool-result) and assistant lines fold into the open
+        turn; sub-agent (`is_sidechain`) lines are skipped."""
         if isinstance(line, TranscriptUserLine):
             if line.is_sidechain:
                 return
@@ -325,11 +382,13 @@ class ClaudeTranscriptTailer:
         turn.last_line_uuid = line.uuid
 
     def begin_turn(self, line: TranscriptUserLine, start: int, end: int) -> OpenTurn:
+        text = prompt_text(line.message)
         accumulator = ClaudeRunAccumulator()
-        accumulator.begin(prompt_text(line.message))
+        accumulator.begin(text)
         stamp(accumulator.messages, line.timestamp)
         return OpenTurn(
             prompt_id=line.prompt_id,
+            prompt_text=text,
             source=line.entrypoint,
             start_offset=start,
             end_offset=end,
@@ -376,7 +435,10 @@ class ClaudeTranscriptTailer:
                         return
                     state.recorded.add(turn.prompt_id)
                     await self.bind_ledger(
-                        state.session_id, run, turn.accumulator.result_text
+                        state.session_id,
+                        run,
+                        turn.prompt_text,
+                        turn.accumulator.result_text,
                     )
             except TimeoutError:
                 span.set_attribute("timed_out", True)
@@ -388,12 +450,12 @@ class ClaudeTranscriptTailer:
                 )
 
     async def bind_ledger(
-        self, session_id: str, run: ExternalAgentRun, answer: str
+        self, session_id: str, run: ExternalAgentRun, prompt_text: str, answer: str
     ) -> None:
-        """Cross-reference the live human ledger (the hooks' inbound prompt / outbound
-        answer, keyed by `prompt_id = run.id`) to this rebuilt run. Reuse-only: the hooks
-        own writing those rows, so a row not yet written is simply left unbound for a
-        later re-drive, never created here."""
+        """Cross-reference the human ledger (inbound prompt / outbound answer, keyed by
+        `prompt_id = run.id`) to this run. Rows the hooks already wrote live are reused;
+        any the live pipe never wrote — a session Octomate watched only after the fact,
+        via recovery — are created here from the transcript, so the ledger stands alone."""
         thread = await self.thread_manager.ensure(
             ThreadKey(CLAUDE_NATIVE_ID, "private", session_id, "")
         )
@@ -405,13 +467,32 @@ class ClaudeTranscriptTailer:
             ),
             None,
         )
-        inbound = self.existing_message(thread, run.id, "inbound")
-        if prompt_request is not None and inbound is not None:
+        if prompt_request is not None:
+            inbound = self.existing_message(thread, run.id, "inbound")
+            if inbound is None:
+                inbound = await self.thread_manager.record_inbound(
+                    MessageEvent(
+                        tentacle_id=CLAUDE_NATIVE_ID,
+                        message_id=run.id,
+                        chat_id=session_id,
+                        chat_type="private",
+                        user_id=NATIVE_USER.user_id,
+                        sender=NATIVE_USER,
+                        segments=[TextSegment(data={"text": prompt_text})],
+                    )
+                )
             await self.thread_manager.bind_messages(
                 [inbound.id], prompt_request.id, kind="request_source", run_id=run.id
             )
-        outbound = self.existing_message(thread, run.id, "outbound")
-        if answer and outbound is not None:
+        if answer:
+            outbound = self.existing_message(thread, run.id, "outbound")
+            if outbound is None:
+                outbound = await self.thread_manager.record_outbound(
+                    thread,
+                    agent_tentacle_id=CLAUDE_NATIVE_ID,
+                    segments=[MarkdownSegment(data={"text": answer})],
+                    platform_message_id=run.id,
+                )
             await self.thread_manager.bind_assistant_replies(
                 [outbound.id], run_id=run.id
             )

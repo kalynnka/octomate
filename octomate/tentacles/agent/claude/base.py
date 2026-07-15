@@ -74,7 +74,6 @@ from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agent.claude.hooks import CLAUDE_HOOK_PATH, ClaudeHookInput
 from octomate.tentacles.agent.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.agent.claude.locks import SessionLocks
-from octomate.tentacles.agent.claude.restore import ClaudeSessionRestore
 from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.agent.claude.transport import SSHTransport
 from octomate.types.json import JsonObject
@@ -140,13 +139,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
         # session's ledger writes (hooks) and run commits (tailer) serialize.
         self.session_locks = SessionLocks()
-        # Rebuilds native sessions' full model timelines from their transcripts — the
-        # manual recovery engine, run on demand when a session is opened; live ingest
-        # goes through `session_tailer`.
-        self.session_restore = ClaudeSessionRestore(self.octomate)
         # Follows live native sessions' transcripts, recording each turn's run and
         # streaming its events — one follow loop per session, shared by the hook
-        # lifecycle and any stream consumer.
+        # lifecycle and any stream consumer. Its `recover` is the manual on-demand
+        # rebuild for a session Octomate watched only partially or never.
         self.session_tailer = ClaudeTranscriptTailer(
             self.octomate.conversations,
             self.octomate.thread_manager,

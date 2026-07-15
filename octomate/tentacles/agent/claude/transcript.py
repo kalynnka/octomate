@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Literal
 
 from anthropic.types import Message as AnthropicMessage
@@ -166,3 +167,36 @@ TranscriptLine = Annotated[
 ]
 
 transcript_lines_adapter = TypeAdapter(list[TranscriptLine])
+
+# One typed line at a time, tolerating kinds this module does not model yet
+# (`validate_json` raises on an unknown discriminator; those lines are skipped).
+transcript_line_adapter: TypeAdapter[TranscriptLine] = TypeAdapter(TranscriptLine)
+
+# Where Claude Code writes session transcripts, one dir per project (cwd slug).
+CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+
+
+def prompt_text(message: TranscriptUserMessage) -> str:
+    """The plain text of a submitted prompt — the string itself, or the text of its
+    text blocks (Claude Code pads a prompt with injected context blocks)."""
+    content = message.content
+    if isinstance(content, str):
+        return content
+    texts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str):
+                texts.append(text)
+    return "\n".join(texts)
+
+
+def locate_transcript(session_id: str) -> Path | None:
+    """The session's transcript on local disk, newest if a slug moved. A caller with only
+    a session id (a web open, or recovery) uses this; a hook already carries the path."""
+    matches = sorted(
+        CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return matches[0] if matches else None

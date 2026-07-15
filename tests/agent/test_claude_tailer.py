@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.events import StreamEvents
 from octomate.database import async_session
+from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import MessageBinding, ThreadKey
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
@@ -438,3 +439,140 @@ async def test_line_split_across_pumps_is_not_half_parsed(tmp_path: Path) -> Non
 
     await tailer.close_turn(state)
     assert [run.id for run in await runs_of(octomate)] == ["p1"]
+
+
+# --- recover(): the manual on-demand rebuild, reusing the same assembly ---
+
+
+def sidechain_record(uid: str, second: int) -> JsonObject:
+    """A sub-agent's assistant line — must never land in the parent timeline."""
+    record = assistant_record(uid, second, [{"type": "text", "text": "subagent chatter"}])
+    record["isSidechain"] = True
+    return record
+
+
+def hook(prompt_id: str, **body: str) -> ClaudeHookInput:
+    return ClaudeHookInput.model_validate(
+        {"hook_event_name": "x", "session_id": SESSION_ID, "prompt_id": prompt_id, **body}
+    )
+
+
+async def test_recover_reconstructs_full_fidelity(tmp_path: Path) -> None:
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE + [sidechain_record("side", 5)] + TURN_TWO)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    recovered = await tailer.recover(SESSION_ID, transcript)
+    assert recovered == ["p1", "p2"]
+
+    first = (await runs_of(octomate))[0]
+    assert first.id == "p1"
+    assert first.external_session_id == SESSION_ID
+    assert first.source == "cli"
+    kinds = [type(message).__name__ for message in first.messages]
+    assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
+
+    response = first.messages[1]
+    assert isinstance(response, ModelResponse)
+    part_kinds = [type(part).__name__ for part in response.parts]
+    assert "ThinkingPart" in part_kinds and "ToolCallPart" in part_kinds
+    assert response.model_name == "claude-opus-4-8"
+    assert response.usage.output_tokens == 7
+    assert first.started_at is not None
+
+    # The sub-agent line is excluded from the rebuilt timeline.
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    texts = json.dumps([message.message_text for message in conversation.messages])
+    assert "subagent chatter" not in texts
+
+
+async def test_recover_creates_the_human_ledger(tmp_path: Path) -> None:
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE + TURN_TWO)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    # No hooks ever ran, so recover creates the ledger from the transcript and binds it.
+    await tailer.recover(SESSION_ID, transcript)
+
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    ledger = [(m.direction, m.platform_message_id) for m in thread.messages]
+    assert ledger == [
+        ("inbound", "p1"),
+        ("outbound", "p1"),
+        ("inbound", "p2"),
+        ("outbound", "p2"),
+    ]
+    async with async_session() as session:
+        bindings = await session.list(MessageBinding, limit=None, order_bys=[])
+    assert sorted({binding.kind for binding in bindings}) == [
+        "assistant_reply",
+        "request_source",
+    ]
+
+
+async def test_recover_reuses_live_ledger_rows(tmp_path: Path) -> None:
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE + TURN_TWO)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    # The hooks already wrote p1's ledger; recover binds those rows, not duplicates.
+    ingest = ClaudeHookIngest(octomate, tailer)
+    await ingest.record_prompt(hook("p1", prompt="list the files"), "list the files")
+    await ingest.record_answer(hook("p1"), "Done.")
+
+    await tailer.recover(SESSION_ID, transcript)
+
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    inbound_p1 = [
+        m
+        for m in thread.messages
+        if m.platform_message_id == "p1" and m.direction == "inbound"
+    ]
+    assert len(inbound_p1) == 1  # bound the existing row, did not duplicate it
+
+
+async def test_recover_is_idempotent(tmp_path: Path) -> None:
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE + TURN_TWO)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    await tailer.recover(SESSION_ID, transcript)
+    again = await tailer.recover(SESSION_ID, transcript)
+
+    assert again == []  # nothing new the second time
+    assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    assert len(thread.messages) == 4  # no duplicate ledger rows
+
+
+async def test_recover_resumes_from_the_last_committed_offset(tmp_path: Path) -> None:
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    # First recovery sees only turn one.
+    assert await tailer.recover(SESSION_ID, transcript) == ["p1"]
+    (p1,) = await runs_of(octomate)
+
+    # Turn two lands later; recovery resumes at max(end_offset), reproducing it exactly.
+    with transcript.open("ab") as handle:
+        handle.write(b"".join(line_bytes(record) for record in TURN_TWO))
+    assert await tailer.recover(SESSION_ID, transcript) == ["p2"]
+
+    runs = await runs_of(octomate)
+    assert [run.id for run in runs] == ["p1", "p2"]
+    assert runs[1].start_offset == p1.end_offset  # resumed exactly at the boundary
+
+
+async def test_recover_missing_transcript_is_a_noop(tmp_path: Path) -> None:
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    assert await tailer.recover(SESSION_ID, tmp_path / "gone.jsonl") == []

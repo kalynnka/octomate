@@ -1,6 +1,9 @@
 # Plan: Claude native session ingest — live transcript tailer + recoverable external runs
 
-> **Status:** proposed · **Owner:** @luhui · **Created:** 2026-07-14
+> **Status:** done · **Owner:** @luhui · **Created:** 2026-07-14
+> **Shipped:** UoW-B polymorphic `ExternalAgentRun` (`4017fc5`), UoW-A offset tailer
+> (`22f2952`), UoW-C hook-lifecycle wiring (`986eeba`), UoW-D manual recovery + one shared
+> assembler (this branch — `recover` on the tailer; the whole-file restore engine retired).
 > **Builds on:** the shipped native-ingest foundation — hook human-ledger
 > ([claude/ingest.py](../../octomate/tentacles/agent/claude/ingest.py), commit `fc8b7de`),
 > transcript schema ([claude/transcript.py](../../octomate/tentacles/agent/claude/transcript.py),
