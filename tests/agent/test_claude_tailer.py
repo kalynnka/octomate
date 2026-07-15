@@ -348,6 +348,23 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger(tmp_path: Path) 
     assert {binding.run_id for binding in bindings} == {"p1", "p2"}
 
 
+async def test_shutdown_cancels_the_follow_loop(tmp_path: Path) -> None:
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    state = tailer.start(SESSION_ID, transcript)
+    await anyio.sleep(0.05)  # let the loop reach its directory watch
+    assert tailer.is_following(SESSION_ID)
+
+    await tailer.shutdown()
+
+    assert not tailer.is_following(SESSION_ID)
+    assert tailer.sessions == {}
+    assert state.task is not None and state.task.done()
+
+
 async def test_line_split_across_pumps_is_not_half_parsed(tmp_path: Path) -> None:
     transcript = tmp_path / f"{SESSION_ID}.jsonl"
     octomate = Octomate()
