@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import monotonic
 
 import anyio
 import logfire
@@ -45,6 +46,13 @@ LIVE_STREAM_BUFFER = 256
 # commit in time is simply left for recovery — the durable sink is idempotent.
 COMMIT_LOCK_TIMEOUT = 30.0
 
+# Reclaim a follow loop whose session went silent (crash, hooks removed — no SessionEnd
+# ever arrives): if no new bytes land for this long, the loop self-finalizes (drains,
+# commits the trailing turn, drops itself) instead of parking on the watch forever. The
+# watch wakes every `IDLE_POLL_MS` even without a file change, to check the deadline.
+IDLE_TIMEOUT = 30 * 60.0
+IDLE_POLL_MS = 60_000
+
 
 @dataclass
 class OpenTurn:
@@ -72,6 +80,8 @@ class TailState:
     receive_stream: MemoryObjectReceiveStream[StreamEvents[str]]
     stop_event: asyncio.Event
     offset: int = 0
+    # Monotonic time of the last pump that read new bytes; drives the idle reclaim.
+    last_active: float = field(default_factory=monotonic)
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
     open_turn: OpenTurn | None = None
@@ -117,13 +127,23 @@ class ClaudeTranscriptTailer:
     def start(
         self, session_id: str, transcript_path: Path, *, offset: int = 0
     ) -> TailState:
-        """Begin (or rejoin) following a session. One loop per session: a live one is
-        returned as-is, so a repeated start (e.g. `SessionStart` then the first
-        `UserPromptSubmit`) is a no-op. `offset` seeds the cursor for a resume."""
+        """Begin (or rejoin) following a session. One loop per session: a live one on the
+        same path is returned as-is, so a repeated start (e.g. `SessionStart` then the
+        first `UserPromptSubmit`) is a no-op. `offset` seeds the cursor for a resume."""
         existing = self.sessions.get(session_id)
-        if existing is not None and existing.task is not None:
-            if not existing.task.done():
+        if existing is not None and existing.task is not None and not existing.task.done():
+            if existing.transcript_path == transcript_path:
                 return existing
+            # Same session, new transcript path (its slug moved): the bytes are the same,
+            # only relocated. Follow the new file, re-reading from the open turn's start
+            # so a not-yet-committed turn isn't lost; the fresh loop re-seeds its
+            # committed-turn guard from the DB, so nothing double-commits.
+            offset = (
+                existing.open_turn.start_offset
+                if existing.open_turn is not None
+                else existing.offset
+            )
+            existing.task.cancel()
         state = self.new_state(session_id, transcript_path, offset)
         state.task = asyncio.create_task(self.follow(state))
         self.sessions[session_id] = state
@@ -152,13 +172,14 @@ class ClaudeTranscriptTailer:
         return state.receive_stream if state is not None else None
 
     async def finalize(self, session_id: str) -> None:
-        """End a session's follow loop: it drains to EOF, commits the trailing turn, and
-        closes the live stream. Awaits the loop so the last turn is durable on return."""
-        state = self.sessions.pop(session_id, None)
+        """End a session's follow loop: it drains to EOF, commits the trailing turn,
+        closes the live stream, and drops itself from the registry. Awaits the loop so the
+        last turn is durable on return."""
+        state = self.sessions.get(session_id)
         if state is None or state.task is None:
             return
         state.stop_event.set()
-        await state.task
+        await state.task  # its finally drains, commits, and reclaims the registry slot
 
     async def shutdown(self) -> None:
         """Cancel every follow loop (tentacle disconnect). No final drain — an
@@ -191,8 +212,18 @@ class ClaudeTranscriptTailer:
                         state.transcript_path.parent,
                         stop_event=state.stop_event,
                         recursive=False,
+                        rust_timeout=IDLE_POLL_MS,
+                        yield_on_timeout=True,
                     ):
                         await self.pump(state)
+                        if monotonic() - state.last_active > IDLE_TIMEOUT:
+                            logger.info(
+                                "Claude tailer for session %s idle past %ss; "
+                                "self-finalizing",
+                                state.session_id,
+                                IDLE_TIMEOUT,
+                            )
+                            break
                     await self.pump(state)  # final drain to EOF
                     await self.close_turn(state)  # commit the trailing turn
             except Exception:
@@ -201,6 +232,10 @@ class ClaudeTranscriptTailer:
                 )
             finally:
                 state.send_stream.close()
+                # Reclaim the registry slot on any exit (idle, finalize, crash), unless a
+                # relocation already replaced this state with a fresh loop.
+                if self.sessions.get(state.session_id) is state:
+                    del self.sessions[state.session_id]
 
     async def prepare(self, state: TailState) -> None:
         """Resolve the session's conversation and seed the committed-turn guard from it,
@@ -235,6 +270,7 @@ class ClaudeTranscriptTailer:
             chunk = handle.read()
         if not chunk:
             return
+        state.last_active = monotonic()  # new bytes — the session is alive
         for raw in chunk.split(b"\n")[:-1]:  # last element is the trailing fragment
             start = state.offset
             state.offset += len(raw) + 1  # + the '\n' the line was framed on

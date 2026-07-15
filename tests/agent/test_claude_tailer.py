@@ -20,6 +20,7 @@ from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import MessageBinding, ThreadKey
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
+from octomate.tentacles.agent.claude import tailer as tailer_mod
 from octomate.tentacles.agent.claude.locks import SessionLocks
 from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer, TailState
 from octomate.types.json import JsonObject
@@ -346,6 +347,55 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger(tmp_path: Path) 
         "request_source",
     ]
     assert {binding.run_id for binding in bindings} == {"p1", "p2"}
+
+
+async def test_relocation_follows_the_moved_transcript(tmp_path: Path) -> None:
+    dir_a = tmp_path / "slug-a"
+    dir_b = tmp_path / "slug-b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    path_a = dir_a / f"{SESSION_ID}.jsonl"
+    write_records(path_a, TURN_ONE)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    state_a = tailer.start(SESSION_ID, path_a)
+    await anyio.sleep(0.1)  # catch up turn one (p1 open, uncommitted)
+
+    # The session's slug moves: the same bytes relocate to a new dir, and turn two lands.
+    path_b = dir_b / f"{SESSION_ID}.jsonl"
+    path_b.write_bytes(path_a.read_bytes())
+    with path_b.open("ab") as handle:
+        handle.write(b"".join(line_bytes(record) for record in TURN_TWO))
+
+    state_b = tailer.start(SESSION_ID, path_b)
+    assert state_b is not state_a
+    assert state_b.transcript_path == path_b
+    await tailer.finalize(SESSION_ID)
+
+    # The uncommitted turn one is re-read from the moved file, so nothing is lost.
+    assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
+
+
+async def test_idle_loop_self_finalizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tailer_mod, "IDLE_TIMEOUT", 0.1)
+    monkeypatch.setattr(tailer_mod, "IDLE_POLL_MS", 50)
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE + TURN_TWO)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    # A session that never sends SessionEnd: no new bytes ever arrive, so past the idle
+    # window the loop self-finalizes — commits the trailing turn and drops itself.
+    tailer.start(SESSION_ID, transcript)
+    with anyio.fail_after(5):
+        while tailer.is_following(SESSION_ID):
+            await anyio.sleep(0.05)
+
+    assert tailer.sessions == {}
+    assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
 
 
 async def test_shutdown_cancels_the_follow_loop(tmp_path: Path) -> None:
