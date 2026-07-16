@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Generic, Self, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, Self, TypeVar
 
 from fastapi import APIRouter
 from rich.style import Style
@@ -32,6 +32,9 @@ class Tentacle(Generic[TentaclePrimaryT, TentacleSecondaryT]):
     # The console log color for this tentacle's lines, dispatched by the Octomate
     # host when the tentacle is connected (see `Octomate.connect`).
     log_color: Style | None = field(default=None, init=False, repr=False)
+    # A tentacle fronting something with a color of its own claims it here, and the
+    # host dispatches that instead of generating a hue from the connection order.
+    brand_color: ClassVar[Style | None] = None
 
     @property
     def log_names(self) -> tuple[str, ...]:

@@ -80,7 +80,7 @@ class Octomate:
             tentacle.octomate = self
             if tentacle.id in self.channels:
                 raise ValueError(f"channel {tentacle.id!r} already connected")
-            tentacle.log_color = log_style_for_index(
+            tentacle.log_color = tentacle.brand_color or log_style_for_index(
                 len(self.agents) + len(self.channels)
             )
             self.channels[tentacle.id] = tentacle
@@ -88,7 +88,7 @@ class Octomate:
             tentacle.octomate = self
             if tentacle.id in self.agents:
                 raise ValueError(f"agent {tentacle.id!r} already connected")
-            tentacle.log_color = log_style_for_index(
+            tentacle.log_color = tentacle.brand_color or log_style_for_index(
                 len(self.agents) + len(self.channels)
             )
             self.agents[tentacle.id] = tentacle

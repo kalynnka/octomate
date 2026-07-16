@@ -52,6 +52,7 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from rich.style import Style
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.deferred import DeferredSuspender
@@ -110,6 +111,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
     in_process: ClassVar[bool] = True
+
+    # Claude's own orange, so its lines carry its identity in a console shared with
+    # every other tentacle, instead of whatever hue the connection order landed on.
+    brand_color: ClassVar[Style | None] = Style(color="#D97757", bold=True)
 
     description: str = (
         "Coding agent for software engineering and multi-step technical work in a "
