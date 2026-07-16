@@ -4,6 +4,7 @@ import logging
 from collections import Counter
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
@@ -25,6 +26,7 @@ from octomate.schemas.thread import (
 )
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
+from octomate.tentacles.agent.claude.transcript import CLAUDE_PROJECTS_DIRS
 from octomate.tentacles.agent.locks import SessionLocks
 
 if TYPE_CHECKING:
@@ -69,9 +71,21 @@ class ClaudeHookIngest:
         octomate: Octomate,
         tailer: ClaudeTranscriptTailer,
         locks: SessionLocks | None = None,
+        extra_transcript_roots: tuple[Path, ...] = (),
     ) -> None:
         self.octomate = octomate
         self.tailer = tailer
+        # The trees a hook may name a transcript in: Claude's own, plus any an operator
+        # adds. A union rather than a replacement — the documented location keeps working
+        # whatever else is configured, so naming an extra root can never be the reason a
+        # session silently stops being ingested.
+        #
+        # Resolved once: the test is `is_relative_to`, which is lexical, so both sides
+        # must be resolved for `..` to mean anything.
+        self.transcript_roots = tuple(
+            root.resolve()
+            for root in (*CLAUDE_PROJECTS_DIRS, *extra_transcript_roots)
+        )
         # Serialize a session's events so the existence check and the write can't race
         # (Claude fires the next event without waiting for our commit). Shared with the
         # tailer so its run/ledger commits serialize against these writes too; the
@@ -108,21 +122,12 @@ class ClaudeHookIngest:
         if event.session_id in self.driven:
             return
         match event.hook_event_name:
-            case "SessionStart":
-                await self.on_session_start(event)
             case "UserPromptSubmit":
                 await self.on_user_prompt_submit(event)
             case "Stop":
                 await self.on_stop(event)
             case "SessionEnd":
                 await self.on_session_end(event)
-
-    @claude_logfire.instrument(
-        "claude.hook SessionStart [{event.session_id}]", extract_args=["event"]
-    )
-    async def on_session_start(self, event: ClaudeHookInput) -> None:
-        async with self.locks.hold(event.session_id):
-            await self.start_session(event)
 
     @claude_logfire.instrument(
         "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
@@ -166,11 +171,25 @@ class ClaudeHookIngest:
         before the follow loop runs — is what keeps the tailer's own `ensure` a cache hit
         rather than a write that could race the hooks' first-sighting create.
 
-        Requires the transcript directory to exist (the tailer's watch needs it); a hook
-        carrying no usable path leaves the tailer unstarted, and the ledger still writes.
+        Requires the transcript directory to exist (the tailer's watch needs it) and the
+        path to name a transcript in Claude's own tree; a hook carrying no usable path
+        leaves the tailer unstarted, and the ledger still writes.
         """
-        path = event.transcript_path
-        if self.tailer.is_following(event.session_id) or path is None:
+        if self.tailer.is_following(event.session_id) or event.transcript_path is None:
+            return
+        # Resolved before the root test: `is_relative_to` is lexical, so an unresolved
+        # `.../projects/../../elsewhere` would pass it.
+        path = event.transcript_path.resolve()
+        if not any(path.is_relative_to(root) for root in self.transcript_roots):
+            # The path is the caller's claim, and following it means reading whatever it
+            # names into this session's history. Only Claude's own tree is in scope.
+            logger.warning(
+                "session %s: refusing transcript outside %s: %s. If Claude Code writes "
+                "elsewhere here, set agents.claude.transcript_root.",
+                event.session_id,
+                ", ".join(str(root) for root in self.transcript_roots),
+                path,
+            )
             return
         if not path.parent.is_dir():
             return

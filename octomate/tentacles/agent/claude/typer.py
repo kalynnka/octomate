@@ -1,7 +1,6 @@
 """`octomate claude ...` — operator commands for the native Claude Code integration.
 
-Owned by the Claude tentacle so its operator surface lives beside its runtime. Mounted
-onto the root CLI as the `claude` group.
+Owned by the Claude tentacle so its operator surface lives beside its runtime.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from octomate.tentacles.agent.claude.hooks import (
     HANDLED_HOOK_EVENTS,
     HOOK_TIMEOUT,
 )
+from octomate.tentacles.agent.typer import HOOK_SECRET_ENV, announce_hook_secret
 from octomate.types.json import JsonObject, JsonValue
 
 claude_typer = typer.Typer(
@@ -31,15 +31,13 @@ claude_typer.add_typer(hooks_typer, name="hooks")
 
 @claude_typer.callback()
 def claude_group() -> None:
-    # Hint — without blocking — when the Claude tentacle is absent from this deployment's
-    # config: its hook router is not served then, so installed hooks reach nothing. The
-    # commands still run (you may be setting a machine up ahead of the config).
+    # Hint without blocking: the commands still run, since a machine may be set up ahead
+    # of the config.
     from octomate.config import OctomateConfig
 
     if OctomateConfig().agents.claude is None:
         typer.secho(
-            "Note: the Claude tentacle is not configured (config.agents.claude), so its "
-            "hook router is not served — installed hooks will have nothing to reach.",
+            "Note: config.agents.claude is unset, so no hook router is served.",
             fg=typer.colors.YELLOW,
             err=True,
         )
@@ -53,8 +51,7 @@ class Scope(str, Enum):
 ScopeOption = Annotated[
     Scope,
     typer.Option(
-        help="Which settings file to touch: 'user' (~/.claude) covers every project on "
-        "the machine; 'project' (./.claude) is repo-local."
+        help="Which settings file to touch: 'user' (~/.claude) or 'project' (./.claude)."
     ),
 ]
 SettingsOption = Annotated[
@@ -82,6 +79,23 @@ def configured_hook_url() -> str:
     return f"http://{host}:{config.port}{CLAUDE_HOOK_PATH}"
 
 
+def claude_hook_handler(url: str) -> JsonObject:
+    """One `http` handler: POST the event body to `url`, bearing the hook credential.
+
+    The credential is a `${VAR}` reference, not its value — Claude Code resolves it at
+    fire time, and only for names in `allowedEnvVars` — so a settings file stays safe to
+    commit. Synchronous, which is what guarantees delivery before a short-lived
+    `claude -p` exits.
+    """
+    return {
+        "type": "http",
+        "url": url,
+        "timeout": HOOK_TIMEOUT,
+        "headers": {"Authorization": f"Bearer ${{{HOOK_SECRET_ENV}}}"},
+        "allowedEnvVars": [HOOK_SECRET_ENV],
+    }
+
+
 def is_octomate_hook(hook: JsonValue) -> bool:
     """An `http` handler pointing at Octomate's hook path — matched by path, not the exact
     URL, so a re-install with a changed host/port replaces the stale one."""
@@ -90,12 +104,6 @@ def is_octomate_hook(hook: JsonValue) -> bool:
         and hook.get("type") == "http"
         and str(hook.get("url", "")).endswith(CLAUDE_HOOK_PATH)
     )
-
-
-def octomate_group(url: str) -> JsonObject:
-    """One matcher group carrying Octomate's `http` handler for an event."""
-    handler: JsonObject = {"type": "http", "url": url, "timeout": HOOK_TIMEOUT}
-    return {"hooks": [handler]}
 
 
 def without_octomate_hooks(groups: JsonValue) -> list[JsonValue]:
@@ -144,9 +152,8 @@ def install(
 ) -> None:
     """Point native Claude Code sessions at Octomate's hook router.
 
-    Merges Octomate's hook handlers into a Claude settings file. Existing hooks are
-    preserved, and re-running replaces any stale Octomate handler in place, so it is safe
-    to run repeatedly.
+    Merges into the settings file: other hooks are preserved, and re-running replaces a
+    stale Octomate handler in place rather than stacking another.
     """
     hook_url = url or configured_hook_url()
     path = settings_file(scope, settings)
@@ -155,14 +162,24 @@ def install(
     if not isinstance(hooks, dict):
         raise typer.BadParameter(f"{path} has a non-object 'hooks' section")
 
-    group: JsonValue = octomate_group(hook_url)
-    for event in HANDLED_HOOK_EVENTS:
-        hooks[event] = without_octomate_hooks(hooks.get(event)) + [group]
+    group: JsonValue = {"hooks": [claude_hook_handler(hook_url)]}
+    # Every event present, not just the handled ones: an event Octomate once registered
+    # and no longer does (`SessionStart`) would otherwise keep a stale handler forever.
+    for event in {*hooks, *HANDLED_HOOK_EVENTS}:
+        kept = without_octomate_hooks(hooks.get(event))
+        if event in HANDLED_HOOK_EVENTS:
+            kept.append(group)
+        if kept:
+            hooks[event] = kept
+        else:
+            del hooks[event]
     write_settings(path, document)
 
     typer.echo(f"Installed Octomate hooks → {hook_url}")
     typer.echo(f"  events:   {', '.join(HANDLED_HOOK_EVENTS)}")
     typer.echo(f"  settings: {path}")
+    typer.echo(f"  auth:     Authorization: Bearer ${{{HOOK_SECRET_ENV}}}")
+    announce_hook_secret()
 
 
 @hooks_typer.command("uninstall")

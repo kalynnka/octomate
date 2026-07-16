@@ -4,6 +4,7 @@ import logging
 from collections import Counter
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from pydantic_ai.messages import (
@@ -20,6 +21,7 @@ from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessageDirection
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agent.codex.hooks import CodexHookInput
+from octomate.tentacles.agent.codex.transcript import CODEX_SESSIONS_DIRS
 from octomate.tentacles.agent.locks import SessionLocks
 
 if TYPE_CHECKING:
@@ -36,10 +38,21 @@ class CodexHookIngest:
         octomate: Octomate,
         tailer: CodexTranscriptTailer,
         locks: SessionLocks | None = None,
+        extra_transcript_roots: tuple[Path, ...] = (),
     ) -> None:
         self.octomate = octomate
         self.tailer = tailer
         self.locks = locks if locks is not None else SessionLocks()
+        # The trees a hook may name a rollout in: Codex's own, plus any an operator adds.
+        # A union rather than a replacement — the documented location keeps working
+        # whatever else is configured, so naming an extra root can never be the reason a
+        # session silently stops being ingested.
+        #
+        # Resolved once: the test is `is_relative_to`, which is lexical, so both sides
+        # must be resolved for `..` to mean anything.
+        self.transcript_roots = tuple(
+            root.resolve() for root in (*CODEX_SESSIONS_DIRS, *extra_transcript_roots)
+        )
         self.driven: Counter[str] = Counter()
 
     @contextmanager
@@ -90,8 +103,22 @@ class CodexHookIngest:
         await self.tailer.pump_session(event.session_id)
 
     async def start_session(self, event: CodexHookInput) -> None:
-        path = event.transcript_path
-        if path is None or not path.parent.is_dir():
+        if event.transcript_path is None:
+            return
+        # Resolved before the root test: `is_relative_to` is lexical, so an unresolved
+        # `.../sessions/../../elsewhere` would pass it. The path is the caller's claim,
+        # and following it means reading whatever it names into this session's history.
+        path = event.transcript_path.resolve()
+        if not any(path.is_relative_to(root) for root in self.transcript_roots):
+            logger.warning(
+                "session %s: refusing transcript outside %s: %s. If Codex writes "
+                "elsewhere here, set agents.codex.transcript_root.",
+                event.session_id,
+                ", ".join(str(root) for root in self.transcript_roots),
+                path,
+            )
+            return
+        if not path.parent.is_dir():
             return
         thread = await self.session_thread(event.session_id)
         await self.octomate.conversations.ensure(

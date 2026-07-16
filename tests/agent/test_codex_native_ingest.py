@@ -24,6 +24,8 @@ async def db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
     yield
 
 
+
+
 def write_rollout(path: Path) -> None:
     records = [
         {
@@ -80,12 +82,17 @@ def write_rollout(path: Path) -> None:
     path.write_text("".join(json.dumps(record) + "\n" for record in records))
 
 
-def wired(octomate: Octomate) -> tuple[CodexHookIngest, CodexTranscriptTailer]:
+def wired(
+    octomate: Octomate, roots: tuple[Path, ...] = ()
+) -> tuple[CodexHookIngest, CodexTranscriptTailer]:
+    """The ingest only tails rollouts inside a known session tree, so tests that expect
+    tailing add the tmp tree they write into — the same injection the tentacle does from
+    `agents.codex.transcript_root`, and additive there for the same reason."""
     locks = SessionLocks()
     tailer = CodexTranscriptTailer(
         octomate.conversations, octomate.thread_manager, locks
     )
-    return CodexHookIngest(octomate, tailer, locks), tailer
+    return CodexHookIngest(octomate, tailer, locks, extra_transcript_roots=roots), tailer
 
 
 async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
@@ -94,7 +101,7 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
     path = tmp_path / "rollout.jsonl"
     path.write_text("")
     octomate = Octomate()
-    ingest, tailer = wired(octomate)
+    ingest, tailer = wired(octomate, (tmp_path,))
 
     common = {
         "session_id": SESSION_ID,
@@ -144,6 +151,31 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
         "done",
     ]
     await tailer.shutdown()
+
+
+async def test_a_transcript_outside_the_session_tree_is_not_tailed(
+    tmp_path: Path,
+) -> None:
+    """`transcript_path` is the caller's claim, and following it means reading whatever
+    it names into this session's history — so only Codex's own tree is in scope. The
+    `..` case is the one a lexical root test would wave through."""
+    outside = tmp_path.parent / "outside.jsonl"
+    outside.write_text("")
+    octomate = Octomate()
+    # tmp_path is a known root here, so `outside` beside it is genuinely outside every
+    # root — without this the paths would be refused only for being outside the real
+    # ~/.codex/sessions, and the test would pass against a gate that never ran.
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    for claimed in (outside, tmp_path / ".." / "outside.jsonl"):
+        await ingest.handle(
+            CodexHookInput(
+                hook_event_name="SessionStart",
+                session_id=SESSION_ID,
+                transcript_path=claimed,
+            )
+        )
+        assert SESSION_ID not in tailer.sessions
 
 
 async def test_driven_session_hooks_are_ignored() -> None:
@@ -233,7 +265,7 @@ async def test_nested_task_does_not_close_or_pollute_the_parent(tmp_path: Path) 
     ]
     path.write_text("".join(json.dumps(record) + "\n" for record in records))
     octomate = Octomate()
-    ingest, tailer = wired(octomate)
+    ingest, tailer = wired(octomate, (tmp_path,))
 
     await ingest.handle(
         CodexHookInput(

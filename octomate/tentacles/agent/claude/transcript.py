@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
@@ -172,8 +173,21 @@ transcript_lines_adapter = TypeAdapter(list[TranscriptLine])
 # (`validate_json` raises on an unknown discriminator; those lines are skipped).
 transcript_line_adapter: TypeAdapter[TranscriptLine] = TypeAdapter(TranscriptLine)
 
-# Where Claude Code writes session transcripts, one dir per project (cwd slug).
-CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+# Where Claude Code writes session transcripts: the documented
+# `<config dir>/projects/<cwd slug>/<session id>.jsonl`.
+#
+# Plural because `CLAUDE_CONFIG_DIR` relocates the tree and may name several directories,
+# comma-separated — reading it as one path would build a single nonsense root out of a
+# list and leave that machine's transcripts unfindable. The variable is thinly
+# documented, so treat this as the default rather than the law: an operator who lands
+# somewhere else overrides it with `agents.claude.transcript_root`.
+CLAUDE_PROJECTS_DIRS: tuple[Path, ...] = tuple(
+    Path(entry.strip()) / "projects"
+    for entry in (
+        os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+    ).split(",")
+    if entry.strip()
+)
 
 
 def prompt_text(message: TranscriptUserMessage) -> str:
@@ -195,7 +209,11 @@ def locate_transcript(session_id: str) -> Path | None:
     """The session's transcript on local disk, newest if a slug moved. A caller with only
     a session id (a web open, or recovery) uses this; a hook already carries the path."""
     matches = sorted(
-        CLAUDE_PROJECTS_DIR.glob(f"*/{session_id}.jsonl"),
+        (
+            match
+            for root in CLAUDE_PROJECTS_DIRS
+            for match in root.glob(f"*/{session_id}.jsonl")
+        ),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )

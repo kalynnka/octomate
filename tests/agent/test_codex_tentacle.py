@@ -27,7 +27,7 @@ from openai_codex.generated.v2_all import (
     TurnStatus,
 )
 from openai_codex.models import Notification, NotificationPayload
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartStartEvent
 
@@ -56,6 +56,8 @@ from uuid_utils.compat import uuid7
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
 )
+
+HOOK_SECRET = SecretStr("test-hook-secret")
 _THREAD = uuid7()
 _ACCEPT_EDITS_THREAD = uuid7()
 _BYPASS_THREAD = uuid7()
@@ -393,6 +395,7 @@ def _tentacle(
         "codex",
         Octomate(conversations=conversations),
         config=config or CodexConfig(approval_mode="deny_all"),
+        hook_secret=HOOK_SECRET,
     )
 
 
@@ -611,6 +614,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         "codex",
         octomate,
         config=CodexConfig(approval_mode="user"),
+        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
 
@@ -655,6 +659,7 @@ async def test_question_requests_bridge_to_cards() -> None:
         "codex",
         octomate,
         config=CodexConfig(approval_mode="user"),
+        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
@@ -708,6 +713,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         "codex",
         octomate,
         config=CodexConfig(approval_mode="user"),
+        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
@@ -736,6 +742,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         "codex-timeout",
         octomate,
         config=CodexConfig(approval_mode="user", approval_timeout=0.01),
+        hook_secret=HOOK_SECRET,
     )
     octomate.connect(timeout_tentacle)
     timeout_tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
@@ -773,6 +780,7 @@ async def test_codex_allow_session_and_permission_mode_auto_approval() -> None:
         "codex",
         octomate,
         config=CodexConfig(approval_mode="user"),
+        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)

@@ -214,3 +214,28 @@ Key config sections:
 - Per-skill sections: `github`, `linear`, `streamify`, `pixiv`, `qweather`, `tarot`
 
 Environment variables use the prefix `OCTOMATE__` with `__` as the nested delimiter — e.g. `OCTOMATE__GEMINI__API_KEY` overrides `gemini.api_key` in YAML.
+
+### Native session hooks
+
+Configuring `agents.claude` or `agents.codex` serves a hook router (`/hooks/claude`, `/hooks/codex`) that native Claude Code / Codex sessions POST their prompts and answers into. Those routes write straight into thread history, which agents read back, so they authenticate — Octomate refuses to boot without a credential.
+
+Set the credential up, then point your clients at it:
+
+```bash
+eval "$(octomate hooks secret)"                  # this shell
+octomate hooks secret >> ~/.zshrc                # and every later one (zsh)
+octomate claude hooks install                    # merges an http handler into ~/.claude/settings.json
+octomate codex hooks install                     # merges a command handler into ~/.codex/hooks.json
+```
+
+`hooks secret` prints one line — `export OCTOMATE__HOOK_SECRET=…` — and writes nothing; where your login environment comes from is yours to know. Sessions only ever read the **environment**, and they are separate processes that never see your `octomate.yaml`, so that line is the bridge, and it has to reach whatever launches them.
+
+`~/.zshrc` covers interactive zsh, which is what VSCode resolves the environment from; use `~/.zshenv` instead if you want non-interactive shells to have it too, and on another shell put the line wherever that shell would find it. Either way an environment is captured when a process starts: shells already open keep the one they had, and a GUI client (VSCode, the desktop app) grabs it when *it* launches — so restart them before expecting the hooks to carry the secret.
+
+Octomate itself reads the secret from `octomate.yaml` (`octomate.hook_secret`), `.env` (`OCTOMATE__HOOK_SECRET=…`), or the environment — both files are gitignored, and a set environment variable wins over `octomate.yaml`, which wins over `.env`. An already-configured secret is printed as-is and never rotated. If none is configured, `hooks secret` makes one and prints the line anyway, and tells you on stderr to give it to Octomate too — until you do, the routers will refuse the hooks.
+
+Both installers write a *reference* to the variable, never its value. Claude does this with `headers` + `allowedEnvVars`; Codex has no per-hook `env`, and a secret on its command line would be world-readable in `ps`, so it reads the variable in the hook itself. That also keeps hook config files safe to commit and share.
+
+The transport is HTTP on both sides — Codex has no http hook handler, so its command hook is a small stdlib-only script that POSTs to the same router. Because it authenticates rather than trusting reachability, Octomate does not have to be on the same machine as the sessions.
+
+A hook names the transcript it wants tailed, and Octomate only follows paths inside a known transcript tree — `<CLAUDE_CONFIG_DIR or ~/.claude>/projects` and `<CODEX_HOME or ~/.codex>/sessions`. Those are where the clients write today rather than a promise they always will, so `agents.claude.transcript_root` / `agents.codex.transcript_root` add another. They widen the set rather than replacing it: the client's own tree stays accepted, so adding a root can never be why a session stops being ingested. If a session's turns reach the ledger but its tools and reasoning never do, look for a refused transcript path in the logs — that setting is the fix.

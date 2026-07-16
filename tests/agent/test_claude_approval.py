@@ -32,6 +32,8 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import Message, ToolPermissionContext
 from pydantic_ai.tools import DeferredToolRequests
 
+from pydantic import SecretStr
+
 from octomate import Octomate
 from octomate.config import ChannelConfig
 from octomate.config.agents import ClaudeCodeConfig
@@ -57,6 +59,8 @@ from uuid_utils.compat import uuid7
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
 )
+
+HOOK_SECRET = SecretStr("test-hook-secret")
 _THREAD = uuid7()
 
 
@@ -202,7 +206,10 @@ def _build(
         channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
     )
     tentacle = ClaudeCodeTentacle(
-        "claude", octomate, config=config or ClaudeCodeConfig()
+        "claude",
+        octomate,
+        config=config or ClaudeCodeConfig(),
+        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
     return tentacle, dam, feelers

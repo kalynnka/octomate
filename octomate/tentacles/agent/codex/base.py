@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, overload
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
 from openai_codex._sandbox import _sandbox_mode
@@ -28,7 +28,7 @@ from openai_codex.generated.v2_all import (
     ThreadStartParams,
     TurnStatus,
 )
-from pydantic import TypeAdapter
+from pydantic import SecretStr, TypeAdapter
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -75,6 +75,7 @@ from octomate.tentacles.agent.codex.hooks import CODEX_HOOK_PATH, CodexHookInput
 from octomate.tentacles.agent.codex.hooks import DRIVEN_ENV
 from octomate.tentacles.agent.codex.ingest import CodexHookIngest
 from octomate.tentacles.agent.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.agent.hooks import hook_guard
 from octomate.tentacles.agent.locks import SessionLocks
 from octomate.types.json import JsonObject
 
@@ -239,6 +240,8 @@ class CodexTentacle(AgentTentacle[str, None]):
     """
 
     config: CodexConfig = field(init=False)
+    # Bearer credential its hook router requires of native sessions.
+    hook_secret: SecretStr = field(init=False, repr=False)
     pool: CodexClientPool | None = field(default=None, init=False, repr=False)
     live_turns: dict[uuid.UUID, AsyncTurnHandle] = field(
         default_factory=dict, init=False
@@ -265,10 +268,12 @@ class CodexTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: CodexConfig,
+        hook_secret: SecretStr,
         description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.config = config
+        self.hook_secret = hook_secret
         self.description = description or self.description
         self.pool = None
         self.live_turns = {}
@@ -285,6 +290,10 @@ class CodexTentacle(AgentTentacle[str, None]):
             self.octomate,
             self.session_tailer,
             self.session_locks,
+            # Accepted alongside Codex's own tree, never instead of it.
+            extra_transcript_roots=(
+                (config.transcript_root,) if config.transcript_root else ()
+            ),
         )
 
     def routers(self) -> tuple[APIRouter]:
@@ -292,7 +301,9 @@ class CodexTentacle(AgentTentacle[str, None]):
 
     @cached_property
     def hook_router(self) -> APIRouter:
-        router = APIRouter(tags=["codex"])
+        router = APIRouter(
+            tags=["codex"], dependencies=[Depends(hook_guard(self.hook_secret))]
+        )
 
         @router.post(CODEX_HOOK_PATH, summary="Codex native-session hook pipe")
         async def receive_hook(event: CodexHookInput) -> JSONResponse:

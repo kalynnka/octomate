@@ -5,6 +5,7 @@ import logging
 import logfire
 import uvicorn
 from fastapi import FastAPI
+from pydantic import SecretStr
 
 from octomate import Octomate
 from octomate.capabilities.history import HistoryCapability
@@ -28,6 +29,26 @@ from octomate.tentacles.channel.slack import SlackTentacle
 from octomate.tentacles.channel.web.vercel import VercelTentacle
 
 config = OctomateConfig()
+
+
+def hook_secret(agent: str) -> SecretStr:
+    """The credential `agent`'s hook router authenticates against.
+
+    Demanded rather than defaulted: these routers write a session's prompts and answers
+    into thread history, which agents read back, so serving one without a credential
+    would let anything that can reach the port speak as the human. Refusing to boot is
+    the only honest answer — the alternative is an open router nobody notices.
+
+    Asked for only where a hook-serving tentacle is actually being built, so a
+    deployment that configures neither Claude nor Codex needs no secret at all.
+    """
+    if config.hook_secret is None:
+        raise RuntimeError(
+            f"octomate.hook_secret is unset, but agents.{agent} serves a hook router "
+            "that authenticates against it. Run `octomate hooks secret` to generate one "
+            f"and place it, then re-run `octomate {agent} hooks install`."
+        )
+    return config.hook_secret
 
 
 def create_app() -> FastAPI:
@@ -117,6 +138,7 @@ def create_app() -> FastAPI:
                 "claude",
                 octomate,
                 config=claude_config,
+                hook_secret=hook_secret("claude"),
             )
         )
 
@@ -126,6 +148,7 @@ def create_app() -> FastAPI:
                 "codex",
                 octomate,
                 config=codex_config,
+                hook_secret=hook_secret("codex"),
             )
         )
 

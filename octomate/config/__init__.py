@@ -3,7 +3,13 @@ from __future__ import annotations
 from ipaddress import IPv4Address
 from typing import Annotated, Self
 
-from pydantic import Field, IPvAnyAddress, ValidationError, model_validator
+from pydantic import (
+    Field,
+    IPvAnyAddress,
+    SecretStr,
+    ValidationError,
+    model_validator,
+)
 from pydantic_core import InitErrorDetails, PydanticCustomError
 from pydantic_settings import (
     BaseSettings,
@@ -66,6 +72,18 @@ class OctomateConfig(BaseSettings):
 
     host: IPvAnyAddress = IPv4Address("127.0.0.1")
     port: Annotated[int, Field(ge=1, le=65535)] = 8000
+
+    hook_secret: Annotated[
+        SecretStr | None,
+        Field(
+            description="Bearer credential the Claude/Codex hook routers require. "
+            "Required whenever one of those agents is configured, since serving a hook "
+            "router unauthenticated would let anything that can reach the port write a "
+            "session's prompts and answers into thread history. Set it in the "
+            "environment (OCTOMATE__HOOK_SECRET) and the installed hooks will reference "
+            "the same variable."
+        ),
+    ] = None
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

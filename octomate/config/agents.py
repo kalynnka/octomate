@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from pathlib import Path
+from typing import Annotated, Literal, TypeAlias
 
 from openai_codex import CodexConfig as CodexSdkConfig
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 from pydantic_ai.models import KnownModelName
 
 from octomate.config.models import ModelConfig
+
+
+# A filesystem path from config, with `~` meaning what the person writing it meant:
+# pydantic keeps `~/...` literal, and `Path("~/x").resolve()` yields `<cwd>/~/x` rather
+# than a home directory — a root like that matches nothing and quietly stops a session
+# being ingested.
+ConfigPath: TypeAlias = Annotated[Path, AfterValidator(Path.expanduser)]
 
 ClaudeCodeModelName: TypeAlias = Literal[
     "best",
@@ -91,6 +99,17 @@ class ClaudeCodeConfig(BaseModel):
     )
     max_turns: int | None = None
     ssh: ClaudeSSHConfig | None = None
+    transcript_root: ConfigPath | None = Field(
+        default=None,
+        description=(
+            "An additional directory native session transcripts may live under; a hook "
+            "naming a path outside every known root is not tailed. Claude's own "
+            "<CLAUDE_CONFIG_DIR or ~/.claude>/projects is always accepted, so this "
+            "widens the set rather than replacing it — set it when Claude Code writes "
+            "somewhere else too, since the default is where it writes today rather than "
+            "a promise it always will."
+        ),
+    )
     approval_timeout: float | None = Field(
         default=None,
         description=(
@@ -114,6 +133,17 @@ class CodexConfig(BaseModel):
     enabled: bool = Field(
         default=True,
         description="Whether to register the Codex tentacle when the config block exists.",
+    )
+    transcript_root: ConfigPath | None = Field(
+        default=None,
+        description=(
+            "An additional directory native session rollouts may live under; a hook "
+            "naming a path outside every known root is not tailed. Codex's own "
+            "<CODEX_HOME or ~/.codex>/sessions is always accepted, so this widens the "
+            "set rather than replacing it — set it when Codex writes somewhere else "
+            "too, since the default is where it writes today rather than a promise it "
+            "always will."
+        ),
     )
     cwd: str = Field(
         default=".",

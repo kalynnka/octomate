@@ -27,9 +27,9 @@ from claude_agent_sdk import (
     PreToolUseHookInput,
     ToolPermissionContext,
 )
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
-from pydantic import TypeAdapter
+from pydantic import SecretStr, TypeAdapter
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_ai import (
     AgentCapability,
@@ -76,6 +76,7 @@ from octomate.tentacles.agent.claude.hooks import CLAUDE_HOOK_PATH, ClaudeHookIn
 from octomate.tentacles.agent.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.agent.claude.transport import SSHTransport
+from octomate.tentacles.agent.hooks import hook_guard
 from octomate.tentacles.agent.locks import SessionLocks
 from octomate.types.json import JsonObject
 
@@ -107,6 +108,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     """
 
     config: ClaudeCodeConfig = field(init=False)
+    # Bearer credential its hook router requires of native sessions.
+    hook_secret: SecretStr = field(init=False, repr=False)
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
@@ -127,10 +130,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: ClaudeCodeConfig,
+        hook_secret: SecretStr,
         description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.config = config
+        self.hook_secret = hook_secret
         self.description = description or self.description
         self.pending = {}
         # One live Claude client per conversation (keyed by thread_id — this
@@ -159,19 +164,26 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             self.octomate,
             self.session_tailer,
             self.session_locks,
+            # Accepted alongside Claude's own tree, never instead of it.
+            extra_transcript_roots=(
+                (config.transcript_root,) if config.transcript_root else ()
+            ),
         )
 
     def routers(self) -> tuple[APIRouter]:
         """The tentacle's HTTP surface, mounted by `Octomate.connect`: the hook router
         native Claude clients (app / CLI / VSCode) POST their session events into.
-        `claude_hook_settings` is the client-side fragment that points a session at it.
+        `octomate claude hooks install` writes the client-side settings that point a
+        session at it.
         """
         return (self.hook_router,)
 
     @cached_property
     def hook_router(self) -> APIRouter:
         """The route behind `routers()`; cached so it is built once."""
-        router = APIRouter(tags=["claude"])
+        router = APIRouter(
+            tags=["claude"], dependencies=[Depends(hook_guard(self.hook_secret))]
+        )
 
         @router.post(
             CLAUDE_HOOK_PATH,

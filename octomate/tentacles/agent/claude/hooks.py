@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 # The events this pipe registers and acts on. `UserPromptSubmit` and `Stop` carry the
-# turn's prompt and answer — the whole human ledger — while `SessionStart` and
-# `SessionEnd` bound the session so the transcript tailer can start and finalize. Tool-
-# lifecycle and message-display events are model-timeline detail the tailer reads off the
-# transcript, not ingested from the events.
-HandledHookEvent = Literal[
-    "SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"
-]
+# turn's prompt and answer — the whole human ledger — while `SessionEnd` closes the
+# session so the transcript tailer can finalize. Tool-lifecycle and message-display
+# events are model-timeline detail the tailer reads off the transcript, not ingested
+# from the events.
+#
+# `SessionStart` is absent on purpose: Claude Code delivers it to `command` and
+# `mcp_tool` hooks only, so registering it as `http` would install a handler that can
+# never fire. The first prompt starts the tailer instead (see `ClaudeHookIngest`).
+HandledHookEvent = Literal["UserPromptSubmit", "Stop", "SessionEnd"]
 HANDLED_HOOK_EVENTS: tuple[HandledHookEvent, ...] = (
-    "SessionStart",
     "UserPromptSubmit",
     "Stop",
     "SessionEnd",
@@ -52,30 +53,3 @@ class ClaudeHookInput(BaseModel):
     prompt: str | None = None
     # The turn's final answer, on `Stop`.
     last_assistant_message: str | None = None
-
-
-class ClaudeHookHandler(TypedDict):
-    type: Literal["http"]
-    url: str
-    timeout: int
-
-
-class ClaudeHookMatcher(TypedDict):
-    hooks: list[ClaudeHookHandler]
-
-
-def claude_hook_settings(url: str) -> dict[str, list[ClaudeHookMatcher]]:
-    """The `hooks` fragment that pipes a native Claude session into Octomate.
-
-    Merges into a Claude settings file (`~/.claude/settings.json` covers every project
-    on the machine). Each handled event gets an `http` handler that POSTs the event
-    body to `url` — Claude Code speaks HTTP natively, so no wrapper script is involved.
-
-    The handlers are synchronous: Claude Code waits for the POST, which is what
-    guarantees delivery before a short-lived `claude -p` process exits. They return an
-    empty JSON object, so no hook decides anything — this pipe only observes.
-    """
-    return {
-        event: [{"hooks": [{"type": "http", "url": url, "timeout": HOOK_TIMEOUT}]}]
-        for event in HANDLED_HOOK_EVENTS
-    }

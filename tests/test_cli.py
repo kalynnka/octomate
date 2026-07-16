@@ -1,18 +1,24 @@
-"""The operator CLI's Claude-hook install/uninstall merge behavior."""
+"""The operator CLI's hook install/uninstall merge behavior."""
 
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import SecretStr
 from typer.testing import CliRunner
 
+from octomate.cli.base import app
 from octomate.tentacles.agent.claude.typer import claude_typer
+from octomate.tentacles.agent.codex.typer import EMIT_SCRIPT, codex_typer
 
 runner = CliRunner()
 URL = "http://127.0.0.1:9999/hooks/claude"
+CODEX_URL = "http://127.0.0.1:9999/hooks/codex"
 COMMAND_HOOK = {"type": "command", "command": "echo done"}
 
 
@@ -47,7 +53,54 @@ def test_install_preserves_existing_hooks_and_is_idempotent(tmp_path: Path) -> N
     hooks = document["hooks"]
     # The pre-existing command hook survives beside one Octomate http handler.
     assert hook_types(hooks["Stop"]) == ["command", "http"]
-    assert set(hooks) == {"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"}
+    # No SessionStart: Claude Code delivers it to command/mcp_tool hooks only, so an
+    # http handler for it could never fire.
+    assert set(hooks) == {"UserPromptSubmit", "Stop", "SessionEnd"}
+
+
+def test_the_installed_handler_references_the_secret_rather_than_carrying_it(
+    tmp_path: Path,
+) -> None:
+    """A settings file is a document people commit and share; the credential is not.
+    Claude Code resolves `${VAR}` from the environment at fire time, and only for names
+    listed in `allowedEnvVars`."""
+    path = tmp_path / "settings.json"
+    runner.invoke(
+        claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)]
+    )
+
+    [handler] = [
+        hook for group in read(path)["hooks"]["Stop"] for hook in group["hooks"]
+    ]
+    assert handler["headers"] == {"Authorization": "Bearer ${OCTOMATE__HOOK_SECRET}"}
+    assert handler["allowedEnvVars"] == ["OCTOMATE__HOOK_SECRET"]
+
+
+def test_install_retires_an_event_octomate_no_longer_registers(tmp_path: Path) -> None:
+    """The shape an older version left behind: an unauthenticated handler on every
+    event, SessionStart included. Re-installing must retire SessionStart rather than
+    leave our stale handler on an event we no longer register."""
+    stale = {"type": "http", "url": URL, "timeout": 10}
+    path = settings_with(
+        tmp_path,
+        {
+            "hooks": {
+                "SessionStart": [{"hooks": [stale]}],
+                "Stop": [{"hooks": [stale, COMMAND_HOOK]}],
+            }
+        },
+    )
+
+    runner.invoke(
+        claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)]
+    )
+
+    hooks = read(path)["hooks"]
+    assert "SessionStart" not in hooks
+    # The operator's own hook on Stop survives beside exactly one fresh Octomate handler.
+    assert hook_types(hooks["Stop"]) == ["command", "http"]
+    [fresh] = [h for g in hooks["Stop"] for h in g["hooks"] if h["type"] == "http"]
+    assert "headers" in fresh
 
 
 def test_install_replaces_a_stale_octomate_url(tmp_path: Path) -> None:
@@ -71,6 +124,7 @@ def test_hints_but_does_not_block_when_claude_is_unconfigured(
 
     class Config:
         agents = Agents()
+        hook_secret = None
 
     monkeypatch.setattr("octomate.config.OctomateConfig", Config)
 
@@ -78,7 +132,205 @@ def test_hints_but_does_not_block_when_claude_is_unconfigured(
         claude_typer, ["hooks", "install", "--url", URL, "--settings", str(tmp_path / "s.json")]
     )
     assert result.exit_code == 0  # the command still runs
-    assert "not configured" in result.output  # but hints that Claude is absent
+    assert "config.agents.claude" in result.output  # but hints that Claude is absent
+
+
+def test_codex_install_runs_the_standalone_emit_script_on_this_interpreter(
+    tmp_path: Path,
+) -> None:
+    """Not `-m octomate...`: importing the package costs ~1.9s on a hook Codex blocks
+    on. By path, through `sys.executable` so it does not depend on the session's PATH."""
+    path = tmp_path / "hooks.json"
+    result = runner.invoke(
+        codex_typer,
+        ["hooks", "install", "--url", CODEX_URL, "--hooks-file", str(path)],
+    )
+    assert result.exit_code == 0
+
+    handlers = [
+        hook
+        for groups in read(path)["hooks"].values()
+        for group in groups
+        for hook in group["hooks"]
+    ]
+    assert handlers  # one per handled event
+    for handler in handlers:
+        assert str(EMIT_SCRIPT) in handler["command"]
+        assert "-m octomate" not in handler["command"]
+
+
+def test_codex_install_replaces_a_handler_left_by_an_older_version(
+    tmp_path: Path,
+) -> None:
+    """Earlier versions invoked the CLI's `codex hooks emit`. Handlers are matched on the
+    hook path, so upgrading replaces that one instead of stacking a second beside it."""
+    path = tmp_path / "hooks.json"
+    stale = {
+        "type": "command",
+        "command": f"/usr/bin/python -m octomate.cli.base codex hooks emit --url {CODEX_URL}",
+    }
+    path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [stale, COMMAND_HOOK]}]}}))
+
+    runner.invoke(
+        codex_typer,
+        ["hooks", "install", "--url", CODEX_URL, "--hooks-file", str(path)],
+    )
+
+    commands = [
+        hook["command"] for group in read(path)["hooks"]["Stop"] for hook in group["hooks"]
+    ]
+    assert stale["command"] not in commands  # the stale handler is gone, not duplicated
+    assert "echo done" in commands  # an unrelated hook of the operator's survives
+    assert sum(str(EMIT_SCRIPT) in command for command in commands) == 1
+
+
+def configured(monkeypatch: pytest.MonkeyPatch, hook_secret: SecretStr | None) -> None:
+    """Pin what Octomate can see, rather than reading the ambient config: whoever runs
+    the suite has a hook secret of their own by now, and it must not decide these."""
+    config = SimpleNamespace(hook_secret=hook_secret)
+    monkeypatch.setattr("octomate.config.OctomateConfig", lambda: config)
+
+
+def test_secret_hands_a_configured_credential_to_the_shell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Octomate may hold its secret in octomate.yaml, but a session only ever reads the
+    environment — and it is a separate process that never sees that yaml. This is the
+    bridge, so nobody copies a secret out of a config file by hand.
+
+    Invoked through the root app, which is how it is really reached: a lone command in a
+    sub-Typer is otherwise flattened away by Typer when invoked directly.
+    """
+    configured(monkeypatch, SecretStr("from-the-yaml"))
+
+    result = runner.invoke(app, ["hooks", "secret"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "export OCTOMATE__HOOK_SECRET=from-the-yaml"
+
+
+def test_a_configured_secret_is_never_rotated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-running is what someone does when hooks already work; handing back a new value
+    would strand Octomate and every client still carrying the old one."""
+    configured(monkeypatch, SecretStr("already-configured"))
+
+    first = runner.invoke(app, ["hooks", "secret"])
+    second = runner.invoke(app, ["hooks", "secret"])
+
+    assert first.stdout == second.stdout
+    assert "already-configured" in first.stdout
+
+
+def test_secret_generates_one_when_none_is_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The line still comes out, so `eval` works the first time too — but the value
+    exists nowhere yet, and only the operator can decide where it lives, so nothing is
+    written and stderr says what is left to do."""
+    monkeypatch.chdir(tmp_path)
+    configured(monkeypatch, None)
+
+    result = runner.invoke(app, ["hooks", "secret"])
+
+    assert result.exit_code == 0
+    assert result.stdout.startswith("export OCTOMATE__HOOK_SECRET=")
+    assert list(tmp_path.iterdir()) == []  # nothing placed
+
+
+def test_the_pretty_guidance_stays_out_of_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The panel is rendered to stderr on purpose. stdout is consumed by `eval` and
+    `>>`, so a single stray glyph of decoration there would land in someone's shell
+    profile — or be eval'd."""
+    configured(monkeypatch, SecretStr("from-the-yaml"))
+
+    result = runner.invoke(app, ["hooks", "secret"])
+
+    assert result.stdout == "export OCTOMATE__HOOK_SECRET=from-the-yaml\n"
+    assert "\x1b[" not in result.stdout  # nor any styling
+
+
+def test_secret_writes_nothing_and_leaves_placing_to_the_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Where an environment comes from is the operator's to know — not every shell is
+    zsh, and a startup file is not this command's to edit. It hands over a line."""
+    monkeypatch.chdir(tmp_path)
+    configured(monkeypatch, SecretStr("from-the-yaml"))
+
+    result = runner.invoke(app, ["hooks", "secret"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "export OCTOMATE__HOOK_SECRET=from-the-yaml"
+    assert list(tmp_path.iterdir()) == []  # nothing written, anywhere
+
+
+def test_a_redirected_line_survives_a_round_trip_through_the_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`octomate hooks secret >> ~/.zshenv` is the suggestion, so what matters is the
+    value a shell reads back out of such a file — quoting and all."""
+    configured(monkeypatch, SecretStr("has spaces & $dollars"))
+    profile = tmp_path / ".zshenv"
+
+    result = runner.invoke(app, ["hooks", "secret"])
+    profile.write_text(result.stdout)  # what the operator's `>>` would put there
+
+    sourced = subprocess.run(
+        [f'. "{profile}"; printf %s "${{OCTOMATE__HOOK_SECRET}}"'],
+        shell=True,
+        capture_output=True,
+        text=True,
+    )
+    assert sourced.stdout == "has spaces & $dollars"
+
+
+def test_secret_quotes_a_credential_that_is_not_shell_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The line is made to be eval'd, and a hand-written secret need not be shell-safe."""
+    configured(monkeypatch, SecretStr("has spaces & $dollars"))
+
+    result = runner.invoke(app, ["hooks", "secret"])
+
+    assert result.stdout.strip() == (
+        "export OCTOMATE__HOOK_SECRET='has spaces & $dollars'"
+    )
+    # And eval'ing it really does reproduce the secret, quoting and all.
+    assert (
+        subprocess.run(
+            [f"{result.stdout.strip()}; printf %s \"${{OCTOMATE__HOOK_SECRET}}\""],
+            shell=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == "has spaces & $dollars"
+    )
+
+
+def test_installing_without_a_configured_secret_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hook config is half the pipe; an install that reports success while no secret
+    exists would just 401 on the next turn."""
+
+    class Agents:
+        claude = None
+
+    class Config:
+        agents = Agents()
+        hook_secret = None
+
+    monkeypatch.setattr("octomate.config.OctomateConfig", Config)
+
+    result = runner.invoke(
+        claude_typer,
+        ["hooks", "install", "--url", URL, "--settings", str(tmp_path / "s.json")],
+    )
+
+    assert result.exit_code == 0  # it still installs
+    assert "octomate hooks secret" in result.output
 
 
 def test_uninstall_removes_only_octomate_hooks(tmp_path: Path) -> None:

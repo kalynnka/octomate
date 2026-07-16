@@ -1,23 +1,25 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import sys
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-import httpx
 import typer
 
 from octomate.tentacles.agent.codex.hooks import (
     CODEX_HOOK_PATH,
-    DRIVEN_ENV,
     HANDLED_HOOK_EVENTS,
     HOOK_TIMEOUT,
 )
+from octomate.tentacles.agent.typer import announce_hook_secret
 from octomate.types.json import JsonObject
+
+# The command a Codex hook runs: a standalone stdlib-only script, run by path rather
+# than imported so a hook never imports the octomate package. See its docstring.
+EMIT_SCRIPT = Path(__file__).with_name("emit.py")
 
 codex_typer = typer.Typer(
     help="Operate the native Codex integration.", no_args_is_help=True
@@ -65,10 +67,13 @@ def write(path: Path, value: JsonObject) -> None:
 
 
 def is_octomate_handler(value: object) -> bool:
+    """A command hook aimed at Octomate's Codex hook path — matched by path, not the
+    exact command, so a re-install replaces a stale handler whatever its host, port, or
+    interpreter, including ones written by versions that ran `codex hooks emit`."""
     return (
         isinstance(value, dict)
         and value.get("type") == "command"
-        and "codex hooks emit" in str(value.get("command", ""))
+        and CODEX_HOOK_PATH in str(value.get("command", ""))
     )
 
 
@@ -85,18 +90,10 @@ def install(
     if not isinstance(hooks, dict):
         raise typer.BadParameter(f"{target} has a non-object 'hooks' section")
     hook_url = url or configured_hook_url()
-    command = shlex.join(
-        [
-            sys.executable,
-            "-m",
-            "octomate.cli.base",
-            "codex",
-            "hooks",
-            "emit",
-            "--url",
-            hook_url,
-        ]
-    )
+    # By absolute path, not `-m octomate...`: importing the package costs ~1.9s, which
+    # Codex would pay on every blocking hook. Through `sys.executable` so the hook runs
+    # on this interpreter, not whichever `python` the session's PATH resolves.
+    command = shlex.join([sys.executable, str(EMIT_SCRIPT), "--url", hook_url])
     group: JsonObject = {
         "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}]
     }
@@ -120,7 +117,10 @@ def install(
         hooks[event] = [*kept, group]
     write(target, document)
     typer.echo(f"Installed Octomate Codex hooks in {target}")
+    typer.echo(f"  events: {', '.join(HANDLED_HOOK_EVENTS)}")
+    typer.echo(f"  emit:   {EMIT_SCRIPT}")
     typer.echo("Open /hooks in Codex and trust the new command hooks.")
+    announce_hook_secret()
 
 
 @hooks_typer.command("uninstall")
@@ -159,14 +159,3 @@ def uninstall(
             document.pop("hooks", None)
     write(target, document)
     typer.echo(f"Removed Octomate Codex hooks from {target}")
-
-
-@hooks_typer.command("emit", hidden=True)
-def emit(url: Annotated[str, typer.Option()]) -> None:
-    """Forward Codex's stdin hook payload to the local Octomate router."""
-    payload = json.load(sys.stdin)
-    if os.environ.get(DRIVEN_ENV) == "1":
-        payload["octomate_driven"] = True
-    response = httpx.post(url, json=payload, timeout=HOOK_TIMEOUT)
-    response.raise_for_status()
-    typer.echo("{}")
