@@ -62,6 +62,16 @@ def short_log_name(name: str) -> str:
     return name
 
 
+# Shared subsystems front no tentacle, so they have neither a brand to claim nor a
+# connection index to step the wheel with. The host's own voice and the plumbing every
+# channel shares take a neutral color here, so they read as the structure around the
+# tentacles rather than as another hue competing with them.
+SHARED_LOG_STYLES: dict[str, Style] = {
+    "main": Style(color="bright_white", bold=True),
+    "channel": Style(color="grey62", bold=True),
+}
+
+
 @dataclass
 class Octomate:
     """Application host for shared services, agents, channels, and routers."""
@@ -114,7 +124,8 @@ class Octomate:
                 for prefix in tentacle.log_names
             ):
                 return tentacle.id, tentacle.log_color
-        return short_log_name(logger_name), None
+        tag = short_log_name(logger_name)
+        return tag, SHARED_LOG_STYLES.get(tag)
 
     async def kick(
         self,

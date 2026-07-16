@@ -51,6 +51,7 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from rich.style import Style
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.deferred import DeferredSuspender
@@ -249,6 +250,10 @@ class CodexTentacle(AgentTentacle[str, None]):
     # Codex approvals/questions are answered in-process through SDK callbacks while
     # the turn stays live. `pending` parks the card response futures.
     in_process: ClassVar[bool] = True
+
+    # OpenAI's own green, so Codex's lines read as Codex's in a console it shares
+    # with every other tentacle.
+    brand_color: ClassVar[Style | None] = Style(color="#10A37F", bold=True)
 
     description: str = (
         "Codex coding agent for repository-aware software engineering tasks."
