@@ -85,7 +85,18 @@ def install(
     if not isinstance(hooks, dict):
         raise typer.BadParameter(f"{target} has a non-object 'hooks' section")
     hook_url = url or configured_hook_url()
-    command = shlex.join(["octomate", "codex", "hooks", "emit", "--url", hook_url])
+    command = shlex.join(
+        [
+            sys.executable,
+            "-m",
+            "octomate.cli.base",
+            "codex",
+            "hooks",
+            "emit",
+            "--url",
+            hook_url,
+        ]
+    )
     group: JsonObject = {
         "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}]
     }
