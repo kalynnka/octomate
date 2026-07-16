@@ -105,7 +105,7 @@ async def test_thread_round_trips_with_messages_and_handoffs() -> None:
             ThreadMessage(
                 thread_id=thread_id,
                 platform_message_id="1710000000.000002",
-                timestamp=datetime.now(timezone.utc),
+                happened_at=datetime.now(timezone.utc),
                 direction="inbound",
                 actor_kind="human",
                 user_id="alice",
@@ -201,7 +201,7 @@ async def test_message_binding_round_trips_as_orm() -> None:
     thread_message = ThreadMessage(
         thread_id=thread.id,
         platform_message_id="1710000000.000002",
-        timestamp=datetime.now(timezone.utc),
+        happened_at=datetime.now(timezone.utc),
         direction="inbound",
         actor_kind="human",
         user_id="alice",

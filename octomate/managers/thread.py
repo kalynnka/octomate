@@ -5,7 +5,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 
 from arcanus.materia.sqlalchemy import selectinload
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
@@ -91,13 +91,32 @@ class ThreadManager:
         while len(self.threads) > self.cache_size:
             self.threads.popitem(last=False)
 
+    async def store_message(self, message: ThreadMessage, thread: Thread) -> None:
+        """Persist a ledger row and re-sync the cached thread from the database."""
+        async with async_session() as session:
+            session.add(message)
+            await session.commit()
+            reloaded = await session.get(Thread, thread.id)
+            if reloaded is not None:
+                await reloaded.messages
+                await reloaded.handoffs
+                self.cache_thread(reloaded)
+
     async def record_inbound(
         self,
         event: MessageEvent,
         *,
         actor_kind: ChannelActorKind = "human",
         agent_tentacle_id: str | None = None,
+        happened_at: datetime | None = None,
     ) -> ThreadMessage:
+        """Write the event to the thread's ledger.
+
+        Pass `happened_at` only to overrule the event's own clock: a transcript replay
+        knows when the turn really happened, which a hook-built event cannot carry.
+        Left out, the event's clock is used, and failing that the moment it arrived —
+        the row is never undated, because an undated row has no place in the order.
+        """
         thread = await self.ensure(
             ThreadKey(
                 channel_tentacle_id=event.tentacle_id,
@@ -106,15 +125,13 @@ class ThreadManager:
                 thread_id=event.thread_id,
             )
         )
+        if happened_at is None and event.timestamp > 0:
+            happened_at = datetime.fromtimestamp(event.timestamp, timezone.utc)
         message = ThreadMessage(
             thread_id=thread.id,
             platform_message_id=event.message_id or None,
             reply_id=event.reply_id,
-            timestamp=(
-                datetime.fromtimestamp(event.timestamp, timezone.utc)
-                if event.timestamp > 0
-                else None
-            ),
+            happened_at=happened_at or datetime.now(timezone.utc),
             direction="inbound",
             actor_kind=actor_kind,
             user_id=event.user_id,
@@ -124,11 +141,7 @@ class ThreadManager:
             message_text=message_text_from_segments(event.segments),
             raw=event.raw,
         )
-        async with async_session() as session:
-            session.add(message)
-            await session.commit()
-        thread.messages.append(message)
-        self.cache_thread(thread)
+        await self.store_message(message, thread)
         return message
 
     async def record_outbound(
@@ -139,12 +152,17 @@ class ThreadManager:
         segments: list[MessageSegment],
         platform_message_id: str | None = None,
         reply_id: str = "",
-        timestamp: datetime | None = None,
+        happened_at: datetime | None = None,
         sender: UserProfile | None = None,
         actor_kind: ChannelActorKind = "agent",
         message_text: str | None = None,
         raw: str = "",
     ) -> ThreadMessage:
+        """Write the agent's reply to the thread's ledger.
+
+        Pass `happened_at` only when something knows better than this moment — a
+        transcript replay does; an agent answering now does not.
+        """
         if isinstance(thread_or_address, Thread):
             thread = thread_or_address
         else:
@@ -153,7 +171,7 @@ class ThreadManager:
             thread_id=thread.id,
             platform_message_id=platform_message_id,
             reply_id=reply_id,
-            timestamp=timestamp,
+            happened_at=happened_at or datetime.now(timezone.utc),
             direction="outbound",
             actor_kind=actor_kind,
             user_id="",
@@ -164,11 +182,7 @@ class ThreadManager:
             message_text=message_text or message_text_from_segments(segments),
             raw=raw,
         )
-        async with async_session() as session:
-            session.add(message)
-            await session.commit()
-        thread.messages.append(message)
-        self.cache_thread(thread)
+        await self.store_message(message, thread)
         return message
 
     async def mark_presented(
@@ -361,7 +375,7 @@ class ThreadManager:
             rows = await session.list(
                 ThreadMessage,
                 limit=limit,
-                order_bys=[ThreadMessage["id"]],
+                order_bys=[ThreadMessage["happened_at"], ThreadMessage["id"]],
                 expressions=expressions,
             )
         return list(rows)
@@ -373,14 +387,29 @@ class ThreadManager:
         *,
         limit: int = 5,
     ) -> list[ThreadMessage]:
+        """The rows standing before `anchor_id` in the thread, oldest last of them
+        first. Neighbours in the conversation, which is what the ledger's order means —
+        so the anchor is compared on the same key the rows are sorted by."""
         async with async_session() as session:
+            anchor = await session.get(ThreadMessage, anchor_id)
+            if anchor is None:
+                raise ValueError(f"thread message {anchor_id} does not exist")
             rows = await session.list(
                 ThreadMessage,
                 limit=limit,
-                order_bys=[ThreadMessage["id"].desc()],
+                order_bys=[
+                    ThreadMessage["happened_at"].desc(),
+                    ThreadMessage["id"].desc(),
+                ],
                 expressions=[
                     ThreadMessage["thread_id"] == thread_id,
-                    ThreadMessage["id"] < anchor_id,
+                    or_(
+                        ThreadMessage["happened_at"] < anchor.happened_at,
+                        and_(
+                            ThreadMessage["happened_at"] == anchor.happened_at,
+                            ThreadMessage["id"] < anchor.id,
+                        ),
+                    ),
                 ],
             )
         return list(reversed(rows))
@@ -392,14 +421,25 @@ class ThreadManager:
         *,
         limit: int = 5,
     ) -> list[ThreadMessage]:
+        """The rows standing after `anchor_id` in the thread, oldest first — the mirror
+        of `chat_messages_before`, and anchored on the same key."""
         async with async_session() as session:
+            anchor = await session.get(ThreadMessage, anchor_id)
+            if anchor is None:
+                raise ValueError(f"thread message {anchor_id} does not exist")
             rows = await session.list(
                 ThreadMessage,
                 limit=limit,
-                order_bys=[ThreadMessage["id"]],
+                order_bys=[ThreadMessage["happened_at"], ThreadMessage["id"]],
                 expressions=[
                     ThreadMessage["thread_id"] == thread_id,
-                    ThreadMessage["id"] > anchor_id,
+                    or_(
+                        ThreadMessage["happened_at"] > anchor.happened_at,
+                        and_(
+                            ThreadMessage["happened_at"] == anchor.happened_at,
+                            ThreadMessage["id"] > anchor.id,
+                        ),
+                    ),
                 ],
             )
         return list(rows)

@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import cast
 
 from pydantic_ai.messages import ModelMessage
@@ -193,7 +193,7 @@ class FakeThreadManager(ThreadManager):
         segments: list[MessageSegment],
         platform_message_id: str | None = None,
         reply_id: str = "",
-        timestamp: datetime | None = None,
+        happened_at: datetime | None = None,
         sender: UserProfile | None = None,
         actor_kind: ChannelActorKind = "agent",
         message_text: str | None = None,
@@ -208,7 +208,9 @@ class FakeThreadManager(ThreadManager):
             thread_id=thread.id,
             platform_message_id=platform_message_id,
             reply_id=reply_id,
-            timestamp=timestamp,
+            # As the real manager does: a row is never undated, because the ledger
+            # orders on this.
+            happened_at=happened_at or datetime.now(timezone.utc),
             direction="outbound",
             actor_kind=actor_kind,
             user_id="",

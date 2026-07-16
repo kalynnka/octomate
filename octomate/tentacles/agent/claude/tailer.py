@@ -19,7 +19,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.messages import ModelRequest
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage, ThreadMessageDirection
@@ -527,6 +527,9 @@ class ClaudeTranscriptTailer:
             ),
             None,
         )
+        # A row born here is history, so it is dated by the transcript's clock rather
+        # than this replay's: `stamp` gave each message the time of the line that
+        # produced it, which is when the turn really happened.
         if prompt_request is not None:
             inbound = self.existing_message(thread, run.id, "inbound")
             if inbound is None:
@@ -539,7 +542,8 @@ class ClaudeTranscriptTailer:
                         user_id=NATIVE_USER.user_id,
                         sender=NATIVE_USER,
                         segments=[TextSegment(data={"text": prompt_text})],
-                    )
+                    ),
+                    happened_at=prompt_request.timestamp,
                 )
             await self.thread_manager.bind_messages(
                 [inbound.id], prompt_request.id, kind="request_source", run_id=run.id
@@ -547,11 +551,20 @@ class ClaudeTranscriptTailer:
         if answer:
             outbound = self.existing_message(thread, run.id, "outbound")
             if outbound is None:
+                answered = next(
+                    (
+                        message
+                        for message in reversed(run.messages)
+                        if isinstance(message, ModelResponse)
+                    ),
+                    None,
+                )
                 outbound = await self.thread_manager.record_outbound(
                     thread,
                     agent_tentacle_id=CLAUDE_NATIVE_ID,
                     segments=[MarkdownSegment(data={"text": answer})],
                     platform_message_id=run.id,
+                    happened_at=answered.timestamp if answered is not None else None,
                 )
             await self.thread_manager.bind_assistant_replies(
                 [outbound.id], run_id=run.id

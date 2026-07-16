@@ -251,13 +251,14 @@ class ClaudeHookIngest:
             # to the tailer, which rebuilds it from the transcript either way.
             return
         messages: list[PydanticModelMessage] = [
-            # Dated to the prompt's own ledger row. `started_at` is read off the first
+            # Dated by the prompt's own ledger row — its conversation clock, not the
+            # moment it was written. `started_at` is read off the first
             # message, and both `Conversation.runs` and `.messages` order on it, so an
             # undated run sorts ahead of the whole history it belongs at the end of —
             # `ModelRequest.timestamp` defaults to None, unlike `ModelResponse`'s.
             ModelRequest(
                 parts=[UserPromptPart(content=prompt.message_text)],
-                timestamp=prompt.created_at,
+                timestamp=prompt.happened_at,
             )
         ]
         if event.last_assistant_message:

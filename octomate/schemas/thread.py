@@ -7,13 +7,14 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import ConfigDict, Field
+from pydantic import AfterValidator, ConfigDict, Field
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress, ChatType, UserProfile
+from octomate.schemas.messages import native_utc
 from octomate.schemas.segments import MessageSegment
 
 if TYPE_CHECKING:
@@ -60,7 +61,14 @@ class ThreadMessage(BaseTransmuter):
     thread_id: uuid.UUID
     platform_message_id: str | None = None
     reply_id: str = ""
-    timestamp: datetime | None = None
+    # When the message happened, and what the ledger orders on: a platform's or a
+    # transcript's clock where one is known, else when Octomate recorded it. Never unset
+    # — the order is only total if every row has one. `created_at` stays the bookkeeping
+    # answer to "when was this written", which for replayed history is a different
+    # instant entirely.
+    happened_at: Annotated[datetime, AfterValidator(native_utc)] = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
     direction: ThreadMessageDirection
     actor_kind: ChannelActorKind
     user_id: str = ""

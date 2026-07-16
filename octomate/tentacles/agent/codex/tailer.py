@@ -433,6 +433,9 @@ class CodexTranscriptTailer:
             (message for message in run.messages if isinstance(message, ModelRequest)),
             None,
         )
+        # A row born here is history, so it is dated by the transcript's clock rather
+        # than this replay's: each message carries the time of the line that produced
+        # it, which is when the turn really happened.
         if request is not None and prompt:
             inbound = self.existing_message(thread, run.id, "inbound")
             if inbound is None:
@@ -445,7 +448,8 @@ class CodexTranscriptTailer:
                         user_id=NATIVE_USER.user_id,
                         sender=NATIVE_USER,
                         segments=[TextSegment(data={"text": prompt})],
-                    )
+                    ),
+                    happened_at=request.timestamp,
                 )
             await self.thread_manager.bind_messages(
                 [inbound.id], request.id, kind="request_source", run_id=run.id
@@ -453,11 +457,20 @@ class CodexTranscriptTailer:
         if answer:
             outbound = self.existing_message(thread, run.id, "outbound")
             if outbound is None:
+                answered = next(
+                    (
+                        message
+                        for message in reversed(run.messages)
+                        if isinstance(message, ModelResponse)
+                    ),
+                    None,
+                )
                 outbound = await self.thread_manager.record_outbound(
                     thread,
                     agent_tentacle_id=CODEX_NATIVE_ID,
                     segments=[MarkdownSegment(data={"text": answer})],
                     platform_message_id=run.id,
+                    happened_at=answered.timestamp if answered is not None else None,
                 )
             await self.thread_manager.bind_assistant_replies(
                 [outbound.id], run_id=run.id

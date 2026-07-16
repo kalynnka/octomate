@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -342,3 +343,24 @@ async def test_unhandled_events_are_ignored() -> None:
     await ingest.handle(hook("MessageDisplay", "p1", delta="thinking...", final=False))
 
     assert await ledger(octomate) == []
+
+
+async def test_a_live_turn_is_dated_when_it_happened() -> None:
+    """A hook carries no clock, and it fires as the turn happens — so receipt time is
+    both the best available answer and a true one, to within the round-trip. An undated
+    row is the thing to avoid: `created_at` alone cannot say whether a row is a live
+    turn or history the tailer replayed."""
+    octomate = Octomate()
+    ingest = ClaudeHookIngest(
+        octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    )
+    before = datetime.now(timezone.utc)
+
+    await submit(ingest, "p1", "list the files")
+    await stop(ingest, "p1", "Here are the files.")
+
+    after = datetime.now(timezone.utc)
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    stamps = [message.happened_at for message in thread.messages]
+    assert len(stamps) == 2
+    assert all(stamp is not None and before <= stamp <= after for stamp in stamps)

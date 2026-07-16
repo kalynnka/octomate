@@ -14,7 +14,7 @@ from octomate.managers import ConversationManager, ThreadManager
 from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import MessageBinding, ThreadMessage
+from octomate.schemas.thread import MessageBinding, ThreadKey, ThreadMessage
 
 
 @pytest.fixture(autouse=True)
@@ -270,3 +270,70 @@ async def test_assistant_reply_binding_uses_persisted_response() -> None:
     assert [binding.thread_message_id for binding in bindings] == [reply.id]
     assert bindings[0].model_message_id == model_message.id
     assert stored_message.model_messages[0].id == model_message.id
+
+
+async def test_history_written_late_still_sorts_where_it_happened() -> None:
+    """The ledger's order is the conversation's, not the order Octomate learned it in.
+
+    A session Octomate meets mid-conversation is exactly this shape: the live turn is
+    written first, and the history behind it is backfilled afterwards — so the rows
+    written last are the ones that happened first. The uuid7 `id` carries the moment of
+    writing, so ordering on it puts a newcomer at the head of its own history.
+    """
+    manager = ThreadManager()
+    earlier = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
+    later = datetime(2026, 7, 9, 11, 0, tzinfo=timezone.utc)
+
+    # The live turn lands first...
+    live = await manager.record_inbound(
+        event("m-live", "alice", "and now this"), happened_at=later
+    )
+    # ...and only then is the history that precedes it replayed off a transcript.
+    replayed = await manager.record_inbound(
+        event("m-old", "alice", "this came first"), happened_at=earlier
+    )
+
+    thread = await manager.ensure(ThreadKey.from_address(address()))
+    assert [m.message_text for m in thread.messages] == [
+        "this came first",
+        "and now this",
+    ]
+    # Written in the opposite order to the one it reads back in — the point of the test.
+    assert replayed.id > live.id
+
+
+async def test_one_instant_keeps_the_order_it_was_written_in() -> None:
+    """`happened_at` alone is not a total order: a transcript line can produce several
+    messages at one instant, and a clock has finite resolution. `id` breaks the tie, so
+    rows sharing an instant stay in the order they were written rather than shuffling."""
+    manager = ThreadManager()
+    same = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
+
+    first = await manager.record_inbound(event("m-1", "alice", "first"), happened_at=same)
+    second = await manager.record_inbound(event("m-2", "alice", "second"), happened_at=same)
+
+    thread = await manager.ensure(ThreadKey.from_address(address()))
+    assert [m.message_text for m in thread.messages] == ["first", "second"]
+    assert first.id < second.id
+
+
+async def test_a_row_is_never_undated() -> None:
+    """The order is only total if every row carries a `happened_at` — and every outbound
+    caller but the tailers passes none, so the manager owns the answer rather than the
+    call sites."""
+    manager = ThreadManager()
+
+    inbound = await manager.record_inbound(
+        MessageEvent(
+            tentacle_id="slack", chat_id="C123", chat_type="group",
+            segments=[TextSegment(data={"text": "no clock on this event"})],
+        )
+    )
+    outbound = await manager.record_outbound(
+        ThreadKey.from_address(address()),
+        agent_tentacle_id="a",
+        segments=[TextSegment(data={"text": "hi"})],
+    )
+
+    assert inbound.happened_at is not None
+    assert outbound.happened_at is not None

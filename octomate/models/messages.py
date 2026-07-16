@@ -74,7 +74,7 @@ class ModelMessage(Base, TransmuterProxiedMixin):
         "ThreadMessage",
         secondary="message_binding",
         back_populates="model_messages",
-        order_by="ThreadMessage.id",
+        order_by="(ThreadMessage.happened_at, ThreadMessage.id)",
         lazy="raise_on_sql",
         viewonly=True,
         overlaps="thread_message,model_message",

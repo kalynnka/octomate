@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anyio
@@ -686,3 +687,30 @@ async def test_recover_overlapping_a_live_follow_leaves_it_tailing(
 
     # p3 is the proof: the loop lived through re-committing p2 and kept tailing.
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2", "p3"]
+
+
+async def test_a_backfilled_row_is_dated_by_the_transcript_not_the_replay(
+    tmp_path: Path,
+) -> None:
+    """A session Octomate only saw after the fact: no hook wrote its ledger, so the
+    tailer creates those rows itself from the transcript.
+
+    Such a row is history, and the transcript records when the turn really happened —
+    `2026-07-09`, days before this replay. Dating it `now` would be a lie the ledger
+    keeps, so the transcript's clock is what a backfilled row carries.
+    """
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE)
+    octomate = Octomate()
+    ingest, _ = wired(octomate)
+
+    # SessionEnd alone: the live tier never saw this session's prompt or answer.
+    await ingest.handle(hook_event("SessionEnd", transcript=transcript, reason="other"))
+
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    dated = {message.direction: message.happened_at for message in thread.messages}
+    assert dated  # the tailer did write the ledger
+
+    # The prompt line says 10:00:01, the final assistant line 10:00:04.
+    assert dated["inbound"] == datetime(2026, 7, 9, 10, 0, 1, tzinfo=timezone.utc)
+    assert dated["outbound"] == datetime(2026, 7, 9, 10, 0, 4, tzinfo=timezone.utc)

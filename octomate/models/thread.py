@@ -137,7 +137,12 @@ class Thread(Base, TransmuterProxiedMixin):
         back_populates="thread",
         cascade="all, delete-orphan",
         foreign_keys="ThreadMessage.thread_id",
-        order_by="ThreadMessage.id",
+        # Conversation order, not insert order. `id` is a uuid7 and so carries the
+        # moment of writing, which is the same thing right up until history is replayed:
+        # a session Octomate learns of mid-conversation has its backfill written after
+        # the live turn that revealed it. It breaks ties, where one instant produced
+        # several rows.
+        order_by="(ThreadMessage.happened_at, ThreadMessage.id)",
         lazy="selectin",
     )
 
@@ -178,9 +183,7 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
     reply_id: Mapped[str] = mapped_column(
         String, nullable=False, default="", index=True
     )
-    timestamp: Mapped[datetime | None] = mapped_column(
-        DateTime, nullable=True, index=True
-    )
+    happened_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
     direction: Mapped[ThreadMessageDirection] = mapped_column(
         String, nullable=False, index=True

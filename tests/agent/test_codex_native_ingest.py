@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -288,4 +289,70 @@ async def test_nested_task_does_not_close_or_pollute_the_parent(tmp_path: Path) 
         "parent prompt",
         "parent answer",
     ]
+    await tailer.shutdown()
+
+
+async def test_a_backfilled_row_is_dated_by_the_rollout_not_the_replay(
+    tmp_path: Path,
+) -> None:
+    """A session Octomate only saw after the fact: no hook wrote its ledger, so the
+    tailer creates those rows from the rollout, which records when the turn really
+    happened. Dating them `now` would be a lie the ledger keeps."""
+    path = tmp_path / "rollout.jsonl"
+    write_rollout(path)
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    # SessionStart alone: the live tier never saw this turn's prompt or answer.
+    await ingest.handle(
+        CodexHookInput.model_validate(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": SESSION_ID,
+                "transcript_path": path,
+            }
+        )
+    )
+    await tailer.pump_session(SESSION_ID)
+
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+    )
+    dated = {message.direction: message.happened_at for message in thread.messages}
+    assert dated  # the tailer did write the ledger
+
+    # The user_message record says 10:00:02, the final assistant message 10:00:05.
+    assert dated["inbound"] == datetime(2026, 7, 16, 10, 0, 2, tzinfo=timezone.utc)
+    assert dated["outbound"] == datetime(2026, 7, 16, 10, 0, 5, tzinfo=timezone.utc)
+    await tailer.shutdown()
+
+
+async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
+    """A hook carries no clock, and it fires as the turn happens — so receipt time is
+    both the best available answer and a true one, to within the round-trip."""
+    path = tmp_path / "rollout.jsonl"
+    path.write_text("")
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+    common = {"session_id": SESSION_ID, "turn_id": TURN_ID, "transcript_path": path}
+    before = datetime.now(timezone.utc)
+
+    await ingest.handle(
+        CodexHookInput.model_validate(
+            {**common, "hook_event_name": "UserPromptSubmit", "prompt": "inspect it"}
+        )
+    )
+    await ingest.handle(
+        CodexHookInput.model_validate(
+            {**common, "hook_event_name": "Stop", "last_assistant_message": "done"}
+        )
+    )
+
+    after = datetime.now(timezone.utc)
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+    )
+    stamps = [message.happened_at for message in thread.messages]
+    assert len(stamps) == 2
+    assert all(stamp is not None and before <= stamp <= after for stamp in stamps)
     await tailer.shutdown()

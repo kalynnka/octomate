@@ -176,7 +176,7 @@ class CodexHookIngest:
         messages: list[ModelMessage] = [
             ModelRequest(
                 parts=[UserPromptPart(prompt.message_text)],
-                timestamp=prompt.created_at,
+                timestamp=prompt.happened_at,
             )
         ]
         if event.last_assistant_message:
