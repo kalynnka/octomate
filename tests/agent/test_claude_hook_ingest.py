@@ -135,6 +135,58 @@ async def test_hooks_sketch_the_turns_run_live() -> None:
     assert [(run.start_offset, run.end_offset) for run in runs] == [(None, None)]
 
 
+async def test_a_session_octomate_drives_is_answered_but_not_recorded() -> None:
+    """An operator's hook settings fire for the tentacle's own sessions too, and this
+    pipe does not reach around them to stop that. It just declines to record what the
+    tentacle is already recording as it drives it — otherwise the same conversation
+    would be written twice, once by the runner and once by its own hooks."""
+    octomate = Octomate()
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+
+    # as the tentacle holds it: from before the session is launched until its client's
+    # teardown has waited the CLI out.
+    with ingest.driving(SESSION_ID):
+        await submit(ingest, "p1", "hello")
+        await stop(ingest, "p1", "hi")
+        await ingest.handle(hook("SessionEnd", reason="other"))
+
+    assert await ledger(octomate) == []  # no chat log
+    assert await sketched(octomate) == []  # no run
+    async with async_session() as session:
+        assert await session.list(AgentRun, limit=None, order_bys=[]) == []
+
+
+async def test_a_session_octomate_does_not_drive_is_still_recorded() -> None:
+    """Claiming one session says nothing about the next: a native client's session runs
+    alongside the tentacle's and is ingested as usual."""
+    octomate = Octomate()
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+
+    with ingest.driving("some-other-session"):
+        await submit(ingest, "p1", "hello")
+
+    assert await ledger(octomate) == [("inbound", "p1", "hello")]
+
+
+async def test_the_claim_outlives_the_first_of_two_overlapping_runs() -> None:
+    """A follow-up run supersedes a live one on the same session, and the two overlap
+    while the first unwinds. The claim is counted, so the run that ends first does not
+    strip it from the one still driving."""
+    octomate = Octomate()
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+
+    with ingest.driving(SESSION_ID):  # the superseded run
+        with ingest.driving(SESSION_ID):  # the follow-up, taken before the first unwinds
+            pass
+        await submit(ingest, "p1", "hello")  # still driven, so still not ingested
+
+    assert await ledger(octomate) == []
+    assert ingest.driven == {}  # both released: nothing kept once no run holds it
+
+    await submit(ingest, "p2", "after")  # the claim is gone, so this is a native turn
+    assert await ledger(octomate) == [("inbound", "p2", "after")]
+
+
 async def test_a_sketch_is_dated_so_it_sorts_after_the_history() -> None:
     """`Conversation.runs` and `.messages` both order on `started_at`, which is read off
     the run's first message — and `ModelRequest.timestamp` defaults to None. An undated

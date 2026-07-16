@@ -402,12 +402,19 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 }
             }
 
+        # Settle the session id before the CLI exists, so the hook pipe can be told to
+        # leave this session alone (claimed below) before it can fire anything. Resuming
+        # already names the session; a new one is pinned here — the SDK takes one or the
+        # other, never both.
+        session_id = conversation.external_id or str(uuid7())
+
         options = ClaudeAgentOptions(
             cwd=self.config.cwd,
             model=cli_model,
             permission_mode=SDK_PERMISSION_MODE[conversation.permission_mode],
             max_turns=self.config.max_turns,
             resume=conversation.external_id,
+            session_id=None if conversation.external_id else session_id,
             can_use_tool=can_use_tool,
             hooks={
                 "PreToolUse": [
@@ -440,16 +447,21 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             if self.config.ssh is not None
             else None
         )
-        with logfire.span(
-            "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
-            agent_id=self.id,
-            run_name=run_name or "claude",
-            conversation_address=str(conversation_address),
-            transport=(
-                f"ssh:{self.config.ssh.host}"
-                if self.config.ssh is not None
-                else "local"
+        with (
+            logfire.span(
+                "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
+                agent_id=self.id,
+                run_name=run_name or "claude",
+                conversation_address=str(conversation_address),
+                transport=(
+                    f"ssh:{self.config.ssh.host}"
+                    if self.config.ssh is not None
+                    else "local"
+                ),
             ),
+            # Taken before the CLI is launched and held until its teardown has waited
+            # the process out, so it spans every hook this session can fire.
+            self.session_ingest.driving(session_id),
         ):
             async with ClaudeSDKClient(options=options, transport=transport) as client:
                 # One live run per conversation: register this client and interrupt
