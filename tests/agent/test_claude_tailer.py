@@ -22,8 +22,8 @@ from octomate.schemas.thread import MessageBinding, ThreadKey
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.agent.claude import tailer as tailer_mod
-from octomate.tentacles.agent.claude.locks import SessionLocks
 from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer, TailState
+from octomate.tentacles.agent.locks import SessionLocks
 from octomate.types.json import JsonObject
 
 SESSION_ID = "sess-tail"

@@ -25,7 +25,7 @@ from octomate.schemas.thread import (
     ThreadMessageDirection,
 )
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
-from octomate.tentacles.agent.claude.locks import SessionLocks
+from octomate.tentacles.agent.locks import SessionLocks
 
 if TYPE_CHECKING:
     from octomate import Octomate

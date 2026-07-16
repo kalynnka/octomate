@@ -26,7 +26,6 @@ from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage, ThreadMessageDirection
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, NATIVE_USER
-from octomate.tentacles.agent.claude.locks import SessionLocks
 from octomate.tentacles.agent.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptLine,
@@ -35,6 +34,7 @@ from octomate.tentacles.agent.claude.transcript import (
     prompt_text,
     transcript_line_adapter,
 )
+from octomate.tentacles.agent.locks import SessionLocks
 
 logger = logging.getLogger(__name__)
 

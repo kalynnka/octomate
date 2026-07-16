@@ -74,9 +74,9 @@ from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agent.claude.hooks import CLAUDE_HOOK_PATH, ClaudeHookInput
 from octomate.tentacles.agent.claude.ingest import ClaudeHookIngest
-from octomate.tentacles.agent.claude.locks import SessionLocks
 from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.agent.claude.transport import SSHTransport
+from octomate.tentacles.agent.locks import SessionLocks
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
