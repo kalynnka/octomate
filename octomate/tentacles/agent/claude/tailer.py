@@ -44,8 +44,9 @@ logger = logging.getLogger(__name__)
 LIVE_STREAM_BUFFER = 256
 
 # Bound the wait for the session lock when committing a turn, so a wedged hook holder
-# can't hang the follow loop (and, through `finalize`, shutdown). A turn that can't
-# commit in time is simply left for recovery — the durable sink is idempotent.
+# can't hang the follow loop (and, through `finalize`, shutdown). Timing out ends the
+# loop — see `close_turn` for why a turn that can't commit must stop the tail rather
+# than be skipped past.
 COMMIT_LOCK_TIMEOUT = 30.0
 
 # Reclaim a follow loop whose session went silent (crash, hooks removed — no SessionEnd
@@ -54,6 +55,21 @@ COMMIT_LOCK_TIMEOUT = 30.0
 # watch wakes every `IDLE_POLL_MS` even without a file change, to check the deadline.
 IDLE_TIMEOUT = 30 * 60.0
 IDLE_POLL_MS = 60_000
+
+
+def assembled(conversation: Conversation) -> set[str]:
+    """The ids of the turns already built from the transcript — the ones a tail may skip.
+
+    The byte range is the mark: a run without one is the hooks' provisional sketch of a
+    turn (`ClaudeHookIngest.sketch_run`), which the tailer is precisely what replaces. It
+    must never seed a committed-turn guard, or the sketch would be mistaken for the real
+    timeline and the turn would never be filled in.
+    """
+    return {
+        run.id
+        for run in conversation.runs
+        if isinstance(run, ExternalAgentRun) and run.end_offset is not None
+    }
 
 
 def stamp(messages: list[PydanticModelMessage], timestamp: datetime | None) -> None:
@@ -111,13 +127,19 @@ class ClaudeTranscriptTailer:
     tentacle and the whole-file restore use. It drives two decoupled sinks:
 
     - **durable** — one `ExternalAgentRun` per completed turn, carrying the byte range it
-      was built from. Because every turn records its offsets, ingest is checkpointed: an
-      interrupted session resumes from `max(end_offset)`, idempotent by `prompt_id`.
+      was built from, replacing the provisional run the hooks sketched for the turn
+      (`ClaudeHookIngest.sketch_run`). Idempotent by `prompt_id`.
     - **live** — a bounded, drop-on-full `StreamEvents` stream for a future UI, which
       never blocks the tailer and which durability never depends on.
 
     A turn commits on the *file* boundary — the next prompt line, or EOF at `finalize` —
     never on a hook, so its bytes are provably flushed once the line after it exists.
+
+    Only `recover` resumes from a turn's `end_offset`; a follow loop re-reads its
+    transcript whole and lets the committed-turn guard drop what it has already seen.
+    Re-reading is what heals a session the tail was absent for, and it costs ~15ms per MB
+    (~160ms for a 3987-line, 56-turn session), paid once per start — cheaper than the
+    checkpoint's one real risk, resuming past bytes no run ever covered.
     """
 
     def __init__(
@@ -151,6 +173,18 @@ class ClaudeTranscriptTailer:
             # only relocated. Follow the new file, re-reading from the open turn's start
             # so a not-yet-committed turn isn't lost; the fresh loop re-seeds its
             # committed-turn guard from the DB, so nothing double-commits.
+            #
+            # KNOWN ISSUE: unreachable in production, so a slug move is not in fact
+            # handled. `ClaudeHookIngest.start_session` — the only caller that ever
+            # relocates — returns early while `is_following`, so `existing` is always
+            # None here and this branch never runs; the test covering it calls `start`
+            # directly, bypassing that guard. The live loop keeps watching the old
+            # directory, `pump` swallows `FileNotFoundError` on every wake, and the
+            # session goes untailed until the idle timeout reclaims it ~30 min later.
+            # Fixing it means letting the ingest hand a changed path through rather than
+            # returning early — and then reading `existing.open_turn` here races the
+            # loop's own mutation of it (it is None mid-`close_turn`, while `offset` has
+            # already advanced past the prompt line), which would silently drop a turn.
             offset = (
                 existing.open_turn.start_offset
                 if existing.open_turn is not None
@@ -184,12 +218,21 @@ class ClaudeTranscriptTailer:
         state = self.sessions.get(session_id)
         return state.receive_stream if state is not None else None
 
-    async def finalize(self, session_id: str) -> None:
+    async def finalize(
+        self, session_id: str, transcript_path: Path | None = None
+    ) -> None:
         """End a session's follow loop: it drains to EOF, commits the trailing turn,
         closes the live stream, and drops itself from the registry. Awaits the loop so the
-        last turn is durable on return."""
+        last turn is durable on return.
+
+        With no loop to end, the session ran unwatched — Octomate restarted mid-session
+        and lost the registry, or came up after the session did — so this is the last
+        moment its tail can be rescued: `recover` rebuilds from the transcript instead.
+        Without that, `SessionEnd` would silently drop every turn since the loop died.
+        """
         state = self.sessions.get(session_id)
         if state is None or state.task is None:
+            await self.recover(session_id, transcript_path)
             return
         state.stop_event.set()
         await state.task  # its finally drains, commits, and reclaims the registry slot
@@ -224,7 +267,7 @@ class ClaudeTranscriptTailer:
             # Own a materia context, mirroring the follow task's boundary.
             with sqlalchemy_materia():
                 conversation = await self.ensure_session(session_id)
-                committed = {run.id for run in conversation.runs}
+                committed = assembled(conversation)
                 start = max(
                     (
                         run.end_offset or 0
@@ -246,7 +289,9 @@ class ClaudeTranscriptTailer:
                     (
                         run
                         for run in fresh.runs
-                        if isinstance(run, ExternalAgentRun) and run.id not in committed
+                        if isinstance(run, ExternalAgentRun)
+                        and run.end_offset is not None
+                        and run.id not in committed
                     ),
                     key=lambda run: run.start_offset or 0,
                 )
@@ -299,7 +344,7 @@ class ClaudeTranscriptTailer:
         """Resolve the session's conversation and seed the committed-turn guard from it,
         so a resume never re-commits a run the last run already wrote."""
         state.conversation = await self.ensure_session(state.session_id)
-        state.recorded = {run.id for run in state.conversation.runs}
+        state.recorded = assembled(state.conversation)
 
     async def ensure_session(self, session_id: str) -> Conversation:
         """Map a native Claude session id to its Octomate home — the session's thread and
@@ -400,7 +445,15 @@ class ClaudeTranscriptTailer:
         """Commit the open turn as an `ExternalAgentRun` with its byte range, then bind
         the turn's human-ledger rows to it. Idempotent by `prompt_id`, so a re-driven
         overlap after a resume is a safe no-op. Held under the session lock so the commit
-        can't interleave with the hooks' ledger writes for the same turn."""
+        can't interleave with the hooks' ledger writes for the same turn.
+
+        A commit that cannot be made ends the follow loop instead of being skipped past.
+        `recover` resumes from the last committed turn's `end_offset`, which only points
+        at the right bytes while the committed turns are the *earliest* ones: skipping a
+        turn and tailing on would let a later turn push that mark past the gap, stranding
+        the skipped turn where no recovery could reach it. Stopping keeps the mark honest
+        — the next prompt, or `SessionEnd`, re-reads the turn from there and commits it.
+        """
         turn = state.open_turn
         state.open_turn = None
         if turn is None or turn.prompt_id in state.recorded:
@@ -415,38 +468,27 @@ class ClaudeTranscriptTailer:
             end_offset=turn.end_offset,
             messages=len(turn.accumulator.messages),
         ) as span:
-            try:
-                async with self.locks.hold(
-                    state.session_id, timeout=COMMIT_LOCK_TIMEOUT
-                ):
-                    run = await self.conversation_manager.record_external_run(
-                        conversation,
-                        run_id=turn.prompt_id,
-                        messages=turn.accumulator.messages,
-                        name=CLAUDE_NATIVE_ID,
-                        external_session_id=state.session_id,
-                        source=turn.source,
-                        start_offset=turn.start_offset,
-                        end_offset=turn.end_offset,
-                        last_line_uuid=turn.last_line_uuid,
-                    )
-                    span.set_attribute("committed", run is not None)
-                    if run is None:
-                        return
-                    state.recorded.add(turn.prompt_id)
-                    await self.bind_ledger(
-                        state.session_id,
-                        run,
-                        turn.prompt_text,
-                        turn.accumulator.result_text,
-                    )
-            except TimeoutError:
-                span.set_attribute("timed_out", True)
-                logger.warning(
-                    "Claude tailer timed out on the session lock committing turn %s of "
-                    "session %s; leaving it for recovery",
-                    turn.prompt_id,
+            async with self.locks.hold(state.session_id, timeout=COMMIT_LOCK_TIMEOUT):
+                run = await self.conversation_manager.record_external_run(
+                    conversation,
+                    run_id=turn.prompt_id,
+                    messages=turn.accumulator.messages,
+                    name=CLAUDE_NATIVE_ID,
+                    external_session_id=state.session_id,
+                    source=turn.source,
+                    start_offset=turn.start_offset,
+                    end_offset=turn.end_offset,
+                    last_line_uuid=turn.last_line_uuid,
+                )
+                span.set_attribute("committed", run is not None)
+                if run is None:
+                    return
+                state.recorded.add(turn.prompt_id)
+                await self.bind_ledger(
                     state.session_id,
+                    run,
+                    turn.prompt_text,
+                    turn.accumulator.result_text,
                 )
 
     async def bind_ledger(

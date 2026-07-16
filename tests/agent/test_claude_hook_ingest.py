@@ -10,8 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.database import async_session
-from octomate.schemas.conversation import Conversation
-from octomate.schemas.messages import ModelMessage
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
@@ -115,22 +113,63 @@ async def test_crash_before_stop_leaves_a_clean_inbound_only_turn() -> None:
     assert await ledger(octomate) == [("inbound", "p1", "do a thing")]
 
 
-async def test_no_model_frame_is_written_live() -> None:
-    """The human ledger is the whole live footprint: no conversation, run, or model
-    message — those are rebuilt from the transcript on restore (UoW-B)."""
+async def test_hooks_sketch_the_turns_run_live() -> None:
+    """The hooks alone leave a whole conversation → run → messages chain for the turn,
+    so a turn in flight has a model history to hang from before the transcript's real
+    timeline lands. The sketch carries no byte range: that is what marks it provisional
+    and lets the tailer replace it."""
     octomate = Octomate()
     ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
 
     await submit(ingest, "p1", "hello")
+
+    # The prompt alone already hangs off a run, keyed by the turn's prompt_id.
+    assert await sketched(octomate) == [("p1", ["hello"])]
+
     await stop(ingest, "p1", "hi")
 
+    # Stop carries no prompt, so the answer joins the prompt read back off the ledger.
+    assert await sketched(octomate) == [("p1", ["hello", "hi"])]
     async with async_session() as session:
-        conversations = await session.list(Conversation, limit=None, order_bys=[])
         runs = await session.list(AgentRun, limit=None, order_bys=[])
-        messages = await session.list(ModelMessage, limit=None, order_bys=[])
-    assert conversations == []
-    assert runs == []
-    assert messages == []
+    assert [(run.start_offset, run.end_offset) for run in runs] == [(None, None)]
+
+
+async def test_a_sketch_is_dated_so_it_sorts_after_the_history() -> None:
+    """`Conversation.runs` and `.messages` both order on `started_at`, which is read off
+    the run's first message — and `ModelRequest.timestamp` defaults to None. An undated
+    sketch would sort ahead of every turn before it, putting the live prompt at the head
+    of the history it belongs at the end of."""
+    octomate = Octomate()
+    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+
+    await submit(ingest, "p1", "first")
+    await stop(ingest, "p1", "done")
+    await submit(ingest, "p2", "second")  # the turn now in flight
+
+    assert [run_id for run_id, _ in await sketched(octomate)] == ["p1", "p2"]
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    assert all(run.started_at is not None for run in conversation.runs)
+    assert [message.message_text for message in conversation.messages] == [
+        "first",
+        "done",
+        "second",
+    ]
+
+
+async def sketched(octomate: Octomate) -> list[tuple[str, list[str | None]]]:
+    """Each run of the session's conversation as (run_id, its messages' text)."""
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    return [
+        (run.id, [message.message_text for message in run.messages])
+        for run in conversation.runs
+    ]
 
 
 async def test_empty_prompt_and_empty_answer_are_skipped() -> None:

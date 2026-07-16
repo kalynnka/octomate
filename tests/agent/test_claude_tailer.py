@@ -350,6 +350,43 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger(tmp_path: Path) 
     assert {binding.run_id for binding in bindings} == {"p1", "p2"}
 
 
+async def test_the_tailer_supersedes_the_hooks_sketch_of_a_turn(tmp_path: Path) -> None:
+    """One run per turn across both tiers: the hooks sketch it live from what they see,
+    and closing the turn supersedes that with the transcript's full timeline. `prompt_id`
+    is the run id both write under, so the sketch is upgraded, never duplicated."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE)
+    octomate = Octomate()
+    ingest, _ = wired(octomate)
+
+    await ingest.handle(
+        hook_event("UserPromptSubmit", "p1", transcript, prompt="list the files")
+    )
+    await ingest.handle(hook_event("Stop", "p1", last_assistant_message="Done."))
+
+    # In flight: the prompt and the answer, and no byte range — the mark of a sketch.
+    [sketch] = await runs_of(octomate)
+    assert sketch.id == "p1"
+    assert [message.message_text for message in sketch.messages] == [
+        "list the files",
+        "Done.",
+    ]
+    assert sketch.end_offset is None
+
+    await ingest.handle(hook_event("SessionEnd", transcript=transcript, reason="other"))
+
+    # Closed: still one run, now carrying the tool round-trip the hooks never saw.
+    [run] = await runs_of(octomate)
+    assert run.id == "p1"
+    assert run.end_offset is not None
+    assert [message.kind for message in run.messages] == [
+        "request",  # the prompt
+        "response",  # the tool call
+        "request",  # its result
+        "response",  # "Done."
+    ]
+
+
 async def test_relocation_follows_the_moved_transcript(tmp_path: Path) -> None:
     dir_a = tmp_path / "slug-a"
     dir_b = tmp_path / "slug-b"
@@ -397,6 +434,33 @@ async def test_idle_loop_self_finalizes(
 
     assert tailer.sessions == {}
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
+
+
+async def test_a_commit_that_times_out_stops_the_tail_rather_than_skipping_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn that cannot commit must stop the tail. Skipping it and carrying on would
+    let p2 commit with a higher `end_offset`, pushing the resume mark past p1's bytes and
+    stranding p1 where no recovery could reach it."""
+    monkeypatch.setattr(tailer_mod, "COMMIT_LOCK_TIMEOUT", 0.05)
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE + TURN_TWO)
+    octomate = Octomate()
+    locks = SessionLocks()
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.thread_manager, locks
+    )
+
+    async with locks.hold(SESSION_ID):  # a wedged holder the commit can't get past
+        tailer.start(SESSION_ID, transcript)
+        with anyio.fail_after(5):
+            while tailer.is_following(SESSION_ID):
+                await anyio.sleep(0.02)
+
+    assert await runs_of(octomate) == []  # p2 did not commit over p1's failure
+
+    # So the resume mark still points at p1's bytes, and recovery reaches both turns.
+    assert await tailer.recover(SESSION_ID, transcript) == ["p1", "p2"]
 
 
 async def test_shutdown_cancels_the_follow_loop(tmp_path: Path) -> None:
@@ -576,3 +640,49 @@ async def test_recover_missing_transcript_is_a_noop(tmp_path: Path) -> None:
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
     assert await tailer.recover(SESSION_ID, tmp_path / "gone.jsonl") == []
+
+
+async def test_session_end_recovers_a_session_no_loop_followed(tmp_path: Path) -> None:
+    """Octomate restarted mid-session, so nothing is following when SessionEnd lands —
+    the registry it would have ended is gone. The hook is the session's last word, so it
+    rebuilds the tail from the transcript rather than dropping it."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE + TURN_TWO)
+    octomate = Octomate()
+    ingest, tailer = wired(octomate)
+
+    assert not tailer.is_following(SESSION_ID)
+    await ingest.handle(hook_event("SessionEnd", transcript=transcript, reason="other"))
+
+    assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
+
+
+async def test_recover_overlapping_a_live_follow_leaves_it_tailing(
+    tmp_path: Path,
+) -> None:
+    """The durable sink — not the follow loop's in-memory guard — is what makes a
+    re-commit a no-op. A recovery racing a live loop commits a turn the loop still holds
+    open, so the loop's own commit of it must be a no-op rather than a primary-key
+    collision: that error escapes into `follow`'s blanket handler, which ends the loop
+    and silently strands every later turn of the session."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE + TURN_TWO)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    tailer.start(SESSION_ID, transcript)
+    await anyio.sleep(0.1)  # the loop commits p1, and holds p2 open at EOF
+    # A second reader resumes past p1 and commits p2 — the turn the loop still holds.
+    assert await tailer.recover(SESSION_ID, transcript) == ["p2"]
+
+    # A later turn lands: closing p2 re-commits it, over bytes recover already wrote.
+    turn_three = [
+        prompt_record("p3", "and push", 9),
+        assistant_record("a4", 10, [{"type": "text", "text": "Pushed."}]),
+    ]
+    with transcript.open("ab") as handle:
+        handle.write(b"".join(line_bytes(record) for record in turn_three))
+    await tailer.finalize(SESSION_ID)
+
+    # p3 is the proof: the loop lived through re-committing p2 and kept tailing.
+    assert [run.id for run in await runs_of(octomate)] == ["p1", "p2", "p3"]

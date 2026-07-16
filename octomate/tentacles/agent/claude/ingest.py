@@ -4,11 +4,23 @@ import logging
 from typing import TYPE_CHECKING
 
 import logfire
+from pydantic_ai.messages import ModelMessage as PydanticModelMessage
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 
 from octomate.schemas.conversation import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadKey, ThreadMessageDirection
+from octomate.schemas.thread import (
+    Thread,
+    ThreadKey,
+    ThreadMessage,
+    ThreadMessageDirection,
+)
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agent.claude.locks import SessionLocks
 
@@ -36,13 +48,17 @@ class ClaudeHookIngest:
 
     Each turn's prompt (`UserPromptSubmit`) and answer (`Stop.last_assistant_message`)
     are written as inbound/outbound `ThreadMessage`s — a complete, lossless chat log,
-    visible the moment the session runs. The events carry no thinking or usage, so the
-    full model timeline comes from the `ClaudeTranscriptTailer`, which this starts on the
-    first prompt (`SessionStart` is not delivered to http hooks) and finalizes at
-    `SessionEnd`. No transcript is read here.
+    visible the moment the session runs — and sketched as the turn's provisional
+    `ExternalAgentRun`, so a turn in flight is a whole conversation → run → messages
+    chain and not a chat log with no model history to hang from. The events carry no
+    thinking, tools or usage, so the full timeline comes from the
+    `ClaudeTranscriptTailer`, which this starts on the first prompt (`SessionStart` is
+    not delivered to http hooks) and finalizes at `SessionEnd`; it replaces each sketch
+    as its turn closes. No transcript is read here.
 
-    Both ledger rows are stamped `platform_message_id = prompt_id`, the stable per-turn
-    key the tailer binds its rebuilt runs against.
+    Ledger rows and the run alike are keyed by `prompt_id` — `platform_message_id` on
+    the rows, the run's own id — the stable per-turn key both tiers write under, so the
+    tailer's rebuilt run and the hooks' sketch are always the same run.
     """
 
     def __init__(
@@ -87,12 +103,14 @@ class ClaudeHookIngest:
             await self.start_session(event)
             if event.prompt:
                 await self.record_prompt(event, event.prompt)
+                await self.sketch_run(event)
 
     @logfire.instrument("claude.hook Stop [{event.session_id}]", extract_args=["event"])
     async def on_stop(self, event: ClaudeHookInput) -> None:
         async with self.locks.hold(event.session_id):
             if event.last_assistant_message:
                 await self.record_answer(event, event.last_assistant_message)
+                await self.sketch_run(event)
 
     @logfire.instrument(
         "claude.hook SessionEnd [{event.session_id}]", extract_args=["event"]
@@ -100,7 +118,7 @@ class ClaudeHookIngest:
     async def on_session_end(self, event: ClaudeHookInput) -> None:
         # Finalize outside any lock: it awaits the follow loop's own last commit, which
         # takes the session lock — holding it here would deadlock.
-        await self.tailer.finalize(event.session_id)
+        await self.tailer.finalize(event.session_id, event.transcript_path)
 
     async def start_session(self, event: ClaudeHookInput) -> None:
         """Ensure the session's skeleton (thread + conversation) and start its transcript
@@ -153,6 +171,66 @@ class ClaudeHookIngest:
                 sender=NATIVE_USER,
                 segments=[TextSegment(data={"text": prompt})],
             )
+        )
+
+    async def sketch_run(self, event: ClaudeHookInput) -> None:
+        """Write the turn's provisional run — the model timeline as the hooks alone see
+        it: the prompt, then the answer once `Stop` knows it.
+
+        A run is what joins a conversation to its messages, and the transcript's real one
+        only lands when the turn closes (the next prompt, or `SessionEnd`) — so without
+        this a turn in flight would have a conversation and a chat log but no run to hang
+        a model history from, and nothing to reuse until it ended. The tailer replaces
+        this sketch wholesale with the full timeline at close; `prompt_id` is the run id
+        both write under, so they are the same run throughout.
+
+        Both hooks route here, and both read the prompt back off the inbound ledger row:
+        `Stop` carries only `last_assistant_message`, never the prompt it answers.
+        """
+        if not event.prompt_id:
+            return  # no per-turn key: nothing to write a run under
+        thread = await self.session_thread(event.session_id)
+        prompt = self.recorded_prompt(thread, event.prompt_id)
+        if prompt is None or prompt.message_text is None:
+            # The prompt hook never landed (Octomate came up mid-turn). Leave the turn
+            # to the tailer, which rebuilds it from the transcript either way.
+            return
+        messages: list[PydanticModelMessage] = [
+            # Dated to the prompt's own ledger row. `started_at` is read off the first
+            # message, and both `Conversation.runs` and `.messages` order on it, so an
+            # undated run sorts ahead of the whole history it belongs at the end of —
+            # `ModelRequest.timestamp` defaults to None, unlike `ModelResponse`'s.
+            ModelRequest(
+                parts=[UserPromptPart(content=prompt.message_text)],
+                timestamp=prompt.created_at,
+            )
+        ]
+        if event.last_assistant_message:
+            messages.append(
+                ModelResponse(parts=[TextPart(content=event.last_assistant_message)])
+            )
+        conversation = await self.octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+        )
+        await self.octomate.conversations.record_external_run(
+            conversation,
+            run_id=event.prompt_id,
+            messages=messages,
+            name=CLAUDE_NATIVE_ID,
+            external_session_id=event.session_id,
+        )
+
+    def recorded_prompt(self, thread: Thread, prompt_id: str) -> ThreadMessage | None:
+        """The turn's inbound ledger row, as `record_prompt` wrote it — the prompt's text
+        and the time it arrived."""
+        return next(
+            (
+                message
+                for message in thread.messages
+                if message.platform_message_id == prompt_id
+                and message.direction == "inbound"
+            ),
+            None,
         )
 
     async def record_answer(self, event: ClaudeHookInput, answer: str) -> None:

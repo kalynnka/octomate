@@ -141,12 +141,42 @@ class ConversationManager:
         end_offset: int | None = None,
         last_line_uuid: str | None = None,
     ) -> ExternalAgentRun | None:
-        """Persist a run rebuilt from an external runtime's transcript (native Claude)
-        as the `external` variant, carrying its transcript coordinates.
-        `external_session_id` doubles as the conversation's resumable handle
-        (`external_id`)."""
+        """Persist a turn of an external runtime's session (native Claude) as the
+        `external` variant. `external_session_id` doubles as the conversation's
+        resumable handle (`external_id`).
+
+        The byte range is what marks a turn finished. A run carrying `end_offset` was
+        assembled from the transcript and is final, so recording it again — a recovery
+        overlapping a live tail, or a resume re-covering committed bytes — is a no-op
+        returning `None` rather than a primary-key collision. That guard belongs here,
+        at the durable sink: a caller's in-memory guard only knows the runs *it* wrote,
+        never one another tailer already committed.
+
+        A run with no byte range is provisional — the hooks' sketch of a turn still in
+        flight, which sees the prompt and the answer but nothing of the thinking and
+        tool calls between them. It exists so a live turn is a whole
+        conversation → run → messages chain rather than messages with nowhere to hang.
+        Recording over it replaces it wholesale, the transcript's full timeline
+        superseding the sketch once the turn closes.
+        """
         if not messages:
             return None
+        async with async_session() as session:
+            stored = await session.one_or_none(
+                AgentRun, expressions=[AgentRun["id"] == run_id]
+            )
+            if stored is not None:
+                if (
+                    not isinstance(stored, ExternalAgentRun)
+                    or stored.end_offset is not None
+                ):
+                    return None
+                # Drop the provisional run whole — its messages cascade with it — rather
+                # than reconciling two message collections: the replacement is
+                # authoritative, and `model_messages.run_id` is NOT NULL, so leaving the
+                # sketch's rows to be orphaned would fail instead of deleting them.
+                await session.delete(stored)
+                await session.commit()
         run = ExternalAgentRun(
             id=run_id,
             conversation_id=conversation.id,
