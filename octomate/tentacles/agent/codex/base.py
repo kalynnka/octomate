@@ -6,10 +6,13 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, overload
 
 import logfire
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
 from openai_codex._sandbox import _sandbox_mode
 from openai_codex.api import ApprovalMode, Sandbox
@@ -67,6 +70,11 @@ from octomate.tentacles.agent.codex.adapter import (
     CodexRunAccumulator,
     json_object_adapter,
 )
+from octomate.tentacles.agent.codex.hooks import CODEX_HOOK_PATH, CodexHookInput
+from octomate.tentacles.agent.codex.hooks import DRIVEN_ENV
+from octomate.tentacles.agent.codex.ingest import CodexHookIngest
+from octomate.tentacles.agent.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.agent.locks import SessionLocks
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
@@ -262,13 +270,42 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.bridge_contexts = {}
         self.pending = {}
         self.models = {model: model for model in config.models}
+        self.session_locks = SessionLocks()
+        self.session_tailer = CodexTranscriptTailer(
+            self.octomate.conversations,
+            self.octomate.thread_manager,
+            self.session_locks,
+        )
+        self.session_ingest = CodexHookIngest(
+            self.octomate,
+            self.session_tailer,
+            self.session_locks,
+        )
+
+    def routers(self) -> tuple[APIRouter]:
+        return (self.hook_router,)
+
+    @cached_property
+    def hook_router(self) -> APIRouter:
+        router = APIRouter(tags=["codex"])
+
+        @router.post(CODEX_HOOK_PATH, summary="Codex native-session hook pipe")
+        async def receive_hook(event: CodexHookInput) -> JSONResponse:
+            await self.session_ingest.handle(event)
+            return JSONResponse({})
+
+        return router
 
     async def __aenter__(self) -> CodexTentacle:
         # Only the pool is tentacle-wide shared state; each thread's Codex client is
         # built here, entered/exited through the SDK's async context, and reused or
         # evicted by the pool.
         def new_client(thread_id: uuid.UUID) -> AsyncCodex:
-            client = AsyncCodex(config=self.config.runtime)
+            runtime = replace(
+                self.config.runtime,
+                env={**(self.config.runtime.env or {}), DRIVEN_ENV: "1"},
+            )
+            client = AsyncCodex(config=runtime)
             if self.config.approval_mode == "user":
                 # One client per thread, so bind the approval handler to this thread
                 # id — no guessing which live context an SDK request belongs to. The
@@ -278,7 +315,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     return self.handle_sdk_request(thread_id, method, params)
 
                 client._client._sync = CodexClient(
-                    config=self.config.runtime,
+                    config=runtime,
                     approval_handler=handler,
                 )
             return client
@@ -291,6 +328,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         return self
 
     async def __aexit__(self, *exc: object) -> None:
+        await self.session_tailer.shutdown()
         for turn in list(self.live_turns.values()):
             with contextlib.suppress(Exception):
                 await turn.interrupt()
@@ -746,29 +784,30 @@ class CodexTentacle(AgentTentacle[str, None]):
                     permission_mode=conversation.permission_mode,
                 )
                 try:
-                    turn = await codex_thread.turn(
-                        prompt_text,
-                        approval_mode=approval_plan.sdk_mode,
-                        cwd=self.config.cwd,
-                        effort=effort,
-                        model=sdk_model,
-                        output_schema=output_schema,
-                        personality=personality,
-                        sandbox=sandbox,
-                        summary=summary,
-                    )
-                    previous = self.live_turns.get(thread_id)
-                    self.live_turns[thread_id] = turn
-                    if previous is not None and previous is not turn:
-                        with contextlib.suppress(Exception):
-                            await previous.interrupt()
-                    try:
-                        async for notification in turn.stream():
-                            for event in accumulator.consume(notification):
-                                yield event
-                    finally:
-                        if self.live_turns.get(thread_id) is turn:
-                            self.live_turns.pop(thread_id, None)
+                    with self.session_ingest.driving(codex_thread.id):
+                        turn = await codex_thread.turn(
+                            prompt_text,
+                            approval_mode=approval_plan.sdk_mode,
+                            cwd=self.config.cwd,
+                            effort=effort,
+                            model=sdk_model,
+                            output_schema=output_schema,
+                            personality=personality,
+                            sandbox=sandbox,
+                            summary=summary,
+                        )
+                        previous = self.live_turns.get(thread_id)
+                        self.live_turns[thread_id] = turn
+                        if previous is not None and previous is not turn:
+                            with contextlib.suppress(Exception):
+                                await previous.interrupt()
+                        try:
+                            async for notification in turn.stream():
+                                for event in accumulator.consume(notification):
+                                    yield event
+                        finally:
+                            if self.live_turns.get(thread_id) is turn:
+                                self.live_turns.pop(thread_id, None)
                 finally:
                     self.bridge_contexts.pop(thread_id, None)
             finally:

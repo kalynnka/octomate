@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+from collections import Counter
+from collections.abc import Generator
+from contextlib import contextmanager
+from typing import TYPE_CHECKING
+
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
+
+from octomate.schemas.conversation import UserProfile
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import MarkdownSegment, TextSegment
+from octomate.schemas.thread import Thread, ThreadKey, ThreadMessageDirection
+from octomate.tentacles.agent.codex.hooks import CodexHookInput
+from octomate.tentacles.agent.locks import SessionLocks
+
+if TYPE_CHECKING:
+    from octomate import Octomate
+    from octomate.tentacles.agent.codex.tailer import CodexTranscriptTailer
+
+CODEX_NATIVE_ID = "codex-native"
+NATIVE_USER = UserProfile(user_id="native", name="native")
+
+
+class CodexHookIngest:
+    def __init__(
+        self,
+        octomate: Octomate,
+        tailer: CodexTranscriptTailer,
+        locks: SessionLocks | None = None,
+    ) -> None:
+        self.octomate = octomate
+        self.tailer = tailer
+        self.locks = locks if locks is not None else SessionLocks()
+        self.driven: Counter[str] = Counter()
+
+    @contextmanager
+    def driving(self, session_id: str) -> Generator[None]:
+        self.driven[session_id] += 1
+        try:
+            yield
+        finally:
+            self.driven[session_id] -= 1
+            if self.driven[session_id] <= 0:
+                del self.driven[session_id]
+
+    async def handle(self, event: CodexHookInput) -> None:
+        if event.octomate_driven or event.session_id in self.driven:
+            return
+        if event.hook_event_name == "Stop":
+            await self.on_stop(event)
+            return
+        if event.hook_event_name in {"SessionStart", "UserPromptSubmit"}:
+            async with self.locks.hold(event.session_id):
+                await self.start_session(event)
+                if event.hook_event_name == "UserPromptSubmit" and event.prompt:
+                    await self.record_prompt(event, event.prompt)
+                    await self.sketch_run(event)
+
+    async def on_stop(self, event: CodexHookInput) -> None:
+        async with self.locks.hold(event.session_id):
+            if event.last_assistant_message:
+                await self.record_answer(event, event.last_assistant_message)
+                await self.sketch_run(event)
+        # Stop is a turn boundary in Codex, not a session boundary. Pump after the hook
+        # releases the shared lock; the rollout's task_complete line may now be durable.
+        await self.tailer.pump_session(event.session_id)
+
+    async def start_session(self, event: CodexHookInput) -> None:
+        path = event.transcript_path
+        if path is None or not path.parent.is_dir():
+            return
+        thread = await self.session_thread(event.session_id)
+        await self.octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+        )
+        self.tailer.start(event.session_id, path)
+
+    async def session_thread(self, session_id: str) -> Thread:
+        return await self.octomate.thread_manager.ensure(
+            ThreadKey(CODEX_NATIVE_ID, "private", session_id, "")
+        )
+
+    async def record_prompt(self, event: CodexHookInput, prompt: str) -> None:
+        thread = await self.session_thread(event.session_id)
+        if event.turn_id and self.already_recorded(thread, event.turn_id, "inbound"):
+            return
+        await self.octomate.thread_manager.record_inbound(
+            MessageEvent(
+                tentacle_id=CODEX_NATIVE_ID,
+                message_id=event.turn_id or "",
+                chat_id=event.session_id,
+                chat_type="private",
+                user_id=NATIVE_USER.user_id,
+                sender=NATIVE_USER,
+                segments=[TextSegment(data={"text": prompt})],
+            )
+        )
+
+    async def record_answer(self, event: CodexHookInput, answer: str) -> None:
+        thread = await self.session_thread(event.session_id)
+        if event.turn_id and self.already_recorded(thread, event.turn_id, "outbound"):
+            return
+        await self.octomate.thread_manager.record_outbound(
+            thread,
+            agent_tentacle_id=CODEX_NATIVE_ID,
+            segments=[MarkdownSegment(data={"text": answer})],
+            platform_message_id=event.turn_id or "",
+        )
+
+    async def sketch_run(self, event: CodexHookInput) -> None:
+        if not event.turn_id:
+            return
+        thread = await self.session_thread(event.session_id)
+        prompt = next(
+            (
+                message
+                for message in thread.messages
+                if message.platform_message_id == event.turn_id
+                and message.direction == "inbound"
+            ),
+            None,
+        )
+        if prompt is None or prompt.message_text is None:
+            return
+        messages: list[ModelMessage] = [
+            ModelRequest(
+                parts=[UserPromptPart(prompt.message_text)],
+                timestamp=prompt.created_at,
+            )
+        ]
+        if event.last_assistant_message:
+            messages.append(
+                ModelResponse(parts=[TextPart(event.last_assistant_message)])
+            )
+        conversation = await self.octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+        )
+        await self.octomate.conversations.record_external_run(
+            conversation,
+            run_id=event.turn_id,
+            messages=messages,
+            name=CODEX_NATIVE_ID,
+            external_session_id=event.session_id,
+        )
+
+    @staticmethod
+    def already_recorded(
+        thread: Thread, turn_id: str, direction: ThreadMessageDirection
+    ) -> bool:
+        return any(
+            message.platform_message_id == turn_id and message.direction == direction
+            for message in thread.messages
+        )

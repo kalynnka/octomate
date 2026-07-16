@@ -462,7 +462,9 @@ async def test_run_resumes_prior_thread_and_applies_config(
     conversations.store[(_THREAD, "codex")] = FakeConversation(
         external_id="prev-thread"
     )
-    runtime = CodexSdkConfig(client_name="octomate-test")
+    runtime = CodexSdkConfig(
+        client_name="octomate-test", env={"EXISTING_RUNTIME_VALUE": "kept"}
+    )
     tentacle = _tentacle(
         conversations,
         config=CodexConfig(
@@ -489,7 +491,12 @@ async def test_run_resumes_prior_thread_and_applies_config(
         )
 
     assert result.output == "done"
-    assert FakeCodex.last_config is runtime
+    assert FakeCodex.last_config is not None
+    assert FakeCodex.last_config.client_name == runtime.client_name
+    assert FakeCodex.last_config.env == {
+        "EXISTING_RUNTIME_VALUE": "kept",
+        "OCTOMATE_CODEX_DRIVEN": "1",
+    }
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "resume"
     assert thread_call.thread_id == "prev-thread"

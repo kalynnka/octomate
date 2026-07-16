@@ -11,9 +11,11 @@ from __future__ import annotations
 import typer
 
 from octomate.tentacles.agent.claude.typer import claude_typer
+from octomate.tentacles.agent.codex.typer import codex_typer
 
 app = typer.Typer(help="Octomate operator CLI.", no_args_is_help=True)
 app.add_typer(claude_typer, name="claude")
+app.add_typer(codex_typer, name="codex")
 
 
 if __name__ == "__main__":
