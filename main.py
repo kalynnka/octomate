@@ -81,6 +81,11 @@ def create_app() -> FastAPI:
     httpx_logger = logging.getLogger("httpx")
     httpx_logger.setLevel(logging.INFO)
     httpx_logger.addFilter(ProviderHttpLogFilter(registry))
+    # watchfiles logs a line per change detected, and the Claude transcript tailer keeps
+    # a watch on a directory its client rewrites through every turn — a stream of "1
+    # change detected" saying only that a file moved. What came of the change is the
+    # session's own story, which the hook and tailer lines tell.
+    logging.getLogger("watchfiles").setLevel(logging.WARNING)
     for name, level in config.logging.loggers.items():
         logging.getLogger(name).setLevel(level)
     logger = logging.getLogger("octomate.main")

@@ -295,6 +295,13 @@ class ClaudeTranscriptTailer:
                     ),
                     key=lambda run: run.start_offset or 0,
                 )
+                logger.info(
+                    "session %s: re-tailed from byte %d, recovering %d turn(s) no live "
+                    "tail saw",
+                    session_id,
+                    start,
+                    len(recovered),
+                )
                 return [run.id for run in recovered]
 
     async def follow(self, state: TailState) -> None:
@@ -321,8 +328,7 @@ class ClaudeTranscriptTailer:
                         await self.pump(state)
                         if monotonic() - state.last_active > IDLE_TIMEOUT:
                             logger.info(
-                                "Claude tailer for session %s idle past %ss; "
-                                "self-finalizing",
+                                "session %s: silent for %ss, stopped tailing",
                                 state.session_id,
                                 IDLE_TIMEOUT,
                             )
@@ -331,7 +337,9 @@ class ClaudeTranscriptTailer:
                     await self.close_turn(state)  # commit the trailing turn
             except Exception:
                 logger.exception(
-                    "Claude transcript tailer for session %s crashed", state.session_id
+                    "session %s: stopped tailing on error; its remaining turns are left "
+                    "for the next prompt or SessionEnd to recover",
+                    state.session_id,
                 )
             finally:
                 state.send_stream.close()
@@ -489,6 +497,14 @@ class ClaudeTranscriptTailer:
                     run,
                     turn.prompt_text,
                     turn.accumulator.result_text,
+                )
+                logger.info(
+                    "session %s: turn %s synced — %d messages, bytes %d-%d",
+                    state.session_id,
+                    turn.prompt_id,
+                    len(turn.accumulator.messages),
+                    turn.start_offset,
+                    turn.end_offset,
                 )
 
     async def bind_ledger(

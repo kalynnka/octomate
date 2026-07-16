@@ -104,6 +104,9 @@ class ClaudeHookIngest:
             if event.prompt:
                 await self.record_prompt(event, event.prompt)
                 await self.sketch_run(event)
+                logger.info(
+                    "session %s: turn %s asked", event.session_id, event.prompt_id
+                )
 
     @logfire.instrument("claude.hook Stop [{event.session_id}]", extract_args=["event"])
     async def on_stop(self, event: ClaudeHookInput) -> None:
@@ -111,11 +114,15 @@ class ClaudeHookIngest:
             if event.last_assistant_message:
                 await self.record_answer(event, event.last_assistant_message)
                 await self.sketch_run(event)
+                logger.info(
+                    "session %s: turn %s answered", event.session_id, event.prompt_id
+                )
 
     @logfire.instrument(
         "claude.hook SessionEnd [{event.session_id}]", extract_args=["event"]
     )
     async def on_session_end(self, event: ClaudeHookInput) -> None:
+        logger.info("session %s: ended", event.session_id)
         # Finalize outside any lock: it awaits the follow loop's own last commit, which
         # takes the session lock — holding it here would deadlock.
         await self.tailer.finalize(event.session_id, event.transcript_path)
@@ -139,11 +146,7 @@ class ClaudeHookIngest:
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
         )
         self.tailer.start(event.session_id, path)
-        logfire.info(
-            "claude.tailer started for session {session_id}",
-            session_id=event.session_id,
-            transcript_path=str(path),
-        )
+        logger.info("session %s: tailing %s", event.session_id, path)
 
     async def session_thread(self, session_id: str) -> Thread:
         return await self.octomate.thread_manager.ensure(
