@@ -2253,7 +2253,7 @@ wheels = [
 [[package]]
 name = "octomate"
 version = "0.0.1"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "alembic" },
@@ -2280,6 +2280,7 @@ dependencies = [
     { name = "rich" },
     { name = "slack-bolt" },
     { name = "sqlalchemy", extra = ["aiosqlite"] },
+    { name = "typer" },
     { name = "uuid-utils" },
     { name = "uvicorn" },
     { name = "watchfiles" },
@@ -2323,6 +2324,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13" },
     { name = "slack-bolt", specifier = ">=1.18" },
     { name = "sqlalchemy", extras = ["aiosqlite"], specifier = ">=2.0" },
+    { name = "typer", specifier = ">=0.25.1" },
     { name = "uuid-utils", specifier = ">=0.9" },
     { name = "uvicorn", specifier = ">=0.34" },
     { name = "watchfiles", specifier = ">=1.1.1" },

@@ -38,7 +38,18 @@ dependencies = [
     "logfire[httpx,sqlalchemy]>=4.29.0",
     "rich>=13",
     "openai-codex>=0.1.0b3",
+    "typer>=0.25.1",
 ]
+
+[project.scripts]
+octomate = "octomate.cli.base:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["octomate"]
 
 [tool.ruff.lint.per-file-ignores]
 "main.py" = ["E402"]
