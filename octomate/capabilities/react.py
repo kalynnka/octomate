@@ -42,6 +42,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import ModelRequest
 
+from octomate.telemetry import react_logfire
 logger = logging.getLogger(__name__)
 # The react graph is generic machinery: the run's output type is whatever the
 # builder's agent/output_type produce, so neither type variable is bounded.
@@ -163,7 +164,7 @@ class RunAgent(
     async def run(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
     ) -> ResolveDeferred[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
-        with logfire.span(
+        with react_logfire.span(
             "react.agent_run",
             run_name=ctx.deps.run_name,
             streaming=ctx.deps.event_send_stream is not None,
@@ -311,7 +312,7 @@ class RunAgent(
         if isinstance(result.output, DeferredToolRequests) and (
             ctx.deps.resolver is not None or ctx.deps.suspender is not None
         ):
-            logfire.info("react run deferred", run_id=result.run_id)
+            react_logfire.info("react run deferred", run_id=result.run_id)
             return ResolveDeferred(requests=result.output, result=result)
         return End(result)
 
@@ -332,12 +333,12 @@ class ResolveDeferred(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
     ) -> RunAgent[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
         if ctx.deps.resolver is not None:
-            logfire.info("deferred resolved in-process, looping back to RunAgent")
+            react_logfire.info("deferred resolved in-process, looping back to RunAgent")
             return RunAgent(
                 deferred_results=await ctx.deps.resolver.resolve(self.requests)
             )
         if ctx.deps.suspender is not None:
-            logfire.info("deferred suspended, ending run")
+            react_logfire.info("deferred suspended, ending run")
             event = await ctx.deps.suspender.suspend(self.requests)
             if event is not None and ctx.deps.event_send_stream is not None:
                 await ctx.deps.event_send_stream.send(event)

@@ -8,7 +8,6 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TypeVar
 
-import logfire
 from fastapi import APIRouter, FastAPI, Request, Response
 from rich.color import Color
 from rich.style import Style
@@ -28,6 +27,7 @@ from octomate.schemas.awakes import (
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.telemetry import octomate_logfire
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel.base import ChannelTentacle
@@ -132,7 +132,7 @@ class Octomate:
         signal: AwakeSignal,
     ) -> None:
         """Trigger the agent graph from a user message turn or deferred response."""
-        with logfire.span(
+        with octomate_logfire.span(
             "kick {signal_type}", signal_type=type(signal).__name__
         ) as span:
             if isinstance(signal, UserMessageSignal) and signal:

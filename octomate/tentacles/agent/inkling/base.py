@@ -8,7 +8,6 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Self, TypeAlias, overload
 
-import logfire
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -45,6 +44,7 @@ from octomate.capabilities.react import (
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
+from octomate.telemetry import inkling_logfire
 from octomate.tentacles.agent.base import (
     AgentSpecInput,
     AgentTentacle,
@@ -151,7 +151,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             toolset.apply(collect)
         if mcp_servers:
             try:
-                with logfire.span(
+                with inkling_logfire.span(
                     "inkling.warm_mcp_tools",
                     mcp_servers=[server.id for server in mcp_servers],
                 ):
@@ -474,7 +474,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             if deferred_tool_results is not None
             else StartTurn(user_prompt=user_prompt)
         )
-        with logfire.span(
+        with inkling_logfire.span(
             "AgentTentacle {agent_id} {run_name} [{conversation_address}]",
             agent_id=self.id,
             run_name=resolved_run_name,

@@ -4,7 +4,6 @@ import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-import logfire
 from pydantic import TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
@@ -12,6 +11,7 @@ from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
     DeferredApproval,
 )
+from octomate.telemetry import slack_logfire
 from octomate.tentacles.channel.feelers.deferred import ApprovalFeeler
 from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
@@ -44,7 +44,7 @@ class SlackApprovalFeeler(ApprovalFeeler):
     def __init__(self, ink: SlackInk) -> None:
         self.ink = ink
 
-    @logfire.instrument("slack.approvals.present", extract_args=False)
+    @slack_logfire.instrument("slack.approvals.present", extract_args=False)
     async def present(
         self,
         address: ChannelAddress,

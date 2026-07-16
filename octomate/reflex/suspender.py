@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
-import logfire
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import ActionBatchEvent
@@ -12,6 +11,7 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, RunName, SummonDecision
+from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channel.base import ChannelTentacle
 
 
@@ -60,7 +60,7 @@ class HumanReviewSuspender:
                     hint=str(meta.get("hint") or ""),
                 )
                 return None
-        with logfire.span(
+        with reflex_logfire.span(
             "suspend_for_review",
             run_name=self.run_name,
             agent_id=self.agent_tentacle_id,

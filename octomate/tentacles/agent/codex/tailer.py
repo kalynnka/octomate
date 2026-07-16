@@ -29,6 +29,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessageDirection
+from octomate.telemetry import codex_logfire
 from octomate.tentacles.agent.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
 from octomate.tentacles.agent.codex.ingest import CODEX_NATIVE_ID, NATIVE_USER
 from octomate.tentacles.agent.codex.transcript import (
@@ -40,6 +41,7 @@ from octomate.tentacles.agent.locks import SessionLocks
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
+
 COMMIT_LOCK_TIMEOUT = 30.0
 IDLE_TIMEOUT = 30 * 60.0
 IDLE_POLL_MS = 60_000
@@ -141,28 +143,33 @@ class CodexTranscriptTailer:
         self.sessions.clear()
 
     async def follow(self, state: TailState) -> None:
-        try:
-            with sqlalchemy_materia():
-                state.conversation = await self.ensure_session(state.session_id)
-                state.recorded = assembled(state.conversation)
-                await self.pump(state)
-                async for _ in awatch(
-                    state.transcript_path.parent,
-                    stop_event=state.stop_event,
-                    recursive=False,
-                    rust_timeout=IDLE_POLL_MS,
-                    yield_on_timeout=True,
-                ):
+        with codex_logfire.span(
+            "codex.tailer.follow [{session_id}]",
+            session_id=state.session_id,
+            start_offset=state.offset,
+        ):
+            try:
+                with sqlalchemy_materia():
+                    state.conversation = await self.ensure_session(state.session_id)
+                    state.recorded = assembled(state.conversation)
                     await self.pump(state)
-                    if monotonic() - state.last_active > IDLE_TIMEOUT:
-                        break
-        except Exception:
-            logger.exception(
-                "session %s: stopped tailing Codex rollout", state.session_id
-            )
-        finally:
-            if self.sessions.get(state.session_id) is state:
-                del self.sessions[state.session_id]
+                    async for _ in awatch(
+                        state.transcript_path.parent,
+                        stop_event=state.stop_event,
+                        recursive=False,
+                        rust_timeout=IDLE_POLL_MS,
+                        yield_on_timeout=True,
+                    ):
+                        await self.pump(state)
+                        if monotonic() - state.last_active > IDLE_TIMEOUT:
+                            break
+            except Exception:
+                logger.exception(
+                    "session %s: stopped tailing Codex rollout", state.session_id
+                )
+            finally:
+                if self.sessions.get(state.session_id) is state:
+                    del self.sessions[state.session_id]
 
     async def ensure_session(self, session_id: str) -> Conversation:
         thread = await self.thread_manager.ensure(
@@ -383,29 +390,38 @@ class CodexTranscriptTailer:
                 break
         conversation = state.conversation
         assert conversation is not None
-        async with self.locks.hold(state.session_id, timeout=COMMIT_LOCK_TIMEOUT):
-            run = await self.conversation_manager.record_external_run(
-                conversation,
-                run_id=turn.turn_id,
-                messages=turn.messages,
-                name=CODEX_NATIVE_ID,
-                external_session_id=state.session_id,
-                source=turn.source,
-                start_offset=turn.start_offset,
-                end_offset=turn.end_offset,
-            )
-            if run is None:
-                return
-            state.recorded.add(turn.turn_id)
-            await self.bind_ledger(state.session_id, run, turn.prompt, turn.answer)
-            logger.info(
-                "session %s: turn %s synced — %d messages, bytes %d-%d",
-                state.session_id,
-                turn.turn_id,
-                len(turn.messages),
-                turn.start_offset,
-                turn.end_offset,
-            )
+        with codex_logfire.span(
+            "codex.tailer.commit_turn {turn_id} [{session_id}]",
+            turn_id=turn.turn_id,
+            session_id=state.session_id,
+            start_offset=turn.start_offset,
+            end_offset=turn.end_offset,
+            messages=len(turn.messages),
+        ) as span:
+            async with self.locks.hold(state.session_id, timeout=COMMIT_LOCK_TIMEOUT):
+                run = await self.conversation_manager.record_external_run(
+                    conversation,
+                    run_id=turn.turn_id,
+                    messages=turn.messages,
+                    name=CODEX_NATIVE_ID,
+                    external_session_id=state.session_id,
+                    source=turn.source,
+                    start_offset=turn.start_offset,
+                    end_offset=turn.end_offset,
+                )
+                span.set_attribute("committed", run is not None)
+                if run is None:
+                    return
+                state.recorded.add(turn.turn_id)
+                await self.bind_ledger(state.session_id, run, turn.prompt, turn.answer)
+                logger.info(
+                    "session %s: turn %s synced — %d messages, bytes %d-%d",
+                    state.session_id,
+                    turn.turn_id,
+                    len(turn.messages),
+                    turn.start_offset,
+                    turn.end_offset,
+                )
 
     async def bind_ledger(
         self, session_id: str, run: ExternalAgentRun, prompt: str, answer: str

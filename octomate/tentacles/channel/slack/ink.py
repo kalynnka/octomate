@@ -5,13 +5,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
-import logfire
 from pydantic import SecretStr
 from slack_sdk.models.messages.chunk import Chunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
 
 from octomate.schemas.segments import ImageSegment
+from octomate.telemetry import slack_logfire
 from octomate.tentacles.channel.base import DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.output import IMMessageID, MarkdownChunker
 from octomate.tentacles.channel.slack.schema import (
@@ -151,7 +151,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
                 thread_ts = None
         return first_msg_id
 
-    @logfire.instrument("slack.start_stream", extract_args=["channel"])
+    @slack_logfire.instrument("slack.start_stream", extract_args=["channel"])
     async def start_stream(
         self,
         channel: str,
@@ -175,7 +175,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
         stream: AsyncChatStream,
         markdown_text: str,
     ) -> None:
-        with logfire.span("slack.append_stream", chars=len(markdown_text)):
+        with slack_logfire.span("slack.append_stream", chars=len(markdown_text)):
             for chunk in SLACK_MARKDOWN_CHUNKER.chunk(markdown_text):
                 # `chunks=()` forces slack-sdk to flush its internal text buffer.
                 await stream.append(markdown_text=chunk, chunks=())
@@ -212,7 +212,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
             except Exception:
                 logger.warning("SlackInk: failed to stop stream", exc_info=True)
 
-    @logfire.instrument("slack.stop_stream", extract_args=False)
+    @slack_logfire.instrument("slack.stop_stream", extract_args=False)
     async def stop_stream(
         self,
         stream: AsyncChatStream,

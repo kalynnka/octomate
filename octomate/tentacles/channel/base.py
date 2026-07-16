@@ -24,7 +24,6 @@ from typing import (
 )
 
 import anyio
-import logfire
 from opentelemetry import trace
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils import uuid7
@@ -34,6 +33,7 @@ from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress, UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
+from octomate.telemetry import channel_logfire
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
@@ -203,7 +203,7 @@ class ChannelTentacle(
     def name(self) -> str:
         return self.profile.name
 
-    @logfire.instrument("ChannelTentacle {self.id} ingest")
+    @channel_logfire.instrument("ChannelTentacle {self.id} ingest")
     async def ingest(self, raw: RawT) -> None:
         """Inbound pipeline: decode, enrich sender, resolve media, dispatch."""
         address: ChannelAddress | None = None
@@ -222,7 +222,7 @@ class ChannelTentacle(
                 user_id=event.user_id,
                 thread_id=event.thread_id,
             )
-            logfire.info(
+            channel_logfire.info(
                 "ingest decoded message",
                 channel_id=self.id,
                 conversation_address=str(address),

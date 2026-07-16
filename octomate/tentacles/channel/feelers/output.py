@@ -19,7 +19,6 @@ from typing import (
     cast,
 )
 
-import logfire
 from pydantic import JsonValue
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 
@@ -62,6 +61,7 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
 from octomate.schemas.todos import Todo
+from octomate.telemetry import channel_logfire
 from octomate.tentacles.agent.inkling.tools import ASK_QUESTIONS_TOOL_NAME
 from octomate.types.todos import STATUS_MARKERS
 
@@ -834,7 +834,7 @@ async def present_markdown(
     chat_type = address.chat_type
     reply_to = reply_to or address.thread_id or None
     first_message_id: IMMessageID | None = None
-    with logfire.span(
+    with channel_logfire.span(
         "default.markdown.present",
         channel_id=address.channel_tentacle_id,
         conversation_address=str(address),
@@ -895,7 +895,7 @@ class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
         address: ChannelAddress,
         segments: list[MessageSegment],
     ) -> IMMessageID | None:
-        with logfire.span(
+        with channel_logfire.span(
             "default.segments.present",
             channel_id=address.channel_tentacle_id,
             conversation_address=str(address),

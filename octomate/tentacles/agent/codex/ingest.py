@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import Counter
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -17,6 +18,7 @@ from octomate.schemas.conversation import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessageDirection
+from octomate.telemetry import codex_logfire
 from octomate.tentacles.agent.codex.hooks import CodexHookInput
 from octomate.tentacles.agent.locks import SessionLocks
 
@@ -26,7 +28,7 @@ if TYPE_CHECKING:
 
 CODEX_NATIVE_ID = "codex-native"
 NATIVE_USER = UserProfile(user_id="native", name="native")
-
+logger = logging.getLogger(__name__)
 
 class CodexHookIngest:
     def __init__(
@@ -50,8 +52,13 @@ class CodexHookIngest:
             if self.driven[session_id] <= 0:
                 del self.driven[session_id]
 
+    @codex_logfire.instrument(
+        "codex.hook {event.hook_event_name} [{event.session_id}]",
+        extract_args=["event"],
+    )
     async def handle(self, event: CodexHookInput) -> None:
         if event.octomate_driven or event.session_id in self.driven:
+            logger.debug("session %s: ignored driven Codex hook", event.session_id)
             return
         if event.hook_event_name == "Stop":
             await self.on_stop(event)
@@ -62,12 +69,22 @@ class CodexHookIngest:
                 if event.hook_event_name == "UserPromptSubmit" and event.prompt:
                     await self.record_prompt(event, event.prompt)
                     await self.sketch_run(event)
+                    logger.info(
+                        "session %s: turn %s asked",
+                        event.session_id,
+                        event.turn_id,
+                    )
 
     async def on_stop(self, event: CodexHookInput) -> None:
         async with self.locks.hold(event.session_id):
             if event.last_assistant_message:
                 await self.record_answer(event, event.last_assistant_message)
                 await self.sketch_run(event)
+                logger.info(
+                    "session %s: turn %s answered",
+                    event.session_id,
+                    event.turn_id,
+                )
         # Stop is a turn boundary in Codex, not a session boundary. Pump after the hook
         # releases the shared lock; the rollout's task_complete line may now be durable.
         await self.tailer.pump_session(event.session_id)

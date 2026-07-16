@@ -4,11 +4,11 @@ import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-import logfire
 from pydantic import JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
+from octomate.telemetry import lark_logfire
 from octomate.tentacles.channel.feelers.deferred import QuestionFeeler, question_text
 from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.lark.feelers import cards
@@ -41,7 +41,7 @@ class LarkAskQuestionFeeler(QuestionFeeler):
     def __init__(self, ink: LarkInk) -> None:
         self.ink = ink
 
-    @logfire.instrument("lark.ask_questions.present", extract_args=False)
+    @lark_logfire.instrument("lark.ask_questions.present", extract_args=False)
     async def present(
         self,
         address: ChannelAddress,

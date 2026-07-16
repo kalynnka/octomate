@@ -4,13 +4,13 @@ import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-import logfire
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
     DeferredApproval,
 )
+from octomate.telemetry import lark_logfire
 from octomate.tentacles.channel.feelers.deferred import ApprovalFeeler
 from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.lark.feelers import cards
@@ -30,7 +30,7 @@ class LarkApprovalFeeler(ApprovalFeeler):
     def __init__(self, ink: LarkInk) -> None:
         self.ink = ink
 
-    @logfire.instrument("lark.approvals.present", extract_args=False)
+    @lark_logfire.instrument("lark.approvals.present", extract_args=False)
     async def present(
         self,
         address: ChannelAddress,

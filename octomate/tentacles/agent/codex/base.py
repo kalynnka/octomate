@@ -10,7 +10,6 @@ from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, cast, overload
 
-import logfire
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
@@ -65,6 +64,7 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
+from octomate.telemetry import codex_logfire
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.codex.adapter import (
     CODEX_PROVIDER_NAME,
@@ -742,7 +742,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             summary = ReasoningSummary(ReasoningSummaryValue(self.config.summary))
 
         codex_thread_id: str | None = None
-        with logfire.span(
+        with codex_logfire.span(
             "CodexTentacle {agent_id} {run_name} [{conversation_address}]",
             agent_id=self.id,
             run_name=run_name or "codex",

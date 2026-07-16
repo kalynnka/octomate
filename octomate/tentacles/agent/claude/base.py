@@ -14,7 +14,6 @@ from typing import (
     overload,
 )
 
-import logfire
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
@@ -70,6 +69,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
+from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agent.claude.hooks import CLAUDE_HOOK_PATH, ClaudeHookInput
@@ -453,7 +453,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             else None
         )
         with (
-            logfire.span(
+            claude_logfire.span(
                 "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
                 agent_id=self.id,
                 run_name=run_name or "claude",

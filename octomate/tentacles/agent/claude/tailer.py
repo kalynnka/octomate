@@ -8,7 +8,6 @@ from pathlib import Path
 from time import monotonic
 
 import anyio
-import logfire
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
@@ -24,6 +23,7 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage, ThreadMessageDirection
+from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, NATIVE_USER
 from octomate.tentacles.agent.claude.transcript import (
@@ -263,7 +263,9 @@ class ClaudeTranscriptTailer:
         path = transcript_path or locate_transcript(session_id)
         if path is None:
             return []
-        with logfire.span("claude.tailer.recover [{session_id}]", session_id=session_id):
+        with claude_logfire.span(
+            "claude.tailer.recover [{session_id}]", session_id=session_id
+        ):
             # Own a materia context, mirroring the follow task's boundary.
             with sqlalchemy_materia():
                 conversation = await self.ensure_session(session_id)
@@ -307,7 +309,7 @@ class ClaudeTranscriptTailer:
     async def follow(self, state: TailState) -> None:
         """The per-session loop: catch up on what is already on disk, then pump on every
         directory change until `finalize` stops it, and drain once more to EOF."""
-        with logfire.span(
+        with claude_logfire.span(
             "claude.tailer.follow [{session_id}]",
             session_id=state.session_id,
             start_offset=state.offset,
@@ -468,7 +470,7 @@ class ClaudeTranscriptTailer:
             return
         conversation = state.conversation
         assert conversation is not None
-        with logfire.span(
+        with claude_logfire.span(
             "claude.tailer.commit_turn {prompt_id} [{session_id}]",
             prompt_id=turn.prompt_id,
             session_id=state.session_id,

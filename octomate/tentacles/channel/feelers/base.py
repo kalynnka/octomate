@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import logfire
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.conversation import Conversation, ChannelAddress
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
+from octomate.telemetry import channel_logfire
 from octomate.tentacles.channel.feelers.deferred import (
     ApprovalFeeler,
     QuestionFeeler,
@@ -48,7 +48,7 @@ class Feelers:
         decision: SummonDecision | None,
         requests: DeferredToolRequests,
     ) -> DeferredActionBatch:
-        with logfire.span(
+        with channel_logfire.span(
             "present_actions",
             run_name=run_name,
             target_address=str(target_address),

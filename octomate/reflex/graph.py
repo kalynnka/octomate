@@ -7,7 +7,6 @@ from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import Any, Iterable, TypeAlias, overload
 
-import logfire
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import UserContent
@@ -35,6 +34,7 @@ from octomate.schemas.triage import (
     SummonDecision,
     SummonRoute,
 )
+from octomate.telemetry import reflex_logfire
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.channel.base import (
     ChannelOutput,
@@ -221,7 +221,7 @@ class ReflexDeps:
 class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     signal: AwakeSignal
 
-    @logfire.instrument("reflex.awake", extract_args=False)
+    @reflex_logfire.instrument("reflex.awake", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
@@ -230,7 +230,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             return ResumeDeferred(awake=self.signal)
 
         if not self.signal:
-            logfire.info("awake short-circuit: empty signal")
+            reflex_logfire.info("awake short-circuit: empty signal")
             return End(
                 ReflexResult(
                     decision=None,
@@ -256,7 +256,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         user_prompt = "\n\n".join(str(event) for event in self.signal.messages).strip()
         ctx.state.user_prompt = user_prompt
         if not user_prompt and self.signal.trigger_thread_message_id is None:
-            logfire.info(
+            reflex_logfire.info(
                 "awake short-circuit: empty prompt",
                 channel_id=address.channel_tentacle_id,
                 conversation_address=str(address),
@@ -272,7 +272,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
 @dataclass
 class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
-    @logfire.instrument("reflex.route", extract_args=False)
+    @reflex_logfire.instrument("reflex.route", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
@@ -315,7 +315,7 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             return React()
 
         if source_address.thread_id and source_target.thread_strategy == "flat_thread":
-            logfire.info(
+            reflex_logfire.info(
                 "route: flat-thread, skipping triage",
                 channel_id=source_address.channel_tentacle_id,
                 conversation_address=str(source_address),
@@ -365,7 +365,7 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
 @dataclass
 class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
-    @logfire.instrument("reflex.handoff", extract_args=False)
+    @reflex_logfire.instrument("reflex.handoff", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
@@ -434,7 +434,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     # Set by Teleport to resume the same agent against the forked history.
     teleport_results: DeferredToolResults | None = None
 
-    @logfire.instrument("reflex.react", extract_args=False)
+    @reflex_logfire.instrument("reflex.react", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
@@ -530,7 +530,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             emit_on_stream=target_channel.config.stream.enabled,
         )
 
-        with logfire.span(
+        with reflex_logfire.span(
             "react",
             channel_id=target_address.channel_tentacle_id,
             agent_id=agent.id,
@@ -718,7 +718,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 state.run_name = "summon"
                 span.set_attribute("react.action", summon_decision.action)
                 span.set_attribute("react.next_agent_id", summon_decision.agent_id)
-                logfire.info(
+                reflex_logfire.info(
                     "react -> {action} agent={agent_id}",
                     action=summon_decision.action,
                     agent_id=summon_decision.agent_id,
@@ -745,7 +745,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     origin: ResponseTarget
     agent_id: str
 
-    @logfire.instrument("reflex.teleport", extract_args=False)
+    @reflex_logfire.instrument("reflex.teleport", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
@@ -807,13 +807,13 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     awake: DeferredActionBatchResponse
 
-    @logfire.instrument("reflex.resume_deferred", extract_args=False)
+    @reflex_logfire.instrument("reflex.resume_deferred", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
     ) -> React | End[ReflexGraphResult]:
         state = ctx.state
-        with logfire.span("resume_deferred", batch_id=str(self.awake.batch_id)) as span:
+        with reflex_logfire.span("resume_deferred", batch_id=str(self.awake.batch_id)) as span:
             batch = await ctx.deps.action_manager.resolve_batch(self.awake)
             span.set_attribute("run_name", batch.run_name)
             span.set_attribute("batch_status", batch.status)
@@ -867,7 +867,7 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         decision = decision.model_copy(update={"agent_id": batch.agent_tentacle_id})
         state.decision = decision
         if batch.status in {"completed", "resuming"}:
-            logfire.info("resume already completed", batch_id=str(batch.id))
+            reflex_logfire.info("resume already completed", batch_id=str(batch.id))
             return End(ReflexResult(decision=decision, target=target))
         if not batch.completed:
             return End(
@@ -886,7 +886,7 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         state.thread = await ctx.deps.thread_manager.ensure(batch.target_address)
         state.user_prompt = None
         state.run_name = "resume"
-        logfire.info("resume routes to React", batch_id=str(batch.id))
+        reflex_logfire.info("resume routes to React", batch_id=str(batch.id))
         return React(resume_batch_id=batch.id)
 
 

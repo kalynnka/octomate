@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-import logfire
 from arcanus import RelationCollection
 from pydantic_ai.tools import DeferredToolRequests
 
@@ -18,6 +17,7 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
+from octomate.telemetry import deferred_logfire
 from octomate.types.deferred import DeferredBatchStatus
 
 
@@ -34,7 +34,7 @@ class DeferredActionManager:
         decision: SummonDecision | None,
         requests: DeferredToolRequests,
     ) -> DeferredActionBatch:
-        with logfire.span("deferred.create_batch", run_name=run_name) as span:
+        with deferred_logfire.span("deferred.create_batch", run_name=run_name) as span:
             actions = DeferredActionCollection.validate_python(requests)
             questions = [
                 action for action in actions if isinstance(action, DeferredQuestion)
@@ -84,7 +84,7 @@ class DeferredActionManager:
         self,
         awake: DeferredActionBatchResponse,
     ) -> DeferredActionBatch:
-        with logfire.span(
+        with deferred_logfire.span(
             "deferred.resolve_batch",
             batch_id=str(awake.batch_id),
             answers=len(awake.answers),

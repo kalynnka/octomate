@@ -6,7 +6,6 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
-import logfire
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import (
     ModelRequest,
@@ -24,6 +23,7 @@ from octomate.schemas.thread import (
     ThreadMessage,
     ThreadMessageDirection,
 )
+from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agent.locks import SessionLocks
 
@@ -117,14 +117,14 @@ class ClaudeHookIngest:
             case "SessionEnd":
                 await self.on_session_end(event)
 
-    @logfire.instrument(
+    @claude_logfire.instrument(
         "claude.hook SessionStart [{event.session_id}]", extract_args=["event"]
     )
     async def on_session_start(self, event: ClaudeHookInput) -> None:
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
 
-    @logfire.instrument(
+    @claude_logfire.instrument(
         "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
     )
     async def on_user_prompt_submit(self, event: ClaudeHookInput) -> None:
@@ -139,7 +139,9 @@ class ClaudeHookIngest:
                     "session %s: turn %s asked", event.session_id, event.prompt_id
                 )
 
-    @logfire.instrument("claude.hook Stop [{event.session_id}]", extract_args=["event"])
+    @claude_logfire.instrument(
+        "claude.hook Stop [{event.session_id}]", extract_args=["event"]
+    )
     async def on_stop(self, event: ClaudeHookInput) -> None:
         async with self.locks.hold(event.session_id):
             if event.last_assistant_message:
@@ -149,7 +151,7 @@ class ClaudeHookIngest:
                     "session %s: turn %s answered", event.session_id, event.prompt_id
                 )
 
-    @logfire.instrument(
+    @claude_logfire.instrument(
         "claude.hook SessionEnd [{event.session_id}]", extract_args=["event"]
     )
     async def on_session_end(self, event: ClaudeHookInput) -> None:
