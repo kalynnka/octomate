@@ -180,3 +180,80 @@ async def test_marked_session_start_is_ignored_before_the_sdk_returns_its_id() -
 
     assert octomate.thread_manager.threads == {}
     await tailer.shutdown()
+
+
+async def test_nested_task_does_not_close_or_pollute_the_parent(tmp_path: Path) -> None:
+    path = tmp_path / "nested.jsonl"
+    records = [
+        {
+            "timestamp": "2026-07-16T10:00:00Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": TURN_ID},
+        },
+        {
+            "timestamp": "2026-07-16T10:00:01Z",
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "parent prompt"},
+        },
+        {
+            "timestamp": "2026-07-16T10:00:02Z",
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": "child-turn"},
+        },
+        {
+            "timestamp": "2026-07-16T10:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "child answer"}],
+            },
+        },
+        {
+            "timestamp": "2026-07-16T10:00:04Z",
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": "child-turn"},
+        },
+        {
+            "timestamp": "2026-07-16T10:00:05Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "parent answer"}],
+            },
+        },
+        {
+            "timestamp": "2026-07-16T10:00:06Z",
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": TURN_ID},
+        },
+    ]
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    octomate = Octomate()
+    ingest, tailer = wired(octomate)
+
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="SessionStart",
+            session_id=SESSION_ID,
+            transcript_path=path,
+        )
+    )
+    await tailer.pump_session(SESSION_ID)
+
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+    )
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    [run] = conversation.runs
+    assert run.id == TURN_ID
+    assert [message.message_text for message in run.messages] == [
+        "parent prompt",
+        "parent answer",
+    ]
+    await tailer.shutdown()

@@ -78,6 +78,7 @@ class TailState:
     recorded: set[str] = field(default_factory=set)
     source: str | None = None
     open_turn: OpenTurn | None = None
+    nested_turn_ids: list[str] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
     pump_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -118,6 +119,12 @@ class CodexTranscriptTailer:
     async def pump_session(self, session_id: str) -> None:
         state = self.sessions.get(session_id)
         if state is not None:
+            # A Stop hook can arrive immediately after start, before the follow task's
+            # first scheduling slice prepares its durable state. Prepare synchronously
+            # here too; manager.ensure is cached, so racing the follow task is harmless.
+            if state.conversation is None:
+                state.conversation = await self.ensure_session(session_id)
+                state.recorded = assembled(state.conversation)
             await self.pump(state)
 
     async def shutdown(self) -> None:
@@ -200,9 +207,17 @@ class CodexTranscriptTailer:
             state.source = source if isinstance(source, str) else None
             return
         if line.type == "event_msg" and kind == "task_started":
-            await self.close_turn(state)
             turn_id = line.payload.get("turn_id")
-            if isinstance(turn_id, str) and turn_id:
+            if not isinstance(turn_id, str) or not turn_id:
+                return
+            if state.open_turn is not None:
+                # Subagents run inside their parent's turn and emit their own task
+                # boundaries into the same rollout. They must neither close the parent
+                # nor fold their model timeline into it. Keep the parent's byte range
+                # contiguous across the skipped nested span.
+                state.open_turn.end_offset = end
+                state.nested_turn_ids.append(turn_id)
+            else:
                 state.open_turn = OpenTurn(
                     turn_id=turn_id,
                     start_offset=start,
@@ -215,6 +230,12 @@ class CodexTranscriptTailer:
         if turn is None:
             return
         turn.end_offset = end
+        if state.nested_turn_ids:
+            if line.type == "event_msg" and kind == "task_complete":
+                completed_id = line.payload.get("turn_id")
+                if completed_id == state.nested_turn_ids[-1]:
+                    state.nested_turn_ids.pop()
+            return
         if line.type == "event_msg":
             if kind == "user_message":
                 prompt = line.payload.get("message")
@@ -377,6 +398,14 @@ class CodexTranscriptTailer:
                 return
             state.recorded.add(turn.turn_id)
             await self.bind_ledger(state.session_id, run, turn.prompt, turn.answer)
+            logger.info(
+                "session %s: turn %s synced — %d messages, bytes %d-%d",
+                state.session_id,
+                turn.turn_id,
+                len(turn.messages),
+                turn.start_offset,
+                turn.end_offset,
+            )
 
     async def bind_ledger(
         self, session_id: str, run: ExternalAgentRun, prompt: str, answer: str
