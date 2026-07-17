@@ -292,6 +292,125 @@ async def test_nested_task_does_not_close_or_pollute_the_parent(tmp_path: Path) 
     await tailer.shutdown()
 
 
+def event(second: int, kind: str, **payload: str) -> dict[str, object]:
+    return {
+        "timestamp": f"2026-07-16T10:00:{second:02d}Z",
+        "type": "event_msg",
+        "payload": {"type": kind, **payload},
+    }
+
+
+def answer_item(second: int, text: str) -> dict[str, object]:
+    return {
+        "timestamp": f"2026-07-16T10:00:{second:02d}Z",
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": text}],
+        },
+    }
+
+
+async def pumped_runs(tmp_path: Path, records: list[dict[str, object]]):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="SessionStart",
+            session_id=SESSION_ID,
+            transcript_path=path,
+        )
+    )
+    await tailer.pump_session(SESSION_ID)
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+    )
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    await tailer.shutdown()
+    return conversation.runs
+
+
+async def test_an_aborted_turn_closes_and_the_next_turn_still_records(
+    tmp_path: Path,
+) -> None:
+    """The 24% bug: a turn that ends in `turn_aborted` never closed, and the stuck
+    open turn then misread every later `task_started` as nested and swallowed the
+    rest of the session. One abort must cost at most its own turn's tail."""
+    runs = await pumped_runs(
+        tmp_path,
+        [
+            event(0, "task_started", turn_id="turn-a"),
+            event(1, "user_message", message="first ask"),
+            event(2, "turn_aborted", turn_id="turn-a", reason="interrupted"),
+            event(3, "task_started", turn_id="turn-b"),
+            event(4, "user_message", message="second ask"),
+            answer_item(5, "done twice"),
+            event(6, "task_complete", turn_id="turn-b"),
+        ],
+    )
+    assert [run.id for run in runs] == ["turn-a", "turn-b"]
+    aborted, completed = runs
+    assert [message.message_text for message in aborted.messages] == ["first ask"]
+    assert [message.message_text for message in completed.messages] == [
+        "second ask",
+        "done twice",
+    ]
+
+
+async def test_an_aborted_overlapping_task_pops_instead_of_jamming(
+    tmp_path: Path,
+) -> None:
+    runs = await pumped_runs(
+        tmp_path,
+        [
+            event(0, "task_started", turn_id=TURN_ID),
+            event(1, "user_message", message="parent prompt"),
+            event(2, "task_started", turn_id="overlap"),
+            event(3, "turn_aborted", turn_id="overlap", reason="interrupted"),
+            answer_item(4, "parent answer"),
+            event(5, "task_complete", turn_id=TURN_ID),
+        ],
+    )
+    [run] = runs
+    assert run.id == TURN_ID
+    assert [message.message_text for message in run.messages] == [
+        "parent prompt",
+        "parent answer",
+    ]
+
+
+async def test_the_open_turns_own_end_clears_absorbed_task_starts(
+    tmp_path: Path,
+) -> None:
+    """A `task_started` that never closes (measured: 20 in the corpus) leaves the
+    stack non-empty forever; the open turn's own completion must still commit it
+    rather than being skipped as someone else's."""
+    runs = await pumped_runs(
+        tmp_path,
+        [
+            event(0, "task_started", turn_id=TURN_ID),
+            event(1, "user_message", message="parent prompt"),
+            event(2, "task_started", turn_id="dangling"),
+            event(
+                3,
+                "task_complete",
+                turn_id=TURN_ID,
+                last_agent_message="wrapped up",
+            ),
+        ],
+    )
+    [run] = runs
+    assert run.id == TURN_ID
+    assert run.end_offset is not None
+    assert [message.message_text for message in run.messages] == ["parent prompt"]
+
+
 async def test_a_backfilled_row_is_dated_by_the_rollout_not_the_replay(
     tmp_path: Path,
 ) -> None:

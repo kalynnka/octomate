@@ -218,10 +218,10 @@ class CodexTranscriptTailer:
             if not isinstance(turn_id, str) or not turn_id:
                 return
             if state.open_turn is not None:
-                # Subagents run inside their parent's turn and emit their own task
-                # boundaries into the same rollout. They must neither close the parent
-                # nor fold their model timeline into it. Keep the parent's byte range
-                # contiguous across the skipped nested span.
+                # A second task_started while a turn is open: an overlapping task in
+                # this same rollout (measured: never a subagent — those write their
+                # own rollout file). Track it so its completion is not mistaken for
+                # the open turn's; the open turn's byte range stays contiguous.
                 state.open_turn.end_offset = end
                 state.nested_turn_ids.append(turn_id)
             else:
@@ -238,10 +238,21 @@ class CodexTranscriptTailer:
             return
         turn.end_offset = end
         if state.nested_turn_ids:
-            if line.type == "event_msg" and kind == "task_complete":
-                completed_id = line.payload.get("turn_id")
-                if completed_id == state.nested_turn_ids[-1]:
+            if line.type == "event_msg" and kind in {"task_complete", "turn_aborted"}:
+                ended_id = line.payload.get("turn_id")
+                if ended_id == state.nested_turn_ids[-1]:
                     state.nested_turn_ids.pop()
+                elif ended_id == turn.turn_id:
+                    # The open turn itself ended while the stack still held later
+                    # task_starteds — those were turns a stuck open turn absorbed,
+                    # not overlapping work. Closing honestly here is what stops one
+                    # bad turn from swallowing the rest of the session.
+                    state.nested_turn_ids.clear()
+                    if kind == "task_complete":
+                        fallback = line.payload.get("last_agent_message")
+                        if not turn.answer and isinstance(fallback, str):
+                            turn.answer = fallback
+                    await self.close_turn(state)
             return
         if line.type == "event_msg":
             if kind == "user_message":
@@ -257,9 +268,13 @@ class CodexTranscriptTailer:
                     )
             elif kind == "token_count":
                 turn.usage = self.parse_usage(line.payload)
-            elif kind == "task_complete":
-                completed_id = line.payload.get("turn_id")
-                if completed_id == turn.turn_id:
+            elif kind in {"task_complete", "turn_aborted"}:
+                ended_id = line.payload.get("turn_id")
+                if ended_id == turn.turn_id:
+                    # An aborted turn is still real work in the file — commit what it
+                    # reached, as an interrupted Claude turn commits at the next
+                    # prompt. (`turn_aborted` carries no last message; the fallback
+                    # read is a no-op there.)
                     fallback = line.payload.get("last_agent_message")
                     if not turn.answer and isinstance(fallback, str):
                         turn.answer = fallback
