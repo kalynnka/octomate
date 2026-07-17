@@ -462,7 +462,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="prev-thread"))
     conversations = FakeConversationManager()
-    conversations.store[(_THREAD, "codex")] = FakeConversation(
+    conversations.store[(_THREAD, "codex", "")] = FakeConversation(
         external_id="prev-thread"
     )
     runtime = CodexSdkConfig(

@@ -138,9 +138,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.hook_secret = hook_secret
         self.description = description or self.description
         self.pending = {}
-        # One live Claude client per conversation (keyed by thread_id — this
-        # tentacle owns one agent id, so a thread names its conversation): a new
-        # turn interrupts the prior run for the same thread (Phase 6). Weak values
+        # One live Claude client per conversation, keyed by conversation id: a new
+        # turn interrupts the prior run for the same conversation (Phase 6). Not
+        # thread id — a thread also holds subagent conversations, whose runs must
+        # neither interrupt the thread's own live run nor each other. Weak values
         # so a finished run's client drops out on its own once it is collected.
         self.live_clients: weakref.WeakValueDictionary[uuid.UUID, ClaudeSDKClient] = (
             weakref.WeakValueDictionary()
@@ -482,11 +483,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         ):
             async with ClaudeSDKClient(options=options, transport=transport) as client:
                 # One live run per conversation: register this client and interrupt
-                # any prior run for the same thread so a mid-run follow-up supersedes
-                # it. The weak-value map drops this entry once the run ends and the
-                # client is collected — no manual deregistration.
-                previous = self.live_clients.get(thread_id)
-                self.live_clients[thread_id] = client
+                # any prior run for the same conversation so a mid-run follow-up
+                # supersedes it. The weak-value map drops this entry once the run
+                # ends and the client is collected — no manual deregistration.
+                previous = self.live_clients.get(conversation.id)
+                self.live_clients[conversation.id] = client
                 if previous is not None and previous is not client:
                     with contextlib.suppress(Exception):
                         await previous.interrupt()

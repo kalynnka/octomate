@@ -290,7 +290,7 @@ async def test_run_agent_records_new_messages_with_run_name() -> None:
     assert run_label.startswith("custom:")
     assert messages
     # The recorded turn lands in the conversation the next ensure() serves.
-    assert conversations.store[(_THREAD, "inkling")].messages == messages
+    assert conversations.store[(_THREAD, "inkling", "")].messages == messages
 
 
 async def test_run_agent_binds_request_sources_and_advances_cursor(

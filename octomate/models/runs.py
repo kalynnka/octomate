@@ -53,6 +53,27 @@ class AgentRun(Base, TransmuterProxiedMixin):
         default=None,
         index=True,
     )
+    parent_run_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        default=None,
+        index=True,
+        comment=(
+            "The run whose tool call spawned this one (a subagent's turn). An "
+            "unenforced reference, not a FK: native ingest supersedes a provisional "
+            "parent by deleting and reinserting the same id across two commits, "
+            "which an enforced constraint would block or cascade."
+        ),
+    )
+    parent_tool_call_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        default=None,
+        comment=(
+            "The ToolCallPart in the parent run's timeline this run answers, so a "
+            "tool call can expand into its subagent's full timeline."
+        ),
+    )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True, index=True
     )

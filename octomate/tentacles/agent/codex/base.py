@@ -134,12 +134,13 @@ class PooledCodexClient:
 
 
 class CodexClientPool:
-    """Per-thread pool of Codex app-server clients.
+    """Per-conversation pool of Codex app-server clients.
 
-    Each Octomate thread keeps its own warm Codex process (and `AsyncThread` handle),
-    so consecutive turns continue the same thread without relaunching the app-server —
-    the analogue of Claude spawning a CLI subprocess per run, but reused across a
-    thread's turns. Idle clients are closed lazily past `idle_ttl`, and an LRU
+    Each conversation keeps its own warm Codex process (and `AsyncThread` handle),
+    so consecutive turns continue the same Codex thread without relaunching the
+    app-server. Keyed by conversation id, not thread id: a thread also holds
+    subagent conversations, each of which needs its own client rather than sharing
+    (and evicting) the thread's. Idle clients are closed lazily past `idle_ttl`, and an LRU
     `max_clients` cap bounds how many stay warm; a client with a live turn is never
     evicted. Drained entirely on tentacle shutdown."""
 
@@ -156,24 +157,24 @@ class CodexClientPool:
         self.clients: OrderedDict[uuid.UUID, PooledCodexClient] = OrderedDict()
         self.lock = asyncio.Lock()
 
-    async def acquire(self, thread_id: uuid.UUID) -> PooledCodexClient:
+    async def acquire(self, conversation_id: uuid.UUID) -> PooledCodexClient:
         async with self.lock:
             await self.evict_idle()
-            pooled = self.clients.get(thread_id)
+            pooled = self.clients.get(conversation_id)
             if pooled is None:
-                client = self.build(thread_id)
+                client = self.build(conversation_id)
                 await client.__aenter__()
                 pooled = PooledCodexClient(client=client)
-                self.clients[thread_id] = pooled
-            self.clients.move_to_end(thread_id)
+                self.clients[conversation_id] = pooled
+            self.clients.move_to_end(conversation_id)
             pooled.in_use += 1
             pooled.last_used = time.monotonic()
             await self.evict_over_cap()
             return pooled
 
-    async def release(self, thread_id: uuid.UUID) -> None:
+    async def release(self, conversation_id: uuid.UUID) -> None:
         async with self.lock:
-            pooled = self.clients.get(thread_id)
+            pooled = self.clients.get(conversation_id)
             if pooled is not None:
                 pooled.in_use = max(0, pooled.in_use - 1)
                 pooled.last_used = time.monotonic()
@@ -182,10 +183,10 @@ class CodexClientPool:
         if self.idle_ttl is None:
             return
         cutoff = time.monotonic() - self.idle_ttl
-        for thread_id in list(self.clients):
-            pooled = self.clients[thread_id]
+        for conversation_id in list(self.clients):
+            pooled = self.clients[conversation_id]
             if pooled.in_use == 0 and pooled.last_used < cutoff:
-                del self.clients[thread_id]
+                del self.clients[conversation_id]
                 await self.close(pooled)
 
     async def evict_over_cap(self) -> None:
@@ -193,12 +194,12 @@ class CodexClientPool:
             return
         # `clients` is LRU-ordered (move_to_end on acquire), so the front is the
         # least-recently-used; skip any client with a live turn.
-        for thread_id in list(self.clients):
+        for conversation_id in list(self.clients):
             if len(self.clients) <= self.max_clients:
                 break
-            pooled = self.clients[thread_id]
+            pooled = self.clients[conversation_id]
             if pooled.in_use == 0:
-                del self.clients[thread_id]
+                del self.clients[conversation_id]
                 await self.close(pooled)
 
     async def aclose(self) -> None:
@@ -313,22 +314,23 @@ class CodexTentacle(AgentTentacle[str, None]):
         return router
 
     async def __aenter__(self) -> CodexTentacle:
-        # Only the pool is tentacle-wide shared state; each thread's Codex client is
-        # built here, entered/exited through the SDK's async context, and reused or
-        # evicted by the pool.
-        def new_client(thread_id: uuid.UUID) -> AsyncCodex:
+        # Only the pool is tentacle-wide shared state; each conversation's Codex
+        # client is built here, entered/exited through the SDK's async context, and
+        # reused or evicted by the pool.
+        def new_client(conversation_id: uuid.UUID) -> AsyncCodex:
             runtime = replace(
                 self.config.runtime,
                 env={**(self.config.runtime.env or {}), DRIVEN_ENV: "1"},
             )
             client = AsyncCodex(config=runtime)
             if self.config.approval_mode == "user":
-                # One client per thread, so bind the approval handler to this thread
-                # id — no guessing which live context an SDK request belongs to. The
-                # public constructor has no handler hook, so swap in a sync client
-                # that has one (SDK-private) before the transport lazily starts.
+                # One client per conversation, so bind the approval handler to this
+                # conversation id — no guessing which live context an SDK request
+                # belongs to. The public constructor has no handler hook, so swap in a
+                # sync client that has one (SDK-private) before the transport lazily
+                # starts.
                 def handler(method: str, params: JsonObject | None) -> JsonObject:
-                    return self.handle_sdk_request(thread_id, method, params)
+                    return self.handle_sdk_request(conversation_id, method, params)
 
                 client._client._sync = CodexClient(
                     config=runtime,
@@ -401,11 +403,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         return batch, response
 
     def handle_sdk_request(
-        self, thread_id: uuid.UUID, method: str, params: JsonObject | None
+        self, conversation_id: uuid.UUID, method: str, params: JsonObject | None
     ) -> JsonObject:
         # The SDK approval handler fires on the transport thread; bridge each request
         # onto the run's event loop and block that thread until the human answers.
-        context = self.bridge_contexts.get(thread_id)
+        context = self.bridge_contexts.get(conversation_id)
         if context is None:
             return self.deny_sdk_request(f"Octomate has no live context for {method}.")
         if self.is_approval_request(method):
@@ -759,7 +761,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_name=run_name or "codex",
             conversation_address=str(conversation_address),
         ):
-            pooled = await self.pool.acquire(thread_id)
+            pooled = await self.pool.acquire(conversation.id)
             try:
                 codex_thread = pooled.thread
                 if codex_thread is None:
@@ -791,7 +793,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                         )
                     pooled.thread = codex_thread
                 codex_thread_id = codex_thread.id
-                self.bridge_contexts[thread_id] = CodexBridgeContext(
+                self.bridge_contexts[conversation.id] = CodexBridgeContext(
                     loop=asyncio.get_running_loop(),
                     conversation=conversation,
                     conversation_address=conversation_address,
@@ -812,8 +814,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                             sandbox=sandbox,
                             summary=summary,
                         )
-                        previous = self.live_turns.get(thread_id)
-                        self.live_turns[thread_id] = turn
+                        previous = self.live_turns.get(conversation.id)
+                        self.live_turns[conversation.id] = turn
                         if previous is not None and previous is not turn:
                             with contextlib.suppress(Exception):
                                 await previous.interrupt()
@@ -822,12 +824,12 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 for event in accumulator.consume(notification):
                                     yield event
                         finally:
-                            if self.live_turns.get(thread_id) is turn:
-                                self.live_turns.pop(thread_id, None)
+                            if self.live_turns.get(conversation.id) is turn:
+                                self.live_turns.pop(conversation.id, None)
                 finally:
-                    self.bridge_contexts.pop(thread_id, None)
+                    self.bridge_contexts.pop(conversation.id, None)
             finally:
-                await self.pool.release(thread_id)
+                await self.pool.release(conversation.id)
 
         run_id = str(uuid7())
         recorded_run = await self.octomate.conversations.record_agent_run(

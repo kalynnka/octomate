@@ -146,7 +146,7 @@ async def test_run_stream_events_proxies_events_and_persists(
 async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
-    conversations.store[(_THREAD, "claude")] = FakeConversation(external_id="prev-sess")
+    conversations.store[(_THREAD, "claude", "")] = FakeConversation(external_id="prev-sess")
     tentacle = _tentacle(conversations)
 
     result = await tentacle.run("again", conversation_address=KEY, thread_id=_THREAD)
@@ -393,11 +393,16 @@ async def test_new_run_interrupts_the_prior_live_run(
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", GatedClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
+    # The live map keys on the conversation, not the thread — a thread also
+    # holds subagent conversations whose runs must not interrupt this one.
+    conversation = await tentacle.octomate.conversations.ensure(
+        _THREAD, agent_tentacle_id="claude"
+    )
     first = asyncio.ensure_future(_drive(tentacle, "first"))
-    await _spin_until(lambda: tentacle.live_clients.get(_THREAD) is not None)
+    await _spin_until(lambda: tentacle.live_clients.get(conversation.id) is not None)
     client_a = GatedClaudeClient.instances[0]
 
-    # A second turn on the same thread supersedes the first: its client is
+    # A second turn on the same conversation supersedes the first: its client is
     # interrupted so the parked run unblocks and ends.
     second = asyncio.ensure_future(_drive(tentacle, "second"))
     await _spin_until(lambda: client_a.interrupted)
@@ -408,8 +413,10 @@ async def test_new_run_interrupts_the_prior_live_run(
     await asyncio.gather(first, second)
 
     assert client_a.interrupted
-    # B superseded A: the live entry for the thread is now B's client.
-    assert tentacle.live_clients.get(_THREAD) is GatedClaudeClient.instances[1]
+    # B superseded A: the live entry for the conversation is now B's client.
+    assert (
+        tentacle.live_clients.get(conversation.id) is GatedClaudeClient.instances[1]
+    )
 
 
 async def test_shutdown_interrupts_live_runs(
@@ -419,8 +426,11 @@ async def test_shutdown_interrupts_live_runs(
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", GatedClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
+    conversation = await tentacle.octomate.conversations.ensure(
+        _THREAD, agent_tentacle_id="claude"
+    )
     run = asyncio.ensure_future(_drive(tentacle, "hi"))
-    await _spin_until(lambda: tentacle.live_clients.get(_THREAD) is not None)
+    await _spin_until(lambda: tentacle.live_clients.get(conversation.id) is not None)
     client = GatedClaudeClient.instances[0]
 
     await tentacle.__aexit__()

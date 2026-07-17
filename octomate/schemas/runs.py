@@ -32,6 +32,10 @@ class AgentRun(BaseTransmuter):
     kind: Literal["octomate"] = "octomate"
     conversation_id: uuid.UUID
     name: str | None = None
+    # The parent link of a subagent's turn, on the base so both variants carry it:
+    # the run whose tool call spawned this one, and which ToolCallPart it answers.
+    parent_run_id: str | None = None
+    parent_tool_call_id: str | None = None
     started_at: datetime | None = None
 
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()

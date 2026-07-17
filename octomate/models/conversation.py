@@ -22,6 +22,7 @@ class Conversation(Base, TransmuterProxiedMixin):
         UniqueConstraint(
             "thread_id",
             "agent_tentacle_id",
+            "subagent_id",
             name="uq_conversations_conversation_key",
         ),
     )
@@ -35,11 +36,42 @@ class Conversation(Base, TransmuterProxiedMixin):
         nullable=False,
         index=True,
         comment=(
-            "The owning thread. A thread owns one conversation per agent, so "
-            "(thread_id, agent_tentacle_id) is the conversation's identity."
+            "The owning thread. A thread owns one conversation per agent plus one "
+            "per that agent's subagents, so (thread_id, agent_tentacle_id, "
+            "subagent_id) is the conversation's identity."
         ),
     )
     agent_tentacle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # Empty, not NULL, when the conversation is the agent's own — the same
+    # sentinel Thread.thread_id uses, so the plain unique constraint enforces
+    # both halves of the identity (NULLs are distinct in a unique constraint,
+    # which would let a second bare (thread, agent) row through).
+    subagent_id: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="",
+        server_default="",
+        index=True,
+        comment=(
+            "Empty for the agent's own long-lived conversation in the thread; a "
+            "subagent's stable identity for a context spawned by a run — Claude's "
+            "agentId, Codex's child thread id, a commission's name. Not "
+            "external_id: that is a mutable resumable handle, this is identity."
+        ),
+    )
+    parent_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment=(
+            "The conversation whose run spawned this subagent's context — set iff "
+            "subagent_id is. Not derivable from the runs: a commission's parent is "
+            "a different agent, and the parent's run row does not exist until that "
+            "run finishes. Which parent *turn* drove each child run stays on the "
+            "run (parent_run_id); this is the stable whose-context half."
+        ),
+    )
 
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")

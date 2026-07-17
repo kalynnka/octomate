@@ -57,12 +57,16 @@ class ChannelAddress:
 
 
 class ConversationKey(NamedTuple):
-    """Identity of an agent conversation: the owning thread plus the agent. A
-    thread owns one conversation per agent, so every sender in a group thread
-    keys to the one conversation, independent of who woke it."""
+    """Identity of an agent conversation: the owning thread, the agent, and —
+    for a context spawned by one of that agent's runs — the subagent. The
+    empty subagent_id is the agent's own conversation (the Thread.thread_id
+    sentinel convention): a thread owns one bare conversation per agent, so
+    every sender in a group thread keys to that one, independent of who woke
+    it; each subagent keys to its own."""
 
     thread_id: uuid.UUID
     agent_id: str
+    subagent_id: str = ""
 
 
 @sqlalchemy_materia.bless(ConversationModel)
@@ -83,6 +87,24 @@ class Conversation(BaseTransmuter):
         frozen=True,
         description=(
             "The owning agent; with thread_id it is the conversation's identity."
+        ),
+    )
+    subagent_id: str = Field(
+        default="",
+        frozen=True,
+        description=(
+            "Empty for the agent's own conversation in the thread; a subagent's "
+            "stable identity (Claude agentId, Codex child thread id, a "
+            "commission's name) for a context spawned by one run."
+        ),
+    )
+    parent_conversation_id: uuid.UUID | None = Field(
+        default=None,
+        frozen=True,
+        description=(
+            "The conversation whose run spawned this subagent's context — set "
+            "iff subagent_id is. Which parent turn drove each child run stays "
+            "on the run (parent_run_id)."
         ),
     )
 
@@ -108,7 +130,7 @@ class Conversation(BaseTransmuter):
 
     @property
     def key(self) -> ConversationKey:
-        return ConversationKey(self.thread_id, self.agent_tentacle_id)
+        return ConversationKey(self.thread_id, self.agent_tentacle_id, self.subagent_id)
 
 
 class UserProfile(BaseModel):

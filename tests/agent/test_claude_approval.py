@@ -199,7 +199,7 @@ def _build(
     dam = RecordingDeferredActions()
     conversations = FakeConversationManager()
     if conversation is not None:
-        conversations.store[(_THREAD, "claude")] = conversation
+        conversations.store[(_THREAD, "claude", "")] = conversation
     octomate = Octomate(
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, dam),
@@ -217,7 +217,7 @@ def _build(
 
 def _conversation(tentacle: ClaudeCodeTentacle) -> FakeConversation:
     convs = cast(FakeConversationManager, tentacle.octomate.conversations)
-    return convs.store[(_THREAD, "claude")]
+    return convs.store[(_THREAD, "claude", "")]
 
 
 async def _drain(tentacle: ClaudeCodeTentacle) -> None:

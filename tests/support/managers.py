@@ -52,13 +52,15 @@ class FakeConversation:
     messages: list[ModelMessage] = field(default_factory=list)
     external_id: str | None = None
     thread_id: uuid.UUID | None = None
+    subagent_id: str = ""
+    parent_conversation_id: uuid.UUID | None = None
     permission_mode: ConversationPermissionMode = "default"
     allowed_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
 class FakeConversationManager(ConversationManager):
-    store: dict[tuple[uuid.UUID, str | None], FakeConversation] = field(
+    store: dict[tuple[uuid.UUID, str | None, str], FakeConversation] = field(
         default_factory=dict
     )
     ensured: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
@@ -71,12 +73,18 @@ class FakeConversationManager(ConversationManager):
         thread_id: uuid.UUID,
         *,
         agent_tentacle_id: str | None = None,
+        subagent_id: str = "",
+        parent_conversation_id: uuid.UUID | None = None,
     ) -> Conversation:
         self.ensured.append((thread_id, agent_tentacle_id))
-        store_key = (thread_id, agent_tentacle_id)
+        store_key = (thread_id, agent_tentacle_id, subagent_id)
         conversation = self.store.get(store_key)
         if conversation is None:
-            conversation = FakeConversation(thread_id=thread_id)
+            conversation = FakeConversation(
+                thread_id=thread_id,
+                subagent_id=subagent_id,
+                parent_conversation_id=parent_conversation_id,
+            )
             self.store[store_key] = conversation
         return cast(Conversation, conversation)
 
@@ -94,6 +102,8 @@ class FakeConversationManager(ConversationManager):
         *,
         name: str | None = None,
         external_id: str | None = None,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
         fake = cast(FakeConversation, conversation)
         self.runs.append((fake, f"{name}:{run_id}", list(messages)))

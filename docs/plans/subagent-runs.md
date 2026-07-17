@@ -196,7 +196,7 @@ independent of each other after it.
 
 ```
 thread
- ├─ conversation  (agent=claude-native, subagent_id=NULL, external_id=<session>)
+ ├─ conversation  (agent=claude-native, subagent_id="", external_id=<session>)
  │    ├─ run <promptId-1>   ExternalAgentRun   bytes[278 … 725724]  of <session>.jsonl
  │    └─ run <promptId-2>   ExternalAgentRun   bytes[727461 … …]    of <session>.jsonl
  │         └── ToolCallPart(tool_name="Agent", tool_call_id=toolu_01J1…)
@@ -216,7 +216,7 @@ The same shape, Octomate-driven:
 
 ```
 thread
- ├─ conversation  (agent=inkling, subagent_id=NULL)
+ ├─ conversation  (agent=inkling, subagent_id="")
  │    └─ run <uuid7>   AgentRun
  │         └── ToolCallPart(tool_name="commission", tool_call_id=pyd_ai_01…)
  └─ conversation  (agent=codex, subagent_id="repo-audit")
@@ -235,7 +235,7 @@ And native Codex — the same shape, reached by a different road (§5):
 
 ```
 thread
- ├─ conversation  (agent=codex-native, subagent_id=NULL, external_id=<thread-id>)
+ ├─ conversation  (agent=codex-native, subagent_id="", external_id=<thread-id>)
  │    └─ run <turn_id>   ExternalAgentRun   bytes of rollout-…-<thread-id>.jsonl
  │         └── event_msg sub_agent_activity  event_id=call_47up…  agent_thread_id=019f6b28…
  │                                                    ▲
@@ -367,24 +367,34 @@ The spine. Ships alone; nothing below is possible without it.
   - `parent_tool_call_id: Mapped[str | None]` — the `ToolCallPart.tool_call_id` in the
     parent's timeline this child answers. Binds a tool call to its subagent's run.
 - **ORM** ([models/conversation.py](../../octomate/models/conversation.py)):
-  - `subagent_id: Mapped[str | None]` — indexed, **not** a FK. NULL = the agent's own
-    long-lived conversation in the thread. Set = one subagent's context. Its value is
-    whatever the runtime calls that subagent (§4a): Claude's `agentId`, Codex's child
-    `thread_id`, a commission's `tool_call_id`.
+  - `subagent_id: Mapped[str]` — indexed, **not** a FK, **empty (not NULL) for the
+    agent's own conversation** — the `Thread.thread_id` sentinel convention, which is
+    what lets the existing unique constraint simply widen to three columns. Set = one
+    subagent's context; the value is whatever the runtime calls that subagent (§4a):
+    Claude's `agentId`, Codex's child `thread_id`, a commission's name.
   - ⚠ **It must not be `parent_run_id`, and this is not obvious.** A subagent can be
     *resumed by a later parent turn* (§4a) — its runs then carry **different**
     `parent_run_id`s, so keying the conversation on the parent run would split one
     continuous context across two conversations, each claiming to be "one agent's model
     context". The subagent's own id is stable across its turns; the parent run is not. The
     parent link belongs on the **run**, per turn, where it already is.
-  - **The trap:** replacing `UniqueConstraint("thread_id", "agent_tentacle_id")` with a
-    three-column one **does not work**. SQL treats NULLs as distinct in a unique
-    constraint, so `(T, claude, NULL)` twice would not collide — silently destroying the
-    invariant that a thread owns exactly one conversation per agent. It needs **two
-    indexes**: a partial `UNIQUE (thread_id, agent_tentacle_id) WHERE subagent_id IS
-    NULL`, plus `UNIQUE (thread_id, agent_tentacle_id, subagent_id)`. Both Postgres and
-    SQLite support partial indexes; Alembic emits them via `postgresql_where` /
-    `sqlite_where`.
+  - `parent_conversation_id: Mapped[uuid.UUID | None]` — self-FK (SET NULL), set iff
+    `subagent_id` is; the manager refuses half-set states, so there is no separate
+    `is_subagent` flag to drift. **Why it is not derivable from the runs:** a
+    commission's parent conversation belongs to a *different agent* (inkling spawns
+    codex — nothing else on the child row names inkling), and the parent's run row
+    does not exist until that run *finishes*, so run-hopping fails exactly while a
+    commission is in flight. Conversation carries the stable whose-context half;
+    the run keeps the per-turn which-call half (`parent_run_id` +
+    `parent_tool_call_id`) — a resumed subagent has one parent conversation but a
+    different parent run per turn, which is why neither level can absorb the other.
+  - **The trap the sentinel dodges:** with a *nullable* `subagent_id`, widening the
+    unique constraint to three columns **does not work** — SQL treats NULLs as distinct
+    in a unique constraint, so `(T, claude, NULL)` twice would not collide, silently
+    destroying one-conversation-per-agent. That road needs two indexes (a partial
+    `UNIQUE … WHERE subagent_id IS NULL` plus the full one). The empty-string sentinel
+    is a value, so the one three-column constraint enforces both halves — and it is the
+    convention the schema already uses (`Thread.thread_id = ""` for a main surface).
   - **Not `external_id`, though they often hold the same string.** For a native child both
     are the `agentId`/`thread_id`. They are different concepts: `external_id` is a
     *resumable handle*, rewritten on every `persist_run`
@@ -437,7 +447,7 @@ The spine. Ships alone; nothing below is possible without it.
   `3f1c8ad42b91`).
 
 **Acceptance:** a run can name a parent run and the tool call it answers; a thread holds one
-NULL-parent conversation per agent (enforced, not assumed) and any number of child
+bare conversation per agent (enforced, not assumed) and any number of child
 conversations; a child's messages never appear in the parent agent's `conversation.messages`;
 existing octomate + native paths pass untouched.
 
@@ -882,7 +892,7 @@ guardian threads are **not** ingested; fork-replayed parent turns are not double
 
 | risk | why it bites | mitigation |
 |---|---|---|
-| **The NULL-in-unique-constraint trap** (UoW-1) | A three-column unique constraint silently stops enforcing one-conversation-per-agent. Nothing fails; duplicates accumulate until a cache returns the wrong history. | Partial unique index `WHERE subagent_id IS NULL`. Test that a second NULL-`subagent_id` conversation for the same (thread, agent) **raises**. |
+| **The NULL-in-unique-constraint trap** (UoW-1) | A *nullable* `subagent_id` under a three-column unique constraint silently stops enforcing one-conversation-per-agent — NULLs are distinct, duplicates accumulate until a cache returns the wrong history. | The `""` sentinel (the `Thread.thread_id` convention): empty is a value, so one plain constraint enforces both halves. Test that a second bare conversation for the same (thread, agent) **raises**. |
 | **Live clients keyed by `thread_id`** (UoW-1) | Claude interrupts "the previous run for the same thread" — so a commissioned claude kills the user's live run, and two concurrent commissions kill each other. **Fan-out degrades to serial with casualties, silently.** The assumption is written in the comment; UoW-1 is what falsifies it. | Re-key `live_clients` / `clients` to `conversation_id` **in UoW-1**. Test: two concurrent commissions to one agent in one thread both complete. |
 | **Keying the child conversation on `parent_run_id`** (UoW-1) | A subagent resumed by a later parent turn (§4a — measured, 4 of 93) has runs with **different** `parent_run_id`s. Keying the conversation on it splits one continuous context in two, and the second half reads as an agent with amnesia about work it visibly did. | The conversation is keyed by the subagent's own id; `parent_run_id` lives on the **run**. Test that a two-turn subagent yields **one** conversation with two runs. |
 | **Child offsets in a parent's conversation** (UoW-4) | `max(end_offset)` spans two files, resumes at a nonsense byte, strands turns where recovery cannot reach them — the exact failure invariant 4 was written for. | Structural: children get their own conversation. Plus an explicit test, because the failure is silent. |

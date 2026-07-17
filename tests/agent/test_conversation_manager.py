@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
 import pytest
+import sqlalchemy.exc
 from pydantic_ai.messages import (
     ModelRequest as RawModelRequest,
 )
@@ -19,7 +20,9 @@ import uuid
 
 from uuid_utils.compat import uuid7
 
+from octomate.database import async_session
 from octomate.managers import ConversationManager
+from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 
 
@@ -458,3 +461,147 @@ async def test_fork_empty_source_is_noop() -> None:
     source = await service.ensure(_thread(), agent_tentacle_id="inkling")
     target = await service.ensure(uuid7(), agent_tentacle_id="inkling")
     assert await service.fork(source, target) is None
+
+
+async def test_a_subagent_conversation_is_its_own_context() -> None:
+    """A subagent's conversation is distinct from the agent's own — in the
+    database and in the cache — so a child's history can never flatten into
+    the parent agent's model context."""
+    service = ConversationManager()
+    own = await service.ensure(_thread(), agent_tentacle_id="claude")
+    child = await service.ensure(
+        _thread(),
+        agent_tentacle_id="claude",
+        subagent_id="agent-abc123",
+        parent_conversation_id=own.id,
+    )
+    assert child.id != own.id
+    assert child.subagent_id == "agent-abc123"
+    assert child.parent_conversation_id == own.id
+    assert own.subagent_id == ""
+    assert own.parent_conversation_id is None
+
+    # Re-ensuring each identity returns its own conversation, not the other's.
+    assert (await service.ensure(_thread(), agent_tentacle_id="claude")).id == own.id
+    again = await service.ensure(
+        _thread(),
+        agent_tentacle_id="claude",
+        subagent_id="agent-abc123",
+        parent_conversation_id=own.id,
+    )
+    assert again.id == child.id
+
+    # And a fresh manager resolves both from the database the same way.
+    fresh = ConversationManager()
+    assert (await fresh.ensure(_thread(), agent_tentacle_id="claude")).id == own.id
+    assert (
+        await fresh.ensure(
+            _thread(),
+            agent_tentacle_id="claude",
+            subagent_id="agent-abc123",
+            parent_conversation_id=own.id,
+        )
+    ).id == child.id
+
+
+async def test_a_subagent_names_its_parent_or_neither() -> None:
+    """The is-subagent fact is encoded once: a child names the conversation
+    that spawned it, a bare conversation names nothing. Half-set states are
+    refused rather than stored."""
+    service = ConversationManager()
+    own = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    with pytest.raises(ValueError):
+        await service.ensure(
+            _thread(), agent_tentacle_id="codex", subagent_id="repo-audit"
+        )
+    with pytest.raises(ValueError):
+        await service.ensure(
+            _thread(), agent_tentacle_id="codex", parent_conversation_id=own.id
+        )
+
+
+async def test_one_bare_conversation_per_agent_is_enforced() -> None:
+    """The empty subagent_id is a value, not a NULL, exactly so the plain
+    unique constraint can catch a duplicate bare (thread, agent) row — NULLs
+    are distinct in a unique constraint and would wave it through. If this
+    raises nothing, the invariant the conversation cache rests on is gone."""
+    await ConversationManager().ensure(_thread(), agent_tentacle_id="inkling")
+    with pytest.raises(sqlalchemy.exc.IntegrityError):
+        async with async_session() as session:
+            session.add(
+                Conversation(thread_id=_thread(), agent_tentacle_id="inkling")
+            )
+            await session.commit()
+
+
+async def test_one_conversation_per_subagent_is_enforced() -> None:
+    service = ConversationManager()
+    parent = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    await service.ensure(
+        _thread(),
+        agent_tentacle_id="codex",
+        subagent_id="repo-audit",
+        parent_conversation_id=parent.id,
+    )
+    with pytest.raises(sqlalchemy.exc.IntegrityError):
+        async with async_session() as session:
+            session.add(
+                Conversation(
+                    thread_id=_thread(),
+                    agent_tentacle_id="codex",
+                    subagent_id="repo-audit",
+                )
+            )
+            await session.commit()
+
+
+async def test_a_run_remembers_which_call_spawned_it() -> None:
+    """The run tree: a child run names its parent run and the tool call it
+    answers, and both survive a round trip through a fresh manager."""
+    service = ConversationManager()
+    parent = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    parent_run = await service.record_agent_run(
+        parent,
+        str(uuid7()),
+        [
+            RawModelRequest(parts=[UserPromptPart(content="audit the repo")]),
+            RawModelResponse(parts=[TextPart(content="commissioning codex")]),
+        ],
+    )
+    assert parent_run is not None
+
+    child = await service.ensure(
+        _thread(),
+        agent_tentacle_id="codex",
+        subagent_id="repo-audit",
+        parent_conversation_id=parent.id,
+    )
+    recorded = await service.record_agent_run(
+        child,
+        str(uuid7()),
+        [
+            RawModelRequest(parts=[UserPromptPart(content="audit these files")]),
+            RawModelResponse(parts=[TextPart(content="two findings")]),
+        ],
+        parent_run_id=parent_run.id,
+        parent_tool_call_id="call-1",
+    )
+    assert recorded is not None
+
+    fresh = await ConversationManager().ensure(
+        _thread(),
+        agent_tentacle_id="codex",
+        subagent_id="repo-audit",
+        parent_conversation_id=parent.id,
+    )
+    [reloaded] = fresh.runs
+    assert reloaded.parent_run_id == parent_run.id
+    assert reloaded.parent_tool_call_id == "call-1"
+    # The parent agent's own conversation never sees the child's messages.
+    parent_fresh = await ConversationManager().ensure(
+        _thread(), agent_tentacle_id="inkling"
+    )
+    assert [m.message_text for m in parent_fresh.messages] == [
+        "audit the repo",
+        "commissioning codex",
+    ]

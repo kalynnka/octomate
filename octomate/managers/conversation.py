@@ -48,13 +48,22 @@ class ConversationManager:
         thread_id: uuid.UUID,
         *,
         agent_tentacle_id: str,
+        subagent_id: str = "",
+        parent_conversation_id: uuid.UUID | None = None,
     ) -> Conversation:
         """Resolve the conversation owned by `agent_tentacle_id` in `thread_id`,
         creating it if it does not yet exist. Its `conversation.messages` is the
         live model history. The owning agent is part of the identity — two agents
         in the same thread keep separate conversations — so callers must always
-        supply it."""
-        cache_key = ConversationKey(thread_id, agent_tentacle_id)
+        supply it. `subagent_id` narrows to one subagent's own context; empty is
+        the agent's long-lived conversation in the thread. A subagent context
+        names the conversation that spawned it, and only a subagent context may."""
+        if bool(subagent_id) != (parent_conversation_id is not None):
+            raise ValueError(
+                "a subagent conversation requires both subagent_id and "
+                "parent_conversation_id; a bare conversation takes neither"
+            )
+        cache_key = ConversationKey(thread_id, agent_tentacle_id, subagent_id)
         cached = self.conversations.get(cache_key)
         if cached is not None:
             self.conversations.move_to_end(cache_key)
@@ -66,12 +75,15 @@ class ConversationManager:
                 expressions=[
                     Conversation["thread_id"] == thread_id,
                     Conversation["agent_tentacle_id"] == agent_tentacle_id,
+                    Conversation["subagent_id"] == subagent_id,
                 ],
             )
             if conversation is None:
                 conversation = Conversation(
                     thread_id=thread_id,
                     agent_tentacle_id=agent_tentacle_id,
+                    subagent_id=subagent_id,
+                    parent_conversation_id=parent_conversation_id,
                 )
                 session.add(conversation)
             await session.flush()
@@ -107,17 +119,22 @@ class ConversationManager:
         *,
         name: str | None = None,
         external_id: str | None = None,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
         """Persist a fresh agent run and keep the cached conversation in sync.
         `external_id`, when given, updates the conversation's resumable agent
         session handle in the same commit (external-runtime agents own their own
-        session)."""
+        session). The parent pair marks a subagent's turn: the run whose tool
+        call spawned it, and which call it answers."""
         if not messages:
             return None
         run = AgentRun(
             id=run_id,
             conversation_id=conversation.id,
             name=name,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
             started_at=messages[0].timestamp,
             # Shallow `vars(m)` dicts, so pydantic routes each through the blessed
             # `ModelRequest | ModelResponse` union at construction — the raw pydantic-ai
@@ -140,6 +157,8 @@ class ConversationManager:
         start_offset: int | None = None,
         end_offset: int | None = None,
         last_line_uuid: str | None = None,
+        parent_run_id: str | None = None,
+        parent_tool_call_id: str | None = None,
     ) -> ExternalAgentRun | None:
         """Persist a turn of an external runtime's session (native Claude) as the
         `external` variant. `external_session_id` doubles as the conversation's
@@ -181,6 +200,8 @@ class ConversationManager:
             id=run_id,
             conversation_id=conversation.id,
             name=name,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
             started_at=messages[0].timestamp,
             messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
             external_session_id=external_session_id,
