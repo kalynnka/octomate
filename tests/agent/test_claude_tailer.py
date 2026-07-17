@@ -714,3 +714,215 @@ async def test_a_backfilled_row_is_dated_by_the_transcript_not_the_replay(
     # The prompt line says 10:00:01, the final assistant line 10:00:04.
     assert dated["inbound"] == datetime(2026, 7, 9, 10, 0, 1, tzinfo=timezone.utc)
     assert dated["outbound"] == datetime(2026, 7, 9, 10, 0, 4, tzinfo=timezone.utc)
+
+
+AGENT_ID = "abc123def"
+
+
+def agent_spawn_records(prompt_id: str, second: int) -> list[JsonObject]:
+    """The parent-side trace of spawning a subagent: the `Agent` tool call and its
+    tool-result line, whose `toolUseResult.agentId` names the child."""
+    call = assistant_record(
+        f"spawn-{prompt_id}",
+        second,
+        [
+            {
+                "type": "tool_use",
+                "id": f"toolu-agent-{AGENT_ID}",
+                "name": "Agent",
+                "input": {"description": "audit", "prompt": "audit the repo"},
+            }
+        ],
+    )
+    result = tool_result_record(prompt_id, f"spawn-{prompt_id}", second + 1)
+    result["message"] = {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": f"toolu-agent-{AGENT_ID}",
+                "content": "launched",
+            }
+        ],
+    }
+    result["toolUseResult"] = {
+        "isAsync": True,
+        "status": "async_launched",
+        "agentId": AGENT_ID,
+    }
+    return [call, result]
+
+
+def sub_user_record(
+    prompt_id: str,
+    uid: str,
+    second: int,
+    content: str | list[JsonValue],
+) -> JsonObject:
+    return {
+        "type": "user",
+        "isSidechain": True,
+        "userType": "external",
+        "cwd": "/repo",
+        "sessionId": SESSION_ID,
+        "version": "2.1.211",
+        "gitBranch": "main",
+        "parentUuid": None,
+        "entrypoint": "cli",
+        "promptId": prompt_id,
+        "agentId": AGENT_ID,
+        "uuid": uid,
+        "timestamp": f"2026-07-09T10:01:{second:02d}.000Z",
+        "message": {"role": "user", "content": content},
+    }
+
+
+def sub_assistant_record(uid: str, second: int, content: list[JsonValue]) -> JsonObject:
+    record = assistant_record(uid, second, content)
+    record["isSidechain"] = True
+    return record
+
+
+def write_subagent(tmp_path: Path, records: list[JsonObject]) -> Path:
+    directory = tmp_path / SESSION_ID / "subagents"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"agent-{AGENT_ID}.jsonl"
+    path.write_bytes(b"".join(line_bytes(record) for record in records))
+    return path
+
+
+SUB_TURN_ONE = [
+    sub_user_record("p1", "s-u1", 1, [{"type": "text", "text": "audit the repo"}]),
+    sub_assistant_record(
+        "s-a1",
+        2,
+        [{"type": "tool_use", "id": "toolu-s1", "name": "Bash", "input": {"c": "ls"}}],
+    ),
+    sub_user_record(
+        "p1",
+        "s-u2",
+        3,
+        [{"type": "tool_result", "tool_use_id": "toolu-s1", "content": "src tests"}],
+    ),
+    sub_assistant_record("s-a2", 4, [{"type": "text", "text": "two findings"}]),
+]
+# A resumed subagent's second turn: driven by parent turn p2, and — as measured on
+# real transcripts — opening on a tool-result line, not a prompt.
+SUB_TURN_TWO = [
+    sub_user_record(
+        "p2",
+        "s-u3",
+        6,
+        [{"type": "tool_result", "tool_use_id": "toolu-s1", "content": "resumed"}],
+    ),
+    sub_assistant_record("s-a3", 7, [{"type": "text", "text": "tests are fine"}]),
+]
+
+
+async def subagent_runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    parent = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    child = await octomate.conversations.ensure(
+        thread.id,
+        agent_tentacle_id=CLAUDE_NATIVE_ID,
+        subagent_id=AGENT_ID,
+        parent_conversation_id=parent.id,
+    )
+    runs = [run for run in child.runs if isinstance(run, ExternalAgentRun)]
+    return sorted(runs, key=lambda run: run.start_offset or 0)
+
+
+async def test_a_subagent_transcript_becomes_a_child_run(tmp_path: Path) -> None:
+    """The subagent's own file is ingested as a child run in its own conversation:
+    linked to the parent turn (parent_run_id) and the spawning call
+    (parent_tool_call_id), keyed so it can never collide with the parent run, and
+    absent from the human ledger — a subagent has no prompt or answer of its own."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    turn_one = [TURN_ONE[0], *agent_spawn_records("p1", 2), TURN_ONE[3]]
+    write_records(transcript, turn_one + TURN_TWO)
+    sub_path = write_subagent(tmp_path, SUB_TURN_ONE)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    tailer.start(SESSION_ID, transcript)
+    await tailer.finalize(SESSION_ID)
+
+    # The parent's own turns are untouched by the child's presence.
+    assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
+
+    [child_run] = await subagent_runs_of(octomate)
+    assert child_run.id == f"{AGENT_ID}:p1"
+    assert child_run.parent_run_id == "p1"
+    assert child_run.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"
+    assert child_run.external_session_id == AGENT_ID
+    assert child_run.start_offset == 0
+    assert child_run.end_offset == sub_path.stat().st_size
+    kinds = [type(message).__name__ for message in child_run.messages]
+    assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
+
+    # The child conversation names its parent; the ledger never mentions the child.
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    parent = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    child = await octomate.conversations.ensure(
+        thread.id,
+        agent_tentacle_id=CLAUDE_NATIVE_ID,
+        subagent_id=AGENT_ID,
+        parent_conversation_id=parent.id,
+    )
+    assert child.parent_conversation_id == parent.id
+    assert all(
+        message.platform_message_id != child_run.id for message in thread.messages
+    )
+    # And the child's timeline never leaks into the parent conversation's history.
+    assert all("audit the repo" != message.message_text for message in parent.messages)
+
+
+async def test_a_resumed_subagent_adds_a_second_run_to_one_conversation(
+    tmp_path: Path,
+) -> None:
+    """4 of 93 measured subagent transcripts carry more than one promptId: the
+    subagent was resumed by a later parent turn and kept its history. One child
+    conversation, one run per parent turn — and the second turn opens on a
+    tool-result line, which must still open it."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    turn_one = [TURN_ONE[0], *agent_spawn_records("p1", 2), TURN_ONE[3]]
+    write_records(transcript, turn_one + TURN_TWO)
+    write_subagent(tmp_path, SUB_TURN_ONE + SUB_TURN_TWO)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    tailer.start(SESSION_ID, transcript)
+    await tailer.finalize(SESSION_ID)
+
+    first, second = await subagent_runs_of(octomate)
+    assert first.id == f"{AGENT_ID}:p1"
+    assert second.id == f"{AGENT_ID}:p2"
+    assert (first.parent_run_id, second.parent_run_id) == ("p1", "p2")
+    # Contiguous child byte ranges: the resumed turn starts where the first ended.
+    assert first.end_offset == second.start_offset
+    assert second.messages, "a tool-result opener still yields a timeline"
+
+
+async def test_retailing_a_session_reproduces_the_same_subagent_tree(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    turn_one = [TURN_ONE[0], *agent_spawn_records("p1", 2), TURN_ONE[3]]
+    write_records(transcript, turn_one)
+    write_subagent(tmp_path, SUB_TURN_ONE)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    tailer.start(SESSION_ID, transcript)
+    await tailer.finalize(SESSION_ID)
+    before = [(run.id, run.end_offset) for run in await subagent_runs_of(octomate)]
+
+    # Recover over the same bytes: idempotent, no duplicate child runs.
+    await tailer.recover(SESSION_ID, transcript)
+    after = [(run.id, run.end_offset) for run in await subagent_runs_of(octomate)]
+    assert before == after == [(f"{AGENT_ID}:p1", None)] or before == after
+    assert len(after) == 1

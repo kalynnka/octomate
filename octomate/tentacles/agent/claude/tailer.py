@@ -99,6 +99,23 @@ class OpenTurn:
 
 
 @dataclass
+class SubagentTail:
+    """One subagent transcript's cursor within a session's tail. A subagent writes its
+    own file (`<session>/subagents/agent-<agentId>.jsonl`), so it gets its own byte
+    cursor, conversation, and open turn — pumped by the owning session's loop rather
+    than a watcher of its own. Its turns frame on `promptId` change: subagent files
+    carry no `promptSource`, and a resumed subagent's next turn may open on a
+    tool-result line, not a prompt."""
+
+    agent_id: str
+    path: Path
+    offset: int = 0
+    conversation: Conversation | None = None
+    recorded: set[str] = field(default_factory=set)  # child run ids already committed
+    open_turn: OpenTurn | None = None
+
+
+@dataclass
 class TailState:
     """One session's follow loop: the file cursor, the turn being assembled, and the
     live stream its events are pushed to."""
@@ -114,7 +131,17 @@ class TailState:
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
     open_turn: OpenTurn | None = None
+    subagents: dict[str, SubagentTail] = field(default_factory=dict)
+    # agentId -> the parent-turn tool_use_id that spawned it, harvested from the
+    # parent's tool-result lines (`toolUseResult.agentId`); stamps each child run's
+    # `parent_tool_call_id`.
+    subagent_calls: dict[str, str] = field(default_factory=dict)
     task: asyncio.Task[None] | None = None
+
+    @property
+    def subagents_dir(self) -> Path:
+        # `<slug>/<session-id>.jsonl` keeps its subagents at `<slug>/<session-id>/subagents`.
+        return self.transcript_path.with_suffix("") / "subagents"
 
 
 class ClaudeTranscriptTailer:
@@ -284,6 +311,7 @@ class ClaudeTranscriptTailer:
                 try:
                     await self.pump(state)  # read [start .. EOF), committing on boundaries
                     await self.close_turn(state)  # commit the trailing turn
+                    await self.close_subagent_turns(state)
                 finally:
                     state.send_stream.close()
                 fresh = await self.ensure_session(session_id)
@@ -337,6 +365,7 @@ class ClaudeTranscriptTailer:
                             break
                     await self.pump(state)  # final drain to EOF
                     await self.close_turn(state)  # commit the trailing turn
+                    await self.close_subagent_turns(state)
             except Exception:
                 logger.exception(
                     "session %s: stopped tailing on error; its remaining turns are left "
@@ -367,6 +396,15 @@ class ClaudeTranscriptTailer:
         )
 
     async def pump(self, state: TailState) -> None:
+        """Advance the session: the transcript itself, then its subagents' files. The
+        subagent pass runs even when the transcript has no new bytes — a working
+        subagent writes while its parent waits silently, so parent quiet is exactly
+        when the children have the most to say."""
+        await self.pump_transcript(state)
+        if await self.pump_subagents(state):
+            state.last_active = monotonic()  # child bytes keep the session alive too
+
+    async def pump_transcript(self, state: TailState) -> None:
         """Read the transcript forward from the cursor, framing on raw `\\n`. Only bytes
         up to the last complete line are consumed; a trailing fragment stays unread and
         is re-read next pump, so a line split across two reads is never half-parsed. A
@@ -404,10 +442,13 @@ class ClaudeTranscriptTailer:
     ) -> None:
         """Route one typed line: a `prompt_source` user line opens a turn (closing the
         previous one); other user (tool-result) and assistant lines fold into the open
-        turn; sub-agent (`is_sidechain`) lines are skipped."""
+        turn. Inline `is_sidechain` lines are skipped — transcripts since 2.1.177 keep
+        subagents in their own files (`pump_subagents`), so this guards only against an
+        older transcript's inline relics."""
         if isinstance(line, TranscriptUserLine):
             if line.is_sidechain:
                 return
+            self.harvest_subagent_call(state, line)
             if line.prompt_source is not None:
                 await self.close_turn(state)
                 state.open_turn = self.begin_turn(line, start, end)
@@ -418,6 +459,27 @@ class ClaudeTranscriptTailer:
                 return
             if state.open_turn is not None:
                 self.fold(state, line, end)
+
+    @staticmethod
+    def harvest_subagent_call(state: TailState, line: TranscriptUserLine) -> None:
+        """Remember which parent tool call spawned which subagent: an `Agent` call's
+        tool-result line names the child (`toolUseResult.agentId`) while its content
+        block names the call. Stamps child runs' `parent_tool_call_id` at commit."""
+        result = line.tool_use_result
+        if not isinstance(result, dict):
+            return
+        agent_id = result.get("agentId")
+        if not isinstance(agent_id, str) or not agent_id:
+            return
+        content = line.message.content
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                tool_use_id = block.get("tool_use_id")
+                if isinstance(tool_use_id, str):
+                    state.subagent_calls[agent_id] = tool_use_id
+                    return
 
     def fold(
         self,
@@ -508,6 +570,185 @@ class ClaudeTranscriptTailer:
                     turn.start_offset,
                     turn.end_offset,
                 )
+
+    async def pump_subagents(self, state: TailState) -> bool:
+        """Advance every subagent transcript of the session, discovering new ones by
+        listing the `subagents/` directory. Returns whether any child yielded bytes."""
+        directory = state.subagents_dir
+        if not directory.is_dir():
+            return False
+        consumed = False
+        for path in sorted(directory.glob("agent-*.jsonl")):
+            agent_id = path.stem.removeprefix("agent-")
+            tail = state.subagents.get(agent_id)
+            if tail is None:
+                tail = SubagentTail(agent_id=agent_id, path=path)
+                state.subagents[agent_id] = tail
+            if await self.pump_subagent(state, tail):
+                consumed = True
+        return consumed
+
+    async def pump_subagent(self, state: TailState, tail: SubagentTail) -> bool:
+        """Read one subagent's file forward from its cursor — the same framing and
+        cursor discipline as `pump_transcript`, against the child's own byte space."""
+        if tail.conversation is None:
+            parent = state.conversation
+            assert parent is not None  # prepare()/recover() resolve it before any pump
+            tail.conversation = await self.conversation_manager.ensure(
+                parent.thread_id,
+                agent_tentacle_id=CLAUDE_NATIVE_ID,
+                subagent_id=tail.agent_id,
+                parent_conversation_id=parent.id,
+            )
+            tail.recorded = assembled(tail.conversation)
+        try:
+            size = tail.path.stat().st_size
+        except FileNotFoundError:
+            return False
+        if size < tail.offset:  # truncation guard, mirroring the parent's
+            tail.offset = 0
+        with tail.path.open("rb") as handle:
+            handle.seek(tail.offset)
+            chunk = handle.read()
+        if not chunk:
+            return False
+        for raw in chunk.split(b"\n")[:-1]:
+            start = tail.offset
+            tail.offset += len(raw) + 1
+            if not raw.strip():
+                continue
+            try:
+                line = transcript_line_adapter.validate_json(raw)
+            except ValidationError:
+                logger.debug(
+                    "skipping unmodeled/malformed subagent line in session %s/%s",
+                    state.session_id,
+                    tail.agent_id,
+                )
+                continue
+            await self.process_subagent_line(state, tail, line, start, tail.offset)
+        return True
+
+    async def process_subagent_line(
+        self,
+        state: TailState,
+        tail: SubagentTail,
+        line: TranscriptLine,
+        start: int,
+        end: int,
+    ) -> None:
+        """Frame a subagent's turns on `promptId` change — the only marker its file
+        carries (`promptSource` is absent, and every line is `is_sidechain`, so
+        neither parent rule applies). Each turn's `promptId` is the *parent* turn
+        that drove it; a resumed subagent opens its next turn on whatever user line
+        arrives first, which is measured to be a tool result, not a prompt."""
+        if isinstance(line, TranscriptUserLine):
+            turn = tail.open_turn
+            if turn is None or line.prompt_id != turn.prompt_id:
+                await self.close_subagent_turn(state, tail)
+                tail.open_turn = self.begin_subagent_turn(line, start, end)
+            else:
+                self.fold_subagent(tail, line, end)
+        elif isinstance(line, TranscriptAssistantLine):
+            if tail.open_turn is not None:
+                self.fold_subagent(tail, line, end)
+
+    def begin_subagent_turn(
+        self, line: TranscriptUserLine, start: int, end: int
+    ) -> OpenTurn:
+        accumulator = ClaudeRunAccumulator()
+        text = prompt_text(line.message)
+        if text:
+            accumulator.begin(text)
+        # The opener may itself carry tool results (a resumed subagent's turn opens on
+        # one); consuming is a no-op for a plain prompt line.
+        for _ in accumulator.consume(line):
+            pass
+        stamp(accumulator.messages, line.timestamp)
+        return OpenTurn(
+            prompt_id=line.prompt_id,
+            prompt_text=text,
+            source=line.entrypoint,
+            start_offset=start,
+            end_offset=end,
+            accumulator=accumulator,
+            last_line_uuid=line.uuid,
+        )
+
+    def fold_subagent(
+        self,
+        tail: SubagentTail,
+        line: TranscriptAssistantLine | TranscriptUserLine,
+        end: int,
+    ) -> None:
+        """Fold a line into the child's open turn. Events are consumed, not emitted:
+        the live stream is the parent timeline's; fanning child events into it would
+        interleave two timelines under one label."""
+        turn = tail.open_turn
+        assert turn is not None
+        written = len(turn.accumulator.messages)
+        for _ in turn.accumulator.consume(line):
+            pass
+        stamp(turn.accumulator.messages[written:], line.timestamp)
+        turn.end_offset = end
+        turn.last_line_uuid = line.uuid
+
+    async def close_subagent_turn(self, state: TailState, tail: SubagentTail) -> None:
+        """Commit the child's open turn as a child run: keyed `<agentId>:<promptId>`
+        (which subagent, which parent turn — a bare `promptId` would collide with the
+        parent run it belongs to), linked by `parent_run_id` = that `promptId` and the
+        harvested spawning call. A subagent has no human prompt or answer, so it never
+        touches the ledger."""
+        turn = tail.open_turn
+        tail.open_turn = None
+        if turn is None:
+            return
+        run_id = f"{tail.agent_id}:{turn.prompt_id}"
+        if run_id in tail.recorded or not turn.accumulator.messages:
+            return
+        conversation = tail.conversation
+        assert conversation is not None
+        with claude_logfire.span(
+            "claude.tailer.commit_subagent_turn {run_id} [{session_id}]",
+            run_id=run_id,
+            session_id=state.session_id,
+            start_offset=turn.start_offset,
+            end_offset=turn.end_offset,
+            messages=len(turn.accumulator.messages),
+        ) as span:
+            async with self.locks.hold(state.session_id, timeout=COMMIT_LOCK_TIMEOUT):
+                run = await self.conversation_manager.record_external_run(
+                    conversation,
+                    run_id=run_id,
+                    messages=turn.accumulator.messages,
+                    name=CLAUDE_NATIVE_ID,
+                    external_session_id=tail.agent_id,
+                    source=turn.source,
+                    start_offset=turn.start_offset,
+                    end_offset=turn.end_offset,
+                    last_line_uuid=turn.last_line_uuid,
+                    parent_run_id=turn.prompt_id,
+                    parent_tool_call_id=state.subagent_calls.get(tail.agent_id),
+                )
+                span.set_attribute("committed", run is not None)
+                if run is None:
+                    return
+                tail.recorded.add(run_id)
+                logger.info(
+                    "session %s: subagent %s turn %s synced — %d messages, bytes %d-%d",
+                    state.session_id,
+                    tail.agent_id,
+                    turn.prompt_id,
+                    len(turn.accumulator.messages),
+                    turn.start_offset,
+                    turn.end_offset,
+                )
+
+    async def close_subagent_turns(self, state: TailState) -> None:
+        """Commit every child's trailing open turn — the subagent counterpart of the
+        final `close_turn`, at `finalize` and `recover`."""
+        for tail in state.subagents.values():
+            await self.close_subagent_turn(state, tail)
 
     async def bind_ledger(
         self, session_id: str, run: ExternalAgentRun, prompt_text: str, answer: str
