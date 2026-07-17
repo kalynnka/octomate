@@ -7,18 +7,28 @@ from pydantic import BaseModel, ConfigDict
 
 # The events this pipe registers and acts on. `UserPromptSubmit` and `Stop` carry the
 # turn's prompt and answer — the whole human ledger — while `SessionEnd` closes the
-# session so the transcript tailer can finalize. Tool-lifecycle and message-display
-# events are model-timeline detail the tailer reads off the transcript, not ingested
-# from the events.
+# session so the transcript tailer can finalize. `SubagentStart`/`SubagentStop` bound a
+# subagent's life the same way one level down: start pokes its transcript tail awake,
+# stop drains and commits it. Tool-lifecycle and message-display events are
+# model-timeline detail the tailer reads off the transcript, not ingested from the
+# events.
 #
 # `SessionStart` is absent on purpose: Claude Code delivers it to `command` and
 # `mcp_tool` hooks only, so registering it as `http` would install a handler that can
 # never fire. The first prompt starts the tailer instead (see `ClaudeHookIngest`).
-HandledHookEvent = Literal["UserPromptSubmit", "Stop", "SessionEnd"]
+HandledHookEvent = Literal[
+    "UserPromptSubmit",
+    "Stop",
+    "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
+]
 HANDLED_HOOK_EVENTS: tuple[HandledHookEvent, ...] = (
     "UserPromptSubmit",
     "Stop",
     "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
 )
 
 # Bound so a wedged or slow Octomate can never freeze someone's Claude session: past
@@ -49,7 +59,13 @@ class ClaudeHookInput(BaseModel):
     # Unused live — this pipe never reads the transcript. Restore locates it to hydrate.
     transcript_path: Path | None = None
     # What the human typed, on `UserPromptSubmit` (the clean copy — the transcript pads
-    # the prompt with injected context blocks).
+    # the prompt with injected context blocks); on `SubagentStart`, the subagent's
+    # opening prompt.
     prompt: str | None = None
-    # The turn's final answer, on `Stop`.
+    # The turn's final answer, on `Stop`; the subagent's, on `SubagentStop`.
     last_assistant_message: str | None = None
+    # Present iff the event fired inside a subagent — the discriminator that keeps a
+    # subagent's events away from the parent-turn handlers. Matches the child
+    # transcript's filename (`agent-<agent_id>.jsonl`).
+    agent_id: str | None = None
+    agent_type: str | None = None

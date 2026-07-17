@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -42,6 +43,11 @@ class ConversationManager:
     def __init__(self, *, cache_size: int = 256) -> None:
         self.cache_size = cache_size
         self.conversations: OrderedDict[ConversationKey, Conversation] = OrderedDict()
+        # Serializes first sightings: two concurrent ensures of one identity — a
+        # session's follow task preparing while a hook pokes it, a commission fan-out
+        # landing twice in one thread — must not both insert. Under the lock the
+        # loser re-checks the cache and becomes a hit instead of a UNIQUE violation.
+        self.ensure_lock = asyncio.Lock()
 
     async def ensure(
         self,
@@ -69,30 +75,35 @@ class ConversationManager:
             self.conversations.move_to_end(cache_key)
             return cached
 
-        async with async_session() as session:
-            conversation = await session.one_or_none(
-                Conversation,
-                expressions=[
-                    Conversation["thread_id"] == thread_id,
-                    Conversation["agent_tentacle_id"] == agent_tentacle_id,
-                    Conversation["subagent_id"] == subagent_id,
-                ],
-            )
-            if conversation is None:
-                conversation = Conversation(
-                    thread_id=thread_id,
-                    agent_tentacle_id=agent_tentacle_id,
-                    subagent_id=subagent_id,
-                    parent_conversation_id=parent_conversation_id,
+        async with self.ensure_lock:
+            cached = self.conversations.get(cache_key)
+            if cached is not None:  # the racer that held the lock first created it
+                self.conversations.move_to_end(cache_key)
+                return cached
+            async with async_session() as session:
+                conversation = await session.one_or_none(
+                    Conversation,
+                    expressions=[
+                        Conversation["thread_id"] == thread_id,
+                        Conversation["agent_tentacle_id"] == agent_tentacle_id,
+                        Conversation["subagent_id"] == subagent_id,
+                    ],
                 )
-                session.add(conversation)
-            await session.flush()
-            await conversation.runs
-            await conversation.messages
-            await session.commit()
+                if conversation is None:
+                    conversation = Conversation(
+                        thread_id=thread_id,
+                        agent_tentacle_id=agent_tentacle_id,
+                        subagent_id=subagent_id,
+                        parent_conversation_id=parent_conversation_id,
+                    )
+                    session.add(conversation)
+                await session.flush()
+                await conversation.runs
+                await conversation.messages
+                await session.commit()
 
-        self.cache_conversation(conversation)
-        return conversation
+            self.cache_conversation(conversation)
+            return conversation
 
     def cache_conversation(self, conversation: Conversation) -> None:
         cache_key = conversation.key

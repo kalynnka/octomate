@@ -55,7 +55,13 @@ def test_install_preserves_existing_hooks_and_is_idempotent(tmp_path: Path) -> N
     assert hook_types(hooks["Stop"]) == ["command", "http"]
     # No SessionStart: Claude Code delivers it to command/mcp_tool hooks only, so an
     # http handler for it could never fire.
-    assert set(hooks) == {"UserPromptSubmit", "Stop", "SessionEnd"}
+    assert set(hooks) == {
+        "UserPromptSubmit",
+        "Stop",
+        "SessionEnd",
+        "SubagentStart",
+        "SubagentStop",
+    }
 
 
 def test_the_installed_handler_references_the_secret_rather_than_carrying_it(

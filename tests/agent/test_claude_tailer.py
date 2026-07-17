@@ -287,14 +287,18 @@ async def test_live_append_is_picked_up_by_the_watch(tmp_path: Path) -> None:
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
 
 
-def wired(octomate: Octomate) -> tuple[ClaudeHookIngest, ClaudeTranscriptTailer]:
+def wired(
+    octomate: Octomate, roots: tuple[Path, ...] = ()
+) -> tuple[ClaudeHookIngest, ClaudeTranscriptTailer]:
     """The ingest + tailer as the tentacle wires them: sharing one per-session lock
-    registry so hook ledger writes and tailer run commits serialize."""
+    registry so hook ledger writes and tailer run commits serialize. Tests that
+    expect a hook-claimed path to be tailed add the tmp tree they write into — the
+    same injection the tentacle does from `agents.claude.transcript_root`."""
     locks = SessionLocks()
     tailer = ClaudeTranscriptTailer(
         octomate.conversations, octomate.thread_manager, locks
     )
-    return ClaudeHookIngest(octomate, tailer, locks), tailer
+    return ClaudeHookIngest(octomate, tailer, locks, extra_transcript_roots=roots), tailer
 
 
 def hook_event(
@@ -926,3 +930,171 @@ async def test_retailing_a_session_reproduces_the_same_subagent_tree(
     after = [(run.id, run.end_offset) for run in await subagent_runs_of(octomate)]
     assert before == after == [(f"{AGENT_ID}:p1", None)] or before == after
     assert len(after) == 1
+
+
+def subagent_hook(name: str, **body: JsonValue) -> ClaudeHookInput:
+    return ClaudeHookInput.model_validate(
+        {
+            "hook_event_name": name,
+            "session_id": SESSION_ID,
+            "cwd": "/repo",
+            "agent_id": AGENT_ID,
+            "agent_type": "Explore",
+            **body,
+        }
+    )
+
+
+async def test_subagent_stop_commits_the_child_run_without_waiting(
+    tmp_path: Path,
+) -> None:
+    """The hooks are the child's live close signal: after SubagentStop the child run
+    is durable — with its byte range and both parent links — while the session is
+    still being followed and the parent's own turn is still open."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    # Parent turn p1 is still in flight: prompt + spawn, no closing prompt after.
+    write_records(transcript, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
+    sub_path = write_subagent(tmp_path, SUB_TURN_ONE)
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    await ingest.handle(
+        subagent_hook(
+            "SubagentStart",
+            transcript_path=str(transcript),
+            prompt="audit the repo",
+        )
+    )
+    assert tailer.is_following(SESSION_ID)  # start self-healed the session tail
+    await ingest.handle(
+        subagent_hook("SubagentStop", last_assistant_message="two findings")
+    )
+
+    [child_run] = await subagent_runs_of(octomate)
+    assert child_run.id == f"{AGENT_ID}:p1"
+    assert child_run.end_offset == sub_path.stat().st_size
+    assert child_run.parent_run_id == "p1"
+    assert child_run.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"
+    # The parent session is still live and its own turn has not been committed.
+    assert tailer.is_following(SESSION_ID)
+    assert [run.id for run in await runs_of(octomate)] == []
+    await tailer.finalize(SESSION_ID)
+
+
+async def test_subagent_start_sketches_the_child_run_when_keyed(tmp_path: Path) -> None:
+    """With a prompt_id on the event, the child run exists from SubagentStart — a
+    dated, provisional sketch the tailer later replaces under the same id."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
+    (tmp_path / SESSION_ID / "subagents").mkdir(parents=True)
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    before = datetime.now(timezone.utc)
+    await ingest.handle(
+        subagent_hook(
+            "SubagentStart",
+            transcript_path=str(transcript),
+            prompt_id="p1",
+            prompt="audit the repo",
+        )
+    )
+    after = datetime.now(timezone.utc)
+
+    [sketch] = await subagent_runs_of(octomate)
+    assert sketch.id == f"{AGENT_ID}:p1"
+    assert sketch.end_offset is None  # provisional: no byte range yet
+    assert sketch.parent_run_id == "p1"
+    assert sketch.started_at is not None and before <= sketch.started_at <= after
+    assert [message.message_text for message in sketch.messages] == ["audit the repo"]
+
+    # The child's file lands and the subagent stops: the full timeline replaces the
+    # sketch as the same run, now final.
+    sub_path = write_subagent(tmp_path, SUB_TURN_ONE)
+    await ingest.handle(
+        subagent_hook("SubagentStop", last_assistant_message="two findings")
+    )
+    [child_run] = await subagent_runs_of(octomate)
+    assert child_run.id == f"{AGENT_ID}:p1"
+    assert child_run.end_offset == sub_path.stat().st_size
+    assert len(child_run.messages) == 4
+    await tailer.finalize(SESSION_ID)
+
+
+async def test_an_event_carrying_agent_id_never_touches_the_parent_turn(
+    tmp_path: Path,
+) -> None:
+    """A subagent's own Stop (or any event fired inside one) carries the parent's
+    session id; unguarded it would write the parent ledger and sketch the parent
+    run with the child's answer."""
+    octomate = Octomate()
+    ingest, tailer = wired(octomate)
+
+    await ingest.handle(
+        ClaudeHookInput.model_validate(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": SESSION_ID,
+                "prompt_id": "p9",
+                "prompt": "child noise",
+                "agent_id": AGENT_ID,
+            }
+        )
+    )
+    await ingest.handle(
+        ClaudeHookInput.model_validate(
+            {
+                "hook_event_name": "Stop",
+                "session_id": SESSION_ID,
+                "prompt_id": "p9",
+                "last_assistant_message": "child answer",
+                "agent_id": AGENT_ID,
+            }
+        )
+    )
+
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    assert thread.messages == []  # no inbound, no outbound: the ledger is the human's
+    assert await runs_of(octomate) == []
+    assert not tailer.is_following(SESSION_ID)
+
+
+async def test_a_driven_sessions_subagent_hooks_are_suppressed(tmp_path: Path) -> None:
+    """A subagent event carries the parent's session id, so the driving claim covers
+    it for free — pinned here rather than trusted."""
+    octomate = Octomate()
+    ingest, tailer = wired(octomate)
+    with ingest.driving(SESSION_ID):
+        await ingest.handle(
+            subagent_hook("SubagentStart", prompt_id="p1", prompt="child work")
+        )
+    assert await subagent_runs_of(octomate) == []
+    assert not tailer.is_following(SESSION_ID)
+
+
+async def test_subagent_stop_with_nothing_following_recovers_the_session(
+    tmp_path: Path,
+) -> None:
+    """Octomate came up mid-session: the stop is the child's last word, so the whole
+    session — parent turns and subagent — is rebuilt from disk, even when the event
+    names the child's own transcript file rather than the session's."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    turn_one = [TURN_ONE[0], *agent_spawn_records("p1", 2), TURN_ONE[3]]
+    write_records(transcript, turn_one + TURN_TWO)
+    sub_path = write_subagent(tmp_path, SUB_TURN_ONE)
+    octomate = Octomate()
+    ingest, tailer = wired(octomate)
+
+    assert not tailer.is_following(SESSION_ID)
+    await ingest.handle(
+        subagent_hook(
+            "SubagentStop",
+            transcript_path=str(sub_path),
+            last_assistant_message="two findings",
+        )
+    )
+
+    assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
+    [child_run] = await subagent_runs_of(octomate)
+    assert child_run.id == f"{AGENT_ID}:p1"
+    assert child_run.end_offset == sub_path.stat().st_size

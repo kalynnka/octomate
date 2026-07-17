@@ -579,14 +579,49 @@ class ClaudeTranscriptTailer:
             return False
         consumed = False
         for path in sorted(directory.glob("agent-*.jsonl")):
-            agent_id = path.stem.removeprefix("agent-")
-            tail = state.subagents.get(agent_id)
-            if tail is None:
-                tail = SubagentTail(agent_id=agent_id, path=path)
-                state.subagents[agent_id] = tail
+            tail = self.subagent_tail(state, path.stem.removeprefix("agent-"))
             if await self.pump_subagent(state, tail):
                 consumed = True
         return consumed
+
+    @staticmethod
+    def subagent_tail(state: TailState, agent_id: str) -> SubagentTail:
+        tail = state.subagents.get(agent_id)
+        if tail is None:
+            tail = SubagentTail(
+                agent_id=agent_id,
+                path=state.subagents_dir / f"agent-{agent_id}.jsonl",
+            )
+            state.subagents[agent_id] = tail
+        return tail
+
+    async def poke_subagent(self, session_id: str, agent_id: str) -> None:
+        """Advance one subagent's file right now — a `SubagentStart` hook's precise
+        wake, instead of waiting for the parent's next event or the poll tick. A
+        session nothing follows is left alone; `recover` rebuilds it later."""
+        state = self.sessions.get(session_id)
+        if state is None:
+            return
+        if state.conversation is None:
+            # The hook can outrun the follow task's first scheduling slice; prepare
+            # synchronously — the manager caches, so racing the task is harmless.
+            await self.prepare(state)
+        if await self.pump_subagent(state, self.subagent_tail(state, agent_id)):
+            state.last_active = monotonic()
+
+    async def finish_subagent(self, session_id: str, agent_id: str) -> None:
+        """Drain and commit one subagent on its `SubagentStop` — the child's
+        `finalize`. The subagent has written its last line by the time the
+        synchronous hook fires, the same trust `SessionEnd` extends to the parent's
+        trailing turn."""
+        state = self.sessions.get(session_id)
+        if state is None:
+            return
+        if state.conversation is None:
+            await self.prepare(state)
+        tail = self.subagent_tail(state, agent_id)
+        await self.pump_subagent(state, tail)
+        await self.close_subagent_turn(state, tail)
 
     async def pump_subagent(self, state: TailState, tail: SubagentTail) -> bool:
         """Read one subagent's file forward from its cursor — the same framing and

@@ -4,6 +4,7 @@ import logging
 from collections import Counter
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -120,8 +121,20 @@ class ClaudeHookIngest:
 
     async def handle(self, event: ClaudeHookInput) -> None:
         if event.session_id in self.driven:
+            # A subagent's events carry the *parent's* session id, so a driven
+            # session's subagents are suppressed by the same claim.
             return
         match event.hook_event_name:
+            case "SubagentStart":
+                await self.on_subagent_start(event)
+            case "SubagentStop":
+                await self.on_subagent_stop(event)
+            case _ if event.agent_id is not None:
+                # Any other event carrying agent_id fired *inside* a subagent (its
+                # own Stop, a PreToolUse, …) and is never a parent-turn event.
+                # Unguarded, a subagent's Stop would write the parent ledger and
+                # sketch the parent run with the child's answer.
+                return
             case "UserPromptSubmit":
                 await self.on_user_prompt_submit(event)
             case "Stop":
@@ -165,7 +178,96 @@ class ClaudeHookIngest:
         # takes the session lock — holding it here would deadlock.
         await self.tailer.finalize(event.session_id, event.transcript_path)
 
-    async def start_session(self, event: ClaudeHookInput) -> None:
+    @claude_logfire.instrument(
+        "claude.hook SubagentStart [{event.session_id}/{event.agent_id}]",
+        extract_args=["event"],
+    )
+    async def on_subagent_start(self, event: ClaudeHookInput) -> None:
+        if not event.agent_id:
+            return
+        async with self.locks.hold(event.session_id):
+            # A subagent starting proves its session is live: start the session tail
+            # if nothing is following (Octomate came up mid-session), exactly as the
+            # first prompt does.
+            await self.start_session(event, self.session_transcript_path(event))
+            if event.prompt_id and event.prompt:
+                await self.sketch_subagent_run(event)
+        # Outside the lock, like every tailer wait: give the child its first pump now
+        # instead of waiting for the parent's next event or the 60s poll tick.
+        await self.tailer.poke_subagent(event.session_id, event.agent_id)
+        logger.info(
+            "session %s: subagent %s started", event.session_id, event.agent_id
+        )
+
+    @claude_logfire.instrument(
+        "claude.hook SubagentStop [{event.session_id}/{event.agent_id}]",
+        extract_args=["event"],
+    )
+    async def on_subagent_stop(self, event: ClaudeHookInput) -> None:
+        if not event.agent_id:
+            return
+        if self.tailer.is_following(event.session_id):
+            # The subagent has written its last line by the time this synchronous
+            # hook fires — the same trust `SessionEnd` extends to the parent's
+            # trailing turn — so drain and commit its open turn now.
+            await self.tailer.finish_subagent(event.session_id, event.agent_id)
+        else:
+            # Nothing following: rebuild from disk. `recover` walks the subagents
+            # directory too, so the child this hook announced is included.
+            await self.tailer.recover(
+                event.session_id, self.session_transcript_path(event)
+            )
+        logger.info(
+            "session %s: subagent %s stopped", event.session_id, event.agent_id
+        )
+
+    def session_transcript_path(self, event: ClaudeHookInput) -> Path | None:
+        """The *session* transcript a subagent event names. Whether its
+        `transcript_path` is the child's own file or the parent's is undocumented, so
+        accept both: a child path (`…/<session-id>/subagents/agent-<id>.jsonl`)
+        derives its session's (`…/<session-id>.jsonl`); anything else is already it."""
+        path = event.transcript_path
+        if path is None or event.agent_id is None:
+            return path
+        if path.name == f"agent-{event.agent_id}.jsonl":
+            return path.parent.parent.with_suffix(".jsonl")
+        return path
+
+    async def sketch_subagent_run(self, event: ClaudeHookInput) -> None:
+        """The child's provisional run, from what the hook alone sees: its opening
+        prompt. `<agentId>:<promptId>` is the id the tailer commits under too, so the
+        full timeline replaces this sketch as the same run. Dated now — a hook carries
+        no clock, and an undated run sorts ahead of the history it belongs at the end
+        of. Skipped when the event carries no `prompt_id` (the field is undocumented
+        for subagent events); the tailer covers the turn from the file either way."""
+        assert event.agent_id and event.prompt_id  # guarded by the caller
+        thread = await self.session_thread(event.session_id)
+        parent = await self.octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+        )
+        child = await self.octomate.conversations.ensure(
+            thread.id,
+            agent_tentacle_id=CLAUDE_NATIVE_ID,
+            subagent_id=event.agent_id,
+            parent_conversation_id=parent.id,
+        )
+        await self.octomate.conversations.record_external_run(
+            child,
+            run_id=f"{event.agent_id}:{event.prompt_id}",
+            messages=[
+                ModelRequest(
+                    parts=[UserPromptPart(content=event.prompt or "")],
+                    timestamp=datetime.now(timezone.utc),
+                )
+            ],
+            name=CLAUDE_NATIVE_ID,
+            external_session_id=event.agent_id,
+            parent_run_id=event.prompt_id,
+        )
+
+    async def start_session(
+        self, event: ClaudeHookInput, transcript_path: Path | None = None
+    ) -> None:
         """Ensure the session's skeleton (thread + conversation) and start its transcript
         tailer, once per session. Ensuring the skeleton here — under the session lock,
         before the follow loop runs — is what keeps the tailer's own `ensure` a cache hit
@@ -173,13 +275,16 @@ class ClaudeHookIngest:
 
         Requires the transcript directory to exist (the tailer's watch needs it) and the
         path to name a transcript in Claude's own tree; a hook carrying no usable path
-        leaves the tailer unstarted, and the ledger still writes.
+        leaves the tailer unstarted, and the ledger still writes. `transcript_path`
+        overrides the event's own — a subagent event may name the child's file, and the
+        session tail must follow the session's.
         """
-        if self.tailer.is_following(event.session_id) or event.transcript_path is None:
+        claimed = transcript_path or event.transcript_path
+        if self.tailer.is_following(event.session_id) or claimed is None:
             return
         # Resolved before the root test: `is_relative_to` is lexical, so an unresolved
         # `.../projects/../../elsewhere` would pass it.
-        path = event.transcript_path.resolve()
+        path = claimed.resolve()
         if not any(path.is_relative_to(root) for root in self.transcript_roots):
             # The path is the caller's claim, and following it means reading whatever it
             # names into this session's history. Only Claude's own tree is in scope.
