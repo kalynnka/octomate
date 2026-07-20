@@ -4,6 +4,7 @@ events, checkpointed so an interrupted session resumes without dup or loss."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -1098,3 +1099,95 @@ async def test_subagent_stop_with_nothing_following_recovers_the_session(
     [child_run] = await subagent_runs_of(octomate)
     assert child_run.id == f"{AGENT_ID}:p1"
     assert child_run.end_offset == sub_path.stat().st_size
+
+
+async def test_subagent_stop_waits_for_the_answer_line_to_land(tmp_path: Path) -> None:
+    """The final answer line races the synchronous SubagentStop hook (measured live:
+    it usually loses). The event names the answer, so the stop drains until the file
+    yields it — without this, the committed child run is final and permanently
+    missing its own conclusion."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
+    # Everything except the final answer line is on disk when the hook fires.
+    sub_path = write_subagent(tmp_path, SUB_TURN_ONE[:-1])
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+    await ingest.handle(
+        subagent_hook("SubagentStart", transcript_path=str(transcript))
+    )
+
+    async def late_writer() -> None:
+        await anyio.sleep(0.3)
+        with sub_path.open("ab") as handle:
+            handle.write(line_bytes(SUB_TURN_ONE[-1]))
+
+    writer = asyncio.ensure_future(late_writer())
+    await ingest.handle(
+        subagent_hook("SubagentStop", last_assistant_message="two findings")
+    )
+    await writer
+
+    [child_run] = await subagent_runs_of(octomate)
+    assert child_run.end_offset == sub_path.stat().st_size
+    assert [type(m).__name__ for m in child_run.messages] == [
+        "ModelRequest",
+        "ModelResponse",
+        "ModelRequest",
+        "ModelResponse",
+    ]
+    await tailer.finalize(SESSION_ID)
+
+
+async def test_subagent_stop_never_hangs_on_an_answer_that_never_lands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tailer_mod, "SUBAGENT_SETTLE_TIMEOUT", 0.3)
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
+    sub_path = write_subagent(tmp_path, SUB_TURN_ONE[:-1])
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+    await ingest.handle(
+        subagent_hook("SubagentStart", transcript_path=str(transcript))
+    )
+
+    await ingest.handle(
+        subagent_hook("SubagentStop", last_assistant_message="words never written")
+    )
+
+    # Bounded: it committed what the file actually held rather than waiting forever.
+    [child_run] = await subagent_runs_of(octomate)
+    assert child_run.end_offset == sub_path.stat().st_size
+    await tailer.finalize(SESSION_ID)
+
+
+async def test_a_diverging_announced_answer_settles_on_quiescence(
+    tmp_path: Path,
+) -> None:
+    """No contract promises the hook's last_assistant_message equals the
+    transcript's text byte-for-byte (truncation, block joins). A divergence must
+    cost a couple of poll beats, not the full timeout — and never the commit."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
+    sub_path = write_subagent(tmp_path, SUB_TURN_ONE)  # complete file on disk
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+    await ingest.handle(
+        subagent_hook("SubagentStart", transcript_path=str(transcript))
+    )
+
+    from time import monotonic as now
+
+    started = now()
+    await ingest.handle(
+        subagent_hook(
+            "SubagentStop", last_assistant_message="two findings… [truncated]"
+        )
+    )
+    elapsed = now() - started
+
+    [child_run] = await subagent_runs_of(octomate)
+    assert child_run.end_offset == sub_path.stat().st_size
+    # Quiescence (2 quiet polls ≈ 0.4s) settled it, not the 2s strict timeout.
+    assert elapsed < 1.5
+    await tailer.finalize(SESSION_ID)

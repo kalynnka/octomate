@@ -56,6 +56,13 @@ COMMIT_LOCK_TIMEOUT = 30.0
 IDLE_TIMEOUT = 30 * 60.0
 IDLE_POLL_MS = 60_000
 
+# A subagent's final answer line races its synchronous SubagentStop hook — measured
+# live, 2 of 3 children had it land ~1-2KB after the hook fired. The event names the
+# answer (`last_assistant_message`), so `finish_subagent` drains until the file yields
+# it, bounded by this window, then closes with what there is.
+SUBAGENT_SETTLE_TIMEOUT = 2.0
+SUBAGENT_SETTLE_POLL = 0.2
+
 
 def assembled(conversation: Conversation) -> set[str]:
     """The ids of the turns already built from the transcript — the ones a tail may skip.
@@ -609,11 +616,15 @@ class ClaudeTranscriptTailer:
         if await self.pump_subagent(state, self.subagent_tail(state, agent_id)):
             state.last_active = monotonic()
 
-    async def finish_subagent(self, session_id: str, agent_id: str) -> None:
+    async def finish_subagent(
+        self, session_id: str, agent_id: str, *, final_answer: str | None = None
+    ) -> None:
         """Drain and commit one subagent on its `SubagentStop` — the child's
-        `finalize`. The subagent has written its last line by the time the
-        synchronous hook fires, the same trust `SessionEnd` extends to the parent's
-        trailing turn."""
+        `finalize`. The hook is synchronous but the transcript writer is not: the
+        final answer line races it (measured: usually loses by ~1-2KB). When the
+        event names the answer, keep draining until the file yields it — the flush
+        barrier the hook itself provides — bounded so a mismatch can never hang the
+        pipe; without one, allow the writer a single settle beat."""
         state = self.sessions.get(session_id)
         if state is None:
             return
@@ -621,7 +632,44 @@ class ClaudeTranscriptTailer:
             await self.prepare(state)
         tail = self.subagent_tail(state, agent_id)
         await self.pump_subagent(state, tail)
-        await self.close_subagent_turn(state, tail)
+        # The turn this stop is for. If a resume arrives inside the settle window,
+        # the pump itself closes this turn on the promptId change and opens the
+        # next — which must NOT be committed by this stop, mid-flight.
+        target = tail.open_turn
+        deadline = monotonic() + SUBAGENT_SETTLE_TIMEOUT
+        quiet = 0
+        while not self.subagent_settled(tail, final_answer):
+            if quiet >= 2:
+                break  # writer went silent: the file is as final as it gets
+            if monotonic() >= deadline:
+                logger.warning(
+                    "session %s: subagent %s kept writing past the settle window "
+                    "without yielding its announced answer; committing what it "
+                    "reached",
+                    session_id,
+                    agent_id,
+                )
+                break
+            before = tail.offset
+            await asyncio.sleep(SUBAGENT_SETTLE_POLL)
+            await self.pump_subagent(state, tail)
+            quiet = quiet + 1 if tail.offset == before else 0
+        if target is None or tail.open_turn is target:
+            await self.close_subagent_turn(state, tail)
+
+    @staticmethod
+    def subagent_settled(tail: SubagentTail, final_answer: str | None) -> bool:
+        """The fast path: the drained turn already carries the exact answer the
+        stop event announced. Divergence (a truncated or differently-joined hook
+        payload — no contract promises byte equality) is not an error: the caller's
+        byte-quiescence fallback settles those, so strictness here only ever costs
+        one extra poll beat, never a wrong commit."""
+        if final_answer is None:
+            return False  # nothing announced; quiescence decides
+        turn = tail.open_turn
+        if turn is None:
+            return False
+        return turn.accumulator.result_text.strip() == final_answer.strip()
 
     async def pump_subagent(self, state: TailState, tail: SubagentTail) -> bool:
         """Read one subagent's file forward from its cursor — the same framing and

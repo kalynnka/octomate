@@ -210,7 +210,11 @@ class ClaudeHookIngest:
             # The subagent has written its last line by the time this synchronous
             # hook fires — the same trust `SessionEnd` extends to the parent's
             # trailing turn — so drain and commit its open turn now.
-            await self.tailer.finish_subagent(event.session_id, event.agent_id)
+            await self.tailer.finish_subagent(
+                event.session_id,
+                event.agent_id,
+                final_answer=event.last_assistant_message,
+            )
         else:
             # Nothing following: rebuild from disk. `recover` walks the subagents
             # directory too, so the child this hook announced is included.
