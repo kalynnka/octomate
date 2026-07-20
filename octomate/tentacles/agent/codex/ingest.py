@@ -32,6 +32,7 @@ CODEX_NATIVE_ID = "codex-native"
 NATIVE_USER = UserProfile(user_id="native", name="native")
 logger = logging.getLogger(__name__)
 
+
 class CodexHookIngest:
     def __init__(
         self,
@@ -73,6 +74,15 @@ class CodexHookIngest:
         if event.octomate_driven or event.session_id in self.driven:
             logger.debug("session %s: ignored driven Codex hook", event.session_id)
             return
+        if event.hook_event_name == "SubagentStart":
+            await self.on_subagent_start(event)
+            return
+        if event.hook_event_name == "SubagentStop":
+            await self.on_subagent_stop(event)
+            return
+        # Child rollout ingestion owns other agent-scoped events.
+        if event.agent_id is not None:
+            return
         if event.hook_event_name == "Stop":
             await self.on_stop(event)
             return
@@ -102,21 +112,43 @@ class CodexHookIngest:
         # releases the shared lock; the rollout's task_complete line may now be durable.
         await self.tailer.pump_session(event.session_id)
 
+    async def on_subagent_start(self, event: CodexHookInput) -> None:
+        async with self.locks.hold(event.session_id):
+            await self.start_session(event)
+        await self.tailer.poke_subagents(event.session_id)
+        logger.info(
+            "session %s: Codex subagent %s started",
+            event.session_id,
+            event.agent_id,
+        )
+
+    async def on_subagent_stop(self, event: CodexHookInput) -> None:
+        async with self.locks.hold(event.session_id):
+            await self.start_session(event)
+        if event.agent_transcript_path is None:
+            return
+        path = self.accepted_transcript_path(
+            event.session_id, event.agent_transcript_path
+        )
+        if path is None:
+            return
+        await self.tailer.finish_subagent(
+            event.session_id,
+            path,
+            agent_id=event.agent_id,
+            final_answer=event.last_assistant_message,
+        )
+        logger.info(
+            "session %s: Codex subagent %s stopped",
+            event.session_id,
+            event.agent_id,
+        )
+
     async def start_session(self, event: CodexHookInput) -> None:
         if event.transcript_path is None:
             return
-        # Resolved before the root test: `is_relative_to` is lexical, so an unresolved
-        # `.../sessions/../../elsewhere` would pass it. The path is the caller's claim,
-        # and following it means reading whatever it names into this session's history.
-        path = event.transcript_path.resolve()
-        if not any(path.is_relative_to(root) for root in self.transcript_roots):
-            logger.warning(
-                "session %s: refusing transcript outside %s: %s. If Codex writes "
-                "elsewhere here, set agents.codex.transcript_root.",
-                event.session_id,
-                ", ".join(str(root) for root in self.transcript_roots),
-                path,
-            )
+        path = self.accepted_transcript_path(event.session_id, event.transcript_path)
+        if path is None:
             return
         if not path.parent.is_dir():
             return
@@ -125,6 +157,24 @@ class CodexHookIngest:
             thread.id, agent_tentacle_id=CODEX_NATIVE_ID
         )
         self.tailer.start(event.session_id, path)
+
+    def accepted_transcript_path(
+        self, session_id: str, claimed: Path
+    ) -> Path | None:
+        # Resolved before the root test: `is_relative_to` is lexical, so an unresolved
+        # `.../sessions/../../elsewhere` would pass it. The path is the caller's claim,
+        # and following it means reading whatever it names into this session's history.
+        path = claimed.resolve()
+        if not any(path.is_relative_to(root) for root in self.transcript_roots):
+            logger.warning(
+                "session %s: refusing transcript outside %s: %s. If Codex writes "
+                "elsewhere here, set agents.codex.transcript_root.",
+                session_id,
+                ", ".join(str(root) for root in self.transcript_roots),
+                path,
+            )
+            return None
+        return path
 
     async def session_thread(self, session_id: str) -> Thread:
         return await self.octomate.thread_manager.ensure(

@@ -23,12 +23,51 @@ class RolloutLine(BaseModel):
 
     timestamp: datetime
     type: Literal[
-        "session_meta", "turn_context", "event_msg", "response_item", "world_state"
+        "session_meta",
+        "turn_context",
+        "event_msg",
+        "response_item",
+        "world_state",
+        "compacted",
+        "inter_agent_communication_metadata",
     ]
     payload: JsonObject
 
 
 rollout_line_adapter = TypeAdapter(RolloutLine)
+
+
+class ThreadSpawnMetadata(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    parent_thread_id: str
+    depth: int = 1
+    agent_path: str = ""
+
+
+class SubagentSource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    thread_spawn: ThreadSpawnMetadata | None = None
+
+
+class SessionSource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    subagent: SubagentSource | None = None
+
+
+class SessionMetadata(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    session_id: str
+    id: str | None = None
+    originator: str | None = None
+    source: str | SessionSource | None = None
+    thread_source: str | None = None
+
+
+session_metadata_adapter = TypeAdapter(SessionMetadata)
 
 
 def payload_type(line: RolloutLine) -> str | None:

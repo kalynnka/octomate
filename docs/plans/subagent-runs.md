@@ -1,6 +1,11 @@
 # Plan: Subagent runs — commissioned agents, claimed routes, and native subagent ingest
 
-> **Status:** proposed · **Owner:** @luhui · **Created:** 2026-07-17
+> **Status:** in progress · **Owner:** @luhui · **Created:** 2026-07-17
+> **Shipped:** §1b abort fix (`2c9c3cc`) · UoW-1 run tree (`f90394f`) · UoW-4 subagent
+> transcripts (`7241206`) · UoW-5 subagent hooks (`56c1c5b`) + live settle fix
+> (`5ac54e0`). **Live-verified** end to end against a running server on 2026-07-18 —
+> findings folded into §6. UoW-2/3 deferred by owner; **UoW-6 is handed to Codex** —
+> its brief is §7 + the UoW-6 section, written to need no other context.
 > **Supersedes:** `claude-native-subagent-runs.md` (2026-07-16) — renamed and rewritten; its
 > central premise was measured false (§1) and its scope was one quarter of this.
 > **Read first:** **§1b — a live 24 % data-loss bug in Codex ingest, found while writing
@@ -105,7 +110,7 @@ Three more corrections, cheaply won:
 - **`SubagentStart` and `SubagentStop` exist**, both HTTP-deliverable, and mirror the
   `UserPromptSubmit`/`Stop` pair the live tier already runs on (§UoW-5).
 
-## 1b. ⚠ A live bug this plan uncovered — ship it *before* the plan, on its own
+## 1b. A live bug this plan uncovered ✅ shipped first, on its own (`2c9c3cc`)
 
 Chasing Codex's subagent story found a **shipped, silent, 24 % data-loss bug in Codex
 ingest**. It is not a subagent bug and must not wait for a subagent feature.
@@ -356,7 +361,79 @@ and **fork replay** duplicates parent turns into the child's file.
 
 ---
 
-## UoW-1 — the run tree
+## 6. As built — the Claude reference implementation
+
+Everything below is **shipped and live-verified** (4 real subagents against a running
+server). This is the design UoW-6 mirrors; read the code it names before writing any.
+
+### The map
+
+| mechanism | where | the one sentence that matters |
+|---|---|---|
+| child cursor | `SubagentTail` in [claude/tailer.py](../../octomate/tentacles/agent/claude/tailer.py) | a child is **state on the session's tail, not a task** — own byte cursor, conversation, open turn; nothing to leak or orphan |
+| discovery | `pump_subagents` | list `<session>/subagents/agent-*.jsonl` on every pump; the subagent pass runs **outside** the parent's no-new-bytes early return, because parent-quiet is when children are busiest |
+| liveness | `pump` + `poke_subagent` | children ride the parent's wake (events + 60s poll tick); hooks add precise pokes; child bytes also reset the idle-reclaim clock |
+| turn framing | `process_subagent_line` | close/open on **`promptId` change only** — child files have no `promptSource`, and a resumed child's turn 2 opens on a *tool-result* line (measured), so `begin_subagent_turn` seeds a prompt only when there is text and always consumes the opener |
+| run key | `close_subagent_turn` | `<agentId>:<promptId>` = *(which subagent, which parent turn)*; a bare `promptId` would collide with the parent run it belongs to |
+| parent links | same + `harvest_subagent_call` | `parent_run_id` = the child lines' own `promptId`; `parent_tool_call_id` harvested from the parent's `toolUseResult.agentId` tool-result line |
+| conversations | `pump_subagent` → `ensure(subagent_id=…, parent_conversation_id=…)` | child context is its own conversation; the manager refuses half-set identity |
+| ledger | — | children **never** touch it: no prompt, no answer, no rows |
+| hook dispatch | `handle` in [claude/ingest.py](../../octomate/tentacles/agent/claude/ingest.py) | any event carrying `agent_id` that is not `SubagentStart/Stop` fired *inside* a subagent → dropped before parent handlers |
+| start | `on_subagent_start` | self-heals the session tail (a subagent proves its session is live), sketches iff `prompt_id` present, pokes the child |
+| stop | `on_subagent_stop` → `finish_subagent` | the child's finalize: drain, **settle**, commit; with nothing following → `recover` (which walks the subagents dir itself) |
+| path normalization | `session_transcript_path` | a subagent event may name the child's own file; derive the session's from it — never start a session tail on a child path |
+| the settle guard | `finish_subagent` + `subagent_settled` | see finding 2 below — this is the part a naive port will get wrong |
+| first-sighting race | `ensure_lock` in [managers/conversation.py](../../octomate/managers/conversation.py) | a hook poke and the follow task's prepare race one INSERT; the loser becomes a cache hit under the lock, not an IntegrityError that kills the loop |
+
+### Live findings (2026-07-18, measured — not theory)
+
+1. **The hooks fire.** `SubagentStart`/`SubagentStop` reached the http handler from a
+   session started *before* the hook reinstall; children committed while the parent turn
+   was still a provisional sketch, with exact `parent_tool_call_id` linkage.
+2. **The final answer line races `SubagentStop`, and usually loses.** 2 of the first 3
+   children committed permanently missing their conclusion (~1–2KB) — a byte-ranged run
+   is final, so the loss is unrecoverable. The fix (`5ac54e0`): drain until the file
+   yields the event's own `last_assistant_message` (exact match, instant when it works —
+   measured `lost=0` post-fix), or the writer goes quiet for two 200ms polls (the
+   content-agnostic fallback — **no contract promises the hook payload equals the
+   transcript byte-for-byte**), bounded at 2s; and never commit a turn the settle-window
+   pump already replaced (a resume arriving mid-settle).
+3. **`SubagentStart` carries no `prompt_id`.** Polled the DB through a child's whole
+   lifetime: no sketch ever appeared; the run materializes complete at Stop. The sketch
+   path is dormant-by-reality; degradation is the live path.
+4. **Still unverified:** whether the events' `transcript_path` is the child's file or the
+   session's (`session_transcript_path` accepts both, so it has not mattered), and
+   whether `SubagentStart` re-fires for a resumed subagent.
+
+## 7. UoW-6 working instructions — for Codex, from Claude
+
+You are implementing UoW-6 (below) in this repo without the conversation that produced
+this plan. What you need:
+
+- **Read first:** §5 (your runtime's measured answers), §6 (the reference implementation
+  you are mirroring), then the UoW-6 section (your work items). The claims about rollout
+  shapes come from a 229-file local corpus; where the plan says *measured*, trust it over
+  intuition, and where it says *unverified*, verify before building on it.
+- **Mirror the shape, not the letter.** Your runtime differs where §5 says it differs
+  (discovery by `session_meta`, the guardian filter, fork replay, encrypted prompts, an
+  explicit `agent_transcript_path`). Everything else — child-as-cursor, own conversation
+  per child, run key *(which subagent, which parent turn)*, no ledger rows, settle before
+  commit — transfers as designed.
+- **The settle race applies to you.** Codex's `SubagentStop` also announces
+  `last_assistant_message`, and your rollout writer is also not synchronous with the
+  hook. Reuse the Claude settle pattern (fast-path match → byte quiescence → bounded
+  timeout) rather than trusting the file at Stop; Claude's version is
+  `finish_subagent` in [claude/tailer.py](../../octomate/tentacles/agent/claude/tailer.py).
+- **House rules:** AGENTS.md at the repo root governs style and process — surgical
+  changes, imports at top, no `typing.Any`, fail-fast. Verify with
+  `uv run pytest -q && uv run ruff check . && uv run pyright` (29 pyright errors are
+  pre-existing; the bar is *no new ones*). Tests are the specification: name each for
+  the failure it prevents, and delete `test_nested_task_does_not_close_or_pollute_the_parent`
+  rather than adapting it — it pins the fiction step 0 removes.
+- **Do not commit.** Leave the working tree for the owner's review; report what changed
+  and how it was verified.
+
+## UoW-1 — the run tree ✅ shipped (`f90394f`)
 
 The spine. Ships alone; nothing below is possible without it.
 
@@ -704,7 +781,7 @@ anyway **fails loudly rather than hanging**; a commissioned claude's approval ca
 reaches the human and unblocks the child; self-commission is refused; an over-running
 commission fails the tool rather than hanging the turn.
 
-## UoW-4 — native subagent transcripts (Claude)
+## UoW-4 — native subagent transcripts (Claude) ✅ shipped (`7241206`)
 
 Delete the lineage-reconstruction idea. Watch the directory.
 
@@ -750,7 +827,7 @@ same session reproduces the identical tree; a session with no subagents is byte-
 unchanged; a pre-2.1.177 transcript with inline sidechain lines still ingests its parent
 turns cleanly.
 
-## UoW-5 — native subagent hooks (Claude)
+## UoW-5 — native subagent hooks (Claude) ✅ shipped (`56c1c5b`, settle fix `5ac54e0`)
 
 The live tier, and it maps one-to-one onto the tier that already works:
 
@@ -777,8 +854,11 @@ every event). `SubagentStart` starts the child's tail; `SubagentStop` closes it.
   keys on `session_id`, and a subagent event carries the **parent's** `session_id` — so it is
   suppressed for free. Confirm with a test rather than trusting this sentence.
 
-**Two things to verify empirically before building on them** — the ingest design has been
-burned here before ("SessionStart is delivered to command hooks only" was learned, not read):
+**Verified live (see §6):** both events reach the http handler; `prompt_id` is absent
+from `SubagentStart`, so the sketch path is dormant and the graceful degradation below is
+the real path; the settle race in §6 finding 2 was found and fixed here. Originally
+flagged for empirical verification — the ingest design has been burned before
+("SessionStart is delivered to command hooks only" was learned, not read):
 
 1. **Is `transcript_path` on `SubagentStart` the subagent's own file or the parent's?** The
    docs show `/path/to/transcript.jsonl` and do not say. If it is the child's, UoW-4 needs no
@@ -800,7 +880,7 @@ transcript closes; the child run exists from `SubagentStart` and is superseded, 
 duplicated, when the tailer commits; a `Stop` carrying `agent_id` never closes the parent's
 turn; an Octomate-driven session's subagents are not ingested.
 
-## UoW-6 — Codex subagents as child runs
+## UoW-6 — Codex subagents as child runs — **assigned to Codex; read §7 first**
 
 Ships last, as agreed. But it is **not** the small gap an earlier draft of this plan called
 it — that draft (and the code it trusted) had Codex's model exactly backwards. §5 has the

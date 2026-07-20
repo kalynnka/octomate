@@ -7,7 +7,13 @@ from pydantic import BaseModel, ConfigDict
 HOOK_TIMEOUT = 10
 CODEX_HOOK_PATH = "/hooks/codex"
 DRIVEN_ENV = "OCTOMATE_CODEX_DRIVEN"
-HANDLED_HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "Stop")
+HANDLED_HOOK_EVENTS = (
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "SubagentStart",
+    "SubagentStop",
+)
 
 
 class CodexHookInput(BaseModel):
@@ -20,5 +26,8 @@ class CodexHookInput(BaseModel):
     turn_id: str | None = None
     prompt: str | None = None
     last_assistant_message: str | None = None
+    agent_id: str | None = None
+    agent_type: str | None = None
+    agent_transcript_path: Path | None = None
     source: str | None = None
     octomate_driven: bool = False

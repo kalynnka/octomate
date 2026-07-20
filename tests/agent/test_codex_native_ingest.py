@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -14,10 +15,16 @@ from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.agent.codex.hooks import CodexHookInput
 from octomate.tentacles.agent.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.agent.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.agent.codex.transcript import rollout_line_adapter
 from octomate.tentacles.agent.locks import SessionLocks
 
 SESSION_ID = "codex-session"
 TURN_ID = "codex-turn"
+ROOT_THREAD_ID = "019f6a89-cb1e-7730-be3b-ed450f8cbb0e"
+PARENT_TURN_ID = "019f6b27-d8e1-7eb2-bf81-aeefbaabbed0"
+CHILD_THREAD_ID = "019f6b28-3ad5-78b0-979f-70a0f1661b0b"
+CHILD_TURN_ONE = "019f6b28-5ff5-7b01-b25c-44b7126d508f"
+CHILD_TURN_TWO = "019f6b2d-b541-7090-8ea7-95bbe0b68c27"
 
 
 @pytest.fixture(autouse=True)
@@ -215,83 +222,6 @@ async def test_marked_session_start_is_ignored_before_the_sdk_returns_its_id() -
     await tailer.shutdown()
 
 
-async def test_nested_task_does_not_close_or_pollute_the_parent(tmp_path: Path) -> None:
-    path = tmp_path / "nested.jsonl"
-    records = [
-        {
-            "timestamp": "2026-07-16T10:00:00Z",
-            "type": "event_msg",
-            "payload": {"type": "task_started", "turn_id": TURN_ID},
-        },
-        {
-            "timestamp": "2026-07-16T10:00:01Z",
-            "type": "event_msg",
-            "payload": {"type": "user_message", "message": "parent prompt"},
-        },
-        {
-            "timestamp": "2026-07-16T10:00:02Z",
-            "type": "event_msg",
-            "payload": {"type": "task_started", "turn_id": "child-turn"},
-        },
-        {
-            "timestamp": "2026-07-16T10:00:03Z",
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "phase": "final_answer",
-                "content": [{"type": "output_text", "text": "child answer"}],
-            },
-        },
-        {
-            "timestamp": "2026-07-16T10:00:04Z",
-            "type": "event_msg",
-            "payload": {"type": "task_complete", "turn_id": "child-turn"},
-        },
-        {
-            "timestamp": "2026-07-16T10:00:05Z",
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "role": "assistant",
-                "phase": "final_answer",
-                "content": [{"type": "output_text", "text": "parent answer"}],
-            },
-        },
-        {
-            "timestamp": "2026-07-16T10:00:06Z",
-            "type": "event_msg",
-            "payload": {"type": "task_complete", "turn_id": TURN_ID},
-        },
-    ]
-    path.write_text("".join(json.dumps(record) + "\n" for record in records))
-    octomate = Octomate()
-    ingest, tailer = wired(octomate, (tmp_path,))
-
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SessionStart",
-            session_id=SESSION_ID,
-            transcript_path=path,
-        )
-    )
-    await tailer.pump_session(SESSION_ID)
-
-    thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
-    )
-    conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
-    )
-    [run] = conversation.runs
-    assert run.id == TURN_ID
-    assert [message.message_text for message in run.messages] == [
-        "parent prompt",
-        "parent answer",
-    ]
-    await tailer.shutdown()
-
-
 def event(second: int, kind: str, **payload: str) -> dict[str, object]:
     return {
         "timestamp": f"2026-07-16T10:00:{second:02d}Z",
@@ -300,17 +230,89 @@ def event(second: int, kind: str, **payload: str) -> dict[str, object]:
     }
 
 
-def answer_item(second: int, text: str) -> dict[str, object]:
+def answer_item(
+    second: int, text: str, *, phase: str = "final_answer"
+) -> dict[str, object]:
     return {
         "timestamp": f"2026-07-16T10:00:{second:02d}Z",
         "type": "response_item",
         "payload": {
             "type": "message",
             "role": "assistant",
-            "phase": "final_answer",
+            "phase": phase,
             "content": [{"type": "output_text", "text": text}],
         },
     }
+
+
+def parent_metadata() -> dict[str, object]:
+    return {
+        "timestamp": "2026-07-16T10:00:00Z",
+        "type": "session_meta",
+        "payload": {
+            "session_id": SESSION_ID,
+            "id": ROOT_THREAD_ID,
+            "originator": "codex_cli",
+            "source": "cli",
+            "thread_source": "user",
+        },
+    }
+
+
+def child_metadata(
+    *, child_thread_id: str = CHILD_THREAD_ID, source: str = "thread_spawn"
+) -> dict[str, object]:
+    subagent = (
+        {
+            "thread_spawn": {
+                "parent_thread_id": ROOT_THREAD_ID,
+                "depth": 1,
+                "agent_path": "/root/audit",
+            }
+        }
+        if source == "thread_spawn"
+        else {"other": source}
+    )
+    return {
+        "timestamp": "2026-07-16T10:00:02Z",
+        "type": "session_meta",
+        "payload": {
+            "session_id": SESSION_ID,
+            "id": child_thread_id,
+            "originator": "codex_cli",
+            "source": {"subagent": subagent},
+            "thread_source": "subagent",
+        },
+    }
+
+
+def subagent_activity(
+    second: int, tool_call_id: str, *, kind: str
+) -> dict[str, object]:
+    happened_at = datetime(
+        2026, 7, 16, 10, 0, second, tzinfo=timezone.utc
+    )
+    return {
+        "timestamp": happened_at.isoformat().replace("+00:00", "Z"),
+        "type": "event_msg",
+        "payload": {
+            "type": "sub_agent_activity",
+            "event_id": tool_call_id,
+            "occurred_at_ms": int(happened_at.timestamp() * 1000),
+            "agent_thread_id": CHILD_THREAD_ID,
+            "agent_path": "/root/audit",
+            "kind": kind,
+        },
+    }
+
+
+def write_records(path: Path, records: list[dict[str, object]]) -> None:
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+
+def append_records(path: Path, records: list[dict[str, object]]) -> None:
+    with path.open("a") as handle:
+        handle.write("".join(json.dumps(record) + "\n" for record in records))
 
 
 async def pumped_runs(tmp_path: Path, records: list[dict[str, object]]):
@@ -363,7 +365,7 @@ async def test_an_aborted_turn_closes_and_the_next_turn_still_records(
     ]
 
 
-async def test_an_aborted_overlapping_task_pops_instead_of_jamming(
+async def test_a_second_task_started_interrupts_and_replaces_the_open_turn(
     tmp_path: Path,
 ) -> None:
     runs = await pumped_runs(
@@ -371,44 +373,21 @@ async def test_an_aborted_overlapping_task_pops_instead_of_jamming(
         [
             event(0, "task_started", turn_id=TURN_ID),
             event(1, "user_message", message="parent prompt"),
-            event(2, "task_started", turn_id="overlap"),
-            event(3, "turn_aborted", turn_id="overlap", reason="interrupted"),
-            answer_item(4, "parent answer"),
-            event(5, "task_complete", turn_id=TURN_ID),
+            event(2, "task_started", turn_id="replacement"),
+            event(3, "user_message", message="replacement prompt"),
+            answer_item(4, "replacement answer"),
+            event(5, "task_complete", turn_id="replacement"),
         ],
     )
-    [run] = runs
-    assert run.id == TURN_ID
-    assert [message.message_text for message in run.messages] == [
+    assert [run.id for run in runs] == [TURN_ID, "replacement"]
+    interrupted, replacement = runs
+    assert [message.message_text for message in interrupted.messages] == [
         "parent prompt",
-        "parent answer",
     ]
-
-
-async def test_the_open_turns_own_end_clears_absorbed_task_starts(
-    tmp_path: Path,
-) -> None:
-    """A `task_started` that never closes (measured: 20 in the corpus) leaves the
-    stack non-empty forever; the open turn's own completion must still commit it
-    rather than being skipped as someone else's."""
-    runs = await pumped_runs(
-        tmp_path,
-        [
-            event(0, "task_started", turn_id=TURN_ID),
-            event(1, "user_message", message="parent prompt"),
-            event(2, "task_started", turn_id="dangling"),
-            event(
-                3,
-                "task_complete",
-                turn_id=TURN_ID,
-                last_agent_message="wrapped up",
-            ),
-        ],
-    )
-    [run] = runs
-    assert run.id == TURN_ID
-    assert run.end_offset is not None
-    assert [message.message_text for message in run.messages] == ["parent prompt"]
+    assert [message.message_text for message in replacement.messages] == [
+        "replacement prompt",
+        "replacement answer",
+    ]
 
 
 async def test_a_backfilled_row_is_dated_by_the_rollout_not_the_replay(
@@ -475,3 +454,286 @@ async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
     assert len(stamps) == 2
     assert all(stamp is not None and before <= stamp <= after for stamp in stamps)
     await tailer.shutdown()
+
+
+async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
+    tmp_path: Path,
+) -> None:
+    parent_path = tmp_path / f"rollout-parent-{ROOT_THREAD_ID}.jsonl"
+    child_path = tmp_path / f"rollout-child-{CHILD_THREAD_ID}.jsonl"
+    write_records(
+        parent_path,
+        [
+            parent_metadata(),
+            event(0, "task_started", turn_id=PARENT_TURN_ID),
+            event(1, "user_message", message="delegate the audit"),
+            subagent_activity(2, "call-spawn", kind="started"),
+            subagent_activity(6, "call-followup", kind="interacted"),
+            answer_item(10, "parent done"),
+            event(11, "task_complete", turn_id=PARENT_TURN_ID),
+        ],
+    )
+    write_records(
+        child_path,
+        [
+            child_metadata(),
+            parent_metadata(),
+            event(0, "task_started", turn_id=PARENT_TURN_ID),
+            event(1, "user_message", message="fork replay"),
+            event(2, "task_complete", turn_id=PARENT_TURN_ID),
+            event(3, "task_started", turn_id=CHILD_TURN_ONE),
+            answer_item(4, "first finding"),
+            event(5, "task_complete", turn_id=CHILD_TURN_ONE),
+            event(7, "task_started", turn_id=CHILD_TURN_TWO),
+            answer_item(8, "second finding"),
+            event(9, "task_complete", turn_id=CHILD_TURN_TWO),
+        ],
+    )
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="SessionStart",
+            session_id=SESSION_ID,
+            transcript_path=parent_path,
+        )
+    )
+    await tailer.pump_session(SESSION_ID)
+
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+    )
+    parent = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    child = await octomate.conversations.ensure(
+        thread.id,
+        agent_tentacle_id=CODEX_NATIVE_ID,
+        subagent_id=CHILD_THREAD_ID,
+        parent_conversation_id=parent.id,
+    )
+
+    assert child.parent_conversation_id == parent.id
+    assert child.external_id == CHILD_THREAD_ID
+    assert [run.id for run in child.runs] == [CHILD_TURN_ONE, CHILD_TURN_TWO]
+    assert [run.parent_run_id for run in child.runs] == [
+        PARENT_TURN_ID,
+        PARENT_TURN_ID,
+    ]
+    assert [run.parent_tool_call_id for run in child.runs] == [
+        "call-spawn",
+        "call-followup",
+    ]
+    assert [message.message_text for message in child.messages] == [
+        "first finding",
+        "second finding",
+    ]
+    assert [run.id for run in parent.runs] == [PARENT_TURN_ID]
+    assert [message.message_text for message in thread.messages] == [
+        "delegate the audit",
+        "parent done",
+    ]
+    await tailer.shutdown()
+
+
+async def test_child_turn_links_activity_that_arrives_after_it_starts(
+    tmp_path: Path,
+) -> None:
+    parent_path = tmp_path / f"rollout-parent-{ROOT_THREAD_ID}.jsonl"
+    child_path = tmp_path / f"rollout-child-{CHILD_THREAD_ID}.jsonl"
+    write_records(
+        parent_path,
+        [
+            parent_metadata(),
+            event(0, "task_started", turn_id=PARENT_TURN_ID),
+        ],
+    )
+    write_records(
+        child_path,
+        [
+            child_metadata(),
+            event(3, "task_started", turn_id=CHILD_TURN_ONE),
+            answer_item(4, "working", phase="commentary"),
+        ],
+    )
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="SessionStart",
+            session_id=SESSION_ID,
+            transcript_path=parent_path,
+        )
+    )
+    await tailer.pump_session(SESSION_ID)
+    append_records(
+        parent_path,
+        [subagent_activity(2, "call-after-start", kind="started")],
+    )
+    append_records(
+        child_path,
+        [
+            answer_item(5, "done"),
+            event(6, "task_complete", turn_id=CHILD_TURN_ONE),
+        ],
+    )
+    await tailer.pump_session(SESSION_ID)
+
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+    )
+    parent = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    child = await octomate.conversations.ensure(
+        thread.id,
+        agent_tentacle_id=CODEX_NATIVE_ID,
+        subagent_id=CHILD_THREAD_ID,
+        parent_conversation_id=parent.id,
+    )
+    [run] = child.runs
+    assert run.parent_run_id == PARENT_TURN_ID
+    assert run.parent_tool_call_id == "call-after-start"
+    await tailer.shutdown()
+
+
+async def test_guardian_rollout_is_not_ingested_as_a_subagent(
+    tmp_path: Path,
+) -> None:
+    parent_path = tmp_path / f"rollout-parent-{ROOT_THREAD_ID}.jsonl"
+    guardian_path = tmp_path / "rollout-guardian.jsonl"
+    write_records(parent_path, [parent_metadata()])
+    write_records(
+        guardian_path,
+        [
+            child_metadata(
+                child_thread_id="019f6b28-4ad5-78b0-979f-70a0f1661b0b",
+                source="guardian",
+            ),
+            event(
+                3,
+                "task_started",
+                turn_id="019f6b28-6ff5-7b01-b25c-44b7126d508f",
+            ),
+            answer_item(4, "internal verdict"),
+        ],
+    )
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="SessionStart",
+            session_id=SESSION_ID,
+            transcript_path=parent_path,
+        )
+    )
+    await tailer.pump_session(SESSION_ID)
+
+    assert all(
+        conversation.subagent_id == ""
+        for conversation in octomate.conversations.conversations.values()
+    )
+    await tailer.shutdown()
+
+
+async def test_subagent_stop_waits_for_the_final_answer_line(
+    tmp_path: Path,
+) -> None:
+    parent_path = tmp_path / f"rollout-parent-{ROOT_THREAD_ID}.jsonl"
+    child_path = tmp_path / f"rollout-child-{CHILD_THREAD_ID}.jsonl"
+    write_records(
+        parent_path,
+        [
+            parent_metadata(),
+            event(0, "task_started", turn_id=PARENT_TURN_ID),
+            subagent_activity(2, "call-spawn", kind="started"),
+        ],
+    )
+    write_records(
+        child_path,
+        [
+            child_metadata(),
+            parent_metadata(),
+            event(0, "task_started", turn_id=PARENT_TURN_ID),
+            event(3, "task_started", turn_id=CHILD_TURN_ONE),
+            answer_item(4, "still working", phase="commentary"),
+        ],
+    )
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="SubagentStart",
+            session_id=SESSION_ID,
+            transcript_path=parent_path,
+            agent_id="opaque-hook-agent-id",
+        )
+    )
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+    )
+    parent = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    child = await octomate.conversations.ensure(
+        thread.id,
+        agent_tentacle_id=CODEX_NATIVE_ID,
+        subagent_id=CHILD_THREAD_ID,
+        parent_conversation_id=parent.id,
+    )
+    assert child.runs == []
+    assert thread.messages == []
+
+    async def late_writer() -> None:
+        await asyncio.sleep(0.3)
+        append_records(
+            child_path,
+            [
+                answer_item(5, "settled answer"),
+                event(6, "task_complete", turn_id=CHILD_TURN_ONE),
+            ],
+        )
+
+    writer = asyncio.create_task(late_writer())
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="SubagentStop",
+            session_id=SESSION_ID,
+            transcript_path=parent_path,
+            agent_transcript_path=child_path,
+            agent_id="opaque-hook-agent-id",
+            last_assistant_message="settled answer",
+        )
+    )
+    await writer
+
+    child = await octomate.conversations.ensure(
+        thread.id,
+        agent_tentacle_id=CODEX_NATIVE_ID,
+        subagent_id=CHILD_THREAD_ID,
+        parent_conversation_id=parent.id,
+    )
+    [run] = child.runs
+    assert run.id == CHILD_TURN_ONE
+    assert run.end_offset == child_path.stat().st_size
+    assert [message.message_text for message in run.messages] == [
+        "still working",
+        "settled answer",
+    ]
+    await tailer.shutdown()
+
+
+def test_known_declined_rollout_line_types_are_modeled() -> None:
+    for line_type in ("compacted", "inter_agent_communication_metadata"):
+        line = rollout_line_adapter.validate_python(
+            {
+                "timestamp": "2026-07-16T10:00:00Z",
+                "type": line_type,
+                "payload": {},
+            }
+        )
+        assert line.type == line_type
