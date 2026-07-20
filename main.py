@@ -78,9 +78,14 @@ def create_app() -> FastAPI:
         if config.logfire.scrub
         else False,
     )
-    logfire.instrument_pydantic_ai()
-    logfire.instrument_httpx()
-    logfire.instrument_sqlalchemy(engine=db_engine())
+    # Library auto-instrumentation is opt-in per library (diagnostic-session volume);
+    # Octomate's own octomate.*-scoped spans are not behind these flags.
+    if config.logfire.instrument.pydantic_ai:
+        logfire.instrument_pydantic_ai()
+    if config.logfire.instrument.httpx:
+        logfire.instrument_httpx()
+    if config.logfire.instrument.sqlalchemy:
+        logfire.instrument_sqlalchemy(engine=db_engine())
 
     octomate = Octomate()
 

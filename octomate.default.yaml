@@ -44,12 +44,20 @@ octomate:
   # Observability. send_to_logfire is opt-in: it only ships when true AND a
   # LOGFIRE_TOKEN is present. scrub redacts identifier attributes (conversation
   # key, user/chat/message ids) in the backend while keeping channel/run labels.
+  # instrument.* toggles per-library auto-instrumentation, all off by default —
+  # each traces a whole library's internals (every request / statement / model
+  # call). Octomate's own spans are not behind these: they always emit whenever
+  # tracing itself is on.
   logfire:
     service_name: ~     # default: octomate
     environment: ~      # default: development
     send_to_logfire: ~  # default: false
     console: ~          # default: false
     scrub: ~            # default: true
+    instrument:
+      pydantic_ai: ~    # default: false — model requests, tool calls, usage per run
+      httpx: ~          # default: false — every outbound HTTP request
+      sqlalchemy: ~     # default: false — every SQL statement
 
   # Runtime IM channels. Keep disabled examples here and put real secrets in
   # octomate.yaml or environment variables.

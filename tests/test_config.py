@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
 
+from octomate.config.observability import LogfireConfig
 from octomate.config import (
     AgentModelConfig,
     ChannelsConfig,
@@ -599,3 +600,13 @@ octomate:
     assert config.channels.napcat is not None
     assert config.channels.napcat.stream.enabled is False
     assert config.channels.napcat.stream.flush_interval == 0.3
+
+
+def test_logfire_instrumentation_defaults_off() -> None:
+    """Library auto-instrumentation is opt-in per library: a fresh config traces
+    nothing but Octomate's own spans. A default flipping on here silently turns
+    every HTTP request / SQL statement / model call into span volume."""
+    instrument = LogfireConfig().instrument
+    assert not instrument.pydantic_ai
+    assert not instrument.httpx
+    assert not instrument.sqlalchemy
