@@ -24,7 +24,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from pydantic_ai.settings import ThinkingEffort
 
-from octomate.schemas.triage import Claim, SummonDestination
+from octomate.schemas.triage import AgentRoute, Claim, SummonDestination
 from octomate.reflex import (
     DeferredResult,
     SummonDecision,
@@ -221,7 +221,7 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
             ],
         ),
     )
-    other = FakeAgent(id="other")
+    other = FakeAgent(id="other", claims={"test": Claim(ability="fake agent")})
     deps = ReflexDeps(
         channels={"chan1": channel},
         agents={"other": other},
@@ -236,11 +236,21 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
     assert deps.available_routes["chan1"] is routes
 
 
-def test_available_routes_resolve_claims() -> None:
-    # Claims are the agent's to make: an agent-config override wins; without one,
-    # the tentacle's table answers — and for a model the table does not know, the
-    # documented default built on its description.
-    override = Claim(ability="acme monorepo work", efforts=("high",))
+def test_agent_routes_evict_models_the_agent_does_not_serve() -> None:
+    served = Claim(ability="fake agent")
+    agent = FakeAgent(claims={"test": served, "haiku": Claim(ability="phantom")})
+
+    assert agent.routes == [
+        AgentRoute(agent_id="inkling", model="test", claim=served)
+    ]
+
+
+def test_available_routes_are_the_exposed_agents_own_routes() -> None:
+    # A channel exposes agents; each agent's active claims are its routes. A
+    # claimed model rides in even when no channel entry names it, an agent with
+    # no claims contributes nothing, and duplicate channel entries for one
+    # agent do not duplicate its routes.
+    pro_claim = Claim(ability="deep work", efforts=("high",))
     channel = FakeChannelTentacle(
         id="chan1",
         config=ChannelConfig(
@@ -248,29 +258,60 @@ def test_available_routes_resolve_claims() -> None:
             agents=[
                 AgentModelConfig(agent="other", model="test"),
                 AgentModelConfig(agent="second", model="test"),
+                AgentModelConfig(agent="second", model="deepseek:deepseek-v4-pro"),
+                AgentModelConfig(agent="third", model="test"),
             ],
         ),
     )
-    other = FakeAgent(id="other")
-    second = FakeAgent(id="second")
-    second.config_claims = {"test": override}
+    other = FakeAgent(id="other", claims={"test": Claim(ability="fake agent")})
+    second = FakeAgent(
+        id="second",
+        claims={
+            "test": Claim(ability="fake agent"),
+            "deepseek:deepseek-v4-pro": pro_claim,
+        },
+    )
+    third = FakeAgent(id="third", claims={})
     deps = ReflexDeps(
         channels={"chan1": channel},
-        agents={"other": other, "second": second},
+        agents={"other": other, "second": second, "third": third},
         conversation_manager=FakeConversationManager(),
         thread_manager=FakeThreadManager(),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
     )
 
-    default_claim, overridden_claim = (
-        route.claim for route in deps.available_routes["chan1"]
+    routes = deps.available_routes["chan1"]
+
+    assert [(route.agent_id, route.model) for route in routes] == [
+        ("other", "test"),
+        ("second", "test"),
+        ("second", "deepseek:deepseek-v4-pro"),
+    ]
+    assert routes[2].claim == pro_claim
+
+
+def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
+    # A summoned model is claims-driven; resolve must not snap it back to the
+    # channel's entry model when the agent serves the requested one.
+    channel = FakeChannelTentacle(
+        id="chan1",
+        config=ChannelConfig(
+            type="fake",
+            agents=[AgentModelConfig(agent="other", model="test")],
+        ),
+    )
+    other = FakeAgent(id="other")
+    deps = ReflexDeps(
+        channels={"chan1": channel},
+        agents={"other": other},
+        conversation_manager=FakeConversationManager(),
+        thread_manager=FakeThreadManager(),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
     )
 
-    assert default_claim == Claim(
-        ability=other.description,
-        efforts=("minimal", "low", "medium", "high", "xhigh"),
-    )
-    assert overridden_claim == override
+    resolved = deps.resolve_agent("chan1", "other", "deepseek:deepseek-v4-pro")
+
+    assert (resolved.agent, resolved.model) == ("other", "deepseek:deepseek-v4-pro")
 
 
 async def test_route_runs_entry_agent_directly() -> None:

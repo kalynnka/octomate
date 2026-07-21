@@ -539,9 +539,14 @@ existing octomate + native paths pass untouched.
 > (`Route` collides with the reflex graph's `Route` node); `Claim` is
 > `(ability, efforts)` — `cost` was dropped by owner call; `Effort` is not our own
 > Literal but pydantic-ai's five-grade `ThinkingEffort`, and `Claim.efforts` defaults
-> to the full scale via `get_args`; claim overrides live in the **agent's** config
-> block (`agents.<id>.claims`, per model), not per channel — channels only choose
-> which routes to expose; the capability is now `GatewayCapability` and its route
+> to the full scale via `get_args`; claims are owned by the **agent's** config
+> block outright (`agents.<id>.claims`, per model, in yaml beside the models they
+> describe — no claim tables in code); a channel exposes **agents** (its
+> `agents:` entries pick entry/default models only) and every exposed agent's
+> own `routes` (built from claims ∩ served models, cached) ride in, so a model
+> with **no claim is not routable**: it cannot be summoned or commissioned, and
+> `resolve_agent` honors any served model rather than snapping back to the
+> channel entry; the capability is now `GatewayCapability` and its route
 > list `other_routes`. Effort mapping: Claude maps `minimal`→`low` (no `max`
 > offered), Codex passes through natively, inkling hands it to `thinking` and the
 > library maps unsupported grades per provider. `summon` takes optional `effort`,

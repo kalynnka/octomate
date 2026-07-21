@@ -8,12 +8,38 @@ octomate:
           settings:
             thinking: medium
         - name: deepseek:deepseek-v4-pro
+      # Claims live in config beside the models they describe, for every
+      # agent. A model with no claim is not summonable. Note an octomate.yaml
+      # replaces this file's `octomate:` tree wholesale — a deployment that
+      # lists its own models lists its own claims; `efforts` omitted means the
+      # full scale.
+      claims:
+        "deepseek:deepseek-v4-flash":
+          ability: Quick general assistant for everyday questions, chat, and
+            light coordination.
+          efforts: [minimal, low, medium]
+        "deepseek:deepseek-v4-pro":
+          ability: General assistant for writing, analysis, and coordinating
+            multi-step work.
     # Anthropic Claude Code agent (opt-in; omitted => absent). Runs the Claude
     # Agent SDK locally, or on a remote host when `ssh` is set. List it in a
     # channel's `agents:` to make it a summon candidate.
     # claude:
     #   cwd: .
     #   models: [opus, sonnet, haiku]   # opus => Opus 4.8
+    #   # A claim advertises what a route is for and the effort levels it
+    #   # accepts (omitted efforts = full scale). A model with no claim is not
+    #   # summonable — list a claim for every model you expose.
+    #   claims:
+    #     opus:
+    #       ability: Coding agent for deep, multi-step engineering across a
+    #         repository.
+    #     sonnet:
+    #       ability: Coding agent for everyday software tasks and mid-sized
+    #         changes.
+    #     haiku:
+    #       ability: Fast coding agent for small, well-scoped fixes and
+    #         repository chores.
     #   # max_turns: ~
     #   # approval_timeout: ~   # seconds to wait for a human approval; ~ = forever
     #   # ssh:                  # run `claude` on a remote host instead of locally
@@ -29,14 +55,21 @@ octomate:
     #     # codex_bin: /opt/bin/codex
     #     config_overrides: []
     #   models: [gpt-5.5, gpt-5.5-pro, gpt-5.3-codex, gpt-5.1-codex-mini]
-    #   # Per-model claim overrides (any agent block takes a `claims:` map). A
-    #   # claim advertises what a route is for and the effort levels it accepts;
-    #   # a model not listed here uses the agent's built-in claim, or a documented
-    #   # default if the agent does not know the model.
+    #   # A model with no claim is not summonable — list a claim for every
+    #   # model you expose (omitted efforts = full scale).
     #   claims:
     #     gpt-5.5:
-    #       ability: Deep repository work in the acme monorepo.
-    #       efforts: [low, medium, high]
+    #       ability: Codex agent for general software engineering across a
+    #         repository.
+    #     gpt-5.5-pro:
+    #       ability: Deep-reasoning Codex agent for large, difficult
+    #         engineering work across a repository.
+    #     gpt-5.3-codex:
+    #       ability: Codex agent tuned for hands-on coding tasks and mid-sized
+    #         changes.
+    #     gpt-5.1-codex-mini:
+    #       ability: Fast Codex agent for small, well-scoped code edits and
+    #         quick fixes.
     #   approval_mode: user        # user | auto_review | deny_all
     #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
     #   sandbox: workspace_write   # read_only | workspace_write | full_access

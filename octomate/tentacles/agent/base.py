@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, TypeAlias, TypeVar, overload
 
 from pydantic_ai import (
@@ -28,11 +29,12 @@ from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.capabilities.react import ReactEventStream
+from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from pydantic_ai.settings import ThinkingEffort
 
-from octomate.schemas.triage import Claim
+from octomate.schemas.triage import AgentRoute, Claim
 from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
 
@@ -54,23 +56,26 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # Subclasses refine this default; overridable at init.
     description: str = "General-purpose agent for handling user requests."
 
-    # Per-model claims for the models the class ships with. Claims are the agent's
-    # to make — channels only choose which routes to expose — so overrides live in
-    # the agent's own config block, not per channel.
-    model_claims: ClassVar[dict[str, Claim]] = {}
-    # Per-model claim overrides from the agent's deployment config, layered over
-    # `model_claims`. Subclasses with a config surface assign it in `__init__`;
-    # the empty class default is never mutated.
-    config_claims: dict[str, Claim] = {}
+    # Per-model claims this agent advertises, keyed by route model name. Claims
+    # are the agent's to make — its config block owns them; a channel only
+    # chooses which agents to expose (and their entry models). A model with no
+    # claim advertises nothing: it is not offered as a route, so it cannot be
+    # summoned (or commissioned). Subclasses assign it in `__init__`; the empty
+    # class default is never mutated.
+    claims: dict[AgentRouteModelName, Claim] = {}
 
-    def claim(self, model: str) -> Claim:
-        claimed = self.config_claims.get(model) or self.model_claims.get(model)
-        if claimed is not None:
-            return claimed
-        # The documented default for a model the class does not know: a
-        # config-added model still advertises something (the description, full
-        # effort scale) rather than nothing.
-        return Claim(ability=self.description)
+    @cached_property
+    def routes(self) -> list[AgentRoute]:
+        """The routes this agent offers — one per claim it can actually honor.
+        A claim naming a model that is not in `models` is evicted rather than
+        advertised, so a route can never point at a model the agent cannot run.
+        Cached — `claims` and `models` are settled in `__init__` and never
+        change after."""
+        return [
+            AgentRoute(agent_id=self.id, model=model, claim=claim)
+            for model, claim in self.claims.items()
+            if model in self.models
+        ]
 
     # Whether the agent keeps a live in-process run that can park on a human
     # deferral (approval/question) and resume by delivering the response to its

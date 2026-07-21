@@ -48,10 +48,11 @@ from octomate.capabilities.gate import (
     TELEPORT_TOOL_NAME,
     GatewayCapability,
 )
+from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.conversation import ChannelAddress
 from pydantic_ai.settings import ThinkingEffort
 
-from octomate.schemas.triage import SummonDecision
+from octomate.schemas.triage import Claim, SummonDecision
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.inkling import inkling_toolset
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
@@ -119,6 +120,20 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             "deepseek:deepseek-v4-pro": "fake-model",
             "opus": "fake-model",
             "opusplan[1m]": "fake-model",
+        }
+    )
+    # An unclaimed model is not routable, so the fake claims every model it
+    # ships by default; pass claims={} to fake an agent that advertises nothing.
+    claims: dict[AgentRouteModelName, Claim] = field(
+        default_factory=lambda: {
+            model: Claim(ability="fake agent")
+            for model in (
+                "test",
+                "deepseek:deepseek-v4-flash",
+                "deepseek:deepseek-v4-pro",
+                "opus",
+                "opusplan[1m]",
+            )
         }
     )
     turns: list[RecordedRun] = field(default_factory=list)

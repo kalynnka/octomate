@@ -80,9 +80,9 @@ class InklingConfig(BaseModel):
     models: list[ModelConfig] = Field(min_length=1)
     claims: dict[KnownModelName, Claim] = Field(
         default_factory=dict,
-        description="Per-model claim overrides (ability/efforts). A model "
-        "not listed here uses the tentacle's claim table, or its documented "
-        "default for a model that table does not know.",
+        description="Per-model claims (ability/efforts). A model with no claim "
+        "advertises nothing: it is not offered as a route, so it cannot be "
+        "summoned (or commissioned).",
     )
 
     @property
@@ -121,9 +121,9 @@ class ClaudeCodeConfig(BaseModel):
     )
     claims: dict[ClaudeCodeModelName, Claim] = Field(
         default_factory=dict,
-        description="Per-model claim overrides (ability/efforts). A model "
-        "not listed here uses the tentacle's claim table, or its documented "
-        "default for a model that table does not know.",
+        description="Per-model claims (ability/efforts). A model with no claim "
+        "advertises nothing: it is not offered as a route, so it cannot be "
+        "summoned (or commissioned).",
     )
     max_turns: int | None = None
     ssh: ClaudeSSHConfig | None = None
@@ -201,9 +201,9 @@ class CodexConfig(BaseModel):
     )
     claims: dict[CodexModelName, Claim] = Field(
         default_factory=dict,
-        description="Per-model claim overrides (ability/efforts). A model "
-        "not listed here uses the tentacle's claim table, or its documented "
-        "default for a model that table does not know.",
+        description="Per-model claims (ability/efforts). A model with no claim "
+        "advertises nothing: it is not offered as a route, so it cannot be "
+        "summoned (or commissioned).",
     )
     approval_mode: CodexApprovalMode = Field(
         default="user",

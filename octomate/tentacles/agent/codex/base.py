@@ -66,7 +66,6 @@ from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
 from pydantic_ai.settings import ThinkingEffort
 
-from octomate.schemas.triage import Claim
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.codex.adapter import (
@@ -266,39 +265,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         "Codex coding agent for repository-aware software engineering tasks."
     )
 
-    # Every route accepts the full effort scale: `turn(effort=...)` is
-    # model-independent, so only the ability varies per model.
-    model_claims: ClassVar[dict[str, Claim]] = {
-        "gpt-5.6-sol": Claim(
-            ability="Frontier Codex agent for the hardest engineering and "
-            "debugging problems.",
-        ),
-        "gpt-5.6-terra": Claim(
-            ability="Codex agent for everyday software engineering and mid-sized "
-            "changes.",
-        ),
-        "gpt-5.6-luna": Claim(
-            ability="Fast Codex agent for small, well-scoped fixes and "
-            "repository chores.",
-        ),
-        "gpt-5.5": Claim(
-            ability="Codex agent for general software engineering across a "
-            "repository.",
-        ),
-        "gpt-5.5-pro": Claim(
-            ability="Deep-reasoning Codex agent for large, difficult engineering "
-            "work across a repository.",
-        ),
-        "gpt-5.3-codex": Claim(
-            ability="Codex agent tuned for hands-on coding tasks and mid-sized "
-            "changes.",
-        ),
-        "gpt-5.1-codex-mini": Claim(
-            ability="Fast Codex agent for small, well-scoped code edits and "
-            "quick fixes.",
-        ),
-    }
-
     def __init__(
         self,
         id: str,
@@ -316,7 +282,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.live_turns = {}
         self.bridge_contexts = {}
         self.pending = {}
-        self.config_claims = {model: claim for model, claim in config.claims.items()}
+        self.claims = {model: claim for model, claim in config.claims.items()}
         self.models = {model: model for model in config.models}
         self.session_locks = SessionLocks()
         self.session_tailer = CodexTranscriptTailer(

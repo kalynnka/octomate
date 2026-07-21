@@ -21,7 +21,7 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadMessage
-from octomate.schemas.triage import SummonDecision
+from octomate.schemas.triage import Claim, SummonDecision
 from octomate.tentacles.agent.inkling import InklingTentacle, inkling_toolset
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.base import Tentacle
@@ -411,7 +411,11 @@ async def test_reception_model_is_resolved_from_agent() -> None:
             summon="Use the stronger model.",
         ),
     )
-    claude = FakeAgent(id="claude", models={"openai:gpt-4o-mini": "pro-m"})
+    claude = FakeAgent(
+        id="claude",
+        models={"openai:gpt-4o-mini": "pro-m"},
+        claims={"openai:gpt-4o-mini": Claim(ability="fake agent")},
+    )
     channel = FakeChannelTentacle(
         config=ChannelConfig(
             type="fake",

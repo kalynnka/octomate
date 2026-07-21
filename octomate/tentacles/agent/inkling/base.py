@@ -6,7 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar, Self, TypeAlias, overload
+from typing import TYPE_CHECKING, Self, TypeAlias, overload
 
 from pydantic_ai import (
     AgentCapability,
@@ -79,18 +79,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         "coordinating multi-step work."
     )
 
-    model_claims: ClassVar[dict[str, Claim]] = {
-        "deepseek:deepseek-v4-flash": Claim(
-            ability="Quick general assistant for everyday questions, chat, and "
-            "light coordination.",
-            efforts=("minimal", "low", "medium"),
-        ),
-        "deepseek:deepseek-v4-pro": Claim(
-            ability="General assistant for writing, analysis, and coordinating "
-            "multi-step work.",
-        ),
-    }
-
     _exit_stack: AsyncExitStack = field(init=False)
     toolsets: list[AbstractToolset[None]] = field(init=False)
 
@@ -132,9 +120,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self.conversation_manager = conversation_manager or octomate.conversations
         self.deferred_resolver = deferred_resolver
         self.description = description or self.description
-        self.config_claims = {
-            model: claim for model, claim in (claims or {}).items()
-        }
+        self.claims = {model: claim for model, claim in (claims or {}).items()}
         self._exit_stack = AsyncExitStack()
         self.toolsets = list(toolsets or [])
 

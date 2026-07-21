@@ -146,17 +146,17 @@ class ReflexDeps:
     def available_routes(self) -> dict[str, list[AgentRoute]]:
         available: dict[str, list[AgentRoute]] = {}
         for channel_id in self.channels:
-            routes: list[AgentRoute] = []
-            for agent_config in self.agent_configs(channel_id):
-                agent = self.agent(agent_config.agent)
-                routes.append(
-                    AgentRoute(
-                        agent_id=agent_config.agent,
-                        model=agent_config.model,
-                        claim=agent.claim(agent_config.model),
-                    )
+            # A channel exposes agents, and each agent manages its own
+            # routes (from its claims). The channel's (agent, model) entries
+            # only pick its entry/default models — they do not bound the routes.
+            available[channel_id] = [
+                route
+                for agent_id in dict.fromkeys(
+                    agent_config.agent
+                    for agent_config in self.agent_configs(channel_id)
                 )
-            available[channel_id] = routes
+                for route in self.agent(agent_id).routes
+            ]
         return available
 
     def resolve_agent(
@@ -172,6 +172,15 @@ class ReflexDeps:
                 return agent_config
             if agent_id is not None and agent_config.agent == agent_id:
                 matched = agent_config
+        if (
+            matched is not None
+            and model is not None
+            and model in self.agent(matched.agent).models
+        ):
+            # Summonable models are claims-driven, not bounded by the channel's
+            # entry list — honor any model the agent actually serves rather
+            # than snapping back to the entry default.
+            return AgentModelConfig(agent=matched.agent, model=model)
         return matched or configs[0]
 
     async def load_pending_prompt(

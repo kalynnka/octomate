@@ -454,22 +454,14 @@ async def test_completed_run_releases_its_client(
     assert len(tentacle.live_clients) == 0
 
 
-def test_config_claims_beat_the_class_table() -> None:
-    override = Claim(ability="acme monorepo work", efforts=("high",))
+def test_claims_come_from_config_and_default_to_none() -> None:
+    """Claims are config-owned outright: a config claim is the tentacle's claim,
+    and a bare config claims nothing — an unclaimed model cannot be summoned."""
+    claim = Claim(ability="acme monorepo work", efforts=("high",))
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=ClaudeCodeConfig(claims={"haiku": override}),
+        config=ClaudeCodeConfig(claims={"haiku": claim}),
     )
 
-    assert tentacle.claim("haiku") == override
-    assert tentacle.claim("opus") == ClaudeCodeTentacle.model_claims["opus"]
-
-
-def test_model_claims_cover_every_shipped_model_and_differ() -> None:
-    """Every model the class ships in its config default advertises a claim of its
-    own — the point of per-route claims is that two models of one agent no longer
-    advertise identically."""
-    assert ClaudeCodeConfig().models <= ClaudeCodeTentacle.model_claims.keys()
-    opus = ClaudeCodeTentacle.model_claims["opus[1m]"]
-    haiku = ClaudeCodeTentacle.model_claims["haiku"]
-    assert opus.ability != haiku.ability
+    assert tentacle.claims == {"haiku": claim}
+    assert ClaudeCodeConfig().claims == {}

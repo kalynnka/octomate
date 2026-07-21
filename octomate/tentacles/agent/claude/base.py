@@ -71,7 +71,6 @@ from octomate.schemas.deferred import (
 from octomate.schemas.messages import ModelRequest
 from pydantic_ai.settings import ThinkingEffort
 
-from octomate.schemas.triage import Claim
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
@@ -127,47 +126,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         "code repository."
     )
 
-    # Every route accepts the full effort scale: the SDK `effort` knob is
-    # model-independent, so only the ability varies per model.
-    model_claims: ClassVar[dict[str, Claim]] = {
-        "best": Claim(
-            ability="Frontier coding agent for the hardest engineering and "
-            "debugging problems.",
-        ),
-        "fable": Claim(
-            ability="Frontier coding agent for the hardest engineering and "
-            "debugging problems.",
-        ),
-        "opus": Claim(
-            ability="Coding agent for deep, multi-step engineering across a "
-            "repository.",
-        ),
-        "opus[1m]": Claim(
-            ability="Coding agent for deep, multi-step engineering across a "
-            "repository, with a 1M-token context for large codebases.",
-        ),
-        "opusplan": Claim(
-            ability="Coding agent that plans before building; for large changes "
-            "that need a design pass first.",
-        ),
-        "opusplan[1m]": Claim(
-            ability="Coding agent that plans before building, with a 1M-token "
-            "context; for large changes across a big codebase.",
-        ),
-        "sonnet": Claim(
-            ability="Coding agent for everyday software tasks and mid-sized "
-            "changes.",
-        ),
-        "sonnet[1m]": Claim(
-            ability="Coding agent for everyday software tasks and mid-sized "
-            "changes, with a 1M-token context for large codebases.",
-        ),
-        "haiku": Claim(
-            ability="Fast coding agent for small, well-scoped fixes and "
-            "repository chores.",
-        ),
-    }
-
     def __init__(
         self,
         id: str,
@@ -182,7 +140,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.hook_secret = hook_secret
         self.description = description or self.description
         self.pending = {}
-        self.config_claims = {model: claim for model, claim in config.claims.items()}
+        self.claims = {model: claim for model, claim in config.claims.items()}
         # One live Claude client per conversation, keyed by conversation id: a new
         # turn interrupts the prior run for the same conversation (Phase 6). Not
         # thread id — a thread also holds subagent conversations, whose runs must
