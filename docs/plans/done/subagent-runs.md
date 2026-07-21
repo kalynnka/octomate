@@ -1,19 +1,21 @@
 # Plan: Subagent runs — commissioned agents, claimed routes, and native subagent ingest
 
-> **Status:** in progress · **Owner:** @luhui · **Created:** 2026-07-17
-> **Shipped:** §1b abort fix (`2c9c3cc`) · UoW-1 run tree (`f90394f`) · UoW-2
-> route claims + effort (see the UoW-2 as-built note) · UoW-4 subagent
-> transcripts (`7241206`) · UoW-5 subagent hooks (`56c1c5b`) + live settle fix
-> (`5ac54e0`). **Live-verified** end to end against a running server on 2026-07-18 —
-> findings folded into §6. UoW-2/3 deferred by owner; **UoW-6 is handed to Codex** —
-> its brief is §7 + the UoW-6 section, written to need no other context.
+> **Status:** done (2026-07-22) · **Owner:** @luhui · **Created:** 2026-07-17
+> **Shipped:** §1b abort fix (`2c9c3cc`) · UoW-1 run tree (`f90394f`) · UoW-4
+> subagent transcripts (`7241206`) · UoW-5 subagent hooks (`56c1c5b`, settle fix
+> `5ac54e0`) · UoW-6 Codex subagents (`0ed75bd`, by Codex from §7) · UoW-2 route
+> claims + effort (`087c4e3`, refined `1230b6a`: claims wholly in config, agents
+> own their routes) · UoW-3 scheme/whisper (`973c509`, refined `c32ea42`:
+> `subagent_run` on the tentacle contract, ask/todo/history as capabilities).
+> **Live-verified** (UoW-4/5) end to end against a running server on 2026-07-18 —
+> findings folded into §6.
 > **Supersedes:** `claude-native-subagent-runs.md` (2026-07-16) — renamed and rewritten; its
 > central premise was measured false (§1) and its scope was one quarter of this.
 > **Read first:** **§1b — a live 24 % data-loss bug in Codex ingest, found while writing
 > this. It is not a subagent bug. Ship its fix before this plan.**
 > **Builds on:** the shipped native-ingest stack
-> ([native-session-ingest.md](done/native-session-ingest.md)) and the self-routing gate
-> ([self-routing-dispatch.md](done/self-routing-dispatch.md)).
+> ([native-session-ingest.md](native-session-ingest.md)) and the self-routing gate
+> ([self-routing-dispatch.md](self-routing-dispatch.md)).
 >
 > **Every claim below about what a runtime writes was measured** — 80 Claude transcripts and
 > 229 Codex rollouts on this machine — not reasoned from docs. Two designs and one shipped
@@ -49,8 +51,8 @@ The superseded plan's design rested on this claim:
 > true` — a subagent's (Task tool's) internal turn … the subagent's own work is dropped
 > entirely."*
 
-The skip is real ([tailer.py:409](../../octomate/tentacles/agent/claude/tailer.py#L409),
-[:417](../../octomate/tentacles/agent/claude/tailer.py#L417)). **The lines it skips do not
+The skip is real ([tailer.py:409](../../../octomate/tentacles/agent/claude/tailer.py#L409),
+[:417](../../../octomate/tentacles/agent/claude/tailer.py#L417)). **The lines it skips do not
 exist.** Measured across the whole local corpus — 80 main transcripts, Claude Code 2.1.177
 through 2.1.211, 27 sessions with subagents:
 
@@ -84,7 +86,7 @@ documented one and throw the rest away**:
 | `toolUseId` → the parent's `Agent` tool call | the `.meta.json` sidecar | **no** — undocumented internal | **dropped** |
 
 **`promptId` is the linkage.** It is the key the whole ingest design already turns on
-([native-session-ingest.md §2](done/native-session-ingest.md)) — a subagent line simply
+([native-session-ingest.md §2](native-session-ingest.md)) — a subagent line simply
 carries its *parent's*. Nothing else is needed to hang a child run under a parent run.
 
 **Dropping the sidecar costs nothing**, which is the point: everything it carries is
@@ -117,7 +119,7 @@ Chasing Codex's subagent story found a **shipped, silent, 24 % data-loss bug in 
 ingest**. It is not a subagent bug and must not wait for a subagent feature.
 
 **A Codex turn closes on `task_complete` *or* `turn_aborted`. We only handle the former**
-([codex/tailer.py:260-266](../../octomate/tentacles/agent/codex/tailer.py#L260-L266)). An
+([codex/tailer.py:260-266](../../../octomate/tentacles/agent/codex/tailer.py#L260-L266)). An
 aborted turn therefore never closes, `state.open_turn` never clears — and then the nesting
 branch turns a stuck turn into a **cascading** one: every subsequent `task_started` is
 misread as a nested subagent, pushed onto `nested_turn_ids`, and swallowed **for the rest of
@@ -161,7 +163,7 @@ independent of each other after it.
 ## 3. What already exists (grounding)
 
 - **The spellbook.** `GateCapability`
-  ([gate.py:73](../../octomate/capabilities/gate.py#L73)) contributes an instruction plus
+  ([gate.py:73](../../../octomate/capabilities/gate.py#L73)) contributes an instruction plus
   three tools: `scry` (list routes), `summon` (sticky handoff — records a decision the
   reflex graph reads *after* the run ends), `teleport` (deferred; the graph forks history
   and resumes the same agent elsewhere). **`commission` is the missing fourth.**
@@ -175,18 +177,18 @@ independent of each other after it.
   `parent_run_id` and `parent_tool_call_id` the run tree wants, available in the tool body
   with nothing threaded through.
 - **The one wait that must never be unbounded** is already named: `approval_timeout`
-  ([config/agents.py:113](../../octomate/config/agents.py#L113)) exists because a human may
+  ([config/agents.py:113](../../../octomate/config/agents.py#L113)) exists because a human may
   never answer. A commissioned agent may never finish, for the same reason and with the same
   fix.
 - **The route.** `SummonRoute(agent_id, model, description)`
-  ([triage.py:43](../../octomate/schemas/triage.py#L43)), built from
-  `ReflexDeps.available_routes` ([graph.py:145](../../octomate/reflex/graph.py#L145)). The
+  ([triage.py:43](../../../octomate/schemas/triage.py#L43)), built from
+  `ReflexDeps.available_routes` ([graph.py:145](../../../octomate/reflex/graph.py#L145)). The
   `description` is one free-text string **per tentacle class**
-  ([agent/base.py:52](../../octomate/tentacles/agent/base.py#L52)), shared across every
+  ([agent/base.py:52](../../../octomate/tentacles/agent/base.py#L52)), shared across every
   model row of that agent. That is the entire existing notion of "what can this agent do".
 - **An in-process agent's approval resolves without the graph.** `Octomate.kick` hands a
   `DeferredActionBatchResponse` straight to `agent.pending[batch_id]`
-  ([base.py:142-155](../../octomate/base.py#L142-L155)) for any agent with
+  ([base.py:142-155](../../../octomate/base.py#L142-L155)) for any agent with
   `in_process = True` (claude, codex). This is why a commissioned claude can still ask a
   human for permission while its parent's tool call waits — and why a commissioned
   **inkling** asking a *question* cannot (UoW-3's deadlock).
@@ -194,7 +196,7 @@ independent of each other after it.
   `nested_turn_ids` stack meant "the boundary detection is done." **It detects a thing that
   does not happen** — see §5. It is not prior art; it is a bug.
 - **A render slot nothing fills.** `StreamBlockType`
-  ([feelers/output.py:152](../../octomate/tentacles/channel/feelers/output.py#L152)) already
+  ([feelers/output.py:152](../../../octomate/tentacles/channel/feelers/output.py#L152)) already
   reads `Literal["answer", "thinking", "tool_call", "tool_result", "subagent"]`. Nothing in
   the ingest or react path has ever produced a `subagent` block.
 
@@ -257,13 +259,13 @@ tree, so it names the tree and can never key a conversation.
 **A child gets its own conversation.** Not an aesthetic choice — three forcing reasons:
 
 1. **`Conversation.messages` is an unfiltered viewonly join through `agent_runs`**
-   ([conversation.py:70-78](../../octomate/models/conversation.py#L70-L78)). A child run in
+   ([conversation.py:70-78](../../../octomate/models/conversation.py#L70-L78)). A child run in
    the parent's conversation flattens its whole timeline into the parent agent's model
    history, on the next turn, silently. That is context poisoning, not a display bug.
 2. **`external_id` is one handle per conversation.** The child has its own transcript file
    and needs its own handle; there is no second slot.
 3. **`recover()` resumes from `max(end_offset)`**
-   ([tailer.py:273](../../octomate/tentacles/agent/claude/tailer.py#L273)). Parent and child
+   ([tailer.py:273](../../../octomate/tentacles/agent/claude/tailer.py#L273)). Parent and child
    offsets index **different files**. Mixed in one conversation, one `max()` spans two
    coordinate systems and strands turns — the precise failure invariant 4 of the ingest
    design exists to prevent. Separate conversations keep each `max()` inside one file.
@@ -316,7 +318,7 @@ A stronger claim than "we avoid it", and it holds for a different reason per age
 
 | agent | can its run return `DeferredToolRequests`? | why |
 |---|---|---|
-| **claude / codex** (commissioned or native) | **architecturally no** | they present approvals via `channel.feelers.present_actions` directly and park a future in `self.pending` ([claude/base.py:222](../../octomate/tentacles/agent/claude/base.py#L222), [codex/base.py:376](../../octomate/tentacles/agent/codex/base.py#L376)), resolved by `kick`. They **accept `deferred_suspender` and ignore it**, like every other pydantic-ai knob. A blocked in-process run is not a deferred run. |
+| **claude / codex** (commissioned or native) | **architecturally no** | they present approvals via `channel.feelers.present_actions` directly and park a future in `self.pending` ([claude/base.py:222](../../../octomate/tentacles/agent/claude/base.py#L222), [codex/base.py:376](../../../octomate/tentacles/agent/codex/base.py#L376)), resolved by `kick`. They **accept `deferred_suspender` and ignore it**, like every other pydantic-ai knob. A blocked in-process run is not a deferred run. |
 | **inkling** (commissioned) | yes — **so we take the tools away** | it is the only agent that defers at all. UoW-3 gives a commissioned run no suspender and no `ask_questions`; without them nothing can raise `CallDeferred`. |
 | native subagents (either runtime) | not our problem | the client asks its own human in its own terminal. We are recording, not driving. |
 
@@ -327,12 +329,12 @@ commission legitimately borrows the parent's surface for (UoW-3).
 
 ## 5. Codex — the same questions, different answers
 
-[native-session-ingest.md §8](done/native-session-ingest.md) told Codex to answer four
+[native-session-ingest.md §8](native-session-ingest.md) told Codex to answer four
 questions empirically rather than assume Claude's answers. Nobody did, and a **guess got
 written into the code as a comment** — which this plan then inherited as fact. Here are the
 answers, measured against 229 local rollouts and the docs.
 
-> The comment that misled two plans, [codex/tailer.py:221-224](../../octomate/tentacles/agent/codex/tailer.py#L221-L224):
+> The comment that misled two plans, [codex/tailer.py:221-224](../../../octomate/tentacles/agent/codex/tailer.py#L221-L224):
 > *"Subagents run inside their parent's turn and emit their own task boundaries into the same
 > rollout."* **Both clauses are false.** They do not run inside the parent's turn, and they
 > emit nothing into the parent's rollout. Delete it with the branch it justifies.
@@ -371,7 +373,7 @@ server). This is the design UoW-6 mirrors; read the code it names before writing
 
 | mechanism | where | the one sentence that matters |
 |---|---|---|
-| child cursor | `SubagentTail` in [claude/tailer.py](../../octomate/tentacles/agent/claude/tailer.py) | a child is **state on the session's tail, not a task** — own byte cursor, conversation, open turn; nothing to leak or orphan |
+| child cursor | `SubagentTail` in [claude/tailer.py](../../../octomate/tentacles/agent/claude/tailer.py) | a child is **state on the session's tail, not a task** — own byte cursor, conversation, open turn; nothing to leak or orphan |
 | discovery | `pump_subagents` | list `<session>/subagents/agent-*.jsonl` on every pump; the subagent pass runs **outside** the parent's no-new-bytes early return, because parent-quiet is when children are busiest |
 | liveness | `pump` + `poke_subagent` | children ride the parent's wake (events + 60s poll tick); hooks add precise pokes; child bytes also reset the idle-reclaim clock |
 | turn framing | `process_subagent_line` | close/open on **`promptId` change only** — child files have no `promptSource`, and a resumed child's turn 2 opens on a *tool-result* line (measured), so `begin_subagent_turn` seeds a prompt only when there is text and always consumes the opener |
@@ -379,12 +381,12 @@ server). This is the design UoW-6 mirrors; read the code it names before writing
 | parent links | same + `harvest_subagent_call` | `parent_run_id` = the child lines' own `promptId`; `parent_tool_call_id` harvested from the parent's `toolUseResult.agentId` tool-result line |
 | conversations | `pump_subagent` → `ensure(subagent_id=…, parent_conversation_id=…)` | child context is its own conversation; the manager refuses half-set identity |
 | ledger | — | children **never** touch it: no prompt, no answer, no rows |
-| hook dispatch | `handle` in [claude/ingest.py](../../octomate/tentacles/agent/claude/ingest.py) | any event carrying `agent_id` that is not `SubagentStart/Stop` fired *inside* a subagent → dropped before parent handlers |
+| hook dispatch | `handle` in [claude/ingest.py](../../../octomate/tentacles/agent/claude/ingest.py) | any event carrying `agent_id` that is not `SubagentStart/Stop` fired *inside* a subagent → dropped before parent handlers |
 | start | `on_subagent_start` | self-heals the session tail (a subagent proves its session is live), sketches iff `prompt_id` present, pokes the child |
 | stop | `on_subagent_stop` → `finish_subagent` | the child's finalize: drain, **settle**, commit; with nothing following → `recover` (which walks the subagents dir itself) |
 | path normalization | `session_transcript_path` | a subagent event may name the child's own file; derive the session's from it — never start a session tail on a child path |
 | the settle guard | `finish_subagent` + `subagent_settled` | see finding 2 below — this is the part a naive port will get wrong |
-| first-sighting race | `ensure_lock` in [managers/conversation.py](../../octomate/managers/conversation.py) | a hook poke and the follow task's prepare race one INSERT; the loser becomes a cache hit under the lock, not an IntegrityError that kills the loop |
+| first-sighting race | `ensure_lock` in [managers/conversation.py](../../../octomate/managers/conversation.py) | a hook poke and the follow task's prepare race one INSERT; the loser becomes a cache hit under the lock, not an IntegrityError that kills the loop |
 
 ### Live findings (2026-07-18, measured — not theory)
 
@@ -424,7 +426,7 @@ this plan. What you need:
   `last_assistant_message`, and your rollout writer is also not synchronous with the
   hook. Reuse the Claude settle pattern (fast-path match → byte quiescence → bounded
   timeout) rather than trusting the file at Stop; Claude's version is
-  `finish_subagent` in [claude/tailer.py](../../octomate/tentacles/agent/claude/tailer.py).
+  `finish_subagent` in [claude/tailer.py](../../../octomate/tentacles/agent/claude/tailer.py).
 - **House rules:** AGENTS.md at the repo root governs style and process — surgical
   changes, imports at top, no `typing.Any`, fail-fast. Verify with
   `uv run pytest -q && uv run ruff check . && uv run pyright` (29 pyright errors are
@@ -438,13 +440,13 @@ this plan. What you need:
 
 The spine. Ships alone; nothing below is possible without it.
 
-- **ORM** ([models/runs.py](../../octomate/models/runs.py)) — on `AgentRun`, so **both**
+- **ORM** ([models/runs.py](../../../octomate/models/runs.py)) — on `AgentRun`, so **both**
   variants carry it (an octomate child and an external child are the same relationship):
   - `parent_run_id: Mapped[str | None]` — self-FK to `agent_runs.id`, indexed.
     **`String`, not `Uuid`** — the PK is a pydantic-ai run id, not a native uuid column.
   - `parent_tool_call_id: Mapped[str | None]` — the `ToolCallPart.tool_call_id` in the
     parent's timeline this child answers. Binds a tool call to its subagent's run.
-- **ORM** ([models/conversation.py](../../octomate/models/conversation.py)):
+- **ORM** ([models/conversation.py](../../../octomate/models/conversation.py)):
   - `subagent_id: Mapped[str]` — indexed, **not** a FK, **empty (not NULL) for the
     agent's own conversation** — the `Thread.thread_id` sentinel convention, which is
     what lets the existing unique constraint simply widen to three columns. Set = one
@@ -476,7 +478,7 @@ The spine. Ships alone; nothing below is possible without it.
   - **Not `external_id`, though they often hold the same string.** For a native child both
     are the `agentId`/`thread_id`. They are different concepts: `external_id` is a
     *resumable handle*, rewritten on every `persist_run`
-    ([conversation.py:219-221](../../octomate/managers/conversation.py#L219-L221)); a
+    ([conversation.py:219-221](../../../octomate/managers/conversation.py#L219-L221)); a
     mutable column has no business in a unique index. And a commissioned child has an
     identity but no external session at all.
 - **Read paths that must be taught the child exists** — each is a live bug the moment
@@ -484,40 +486,40 @@ The spine. Ships alone; nothing below is possible without it.
 
   | site | today | after |
   |---|---|---|
-  | `Conversation.messages` ([conversation.py:70](../../octomate/models/conversation.py#L70)) | joins every run | unchanged — children live elsewhere, so it is already correct |
-  | `Conversation.runs` ([:57](../../octomate/models/conversation.py#L57)) | `order_by=started_at`, **nullable** | a child with `started_at=None` sorts ahead of the whole history. Date children the way the sketch is dated ([native-session-ingest.md §5](done/native-session-ingest.md)) |
-  | `AgentRun.messages` ([runs.py:63](../../octomate/models/runs.py#L63)) | `cascade="all"`, **not** `delete-orphan` | deleting a parent run will not reach its children; `model_messages.run_id` is NOT NULL, so a half-cascade raises `IntegrityError`. `record_external_run`'s delete-whole path ([conversation.py:172](../../octomate/managers/conversation.py#L172)) must account for children before it drops a sketch |
-  | `assembled()` ([tailer.py:60](../../octomate/tentacles/agent/claude/tailer.py#L60)) | per conversation | already correct once children are in their own conversation |
+  | `Conversation.messages` ([conversation.py:70](../../../octomate/models/conversation.py#L70)) | joins every run | unchanged — children live elsewhere, so it is already correct |
+  | `Conversation.runs` ([:57](../../../octomate/models/conversation.py#L57)) | `order_by=started_at`, **nullable** | a child with `started_at=None` sorts ahead of the whole history. Date children the way the sketch is dated ([native-session-ingest.md §5](native-session-ingest.md)) |
+  | `AgentRun.messages` ([runs.py:63](../../../octomate/models/runs.py#L63)) | `cascade="all"`, **not** `delete-orphan` | deleting a parent run will not reach its children; `model_messages.run_id` is NOT NULL, so a half-cascade raises `IntegrityError`. `record_external_run`'s delete-whole path ([conversation.py:172](../../../octomate/managers/conversation.py#L172)) must account for children before it drops a sketch |
+  | `assembled()` ([tailer.py:60](../../../octomate/tentacles/agent/claude/tailer.py#L60)) | per conversation | already correct once children are in their own conversation |
 
 - ⚠ **The live-client maps must be re-keyed, and this is the sharpest edge in UoW-1.**
   Both in-process tentacles cache their live client **by `thread_id`**, on an assumption
   this UoW deletes. Claude states it outright
-  ([claude/base.py:141-143](../../octomate/tentacles/agent/claude/base.py#L141-L143)):
+  ([claude/base.py:141-143](../../../octomate/tentacles/agent/claude/base.py#L141-L143)):
   *"keyed by thread_id — this tentacle owns one agent id, **so a thread names its
   conversation**"*. After UoW-1 a thread names **many** of its conversations.
 
   | | today | after UoW-1, unfixed |
   |---|---|---|
-  | claude ([base.py:488-492](../../octomate/tentacles/agent/claude/base.py#L488-L492)) | `live_clients[thread_id]`, and a new run **interrupts the previous one** for that thread | a commissioned claude **interrupts the user's own live claude run** in the same thread. Two concurrent commissions interrupt each other — **fan-out silently becomes serial-with-casualties** |
-  | codex ([base.py:160-168](../../octomate/tentacles/agent/codex/base.py#L160-L168)) | `clients[thread_id]`, an LRU pool of warm app-servers | two concurrent commissions share one client across two different Codex threads |
+  | claude ([base.py:488-492](../../../octomate/tentacles/agent/claude/base.py#L488-L492)) | `live_clients[thread_id]`, and a new run **interrupts the previous one** for that thread | a commissioned claude **interrupts the user's own live claude run** in the same thread. Two concurrent commissions interrupt each other — **fan-out silently becomes serial-with-casualties** |
+  | codex ([base.py:160-168](../../../octomate/tentacles/agent/codex/base.py#L160-L168)) | `clients[thread_id]`, an LRU pool of warm app-servers | two concurrent commissions share one client across two different Codex threads |
 
   The fix is small and the intent is already written down — claude's own comment one line
   up says *"**One live run per conversation**"*, which is exactly right and exactly not
   what the code does. **Key both maps by `conversation_id`.** Do it in UoW-1, with the
   schema change that invalidates the assumption, not in UoW-3 where the symptom appears.
-- **Transmuters** ([schemas/runs.py](../../octomate/schemas/runs.py),
-  [schemas/conversation.py](../../octomate/schemas/conversation.py)): add the fields. No new
+- **Transmuters** ([schemas/runs.py](../../../octomate/schemas/runs.py),
+  [schemas/conversation.py](../../../octomate/schemas/conversation.py)): add the fields. No new
   polymorphic identity — **a child is not a variant, it is a relationship.** `kind` stays
   `octomate | external`; an octomate child and an external child are both real and must
   both be expressible. (The superseded plan offered "a dedicated `SubagentRun` polymorphic
   identity" as an alternative — it would force the two axes into one column.)
-- **Manager** ([managers/conversation.py](../../octomate/managers/conversation.py)):
+- **Manager** ([managers/conversation.py](../../../octomate/managers/conversation.py)):
   `ensure(thread_id, *, agent_tentacle_id, subagent_id=None)`, threading through the
-  `ConversationKey` cache tuple ([conversation.py:59-65](../../octomate/schemas/conversation.py#L59-L65))
+  `ConversationKey` cache tuple ([conversation.py:59-65](../../../octomate/schemas/conversation.py#L59-L65))
   — it is a 2-tuple `(thread_id, agent_id)` today and must become a 3-tuple, or two
   subagents of the same agent in one thread collide **in the cache** while the database
   keeps them apart. `persist_run` is already generic over `RunT`
-  ([:196](../../octomate/managers/conversation.py#L196)) and needs nothing.
+  ([:196](../../../octomate/managers/conversation.py#L196)) and needs nothing.
 - **Migration**: the `7a3e9c1b2f8d` shape — hand-written, `op.add_column` ×3 +
   `op.create_index`; SQLite adds columns in place, so `model_messages`' FKs are untouched.
   The `conversations` unique-constraint swap **does** rebuild that table on SQLite; do it in
@@ -533,7 +535,7 @@ existing octomate + native paths pass untouched.
 > are inert under test. The self-FK will not be enforced there either. Test the cascade
 > behaviour explicitly rather than trusting the constraint.
 
-## UoW-2 — routes that claim what they are ✅ shipped
+## UoW-2 — routes that claim what they are ✅ shipped (`087c4e3`, refined `1230b6a`)
 
 > **As built, where it deviates from the sketch below:** the type is `AgentRoute`
 > (`Route` collides with the reflex graph's `Route` node); `Claim` is
@@ -578,7 +580,7 @@ class Route:                       # replaces SummonRoute
 ```
 
 - **Normalization is the whole point.** Codex speaks
-  `none|minimal|low|medium|high|xhigh` ([config/agents.py:43](../../octomate/config/agents.py#L43)),
+  `none|minimal|low|medium|high|xhigh` ([config/agents.py:43](../../../octomate/config/agents.py#L43)),
   inkling speaks `settings={"thinking": ...}`, Claude encodes it in the model name
   (`opusplan[1m]`). A caller must not have to know any of that. Each tentacle maps the
   normalized `Effort` onto its own knob; `Claim.efforts` says which ones it can honor.
@@ -586,14 +588,14 @@ class Route:                       # replaces SummonRoute
   it knows; `octomate.yaml` overrides per route. A new model added in config inherits a
   documented default rather than claiming nothing.
 - `scry` returns `list[Route]`; the gate instruction
-  ([gate.py:40](../../octomate/capabilities/gate.py#L40)) grows a line on reading a claim.
-  `summon` keeps its `Literal`-rewrite trick ([:96-103](../../octomate/capabilities/gate.py#L96-L103))
+  ([gate.py:40](../../../octomate/capabilities/gate.py#L40)) grows a line on reading a claim.
+  `summon` keeps its `Literal`-rewrite trick ([:96-103](../../../octomate/capabilities/gate.py#L96-L103))
   — it exists to keep the ~500-entry `KnownModelName` union out of the tool schema, and
   `commission` inherits the same hazard.
 
 **The open question of this UoW — settle it before writing code.** `AgentTentacle.run()` has
 no `effort` parameter, and the generic knob that exists (`model_settings`) is **explicitly
-ignored by claude and codex** ([claude/base.py:105-107](../../octomate/tentacles/agent/claude/base.py#L105-L107)).
+ignored by claude and codex** ([claude/base.py:105-107](../../../octomate/tentacles/agent/claude/base.py#L105-L107)).
 Three ways:
 
 | | cost | verdict |
@@ -606,7 +608,7 @@ Three ways:
 advertise differently; a caller-requested effort reaches the run on every tentacle, or is
 refused as unsupported by that route's claim; an unclaimed config model gets its class default.
 
-## UoW-3 — `commission` ✅ shipped
+## UoW-3 — `commission` ✅ shipped (`973c509`, refined `c32ea42`)
 
 > **Final naming (owner call):** the spells shipped as **`scheme`** (spawn — two
 > agents scheme on a topic without the user knowing) and **`whisper`** (a quiet
@@ -665,24 +667,24 @@ instead hands the conversation away permanently.
 
 **Where it lives.** `commission` is the gate's fourth spell, registered on the *same*
 `FunctionToolset(id=GATE_TOOLSET_ID)` that `__post_init__` builds for `scry` / `summon` /
-`teleport` ([gate.py:104-178](../../octomate/capabilities/gate.py#L104-L178)) — not a new
+`teleport` ([gate.py:104-178](../../../octomate/capabilities/gate.py#L104-L178)) — not a new
 capability. Routing is one concern; splitting it across two capabilities would mean two
 instruction blocks competing to explain one decision. Concretely:
 
 - `COMMISSION_TOOL_NAME = "commission"` beside the existing three names
-  ([gate.py:31-38](../../octomate/capabilities/gate.py#L31-L38)). **No `COMMISSION_KIND`** —
+  ([gate.py:31-38](../../../octomate/capabilities/gate.py#L31-L38)). **No `COMMISSION_KIND`** —
   a metadata kind exists to classify a *deferral* out of a finished run, and a commission
   never defers.
-- `GATE_INSTRUCTION` ([gate.py:40](../../octomate/capabilities/gate.py#L40)) grows a
+- `GATE_INSTRUCTION` ([gate.py:40](../../../octomate/capabilities/gate.py#L40)) grows a
   `### commission` section. It already opens with plain words for what each opaque spell
   does — keep that bargain, and lead the new section with the `summon` contrast rather
   than the mechanism.
-- It inherits `summon`'s `Literal`-rewrite ([gate.py:96-103](../../octomate/capabilities/gate.py#L96-L103),
-  [:165-169](../../octomate/capabilities/gate.py#L165-L169)): stamp the live route
+- It inherits `summon`'s `Literal`-rewrite ([gate.py:96-103](../../../octomate/capabilities/gate.py#L96-L103),
+  [:165-169](../../../octomate/capabilities/gate.py#L165-L169)): stamp the live route
   `agent_id` / `model` literals onto the signature before registration, or the ~500-entry
   `KnownModelName` union drowns the real routes in the tool schema.
 - `GateCapability` is constructed **fresh per `React` node execution**
-  ([graph.py:504](../../octomate/reflex/graph.py#L504)) and is already stateful (`summon`
+  ([graph.py:504](../../../octomate/reflex/graph.py#L504)) and is already stateful (`summon`
   mutates `decision`). A commission needs no new mutable field: unlike `summon`, it does
   not record a decision for the graph to read back — it returns its result inline.
 - `allow_here` has no analogue. A commission has no destination: it never lands on a
@@ -728,7 +730,7 @@ provide, at the only moment it is wanted.
 
 **History comes for free, and this is §4a paying off.** `commune` resolves the *same* child
 conversation, and a conversation **is** the history — every react node reads
-`conversation.messages` ([react.py:116-118](../../octomate/capabilities/react.py#L116-L118)).
+`conversation.messages` ([react.py:116-118](../../../octomate/capabilities/react.py#L116-L118)).
 Nothing is replayed by hand. For a commissioned claude/codex, the child conversation's
 `external_id` is its native session, so `resume=` continues it the same way. Had the
 conversation been keyed on `parent_run_id`, none of this would work — a follow-up in a later
@@ -761,12 +763,12 @@ the call this child answers. They are exactly `parent_run_id` and `parent_tool_c
 > the run itself**, which a tool cannot do from inside. A commission stays put.
 
 - **Only inkling can commission.** Claude and codex ignore injected capabilities
-  ([claude/base.py:105-107](../../octomate/tentacles/agent/claude/base.py#L105-L107)) —
+  ([claude/base.py:105-107](../../../octomate/tentacles/agent/claude/base.py#L105-L107)) —
   they cannot even `summon` today. They do not need to: they have native subagents, and
   UoW-4/5/6 records those. State this; do not try to fix it here.
 - **Rendering is out of scope.** The child's events do not stream to the channel in this
   UoW; the durable child run is enough. `StreamBlockType`'s unused `"subagent"` block
-  ([feelers/output.py:152](../../octomate/tentacles/channel/feelers/output.py#L152)) is
+  ([feelers/output.py:152](../../../octomate/tentacles/channel/feelers/output.py#L152)) is
   where that lands later.
 
 ### The guards — what a commissioned run is *not* given
@@ -782,7 +784,7 @@ applied.
 |---|---|---|
 | **`summon`** | it acts on a thread surface; a commission has none | the child hands away a conversation it does not own |
 | **`teleport`** | same | the child relocates a run nobody is reading |
-| **`ask_questions`** ([inkling/tools.py:12](../../octomate/tentacles/agent/inkling/tools.py#L12)) | **there is no user to ask** | ⚠ see below — this one *deadlocks* |
+| **`ask_questions`** ([inkling/tools.py:12](../../../octomate/tentacles/agent/inkling/tools.py#L12)) | **there is no user to ask** | ⚠ see below — this one *deadlocks* |
 | **a `deferred_suspender`** | the same reason | a batch is persisted and presented that nothing will ever resume |
 | **`commission`, past the depth cap** | bounded recursion | inkling → inkling → … , live at every level |
 
@@ -796,7 +798,7 @@ deferral it produces anyway surface as a tool failure the parent can see.
 
 **Approvals still work, and must.** A commissioned claude/codex needs permission to edit
 files, and `in_process` agents park a future in `pending` that `Octomate.kick` resolves
-directly ([base.py:142-155](../../octomate/base.py#L142-L155)) — no graph involved, so it
+directly ([base.py:142-155](../../../octomate/base.py#L142-L155)) — no graph involved, so it
 resolves cleanly while the parent awaits. That is the one thing a commission legitimately
 borrows the parent's surface for. It is also why "no user" is stated as "no thread": the
 distinction is load-bearing.
@@ -807,14 +809,14 @@ level. **At the cap, do not offer the tool** — drop `commission` from the chil
 rather than registering it and raising `ModelRetry`. A model cannot misuse a tool it never
 sees, and the retry budget is not spent teaching it a rule the schema could have stated.
 Self-commission is refused as `summon` already refuses it
-([gate.py:150](../../octomate/capabilities/gate.py#L150)); note this is **weaker than
+([gate.py:150](../../../octomate/capabilities/gate.py#L150)); note this is **weaker than
 summon's** guard, because A → B → A is a legal cycle that self-check alone does not catch —
 the depth cap is what actually bounds it.
 
 **Timeout.** A commissioned claude can run for many minutes holding the parent's tool call
 open. Bound it, and surface the expiry as a tool failure. `approval_timeout` is the existing
 precedent for "a wait that must not be unbounded"
-([config/agents.py:113](../../octomate/config/agents.py#L113)).
+([config/agents.py:113](../../../octomate/config/agents.py#L113)).
 
 **Restart is fail-fast, and now for free.** A commission in flight when Octomate dies dies
 with it — the parent run was in memory, and there is nothing to resume. No cleanup pass, no
@@ -852,10 +854,10 @@ Delete the lineage-reconstruction idea. Watch the directory.
    `ClaudeRunAccumulator`, framed on `\n`, cursored by byte offset, committed via
    `record_external_run` — the same translation, the same idempotency, the same sink. The
    *only* differences are turn framing (below) and that a child **never binds the ledger**
-   (`bind_ledger`, [tailer.py:512](../../octomate/tentacles/agent/claude/tailer.py#L512)):
+   (`bind_ledger`, [tailer.py:512](../../../octomate/tentacles/agent/claude/tailer.py#L512)):
    there is no human prompt and no human answer in a subagent.
 3. **Turn framing is different, and this is the sharp edge.** `promptSource` — the
-   marker the parent's framing keys on ([tailer.py:411](../../octomate/tentacles/agent/claude/tailer.py#L411))
+   marker the parent's framing keys on ([tailer.py:411](../../../octomate/tentacles/agent/claude/tailer.py#L411))
    — **is absent from subagent files entirely**. Not null: absent. And a subagent file is
    *not* one turn: **4 of 93** in the corpus carry more than one `promptId` (up to 3), from
    subagents resumed after their first result. So:
@@ -896,7 +898,7 @@ The live tier, and it maps one-to-one onto the tier that already works:
 | `Stop` | **`SubagentStop`** | `agent_id`, `agent_type`, `last_assistant_message` |
 
 Both are HTTP-deliverable. Add them to `HANDLED_HOOK_EVENTS`
-([hooks.py:18](../../octomate/tentacles/agent/claude/hooks.py#L18)) and to `ClaudeHookInput`
+([hooks.py:18](../../../octomate/tentacles/agent/claude/hooks.py#L18)) and to `ClaudeHookInput`
 as `agent_id` / `agent_type` (the envelope is `extra="ignore"`, so one model still validates
 every event). `SubagentStart` starts the child's tail; `SubagentStop` closes it.
 
@@ -904,12 +906,12 @@ every event). `SubagentStart` starts the child's tail; `SubagentStop` closes it.
   that is how a subagent's `PreToolUse` is told from the parent's. We handle neither, but
   the rule matters: **an event carrying `agent_id` is not a parent-turn event.** Without
   that guard a `Stop` from inside a subagent would close the parent's turn.
-- **The child sketch.** Same reasoning as the parent's ([native-session-ingest.md §5](done/native-session-ingest.md)):
+- **The child sketch.** Same reasoning as the parent's ([native-session-ingest.md §5](native-session-ingest.md)):
   `SubagentStart` writes a provisional child run so a subagent in flight has somewhere to
   hang; the tailer supersedes it with the full timeline. **Date it** — an undated run sorts
   ahead of the history it belongs at the end of.
 - **`driving` still suppresses.** A subagent of a session Octomate drives is still Octomate's
-  own work; the existing session claim ([ingest.py:100](../../octomate/tentacles/agent/claude/ingest.py#L100))
+  own work; the existing session claim ([ingest.py:100](../../../octomate/tentacles/agent/claude/ingest.py#L100))
   keys on `session_id`, and a subagent event carries the **parent's** `session_id` — so it is
   suppressed for free. Confirm with a test rather than trusting this sentence.
 
@@ -923,7 +925,7 @@ flagged for empirical verification — the ingest design has been burned before
    docs show `/path/to/transcript.jsonl` and do not say. If it is the child's, UoW-4 needs no
    directory discovery at all — the hook hands over the exact file. If it is the parent's,
    derive the child's from `<stem>/subagents/agent-<agent_id>.jsonl`. **Both must still pass
-   the transcript-root sandbox** ([ingest.py:183](../../octomate/tentacles/agent/claude/ingest.py#L183)):
+   the transcript-root sandbox** ([ingest.py:183](../../../octomate/tentacles/agent/claude/ingest.py#L183)):
    the path is the caller's claim, and the subagent dir is *inside* the accepted tree, so no
    root widening is needed — verify that, do not assume it.
 2. **Do `SubagentStart`/`SubagentStop` actually reach an `http` handler?** The docs say every
@@ -939,14 +941,14 @@ transcript closes; the child run exists from `SubagentStart` and is superseded, 
 duplicated, when the tailer commits; a `Stop` carrying `agent_id` never closes the parent's
 turn; an Octomate-driven session's subagents are not ingested.
 
-## UoW-6 — Codex subagents as child runs — **assigned to Codex; read §7 first**
+## UoW-6 — Codex subagents as child runs ✅ shipped (`0ed75bd`, by Codex)
 
 Ships last, as agreed. But it is **not** the small gap an earlier draft of this plan called
 it — that draft (and the code it trusted) had Codex's model exactly backwards. §5 has the
 corrected shape; this is the work.
 
 **Step 0 is a deletion.** Remove the nesting branch and `nested_turn_ids`
-([codex/tailer.py:216-245](../../octomate/tentacles/agent/codex/tailer.py#L216-L245), `:83`).
+([codex/tailer.py:216-245](../../../octomate/tentacles/agent/codex/tailer.py#L216-L245), `:83`).
 It detects a thing that does not happen and, per §5, is the mechanism of a live 24 % data
 loss. Its test, `test_nested_task_does_not_close_or_pollute_the_parent`
 (`tests/agent/test_codex_native_ingest.py:218`), pins the fiction — it must be **deleted, not
@@ -996,8 +998,8 @@ Then the actual capture:
    skip every line before the child's own first `task_started`.
 6. **Model the missing line kinds.** `compacted` (140 local) and
    `inter_agent_communication_metadata` (97) are absent from the `RolloutLine` union
-   ([codex/transcript.py:25](../../octomate/tentacles/agent/codex/transcript.py#L25)) and are
-   silently dropped at [tailer.py:202-205](../../octomate/tentacles/agent/codex/tailer.py#L202-L205).
+   ([codex/transcript.py:25](../../../octomate/tentacles/agent/codex/transcript.py#L25)) and are
+   silently dropped at [tailer.py:202-205](../../../octomate/tentacles/agent/codex/tailer.py#L202-L205).
    Harmless today; name them so the next reader knows they were seen and declined.
 
 **Hooks** (`SubagentStart` / `SubagentStop`) mirror UoW-5 with two Codex specifics:
@@ -1061,22 +1063,22 @@ guardian threads are **not** ingested; fork-replayed parent turns are not double
 
 | concern | file |
 |---|---|
-| the spellbook `commission` joins | [capabilities/gate.py](../../octomate/capabilities/gate.py) |
-| why a commission is *not* shaped like `teleport` | `TeleportRequest` in [reflex/suspender.py](../../octomate/reflex/suspender.py), `Teleport` in [reflex/graph.py](../../octomate/reflex/graph.py) |
-| the deferral a commissioned run must never reach | `HumanReviewSuspender` in [reflex/suspender.py](../../octomate/reflex/suspender.py), `ask_questions` in [inkling/tools.py](../../octomate/tentacles/agent/inkling/tools.py) |
-| in-process approval resolution (why claude's cards still work) | `kick` in [base.py](../../octomate/base.py) |
+| the spellbook `commission` joins | [capabilities/gate.py](../../../octomate/capabilities/gate.py) |
+| why a commission is *not* shaped like `teleport` | `TeleportRequest` in [reflex/suspender.py](../../../octomate/reflex/suspender.py), `Teleport` in [reflex/graph.py](../../../octomate/reflex/graph.py) |
+| the deferral a commissioned run must never reach | `HumanReviewSuspender` in [reflex/suspender.py](../../../octomate/reflex/suspender.py), `ask_questions` in [inkling/tools.py](../../../octomate/tentacles/agent/inkling/tools.py) |
+| in-process approval resolution (why claude's cards still work) | `kick` in [base.py](../../../octomate/base.py) |
 | tool-call concurrency + `RunContext` ids (the two facts UoW-3 rests on) | `pydantic_ai/tool_manager.py`, `pydantic_ai/_run_context.py` |
-| the run + conversation model to extend | [models/runs.py](../../octomate/models/runs.py), [models/conversation.py](../../octomate/models/conversation.py) |
-| the durable sink and its idempotency rule | `record_external_run` in [managers/conversation.py](../../octomate/managers/conversation.py) |
-| the skip that stops being load-bearing | [claude/tailer.py:402-420](../../octomate/tentacles/agent/claude/tailer.py#L402-L420) |
-| turn framing, commit, recover | [claude/tailer.py](../../octomate/tentacles/agent/claude/tailer.py) |
-| hook payload model + event list | [claude/hooks.py](../../octomate/tentacles/agent/claude/hooks.py) |
-| the sandbox any subagent path must pass | `transcript_roots` in [claude/ingest.py](../../octomate/tentacles/agent/claude/ingest.py) |
-| the false comment + the branch to delete | [codex/tailer.py:216-245](../../octomate/tentacles/agent/codex/tailer.py#L216-L245) |
-| the live abort bug (§1b) | `task_complete` in [codex/tailer.py:260-266](../../octomate/tentacles/agent/codex/tailer.py#L260-L266) |
-| the rollout line kinds we model — and the two we do not | [codex/transcript.py:25](../../octomate/tentacles/agent/codex/transcript.py#L25) |
-| Codex's 10 hook events, of which we handle 3 | [codex/hooks.py](../../octomate/tentacles/agent/codex/hooks.py), `HookEventName` in `openai_codex/generated/v2_all.py:1466-1476` |
-| the ingest design this extends | [native-session-ingest.md](done/native-session-ingest.md) |
+| the run + conversation model to extend | [models/runs.py](../../../octomate/models/runs.py), [models/conversation.py](../../../octomate/models/conversation.py) |
+| the durable sink and its idempotency rule | `record_external_run` in [managers/conversation.py](../../../octomate/managers/conversation.py) |
+| the skip that stops being load-bearing | [claude/tailer.py:402-420](../../../octomate/tentacles/agent/claude/tailer.py#L402-L420) |
+| turn framing, commit, recover | [claude/tailer.py](../../../octomate/tentacles/agent/claude/tailer.py) |
+| hook payload model + event list | [claude/hooks.py](../../../octomate/tentacles/agent/claude/hooks.py) |
+| the sandbox any subagent path must pass | `transcript_roots` in [claude/ingest.py](../../../octomate/tentacles/agent/claude/ingest.py) |
+| the false comment + the branch to delete | [codex/tailer.py:216-245](../../../octomate/tentacles/agent/codex/tailer.py#L216-L245) |
+| the live abort bug (§1b) | `task_complete` in [codex/tailer.py:260-266](../../../octomate/tentacles/agent/codex/tailer.py#L260-L266) |
+| the rollout line kinds we model — and the two we do not | [codex/transcript.py:25](../../../octomate/tentacles/agent/codex/transcript.py#L25) |
+| Codex's 10 hook events, of which we handle 3 | [codex/hooks.py](../../../octomate/tentacles/agent/codex/hooks.py), `HookEventName` in `openai_codex/generated/v2_all.py:1466-1476` |
+| the ingest design this extends | [native-session-ingest.md](native-session-ingest.md) |
 | the migration shape to copy | `migrations/versions/2026_07_15_1530-7a3e9c1b2f8d_external_agent_run_variant.py` |
 
 The tests are the specification: each one names the failure it prevents.
