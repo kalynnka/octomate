@@ -13,7 +13,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
-from octomate.capabilities.gate import SCRY_TOOL_NAME, GateCapability
+from octomate.capabilities.gate import SCRY_TOOL_NAME, GatewayCapability
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
@@ -22,7 +22,9 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.triage import SummonDestination
+from pydantic_ai.settings import ThinkingEffort
+
+from octomate.schemas.triage import Claim, SummonDestination
 from octomate.reflex import (
     DeferredResult,
     SummonDecision,
@@ -161,12 +163,14 @@ def _deferred_results() -> DeferredToolResults:
 def _summon(
     agent_id: str = "other",
     destination: SummonDestination = "thread",
+    effort: ThinkingEffort | None = None,
 ) -> SummonDecision:
     return SummonDecision(
         action="summon",
         agent_id=agent_id,
         model="test",
         destination=destination,
+        effort=effort,
         reason="needs work",
         hint="Working on it",
         summon="Please debug this in reception.",
@@ -196,11 +200,11 @@ def _two_reception_config(*, stream: bool) -> ChannelConfig:
     )
 
 
-def _recorded_gate_capability(run: RecordedRun) -> GateCapability:
+def _recorded_gate_capability(run: RecordedRun) -> GatewayCapability:
     gates = [
         capability
         for capability in run.capabilities
-        if isinstance(capability, GateCapability)
+        if isinstance(capability, GatewayCapability)
     ]
     assert len(gates) == 1
     return gates[0]
@@ -230,6 +234,43 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
 
     assert [(route.agent_id, route.model) for route in routes] == [("other", "test")]
     assert deps.available_routes["chan1"] is routes
+
+
+def test_available_routes_resolve_claims() -> None:
+    # Claims are the agent's to make: an agent-config override wins; without one,
+    # the tentacle's table answers — and for a model the table does not know, the
+    # documented default built on its description.
+    override = Claim(ability="acme monorepo work", efforts=("high",))
+    channel = FakeChannelTentacle(
+        id="chan1",
+        config=ChannelConfig(
+            type="fake",
+            agents=[
+                AgentModelConfig(agent="other", model="test"),
+                AgentModelConfig(agent="second", model="test"),
+            ],
+        ),
+    )
+    other = FakeAgent(id="other")
+    second = FakeAgent(id="second")
+    second.config_claims = {"test": override}
+    deps = ReflexDeps(
+        channels={"chan1": channel},
+        agents={"other": other, "second": second},
+        conversation_manager=FakeConversationManager(),
+        thread_manager=FakeThreadManager(),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
+    )
+
+    default_claim, overridden_claim = (
+        route.claim for route in deps.available_routes["chan1"]
+    )
+
+    assert default_claim == Claim(
+        ability=other.description,
+        efforts=("minimal", "low", "medium", "high", "xhigh"),
+    )
+    assert overridden_claim == override
 
 
 async def test_route_runs_entry_agent_directly() -> None:
@@ -295,6 +336,30 @@ async def test_reception_mounts_gate_capability() -> None:
     assert gate.toolset is not None
     scry = gate.toolset.tools[SCRY_TOOL_NAME].function
     assert await scry(FAKE_CONTEXT) == []
+
+
+async def test_react_passes_the_decision_effort_to_the_run() -> None:
+    address = _key()
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    target = _source_target(address)
+
+    await reflex_graph.run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(effort="high")
+        ),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    assert agent.turns[0].effort == "high"
 
 
 async def test_reception_allow_here_false_on_group_main() -> None:

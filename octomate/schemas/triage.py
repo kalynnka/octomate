@@ -5,7 +5,9 @@ from typing import Literal, NamedTuple
 
 from pydantic import BaseModel
 
-from octomate.config.agents import AgentRouteModelName
+from pydantic_ai.settings import ThinkingEffort
+
+from octomate.config.agents import AgentRouteModelName, Claim
 
 ResponseTargetMode = Literal["main", "sub"]
 # Where a summon lands: `here` transmits ownership of the current thread in place;
@@ -19,7 +21,7 @@ SummonDestination = Literal["here", "thread"]
 RunName = Literal["react", "summon", "teleport", "resume"]
 
 
-class SummonRouteKey(NamedTuple):
+class AgentRouteKey(NamedTuple):
     agent_id: str
     model: AgentRouteModelName
 
@@ -32,23 +34,28 @@ class SummonDecision(BaseModel):
     agent_id: str
     model: AgentRouteModelName
     destination: SummonDestination = "thread"
+    effort: ThinkingEffort | None = None
     hint: str
     summon: str
 
     @property
-    def key(self) -> SummonRouteKey:
-        return SummonRouteKey(agent_id=self.agent_id, model=self.model)
+    def key(self) -> AgentRouteKey:
+        return AgentRouteKey(agent_id=self.agent_id, model=self.model)
 
 
 @dataclass(frozen=True)
-class SummonRoute:
+class AgentRoute:
+    """A summonable (agent, model) pair and the claim it advertises. Agents
+    advertise; the caller requests — the claim publishes the space this route
+    supports, and a caller picks a point in it."""
+
     agent_id: str
     model: AgentRouteModelName
-    description: str
+    claim: Claim
 
     @property
-    def key(self) -> SummonRouteKey:
-        return SummonRouteKey(agent_id=self.agent_id, model=self.model)
+    def key(self) -> AgentRouteKey:
+        return AgentRouteKey(agent_id=self.agent_id, model=self.model)
 
     def __str__(self) -> str:
-        return f"- agent_id={self.agent_id}, model={self.model!r}: {self.description}"
+        return f"- agent_id={self.agent_id}, model={self.model!r}: {self.claim}"

@@ -881,3 +881,13 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
     # Exiting the tentacle drains the pool, closing every warm client.
     assert FakeCodex.closed == 2
     assert tentacle.pool is None
+
+
+def test_model_claims_cover_every_shipped_model_and_differ() -> None:
+    """Every model the class ships in its config default advertises a claim of its
+    own — the point of per-route claims is that two models of one agent no longer
+    advertise identically."""
+    assert CodexConfig().models <= CodexTentacle.model_claims.keys()
+    pro = CodexTentacle.model_claims["gpt-5.5-pro"]
+    mini = CodexTentacle.model_claims["gpt-5.1-codex-mini"]
+    assert pro.ability != mini.ability

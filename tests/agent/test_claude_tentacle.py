@@ -26,7 +26,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate import Octomate
-from octomate.config.agents import ClaudeCodeConfig, ClaudeSSHConfig
+from octomate.config.agents import Claim, ClaudeCodeConfig, ClaudeSSHConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.agent.claude.transport import SSHTransport
 from octomate.schemas.triage import SummonDecision
@@ -452,3 +452,24 @@ async def test_completed_run_releases_its_client(
     # on its own — no manual deregistration.
     gc.collect()
     assert len(tentacle.live_clients) == 0
+
+
+def test_config_claims_beat_the_class_table() -> None:
+    override = Claim(ability="acme monorepo work", efforts=("high",))
+    tentacle = _tentacle(
+        FakeConversationManager(),
+        config=ClaudeCodeConfig(claims={"haiku": override}),
+    )
+
+    assert tentacle.claim("haiku") == override
+    assert tentacle.claim("opus") == ClaudeCodeTentacle.model_claims["opus"]
+
+
+def test_model_claims_cover_every_shipped_model_and_differ() -> None:
+    """Every model the class ships in its config default advertises a claim of its
+    own — the point of per-route claims is that two models of one agent no longer
+    advertise identically."""
+    assert ClaudeCodeConfig().models <= ClaudeCodeTentacle.model_claims.keys()
+    opus = ClaudeCodeTentacle.model_claims["opus[1m]"]
+    haiku = ClaudeCodeTentacle.model_claims["haiku"]
+    assert opus.ability != haiku.ability

@@ -6,7 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Self, TypeAlias, overload
+from typing import TYPE_CHECKING, ClassVar, Self, TypeAlias, overload
 
 from pydantic_ai import (
     AgentCapability,
@@ -27,6 +27,7 @@ from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
+from pydantic_ai.settings import ModelSettings, ThinkingEffort, merge_model_settings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
@@ -44,6 +45,7 @@ from octomate.capabilities.react import (
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
+from octomate.schemas.triage import Claim
 from octomate.telemetry import inkling_logfire
 from octomate.tentacles.agent.base import (
     AgentSpecInput,
@@ -77,6 +79,18 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         "coordinating multi-step work."
     )
 
+    model_claims: ClassVar[dict[str, Claim]] = {
+        "deepseek:deepseek-v4-flash": Claim(
+            ability="Quick general assistant for everyday questions, chat, and "
+            "light coordination.",
+            efforts=("minimal", "low", "medium"),
+        ),
+        "deepseek:deepseek-v4-pro": Claim(
+            ability="General assistant for writing, analysis, and coordinating "
+            "multi-step work.",
+        ),
+    }
+
     _exit_stack: AsyncExitStack = field(init=False)
     toolsets: list[AbstractToolset[None]] = field(init=False)
 
@@ -94,6 +108,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_manager: ConversationManager | None = None,
         deferred_resolver: DeferredResolver | None = None,
         description: str | None = None,
+        claims: Mapping[KnownModelName, Claim] | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.models = dict(models or {})
@@ -117,6 +132,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self.conversation_manager = conversation_manager or octomate.conversations
         self.deferred_resolver = deferred_resolver
         self.description = description or self.description
+        self.config_claims = {
+            model: claim for model, claim in (claims or {}).items()
+        }
         self._exit_stack = AsyncExitStack()
         self.toolsets = list(toolsets or [])
 
@@ -188,6 +206,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -217,6 +236,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -245,6 +265,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -271,6 +292,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             deferred_tool_results=deferred_tool_results,
             deferred_suspender=deferred_suspender,
             model=model,
+            effort=effort,
             instructions=instructions,
             deps=deps,
             model_settings=model_settings,
@@ -304,6 +326,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -332,6 +355,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -359,6 +383,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -384,6 +409,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 deferred_tool_results=deferred_tool_results,
                 deferred_suspender=deferred_suspender,
                 model=model,
+                effort=effort,
                 instructions=instructions,
                 deps=deps,
                 model_settings=model_settings,
@@ -412,6 +438,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None,
         deferred_suspender: DeferredSuspender | None,
         model: Model | KnownModelName | str | None,
+        effort: ThinkingEffort | None,
         instructions: AgentInstructions[None],
         deps: None,
         model_settings: AgentModelSettings[None] | None,
@@ -429,6 +456,17 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         None,
     ]:
         resolved_run_name = run_name or "react"
+        # Effort IS pydantic-ai's `thinking` scale; pass it through, layered over
+        # any run settings the caller passed. The library maps a grade a provider
+        # lacks to its closest available one.
+        if effort is not None:
+            if callable(model_settings):
+                raise ValueError(
+                    "effort cannot be combined with callable model_settings"
+                )
+            model_settings = merge_model_settings(
+                model_settings, ModelSettings(thinking=effort)
+            )
         react_output_type: OutputSpec[InklingOutput | RunOutputDataT] = (
             [str, list[MessageSegment], DeferredToolRequests]
             if output_type is None

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
 
 from octomate.config.observability import LogfireConfig
+from octomate.schemas.triage import Claim
 from octomate.config import (
     AgentModelConfig,
     ChannelsConfig,
@@ -610,3 +611,23 @@ def test_logfire_instrumentation_defaults_off() -> None:
     assert not instrument.pydantic_ai
     assert not instrument.httpx
     assert not instrument.sqlalchemy
+
+
+def test_agent_claims_override_parses_from_config() -> None:
+    config = CodexConfig.model_validate(
+        {
+            "claims": {
+                "gpt-5.5": {
+                    "ability": "Deep repository work in the acme monorepo.",
+                    "efforts": ["low", "medium", "high"],
+                }
+            }
+        }
+    )
+
+    assert config.claims == {
+        "gpt-5.5": Claim(
+            ability="Deep repository work in the acme monorepo.",
+            efforts=("low", "medium", "high"),
+        )
+    }

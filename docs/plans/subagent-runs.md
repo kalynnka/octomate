@@ -1,7 +1,8 @@
 # Plan: Subagent runs — commissioned agents, claimed routes, and native subagent ingest
 
 > **Status:** in progress · **Owner:** @luhui · **Created:** 2026-07-17
-> **Shipped:** §1b abort fix (`2c9c3cc`) · UoW-1 run tree (`f90394f`) · UoW-4 subagent
+> **Shipped:** §1b abort fix (`2c9c3cc`) · UoW-1 run tree (`f90394f`) · UoW-2
+> route claims + effort (see the UoW-2 as-built note) · UoW-4 subagent
 > transcripts (`7241206`) · UoW-5 subagent hooks (`56c1c5b`) + live settle fix
 > (`5ac54e0`). **Live-verified** end to end against a running server on 2026-07-18 —
 > findings folded into §6. UoW-2/3 deferred by owner; **UoW-6 is handed to Codex** —
@@ -532,7 +533,19 @@ existing octomate + native paths pass untouched.
 > are inert under test. The self-FK will not be enforced there either. Test the cascade
 > behaviour explicitly rather than trusting the constraint.
 
-## UoW-2 — routes that claim what they are
+## UoW-2 — routes that claim what they are ✅ shipped
+
+> **As built, where it deviates from the sketch below:** the type is `AgentRoute`
+> (`Route` collides with the reflex graph's `Route` node); `Claim` is
+> `(ability, efforts)` — `cost` was dropped by owner call; `Effort` is not our own
+> Literal but pydantic-ai's five-grade `ThinkingEffort`, and `Claim.efforts` defaults
+> to the full scale via `get_args`; claim overrides live in the **agent's** config
+> block (`agents.<id>.claims`, per model), not per channel — channels only choose
+> which routes to expose; the capability is now `GatewayCapability` and its route
+> list `other_routes`. Effort mapping: Claude maps `minimal`→`low` (no `max`
+> offered), Codex passes through natively, inkling hands it to `thinking` and the
+> library maps unsupported grades per provider. `summon` takes optional `effort`,
+> set only when the user explicitly asked for a level.
 
 Today a route is `(agent_id, model, description)` and the description is one string per
 **agent class**, so `codex/gpt-5.1-codex-mini` and `codex/gpt-5.5-pro` advertise identically

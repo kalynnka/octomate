@@ -18,7 +18,7 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.capabilities.events import StreamEvents
-from octomate.capabilities.gate import GateCapability
+from octomate.capabilities.gate import GatewayCapability
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
@@ -32,7 +32,7 @@ from octomate.schemas.triage import (
     ResponseTargetMode,
     RunName,
     SummonDecision,
-    SummonRoute,
+    AgentRoute,
 )
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.agent.base import AgentTentacle
@@ -96,7 +96,7 @@ class ReflexState:
     run_name: RunName = "react"
     decision: SummonDecision | None = None
     targets: dict[str, ResponseTarget] = field(default_factory=dict)
-    summon_routes: list[SummonRoute] = field(default_factory=list)
+    summon_routes: list[AgentRoute] = field(default_factory=list)
     thread: Thread | None = None
     trigger_thread_message_id: uuid.UUID | None = None
     source_thread_address: ChannelAddress | None = None
@@ -143,17 +143,17 @@ class ReflexDeps:
         ]
 
     @cached_property
-    def available_routes(self) -> dict[str, list[SummonRoute]]:
-        available: dict[str, list[SummonRoute]] = {}
+    def available_routes(self) -> dict[str, list[AgentRoute]]:
+        available: dict[str, list[AgentRoute]] = {}
         for channel_id in self.channels:
-            routes: list[SummonRoute] = []
+            routes: list[AgentRoute] = []
             for agent_config in self.agent_configs(channel_id):
                 agent = self.agent(agent_config.agent)
                 routes.append(
-                    SummonRoute(
+                    AgentRoute(
                         agent_id=agent_config.agent,
                         model=agent_config.model,
-                        description=agent.description,
+                        claim=agent.claim(agent_config.model),
                     )
                 )
             available[channel_id] = routes
@@ -501,7 +501,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         state.summon_routes = routes
         # `summon here` is refused on a group main (Case 1): pinning an owner there
         # would route every gated-in message, from any user, to one agent.
-        gate = GateCapability(
+        gate = GatewayCapability(
             routes=routes,
             current_agent_id=agent.id,
             allow_here=not (target_address.is_group and not target_address.thread_id),
@@ -554,6 +554,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         source_thread_message_ids=state.source_thread_message_ids,
                         run_name=state.run_name,
                         model=run_model,
+                        effort=decision.effort,
                         deferred_tool_results=deferred_results,
                         deferred_suspender=suspender,
                         capabilities=[gate],
@@ -616,6 +617,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     source_thread_message_ids=state.source_thread_message_ids,
                     run_name=state.run_name,
                     model=run_model,
+                    effort=decision.effort,
                     deferred_tool_results=deferred_results,
                     deferred_suspender=suspender,
                     capabilities=[gate],

@@ -46,9 +46,11 @@ from octomate.capabilities.gate import (
     SUMMON_TOOL_NAME,
     TELEPORT_KIND,
     TELEPORT_TOOL_NAME,
-    GateCapability,
+    GatewayCapability,
 )
 from octomate.schemas.conversation import ChannelAddress
+from pydantic_ai.settings import ThinkingEffort
+
 from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.inkling import inkling_toolset
@@ -89,6 +91,7 @@ class RecordedRun:
     source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
     deferred_results: DeferredToolResults | None = None
     model: Model | str | None = None
+    effort: ThinkingEffort | None = None
     capabilities: list[AgentCapability[None]] = field(default_factory=list)
 
 
@@ -132,6 +135,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         run_name: str | None = None,
         output_type: OutputSpec[FakeRunOutput] | None = None,
         model: Model | str | None = None,
+        effort: ThinkingEffort | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
@@ -149,6 +153,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
                 model=model,
+                effort=effort,
                 capabilities=list(capabilities or []),
             )
         )
@@ -164,7 +169,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 (
                     capability
                     for capability in capabilities or []
-                    if isinstance(capability, GateCapability)
+                    if isinstance(capability, GatewayCapability)
                 ),
                 None,
             )
@@ -197,6 +202,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         source_thread_message_ids: Sequence[uuid.UUID] | None = None,
         run_name: str | None = None,
         model: Model | str | None = None,
+        effort: ThinkingEffort | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
@@ -213,6 +219,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
                 model=model,
+                effort=effort,
                 capabilities=list(capabilities or []),
             )
         )
@@ -226,7 +233,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                     (
                         capability
                         for capability in capabilities or []
-                        if isinstance(capability, GateCapability)
+                        if isinstance(capability, GatewayCapability)
                     ),
                     None,
                 )

@@ -11,25 +11,38 @@ from octomate.capabilities.gate import (
     SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
-    GateCapability,
+    GatewayCapability,
 )
-from octomate.schemas.triage import SummonDecision, SummonDestination, SummonRoute
+from pydantic_ai.settings import ThinkingEffort
+
+from octomate.schemas.triage import (
+    AgentRoute,
+    Claim,
+    SummonDecision,
+    SummonDestination,
+)
 
 FAKE_CONTEXT = cast(RunContext[None], None)
 
 
-def _capability(allow_here: bool = True) -> GateCapability:
-    return GateCapability(
+CLAUDE_CLAIM = Claim(ability="coding work", efforts=("medium", "high"))
+
+
+def _capability(allow_here: bool = True) -> GatewayCapability:
+    return GatewayCapability(
         routes=[
-            SummonRoute(
+            AgentRoute(
                 agent_id="claude",
                 model="opus",
-                description="coding work",
+                claim=CLAUDE_CLAIM,
             ),
-            SummonRoute(
+            AgentRoute(
                 agent_id="inkling",
                 model="flash",
-                description="current agent",
+                claim=Claim(
+                    ability="current agent",
+                    efforts=("low", "medium", "high"),
+                ),
             ),
         ],
         current_agent_id="inkling",
@@ -41,12 +54,14 @@ def _decision(
     agent_id: str = "claude",
     model: str = "opus",
     destination: SummonDestination = "thread",
+    effort: ThinkingEffort | None = None,
 ) -> SummonDecision:
     return SummonDecision(
         action="summon",
         agent_id=agent_id,
         model=model,
         destination=destination,
+        effort=effort,
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
@@ -112,7 +127,7 @@ def test_gate_instruction_explains_each_spell_in_plain_words() -> None:
     assert "target_id" not in instructions
 
 
-async def test_scry_tool_returns_summonable_routes() -> None:
+async def test_scry_tool_returns_other_routes() -> None:
     capability = _capability()
     assert capability.toolset is not None
     scry = capability.toolset.tools[SCRY_TOOL_NAME].function
@@ -120,10 +135,10 @@ async def test_scry_tool_returns_summonable_routes() -> None:
     routes = await scry(FAKE_CONTEXT)
 
     assert routes == [
-        SummonRoute(
+        AgentRoute(
             agent_id="claude",
             model="opus",
-            description="coding work",
+            claim=CLAUDE_CLAIM,
         )
     ]
 
@@ -160,6 +175,44 @@ async def test_summon_tool_retries_invalid_route() -> None:
             hint="Working on it",
             summon="Please investigate the failing test.",
         )
+
+
+async def test_summon_carries_a_claimed_effort() -> None:
+    capability = _capability()
+    assert capability.toolset is not None
+    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+
+    await summon(
+        FAKE_CONTEXT,
+        agent_id="claude",
+        model="opus",
+        destination="thread",
+        reason="needs coding",
+        hint="Working on it",
+        summon="Please investigate the failing test.",
+        effort="high",
+    )
+
+    assert capability.decision == _decision(effort="high")
+
+
+async def test_summon_refuses_an_unclaimed_effort() -> None:
+    capability = _capability()
+    assert capability.toolset is not None
+    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+
+    with pytest.raises(ModelRetry, match="does not accept effort 'low'"):
+        await summon(
+            FAKE_CONTEXT,
+            agent_id="claude",
+            model="opus",
+            destination="thread",
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+            effort="low",
+        )
+    assert capability.decision is None
 
 
 async def test_summon_here_refused_when_disallowed() -> None:

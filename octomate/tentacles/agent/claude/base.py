@@ -69,6 +69,9 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
+from pydantic_ai.settings import ThinkingEffort
+
+from octomate.schemas.triage import Claim
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
@@ -124,6 +127,47 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         "code repository."
     )
 
+    # Every route accepts the full effort scale: the SDK `effort` knob is
+    # model-independent, so only the ability varies per model.
+    model_claims: ClassVar[dict[str, Claim]] = {
+        "best": Claim(
+            ability="Frontier coding agent for the hardest engineering and "
+            "debugging problems.",
+        ),
+        "fable": Claim(
+            ability="Frontier coding agent for the hardest engineering and "
+            "debugging problems.",
+        ),
+        "opus": Claim(
+            ability="Coding agent for deep, multi-step engineering across a "
+            "repository.",
+        ),
+        "opus[1m]": Claim(
+            ability="Coding agent for deep, multi-step engineering across a "
+            "repository, with a 1M-token context for large codebases.",
+        ),
+        "opusplan": Claim(
+            ability="Coding agent that plans before building; for large changes "
+            "that need a design pass first.",
+        ),
+        "opusplan[1m]": Claim(
+            ability="Coding agent that plans before building, with a 1M-token "
+            "context; for large changes across a big codebase.",
+        ),
+        "sonnet": Claim(
+            ability="Coding agent for everyday software tasks and mid-sized "
+            "changes.",
+        ),
+        "sonnet[1m]": Claim(
+            ability="Coding agent for everyday software tasks and mid-sized "
+            "changes, with a 1M-token context for large codebases.",
+        ),
+        "haiku": Claim(
+            ability="Fast coding agent for small, well-scoped fixes and "
+            "repository chores.",
+        ),
+    }
+
     def __init__(
         self,
         id: str,
@@ -138,6 +182,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.hook_secret = hook_secret
         self.description = description or self.description
         self.pending = {}
+        self.config_claims = {model: claim for model, claim in config.claims.items()}
         # One live Claude client per conversation, keyed by conversation id: a new
         # turn interrupts the prior run for the same conversation (Phase 6). Not
         # thread id — a thread also holds subagent conversations, whose runs must
@@ -275,6 +320,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
@@ -429,6 +475,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         options = ClaudeAgentOptions(
             cwd=self.config.cwd,
             model=cli_model,
+            # The SDK scale has no `minimal` (and a `max` tier Octomate does not
+            # offer); minimal maps down to low, the rest pass through. None
+            # leaves the CLI default.
+            effort="low" if effort == "minimal" else effort,
             permission_mode=SDK_PERMISSION_MODE[conversation.permission_mode],
             max_turns=self.config.max_turns,
             resume=conversation.external_id,
@@ -569,6 +619,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -598,6 +649,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -626,6 +678,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -677,6 +730,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -705,6 +759,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -732,6 +787,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -755,6 +811,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 run_name=run_name,
                 output_type=output_type,
                 model=model,
+                effort=effort,
                 instructions=instructions,
                 capabilities=capabilities,
             )

@@ -64,6 +64,9 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
+from pydantic_ai.settings import ThinkingEffort
+
+from octomate.schemas.triage import Claim
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.codex.adapter import (
@@ -263,6 +266,39 @@ class CodexTentacle(AgentTentacle[str, None]):
         "Codex coding agent for repository-aware software engineering tasks."
     )
 
+    # Every route accepts the full effort scale: `turn(effort=...)` is
+    # model-independent, so only the ability varies per model.
+    model_claims: ClassVar[dict[str, Claim]] = {
+        "gpt-5.6-sol": Claim(
+            ability="Frontier Codex agent for the hardest engineering and "
+            "debugging problems.",
+        ),
+        "gpt-5.6-terra": Claim(
+            ability="Codex agent for everyday software engineering and mid-sized "
+            "changes.",
+        ),
+        "gpt-5.6-luna": Claim(
+            ability="Fast Codex agent for small, well-scoped fixes and "
+            "repository chores.",
+        ),
+        "gpt-5.5": Claim(
+            ability="Codex agent for general software engineering across a "
+            "repository.",
+        ),
+        "gpt-5.5-pro": Claim(
+            ability="Deep-reasoning Codex agent for large, difficult engineering "
+            "work across a repository.",
+        ),
+        "gpt-5.3-codex": Claim(
+            ability="Codex agent tuned for hands-on coding tasks and mid-sized "
+            "changes.",
+        ),
+        "gpt-5.1-codex-mini": Claim(
+            ability="Fast Codex agent for small, well-scoped code edits and "
+            "quick fixes.",
+        ),
+    }
+
     def __init__(
         self,
         id: str,
@@ -280,6 +316,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.live_turns = {}
         self.bridge_contexts = {}
         self.pending = {}
+        self.config_claims = {model: claim for model, claim in config.claims.items()}
         self.models = {model: model for model in config.models}
         self.session_locks = SessionLocks()
         self.session_tailer = CodexTranscriptTailer(
@@ -680,6 +717,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
@@ -742,9 +780,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             if self.config.personality is not None
             else None
         )
-        effort = (
-            ReasoningEffort(self.config.effort)
-            if self.config.effort is not None
+        # The caller's normalized effort wins over the config default; both speak
+        # values the SDK scale already contains, so no mapping table is needed.
+        turn_effort = (
+            ReasoningEffort(effort or self.config.effort)
+            if effort is not None or self.config.effort is not None
             else None
         )
         if self.config.summary is None:
@@ -807,7 +847,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                             prompt_text,
                             approval_mode=approval_plan.sdk_mode,
                             cwd=self.config.cwd,
-                            effort=effort,
+                            effort=turn_effort,
                             model=sdk_model,
                             output_schema=output_schema,
                             personality=personality,
@@ -899,6 +939,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -928,6 +969,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -956,6 +998,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -980,6 +1023,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_name=run_name,
             output_type=output_type,
             model=model,
+            effort=effort,
             instructions=instructions,
             capabilities=capabilities,
         ):
@@ -1005,6 +1049,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -1033,6 +1078,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -1060,6 +1106,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -1083,6 +1130,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 run_name=run_name,
                 output_type=output_type,
                 model=model,
+                effort=effort,
                 instructions=instructions,
                 capabilities=capabilities,
             )

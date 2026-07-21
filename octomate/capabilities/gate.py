@@ -21,11 +21,12 @@ from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from octomate.config.agents import AgentRouteModelName
+from pydantic_ai.settings import ThinkingEffort
+
 from octomate.schemas.triage import (
+    AgentRoute,
     SummonDecision,
     SummonDestination,
-    SummonRoute,
-    SummonRouteKey,
 )
 
 SCRY_TOOL_NAME = "scry"
@@ -57,11 +58,14 @@ Do NOT summon when:
 - You are only mildly unsure — ask the user a clarifying question instead.
 - No route clearly fits — handle it yourself or ask; never summon on a guess.
 
-When one fires, call `scry` first to see the agents and what each is for, pick the one
-whose description clearly matches, and `summon` it — copying its `agent_id` and `model`
-exactly from that route, and writing a self-contained brief since the other agent may not
-see this chat. Choose `destination`: `here` hands over this same conversation; `thread`
-opens a new sub-thread of the current chat. You yourself are not a valid summon target.
+When one fires, call `scry` first to see the agents and what each is for. Every route
+carries a claim: its ability (what that agent+model is for) and the effort levels it
+accepts — pick the route whose ability covers the work. Set `effort` only when the
+user explicitly asked for a level; otherwise leave it unset so the agent's own default
+applies. Then `summon` — copying its `agent_id` and `model` exactly from that route,
+and writing a self-contained brief since the other agent may not see this chat.
+Choose `destination`: `here` hands over this same conversation; `thread` opens a new
+sub-thread of the current chat. You yourself are not a valid summon target.
 
 ### `teleport` — relocate yourself
 Move this conversation into a new sub-thread that *you* keep handling, carrying everything
@@ -71,22 +75,23 @@ that you are the right one to do — no other agent involved.
 
 
 @dataclass
-class GateCapability(AbstractCapability[None]):
-    routes: list[SummonRoute]
+class GatewayCapability(AbstractCapability[None]):
+    routes: list[AgentRoute]
     current_agent_id: str
     # False on a group main channel, where pinning an owner would route every
     # gated-in message (from any user) to one agent — so `summon here` is refused there.
     allow_here: bool = True
     decision: SummonDecision | None = field(default=None, init=False)
-    summonable_routes: list[SummonRoute] = field(init=False, repr=False)
-    route_keys: set[SummonRouteKey] = field(init=False, repr=False)
+    # Every route but the current agent's own — the info shared with the agent to
+    # decide where to go: what `scry` reveals, and what every spell validates a
+    # chosen route against.
+    other_routes: list[AgentRoute] = field(init=False, repr=False)
     toolset: FunctionToolset[None] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self.summonable_routes = [
+        self.other_routes = [
             route for route in self.routes if route.agent_id != self.current_agent_id
         ]
-        self.route_keys = {route.key for route in self.summonable_routes}
         # Constrain the summon args to the routes actually on offer. Left as their
         # declared types, pydantic-ai renders `model`'s full union — the ~500-entry
         # KnownModelName literal — into the tool schema, drowning the real routes and
@@ -94,19 +99,19 @@ class GateCapability(AbstractCapability[None]):
         # `Literal` of the live route values at runtime and stamp it on the tool's
         # signature so the model only ever sees the handful that route.
         route_agent_ids = tuple(
-            dict.fromkeys(route.agent_id for route in self.summonable_routes)
+            dict.fromkeys(route.agent_id for route in self.other_routes)
         )
         route_models = tuple(
-            dict.fromkeys(str(route.model) for route in self.summonable_routes)
+            dict.fromkeys(str(route.model) for route in self.other_routes)
         )
         agent_id_type = Literal[route_agent_ids] if route_agent_ids else str
         model_type = Literal[route_models] if route_models else str
         toolset: FunctionToolset[None] = FunctionToolset(id=GATE_TOOLSET_ID)
 
         @toolset.tool(name=SCRY_TOOL_NAME)
-        async def scry(ctx: RunContext[None]) -> list[SummonRoute]:
+        async def scry(ctx: RunContext[None]) -> list[AgentRoute]:
             """Reveal the Octomate agent tentacles that can be summoned from you."""
-            return self.summonable_routes
+            return self.other_routes
 
         async def summon(
             ctx: RunContext[None],
@@ -116,6 +121,7 @@ class GateCapability(AbstractCapability[None]):
             hint: str,
             reason: str,
             summon: str,
+            effort: ThinkingEffort | None = None,
         ) -> str:
             """Hand this conversation to another Octomate agent, who takes it over.
 
@@ -132,6 +138,9 @@ class GateCapability(AbstractCapability[None]):
                     their opening prompt and they cannot see this conversation, so give
                     the goal, the relevant context and decisions, what's been tried, and
                     what a finished result looks like.
+                effort: How hard the agent should think, from the effort levels the
+                    route's claim offers. Set it only when the user explicitly asked
+                    for a level; omitted, the agent's own default applies.
             """
             if destination == "here" and not self.allow_here:
                 raise ModelRetry(
@@ -143,6 +152,7 @@ class GateCapability(AbstractCapability[None]):
                 agent_id=agent_id,
                 model=model,
                 destination=destination,
+                effort=effort,
                 hint=hint,
                 reason=reason,
                 summon=summon,
@@ -152,12 +162,27 @@ class GateCapability(AbstractCapability[None]):
                     f"Cannot summon yourself {self.current_agent_id!r}. "
                     f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
                 )
-            if decision.key not in self.route_keys:
-                available = "\n".join(str(route) for route in self.summonable_routes)
+            route = next(
+                (
+                    route
+                    for route in self.other_routes
+                    if route.key == decision.key
+                ),
+                None,
+            )
+            if route is None:
+                available = "\n".join(str(route) for route in self.other_routes)
                 raise ModelRetry(
                     f"Invalid summon route (agent_id={agent_id!r}, "
                     f"model={decision.model!r}). Copy an agent_id and model exactly "
                     f"from one of these routes:\n{available}"
+                )
+            if effort is not None and effort not in route.claim.efforts:
+                raise ModelRetry(
+                    f"Route (agent_id={agent_id!r}, model={decision.model!r}) does "
+                    f"not accept effort {effort!r}; it claims "
+                    f"{'/'.join(route.claim.efforts)}. Pick one of those, or omit "
+                    f"effort."
                 )
             self.decision = decision
             return f"Summoning {agent_id} ({decision.model}) → {destination}."

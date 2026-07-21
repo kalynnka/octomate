@@ -124,6 +124,7 @@ def create_app() -> FastAPI:
                 model.name: registry.build_model(model)
                 for model in config.agents.inkling.models
             },
+            claims=config.agents.inkling.claims,
             toolsets=[
                 inkling_toolset,
                 *build_mcp_toolsets(config.mcp),

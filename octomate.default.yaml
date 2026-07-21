@@ -29,6 +29,14 @@ octomate:
     #     # codex_bin: /opt/bin/codex
     #     config_overrides: []
     #   models: [gpt-5.5, gpt-5.5-pro, gpt-5.3-codex, gpt-5.1-codex-mini]
+    #   # Per-model claim overrides (any agent block takes a `claims:` map). A
+    #   # claim advertises what a route is for and the effort levels it accepts;
+    #   # a model not listed here uses the agent's built-in claim, or a documented
+    #   # default if the agent does not know the model.
+    #   claims:
+    #     gpt-5.5:
+    #       ability: Deep repository work in the acme monorepo.
+    #       efforts: [low, medium, high]
     #   approval_mode: user        # user | auto_review | deny_all
     #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
     #   sandbox: workspace_write   # read_only | workspace_write | full_access

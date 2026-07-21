@@ -30,6 +30,9 @@ from pydantic_ai.toolsets import AbstractToolset
 from octomate.capabilities.react import ReactEventStream
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
+from pydantic_ai.settings import ThinkingEffort
+
+from octomate.schemas.triage import Claim
 from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
 
@@ -50,6 +53,24 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # Capability blurb the triage agent reads when routing to a reception agent.
     # Subclasses refine this default; overridable at init.
     description: str = "General-purpose agent for handling user requests."
+
+    # Per-model claims for the models the class ships with. Claims are the agent's
+    # to make — channels only choose which routes to expose — so overrides live in
+    # the agent's own config block, not per channel.
+    model_claims: ClassVar[dict[str, Claim]] = {}
+    # Per-model claim overrides from the agent's deployment config, layered over
+    # `model_claims`. Subclasses with a config surface assign it in `__init__`;
+    # the empty class default is never mutated.
+    config_claims: dict[str, Claim] = {}
+
+    def claim(self, model: str) -> Claim:
+        claimed = self.config_claims.get(model) or self.model_claims.get(model)
+        if claimed is not None:
+            return claimed
+        # The documented default for a model the class does not know: a
+        # config-added model still advertises something (the description, full
+        # effort scale) rather than nothing.
+        return Claim(ability=self.description)
 
     # Whether the agent keeps a live in-process run that can park on a human
     # deferral (approval/question) and resume by delivering the response to its
@@ -74,6 +95,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
@@ -103,6 +125,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
@@ -132,6 +155,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
@@ -162,6 +186,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
@@ -190,6 +215,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
@@ -218,6 +244,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,

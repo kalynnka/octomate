@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias, get_args
 
 from openai_codex import CodexConfig as CodexSdkConfig
 from pydantic import AfterValidator, BaseModel, Field
 from pydantic_ai.models import KnownModelName
+from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config.models import ModelConfig
 
@@ -60,8 +62,28 @@ AgentRouteModelName: TypeAlias = (
 )
 
 
+@dataclass(frozen=True)
+class Claim:
+    # What this route is for — per-route, not per-agent, so two models of one
+    # agent can advertise differently.
+    ability: str
+    # The effort levels this route accepts from a caller — pydantic-ai's thinking
+    # scale, the one effort vocabulary across all agents; each tentacle maps it
+    # onto its runtime's knob. Defaults to the full scale.
+    efforts: tuple[ThinkingEffort, ...] = get_args(ThinkingEffort)
+
+    def __str__(self) -> str:
+        return f"[effort {'/'.join(self.efforts)}] {self.ability}"
+
+
 class InklingConfig(BaseModel):
     models: list[ModelConfig] = Field(min_length=1)
+    claims: dict[KnownModelName, Claim] = Field(
+        default_factory=dict,
+        description="Per-model claim overrides (ability/efforts). A model "
+        "not listed here uses the tentacle's claim table, or its documented "
+        "default for a model that table does not know.",
+    )
 
     @property
     def default_model(self) -> ModelConfig:
@@ -96,6 +118,12 @@ class ClaudeCodeConfig(BaseModel):
     models: set[ClaudeCodeModelName] = Field(
         default={"opusplan[1m]", "opus[1m]", "sonnet[1m]", "haiku"},
         min_length=1,
+    )
+    claims: dict[ClaudeCodeModelName, Claim] = Field(
+        default_factory=dict,
+        description="Per-model claim overrides (ability/efforts). A model "
+        "not listed here uses the tentacle's claim table, or its documented "
+        "default for a model that table does not know.",
     )
     max_turns: int | None = None
     ssh: ClaudeSSHConfig | None = None
@@ -170,6 +198,12 @@ class CodexConfig(BaseModel):
         },
         min_length=1,
         description="Codex model route labels this agent exposes to channels.",
+    )
+    claims: dict[CodexModelName, Claim] = Field(
+        default_factory=dict,
+        description="Per-model claim overrides (ability/efforts). A model "
+        "not listed here uses the tentacle's claim table, or its documented "
+        "default for a model that table does not know.",
     )
     approval_mode: CodexApprovalMode = Field(
         default="user",
