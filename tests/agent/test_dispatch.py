@@ -22,7 +22,8 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadMessage
 from octomate.schemas.triage import Claim, SummonDecision
-from octomate.tentacles.agent.inkling import InklingTentacle, inkling_toolset
+from octomate.capabilities.ask import AskCapability
+from octomate.tentacles.agent.inkling import InklingTentacle
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.base import Tentacle
 from tests.support.agents import FakeAgent
@@ -511,7 +512,7 @@ def _inkling(octomate: Octomate, stream_text: str) -> InklingTentacle:
                 model,
                 deps_type=type(None),
                 output_type=[str],
-                toolsets=[inkling_toolset],
+                capabilities=[AskCapability()],
             ),
         ),
         models={"test": model},

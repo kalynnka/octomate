@@ -15,6 +15,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate import Octomate
+from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.deferred import DeclineResolver
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import ActionBatchEvent
@@ -25,7 +26,6 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
-    inkling_toolset,
 )
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
@@ -46,8 +46,7 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
         deps_type=type(None),
         name="octomate-inkling",
         output_type=[str, list[MessageSegment], DeferredToolRequests],
-        toolsets=[inkling_toolset],
-        capabilities=[TodoCapability(), SendCapability()],
+        capabilities=[AskCapability(), TodoCapability(), SendCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
 
@@ -100,7 +99,7 @@ def _boom_agent() -> Agent[None, ScriptedOutput]:
         FunctionModel(stream_function=boom, model_name="scripted"),
         deps_type=type(None),
         output_type=[str, DeferredToolRequests],
-        toolsets=[inkling_toolset],
+        capabilities=[AskCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
 
@@ -302,6 +301,68 @@ async def test_run_resumes_via_resume_turn_when_deferred_results_passed() -> Non
     assert resumed.output == "all done!"
     assert script.cursor == 2
     assert len(conversations.runs) == 2
+
+
+async def test_subagent_run_mounts_no_tentacle_capabilities() -> None:
+    """The tentacle's own capabilities (ask/send/todos/history) are user- or
+    surface-coupled: `subagent_run` mounts none of them, while a plain run —
+    interactive or not — keeps them. `interactive` only governs interaction."""
+    seen_tools: list[list[str]] = []
+
+    async def probe(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        seen_tools.append([tool.name for tool in info.function_tools])
+        yield "ok"
+
+    agent: Agent[None, ScriptedOutput] = Agent(
+        FunctionModel(stream_function=probe, model_name="probe"),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    conversations = FakeConversationManager()
+    tentacle = InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=cast(Agent[None, InklingOutput], agent),
+        conversation_manager=conversations,
+        capabilities=[AskCapability(), TodoCapability()],
+    )
+
+    await tentacle.run(
+        "hi",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+    )
+    parent = await conversations.ensure(_THREAD, agent_tentacle_id="inkling")
+    child = await conversations.ensure(
+        _THREAD,
+        agent_tentacle_id="inkling",
+        subagent_id="probe",
+        parent_conversation_id=parent.id,
+    )
+    await tentacle.subagent_run(
+        "work the brief",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        conversation_id=child.id,
+    )
+    await tentacle.subagent_run(
+        "work with todos",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        conversation_id=child.id,
+        capabilities=[TodoCapability()],
+    )
+
+    interactive_tools, accomplice_tools, chosen_tools = seen_tools
+    assert "ask_questions" in interactive_tools
+    assert "write_todos" in interactive_tools
+    assert accomplice_tools == []
+    # The spawner controls the set outright: what it passes is what mounts.
+    assert "write_todos" in chosen_tools and "ask_questions" not in chosen_tools
 
 
 async def test_inkling_default_includes_todo_capability() -> None:

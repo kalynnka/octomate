@@ -749,8 +749,20 @@ class CodexTentacle(AgentTentacle[str, None]):
             prompt_text = ""
         if not prompt_text:
             raise ValueError("CodexTentacle requires a non-empty text prompt")
-        if isinstance(instructions, str):
-            prompt_text = "\n\n".join([instructions, prompt_text])
+        # Run-level instructions are real instructions, not prompt text: they
+        # join the thread's developer instructions (an accomplice's framing
+        # included), which start/resume carry to the SDK.
+        developer_instructions = (
+            "\n\n".join(
+                part
+                for part in (
+                    self.config.developer_instructions,
+                    instructions if isinstance(instructions, str) else None,
+                )
+                if part
+            )
+            or None
+        )
 
         # A non-interactive run (an accomplice in a scheme) never asks a human:
         # the SDK's own deny_all mode declines every approval at the source.
@@ -794,7 +806,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                             approval_mode=approval_mode,
                             base_instructions=self.config.base_instructions,
                             cwd=self.config.cwd,
-                            developer_instructions=self.config.developer_instructions,
+                            developer_instructions=developer_instructions,
                             model=sdk_model,
                             model_provider=self.config.model_provider,
                             personality=personality,
@@ -806,7 +818,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                             approval_mode=approval_mode,
                             base_instructions=self.config.base_instructions,
                             cwd=self.config.cwd,
-                            developer_instructions=self.config.developer_instructions,
+                            developer_instructions=developer_instructions,
                             ephemeral=self.config.ephemeral,
                             model=sdk_model,
                             model_provider=self.config.model_provider,

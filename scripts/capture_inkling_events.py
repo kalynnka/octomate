@@ -42,9 +42,11 @@ from octomate.config import OctomateConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ConversationKey
+from octomate.managers.thread import ThreadManager
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment, MessageSegment
-from octomate.tentacles.agent.inkling import build_mcp_toolsets, inkling_toolset
+from octomate.capabilities.ask import AskCapability
+from octomate.tentacles.agent.inkling import build_mcp_toolsets
 from octomate.tentacles.agent.inkling.base import (
     InklingOutput,
 )
@@ -153,8 +155,9 @@ async def capture(
 ) -> dict[str, int]:
     config = OctomateConfig()
     conversations = ConversationManager()
+    threads = ThreadManager()
     registry = ProviderRegistry(config.providers)
-    toolsets = [inkling_toolset]
+    toolsets = []
     if with_mcp:
         # Force GitHub read-only for captures so a recording can never mutate a
         # real repo, regardless of the operator's octomate.yaml setting.
@@ -163,14 +166,14 @@ async def capture(
             mcp = mcp.model_copy(
                 update={"github": mcp.github.model_copy(update={"read_only": True})}
             )
-        toolsets = [inkling_toolset, *build_mcp_toolsets(mcp)]
+        toolsets = [*build_mcp_toolsets(mcp)]
     agent: Agent[None, InklingOutput] = Agent(
-        registry.build_model(config.agents.inkling.model),
+        registry.build_model(config.agents.inkling.default_model),
         deps_type=type(None),
         name="octomate-inkling",
         output_type=[str, list[MessageSegment], DeferredToolRequests],
         toolsets=toolsets,
-        capabilities=[TodoCapability(), SendCapability()],
+        capabilities=[AskCapability(), TodoCapability(), SendCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
 
@@ -183,6 +186,7 @@ async def capture(
                 case_counts[case.name] = await capture_case(
                     file=file,
                     conversations=conversations,
+                    threads=threads,
                     agent=agent,
                     case=case,
                     run_name=run_name,
@@ -197,6 +201,7 @@ async def capture_case(
     *,
     file: TextIOBase,
     conversations: ConversationManager,
+    threads: ThreadManager,
     agent: Agent[None, InklingOutput],
     case: CaptureCase,
     run_name: str,
@@ -208,7 +213,7 @@ async def capture_case(
     effective_chat_id = (
         f"{chat_id}-{case.name}" if chat_id else f"capture-{case.name}-{uuid4().hex}"
     )
-    key = ConversationKey(
+    address = ChannelAddress(
         channel_tentacle_id="capture",
         chat_type="private",
         chat_id=effective_chat_id,
@@ -217,7 +222,8 @@ async def capture_case(
     )
 
     count = 0
-    conversation = await conversations.ensure(key, agent_tentacle_id="inkling")
+    thread = await threads.ensure(address)
+    conversation = await conversations.ensure(thread.id, agent_tentacle_id="inkling")
     message_history = cast("list[ModelMessage]", list(conversation.messages))
     async with agent.iter(
         case.prompt,

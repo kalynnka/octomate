@@ -54,7 +54,7 @@ from pydantic_ai.settings import ThinkingEffort
 
 from octomate.schemas.triage import Claim, SummonDecision
 from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.inkling import inkling_toolset
+from octomate.capabilities.ask import AskCapability
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.channel.base import ChannelOutput
 from octomate.types.json import JsonObject
@@ -354,7 +354,7 @@ def build_scripted_agent(
         FunctionModel(stream_function=script, model_name="scripted"),
         deps_type=type(None),
         output_type=[str, DeferredToolRequests],
-        toolsets=[inkling_toolset],
+        capabilities=[AskCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
     return agent, script
@@ -371,6 +371,6 @@ def build_non_stream_agent() -> Agent[None, ScriptedOutput]:
         FunctionModel(function=respond, model_name="scripted"),
         deps_type=type(None),
         output_type=[str, DeferredToolRequests],
-        toolsets=[inkling_toolset],
+        capabilities=[AskCapability()],
         system_prompt=SYSTEM_PROMPT,
     )

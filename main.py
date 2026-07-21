@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from pydantic import SecretStr
 
 from octomate import Octomate
+from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.history import HistoryCapability
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
@@ -19,7 +20,6 @@ from octomate.tentacles.agent.codex import CodexTentacle
 from octomate.tentacles.agent.inkling import (
     InklingTentacle,
     build_mcp_toolsets,
-    inkling_toolset,
 )
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.base import TentacleLogFormatter
@@ -126,13 +126,28 @@ def create_app() -> FastAPI:
             },
             claims=config.agents.inkling.claims,
             toolsets=[
-                inkling_toolset,
                 *build_mcp_toolsets(config.mcp),
             ],
             capabilities=[
-                TodoCapability(),
+                AskCapability(),
                 SendCapability(),
-                HistoryCapability(octomate.conversations, octomate.thread_manager),
+                # Deferred: the todo/history tools stay out of the schema until
+                # the model loads the capability, keeping the everyday tool
+                # surface small.
+                TodoCapability(
+                    id="todos",
+                    description="Persisted task list for planning and tracking "
+                    "multi-step work.",
+                    defer_loading=True,
+                ),
+                HistoryCapability(
+                    octomate.conversations,
+                    octomate.thread_manager,
+                    id="history",
+                    description="Search and page this thread's chat ledger and "
+                    "this conversation's model ledger.",
+                    defer_loading=True,
+                ),
             ],
             system_prompt=SYSTEM_PROMPT,
         ),

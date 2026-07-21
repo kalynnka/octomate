@@ -22,7 +22,7 @@ from octomate.capabilities.events import MessageSentEvent
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.segments import MarkdownSegment, MessageSegment
-from octomate.tentacles.agent.inkling import inkling_toolset
+from octomate.capabilities.ask import AskCapability
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import ScriptedStream, ScriptedTurn
@@ -34,8 +34,7 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
         deps_type=type(None),
         name="octomate-inkling",
         output_type=[str, list[MessageSegment], DeferredToolRequests],
-        toolsets=[inkling_toolset],
-        capabilities=[TodoCapability(), SendCapability()],
+        capabilities=[AskCapability(), TodoCapability(), SendCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
 

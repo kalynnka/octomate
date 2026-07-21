@@ -94,6 +94,17 @@ said so far. Use it for multi-step or long-running work that deserves its own th
 that you are the right one to do — no other agent involved.
 """
 
+# The framing every accomplice run carries, passed by the gateway at the
+# `subagent_run` call site: no gate, no user, no approvals — the reply is the
+# report.
+ACCOMPLICE_INSTRUCTION = """\
+You are an accomplice: another agent drew you into its scheme, and your reply is
+your report back to it. There is no user here to ask, and anything that needs a
+human approval is declined immediately — work from the brief you were given within
+what you can do unaided; if something is under-specified or unapprovable, state the
+assumption or the blocker in your report and proceed.
+"""
+
 SCHEME_INSTRUCTION = """\
 
 ### `scheme` — put another agent to work in the background (you keep the conversation)
@@ -108,16 +119,6 @@ reply run concurrently.
 ### `whisper` — a quiet word to an accomplice
 Continue an accomplice's work by `name`: it remembers everything it did. Use it to
 refine or extend that work instead of scheming a new accomplice.
-"""
-
-# An accomplice carries no gate at all — no summon, no teleport, no schemes of
-# its own. This rides the accomplice's run as plain instructions instead.
-ACCOMPLICE_INSTRUCTION = """\
-You are an accomplice: another agent drew you into its scheme, and your reply is
-your report back to it. There is no user here to ask, and anything that needs a human
-approval is declined immediately — work from the brief you were given within what
-you can do unaided; if something is under-specified or unapprovable, state the
-assumption or the blocker in your report and proceed.
 """
 
 
@@ -270,23 +271,21 @@ class GatewayCapability(AbstractCapability[None]):
             raise RuntimeError("a scheme needs the parent run id for the run tree")
         agent = agents[child.agent_tentacle_id]
         try:
-            # No deferred_suspender, no resolver, and no capabilities: a
-            # accomplice gets no gate at all — nested scheming does not
-            # exist, and one that defers anyway ends its run with
-            # DeferredToolRequests, surfaced loudly below instead of
-            # parking a batch nothing resumes. The agent gets only an
-            # address — the pre-ensured child conversation — and stays
-            # ignorant of why it runs.
+            # The subagent contract (non-interactive, no capabilities,
+            # addressed at the pre-ensured child conversation) lives on
+            # `subagent_run`; the accomplice framing is this spawner's and is
+            # passed here. An accomplice that defers anyway ends its run with
+            # DeferredToolRequests, surfaced loudly below instead of parking a
+            # batch nothing resumes.
             result = await asyncio.wait_for(
-                agent.run(
+                agent.subagent_run(
                     prompt,
                     conversation_address=conversation_address,
                     thread_id=thread_id,
+                    conversation_id=child.id,
                     run_name=run_name,
                     model=model,
                     effort=effort,
-                    conversation_id=child.id,
-                    interactive=False,
                     instructions=ACCOMPLICE_INSTRUCTION,
                 ),
                 timeout=self.scheme_timeout,

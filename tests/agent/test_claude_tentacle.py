@@ -179,6 +179,31 @@ async def test_a_run_addressed_by_conversation_id_lands_there(
     assert child.runs  # the turn recorded into the child conversation
 
 
+async def test_instructions_land_in_the_system_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Run-level instructions (an accomplice's framing included) append to the
+    # Claude Code system-prompt preset; the user prompt stays untouched.
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+
+    await tentacle.run(
+        "audit the repo",
+        conversation_address=KEY,
+        thread_id=_THREAD,
+        instructions="You are an accomplice.",
+    )
+
+    options = cast(ClaudeAgentOptions, FakeClaudeClient.last_options)
+    assert options.system_prompt == {
+        "type": "preset",
+        "preset": "claude_code",
+        "append": "You are an accomplice.",
+    }
+    assert FakeClaudeClient.last_prompt == "audit the repo"
+
+
 async def test_a_non_interactive_run_declines_approvals_and_questions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -37,7 +37,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest as OctomateModelRequest
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, ThreadMessage
-from octomate.tentacles.agent.inkling import inkling_toolset
+from octomate.capabilities.ask import AskCapability
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import (
     ScriptedOutput,
@@ -509,7 +509,7 @@ async def test_iter_react_graph_events_reraises_graph_error_after_drain() -> Non
         FunctionModel(stream_function=boom, model_name="scripted"),
         deps_type=type(None),
         output_type=[str, DeferredToolRequests],
-        toolsets=[inkling_toolset],
+        capabilities=[AskCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
     deps = _deps(agent=agent)

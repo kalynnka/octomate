@@ -62,7 +62,7 @@ from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
 from octomate.schemas.todos import Todo
 from octomate.telemetry import channel_logfire
-from octomate.tentacles.agent.inkling.tools import ASK_QUESTIONS_TOOL_NAME
+from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
 from octomate.types.todos import STATUS_MARKERS
 
 if TYPE_CHECKING:

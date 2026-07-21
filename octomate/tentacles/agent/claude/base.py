@@ -27,6 +27,7 @@ from claude_agent_sdk import (
     PreToolUseHookInput,
     ToolPermissionContext,
 )
+from claude_agent_sdk.types import SystemPromptPreset
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import SecretStr, TypeAdapter
@@ -482,6 +483,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # Stream partial assistant messages so the accumulator can emit token
             # deltas (typewriter) instead of whole blocks; see ClaudeRunAccumulator.
             include_partial_messages=True,
+            # Run-level instructions are real instructions, not prompt text:
+            # appended to the Claude Code system-prompt preset so the SDK weighs
+            # them as such (an accomplice's framing included).
+            system_prompt=(
+                SystemPromptPreset(
+                    type="preset", preset="claude_code", append=instructions
+                )
+                if isinstance(instructions, str)
+                else None
+            ),
             # Native Claude clients hide sdk-py transcripts from history. Tag these
             # user-routed sessions like CLI runs so they stay visible there too.
             env={"CLAUDE_CODE_ENTRYPOINT": "cli"},
@@ -496,8 +507,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             prompt_text = ""
         if not prompt_text:
             raise ValueError("ClaudeCodeTentacle requires a non-empty text prompt")
-        if isinstance(instructions, str):
-            prompt_text = "\n\n".join([instructions, prompt_text])
 
         transport = (
             SSHTransport(prompt_text, options, ssh=self.config.ssh)

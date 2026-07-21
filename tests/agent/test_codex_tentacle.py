@@ -456,6 +456,36 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     assert messages
 
 
+async def test_instructions_join_the_developer_instructions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Run-level instructions (an accomplice's framing included) ride the
+    # thread's developer instructions, joined after the config default.
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(
+        conversations,
+        config=CodexConfig(
+            approval_mode="deny_all", developer_instructions="House style."
+        ),
+    )
+
+    async with tentacle:
+        await tentacle.run(
+            "work the brief",
+            conversation_address=KEY,
+            thread_id=_THREAD,
+            model="gpt-5.3-codex",
+            instructions="You are an accomplice.",
+        )
+
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.developer_instructions == (
+        "House style.\n\nYou are an accomplice."
+    )
+
+
 async def test_run_resumes_prior_thread_and_applies_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

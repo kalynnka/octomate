@@ -19,9 +19,9 @@ from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.gateway import (
+    ACCOMPLICE_INSTRUCTION,
     SCHEME_TOOL_NAME,
     WHISPER_TOOL_NAME,
-    ACCOMPLICE_INSTRUCTION,
     GatewayCapability,
 )
 from octomate.schemas.conversation import ChannelAddress

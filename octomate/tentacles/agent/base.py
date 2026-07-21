@@ -183,6 +183,44 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     ) -> AgentRunResult[AgentOutputT | RunOutputDataT]:
         """Run the agent for an Octomate conversation."""
 
+    async def subagent_run(
+        self: AgentTentacle[AgentOutputT, None],
+        user_prompt: str,
+        *,
+        conversation_address: ChannelAddress,
+        thread_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        run_name: str | None = None,
+        model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
+        instructions: str | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+    ) -> AgentRunResult[AgentOutputT]:
+        """Run as a subagent: the subagent contract in one place, apart from
+        `run()`'s general surface.
+
+        A subagent run is addressed at a pre-ensured conversation its spawner
+        owns (`conversation_id` is required, not optional), and it is fully
+        non-interactive — every human interaction declines at once. The caller
+        controls `capabilities` outright: a subagent mounts exactly what its
+        spawner passes, never the tentacle's own set (inkling overrides to keep
+        its defaults out; claude/codex ignore capabilities entirely). The
+        spawner passes its framing as `instructions` and stamps the run tree
+        after the report returns.
+        """
+        return await self.run(
+            user_prompt,
+            conversation_address=conversation_address,
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+            interactive=False,
+            run_name=run_name,
+            model=model,
+            effort=effort,
+            instructions=instructions,
+            capabilities=capabilities,
+        )
+
     @overload
     def run_stream_events(
         self,

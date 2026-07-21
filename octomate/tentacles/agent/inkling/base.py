@@ -75,6 +75,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     """Inkling agent wrapper with pydantic-ai-style run entrypoints."""
 
     agent: Agent[None, InklingOutput] = field(init=False)
+    capabilities: list[AgentCapability[None]] = field(init=False)
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
 
@@ -104,6 +105,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.models = dict(models or {})
+        # Held on the tentacle, not baked into the Agent: every run decides what
+        # to mount — an accomplice run gets none of them.
+        self.capabilities = list(capabilities or [])
         if agent is None:
             default_model = next(iter(self.models.values()), None)
             if default_model is None:
@@ -114,7 +118,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 name=name,
                 output_type=[str, list[MessageSegment], DeferredToolRequests],
                 toolsets=list(toolsets or []),
-                capabilities=list(capabilities or []),
                 system_prompt=system_prompt,
             )
         self.agent = agent
@@ -301,8 +304,46 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             infer_name=infer_name,
             toolsets=toolsets,
             builtin_tools=builtin_tools,
-            capabilities=capabilities,
+            # The tentacle's own capabilities ride every plain run; only
+            # `subagent_run` mounts a caller-chosen set instead.
+            capabilities=[*self.capabilities, *(capabilities or [])],
             spec=spec,
+        ):
+            if isinstance(event, AgentRunResultEvent):
+                result = event.result
+        if result is None:
+            raise RuntimeError("react graph completed without an AgentRunResult")
+        return result
+
+    async def subagent_run(
+        self,
+        user_prompt: str,
+        *,
+        conversation_address: ChannelAddress,
+        thread_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        run_name: str | None = None,
+        model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
+        instructions: str | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+    ) -> AgentRunResult[InklingOutput]:
+        """The subagent contract, inkling-shaped: on top of the base policy
+        (addressed conversation, non-interactive), the run mounts exactly the
+        `capabilities` its caller passes — never the tentacle's own set, which
+        is all user- or surface-coupled (ask, send, todos, history)."""
+        result: AgentRunResult[InklingOutput] | None = None
+        async for event in self.iter_graph_events(
+            user_prompt=user_prompt,
+            conversation_address=conversation_address,
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+            interactive=False,
+            run_name=run_name,
+            model=model,
+            effort=effort,
+            instructions=instructions,
+            capabilities=capabilities,
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
@@ -426,7 +467,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 infer_name=infer_name,
                 toolsets=toolsets,
                 builtin_tools=builtin_tools,
-                capabilities=capabilities,
+                capabilities=[*self.capabilities, *(capabilities or [])],
                 spec=spec,
             )
         )
@@ -437,35 +478,37 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None,
         conversation_address: ChannelAddress,
         thread_id: uuid.UUID | None,
-        source_thread_address: ChannelAddress | None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None,
-        run_name: str | None,
-        output_type: OutputSpec[RunOutputDataT] | None,
-        deferred_tool_results: DeferredToolResults | None,
-        deferred_suspender: DeferredSuspender | None,
-        model: Model | KnownModelName | str | None,
-        effort: ThinkingEffort | None,
-        conversation_id: uuid.UUID | None,
-        interactive: bool,
-        instructions: AgentInstructions[None],
-        deps: None,
-        model_settings: AgentModelSettings[None] | None,
-        usage_limits: UsageLimits | None,
-        usage: RunUsage | None,
-        metadata: AgentMetadata[None] | None,
-        output_retries: int | None,
-        infer_name: bool,
-        toolsets: Sequence[AbstractToolset[None]] | None,
-        builtin_tools: Sequence[AgentNativeTool[None]] | None,
-        capabilities: Sequence[AgentCapability[None]] | None,
-        spec: AgentSpecInput | None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        run_name: str | None = None,
+        output_type: OutputSpec[RunOutputDataT] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
+        model: Model | KnownModelName | str | None = None,
+        effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
+        instructions: AgentInstructions[None] = None,
+        deps: None = None,
+        model_settings: AgentModelSettings[None] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[None] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+        spec: AgentSpecInput | None = None,
     ) -> AsyncGenerator[
         ReactStreamEvent[InklingOutput | RunOutputDataT],
         None,
     ]:
         # A non-interactive run declines every deferred action at once: no
         # human exists, so asks and approvals resolve to declines in-process
-        # and the react loop continues to a final answer.
+        # and the react loop continues to a final answer. That is all
+        # `interactive` means — `capabilities` arrives here final; which set to
+        # mount is the entrypoints' decision.
         resolver = self.deferred_resolver if interactive else DeclineResolver()
         resolved_run_name = run_name or "react"
         # Effort IS pydantic-ai's `thinking` scale; pass it through, layered over
