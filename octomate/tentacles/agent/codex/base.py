@@ -684,6 +684,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
@@ -699,10 +701,21 @@ class CodexTentacle(AgentTentacle[str, None]):
                 "CodexTentacle does not support DeferredToolRequests in output_type"
             )
 
-        conversation = await self.octomate.conversations.ensure(
-            thread_id,
-            agent_tentacle_id=self.id,
-        )
+        if conversation_id is not None:
+            conversation = await self.octomate.conversations.get(conversation_id)
+            if (
+                conversation.agent_tentacle_id != self.id
+                or conversation.thread_id != thread_id
+            ):
+                raise ValueError(
+                    f"conversation {conversation_id} does not belong to "
+                    f"({self.id!r}, {thread_id})"
+                )
+        else:
+            conversation = await self.octomate.conversations.ensure(
+                thread_id,
+                agent_tentacle_id=self.id,
+            )
         accumulator = CodexRunAccumulator()
         accumulator.begin(user_prompt)
 
@@ -739,7 +752,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         if isinstance(instructions, str):
             prompt_text = "\n\n".join([instructions, prompt_text])
 
-        approval_plan = codex_approval_plan(self.config.approval_mode)
+        # A non-interactive run (an accomplice in a scheme) never asks a human:
+        # the SDK's own deny_all mode declines every approval at the source.
+        approval_mode = self.config.approval_mode if interactive else "deny_all"
+        approval_plan = codex_approval_plan(approval_mode)
         sandbox = Sandbox[self.config.sandbox]
         personality = (
             Personality(self.config.personality)
@@ -775,7 +791,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                         codex_thread = await self.resume_codex_thread(
                             pooled.client,
                             thread_id=conversation.external_id,
-                            approval_mode=self.config.approval_mode,
+                            approval_mode=approval_mode,
                             base_instructions=self.config.base_instructions,
                             cwd=self.config.cwd,
                             developer_instructions=self.config.developer_instructions,
@@ -787,7 +803,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     else:
                         codex_thread = await self.start_codex_thread(
                             pooled.client,
-                            approval_mode=self.config.approval_mode,
+                            approval_mode=approval_mode,
                             base_instructions=self.config.base_instructions,
                             cwd=self.config.cwd,
                             developer_instructions=self.config.developer_instructions,
@@ -906,6 +922,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -936,6 +954,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -965,6 +985,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -990,6 +1012,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             output_type=output_type,
             model=model,
             effort=effort,
+            conversation_id=conversation_id,
+            interactive=interactive,
             instructions=instructions,
             capabilities=capabilities,
         ):
@@ -1016,6 +1040,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -1045,6 +1071,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -1073,6 +1101,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -1097,6 +1127,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 output_type=output_type,
                 model=model,
                 effort=effort,
+                conversation_id=conversation_id,
+                interactive=interactive,
                 instructions=instructions,
                 capabilities=capabilities,
             )

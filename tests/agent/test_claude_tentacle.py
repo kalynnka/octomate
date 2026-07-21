@@ -8,13 +8,20 @@ from typing import ClassVar, Literal
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
+    ClaudeAgentOptions,
+    HookContext,
+    HookInput,
+    PermissionResultDeny,
     ResultMessage,
     TextBlock,
+    ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
 )
 from claude_agent_sdk.types import Message
+from types import SimpleNamespace
+from typing import cast
 from pydantic import SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -141,6 +148,71 @@ async def test_run_stream_events_proxies_events_and_persists(
     fake, _label, messages = conversations.runs[0]
     assert fake.external_id == "sess-xyz"
     assert messages  # user prompt + assistant turns
+
+
+async def test_a_run_addressed_by_conversation_id_lands_there(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The tentacle resolves the pre-ensured conversation by id — it never learns
+    # why the conversation exists, only where to run.
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    conversations = FakeConversationManager()
+    parent = await conversations.ensure(_THREAD, agent_tentacle_id="inkling")
+    child = await conversations.ensure(
+        _THREAD,
+        agent_tentacle_id="claude",
+        subagent_id="repo-audit",
+        parent_conversation_id=parent.id,
+    )
+    tentacle = _tentacle(conversations)
+
+    result = await tentacle.run(
+        "audit the repo",
+        conversation_address=KEY,
+        thread_id=_THREAD,
+        run_name="scheme",
+        conversation_id=child.id,
+    )
+
+    assert result.output == "done"
+    assert child.external_id == "sess-xyz"  # the hand's own resumable session
+    assert child.runs  # the turn recorded into the child conversation
+
+
+async def test_a_non_interactive_run_declines_approvals_and_questions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A hand has no user: approvals and questions die instantly instead of
+    # becoming cards — the same policy the native runtimes apply to their own
+    # subagents.
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+
+    await tentacle.run(
+        "work", conversation_address=KEY, thread_id=_THREAD, interactive=False
+    )
+
+    options = cast(ClaudeAgentOptions, FakeClaudeClient.last_options)
+    assert options.can_use_tool is not None
+    decision = await options.can_use_tool(
+        "Bash", {}, cast(ToolPermissionContext, SimpleNamespace(tool_use_id="t1"))
+    )
+    assert isinstance(decision, PermissionResultDeny)
+    assert "no user" in decision.message
+    assert options.hooks is not None
+    ask_hooks = options.hooks["PreToolUse"][0].hooks
+    answer = await ask_hooks[0](
+        cast(HookInput, {"tool_input": {}}), "call-1", cast(HookContext, None)
+    )
+    assert answer == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "This run has no user to ask. Proceed "
+            "on your best judgment and state the assumption in your report.",
+        }
+    }
 
 
 async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> None:

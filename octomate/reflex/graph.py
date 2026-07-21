@@ -18,7 +18,7 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
 from octomate.capabilities.events import StreamEvents
-from octomate.capabilities.gate import GatewayCapability
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
@@ -514,6 +514,13 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             routes=routes,
             current_agent_id=agent.id,
             allow_here=not (target_address.is_group and not target_address.thread_id),
+            # The scheme spells need to actually run an accomplice; without
+            # a thread there is nowhere for a child conversation to live, and
+            # the gate then simply does not offer them.
+            agents=ctx.deps.agents,
+            conversations=ctx.deps.conversation_manager,
+            thread_id=thread_id,
+            conversation_address=target_address,
         )
 
         deferred_results = self.teleport_results

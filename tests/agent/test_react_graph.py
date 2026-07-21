@@ -293,6 +293,37 @@ async def test_run_agent_records_new_messages_with_run_name() -> None:
     assert conversations.store[(_THREAD, "inkling", "")].messages == messages
 
 
+async def test_a_run_addressed_by_conversation_id_lands_there() -> None:
+    # The graph resolves a pre-ensured conversation by id — the runner does not
+    # know why it exists (a commissioned hand's child context), it just runs in
+    # the context the spawner chose.
+    agent = build_non_stream_agent()
+    conversations = FakeConversationManager()
+    parent = await conversations.ensure(_THREAD, agent_tentacle_id="inkling")
+    child = await conversations.ensure(
+        _THREAD,
+        agent_tentacle_id="inkling",
+        subagent_id="repo-audit",
+        parent_conversation_id=parent.id,
+    )
+    deps = _deps(agent=agent, conversations=conversations, run_name="scheme")
+
+    await _graph().run(
+        StartTurn(user_prompt="do the delegated work"),
+        state=ReactState(
+            conversation_address=_key(),
+            agent_tentacle_id="inkling",
+            thread_id=_THREAD,
+            conversation_id=child.id,
+        ),
+        deps=deps,
+    )
+
+    assert child.messages  # the turn recorded into the child, not the parent
+    assert not parent.messages
+    assert child.runs  # and it hangs off the child conversation
+
+
 async def test_run_agent_binds_request_sources_and_advances_cursor(
     in_memory_engine: AsyncEngine,
 ) -> None:

@@ -56,7 +56,7 @@ from octomate.capabilities.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
-from octomate.capabilities.gate import TELEPORT_TOOL_NAME
+from octomate.capabilities.gateway import TELEPORT_TOOL_NAME
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment

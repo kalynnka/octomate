@@ -45,6 +45,36 @@ async def test_ensure_is_idempotent() -> None:
     assert a.id == b.id
 
 
+async def test_subagents_lists_only_the_parents_own_hands() -> None:
+    service = ConversationManager()
+    thread = _thread()
+    parent = await service.ensure(thread, agent_tentacle_id="inkling")
+    other = await service.ensure(thread, agent_tentacle_id="claude")
+    audit = await service.ensure(
+        thread,
+        agent_tentacle_id="claude",
+        subagent_id="repo-audit",
+        parent_conversation_id=parent.id,
+    )
+    docs = await service.ensure(
+        thread,
+        agent_tentacle_id="codex",
+        subagent_id="docs",
+        parent_conversation_id=parent.id,
+    )
+    await service.ensure(
+        thread,
+        agent_tentacle_id="codex",
+        subagent_id="stray",
+        parent_conversation_id=other.id,
+    )
+
+    hands = await service.subagents(parent.id)
+
+    assert {hand.id for hand in hands} == {audit.id, docs.id}
+    assert {hand.subagent_id for hand in hands} == {"repo-audit", "docs"}
+
+
 async def test_permission_defaults_and_grant_round_trip() -> None:
     service = ConversationManager()
     convo = await service.ensure(_thread(), agent_tentacle_id="claude")

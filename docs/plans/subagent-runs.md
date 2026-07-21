@@ -606,7 +606,48 @@ Three ways:
 advertise differently; a caller-requested effort reaches the run on every tentacle, or is
 refused as unsupported by that route's claim; an unclaimed config model gets its class default.
 
-## UoW-3 — `commission`
+## UoW-3 — `commission` ✅ shipped
+
+> **Final naming (owner call):** the spells shipped as **`scheme`** (spawn — two
+> agents scheme on a topic without the user knowing) and **`whisper`** (a quiet
+> follow-up to the accomplice by name); the child agent is an **accomplice**
+> (`run_accomplice`, `ACCOMPLICE_INSTRUCTION`, `SCHEME_TIMEOUT`, gate flag
+> `scheming`), and child runs are labeled `run_name="scheme"` / `"whisper"`. The
+> text below keeps the working name *commission* for history.
+>
+> **As built, where it deviates from the sketch below:** the runner stays
+> ignorant of why it runs — `run()` carries only `conversation_id: uuid | None`,
+> an address. The gate pre-ensures the child conversation (subagent_id +
+> parent_conversation_id) before the run; the tentacle resolves the id as a
+> cache hit or one fresh read (`ConversationManager.get(id)`; each caller
+> validates the conversation belongs to its own agent + thread); and the spawner stamps the run tree *after* the report
+> returns (`link_parent_run(run_id, parent_run_id, parent_tool_call_id)` — the
+> parent pair never enters the tentacle). The parent conversation is never
+> created by the gate: its id is read off the tool call's `RunContext`
+> (`ctx.conversation_id`, which the react graph sets to the calling run's own
+> conversation) — no id, no commission. **Nested subagents do
+> not exist**: a hand runs with no gate capability at all — no summon, no
+> teleport, no commissioning of its own (no depth cap needed) — and
+> `HAND_INSTRUCTION` rides its run as plain instructions, telling it it is a
+> hand with no user. **A hand is fully
+> non-interactive** — `run(interactive=False)`: claude declines approvals in
+> `can_use_tool` and questions in the ask hook immediately (no card is ever
+> presented), codex runs under the SDK's own `deny_all`, and a non-interactive inkling
+> run resolves every deferral through `DeclineResolver` — asks and approvals
+> decline immediately in-process and the react loop continues to a final answer
+> — matching how the native runtimes treat their own subagents; the plan's "approvals still work" paragraph below
+> is superseded by owner call. The ask-tool is not removed from inkling's schema
+> (pydantic-ai run-level toolsets are additive, not a filter) — instead a hand
+> runs with no suspender/resolver, so a deferral ends its run and `commission`
+> surfaces it as a loud ModelRetry. Timeout is
+> `commission_timeout` on the gate (default `COMMISSION_TIMEOUT` 900s), expiry
+> is a ModelRetry that names `commune` as the recovery. `commune` scopes names
+> to the hands commissioned from *this* conversation
+> (`ConversationManager.subagents(parent_conversation_id)`), and a `commune`
+> with no model override runs the agent's default model rather than re-pinning
+> the commissioned one. Landing this exposed a UoW-2 miss, fixed here: claude's
+> non-streaming `run()` never forwarded `effort` to `_iter_events`.
+
 
 The fourth spell. The spellbook's semantic gap, stated plainly:
 

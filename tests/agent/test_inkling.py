@@ -8,13 +8,14 @@ from dataclasses import dataclass, field
 from typing import TypeAlias, cast
 
 import pytest
-from pydantic_ai import AgentRunResultEvent
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai import AgentRunResultEvent, ToolDenied
+from pydantic_ai.messages import ModelMessage, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate import Octomate
+from octomate.capabilities.deferred import DeclineResolver
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.events import ActionBatchEvent
 from octomate.capabilities.react import ReactStreamEvent
@@ -152,6 +153,55 @@ async def test_inkling_loop_emits_deferred_question_batch() -> None:
     assert script.cursor == 1
     assert len(conversations.runs) == 1
     assert all(run[1].startswith("react:") for run in conversations.runs)
+
+
+async def test_decline_resolver_denies_approvals_and_answers_calls() -> None:
+    requests = DeferredToolRequests(
+        calls=[
+            ToolCallPart(tool_name="ask_questions", args={}, tool_call_id="c1")
+        ],
+        approvals=[
+            ToolCallPart(tool_name="dangerous", args={}, tool_call_id="a1")
+        ],
+    )
+
+    results = await DeclineResolver().resolve(requests)
+
+    denied = results.approvals["a1"]
+    assert isinstance(denied, ToolDenied) and "no user" in denied.message
+    assert "no user" in cast(str, results.calls["c1"])
+
+
+async def test_non_interactive_run_declines_deferrals_and_continues() -> None:
+    """A non-interactive inkling run resolves every deferral as a decline
+    in-process — the loop continues to a final answer instead of parking a
+    DeferredToolRequests output."""
+    agent, script = build_scripted_agent(
+        [
+            ScriptedTurn(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "what's your name?"}]},
+                tool_call_id="call_ask_1",
+            ),
+            "proceeding without answers",
+        ]
+    )
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(agent, conversations)
+
+    result = await tentacle.run(
+        "hi octomate",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+        interactive=False,
+    )
+
+    assert result.output == "proceeding without answers"
+    assert script.cursor == 2
+    # The decline reached the model as the ask tool's return.
+    recorded = str(conversations.store[(_THREAD, "inkling", "")].messages)
+    assert "no user" in recorded
 
 
 async def test_inkling_tentacle_invokes_suspender_on_deferred_request() -> None:

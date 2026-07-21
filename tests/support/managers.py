@@ -54,6 +54,8 @@ class FakeConversation:
     thread_id: uuid.UUID | None = None
     subagent_id: str = ""
     parent_conversation_id: uuid.UUID | None = None
+    agent_tentacle_id: str = ""
+    runs: list[str] = field(default_factory=list)
     permission_mode: ConversationPermissionMode = "default"
     allowed_tools: list[str] = field(default_factory=list)
 
@@ -65,6 +67,9 @@ class FakeConversationManager(ConversationManager):
     )
     ensured: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
     runs: list[tuple[FakeConversation, str, list[ModelMessage]]] = field(
+        default_factory=list
+    )
+    parent_links: list[tuple[str, str | None, str | None]] = field(
         default_factory=list
     )
 
@@ -84,9 +89,33 @@ class FakeConversationManager(ConversationManager):
                 thread_id=thread_id,
                 subagent_id=subagent_id,
                 parent_conversation_id=parent_conversation_id,
+                agent_tentacle_id=agent_tentacle_id or "",
             )
             self.store[store_key] = conversation
         return cast(Conversation, conversation)
+
+    async def get(self, conversation_id: uuid.UUID) -> Conversation:
+        for conversation in self.store.values():
+            if conversation.id == conversation_id:
+                return cast(Conversation, conversation)
+        raise ValueError(f"unknown conversation {conversation_id}")
+
+    async def link_parent_run(
+        self,
+        run_id: str,
+        *,
+        parent_run_id: str,
+        parent_tool_call_id: str | None,
+    ) -> None:
+        self.parent_links.append((run_id, parent_run_id, parent_tool_call_id))
+
+    async def subagents(self, parent_conversation_id: uuid.UUID) -> list[Conversation]:
+        return [
+            cast(Conversation, conversation)
+            for conversation in self.store.values()
+            if conversation.parent_conversation_id == parent_conversation_id
+            and conversation.subagent_id
+        ]
 
     async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
         for conversation in self.store.values():
@@ -107,6 +136,7 @@ class FakeConversationManager(ConversationManager):
     ) -> AgentRun | None:
         fake = cast(FakeConversation, conversation)
         self.runs.append((fake, f"{name}:{run_id}", list(messages)))
+        fake.runs.append(run_id)
         fake.messages.extend(messages)
         if external_id is not None:
             fake.external_id = external_id

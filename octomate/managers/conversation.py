@@ -112,6 +112,58 @@ class ConversationManager:
         while len(self.conversations) > self.cache_size:
             self.conversations.popitem(last=False)
 
+    async def get(self, conversation_id: uuid.UUID) -> Conversation:
+        """Resolve a conversation by id — a cache hit or one fresh read; raises
+        on an unknown id. This is the by-id path for a run addressed at a
+        pre-ensured conversation (a schemed accomplice's child context): the
+        caller ensured it and owns any thread/agent validation."""
+        for cached in self.conversations.values():
+            if cached.id == conversation_id:
+                return cached
+        async with async_session() as session:
+            conversation = await session.get(Conversation, conversation_id)
+            if conversation is None:
+                raise ValueError(f"unknown conversation {conversation_id}")
+            await conversation.runs
+            await conversation.messages
+        self.cache_conversation(conversation)
+        return conversation
+
+    async def link_parent_run(
+        self,
+        run_id: str,
+        *,
+        parent_run_id: str,
+        parent_tool_call_id: str | None,
+    ) -> None:
+        """Stamp a recorded run's place in the run tree, after the fact. The
+        runner stays ignorant of why it ran; the caller that spawned it links
+        the turn to its own run and tool call once the child returns. A run
+        that recorded nothing has no row to link — not an error."""
+        async with async_session() as session:
+            run = await session.one_or_none(
+                AgentRun, expressions=[AgentRun["id"] == run_id]
+            )
+            if run is None:
+                return
+            run.parent_run_id = parent_run_id
+            run.parent_tool_call_id = parent_tool_call_id
+            await session.commit()
+
+    async def subagents(self, parent_conversation_id: uuid.UUID) -> list[Conversation]:
+        """The subagent conversations spawned from `parent_conversation_id` — the
+        live accomplices a `whisper` can reach. Rows only; callers resolve a chosen one
+        through `ensure` so the cache stays the single source of history."""
+        async with async_session() as session:
+            rows = await session.list(
+                Conversation,
+                limit=None,
+                expressions=[
+                    Conversation["parent_conversation_id"] == parent_conversation_id
+                ],
+            )
+        return list(rows)
+
     async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
         for conversation in self.conversations.values():
             if conversation.id == conversation_id:

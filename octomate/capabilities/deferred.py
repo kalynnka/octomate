@@ -13,8 +13,10 @@ channels.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
+from pydantic_ai import ToolDenied
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.capabilities.events import ActionBatchEvent
@@ -24,6 +26,28 @@ class DeferredResolver(Protocol):
     """Resolve deferred tool calls in-process so the react loop can continue."""
 
     async def resolve(self, requests: DeferredToolRequests) -> DeferredToolResults: ...
+
+
+@dataclass
+class DeclineResolver:
+    """Resolves every deferred action by declining it immediately — the
+    resolver for a non-interactive run (e.g. an accomplice in a scheme). There is no
+    human to ask, so approvals are denied and asks are answered with the
+    decline, and the react loop continues to a final answer in-process instead
+    of parking anything for review."""
+
+    message: str = (
+        "Declined: this run has no user to ask. Proceed on your best judgment "
+        "and state the assumption in your report."
+    )
+
+    async def resolve(self, requests: DeferredToolRequests) -> DeferredToolResults:
+        results = DeferredToolResults()
+        for approval in requests.approvals:
+            results.approvals[approval.tool_call_id] = ToolDenied(self.message)
+        for call in requests.calls:
+            results.calls[call.tool_call_id] = self.message
+        return results
 
 
 class DeferredSuspender(Protocol):

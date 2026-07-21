@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
 
-from octomate.capabilities.gate import (
+from octomate.capabilities.gateway import (
     SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,

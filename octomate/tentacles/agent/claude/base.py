@@ -279,15 +279,28 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
-        conversation = await self.octomate.conversations.ensure(
-            thread_id,
-            agent_tentacle_id=self.id,
-        )
+        if conversation_id is not None:
+            conversation = await self.octomate.conversations.get(conversation_id)
+            if (
+                conversation.agent_tentacle_id != self.id
+                or conversation.thread_id != thread_id
+            ):
+                raise ValueError(
+                    f"conversation {conversation_id} does not belong to "
+                    f"({self.id!r}, {thread_id})"
+                )
+        else:
+            conversation = await self.octomate.conversations.ensure(
+                thread_id,
+                agent_tentacle_id=self.id,
+            )
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
         # Tools the user already granted "allow for session" on this conversation
@@ -332,6 +345,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         ) -> PermissionResultAllow | PermissionResultDeny:
             if tool_name in session_allowed:
                 return PermissionResultAllow(updated_input=input_data)
+            if not interactive:
+                # A non-interactive run (an accomplice in a scheme) has no
+                # human to ask — decline at once instead of presenting a card.
+                return PermissionResultDeny(
+                    message=f"{tool_name} needs an approval and this run has no "
+                    "user to ask. Proceed another way, or report what you could "
+                    "not do."
+                )
             requests = DeferredToolRequests(
                 approvals=[
                     ToolCallPart(
@@ -376,6 +397,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # Registered only for PreToolUse/AskUserQuestion, so the input is always
             # a PreToolUseHookInput. `can_use_tool` can only allow/deny, so the
             # answer is fed back by denying with the answer as the reason.
+            if not interactive:
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "This run has no user to "
+                        "ask. Proceed on your best judgment and state the "
+                        "assumption in your report.",
+                    }
+                }
             tool_input = cast(PreToolUseHookInput, hook_input)["tool_input"]
             asked = tool_input.get("questions") or []
             requests = DeferredToolRequests(
@@ -578,6 +609,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -608,6 +641,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -637,6 +672,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -661,6 +698,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             run_name=run_name,
             output_type=output_type,
             model=model,
+            effort=effort,
+            conversation_id=conversation_id,
+            interactive=interactive,
             instructions=instructions,
             capabilities=capabilities,
         ):
@@ -689,6 +729,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -718,6 +760,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -746,6 +790,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -770,6 +816,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 output_type=output_type,
                 model=model,
                 effort=effort,
+                conversation_id=conversation_id,
+                interactive=interactive,
                 instructions=instructions,
                 capabilities=capabilities,
             )

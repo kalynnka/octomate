@@ -42,7 +42,7 @@ from octomate import Octomate
 from octomate.capabilities.agent import Agent
 from octomate.capabilities.deferred import DeferredSuspender
 from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
-from octomate.capabilities.gate import (
+from octomate.capabilities.gateway import (
     SUMMON_TOOL_NAME,
     TELEPORT_KIND,
     TELEPORT_TOOL_NAME,
@@ -93,6 +93,9 @@ class RecordedRun:
     deferred_results: DeferredToolResults | None = None
     model: Model | str | None = None
     effort: ThinkingEffort | None = None
+    conversation_id: uuid.UUID | None = None
+    interactive: bool = True
+    instructions: str | None = None
     capabilities: list[AgentCapability[None]] = field(default_factory=list)
 
 
@@ -151,6 +154,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         output_type: OutputSpec[FakeRunOutput] | None = None,
         model: Model | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
@@ -169,6 +174,9 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 deferred_results=deferred_tool_results,
                 model=model,
                 effort=effort,
+                conversation_id=conversation_id,
+                interactive=interactive,
+                instructions=instructions,
                 capabilities=list(capabilities or []),
             )
         )
@@ -218,6 +226,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         run_name: str | None = None,
         model: Model | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
@@ -235,6 +244,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 deferred_results=deferred_tool_results,
                 model=model,
                 effort=effort,
+                conversation_id=conversation_id,
                 capabilities=list(capabilities or []),
             )
         )

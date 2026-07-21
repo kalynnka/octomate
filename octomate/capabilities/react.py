@@ -69,6 +69,10 @@ class ReactState:
     conversation_address: ChannelAddress
     agent_tentacle_id: str
     thread_id: uuid.UUID
+    # A pre-ensured conversation to run in, by id — the caller that spawned this
+    # run chose the context (e.g. a schemed accomplice's child conversation).
+    # None resolves the agent's own (thread, agent) conversation as usual.
+    conversation_id: uuid.UUID | None = None
     source_thread_address: ChannelAddress | None = None
     source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
 
@@ -98,6 +102,30 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     spec: dict[str, Any] | AgentSpec | None = None
 
 
+async def resolve_conversation(
+    ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]],
+) -> Conversation:
+    """The node's conversation: the pre-ensured one when the run is addressed
+    by id, otherwise the agent's own (thread, agent) conversation."""
+    if ctx.state.conversation_id is not None:
+        conversation = await ctx.deps.conversation_manager.get(
+            ctx.state.conversation_id
+        )
+        if (
+            conversation.agent_tentacle_id != ctx.state.agent_tentacle_id
+            or conversation.thread_id != ctx.state.thread_id
+        ):
+            raise ValueError(
+                f"conversation {ctx.state.conversation_id} does not belong to "
+                f"({ctx.state.agent_tentacle_id!r}, {ctx.state.thread_id})"
+            )
+        return conversation
+    return await ctx.deps.conversation_manager.ensure(
+        ctx.state.thread_id,
+        agent_tentacle_id=ctx.state.agent_tentacle_id,
+    )
+
+
 @dataclass
 class StartTurn(
     BaseNode[
@@ -113,10 +141,7 @@ class StartTurn(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
     ) -> RunAgent[ReactOutputT, ReactDepsT]:
         if self.user_prompt is not None:
-            conversation = await ctx.deps.conversation_manager.ensure(
-                ctx.state.thread_id,
-                agent_tentacle_id=ctx.state.agent_tentacle_id,
-            )
+            conversation = await resolve_conversation(ctx)
             abandoned = await ctx.deps.conversation_manager.drop_trailing_deferral(
                 conversation
             )
@@ -171,10 +196,7 @@ class RunAgent(
             conversation_address=str(ctx.state.conversation_address),
             resumed=self.deferred_results is not None,
         ) as span:
-            conversation = await ctx.deps.conversation_manager.ensure(
-                ctx.state.thread_id,
-                agent_tentacle_id=ctx.state.agent_tentacle_id,
-            )
+            conversation = await resolve_conversation(ctx)
             if ctx.deps.event_send_stream is None:
                 # builtin_tools and output_retries are deprecated run kwargs in
                 # pydantic-ai 1.x: native tools register as NativeTool capabilities,

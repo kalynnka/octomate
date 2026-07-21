@@ -32,7 +32,11 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.capabilities.agent import Agent
-from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
+from octomate.capabilities.deferred import (
+    DeclineResolver,
+    DeferredResolver,
+    DeferredSuspender,
+)
 from octomate.capabilities.react import (
     ReactDeps,
     ReactEventStream,
@@ -193,6 +197,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -223,6 +229,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -252,6 +260,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -279,6 +289,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             deferred_suspender=deferred_suspender,
             model=model,
             effort=effort,
+            conversation_id=conversation_id,
+            interactive=interactive,
             instructions=instructions,
             deps=deps,
             model_settings=model_settings,
@@ -313,6 +325,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -342,6 +356,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -370,6 +386,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
+        conversation_id: uuid.UUID | None = None,
+        interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
@@ -396,6 +414,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 deferred_suspender=deferred_suspender,
                 model=model,
                 effort=effort,
+                conversation_id=conversation_id,
+                interactive=interactive,
                 instructions=instructions,
                 deps=deps,
                 model_settings=model_settings,
@@ -425,6 +445,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_suspender: DeferredSuspender | None,
         model: Model | KnownModelName | str | None,
         effort: ThinkingEffort | None,
+        conversation_id: uuid.UUID | None,
+        interactive: bool,
         instructions: AgentInstructions[None],
         deps: None,
         model_settings: AgentModelSettings[None] | None,
@@ -441,6 +463,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         ReactStreamEvent[InklingOutput | RunOutputDataT],
         None,
     ]:
+        # A non-interactive run declines every deferred action at once: no
+        # human exists, so asks and approvals resolve to declines in-process
+        # and the react loop continues to a final answer.
+        resolver = self.deferred_resolver if interactive else DeclineResolver()
         resolved_run_name = run_name or "react"
         # Effort IS pydantic-ai's `thinking` scale; pass it through, layered over
         # any run settings the caller passed. The library maps a grade a provider
@@ -463,7 +489,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             conversation_manager=self.conversation_manager,
             thread_manager=self.octomate.thread_manager,
             agent_deps=deps,
-            resolver=self.deferred_resolver,
+            resolver=resolver,
             suspender=deferred_suspender,
             output_type=react_output_type,
             run_name=resolved_run_name,
@@ -490,6 +516,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             conversation_address=conversation_address,
             agent_tentacle_id=self.id,
             thread_id=thread_id,
+            conversation_id=conversation_id,
             source_thread_address=source_thread_address,
             source_thread_message_ids=list(source_thread_message_ids or []),
         )

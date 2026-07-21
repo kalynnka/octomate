@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import ActionBatchEvent
-from octomate.capabilities.gate import TELEPORT_KIND
+from octomate.capabilities.gateway import TELEPORT_KIND
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress

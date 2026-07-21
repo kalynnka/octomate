@@ -13,7 +13,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
-from octomate.capabilities.gate import SCRY_TOOL_NAME, GatewayCapability
+from octomate.capabilities.gateway import SCRY_TOOL_NAME, GatewayCapability
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
@@ -377,6 +377,35 @@ async def test_reception_mounts_gate_capability() -> None:
     assert gate.toolset is not None
     scry = gate.toolset.tools[SCRY_TOOL_NAME].function
     assert await scry(FAKE_CONTEXT) == []
+
+
+async def test_react_mounts_a_scheming_gate_in_a_thread() -> None:
+    address = _key("t1")
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    target = _source_target(address)
+    thread = _thread(address)
+
+    await reflex_graph.run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    gate = _recorded_gate_capability(agent.turns[0])
+    assert gate.scheming
+    assert gate.thread_id == thread.id
+    assert gate.conversation_address == address
+    assert gate.toolset is not None and "scheme" in gate.toolset.tools
 
 
 async def test_react_passes_the_decision_effort_to_the_run() -> None:
