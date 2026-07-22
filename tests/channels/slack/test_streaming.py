@@ -32,6 +32,7 @@ from octomate import Octomate
 from octomate.capabilities.events import (
     ResultSegmentEvent,
     StreamEvents,
+    SubagentActivity,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoStatusChangedEvent,
@@ -487,3 +488,66 @@ async def test_slack_text_stream_rotates_before_slack_expires(
     assert ink.stream_objects[0].appends == ["hello"]
     assert ink.stream_objects[0].stopped
     assert ink.stream_objects[1].appends == [" again"]
+
+
+async def test_slack_subagents_own_streams_separate_from_parent_and_siblings() -> None:
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+
+    first_activity = SubagentActivity("call-a", "scheme", "audit")
+    second_activity = SubagentActivity("call-b", "scheme", "tests")
+    third_activity = SubagentActivity("call-c", "scheme", "docs")
+    async with channel.feelers.timeline.open(slack_key()) as parent:
+        await parent.thinking_start()
+        await parent.thinking_delta("parent work")
+        async with parent.open_subagent(
+            first_activity
+        ) as first, parent.open_subagent(
+            second_activity
+        ) as second, parent.open_subagent(third_activity) as third:
+            await first.append_response("audit result")
+            await second.append_response("test result")
+            await third.append_response("docs result")
+            await first.settle("completed")
+            await second.settle("failed", "one failure")
+            await third.settle("completed")
+    parent_stream = ink.stream_objects[0]
+
+    assert len(ink.stream_objects) == 4
+    first_stream, second_stream, third_stream = ink.stream_objects[1:]
+    assert len(
+        {id(parent_stream), id(first_stream), id(second_stream), id(third_stream)}
+    ) == 4
+    parent_ids = {
+        chunk.id
+        for group in parent_stream.chunks
+        for chunk in group
+        if isinstance(chunk, TaskUpdateChunk)
+    }
+    first_ids = {
+        chunk.id
+        for group in first_stream.chunks
+        for chunk in group
+        if isinstance(chunk, TaskUpdateChunk)
+    }
+    second_ids = {
+        chunk.id
+        for group in second_stream.chunks
+        for chunk in group
+        if isinstance(chunk, TaskUpdateChunk)
+    }
+    third_ids = {
+        chunk.id
+        for group in third_stream.chunks
+        for chunk in group
+        if isinstance(chunk, TaskUpdateChunk)
+    }
+    assert parent_ids == {"thinking-1"}
+    assert first_ids == {"call-a"}
+    assert second_ids == {"call-b"}
+    assert third_ids == {"call-c"}
+    assert "audit result" in str(first_stream.chunks)
+    assert "test result" not in str(first_stream.chunks)
+    assert "test result" in str(second_stream.chunks)
+    assert "docs result" in str(third_stream.chunks)
+    assert all(stream.stopped for stream in ink.stream_objects)

@@ -30,6 +30,7 @@ from tests.support.scenarios import (
     showcase,
     slack_card_payload,
     streamed_text,
+    subagent_run,
 )
 from tests.trigger.conftest import TriggerTargets, run_banner
 
@@ -172,3 +173,19 @@ async def test_slack_renders_timeline(
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text
+
+
+async def test_slack_renders_subagent_timelines(
+    slack_channel: tuple[SlackTentacle, ChannelAddress],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two parallel schemes open sibling streams and fold their reports without
+    adding scheme rows to the parent plan stream."""
+    channel, address = slack_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await drive(channel, address, play(subagent_run(), delay=0.05))
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+    assert "Subagent timeline" not in caplog.text

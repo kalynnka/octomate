@@ -22,8 +22,12 @@ from pathlib import Path
 from typing import Literal, TypeAlias, cast
 from uuid import uuid4
 
-from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai import AgentCapability, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    ModelMessage,
+)
 from pydantic_ai.output import OutputSpec
 from pydantic_core import to_jsonable_python
 
@@ -35,20 +39,26 @@ sys.modules.setdefault("octomate", octomate_package)
 
 from pydantic_ai.tools import DeferredToolRequests
 
+from octomate.base import Octomate
 from octomate.capabilities.agent import Agent
+from octomate.capabilities.gateway import SCHEME_TOOL_NAME, GatewayCapability
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
+from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment, MessageSegment
+from octomate.schemas.triage import AgentRoute, Claim
 from octomate.capabilities.ask import AskCapability
+from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.agent.inkling import build_mcp_toolsets
 from octomate.tentacles.agent.inkling.base import (
     InklingOutput,
+    InklingTentacle,
 )
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.json import JsonObject
@@ -65,6 +75,15 @@ SEGMENTS_PROMPT = (
     "local image file path in the image segment: tests/src/images/usagi.jpg. "
     "Keep the message concise and do not ask questions."
 )
+SUBAGENTS_PROMPT = (
+    "This is a subagent capture test. First call scry. Then, in one assistant "
+    "turn, call scheme twice using the route scry returns. Name the accomplices "
+    "timeline-contract and failure-review. Ask timeline-contract for three "
+    "invariants of an independent subagent activity timeline. Ask failure-review "
+    "for three failure cases whose partial report should remain reviewable. After "
+    "both reports return, give a concise synthesis. Do not summon, teleport, "
+    "whisper, or do the delegated work yourself."
+)
 DEFAULT_OUTPUT_DIR = Path("tests/src/events")
 DEFAULT_IMAGE = Path("tests/src/images/usagi.jpg")
 RawCapturedEvent: TypeAlias = AgentStreamEvent | AgentRunResultEvent[InklingOutput]
@@ -79,6 +98,7 @@ class CaptureCase:
     output_type: OutputSpec[InklingOutput]
     expectation: Expectation
     required_image: str | None = None
+    subagents: bool = False
 
 
 def event_payload(event: RawCapturedEvent) -> JsonObject:
@@ -112,8 +132,13 @@ def parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--file-name",
-        default="inkling_text.jsonl",
-        help="Output file for a prompt-override run. Defaults to inkling_text.jsonl.",
+        default=None,
+        help="Output file for a prompt override or subagent run.",
+    )
+    parser.add_argument(
+        "--subagents",
+        action="store_true",
+        help="Capture one real Inkling run that completes two scheme calls.",
     )
     parser.add_argument(
         "--mcp",
@@ -167,8 +192,9 @@ async def capture(
                 update={"github": mcp.github.model_copy(update={"read_only": True})}
             )
         toolsets = [*build_mcp_toolsets(mcp)]
+    model_config = config.agents.inkling.default_model
     agent: Agent[None, InklingOutput] = Agent(
-        registry.build_model(config.agents.inkling.default_model),
+        registry.build_model(model_config),
         deps_type=type(None),
         name="octomate-inkling",
         output_type=[str, list[MessageSegment], DeferredToolRequests],
@@ -176,6 +202,15 @@ async def capture(
         capabilities=[AskCapability(), TodoCapability(), SendCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
+    accomplice: InklingTentacle | None = None
+    if any(case.subagents for case in cases):
+        host = Octomate(thread_manager=threads, conversations=conversations)
+        accomplice = InklingTentacle(
+            "capture-accomplice",
+            host,
+            models={model_config.name: registry.build_model(model_config)},
+            conversation_manager=conversations,
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     case_counts: dict[str, int] = {}
@@ -193,6 +228,8 @@ async def capture(
                     chat_id=chat_id,
                     user_id=user_id,
                     thread_id=thread_id,
+                    accomplice=accomplice,
+                    subagent_model=model_config.name,
                 )
     return case_counts
 
@@ -208,6 +245,8 @@ async def capture_case(
     chat_id: str,
     user_id: str,
     thread_id: str,
+    accomplice: InklingTentacle | None,
+    subagent_model: AgentRouteModelName,
 ) -> int:
     print(f"capture case: {case.name}")
     effective_chat_id = (
@@ -225,17 +264,51 @@ async def capture_case(
     thread = await threads.ensure(address)
     conversation = await conversations.ensure(thread.id, agent_tentacle_id="inkling")
     message_history = cast("list[ModelMessage]", list(conversation.messages))
+    capabilities: list[AgentCapability[None]] = []
+    if case.subagents:
+        if accomplice is None:
+            raise RuntimeError("subagent capture requires an accomplice")
+        agents: dict[str, AgentTentacle] = {accomplice.id: accomplice}
+        capabilities.append(
+            GatewayCapability(
+                routes=[
+                    AgentRoute(
+                        agent_id=accomplice.id,
+                        model=subagent_model,
+                        claim=Claim(ability="independent analysis for capture tests"),
+                    )
+                ],
+                current_agent_id="inkling",
+                agents=agents,
+                conversations=conversations,
+                thread_id=thread.id,
+                conversation_address=address,
+            )
+        )
+    scheme_calls = 0
+    scheme_results = 0
     async with agent.iter(
         case.prompt,
         output_type=case.output_type,
         message_history=message_history or None,
         conversation_id=str(conversation.id),
+        capabilities=capabilities or None,
     ) as run:
         async for node in run:
             if agent.is_model_request_node(node) or agent.is_call_tools_node(node):
                 async with node.stream(run.ctx) as stream:
                     async for event in stream:
                         count = write_event(file, count, event)
+                        if (
+                            isinstance(event, FunctionToolCallEvent)
+                            and event.part.tool_name == SCHEME_TOOL_NAME
+                        ):
+                            scheme_calls += 1
+                        elif (
+                            isinstance(event, FunctionToolResultEvent)
+                            and event.part.tool_name == SCHEME_TOOL_NAME
+                        ):
+                            scheme_results += 1
         if run.result is None:
             raise RuntimeError(f"{case.name} capture completed without a run result")
 
@@ -265,6 +338,11 @@ async def capture_case(
 
         result_event = AgentRunResultEvent(run.result)
         count = write_event(file, count, result_event)
+        if case.subagents and (scheme_calls < 2 or scheme_results < 2):
+            raise RuntimeError(
+                f"subagent capture expected two scheme pairs, got "
+                f"calls={scheme_calls}, results={scheme_results}"
+            )
         await conversations.record_agent_run(
             conversation,
             run_id=run.result.run_id,
@@ -276,7 +354,18 @@ async def capture_case(
 
 def main() -> None:
     args = parser().parse_args()
-    if args.prompt is None:
+    if args.subagents:
+        cases = [
+            CaptureCase(
+                name="subagents",
+                file_name=args.file_name or "inkling_subagents.jsonl",
+                prompt=args.prompt or SUBAGENTS_PROMPT,
+                output_type=str,
+                expectation="plain_text",
+                subagents=True,
+            )
+        ]
+    elif args.prompt is None:
         if not DEFAULT_IMAGE.exists():
             raise FileNotFoundError(DEFAULT_IMAGE)
         cases = [
@@ -300,7 +389,7 @@ def main() -> None:
         cases = [
             CaptureCase(
                 name="plain_text",
-                file_name=args.file_name,
+                file_name=args.file_name or "inkling_text.jsonl",
                 prompt=args.prompt,
                 output_type=str,
                 expectation="plain_text",

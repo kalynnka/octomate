@@ -38,6 +38,7 @@ from pydantic_ai.messages import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
+    ToolCallPart,
     ToolReturnPart,
 )
 from pydantic_ai.tools import DeferredToolRequests
@@ -49,6 +50,8 @@ from octomate.capabilities.events import (
     MessageSentEvent,
     ResultSegmentEvent,
     StreamEvents,
+    SubagentActivity,
+    SubagentActivityStatus,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,
@@ -56,7 +59,11 @@ from octomate.capabilities.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
-from octomate.capabilities.gateway import TELEPORT_TOOL_NAME
+from octomate.capabilities.gateway import (
+    SCHEME_TOOL_NAME,
+    TELEPORT_TOOL_NAME,
+    WHISPER_TOOL_NAME,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
@@ -436,6 +443,9 @@ SKIPPED_PLAN_TOOL_NAMES = frozenset(
         ASK_QUESTIONS_TOOL_NAME,
         DEFAULT_OUTPUT_TOOL_NAME,
         SEND_TOOL_NAME,
+        # Subagent calls render as separate timelines instead of parent plan rows.
+        SCHEME_TOOL_NAME,
+        WHISPER_TOOL_NAME,
         TELEPORT_TOOL_NAME,  # Teleport is internal routing plumbing (relocate the conversation)
     }
 )
@@ -454,10 +464,6 @@ def format_field_name(value: object) -> str:
 def humanize_tool_name(tool_name: str) -> str:
     name = tool_name.rsplit("__", 1)[-1].replace("-", " ")
     return format_field_name(name)
-
-
-def status_hint(tool_name: str) -> str:
-    return f"{humanize_tool_name(tool_name)}…"
 
 
 def truncate_task_detail(text: str, *, max_chars: int = MAX_TASK_DETAIL_CHARS) -> str:
@@ -538,6 +544,24 @@ class MarkdownFeeler(Protocol):
     ) -> IMMessageID | None: ...
 
 
+class SubagentTimelineState:
+    """One independently rendered commissioned child run."""
+
+    async def append_response(self, delta: str) -> None: ...
+
+    async def settle(
+        self,
+        status: SubagentActivityStatus,
+        detail: str | None = None,
+    ) -> None: ...
+
+
+@dataclass
+class OpenSubagentTimeline:
+    context: AbstractAsyncContextManager[SubagentTimelineState]
+    state: SubagentTimelineState
+
+
 class TimelineState:
     """Streaming render hook for one run, and the event→render dispatch (`drive`)
     that walks the run stream. The feeler that opened the state calls `bind` with
@@ -571,6 +595,113 @@ class TimelineState:
     ask_questions: QuestionFeeler
     approvals: ApprovalFeeler
     deferred_actions: DeferredActionManager
+    subagent_timelines: dict[str, OpenSubagentTimeline] | None = None
+
+    @asynccontextmanager
+    async def open_subagent(
+        self,
+        activity: SubagentActivity,
+    ) -> AsyncIterator[SubagentTimelineState]:
+        """Ignore child activity when this timeline has no streaming renderer."""
+        yield SubagentTimelineState()
+
+    async def observe_subagent_part(
+        self,
+        part: ToolCallPart | ToolReturnPart | RetryPromptPart,
+    ) -> None:
+        if isinstance(part, ToolCallPart):
+            if part.tool_name not in {SCHEME_TOOL_NAME, WHISPER_TOOL_NAME}:
+                return
+            args = part.args_as_dict()
+            name = args.get("name")
+            if not isinstance(name, str) or not name:
+                logger.warning(
+                    "Subagent tool %s has no display name; skipping its timeline",
+                    part.tool_call_id,
+                )
+                return
+            activity = SubagentActivity(
+                invocation_id=part.tool_call_id,
+                kind="scheme" if part.tool_name == SCHEME_TOOL_NAME else "whisper",
+                name=name,
+            )
+            context = self.open_subagent(activity)
+            try:
+                state = await context.__aenter__()
+            except Exception:
+                logger.warning(
+                    "Subagent timeline %s failed to open",
+                    part.tool_call_id,
+                    exc_info=True,
+                )
+                return
+            if self.subagent_timelines is None:
+                self.subagent_timelines = {}
+            previous = self.subagent_timelines.pop(part.tool_call_id, None)
+            if previous is not None:
+                await self.settle_subagent(previous, "failed")
+            self.subagent_timelines[part.tool_call_id] = OpenSubagentTimeline(
+                context=context,
+                state=state,
+            )
+            return
+
+        if self.subagent_timelines is None:
+            return
+        timeline = self.subagent_timelines.pop(part.tool_call_id, None)
+        if timeline is None:
+            return
+        response = tool_result_text(part)
+        if response:
+            try:
+                await timeline.state.append_response(response)
+            except Exception:
+                logger.warning(
+                    "Subagent timeline %s failed to render its response",
+                    part.tool_call_id,
+                    exc_info=True,
+                )
+        status: SubagentActivityStatus = "completed"
+        if isinstance(part, RetryPromptPart) or (
+            isinstance(part, ToolReturnPart) and part.outcome != "success"
+        ):
+            status = "failed"
+        await self.settle_subagent(timeline, status)
+
+    async def observe_subagent_event(
+        self,
+        event: StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput],
+    ) -> None:
+        if isinstance(event, FunctionToolCallEvent | FunctionToolResultEvent):
+            try:
+                await self.observe_subagent_part(event.part)
+            except Exception:
+                logger.warning(
+                    "Subagent timeline failed to consume event",
+                    exc_info=True,
+                )
+
+    async def settle_subagent(
+        self,
+        timeline: OpenSubagentTimeline,
+        status: SubagentActivityStatus,
+    ) -> None:
+        try:
+            await timeline.state.settle(status)
+        except Exception:
+            logger.warning("Subagent timeline failed to settle", exc_info=True)
+        try:
+            await timeline.context.__aexit__(None, None, None)
+        except Exception:
+            logger.warning("Subagent timeline failed to close", exc_info=True)
+
+    async def settle_subagents(self, status: SubagentActivityStatus) -> None:
+        if self.subagent_timelines is None:
+            return
+        timelines = list(self.subagent_timelines.values())
+        self.subagent_timelines.clear()
+        for timeline in timelines:
+            await self.settle_subagent(timeline, status)
 
     async def drive(
         self,
@@ -588,6 +719,7 @@ class TimelineState:
         answered = False
         final_output: ChannelOutput = None
         async for event in stream:
+            await self.observe_subagent_event(event)
             if failed:
                 continue  # keep draining the stream even after a render failure
             try:
@@ -1010,5 +1142,9 @@ class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
         )
         try:
             yield state
+        except asyncio.CancelledError:
+            await state.settle_subagents("cancelled")
+            raise
         finally:
+            await state.settle_subagents("failed")
             await state.send_parts(todo_block=True)
