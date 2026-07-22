@@ -38,6 +38,7 @@ from octomate.config.channels import (
     SlackChannelConfig,
     SlackStreamConfig,
 )
+from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.mcp import GitHubMcpConfig, LinearMcpConfig, McpConfig
 from octomate.config.models import (
     AnthropicModelSettings,
@@ -247,6 +248,9 @@ __all__ = [
     "OpenAIProviderConfig",
     "ProvidersConfig",
     "VertexProviderConfig",
+    # database
+    "DatabaseSettings",
+    "database_settings",
     # mcp
     "McpConfig",
     "GitHubMcpConfig",

@@ -6,6 +6,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from octomate.config.database import database_settings
 from octomate.models import (
     Base,  # noqa: F401 — registers all ORM tables on Base.metadata
 )
@@ -13,6 +14,15 @@ from octomate.models import (
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+# Migrations resolve the database exactly like the app does (octomate/database.py:
+# OCTOMATE_DB_URL, then `db_url:` in octomate.yaml, then the SQLite default) —
+# otherwise `alembic upgrade` silently targets alembic.ini's dev default no matter
+# where the operator pointed the app. `%` is doubled because set_main_option
+# interpolates configparser-style.
+config.set_main_option(
+    "sqlalchemy.url", database_settings.db_url.replace("%", "%%")
+)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
