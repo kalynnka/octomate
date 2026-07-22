@@ -604,6 +604,105 @@ def mid_run_notice(
     ]
 
 
+def subagent_run() -> ChannelScript:
+    """Two parallel schemes from a real DeepSeek Flash Inkling capture, condensed
+    to stable tool events and de-identified for live channel replay."""
+    timeline_report = (
+        "1. **Append-Only** — Once an event is added, it cannot be modified, "
+        "deleted, or reordered.\n"
+        "2. **Monotonic Order** — Each new event follows every preceding event.\n"
+        "3. **Unique Identity** — Every event has an identifier that never repeats."
+    )
+    failure_report = (
+        "1. **Agent crash mid-response** — Preserve completed reasoning and "
+        "intermediate data for diagnosis.\n"
+        "2. **Unrecoverable tool timeout** — Keep collected results so retries do "
+        "not repeat completed work.\n"
+        "3. **Parent supervisor termination** — Retain accomplished work so the "
+        "parent can resume, roll back, or accept it."
+    )
+    answer = (
+        "Both subagents completed independently. The timeline contract is "
+        "append-only, ordered, and uniquely identified; failure review keeps "
+        "partial work available after crashes, timeouts, and cancellation."
+    )
+    return [
+        PartStartEvent(
+            index=0,
+            part=ThinkingPart(content="I need to discover the available route"),
+        ),
+        PartEndEvent(
+            index=0,
+            part=ThinkingPart(
+                content="I need to discover the available route, then commission "
+                "both independent reviews."
+            ),
+        ),
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scry",
+                args={},
+                tool_call_id="call_scry_subagents",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="scry",
+                content=[
+                    {
+                        "agent_id": "capture-accomplice",
+                        "model": "deepseek:deepseek-v4-flash",
+                        "claim": {
+                            "ability": "independent analysis for capture tests"
+                        },
+                    }
+                ],
+                tool_call_id="call_scry_subagents",
+            )
+        ),
+        *narration("I found the route and am starting both reviews in parallel."),
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={
+                    "name": "timeline-contract",
+                    "agent_id": "capture-accomplice",
+                    "model": "deepseek:deepseek-v4-flash",
+                    "brief": "List three invariants for an independent timeline.",
+                },
+                tool_call_id="call_scheme_timeline",
+            )
+        ),
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={
+                    "name": "failure-review",
+                    "agent_id": "capture-accomplice",
+                    "model": "deepseek:deepseek-v4-flash",
+                    "brief": "List three failures where partial work must survive.",
+                },
+                tool_call_id="call_scheme_failures",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="scheme",
+                content=timeline_report,
+                tool_call_id="call_scheme_timeline",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="scheme",
+                content=failure_report,
+                tool_call_id="call_scheme_failures",
+            )
+        ),
+        *streamed_text(answer),
+    ]
+
+
 def showcase(
     *,
     image_file: str | None = None,

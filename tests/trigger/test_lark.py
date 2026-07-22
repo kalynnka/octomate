@@ -28,6 +28,7 @@ from tests.support.scenarios import (
     play,
     showcase,
     streamed_text,
+    subagent_run,
 )
 from tests.support.channels import drive
 from tests.trigger.conftest import TriggerTargets, run_banner
@@ -162,3 +163,19 @@ async def test_lark_renders_timeline(
 
     assert message_id is not None
     assert "timeline render failed" not in caplog.text
+
+
+async def test_lark_renders_subagent_timelines(
+    lark_channel: tuple[LarkTentacle, ChannelAddress],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two parallel schemes open sibling cards and fold their reports without
+    adding scheme rows to the parent timeline."""
+    channel, address = lark_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await drive(channel, address, play(subagent_run(), delay=0.2))
+
+    assert message_id is not None
+    assert "timeline render failed" not in caplog.text
+    assert "Subagent timeline" not in caplog.text
