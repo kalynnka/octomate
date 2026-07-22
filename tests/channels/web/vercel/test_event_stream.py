@@ -6,12 +6,17 @@ from collections.abc import AsyncIterator
 from typing import cast
 from uuid import uuid4
 
+import anyio
 from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
     PartDeltaEvent,
     PartStartEvent,
     TextPart,
     TextPartDelta,
     ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
 )
 from pydantic_ai.result import FinalResult
 from pydantic_ai.ui import NativeEvent
@@ -22,20 +27,30 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     TextDeltaChunk,
     TextEndChunk,
     TextStartChunk,
+    ToolInputAvailableChunk,
+    ToolOutputAvailableChunk,
 )
 
 from octomate.capabilities.events import (
     ActionBatchEvent,
     MessageSentEvent,
     ResultSegmentEvent,
+    SubagentActivity,
     TodoCreatedEvent,
 )
 from octomate.capabilities.react import ReactStreamEvent
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.todos import Todo
 from octomate.tentacles.agent.inkling.base import InklingOutput
+from octomate.tentacles.channel.web.vercel.base import (
+    VercelStreamItem,
+    VercelTimelineFeeler,
+    current_sink,
+)
 from octomate.tentacles.channel.web.vercel.event_stream import VercelEventStream
+from tests.support.channels import RecordingApprovalFeeler, RecordingQuestionFeeler
 
 
 async def _chunks(events: list[ReactStreamEvent[InklingOutput]]) -> list[BaseChunk]:
@@ -168,3 +183,72 @@ async def test_native_events_pass_through_to_stock_handlers() -> None:
     chunks = await _chunks([PartStartEvent(index=0, part=ThinkingPart(content="hmm"))])
 
     assert any(isinstance(chunk, ReasoningStartChunk) for chunk in chunks)
+
+
+async def test_parent_stream_hides_scheme_tool_row() -> None:
+    chunks = await _chunks(
+        [
+            FunctionToolCallEvent(
+                ToolCallPart(
+                    tool_name="scheme",
+                    args={"name": "audit"},
+                    tool_call_id="call-a",
+                )
+            ),
+            FunctionToolResultEvent(
+                ToolReturnPart(
+                    tool_name="scheme",
+                    content="report",
+                    tool_call_id="call-a",
+                )
+            ),
+        ]
+    )
+
+    assert not any(
+        getattr(chunk, "tool_call_id", None) == "call-a" for chunk in chunks
+    )
+
+
+async def test_subagents_render_as_independent_standard_tool_parts() -> None:
+    send, receive = anyio.create_memory_object_stream[VercelStreamItem](20)
+    token = current_sink.set(send)
+    feeler = VercelTimelineFeeler(
+        ask_questions=RecordingQuestionFeeler(),
+        approvals=RecordingApprovalFeeler(),
+    )
+    address = ChannelAddress(
+        channel_tentacle_id="dev_ui",
+        chat_type="private",
+        chat_id="dev",
+        user_id="dev",
+        thread_id="chat-1",
+    )
+    try:
+        async with feeler.open(address) as timeline:
+            async with timeline.open_subagent(
+                SubagentActivity("call-a", "scheme", "audit")
+            ) as first, timeline.open_subagent(
+                SubagentActivity("call-b", "scheme", "tests")
+            ) as second:
+                await first.append_response("audit result")
+                await second.append_response("test result")
+                await first.settle("completed")
+                await second.settle("failed", "one failure")
+    finally:
+        current_sink.reset(token)
+        await send.aclose()
+
+    items = [item async for item in receive]
+    inputs = [item for item in items if isinstance(item, ToolInputAvailableChunk)]
+    outputs = [item for item in items if isinstance(item, ToolOutputAvailableChunk)]
+    assert [item.tool_call_id for item in inputs] == ["call-a", "call-b"]
+    assert [item.tool_name for item in inputs] == ["scheme", "scheme"]
+    first_outputs = [item for item in outputs if item.tool_call_id == "call-a"]
+    second_outputs = [item for item in outputs if item.tool_call_id == "call-b"]
+    assert first_outputs[-1].preliminary is False
+    assert second_outputs[-1].preliminary is False
+    assert "audit result" in str(first_outputs[-1].output)
+    assert "test result" not in str(first_outputs[-1].output)
+    assert "test result" in str(second_outputs[-1].output)
+    assert "audit result" not in str(second_outputs[-1].output)

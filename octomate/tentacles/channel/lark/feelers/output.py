@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -20,6 +21,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.events import (
+    SubagentActivity,
+    SubagentActivityStatus,
     TodoDeletedEvent,
     TodoEvent,
 )
@@ -36,7 +39,9 @@ from octomate.telemetry import lark_logfire
 from octomate.tentacles.channel.feelers.output import (
     IMMessageID,
     JsonValue,
+    MarkdownChunker,
     StreamFlusher,
+    SubagentTimelineState,
     TextStreamBatcher,
     TimelineFeeler,
     TimelineState,
@@ -182,6 +187,22 @@ class LarkRunStateCards(TimelineState):
     def __post_init__(self) -> None:
         self.thinking_flusher = StreamFlusher(self.flush_thinking)
         self.answer_flusher = StreamFlusher(self.flush_answer)
+
+    @asynccontextmanager
+    async def open_subagent(
+        self,
+        activity: SubagentActivity,
+    ) -> AsyncIterator[LarkSubagentTimelineState]:
+        state = LarkSubagentTimelineState(
+            ink=self.ink,
+            activity=activity,
+            chat_id=self.chat_id,
+            chat_type=self.chat_type,
+            reply_to=self.reply_to,
+            reply_in_thread=self.reply_in_thread,
+        )
+        await state.start()
+        yield state
 
     async def post(self, card: JsonObject) -> str | None:
         raw_card = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
@@ -507,8 +528,105 @@ class LarkTimelineFeeler(TimelineFeeler):
         )
         try:
             yield state
+        except asyncio.CancelledError:
+            await state.settle_subagents("cancelled")
+            raise
         finally:
+            await state.settle_subagents("failed")
             # consume() already fed any non-streamed final output via answer_delta,
             # so the result-fallback arg is None here.
             await state.finish(None)
             state.message_id = state.answer_message_id
+
+
+@dataclass
+class LarkSubagentTimelineState(SubagentTimelineState):
+    ink: LarkInk
+    activity: SubagentActivity
+    chat_id: str
+    chat_type: str
+    reply_to: str | None
+    reply_in_thread: bool
+
+    card_id: str | None = None
+    response: str = ""
+    status: SubagentActivityStatus | None = None
+
+    def card(self, *, expanded: bool) -> JsonValue:
+        template = "blue"
+        title = f"Starting {self.activity.name}…"
+        if self.status == "completed":
+            template = "green"
+            title = "Completed"
+        elif self.status is not None:
+            template = "red"
+            title = {
+                "failed": "Failed",
+                "timed_out": "Timed out",
+                "cancelled": "Cancelled",
+            }[self.status]
+        elements: list[JsonValue] = [cards.markdown(f"**{title}**")]
+        chunks = MarkdownChunker().chunk(self.response) if self.response else []
+        for index, chunk in enumerate(chunks):
+            title = "Response" if index == 0 else f"Response ({index + 1})"
+            elements.append(
+                cards.collapsible_panel(
+                    title,
+                    [cards.markdown(chunk)],
+                    expanded=expanded,
+                )
+            )
+        return cards.card_v2(
+            elements,
+            header=cards.header(
+                f"Subagent · {self.activity.name}",
+                template=template,
+            ),
+        )
+
+    async def start(self) -> None:
+        payload = json.dumps(
+            self.card(expanded=True), ensure_ascii=False, separators=(",", ":")
+        )
+        self.card_id = await self.ink.send_message(
+            self.chat_id,
+            self.chat_type,
+            [LarkOutboundMessage(msg_type="interactive", content=payload)],
+            self.reply_to,
+            reply_in_thread=self.reply_in_thread,
+        )
+        if self.card_id is None:
+            self.card_id = await self.ink.send_text_message(
+                self.chat_id,
+                self.chat_type,
+                card_render_fallback_text(payload),
+                self.reply_to,
+                reply_in_thread=self.reply_in_thread,
+            )
+
+    async def render(self, *, expanded: bool) -> None:
+        if self.card_id is None:
+            raise RuntimeError("subagent card was not created")
+        payload = json.dumps(
+            self.card(expanded=expanded),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        await self.ink.patch_card(self.card_id, payload)
+
+    async def append_response(self, delta: str) -> None:
+        if self.status is not None or not delta:
+            return
+        self.response += delta
+
+    async def settle(
+        self,
+        status: SubagentActivityStatus,
+        detail: str | None = None,
+    ) -> None:
+        if self.status is not None:
+            return
+        if detail:
+            self.response = f"{self.response}\n\n{detail}" if self.response else detail
+        self.status = status
+        await self.render(expanded=False)

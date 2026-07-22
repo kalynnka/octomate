@@ -10,6 +10,7 @@ binds a bare `TimelineState` to a channel's feelers for the direct-drive tests.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -27,6 +28,8 @@ from typing_extensions import NotRequired, TypedDict
 
 from octomate import Octomate
 from octomate.capabilities.events import (
+    SubagentActivity,
+    SubagentActivityStatus,
     TodoEvent,
 )
 from octomate.capabilities.react import ReactStreamEvent
@@ -51,6 +54,7 @@ from octomate.tentacles.channel.feelers.deferred import (
 )
 from octomate.tentacles.channel.feelers.output import (
     IMMessageID,
+    SubagentTimelineState,
     TimelineFeeler,
     TimelineState,
 )
@@ -192,6 +196,32 @@ class RecordingTimelineFeeler:
         self.consumed.append((address, state.message_id))
 
 
+@dataclass
+class RecordingSubagentTimelineState(SubagentTimelineState):
+    address: ChannelAddress
+    activity: SubagentActivity
+    response: str = ""
+    settlements: list[tuple[SubagentActivityStatus, str | None]] = field(
+        default_factory=list
+    )
+    closed: bool = False
+    fail_updates: bool = False
+
+    async def append_response(self, delta: str) -> None:
+        if self.fail_updates:
+            raise RuntimeError("subagent timeline update failed")
+        self.response += delta
+
+    async def settle(
+        self,
+        status: SubagentActivityStatus,
+        detail: str | None = None,
+    ) -> None:
+        if self.fail_updates:
+            raise RuntimeError("subagent timeline update failed")
+        self.settlements.append((status, detail))
+
+
 class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     """Real channel pipeline over recording fakes. `start_sub_thread` succeeds
     and records, so the graph tests can route receptions into "hint-thread".
@@ -273,11 +303,41 @@ class RecordingTimeline(TimelineState):
     dispatch is observable too."""
 
     calls: list[tuple[str, object]] = field(default_factory=list)
+    subagent_states: list[RecordingSubagentTimelineState] = field(
+        default_factory=list
+    )
+    fail_subagent_open: bool = False
+    fail_subagent_updates: bool = False
     message_id: IMMessageID | None = None
 
     @asynccontextmanager
     async def open(self, address: ChannelAddress) -> AsyncGenerator[RecordingTimeline]:
-        yield self
+        self.address = address
+        try:
+            yield self
+        except asyncio.CancelledError:
+            await self.settle_subagents("cancelled")
+            raise
+        finally:
+            await self.settle_subagents("failed")
+
+    @asynccontextmanager
+    async def open_subagent(
+        self,
+        activity: SubagentActivity,
+    ) -> AsyncGenerator[RecordingSubagentTimelineState]:
+        if self.fail_subagent_open:
+            raise RuntimeError("subagent timeline open failed")
+        state = RecordingSubagentTimelineState(
+            self.address,
+            activity,
+            fail_updates=self.fail_subagent_updates,
+        )
+        self.subagent_states.append(state)
+        try:
+            yield state
+        finally:
+            state.closed = True
 
     async def thinking_start(self) -> None:
         await self.begin_entry()

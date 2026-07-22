@@ -26,7 +26,12 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from pydantic_ai.messages import PartStartEvent, TextPart
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartStartEvent,
+    TextPart,
+)
 from pydantic_ai.result import FinalResult
 from pydantic_ai.ui import NativeEvent
 from pydantic_ai.ui.vercel_ai import VercelAIEventStream
@@ -47,6 +52,7 @@ from octomate.capabilities.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
+from octomate.capabilities.gateway import SCHEME_TOOL_NAME, WHISPER_TOOL_NAME
 from octomate.capabilities.react import ReactStreamEvent
 from octomate.tentacles.agent.inkling.base import InklingOutput
 
@@ -56,9 +62,19 @@ class VercelEventStream(VercelAIEventStream[None, InklingOutput]):
     reply_id: str | None = None
 
     async def handle_event(
-        self, event: NativeEvent | ReactStreamEvent[InklingOutput]
+        self,
+        event: NativeEvent | ReactStreamEvent[InklingOutput] | BaseChunk,
     ) -> AsyncIterator[BaseChunk]:
         match event:
+            case (
+                FunctionToolCallEvent()
+                | FunctionToolResultEvent()
+            ) if event.part.tool_name in {SCHEME_TOOL_NAME, WHISPER_TOOL_NAME}:
+                return
+            case BaseChunk():
+                async for chunk in self.close_reply():
+                    yield chunk
+                yield event
             case PartStartEvent(part=TextPart()):
                 # The native reply's text part is opening — close any mid-run notice
                 # block first so the two text parts don't interleave (an unbounded

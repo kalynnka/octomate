@@ -379,6 +379,31 @@ async def test_reception_mounts_gate_capability() -> None:
     assert await scry(FAKE_CONTEXT) == []
 
 
+async def test_non_stream_reception_presents_only_the_final_output() -> None:
+    address = _key()
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    target = _source_target(address)
+
+    await reflex_graph.run(
+        React(),
+        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    assert len(agent.turns) == 1
+    assert agent.streams == []
+    assert im.consumed == []
+    assert im.sent[-1][2][0]["text"] == "done"
+
+
 async def test_react_mounts_a_scheming_gate_in_a_thread() -> None:
     address = _key("t1")
     agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")

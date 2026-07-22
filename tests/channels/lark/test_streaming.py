@@ -26,6 +26,7 @@ from pydantic_ai.messages import (
 from octomate.capabilities.events import (
     ResultSegmentEvent,
     StreamEvents,
+    SubagentActivity,
     TodoCompletedEvent,
     TodoCreatedEvent,
 )
@@ -396,3 +397,47 @@ async def test_lark_answer_updates_coalesce_off_the_drive_loop() -> None:
     assert contents[0] == "A"
     assert contents[-1] == "ABC"
     assert "AB" not in contents
+
+
+async def test_lark_subagents_own_cards_separate_from_parent_and_siblings() -> None:
+    ink = FakeLarkInk()
+    channel = lark_channel(ink)
+    address = ChannelAddress(
+        channel_tentacle_id="lark",
+        chat_type="private",
+        chat_id="u1",
+        user_id="u1",
+    )
+
+    first_activity = SubagentActivity("call-a", "scheme", "audit")
+    second_activity = SubagentActivity("call-b", "scheme", "tests")
+    async with channel.feelers.timeline.open(address) as parent:
+        await parent.thinking_start()
+        await parent.thinking_delta("parent work")
+        async with parent.open_subagent(
+            first_activity
+        ) as first, parent.open_subagent(second_activity) as second:
+            await first.append_response("audit result")
+            await second.append_response("test result")
+            await first.settle("completed")
+            await second.settle("failed", "one failure")
+    parent_card_id = "created-1"
+
+    assert len(ink.created) == 3
+    patched_ids = [message_id for message_id, _content in ink.patched]
+    assert {"created-2", "created-3"} <= set(patched_ids)
+    first_final = next(
+        content
+        for message_id, content in reversed(ink.patched)
+        if message_id == "created-2"
+    )
+    second_final = next(
+        content
+        for message_id, content in reversed(ink.patched)
+        if message_id == "created-3"
+    )
+    assert '"expanded":false' in first_final
+    assert "audit result" in first_final and "test result" not in first_final
+    assert '"expanded":false' in second_final
+    assert "test result" in second_final and "audit result" not in second_final
+    assert patched_ids.count(parent_card_id) >= 1

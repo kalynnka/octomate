@@ -42,6 +42,18 @@ from octomate.schemas.todos import Todo
 
 OutputT = TypeVar("OutputT")
 
+SubagentActivityKind = Literal["scheme", "whisper"]
+SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
+
+
+@dataclass(frozen=True)
+class SubagentActivity:
+    """One commissioned child run rendered on its own channel timeline."""
+
+    invocation_id: str
+    kind: SubagentActivityKind
+    name: str
+
 
 @dataclass
 class ResultSegmentEvent:

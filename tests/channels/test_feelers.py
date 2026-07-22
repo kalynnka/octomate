@@ -3,14 +3,18 @@ deferred feelers, `Feelers.present_actions`, stream batching, and chunking."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
 from typing import cast
 
+import pytest
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
     PartStartEvent,
+    RetryPromptPart,
     TextPart,
     TextPartDelta,
     ThinkingPart,
@@ -42,6 +46,7 @@ from octomate.tentacles.channel.feelers.output import (
     TextStreamBatcher,
     markdown_from_output,
     render_stream_event_delta,
+    should_skip_plan_tool,
 )
 from octomate.tentacles.channel.lark import LarkTentacle
 from octomate.tentacles.channel.napcat import NapcatTentacle
@@ -55,6 +60,9 @@ from tests.support.channels import (
     RecordingApprovalFeeler,
     RecordingMarkdownFeeler,
     RecordingQuestionFeeler,
+    RecordingTimeline,
+    bound,
+    drive,
 )
 from tests.support.managers import FakeActionManager, FakePresentedBatch
 from tests.support.scenarios import mid_run_notice, play
@@ -107,6 +115,239 @@ def test_thread_strategies_are_declared() -> None:
     assert SlackTentacle.thread_strategy == "flat_thread"
     assert LarkTentacle.thread_strategy == "flat_thread"
     assert NapcatTentacle.thread_strategy == "main_only"
+
+
+def test_parent_timeline_hides_subagent_tool_rows() -> None:
+    assert should_skip_plan_tool("scheme")
+    assert should_skip_plan_tool("whisper")
+
+
+async def test_timeline_pairs_parallel_subagent_calls_with_their_results() -> None:
+    channel = FakeChannelTentacle()
+    timeline = RecordingTimeline()
+    bound(timeline, channel, _key())
+    events = [
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={"name": "audit", "brief": "Audit the repo."},
+                tool_call_id="call-a",
+            )
+        ),
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={"name": "tests", "brief": "Run tests."},
+                tool_call_id="call-b",
+            )
+        ),
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={"name": "docs", "brief": "Review docs."},
+                tool_call_id="call-c",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="scheme", content="test report", tool_call_id="call-b"
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="scheme", content="audit report", tool_call_id="call-a"
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="scheme", content="docs report", tool_call_id="call-c"
+            )
+        ),
+    ]
+
+    async with timeline.open(_key()) as state:
+        await state.drive(play(events))
+
+    assert len(timeline.subagent_states) == 3
+    states = {
+        state.activity.invocation_id: state for state in timeline.subagent_states
+    }
+    assert states["call-a"].response == "audit report"
+    assert states["call-b"].response == "test report"
+    assert states["call-c"].response == "docs report"
+    assert len({id(state) for state in timeline.subagent_states}) == 3
+    assert all(
+        state.settlements == [("completed", None)]
+        for state in timeline.subagent_states
+    )
+    assert all(state.closed for state in timeline.subagent_states)
+    assert "tool_start" not in timeline.names()
+    assert "tool_end" not in timeline.names()
+
+
+async def test_each_whisper_tool_call_opens_a_fresh_timeline() -> None:
+    channel = FakeChannelTentacle()
+    timeline = RecordingTimeline()
+    bound(timeline, channel, _key())
+    events = [
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="whisper",
+                args={"name": "audit", "message": "Go deeper."},
+                tool_call_id="call-1",
+            )
+        ),
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="whisper",
+                args={"name": "audit", "message": "Summarize."},
+                tool_call_id="call-2",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="whisper",
+                content="deep report",
+                tool_call_id="call-1",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="whisper",
+                content="summary",
+                tool_call_id="call-2",
+            )
+        ),
+    ]
+    async with timeline.open(_key()) as state:
+        await state.drive(play(events))
+
+    first, second = timeline.subagent_states
+    assert first.activity.kind == second.activity.kind == "whisper"
+    assert first.activity.name == second.activity.name == "audit"
+    assert first.activity.invocation_id == "call-1"
+    assert second.activity.invocation_id == "call-2"
+    assert first.response == "deep report"
+    assert second.response == "summary"
+
+
+async def test_timeline_folds_retry_and_pending_subagent_failures() -> None:
+    channel = FakeChannelTentacle()
+    timeline = RecordingTimeline()
+    bound(timeline, channel, _key())
+    events = [
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={"name": "timeout"},
+                tool_call_id="call-timeout",
+            )
+        ),
+        FunctionToolResultEvent(
+            RetryPromptPart(
+                tool_name="scheme",
+                content="The accomplice exceeded its timeout.",
+                tool_call_id="call-timeout",
+            )
+        ),
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={"name": "broken"},
+                tool_call_id="call-broken",
+            )
+        ),
+    ]
+
+    async with timeline.open(_key()) as state:
+        await state.drive(play(events))
+
+    timed_out, broken = timeline.subagent_states
+    assert timed_out.response.startswith("The accomplice exceeded its timeout.")
+    assert timed_out.settlements == [("failed", None)]
+    assert broken.settlements == [("failed", None)]
+    assert timed_out.closed and broken.closed
+
+
+async def test_subagent_renderer_failures_do_not_interrupt_the_parent_stream() -> None:
+    events = [
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={"name": "resilient"},
+                tool_call_id="call-a",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="scheme", content="report", tool_call_id="call-a"
+            )
+        ),
+    ]
+    for timeline in (
+        RecordingTimeline(fail_subagent_open=True),
+        RecordingTimeline(fail_subagent_updates=True),
+    ):
+        channel = FakeChannelTentacle()
+        bound(timeline, channel, _key())
+        async with timeline.open(_key()) as state:
+            await state.drive(play(events))
+
+
+async def test_timeline_closes_an_unfinished_subagent_on_cancellation() -> None:
+    channel = FakeChannelTentacle()
+    timeline = RecordingTimeline()
+    bound(timeline, channel, _key())
+    waiting = asyncio.Event()
+
+    async def source() -> AsyncIterator[FunctionToolCallEvent]:
+        yield FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={"name": "cancelled"},
+                tool_call_id="call-a",
+            )
+        )
+        waiting.set()
+        await asyncio.Event().wait()
+
+    async def consume() -> None:
+        async with timeline.open(_key()) as state:
+            await state.drive(source())
+
+    task = asyncio.create_task(consume())
+    await waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    [state] = timeline.subagent_states
+    assert state.settlements == [("cancelled", None)]
+    assert state.closed
+
+
+async def test_default_timeline_omits_subagent_activity() -> None:
+    channel = FakeChannelTentacle()
+    events = [
+        FunctionToolCallEvent(
+            ToolCallPart(
+                tool_name="scheme",
+                args={"name": "audit"},
+                tool_call_id="call-a",
+            )
+        ),
+        FunctionToolResultEvent(
+            ToolReturnPart(
+                tool_name="scheme",
+                content="audit report",
+                tool_call_id="call-a",
+            )
+        ),
+    ]
+
+    await drive(channel, _key(), play(events))
+
+    assert channel.sent == []
 
 
 def test_markdown_from_output_renders_segments() -> None:

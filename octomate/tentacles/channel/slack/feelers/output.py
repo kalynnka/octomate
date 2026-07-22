@@ -15,11 +15,13 @@ from pydantic_ai.messages import (
     RetryPromptPart,
     ToolReturnPart,
 )
-from slack_sdk.models.messages.chunk import PlanUpdateChunk, TaskUpdateChunk
+from slack_sdk.models.messages.chunk import Chunk, PlanUpdateChunk, TaskUpdateChunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 
 from octomate.capabilities.events import (
     MessageSentEvent,
+    SubagentActivity,
+    SubagentActivityStatus,
     TodoDeletedEvent,
     TodoEvent,
 )
@@ -33,7 +35,9 @@ from octomate.schemas.segments import (
 )
 from octomate.tentacles.channel.feelers.output import (
     IMMessageID,
+    MarkdownChunker,
     StreamFlusher,
+    SubagentTimelineState,
     TextStreamBatcher,
     TimelineFeeler,
     TimelineState,
@@ -41,7 +45,6 @@ from octomate.tentacles.channel.feelers.output import (
     humanize_tool_name,
     should_skip_plan_tool,
     split_reply,
-    status_hint,
     truncate_task_detail,
 )
 from octomate.tentacles.channel.slack.chromo import SlackChromo
@@ -154,6 +157,25 @@ class SlackTimelineState(TimelineState):
     def __post_init__(self) -> None:
         self.thinking_flusher = StreamFlusher(self.flush_thinking)
         self.text_flusher = StreamFlusher(self.flush_text)
+
+    @asynccontextmanager
+    async def open_subagent(
+        self,
+        activity: SubagentActivity,
+    ) -> AsyncIterator[SlackSubagentTimelineState]:
+        state = SlackSubagentTimelineState(
+            ink=self.ink,
+            activity=activity,
+            channel=self.channel,
+            thread_ts=self.thread_ts,
+            recipient_user_id=self.recipient_user_id,
+            recipient_team_id=self.recipient_team_id,
+        )
+        try:
+            await state.start()
+            yield state
+        finally:
+            await state.close()
 
     def reset_text_flush_state(self) -> None:
         self.text_stream = None
@@ -401,7 +423,7 @@ class SlackTimelineState(TimelineState):
             tool.tool_call_id,
             title,
             format_tool_arguments(tool.tool_name, args) if args else None,
-            status_hint(tool.tool_name),
+            f"{humanize_tool_name(tool.tool_name)}…",
             tool_name=tool.tool_name,
         )
 
@@ -593,7 +615,11 @@ class SlackTimelineFeeler(TimelineFeeler):
         await state.set_status(STATUS_THINKING)
         try:
             yield state
+        except asyncio.CancelledError:
+            await state.settle_subagents("cancelled")
+            raise
         finally:
+            await state.settle_subagents("failed")
             await state.complete_pending()
             await state.finish_text()
             await state.finish_plan()
@@ -601,3 +627,88 @@ class SlackTimelineFeeler(TimelineFeeler):
             # The last text message is the final reply.
             state.message_id = state.last_message_id
             await state.join_status()
+
+
+@dataclass
+class SlackSubagentTimelineState(SubagentTimelineState):
+    ink: SlackInk
+    activity: SubagentActivity
+    channel: str
+    thread_ts: str
+    recipient_user_id: str | None
+    recipient_team_id: str | None
+
+    stream: AsyncChatStream | None = None
+    root: SlackStep = field(init=False)
+    response: str = ""
+    response_steps: list[SlackStep] = field(default_factory=list)
+    settled: bool = False
+
+    def __post_init__(self) -> None:
+        self.root = SlackStep(
+            id=self.activity.invocation_id,
+            title=f"Starting {self.activity.name}…",
+        )
+
+    async def start(self) -> None:
+        self.stream = await self.ink.start_stream(
+            self.channel,
+            self.thread_ts,
+            recipient_user_id=self.recipient_user_id,
+            recipient_team_id=self.recipient_team_id,
+            task_display_mode=TASK_DISPLAY_MODE,
+        )
+        await self.ink.append_stream_chunks(
+            self.stream,
+            [
+                PlanUpdateChunk(title=f"Subagent · {self.activity.name}"),
+                self.root.chunk(),
+            ],
+        )
+
+    async def append_response(self, delta: str) -> None:
+        if self.settled or not delta:
+            return
+        self.response += delta
+
+    async def settle(
+        self,
+        status: SubagentActivityStatus,
+        detail: str | None = None,
+    ) -> None:
+        if self.settled or self.stream is None:
+            return
+        if detail:
+            self.response = f"{self.response}\n\n{detail}" if self.response else detail
+        self.settled = True
+        chunks = MarkdownChunker().chunk(self.response) if self.response else []
+        if chunks:
+            self.root.sections = [chunks[0]]
+            for index, chunk in enumerate(chunks[1:], start=1):
+                self.response_steps.append(
+                    SlackStep(
+                        id=f"{self.activity.invocation_id}:response:{index}",
+                        title=f"Response ({index + 1})",
+                        sections=[chunk],
+                    )
+                )
+        terminal_titles: dict[SubagentActivityStatus, str] = {
+            "completed": "Completed",
+            "failed": "Failed",
+            "timed_out": "Timed out",
+            "cancelled": "Cancelled",
+        }
+        terminal_status = "complete" if status == "completed" else "error"
+        self.root.title = terminal_titles[status]
+        self.root.status = terminal_status
+        updates: list[Chunk] = [self.root.chunk(status=terminal_status)]
+        for step in self.response_steps:
+            step.status = terminal_status
+            updates.append(step.chunk(status=terminal_status))
+        await self.ink.append_stream_chunks(self.stream, updates)
+
+    async def close(self) -> None:
+        if self.stream is not None:
+            stream = self.stream
+            self.stream = None
+            await self.ink.stop_stream(stream)

@@ -12,6 +12,7 @@ straight through the reception agent.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -26,9 +27,17 @@ from pydantic import BaseModel, ConfigDict
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.ui import NativeEvent
 from pydantic_ai.ui.vercel_ai.request_types import RequestData, TextUIPart
-from pydantic_ai.ui.vercel_ai.response_types import BaseChunk
+from pydantic_ai.ui.vercel_ai.response_types import (
+    BaseChunk,
+    ToolInputAvailableChunk,
+    ToolOutputAvailableChunk,
+)
 
-from octomate.capabilities.events import StreamEvents
+from octomate.capabilities.events import (
+    StreamEvents,
+    SubagentActivity,
+    SubagentActivityStatus,
+)
 from octomate.config import ChannelConfig
 from octomate.config.channels import AgentModelConfig
 from octomate.schemas.awakes import UserMessageSignal
@@ -46,7 +55,11 @@ from octomate.tentacles.channel.base import (
     ThreadStrategy,
 )
 from octomate.tentacles.channel.feelers.deferred import ApprovalFeeler, QuestionFeeler
-from octomate.tentacles.channel.feelers.output import TimelineState
+from octomate.tentacles.channel.feelers.output import (
+    MarkdownChunker,
+    SubagentTimelineState,
+    TimelineState,
+)
 from octomate.tentacles.channel.web.vercel.event_stream import VercelEventStream
 
 if TYPE_CHECKING:
@@ -55,7 +68,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 VercelStreamItem: TypeAlias = (
-    StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput] | BaseChunk
 )
 
 # The dev UI is single-user; the sender is fixed. Each Vercel chat (its `id`)
@@ -168,11 +181,21 @@ class VercelTimelineState(TimelineState):
         self.message_id = None
         self.reply_to = None
 
+    @asynccontextmanager
+    async def open_subagent(
+        self,
+        activity: SubagentActivity,
+    ) -> AsyncGenerator[VercelSubagentTimelineState, None]:
+        state = VercelSubagentTimelineState(activity, self.sink)
+        await state.start()
+        yield state
+
     async def drive(
         self,
         stream: AsyncIterator[VercelStreamItem],
     ) -> None:
         async for event in stream:
+            await self.observe_subagent_event(event)
             await self.sink.send(event)
 
 
@@ -192,7 +215,70 @@ class VercelTimelineFeeler:
         sink = current_sink.get()
         if sink is None:
             raise RuntimeError("vercel timeline opened without an active request sink")
-        yield VercelTimelineState(address, self.ask_questions, self.approvals, sink)
+        state = VercelTimelineState(address, self.ask_questions, self.approvals, sink)
+        try:
+            yield state
+        except asyncio.CancelledError:
+            await state.settle_subagents("cancelled")
+            raise
+        finally:
+            await state.settle_subagents("failed")
+
+
+class VercelSubagentTimelineState(SubagentTimelineState):
+    """Owns one Vercel tool part for one commissioned child run."""
+
+    def __init__(
+        self,
+        activity: SubagentActivity,
+        sink: MemoryObjectSendStream[VercelStreamItem],
+    ) -> None:
+        self.activity = activity
+        self.sink = sink
+        self.response = ""
+        self.settled = False
+
+    async def start(self) -> None:
+        await self.sink.send(
+            ToolInputAvailableChunk(
+                tool_call_id=self.activity.invocation_id,
+                tool_name=self.activity.kind,
+                input={
+                    "name": self.activity.name,
+                },
+                dynamic=True,
+            )
+        )
+
+    async def append_response(self, delta: str) -> None:
+        if self.settled or not delta:
+            return
+        self.response += delta
+
+    async def settle(
+        self,
+        status: SubagentActivityStatus,
+        detail: str | None = None,
+    ) -> None:
+        if self.settled:
+            return
+        self.settled = True
+        chunks = MarkdownChunker().chunk(self.response) if self.response else []
+        await self.sink.send(
+            ToolOutputAvailableChunk(
+                tool_call_id=self.activity.invocation_id,
+                output={
+                    "status": status,
+                    "detail": detail,
+                    "sections": [
+                        {"number": index, "content": content}
+                        for index, content in enumerate(chunks, start=1)
+                    ],
+                },
+                dynamic=True,
+                preliminary=False,
+            )
+        )
 
 
 class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
