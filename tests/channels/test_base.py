@@ -124,7 +124,7 @@ async def test_ingest_dispatches_event_to_octomate(
     event = signal.messages[0]
     assert event.tentacle_id == "chan1"
     assert event.self_id == "bot"
-    assert event.sender.user_id == "alice"
+    assert event.sender.channel_user_id == "alice"
 
     thread = await octomate.thread_manager.ensure(address)
     assert thread.messages[-1].id == signal.trigger_thread_message_id

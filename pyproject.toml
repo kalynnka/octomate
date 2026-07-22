@@ -65,6 +65,13 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+filterwarnings = [
+    # Channel profile schemas intentionally redeclare UserProfile fields (platform
+    # aliases/defaults); the transmuter metaclass serves same-named class attributes,
+    # which pydantic reports as shadowing. Mirrors the runtime filter in octomate/__init__.py,
+    # which pytest's per-phase warning state does not preserve for late channel imports.
+    'ignore:Field name "\w+" in "\w*(UserProfile|Sender)" shadows:UserWarning',
+]
 markers = [
     "trigger: live replay against a real IM client (needs octomate.yaml credentials); auto-skipped unless explicitly targeted",
 ]

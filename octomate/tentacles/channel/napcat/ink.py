@@ -58,7 +58,7 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
             logger.warning(
                 "NapcatInk: get_user_profile failed for %s", user_id, exc_info=True
             )
-            return NapcatUserProfile(user_id=user_id, name=user_id)
+            return NapcatUserProfile(channel_user_id=user_id, name=user_id)
 
     async def upload_media(self, data: bytes) -> str | None:
         return None

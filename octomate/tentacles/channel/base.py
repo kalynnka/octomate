@@ -30,7 +30,8 @@ from uuid_utils import uuid7
 
 from octomate.config import ChannelConfig
 from octomate.schemas.awakes import UserMessageSignal
-from octomate.schemas.conversation import ChannelAddress, UserProfile
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.telemetry import channel_logfire
@@ -139,7 +140,9 @@ class ChannelTentacle(
     FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
     thread_strategy: ClassVar[ThreadStrategy] = "main_only"
 
-    profile: UserProfile
+    # The platform account this tentacle is logged in as (the bot's own
+    # identity on the channel) — probe() fills it from ink.inspect().
+    self_profile: UserProfile
     feelers: Feelers
     ink: Ink[MessageT]
     chromo: Chromo[RawT, MessageT]
@@ -182,14 +185,14 @@ class ChannelTentacle(
 
     async def probe(self) -> None:
         """Resolve the channel's own identity from the platform. Awaited by the
-        host before the channel is served, so `self.profile` is set before any
+        host before the channel is served, so `self.self_profile` is set before any
         inbound event is ingested."""
-        self.profile = await self.ink.inspect()
+        self.self_profile = await self.ink.inspect()
         logger.info(
             "Channel %s: probed as %s (%s)",
             self.id,
-            self.profile.user_id,
-            self.profile.name,
+            self.self_profile.channel_user_id,
+            self.self_profile.name,
         )
 
     async def __aenter__(self) -> Self:
@@ -201,7 +204,7 @@ class ChannelTentacle(
 
     @property
     def name(self) -> str:
-        return self.profile.name
+        return self.self_profile.name
 
     @channel_logfire.instrument("ChannelTentacle {self.id} ingest")
     async def ingest(self, raw: RawT) -> None:
@@ -212,7 +215,7 @@ class ChannelTentacle(
             if event is None:
                 return
             event.tentacle_id = self.id
-            event.self_id = self.profile.user_id
+            event.self_id = self.self_profile.channel_user_id
             event.sender = await self.get_user_profile(event.user_id)
             await self.submerge(event)
             address = ChannelAddress(
@@ -232,7 +235,7 @@ class ChannelTentacle(
             if (
                 self.config.mention_only
                 and address.is_group
-                and not event.is_at(self.profile.user_id)
+                and not event.is_at(self.self_profile.channel_user_id)
             ):
                 logger.debug(
                     "Channel %s: ignored unmentioned group event %s",

@@ -31,7 +31,7 @@ from octomate.capabilities.react import (
     iter_react_graph_events,
 )
 from octomate.database import async_session
-from octomate.managers import ConversationManager, ThreadManager
+from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest as OctomateModelRequest
@@ -328,7 +328,7 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
     in_memory_engine: AsyncEngine,
 ) -> None:
     address = _key()
-    thread_manager = ThreadManager()
+    thread_manager = ThreadManager(users=UserManager())
     first = await thread_manager.record_inbound(_event("m1", "first detail"))
     second = await thread_manager.record_inbound(
         _event("m2", "second detail", user_id="other")
@@ -380,7 +380,7 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
         )
         assert stored_first is not None
         await stored_first.model_messages
-    fresh_thread = await ThreadManager().ensure(address)
+    fresh_thread = await ThreadManager(users=UserManager()).ensure(address)
 
     assert [binding.thread_message_id for binding in bindings] == [
         first.id,
@@ -399,7 +399,7 @@ async def test_deferred_resume_loop_skips_source_binding(
     # no user prompt. The prompt-source binding belongs to the user-prompt turn;
     # the loop-back must skip it, not crash on the missing user ModelRequest.
     address = _key()
-    thread_manager = ThreadManager()
+    thread_manager = ThreadManager(users=UserManager())
     trigger = await thread_manager.record_inbound(_event("m1", "please ask"))
     thread = await thread_manager.ensure(address)
     conversations = ConversationManager()

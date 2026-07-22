@@ -58,6 +58,7 @@ from octomate.config.providers import (
     ProvidersConfig,
     VertexProviderConfig,
 )
+from octomate.config.users import UserConfig
 
 
 class OctomateConfig(BaseSettings):
@@ -92,6 +93,13 @@ class OctomateConfig(BaseSettings):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
+    users: dict[str, UserConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Cross-channel identities keyed by handle; each user's links are "
+            "reconciled into the registry at startup."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_channel_agent_routes(self) -> Self:
@@ -205,6 +213,42 @@ class OctomateConfig(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def validate_user_links(self) -> Self:
+        """A typo'd channel id in a user's links must fail the boot, not
+        silently produce a link no channel will ever resolve."""
+        channel_ids = {
+            channel_id
+            for channel_id, channel in (
+                ("slack", self.channels.slack),
+                ("lark", self.channels.lark),
+                ("napcat", self.channels.napcat),
+                ("dev_ui", self.channels.dev_ui),
+            )
+            if channel is not None
+        }
+        errors: list[InitErrorDetails] = []
+        for handle, user in self.users.items():
+            for channel_id, profile in user.profiles.items():
+                if channel_id not in channel_ids:
+                    errors.append(
+                        InitErrorDetails(
+                            type=PydanticCustomError(
+                                "user_link_channel",
+                                "{channel} does not match a configured channel",
+                                {"channel": repr(channel_id)},
+                            ),
+                            loc=("users", handle, "profiles", channel_id),
+                            input=profile.channel_user_id,
+                        )
+                    )
+        if errors:
+            raise ValidationError.from_exception_data(
+                self.__class__.__name__,
+                errors,
+            )
+        return self
+
     @classmethod
     def settings_customise_sources(
         cls,
@@ -255,6 +299,8 @@ __all__ = [
     "McpConfig",
     "GitHubMcpConfig",
     "LinearMcpConfig",
+    # users
+    "UserConfig",
     # channels
     "AgentModelConfig",
     "ChannelConfig",

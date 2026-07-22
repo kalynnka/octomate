@@ -9,7 +9,8 @@ from sqlalchemy import and_, or_
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
-from octomate.schemas.conversation import ChannelAddress, UserProfile
+from octomate.managers.user import UserManager
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
@@ -22,6 +23,7 @@ from octomate.schemas.thread import (
     ThreadKey,
     ThreadMessage,
 )
+from octomate.schemas.user import UserProfile
 
 
 def message_text_from_segments(segments: list[MessageSegment]) -> str | None:
@@ -42,7 +44,10 @@ class ThreadManager:
     and write methods keep the cached `Thread` coherent after commits.
     """
 
-    def __init__(self, *, cache_size: int = 256) -> None:
+    def __init__(self, *, users: UserManager, cache_size: int = 256) -> None:
+        # Every ledger row references its sender's registry profile — the host
+        # constructs this manager around its one identity registry.
+        self.users = users
         self.cache_size = cache_size
         self.threads: OrderedDict[ThreadKey, Thread] = OrderedDict()
 
@@ -127,6 +132,9 @@ class ThreadManager:
         )
         if happened_at is None and event.timestamp > 0:
             happened_at = datetime.fromtimestamp(event.timestamp, timezone.utc)
+        sender = await self.users.ensure_profile(
+            thread.channel_tentacle_id, event.sender
+        )
         message = ThreadMessage(
             thread_id=thread.id,
             platform_message_id=event.message_id or None,
@@ -136,7 +144,7 @@ class ThreadManager:
             actor_kind=actor_kind,
             user_id=event.user_id,
             agent_tentacle_id=agent_tentacle_id,
-            sender=event.sender,
+            sender_id=sender.id,
             segments=event.segments,
             message_text=message_text_from_segments(event.segments),
             raw=event.raw,
@@ -153,13 +161,12 @@ class ThreadManager:
         platform_message_id: str | None = None,
         reply_id: str = "",
         happened_at: datetime | None = None,
-        sender: UserProfile | None = None,
+        sender: UserProfile,
         actor_kind: ChannelActorKind = "agent",
         message_text: str | None = None,
         raw: str = "",
     ) -> ThreadMessage:
         """Write the agent's reply to the thread's ledger.
-
         Pass `happened_at` only when something knows better than this moment — a
         transcript replay does; an agent answering now does not.
         """
@@ -167,6 +174,7 @@ class ThreadManager:
             thread = thread_or_address
         else:
             thread = await self.ensure(thread_or_address)
+        sender = await self.users.ensure_profile(thread.channel_tentacle_id, sender)
         message = ThreadMessage(
             thread_id=thread.id,
             platform_message_id=platform_message_id,
@@ -176,8 +184,7 @@ class ThreadManager:
             actor_kind=actor_kind,
             user_id="",
             agent_tentacle_id=agent_tentacle_id,
-            sender=sender
-            or UserProfile(user_id=agent_tentacle_id, name=agent_tentacle_id),
+            sender_id=sender.id,
             segments=segments,
             message_text=message_text or message_text_from_segments(segments),
             raw=raw,

@@ -631,3 +631,33 @@ def test_agent_claims_override_parses_from_config() -> None:
             efforts=("low", "medium", "high"),
         )
     }
+
+
+def test_user_links_must_reference_configured_channel() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        OctomateConfig.model_validate(
+            {"users": {"luhui": {"name": "Lu", "profiles": {"matrix": "@lu:x"}}}}
+        )
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == ("users", "luhui", "profiles", "matrix")
+    assert error["msg"] == "'matrix' does not match a configured channel"
+
+
+def test_user_links_accept_configured_channels() -> None:
+    config = OctomateConfig.model_validate(
+        {
+            "channels": {
+                "napcat": {"ws_url": "ws://x", "http_url": "http://x"},
+            },
+            "users": {
+                "luhui": {"name": "Lu", "profiles": {"napcat": "9", "dev_ui": "dev"}},
+            },
+        }
+    )
+
+    profiles = config.users["luhui"].profiles
+    assert {key: profile.channel_user_id for key, profile in profiles.items()} == {
+        "napcat": "9",
+        "dev_ui": "dev",
+    }

@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import Field, model_validator
 from typing_extensions import NotRequired, TypedDict
 
-from octomate.schemas.conversation import UserProfile
+from octomate.schemas.user import UserProfile
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.types.json import JsonObject
 
@@ -57,7 +57,7 @@ class LarkStreamCard:
 
 
 class LarkUserProfile(UserProfile):
-    user_id: str = Field(default="", validation_alias="open_id")
+    channel_user_id: str = Field(default="", validation_alias="open_id")
     title: str | None = Field(default=None, validation_alias="job_title")
 
     union_id: str = ""

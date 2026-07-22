@@ -48,7 +48,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
         user = user_resp.get("user", {})
         profile = user.get("profile", {})
         return SlackUserProfile(
-            user_id=bot_user_id,
+            channel_user_id=bot_user_id,
             name=profile.get("real_name") or user.get("real_name", bot_user_id),
             nickname=profile.get("display_name") or None,
             title=profile.get("title") or None,
@@ -60,7 +60,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
             user = resp.get("user", {})
             profile = user.get("profile", {})
             return SlackUserProfile(
-                user_id=user_id,
+                channel_user_id=user_id,
                 name=profile.get("real_name") or user.get("real_name", user_id),
                 nickname=profile.get("display_name") or None,
                 title=profile.get("title") or None,
@@ -69,7 +69,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
             logger.warning(
                 "SlackInk: get_user_profile failed for %s", user_id, exc_info=True
             )
-            return SlackUserProfile(user_id=user_id, name=user_id)
+            return SlackUserProfile(channel_user_id=user_id, name=user_id)
 
     async def upload_media(self, data: bytes) -> str | None:
         try:

@@ -10,8 +10,9 @@ from pydantic_ai.messages import TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
-from octomate.managers import ConversationManager, ThreadManager
-from octomate.schemas.conversation import ChannelAddress, UserProfile
+from octomate.managers import ConversationManager, ThreadManager, UserManager
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, ThreadKey, ThreadMessage
@@ -41,28 +42,28 @@ def event(message_id: str, user_id: str, text: str) -> MessageEvent:
         user_id=user_id,
         chat_id="C123",
         chat_type="group",
-        sender=UserProfile(user_id=user_id, name=user_id.title()),
+        sender=UserProfile(channel_user_id=user_id, name=user_id.title()),
         segments=[TextSegment(data={"text": text})],
         raw=text,
     )
 
 
 async def test_ensure_thread_ignores_sender_user_id() -> None:
-    manager = ThreadManager()
+    manager = ThreadManager(users=UserManager())
 
     alice_thread = await manager.ensure(address("alice"))
     bob_thread = await manager.ensure(address("bob"))
     await manager.record_inbound(event("m1", "alice", "alpha"))
     await manager.record_inbound(event("m2", "bob", "beta"))
 
-    fresh_thread = await ThreadManager().ensure(address("charlie"))
+    fresh_thread = await ThreadManager(users=UserManager()).ensure(address("charlie"))
 
     assert alice_thread.id == bob_thread.id == fresh_thread.id
     assert [message.user_id for message in fresh_thread.messages] == ["alice", "bob"]
 
 
 async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> None:
-    manager = ThreadManager()
+    manager = ThreadManager(users=UserManager())
     thread = await manager.ensure(address())
     human_message = await manager.record_inbound(event("m1", "alice", "human asks"))
     bot_message = await manager.record_inbound(
@@ -73,11 +74,13 @@ async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> 
         thread,
         agent_tentacle_id="inkling",
         segments=[TextSegment(data={"text": "inkling already answered"})],
+        sender=UserProfile(channel_user_id="bot", name="Bot"),
     )
     other_agent_output = await manager.record_outbound(
         thread,
         agent_tentacle_id="claude",
         segments=[TextSegment(data={"text": "claude added context"})],
+        sender=UserProfile(channel_user_id="bot", name="Bot"),
     )
     trigger = await manager.record_inbound(event("m3", "alice", "wake now"))
 
@@ -111,11 +114,11 @@ async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> 
 
 
 async def test_pending_prompt_messages_ensures_thread() -> None:
-    manager = ThreadManager()
+    manager = ThreadManager(users=UserManager())
     thread = await manager.ensure(address())
     trigger = await manager.record_inbound(event("m1", "alice", "wake now"))
 
-    pending = await ThreadManager().pending_prompt_messages(
+    pending = await ThreadManager(users=UserManager()).pending_prompt_messages(
         thread,
         trigger.id,
         active_agent_id="inkling",
@@ -125,7 +128,7 @@ async def test_pending_prompt_messages_ensures_thread() -> None:
 
 
 async def test_record_handoff_syncs_active_owner_cache() -> None:
-    manager = ThreadManager()
+    manager = ThreadManager(users=UserManager())
     thread = await manager.ensure(address())
 
     await manager.record_handoff(
@@ -153,7 +156,7 @@ async def test_record_handoff_syncs_active_owner_cache() -> None:
 
 
 async def test_chat_history_search_paging_and_message_bindings() -> None:
-    manager = ThreadManager()
+    manager = ThreadManager(users=UserManager())
     thread = await manager.ensure(address())
     first = await manager.record_inbound(event("m1", "alice", "alpha first"))
     second = await manager.record_inbound(event("m2", "bob", "beta second"))
@@ -209,13 +212,14 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
 
 
 async def test_assistant_reply_binding_uses_persisted_response() -> None:
-    manager = ThreadManager()
+    manager = ThreadManager(users=UserManager())
     thread = await manager.ensure(address())
     reply = await manager.record_outbound(
         thread,
         agent_tentacle_id="inkling",
         segments=[TextSegment(data={"text": "visible answer"})],
         platform_message_id="bot-reply-1",
+        sender=UserProfile(channel_user_id="bot", name="Bot"),
     )
 
     conversation_manager = ConversationManager()
@@ -280,7 +284,7 @@ async def test_history_written_late_still_sorts_where_it_happened() -> None:
     written last are the ones that happened first. The uuid7 `id` carries the moment of
     writing, so ordering on it puts a newcomer at the head of its own history.
     """
-    manager = ThreadManager()
+    manager = ThreadManager(users=UserManager())
     earlier = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
     later = datetime(2026, 7, 9, 11, 0, tzinfo=timezone.utc)
 
@@ -306,7 +310,7 @@ async def test_one_instant_keeps_the_order_it_was_written_in() -> None:
     """`happened_at` alone is not a total order: a transcript line can produce several
     messages at one instant, and a clock has finite resolution. `id` breaks the tie, so
     rows sharing an instant stay in the order they were written rather than shuffling."""
-    manager = ThreadManager()
+    manager = ThreadManager(users=UserManager())
     same = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
 
     first = await manager.record_inbound(event("m-1", "alice", "first"), happened_at=same)
@@ -321,7 +325,7 @@ async def test_a_row_is_never_undated() -> None:
     """The order is only total if every row carries a `happened_at` — and every outbound
     caller but the tailers passes none, so the manager owns the answer rather than the
     call sites."""
-    manager = ThreadManager()
+    manager = ThreadManager(users=UserManager())
 
     inbound = await manager.record_inbound(
         MessageEvent(
@@ -333,6 +337,7 @@ async def test_a_row_is_never_undated() -> None:
         ThreadKey.from_address(address()),
         agent_tentacle_id="a",
         segments=[TextSegment(data={"text": "hi"})],
+        sender=UserProfile(channel_user_id="bot", name="Bot"),
     )
 
     assert inbound.happened_at is not None

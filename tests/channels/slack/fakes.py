@@ -15,7 +15,8 @@ from slack_sdk.web.async_chat_stream import AsyncChatStream
 
 from octomate.config import SlackChannelConfig, SlackStreamConfig
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.conversation import ChannelAddress, UserProfile
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.user import UserProfile
 from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.channel.base import DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
@@ -54,10 +55,10 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
     uploads: list[tuple[str, bytes, str, str | None]] = field(default_factory=list)
 
     async def inspect(self) -> UserProfile:
-        return UserProfile(user_id="bot", name="Bot")
+        return UserProfile(channel_user_id="bot", name="Bot")
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
-        return UserProfile(user_id=user_id, name=user_id)
+        return UserProfile(channel_user_id=user_id, name=user_id)
 
     async def upload_media(self, data: bytes) -> str | None:
         return None

@@ -15,7 +15,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.schemas.conversation import UserProfile
+from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessageDirection
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from octomate.tentacles.agent.codex.tailer import CodexTranscriptTailer
 
 CODEX_NATIVE_ID = "codex-native"
-NATIVE_USER = UserProfile(user_id="native", name="native")
+NATIVE_USER = UserProfile(channel_user_id="native", name="native")
 logger = logging.getLogger(__name__)
 
 
@@ -191,7 +191,7 @@ class CodexHookIngest:
                 message_id=event.turn_id or "",
                 chat_id=event.session_id,
                 chat_type="private",
-                user_id=NATIVE_USER.user_id,
+                user_id=NATIVE_USER.channel_user_id,
                 sender=NATIVE_USER,
                 segments=[TextSegment(data={"text": prompt})],
             )
@@ -205,6 +205,7 @@ class CodexHookIngest:
             thread,
             agent_tentacle_id=CODEX_NATIVE_ID,
             segments=[MarkdownSegment(data={"text": answer})],
+            sender=NATIVE_USER,
             platform_message_id=event.turn_id or "",
         )
 

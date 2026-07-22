@@ -32,7 +32,8 @@ from octomate.capabilities.events import StreamEvents
 from octomate.config import ChannelConfig
 from octomate.config.channels import AgentModelConfig
 from octomate.schemas.awakes import UserMessageSignal
-from octomate.schemas.conversation import ChannelAddress, UserProfile
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, TextSegment
 from octomate.schemas.thread import Thread
@@ -94,10 +95,10 @@ class VercelInk(Ink[BaseChunk]):
     """Transport stub: only identity probing is used (output streams inline)."""
 
     async def inspect(self) -> UserProfile:
-        return UserProfile(user_id="dev_ui", name="Octomate")
+        return UserProfile(channel_user_id="dev_ui", name="Octomate")
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
-        return UserProfile(user_id=user_id or DEV_USER_ID, name="Dev")
+        return UserProfile(channel_user_id=user_id or DEV_USER_ID, name="Dev")
 
     async def upload_media(self, data: bytes) -> str | None:
         raise VercelSeamNotWired
@@ -278,7 +279,7 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
         if event is None:
             raise ValueError("Vercel request carried no user message")
         event.tentacle_id = self.id
-        event.self_id = self.profile.user_id
+        event.self_id = self.self_profile.channel_user_id
         event.sender = await self.get_user_profile(event.user_id)
         thread = await self.octomate.thread_manager.ensure(
             ChannelAddress(

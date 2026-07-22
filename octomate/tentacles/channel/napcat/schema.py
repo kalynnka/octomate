@@ -16,7 +16,7 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 from typing_extensions import NotRequired, TypedDict
 
-from octomate.schemas.conversation import UserProfile
+from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AtData,
@@ -70,13 +70,18 @@ class NapcatUserProfile(UserProfile):
     @classmethod
     def normalize(cls, data: JsonObject) -> JsonObject:
         if isinstance(data, dict):
-            data.setdefault("user_id", data.get("user_id") or data.get("uin") or "")
+            # `user_id` is popped, not kept: on the registry schema that name is
+            # the owner FK, and the payload's value is the platform id.
+            data["channel_user_id"] = (
+                data.get("channel_user_id") or data.pop("user_id", None)
+                or data.get("uin") or ""
+            )
             if not data.get("nick") and not data.get("name"):
                 data["name"] = (
                     data.get("card")
                     or data.get("nickname")
                     or data.get("remark")
-                    or data.get("user_id")
+                    or data.get("channel_user_id")
                     or ""
                 )
             data.setdefault("nickname", data.get("nickname") or data.get("card"))
@@ -94,6 +99,10 @@ class NapcatSender(UserProfile):
     @classmethod
     def normalize(cls, data: JsonObject) -> JsonObject:
         if isinstance(data, dict):
+            # OneBot sender payloads carry the platform id as `user_id`; pop it
+            # into channel_user_id so the owner-FK field never sees it.
+            if "channel_user_id" not in data and (uid := data.pop("user_id", None)):
+                data["channel_user_id"] = uid
             if not data.get("name"):
                 data["name"] = data.get("card") or data.get("nickname") or ""
         return data

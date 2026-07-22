@@ -15,19 +15,21 @@ from datetime import datetime, timezone
 from typing import cast
 
 from pydantic_ai.messages import ModelMessage
+from arcanus import Relation
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
+from octomate.managers.user import UserManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
     ConversationPermissionMode,
-    UserProfile,
 )
+from octomate.schemas.user import UserProfile
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment
@@ -160,6 +162,7 @@ class FakeConversationManager(ConversationManager):
 
 @dataclass
 class FakeThreadManager(ThreadManager):
+    users: UserManager = field(default_factory=UserManager)
     threads_by_key: dict[ThreadKey, Thread] = field(default_factory=dict)
     handoffs: list[Handoff] = field(default_factory=list)
     outbounds: list[ThreadMessage] = field(default_factory=list)
@@ -234,7 +237,7 @@ class FakeThreadManager(ThreadManager):
         platform_message_id: str | None = None,
         reply_id: str = "",
         happened_at: datetime | None = None,
-        sender: UserProfile | None = None,
+        sender: UserProfile,
         actor_kind: ChannelActorKind = "agent",
         message_text: str | None = None,
         raw: str = "",
@@ -255,8 +258,10 @@ class FakeThreadManager(ThreadManager):
             actor_kind=actor_kind,
             user_id="",
             agent_tentacle_id=agent_tentacle_id,
-            sender=sender
-            or UserProfile(user_id=agent_tentacle_id, name=agent_tentacle_id),
+            # In-memory fake: a synthetic row id plus the value pre-loaded into
+            # the relation, so readers see the profile without a database.
+            sender_id=uuid7(),
+            sender=Relation(sender),
             segments=segments,
             message_text=message_text or message_text_from_segments(segments),
             raw=raw,

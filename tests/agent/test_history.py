@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.history import HistoryCapability
-from octomate.managers import ConversationManager, ThreadManager
+from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -281,7 +281,7 @@ async def test_pagination_includes_non_text_neighbours() -> None:
 async def test_history_tool_returns_messages_with_ids() -> None:
     manager = ConversationManager()
     conversation = await _seed(manager)
-    capability = HistoryCapability(manager)
+    capability = HistoryCapability(manager, ThreadManager(users=UserManager()))
     assert capability.toolset is not None
     ctx = _ctx(conversation.id)
     tools = await capability.toolset.get_tools(ctx)
@@ -301,7 +301,7 @@ async def test_history_tool_returns_messages_with_ids() -> None:
 
 async def test_history_thread_tools_follow_conversation_thread_id() -> None:
     conversation_manager = ConversationManager()
-    thread_manager = ThreadManager()
+    thread_manager = ThreadManager(users=UserManager())
     first = await thread_manager.record_inbound(
         _event("m1", "alice", "stored while asleep")
     )

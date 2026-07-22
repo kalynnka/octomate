@@ -14,7 +14,7 @@ import pytest
 from slack_bolt.async_app import AsyncSay
 from slack_bolt.async_app import AsyncApp
 
-from octomate.schemas.conversation import UserProfile
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel.slack import base as slack_base
 from octomate.tentacles.channel.slack.schema import SlackMessageEvent
 from tests.channels.slack.fakes import FakeSlackInk, slack_channel
@@ -65,7 +65,7 @@ async def test_enter_connects_socket_mode_without_parking(
 
 async def test_on_message_does_not_block_on_the_run() -> None:
     channel = slack_channel(FakeSlackInk())
-    channel.profile = UserProfile(user_id="bot")
+    channel.self_profile = UserProfile(channel_user_id="bot")
     channel.ingest_tasks = set()
 
     started = asyncio.Event()
@@ -94,7 +94,7 @@ async def test_on_message_does_not_block_on_the_run() -> None:
 
 async def test_on_message_ignores_bot_and_subtype_events() -> None:
     channel = slack_channel(FakeSlackInk())
-    channel.profile = UserProfile(user_id="bot")
+    channel.self_profile = UserProfile(channel_user_id="bot")
     channel.ingest_tasks = set()
 
     calls: list[object] = []

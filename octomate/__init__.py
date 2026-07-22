@@ -18,6 +18,16 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+# The channel profile schemas intentionally redeclare UserProfile fields to attach
+# platform aliases and defaults. Since UserProfile became a transmuter, its metaclass
+# serves same-named class attributes (column accessors), which pydantic reports as
+# shadowing on every redeclaration.
+warnings.filterwarnings(
+    "ignore",
+    message=r'Field name "\w+" in "\w*(UserProfile|Sender)" shadows',
+    category=UserWarning,
+)
+
 from octomate.base import Octomate  # noqa: E402  (filter must precede this import)
 
 __all__ = ["Octomate"]

@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import Field, Json
 from typing_extensions import NotRequired, TypedDict
 
-from octomate.schemas.conversation import UserProfile
+from octomate.schemas.user import UserProfile
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.types.json import JsonObject
 
@@ -152,7 +152,7 @@ class SlackThreadContext:
 
 
 class SlackUserProfile(UserProfile):
-    user_id: str = ""
+    channel_user_id: str = ""
     name: str = ""
     nickname: str | None = Field(default=None)
     title: str | None = None

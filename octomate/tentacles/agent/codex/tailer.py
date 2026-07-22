@@ -638,7 +638,7 @@ class CodexTranscriptTailer:
                         message_id=run.id,
                         chat_id=session_id,
                         chat_type="private",
-                        user_id=NATIVE_USER.user_id,
+                        user_id=NATIVE_USER.channel_user_id,
                         sender=NATIVE_USER,
                         segments=[TextSegment(data={"text": prompt})],
                     ),
@@ -662,6 +662,7 @@ class CodexTranscriptTailer:
                     thread,
                     agent_tentacle_id=CODEX_NATIVE_ID,
                     segments=[MarkdownSegment(data={"text": answer})],
+                    sender=NATIVE_USER,
                     platform_message_id=run.id,
                     happened_at=answered.timestamp if answered is not None else None,
                 )

@@ -23,6 +23,7 @@ from octomate.models.base import Base
 if TYPE_CHECKING:
     from octomate.models.conversation import Conversation
     from octomate.models.messages import ModelMessage
+    from octomate.models.user import UserProfile
 
 ThreadStatus = Literal["active", "closed"]
 ThreadMessageDirection = Literal["inbound", "outbound"]
@@ -196,7 +197,18 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         String, nullable=True, index=True
     )
 
-    sender: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
+    sender_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("user_profiles.id"),
+        nullable=False,
+        index=True,
+        comment=(
+            "The sender's registry profile row — inbound: the platform account; "
+            "outbound: the channel bot or a native session's pseudo-user."
+        ),
+    )
+    sender: Mapped[UserProfile] = relationship("UserProfile", lazy="selectin")
+
     segments: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     message_text: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     raw: Mapped[str] = mapped_column(String, nullable=False, default="")

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from arcanus import BaseTransmuter, RelationCollection, Relationships
+from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
 from pydantic import AfterValidator, ConfigDict, Field
 from uuid_utils.compat import uuid7
@@ -13,7 +13,8 @@ from uuid_utils.compat import uuid7
 from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ChannelAddress, ChatType, UserProfile
+from octomate.schemas.conversation import ChannelAddress, ChatType
+from octomate.schemas.user import UserProfile
 from octomate.schemas.messages import native_utc
 from octomate.schemas.segments import MessageSegment
 
@@ -73,7 +74,14 @@ class ThreadMessage(BaseTransmuter):
     actor_kind: ChannelActorKind
     user_id: str = ""
     agent_tentacle_id: str | None = None
-    sender: UserProfile = Field(default_factory=UserProfile)
+    sender_id: uuid.UUID = Field(
+        description=(
+            "The sender's registry profile row (user_profiles); `sender` "
+            "resolves it. Inbound: the platform account; outbound: the channel "
+            "bot or a native session's pseudo-user."
+        ),
+    )
+    sender: Relation[UserProfile] = Field(default_factory=Relation, frozen=True)
     segments: list[MessageSegment] = Field(default_factory=list)
     message_text: str | None = None
     raw: str = ""

@@ -88,7 +88,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
         if not bot:
             raise RuntimeError("LarkInk: inspect failed, no bot info returned")
         return LarkUserProfile(
-            user_id=bot.get("open_id", ""),
+            channel_user_id=bot.get("open_id", ""),
             name=bot.get("app_name", ""),
             avatar_url=bot.get("avatar_url", ""),
         )
@@ -121,7 +121,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
             logger.warning(
                 "LarkInk: get_user_profile failed for %s", user_id, exc_info=True
             )
-        return LarkUserProfile(user_id=user_id, name=user_id)
+        return LarkUserProfile(channel_user_id=user_id, name=user_id)
 
     async def upload_media(self, data: bytes) -> str | None:
         request = (

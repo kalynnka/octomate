@@ -15,6 +15,7 @@ from rich.style import Style
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.thread import ThreadManager
+from octomate.managers.user import UserManager
 from octomate.reflex import (
     Awake,
     ReflexDeps,
@@ -76,14 +77,20 @@ SHARED_LOG_STYLES: dict[str, Style] = {
 class Octomate:
     """Application host for shared services, agents, channels, and routers."""
 
-    thread_manager: ThreadManager = field(default_factory=ThreadManager)
+    thread_manager: ThreadManager = field(init=False)
     conversations: ConversationManager = field(default_factory=ConversationManager)
     deferred_actions: DeferredActionManager = field(
         default_factory=DeferredActionManager
     )
+    users: UserManager = field(default_factory=UserManager)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
     routers: list[APIRouter] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Every ledger row references its sender's registry profile, so the
+        # thread manager records through the host's one identity registry.
+        self.thread_manager = ThreadManager(users=self.users)
 
     def connect(self, tentacle: TentacleT) -> TentacleT:
         if isinstance(tentacle, ChannelTentacle):
@@ -170,6 +177,11 @@ class Octomate:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             with sqlalchemy_materia():
+                # The identity registry warms and reconciles before any tentacle
+                # starts, so the first ingested message resolves against a loaded
+                # map and config-declared links exist from the first turn.
+                await self.users.load()
+                await self.users.reconcile()
                 # Each tentacle is an async context manager owning its own
                 # long-lived resources (agents: warm MCP sessions; channels:
                 # the inbound receive loop). Enter agents first so their tools

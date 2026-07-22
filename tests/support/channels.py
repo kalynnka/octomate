@@ -33,7 +33,8 @@ from octomate.capabilities.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal
-from octomate.schemas.conversation import ChatType, ChannelAddress, UserProfile
+from octomate.schemas.conversation import ChatType, ChannelAddress
+from octomate.schemas.user import UserProfile
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
@@ -118,7 +119,7 @@ class RecordingDeferredActions(DeferredActionManager):
 @dataclass
 class RecordingInk(Ink[NativeMessage]):
     self_profile: UserProfile = field(
-        default_factory=lambda: UserProfile(user_id="bot", name="Bot")
+        default_factory=lambda: UserProfile(channel_user_id="bot", name="Bot")
     )
     user_profiles: dict[str, UserProfile] = field(default_factory=dict)
     sent: list[tuple[str, str, list[NativeMessage], str | None, bool]] = field(
@@ -132,7 +133,7 @@ class RecordingInk(Ink[NativeMessage]):
     async def get_user_profile(self, user_id: str) -> UserProfile:
         return self.user_profiles.get(
             user_id,
-            UserProfile(user_id=user_id, name=f"user-{user_id}"),
+            UserProfile(channel_user_id=user_id, name=f"user-{user_id}"),
         )
 
     async def upload_media(self, data: bytes) -> str | None:
@@ -229,7 +230,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.sent = self.recording_ink.sent
         self.consumed = []
         self.sub_threads = []
-        self.profile = self.recording_ink.self_profile
+        self.self_profile = self.recording_ink.self_profile
         self.feelers.timeline = RecordingTimelineFeeler(
             self.feelers.timeline, self.consumed
         )

@@ -7,7 +7,7 @@ from typing import Annotated, Literal, NamedTuple
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 from uuid_utils.compat import uuid7
 
 from octomate.models.conversation import Conversation as ConversationModel
@@ -131,20 +131,3 @@ class Conversation(BaseTransmuter):
     @property
     def key(self) -> ConversationKey:
         return ConversationKey(self.thread_id, self.agent_tentacle_id, self.subagent_id)
-
-
-class UserProfile(BaseModel):
-    model_config = ConfigDict(
-        validate_by_alias=True,
-        validate_by_name=True,
-        extra="ignore",
-        coerce_numbers_to_str=True,
-        frozen=True,
-    )
-
-    user_id: str = "0"
-    name: str = ""
-    nickname: str | None = None
-    gender: str | None = None
-    age: int | None = None
-    title: str | None = None

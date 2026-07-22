@@ -19,6 +19,7 @@ from octomate.models.messages import (
 )
 from octomate.models.runs import AgentRun, ExternalAgentRun
 from octomate.models.todos import Todo
+from octomate.models.user import User, UserProfile
 
 __all__ = [
     "AgentRun",
@@ -37,4 +38,6 @@ __all__ = [
     "ModelRequest",
     "ModelResponse",
     "Todo",
+    "User",
+    "UserProfile",
 ]

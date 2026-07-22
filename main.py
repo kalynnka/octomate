@@ -14,6 +14,7 @@ from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
+from octomate.managers.user import UserManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.codex import CodexTentacle
@@ -87,7 +88,7 @@ def create_app() -> FastAPI:
     if config.logfire.instrument.sqlalchemy:
         logfire.instrument_sqlalchemy(engine=db_engine())
 
-    octomate = Octomate()
+    octomate = Octomate(users=UserManager(config.users))
 
     console_handler = logging.StreamHandler()
     # Tint the level + each tentacle's header, but only on a real terminal so the

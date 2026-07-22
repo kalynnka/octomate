@@ -156,7 +156,7 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
         subtype = event.get("subtype")
         if subtype in IGNORED_SUBTYPES:
             return
-        if event.get("bot_id") or event.get("user") == self.profile.user_id:
+        if event.get("bot_id") or event.get("user") == self.self_profile.channel_user_id:
             return
         # Run the turn off the socket listener so bolt acks the envelope right
         # away. Awaiting `ingest` here would hold the ack until the whole run

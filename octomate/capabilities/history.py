@@ -185,7 +185,9 @@ class HistoryCapability(AbstractCapability[Any]):
     """Adds thread-history and model-history tools scoped to the run's conversation."""
 
     conversation_manager: ConversationManager
-    thread_manager: ThreadManager = field(default_factory=ThreadManager)
+    # No default: the capability must read the host's ledger manager, never a
+    # private one with its own identity registry.
+    thread_manager: ThreadManager
     toolset: AbstractToolset[Any] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:

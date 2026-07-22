@@ -109,11 +109,13 @@ class ReflexState:
 @dataclass
 class ReflexDeps:
     channels: dict[str, ChannelTentacle]
+    # No default: a deps object must carry the host's ledger manager, never a
+    # private one with its own identity registry.
+    thread_manager: ThreadManager
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
     conversation_manager: ConversationManager = field(
         default_factory=ConversationManager
     )
-    thread_manager: ThreadManager = field(default_factory=ThreadManager)
     action_manager: DeferredActionManager = field(default_factory=DeferredActionManager)
 
     @overload
@@ -214,7 +216,12 @@ class ReflexDeps:
             text = message.message_text or message.raw
             if not text:
                 continue
-            display_name = message.sender.name or message.sender.nickname or "anonymous"
+            sender = await message.sender
+            display_name = (
+                (sender.name or sender.nickname or "anonymous")
+                if sender is not None
+                else "anonymous"
+            )
             platform_id = (
                 f" #msg:{message.platform_message_id}"
                 if message.platform_message_id
@@ -609,6 +616,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                             target_address,
                             agent_tentacle_id=agent.id,
                             segments=[MarkdownSegment(data={"text": run_output})],
+                            sender=target_channel.self_profile,
                             message_text=run_output,
                             raw=run_output,
                         )
@@ -621,6 +629,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                             target_address,
                             agent_tentacle_id=agent.id,
                             segments=body,
+                            sender=target_channel.self_profile,
                             raw="\n\n".join(str(segment) for segment in body),
                         )
                         reply_thread_message_ids.append(thread_message.id)
@@ -645,6 +654,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                             target_address,
                             agent_tentacle_id=agent.id,
                             segments=[MarkdownSegment(data={"text": run_output})],
+                            sender=target_channel.self_profile,
                             message_text=run_output,
                             raw=run_output,
                         )
@@ -674,6 +684,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                             target_address,
                             agent_tentacle_id=agent.id,
                             segments=body,
+                            sender=target_channel.self_profile,
                             raw="\n\n".join(str(segment) for segment in body),
                         )
                         reply_thread_message_ids.append(thread_message.id)

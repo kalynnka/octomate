@@ -24,7 +24,8 @@ from octomate.schemas.thread import (
     ThreadKey,
     MessageBinding,
 )
-from octomate.schemas.conversation import ChannelAddress, UserProfile
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.user import UserProfile
 from octomate.schemas.segments import TextSegment
 
 
@@ -109,7 +110,8 @@ async def test_thread_round_trips_with_messages_and_handoffs() -> None:
                 direction="inbound",
                 actor_kind="human",
                 user_id="alice",
-                sender=UserProfile(user_id="alice", name="Alice"),
+                sender_id=uuid.uuid4(),
+                sender=UserProfile(channel_user_id="alice", name="Alice"),
                 segments=[TextSegment(data={"text": "handoff this"})],
                 message_text="handoff this",
             )
@@ -205,7 +207,8 @@ async def test_message_binding_round_trips_as_orm() -> None:
         direction="inbound",
         actor_kind="human",
         user_id="alice",
-        sender=UserProfile(user_id="alice", name="Alice"),
+        sender_id=uuid.uuid4(),
+        sender=UserProfile(channel_user_id="alice", name="Alice"),
         segments=[TextSegment(data={"text": "handoff this"})],
         message_text="handoff this",
     )
