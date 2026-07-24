@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+from collections.abc import AsyncIterator, Mapping
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.config.users import UserConfig
+from octomate.database import async_session
 from octomate.managers.user import UserManager
-from octomate.schemas.user import UserProfile
+from octomate.schemas.user import User, UserProfile
 
 
 @pytest.fixture(autouse=True)
@@ -15,167 +17,354 @@ async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
     yield
 
 
-async def loaded(config: dict[str, UserConfig] | None = None) -> UserManager:
-    manager = UserManager(config)
-    await manager.load()
-    return manager
-
-
-def test_profile_validates_legacy_sender_blob() -> None:
-    """Pre-promotion ThreadMessage.sender blobs — `user_id` is the platform
-    string and none of the registry fields exist — still validate: the legacy
-    shim claims that key for channel_user_id, never the owner FK."""
-    blob = {
-        "user_id": "U123",
-        "name": "Lu",
-        "nickname": None,
-        "gender": None,
-        "age": None,
-        "title": None,
+def config(spec: Mapping[str, object]) -> dict[str, UserConfig]:
+    return {
+        username: UserConfig.model_validate(value) for username, value in spec.items()
     }
-    profile = UserProfile.model_validate(blob)
-    assert profile.channel_user_id == "U123"
-    assert profile.user_id is None
-    assert profile.method is None
-    assert profile.channel_tentacle_id == ""
 
 
-async def test_reconcile_links_declared_accounts() -> None:
-    manager = await loaded(
-        {"luhui": UserConfig.model_validate({"name": "Lu Hui", "profiles": {"slack": "U1", "napcat": "9"}})}
+def profile_config(channel_user_id: str) -> dict[str, str]:
+    return {"channel_user_id": channel_user_id}
+
+
+async def find_profile(channel: str, channel_user_id: str) -> UserProfile | None:
+    async with async_session() as session:
+        return await session.one_or_none(
+            UserProfile,
+            expressions=[
+                UserProfile["channel_tentacle_id"] == channel,
+                UserProfile["channel_user_id"] == channel_user_id,
+            ],
+        )
+
+
+async def find_user(username: str) -> User | None:
+    async with async_session() as session:
+        return await session.one_or_none(
+            User,
+            expressions=[User["username"] == username],
+        )
+
+
+async def owner_of(manager: UserManager, channel: str, channel_user_id: str) -> User:
+    profile = await find_profile(channel, channel_user_id)
+    assert profile is not None
+    owner = await manager.owner(profile)
+    assert owner is not None
+    return owner
+
+
+async def test_first_sighting_creates_an_ownerless_visitor() -> None:
+    manager = UserManager()
+
+    profile = await manager.ensure_profile(
+        "slack", UserProfile(channel_user_id="U1", name="Lu")
     )
+
+    assert profile.channel_tentacle_id == "slack"
+    assert profile.channel_user_id == "U1"
+    assert profile.name == "Lu"
+    assert profile.user_id is None
+    assert profile.user.peek() is None
+    assert await manager.owner(profile) is None
+    async with async_session() as session:
+        assert list(await session.list(User, limit=None)) == []
+
+
+async def test_ensure_profile_serializes_concurrent_first_sightings() -> None:
+    manager = UserManager()
+
+    profiles = await asyncio.gather(
+        *(
+            manager.ensure_profile(
+                "slack", UserProfile(channel_user_id="U1", name="Lu")
+            )
+            for _ in range(3)
+        )
+    )
+
+    assert len({profile.id for profile in profiles}) == 1
+    assert {profile.user_id for profile in profiles} == {None}
+
+
+async def test_profile_tracks_the_latest_channel_snapshot() -> None:
+    manager = UserManager()
+    first = await manager.ensure_profile(
+        "lark", UserProfile(channel_user_id="ou_1", name="Original")
+    )
+    changed = await manager.ensure_profile(
+        "lark", UserProfile(channel_user_id="ou_1", name="Changed")
+    )
+    blanked = await manager.ensure_profile(
+        "lark", UserProfile(channel_user_id="ou_1", name="")
+    )
+
+    assert changed.id == first.id == blanked.id
+    assert blanked.name == ""
+    assert blanked.user_id is None
+
+
+async def test_reconcile_groups_declared_profiles_under_one_yaml_user() -> None:
+    manager = UserManager(
+        config(
+            {
+                "luhui": {
+                    "name": "Lu Hui",
+                    "profiles": {
+                        "slack": profile_config("U1"),
+                        "napcat": profile_config("9"),
+                    },
+                }
+            }
+        )
+    )
+
     await manager.reconcile()
 
-    profile = manager.resolve("slack", "U1")
-    assert profile is not None
-    assert profile.method == "config"
-    assert profile.verified_at is not None
-    owner = manager.owner_of(profile)
-    assert owner is not None and owner.handle == "luhui"
+    slack = await find_profile("slack", "U1")
+    napcat = await find_profile("napcat", "9")
+    assert slack is not None and napcat is not None
+    assert slack.user_id == napcat.user_id
+    owner = await manager.owner(slack)
+    assert owner is not None
+    assert owner.username == "luhui"
     assert owner.name == "Lu Hui"
 
-    # A fresh manager sees the persisted registry, not just the cache.
-    fresh = await loaded()
-    stored = fresh.resolve("napcat", "9")
-    assert stored is not None
-    stored_owner = fresh.owner_of(stored)
-    assert stored_owner is not None and stored_owner.handle == "luhui"
 
-
-async def test_link_fails_fast_across_users() -> None:
-    manager = await loaded(
-        {
-            "a": UserConfig.model_validate({"profiles": {"slack": "U1"}}),
-            "b": UserConfig(),
-        }
+async def test_yaml_key_is_the_stable_username_and_default_name() -> None:
+    manager = UserManager(
+        config(
+            {
+                "luhui": {
+                    "nickname": "Lu",
+                    "profiles": {"slack": profile_config("U1")},
+                }
+            }
+        )
     )
-    await manager.reconcile()
-
-    with pytest.raises(ValueError, match="already linked"):
-        await manager.link(manager.handles["b"], "slack", "U1", method="code")
-
-
-async def test_unlink_keeps_the_row() -> None:
-    manager = await loaded({"luhui": UserConfig.model_validate({"profiles": {"slack": "U1"}})})
-    await manager.reconcile()
-
-    await manager.unlink("slack", "U1")
-    profile = manager.resolve("slack", "U1")
-    assert profile is not None
-    assert profile.user_id is None
-    assert profile.method is None
-    assert profile.verified_at is None
-
-    fresh = await loaded()
-    stored = fresh.resolve("slack", "U1")
-    assert stored is not None and stored.user_id is None
-
-
-async def test_reconcile_is_idempotent() -> None:
-    config = {"luhui": UserConfig.model_validate({"name": "Lu", "profiles": {"slack": "U1"}})}
-    manager = await loaded(config)
-    await manager.reconcile()
-    first = manager.resolve("slack", "U1")
-    assert first is not None
-    verified_at = first.verified_at
 
     await manager.reconcile()
-    second = manager.resolve("slack", "U1")
-    assert second is not None and second.verified_at == verified_at
 
-    fresh = await loaded(config)
-    await fresh.reconcile()
-    assert len(fresh.profiles) == 1
-    assert len(fresh.users) == 1
+    owner = await owner_of(manager, "slack", "U1")
+    assert owner.username == "luhui"
+    assert owner.name == "luhui"
+    assert owner.nickname == "Lu"
 
 
-async def test_reconcile_removes_user_and_unlinks_everything() -> None:
-    manager = await loaded({"luhui": UserConfig.model_validate({"profiles": {"slack": "U1"}})})
-    await manager.reconcile()
-    # A handshake link belonging to the same user dies with it: no user, no link.
-    await manager.link(manager.handles["luhui"], "napcat", "9", method="code")
+async def test_reconcile_rejects_a_profile_declared_for_two_users() -> None:
+    manager = UserManager(
+        config(
+            {
+                "a": {"profiles": {"slack": profile_config("U1")}},
+                "b": {"profiles": {"slack": profile_config("U1")}},
+            }
+        )
+    )
 
-    emptied = await loaded()
-    await emptied.reconcile()
-    assert emptied.handles == {}
-    for key in (("slack", "U1"), ("napcat", "9")):
-        profile = emptied.resolve(*key)
-        assert profile is not None, key
-        assert profile.user_id is None
-
-
-async def test_reconcile_moves_account_between_users() -> None:
-    manager = await loaded({"a": UserConfig.model_validate({"profiles": {"slack": "U1"}})})
-    await manager.reconcile()
-
-    moved = await loaded({"a": UserConfig(), "b": UserConfig.model_validate({"profiles": {"slack": "U1"}})})
-    await moved.reconcile()
-    profile = moved.resolve("slack", "U1")
-    assert profile is not None
-    owner = moved.owner_of(profile)
-    assert owner is not None and owner.handle == "b"
-    assert profile.method == "config"
-
-
-async def test_reconcile_preserves_code_links_of_surviving_users() -> None:
-    manager = await loaded({"luhui": UserConfig.model_validate({"profiles": {"slack": "U1"}})})
-    await manager.reconcile()
-    await manager.link(manager.handles["luhui"], "napcat", "9", method="code")
-
-    again = await loaded({"luhui": UserConfig.model_validate({"profiles": {"slack": "U1"}})})
-    await again.reconcile()
-    code_link = again.resolve("napcat", "9")
-    assert code_link is not None
-    assert code_link.method == "code"
-    code_owner = again.owner_of(code_link)
-    assert code_owner is not None and code_owner.handle == "luhui"
-
-
-async def test_reconcile_requires_load() -> None:
-    manager = UserManager()
-    with pytest.raises(RuntimeError, match="load"):
+    with pytest.raises(ValueError, match="declared for both"):
         await manager.reconcile()
 
+    assert await find_profile("slack", "U1") is None
+    assert await find_user("a") is None
+    assert await find_user("b") is None
 
-async def test_config_profile_seeds_but_never_overwrites_observations() -> None:
-    manager = await loaded(
-        {
-            "luhui": UserConfig(
-                profiles={
-                    "lark": UserProfile(channel_user_id="ou_1", name="Lu on Lark"),
+
+async def test_reconcile_is_idempotent_and_renames_by_stable_username() -> None:
+    manager = UserManager(
+        config(
+            {
+                "stable-key": {
+                    "name": "Old Name",
+                    "profiles": {"slack": profile_config("U1")},
                 }
-            )
-        }
+            }
+        )
     )
     await manager.reconcile()
-    seeded = manager.resolve("lark", "ou_1")
-    assert seeded is not None and seeded.name == "Lu on Lark"
+    original = await owner_of(manager, "slack", "U1")
 
-    # An ingest observation later updates the row; the next reconcile with the
-    # same config must not overwrite what was observed.
-    await manager.ensure_profile(
-        "lark", UserProfile(channel_user_id="ou_1", name="观察到的名字")
+    await manager.reconcile()
+    renamed = UserManager(
+        config(
+            {
+                "stable-key": {
+                    "name": "New Name",
+                    "profiles": {"slack": profile_config("U1")},
+                }
+            }
+        )
+    )
+    await renamed.reconcile()
+
+    current = await owner_of(renamed, "slack", "U1")
+    assert current.id == original.id
+    assert current.username == "stable-key"
+    assert current.name == "New Name"
+
+
+async def test_reconcile_removing_a_user_retains_it_and_unlinks_profiles() -> None:
+    manager = UserManager(
+        config(
+            {
+                "luhui": {
+                    "profiles": {
+                        "slack": profile_config("U1"),
+                        "lark": profile_config("ou_1"),
+                    },
+                }
+            }
+        )
     )
     await manager.reconcile()
-    observed = manager.resolve("lark", "ou_1")
-    assert observed is not None and observed.name == "观察到的名字"
+    removed_user_id = (await owner_of(manager, "slack", "U1")).id
+
+    empty_config_manager = UserManager()
+    await empty_config_manager.reconcile()
+
+    slack = await find_profile("slack", "U1")
+    lark = await find_profile("lark", "ou_1")
+    assert slack is not None and slack.user_id is None
+    assert lark is not None and lark.user_id is None
+    async with async_session() as session:
+        retained = await session.get(User, removed_user_id)
+    assert retained is not None
+    assert set(empty_config_manager.users) == {removed_user_id}
+    assert empty_config_manager.users[removed_user_id].username == retained.username
+
+
+async def test_reconcile_removing_one_profile_makes_only_it_a_visitor() -> None:
+    original = UserManager(
+        config(
+            {
+                "luhui": {
+                    "profiles": {
+                        "slack": profile_config("U1"),
+                        "lark": profile_config("ou_1"),
+                    },
+                }
+            }
+        )
+    )
+    await original.reconcile()
+    user_id = (await owner_of(original, "slack", "U1")).id
+
+    changed = UserManager(
+        config({"luhui": {"profiles": {"slack": profile_config("U1")}}})
+    )
+    await changed.reconcile()
+
+    slack = await find_profile("slack", "U1")
+    lark = await find_profile("lark", "ou_1")
+    assert slack is not None and slack.user_id == user_id
+    assert lark is not None and lark.user_id is None
+
+
+async def test_reconcile_moves_a_profile_between_yaml_users() -> None:
+    await UserManager(
+        config(
+            {
+                "a": {"profiles": {"slack": profile_config("U1")}},
+                "b": {"profiles": {"lark": profile_config("ou_1")}},
+            }
+        )
+    ).reconcile()
+
+    moved = UserManager(
+        config(
+            {
+                "a": {"profiles": {}},
+                "b": {
+                    "profiles": {
+                        "slack": profile_config("U1"),
+                        "lark": profile_config("ou_1"),
+                    }
+                },
+            }
+        )
+    )
+    await moved.reconcile()
+
+    slack_owner = await owner_of(moved, "slack", "U1")
+    lark_owner = await owner_of(moved, "lark", "ou_1")
+    assert slack_owner.id == lark_owner.id
+    assert slack_owner.username == "b"
+
+
+async def test_reconcile_claims_an_observed_visitor() -> None:
+    visitor_manager = UserManager()
+    visitor = await visitor_manager.ensure_profile(
+        "slack", UserProfile(channel_user_id="U1", name="Observed Name")
+    )
+    assert visitor.user_id is None
+
+    manager = UserManager(
+        config(
+            {
+                "luhui": {
+                    "name": "Lu Hui",
+                    "profiles": {
+                        "slack": {
+                            "channel_user_id": "U1",
+                            "name": "Configured Name",
+                        }
+                    },
+                }
+            }
+        )
+    )
+    await manager.reconcile()
+
+    claimed = await find_profile("slack", "U1")
+    assert claimed is not None
+    assert claimed.id == visitor.id
+    assert claimed.name == "Observed Name"
+    assert (await manager.owner(claimed)) is not None
+
+
+async def test_config_seeds_a_never_seen_profile() -> None:
+    manager = UserManager(
+        config(
+            {
+                "luhui": {
+                    "name": "Lu Hui",
+                    "profiles": {
+                        "lark": {
+                            "channel_user_id": "ou_1",
+                            "name": "Lu on Lark",
+                        }
+                    },
+                }
+            }
+        )
+    )
+
+    await manager.reconcile()
+
+    seeded = await find_profile("lark", "ou_1")
+    assert seeded is not None
+    assert seeded.name == "Lu on Lark"
+    owner = await manager.owner(seeded)
+    assert owner is not None and owner.username == "luhui"
+
+
+async def test_yaml_can_declare_a_registered_user_without_profiles() -> None:
+    manager = UserManager(config({"luhui": {"name": "Lu Hui"}}))
+
+    await manager.reconcile()
+
+    user = await find_user("luhui")
+    assert user is not None
+    assert user.name == "Lu Hui"
+    assert list(await user.profiles) == []
+
+
+async def test_owner_loads_a_registered_user_with_a_fresh_manager() -> None:
+    await UserManager(
+        config({"luhui": {"profiles": {"slack": profile_config("U1")}}})
+    ).reconcile()
+    profile = await find_profile("slack", "U1")
+    assert profile is not None
+
+    owner = await UserManager().owner(profile)
+
+    assert owner is not None and owner.username == "luhui"

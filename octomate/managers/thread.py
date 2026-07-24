@@ -117,6 +117,9 @@ class ThreadManager:
     ) -> ThreadMessage:
         """Write the event to the thread's ledger.
 
+        Swaps `event.sender` for its registry row as a side effect, so the
+        event's sender line resolves the owning identity via `event.sender.user`.
+
         Pass `happened_at` only to overrule the event's own clock: a transcript replay
         knows when the turn really happened, which a hook-built event cannot carry.
         Left out, the event's clock is used, and failing that the moment it arrived —
@@ -135,6 +138,9 @@ class ThreadManager:
         sender = await self.users.ensure_profile(
             thread.channel_tentacle_id, event.sender
         )
+        # Swap in the registry row (owner eagerly loaded) so the event's sender
+        # line resolves `user:{username}` through `event.sender.user`.
+        event.sender = sender
         message = ThreadMessage(
             thread_id=thread.id,
             platform_message_id=event.message_id or None,

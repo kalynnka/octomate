@@ -9,6 +9,7 @@ from pydantic_ai.messages import ModelResponse as RawModelResponse
 from pydantic_ai.messages import TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import ChannelAddress
@@ -125,6 +126,59 @@ async def test_pending_prompt_messages_ensures_thread() -> None:
     )
 
     assert [message.id for message in pending] == [trigger.id]
+
+
+async def test_record_inbound_stamps_linked_identity_on_the_event() -> None:
+    users = UserManager(
+        {
+            "luhui": UserConfig.model_validate(
+                {
+                    "name": "Lu Hui",
+                    "profiles": {
+                        "slack": {"channel_user_id": "U1"},
+                        "lark": {"channel_user_id": "ou_1"},
+                    },
+                }
+            )
+        }
+    )
+    await users.reconcile()
+    manager = ThreadManager(users=users)
+
+    slack = event("m1", "U1", "hello from slack")
+    await manager.record_inbound(slack)
+    lark = MessageEvent(
+        tentacle_id="lark",
+        message_id="m2",
+        thread_id="t1",
+        timestamp=1710000000.0,
+        user_id="ou_1",
+        chat_id="oc_1",
+        chat_type="group",
+        sender=UserProfile(channel_user_id="ou_1", name="陆晖"),
+        segments=[TextSegment(data={"text": "hello from lark"})],
+        raw="hello from lark",
+    )
+    await manager.record_inbound(lark)
+
+    # One human, two channels, one stable marker in both prompts — resolved
+    # through event.sender.user, not a stamped field.
+    slack_owner = await slack.sender.user
+    assert slack_owner is not None and slack_owner.name == "Lu Hui"
+    assert "(U1, user:luhui)" in str(slack)
+    assert "(ou_1, user:luhui)" in str(lark)
+
+
+async def test_sender_line_leaves_an_undeclared_sender_as_a_visitor() -> None:
+    manager = ThreadManager(users=UserManager())
+
+    stranger = event("m1", "alice", "plain")
+    await manager.record_inbound(stranger)
+
+    assert stranger.sender.user.peek() is None
+    assert stranger.sender.user_id is None
+    assert "(alice)" in str(stranger)
+    assert "user:" not in str(stranger)
 
 
 async def test_record_handoff_syncs_active_owner_cache() -> None:
@@ -313,8 +367,12 @@ async def test_one_instant_keeps_the_order_it_was_written_in() -> None:
     manager = ThreadManager(users=UserManager())
     same = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
 
-    first = await manager.record_inbound(event("m-1", "alice", "first"), happened_at=same)
-    second = await manager.record_inbound(event("m-2", "alice", "second"), happened_at=same)
+    first = await manager.record_inbound(
+        event("m-1", "alice", "first"), happened_at=same
+    )
+    second = await manager.record_inbound(
+        event("m-2", "alice", "second"), happened_at=same
+    )
 
     thread = await manager.ensure(ThreadKey.from_address(address()))
     assert [m.message_text for m in thread.messages] == ["first", "second"]
@@ -329,7 +387,9 @@ async def test_a_row_is_never_undated() -> None:
 
     inbound = await manager.record_inbound(
         MessageEvent(
-            tentacle_id="slack", chat_id="C123", chat_type="group",
+            tentacle_id="slack",
+            chat_id="C123",
+            chat_type="group",
             segments=[TextSegment(data={"text": "no clock on this event"})],
         )
     )

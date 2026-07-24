@@ -103,10 +103,13 @@ class LarkInk(Ink[LarkOutboundMessage]):
             )
             resp = await self.client.contact.v3.user.aget(request)  # type: ignore[union-attr]
             if resp.success() and resp.data and resp.data.user:
+                # The SDK user's own `user_id` is Lark's third id namespace
+                # (granted by its own scope) — never ours: the registry keys
+                # Lark by open_id, and on the schema `user_id` is the owner FK.
                 attrs = {
                     key: value
                     for key, value in vars(resp.data.user).items()
-                    if value is not None
+                    if value is not None and key != "user_id"
                 }
                 profile = LarkUserProfile.model_validate(attrs)
                 if profile.name:

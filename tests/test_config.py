@@ -21,6 +21,7 @@ from octomate.config import (
     NapcatChannelConfig,
     OctomateConfig,
     SlackChannelConfig,
+    UserConfig,
 )
 
 
@@ -636,12 +637,66 @@ def test_agent_claims_override_parses_from_config() -> None:
 def test_user_links_must_reference_configured_channel() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate(
-            {"users": {"luhui": {"name": "Lu", "profiles": {"matrix": "@lu:x"}}}}
+            {
+                "users": {
+                    "luhui": {
+                        "name": "Lu",
+                        "profiles": {"matrix": {"channel_user_id": "@lu:x"}},
+                    }
+                }
+            }
         )
 
     error = exc_info.value.errors()[0]
     assert error["loc"] == ("users", "luhui", "profiles", "matrix")
     assert error["msg"] == "'matrix' does not match a configured channel"
+
+
+def test_user_profile_config_rejects_the_old_user_id_field() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        UserConfig.model_validate(
+            {
+                "profiles": {
+                    "slack": {
+                        "channel_user_id": "U1",
+                        "user_id": "U1",
+                        "name": "Lu",
+                    }
+                }
+            }
+        )
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("profiles", "slack", "user_id")
+    assert error["type"] == "uuid_parsing"
+
+
+def test_user_profile_config_ignores_server_generated_id() -> None:
+    supplied_id = "00000000-0000-0000-0000-000000000001"
+
+    config = UserConfig.model_validate(
+        {"profiles": {"slack": {"channel_user_id": "U1", "id": supplied_id}}}
+    )
+
+    assert str(config.profiles["slack"].id) != supplied_id
+
+
+def test_user_profile_config_requires_channel_user_id_in_a_mapping() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        UserConfig.model_validate({"profiles": {"slack": {"name": "Lu"}}})
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("profiles", "slack")
+    assert "channel_user_id is required in a YAML profile" in error["msg"]
+
+
+def test_user_profile_config_rejects_scalar_id_shorthand() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        UserConfig.model_validate({"profiles": {"slack": "U1"}})
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("profiles", "slack")
+    assert error["type"] == "model_attributes_type"
 
 
 def test_user_links_accept_configured_channels() -> None:
@@ -651,7 +706,13 @@ def test_user_links_accept_configured_channels() -> None:
                 "napcat": {"ws_url": "ws://x", "http_url": "http://x"},
             },
             "users": {
-                "luhui": {"name": "Lu", "profiles": {"napcat": "9", "dev_ui": "dev"}},
+                "luhui": {
+                    "name": "Lu",
+                    "profiles": {
+                        "napcat": {"channel_user_id": "9"},
+                        "dev_ui": {"channel_user_id": "dev"},
+                    },
+                },
             },
         }
     )

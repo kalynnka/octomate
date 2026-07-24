@@ -29,6 +29,16 @@ class MessageEvent(BaseModel):
     def display_name(self) -> str:
         return self.sender.name or self.sender.nickname or "anonymous"
 
+    @property
+    def sender_label(self) -> str:
+        """The parenthesized ids of the sender line: the raw platform id, plus
+        the `user:{username}` marker (the owning user) that equates one human
+        across channels. The owner is present once the sender is a registry row."""
+        owner = self.sender.user.peek()
+        if owner is not None:
+            return f"{self.user_id}, user:{owner.username}"
+        return self.user_id
+
     def is_at(self, user_id: str | None = None) -> bool:
         return user_id is not None and any(
             isinstance(seg, AtSegment) and seg.data.user_id == user_id
@@ -42,8 +52,10 @@ class MessageEvent(BaseModel):
 
     def __str__(self) -> str:
         body = "\n".join(f"  {seg}" for seg in self.segments)
-        return f"{self.display_name} ({self.user_id}) #msg:{self.message_id}:\n{body}"
+        return (
+            f"{self.display_name} ({self.sender_label}) #msg:{self.message_id}:\n{body}"
+        )
 
     def to_content_parts(self) -> list[UserContent]:
-        header = f"{self.display_name} ({self.user_id}) #msg:{self.message_id}: "
+        header = f"{self.display_name} ({self.sender_label}) #msg:{self.message_id}: "
         return [header] + [seg.to_content() for seg in self.segments]

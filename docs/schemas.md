@@ -6,7 +6,8 @@ All schemas live under `octomate/schemas/` and are organized into four modules:
 
 | Module        | Purpose                                            |
 | ------------- | -------------------------------------------------- |
-| `conversation`| Agent-conversation identity and user profiles      |
+| `conversation`| Agent-conversation and channel-address identity    |
+| `user`        | Registered users and observed channel profiles     |
 | `segments` | Message segment data types (text, image, at, etc.) |
 | `events`   | Inbound events from IM platforms                   |
 | `actions`  | Outbound actions toward IM platforms               |
@@ -32,7 +33,13 @@ thread — not a human chat log. The user-facing chat ledger is the `Thread` /
 | ----------------- | ---------- | --------------------- | ------------------------------------------------------------------- |
 | `ChannelAddress`  | dataclass  | internal              | Delivery address: tentacle + chat + sender user + platform thread   |
 | `ConversationKey` | NamedTuple | internal              | Cache key for an agent conversation (channel address + owning agent) |
-| `UserProfile`     | Model      | IM → Tentacle → Agent | Sender profile: name, nickname, gender, age, title                  |
+
+### user.py
+
+| Schema        | Type                | Direction             | Summary                                                        |
+| ------------- | ------------------- | --------------------- | -------------------------------------------------------------- |
+| `User`        | Persisted transmuter | internal              | YAML-declared human with a stable username                     |
+| `UserProfile` | Persisted transmuter | IM → Tentacle → Agent | Channel profile; optionally owned by a registered YAML user    |
 
 ### segments.py
 

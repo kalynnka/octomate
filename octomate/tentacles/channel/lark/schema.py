@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Annotated, Protocol, TypeAlias, runtime_checkable
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from typing_extensions import NotRequired, TypedDict
 
 from octomate.schemas.user import UserProfile
@@ -57,6 +57,8 @@ class LarkStreamCard:
 
 
 class LarkUserProfile(UserProfile):
+    model_config = ConfigDict(extra="ignore")
+
     channel_user_id: str = Field(default="", validation_alias="open_id")
     title: str | None = Field(default=None, validation_alias="job_title")
 

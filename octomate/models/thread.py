@@ -207,7 +207,11 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
             "outbound: the channel bot or a native session's pseudo-user."
         ),
     )
-    sender: Mapped[UserProfile] = relationship("UserProfile", lazy="selectin")
+    # A read-only view keyed off sender_id: the profile's lifecycle belongs to
+    # UserManager, so a ledger write never creates or mutates one.
+    sender: Mapped[UserProfile] = relationship(
+        "UserProfile", lazy="selectin", viewonly=True
+    )
 
     segments: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     message_text: Mapped[str | None] = mapped_column(String, nullable=True, index=True)

@@ -177,10 +177,9 @@ class Octomate:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             with sqlalchemy_materia():
-                # The identity registry warms and reconciles before any tentacle
-                # starts, so the first ingested message resolves against a loaded
-                # map and config-declared links exist from the first turn.
-                await self.users.load()
+                # The identity registry reconciles before any tentacle starts, so
+                # YAML users and their declared profiles exist from the first
+                # ingested message; every other sender remains a visitor.
                 await self.users.reconcile()
                 # Each tentacle is an async context manager owning its own
                 # long-lived resources (agents: warm MCP sessions; channels:

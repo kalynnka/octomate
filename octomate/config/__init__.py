@@ -96,7 +96,7 @@ class OctomateConfig(BaseSettings):
     users: dict[str, UserConfig] = Field(
         default_factory=dict,
         description=(
-            "Cross-channel identities keyed by handle; each user's links are "
+            "Registered cross-channel users keyed by stable username; profiles are "
             "reconciled into the registry at startup."
         ),
     )
@@ -191,10 +191,7 @@ class OctomateConfig(BaseSettings):
                                 input=route.model,
                             )
                         )
-                if (
-                    route.agent == "inkling"
-                    and route.model not in inkling_models
-                ):
+                if route.agent == "inkling" and route.model not in inkling_models:
                     errors.append(
                         InitErrorDetails(
                             type=PydanticCustomError(
@@ -228,7 +225,7 @@ class OctomateConfig(BaseSettings):
             if channel is not None
         }
         errors: list[InitErrorDetails] = []
-        for handle, user in self.users.items():
+        for username, user in self.users.items():
             for channel_id, profile in user.profiles.items():
                 if channel_id not in channel_ids:
                     errors.append(
@@ -238,7 +235,7 @@ class OctomateConfig(BaseSettings):
                                 "{channel} does not match a configured channel",
                                 {"channel": repr(channel_id)},
                             ),
-                            loc=("users", handle, "profiles", channel_id),
+                            loc=("users", username, "profiles", channel_id),
                             input=profile.channel_user_id,
                         )
                     )

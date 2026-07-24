@@ -24,15 +24,16 @@ from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.thread import ThreadManager
+from octomate.reflex.suspender import HumanReviewSuspender, TeleportRequest
 from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import Thread
 from octomate.schemas.triage import (
+    AgentRoute,
     ResponseTargetMode,
     RunName,
     SummonDecision,
-    AgentRoute,
 )
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.agent.base import AgentTentacle
@@ -42,7 +43,6 @@ from octomate.tentacles.channel.base import (
     ThreadStrategy,
 )
 from octomate.tentacles.channel.feelers.output import split_reply
-from octomate.reflex.suspender import HumanReviewSuspender, TeleportRequest
 
 logger = logging.getLogger(__name__)
 
@@ -222,12 +222,18 @@ class ReflexDeps:
                 if sender is not None
                 else "anonymous"
             )
+            owner = sender.user.peek() if sender is not None else None
+            ids = (
+                f"{message.user_id}, user:{owner.username}"
+                if owner is not None
+                else message.user_id
+            )
             platform_id = (
                 f" #msg:{message.platform_message_id}"
                 if message.platform_message_id
                 else ""
             )
-            parts.append(f"{display_name} ({message.user_id}){platform_id}:\n{text}")
+            parts.append(f"{display_name} ({ids}){platform_id}:\n{text}")
         prompt = "\n\n".join(parts)
         if prompt:
             state.user_prompt = prompt
@@ -361,7 +367,9 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         # self-routes via the gate toolset (summon / teleport) if it wants to hand off
         # or relocate. No handoff is recorded, so a group main is never pinned to an
         # owner (Case 1).
-        resolved = ctx.deps.resolve_agent(source_address.channel_tentacle_id, None, None)
+        resolved = ctx.deps.resolve_agent(
+            source_address.channel_tentacle_id, None, None
+        )
         await ctx.deps.load_pending_prompt(state, resolved.agent)
         state.decision = SummonDecision(
             action="summon",
@@ -842,7 +850,10 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         ctx: GraphRunContext[ReflexState, ReflexDeps],
     ) -> React | End[ReflexGraphResult]:
         state = ctx.state
-        with reflex_logfire.span("resume_deferred", batch_id=str(self.awake.batch_id)) as span:
+        with reflex_logfire.span(
+            "resume_deferred",
+            batch_id=str(self.awake.batch_id),
+        ) as span:
             batch = await ctx.deps.action_manager.resolve_batch(self.awake)
             span.set_attribute("run_name", batch.run_name)
             span.set_attribute("batch_status", batch.status)
