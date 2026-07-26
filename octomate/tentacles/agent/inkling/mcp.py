@@ -1,35 +1,37 @@
 from __future__ import annotations
 
+from pydantic import SecretStr
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.config import McpConfig
+from octomate.config import GitHubMcpConfig, McpConfig
+
+
+def build_github_mcp_toolset(
+    config: GitHubMcpConfig,
+    access_token: SecretStr,
+) -> AbstractToolset[None]:
+    """Build one run-scoped GitHub MCP toolset for its owning user."""
+    url = config.url.rstrip("/") + "/readonly" if config.read_only else config.url
+    return (
+        MCPToolset(
+            url,
+            headers={"Authorization": f"Bearer {access_token.get_secret_value()}"},
+            id="github",
+        )
+        .prefixed("github")
+        .defer_loading()
+    )
 
 
 def build_mcp_toolsets(config: McpConfig) -> list[AbstractToolset[None]]:
-    """Build deferred-loading MCP toolsets for each enabled vendor server.
+    """Build process-wide MCP toolsets for enabled operator credentials.
 
-    Each server is connected over Streamable HTTP (the default transport for an
-    HTTP URL) with the operator token in the `Authorization` header. Tool names
-    are prefixed per vendor (`github_…`, `linear_…`) so the two servers can't
-    collide (e.g. both expose `list_issues`), and `.defer_loading()` keeps them
-    hidden from the model until discovered through the auto-injected ToolSearch.
+    GitHub is deliberately absent: Inkling mounts it per run from the triggering
+    user's OAuth connection. Linear still uses its configured operator token. Each
+    server is prefixed and deferred until discovered through ToolSearch.
     """
     toolsets: list[AbstractToolset[None]] = []
-
-    if (gh := config.github) and gh.enabled:
-        if gh.token is None:
-            raise ValueError("mcp.github.enabled but no token set")
-        url = gh.url.rstrip("/") + "/readonly" if gh.read_only else gh.url
-        toolsets.append(
-            MCPToolset(
-                url,
-                headers={"Authorization": f"Bearer {gh.token.get_secret_value()}"},
-                id="github",
-            )
-            .prefixed("github")
-            .defer_loading()
-        )
 
     if (lin := config.linear) and lin.enabled:
         if lin.token is None:

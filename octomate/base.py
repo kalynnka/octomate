@@ -5,15 +5,17 @@ import colorsys
 import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import TypeVar
 
 from fastapi import APIRouter, FastAPI, Request, Response
+from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.oauth import OAuthManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.reflex import (
@@ -83,14 +85,20 @@ class Octomate:
         default_factory=DeferredActionManager
     )
     users: UserManager = field(default_factory=UserManager)
+    oauth_encryption_key: InitVar[SecretStr | None] = None
+    oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
     routers: list[APIRouter] = field(default_factory=list)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, oauth_encryption_key: SecretStr | None) -> None:
         # Every ledger row references its sender's registry profile, so the
         # thread manager records through the host's one identity registry.
         self.thread_manager = ThreadManager(users=self.users)
+        self.oauth = OAuthManager(
+            users=self.users,
+            encryption_key=oauth_encryption_key,
+        )
 
     def connect(self, tentacle: TentacleT) -> TentacleT:
         if isinstance(tentacle, ChannelTentacle):

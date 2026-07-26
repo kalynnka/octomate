@@ -1,252 +1,137 @@
-# Plan: self-service OAuth and MCP OAuth connections
+# Plan: self-service OAuth connections
 
 ## Status
 
-The identity prerequisite is implemented. Connection persistence is the next delivery stage. This
-document does not add CLI or administrator connection workflows.
+The YAML user registry and provider-neutral connector foundation are complete. GitHub is the first
+concrete connector: registered Slack users can authorize with device flow, confirm from Slack, and
+use the GitHub MCP server with their own encrypted OAuth token. Authorization-code transports,
+other providers/channels, refresh, revocation, and disconnect are not implemented yet.
 
-## Decision
+## Decisions
 
-Octomate has no public account-registration system. The `users:` section of `octomate.yaml` is the
-current authority that creates a durable human record and links that human's channel profiles.
-Removing the YAML declaration retains the user record but unlinks its profiles. Everyone else who
-can reach Octomate through an admitted channel remains a visitor and may converse without personal
-integrations.
+Octomate does not expose public user registration. The `users:` section of `octomate.yaml` is the
+authority that links channel profiles to durable humans. An admitted but unlinked channel sender is
+a visitor: they can converse normally but cannot create or use a personal OAuth connection.
 
-OAuth connections are self-service secrets. A connection may be started, replaced, inspected, or
-revoked only from a channel profile already linked to its owning YAML user. No route, tool, or
-manager API accepts a target user supplied by an administrator or by the model. The active sender
-is the target.
+OAuth is self-service. The initiating `UserProfile` is the only accepted principal; `OAuthManager`
+resolves its owner through `UserManager`. OAuth APIs must never accept a target username or user id,
+so an administrator, model-generated argument, or callback parameter cannot select another human.
+Operators remain in the technical trust boundary of a self-hosted process, but product workflows
+must never ask an operator to receive or authorize another user's credentials.
 
-The host operator remains part of the technical trust boundary of a self-hosted deployment: an
-operator with the database, process, and encryption key can extract secrets. The product workflow
-must nevertheless never ask an administrator to receive, paste, or authorize another user's token.
-
-## Concepts
-
-### Registered user and visitor
-
-- `User` is currently created only by YAML reconciliation and has a stable `username` equal to its
-  YAML key. Its row remains when the declaration is removed.
-- `UserProfile.user_id` is nullable. A linked profile belongs to its YAML user; an unlinked profile
-  is an observed visitor identity.
-- An admitted visitor receives normal conversational responses but has no personal OAuth or MCP
-  toolsets.
-- A registered person speaking from an undeclared channel profile is a visitor until that profile
-  is added to the same YAML user.
-- Connections owned by a retained user with no linked profile are dormant: they remain encrypted
-  in storage but no sender can inspect, use, replace, or disconnect them.
-
-### Provider OAuth connection
-
-A provider connection authorizes Octomate to call a provider API directly on behalf of the current
-user. GitHub App user authorization and Linear user OAuth are examples. Provider OAuth uses an
-Octomate-owned, pre-registered OAuth application and provider-specific endpoints.
-
-### MCP OAuth connection
-
-An MCP connection authorizes one user to one remote MCP resource. It follows the MCP OAuth client
-flow: protected-resource discovery, authorization-server discovery, PKCE, optional dynamic client
-registration, token refresh, and resource-bound bearer authentication. The connection belongs to
-the user, not to an agent tentacle or a process-wide MCP configuration.
-
-Provider OAuth and MCP OAuth share lifecycle policy and encrypted persistence, but they are distinct
-typed variants because MCP additionally persists resource metadata and possibly dynamically issued
-client information.
-
-## Persistence
-
-Add polymorphic `OAuthConnection` transmuters backed by one table:
+Provider APIs and MCP servers use the same connector boundary. They are not persistence variants.
+Each connector composes two independent choices:
 
 ```text
-OAuthConnection
-  id
-  user_id                         FK users.id, ON DELETE CASCADE
-  kind                            provider | mcp
-  key                             configured provider or MCP server key
-  status                          active | invalid
-  subject                         provider account/workspace identity, when available
-  account_label                   safe display label
-  scopes
-  encrypted_tokens                complete current token response
-  expires_at
-  created_at
-  updated_at
-  version                         optimistic refresh coordination
-
-ProviderOAuthConnection
-  provider                        github | linear | ...
-
-McpOAuthConnection
-  resource_url
-  authorization_server
-  encrypted_client_information    DCR result when the server issues one
+OAuthConnector
+  ├── flow
+  │    ├── device
+  │    └── authorization_code
+  │
+  └── callback transport (authorization_code only)
+       ├── direct_http
+       └── relay
 ```
 
-Initially enforce one connection per `(user_id, kind, key)`. Supporting multiple accounts for the
-same provider is a separate product decision and should not complicate the first implementation.
+- A device flow has no callback transport.
+- An authorization-code flow must select exactly one callback transport.
+- The connector owns upstream-specific behavior such as endpoints, scopes, token exchange, refresh,
+  revocation, account discovery, and MCP authorization-server discovery.
+- The callback transport owns only how the browser start/callback crosses the deployment boundary.
+  It does not own provider tokens or choose the user.
+- The manager owns connector registration and the user authorization boundary.
 
-Add an `OAuthTransaction` table for unfinished browser flows:
+Authorization-code secrets must not be included in a channel message. A transport stages the real
+provider authorization URI and returns a public start URI containing only a random operation UUID.
+Direct HTTP retrieves the staged operation from Octomate; a relay transports the same operation
+without changing connector behavior. Both paths eventually return the callback to the same manager
+completion boundary.
 
-```text
-OAuthTransaction
-  id
-  user_id
-  profile_id                      initiating linked channel profile
-  kind
-  key
-  ticket_hash                     hash of the private channel URL's bearer ticket
-  state_hash
-  encrypted_code_verifier
-  encrypted_discovery/client data needed to finish the flow
-  expires_at
-  consumed_at
-```
+## Connector foundation
 
-Transactions are durable so a process restart does not silently change the security model. Expired
-and consumed rows may be pruned opportunistically.
+`OAuthConnector` is a composition object, not a provider base class. Its flow and callback transport
+are injected strategies. This lets GitHub choose device flow first, while a future Linear or MCP
+connector can choose authorization code plus direct HTTP or relay without branching inside the
+manager.
 
-Tokens, refresh tokens, PKCE verifiers, and dynamically issued client secrets are encrypted as one
-authenticated payload. The encryption key comes from deployment secrets, never YAML or the
-database. Support a primary key plus old decryption keys so key rotation can re-encrypt existing
-connections.
+`OAuthManager` belongs to the project-level `Octomate` instance and shares its `UserManager`. Starting
+an authorization:
 
-## Self-service flow
+1. resolves the connector by its registered id;
+2. resolves the current channel profile's YAML-linked owner;
+3. rejects an ownerless visitor before invoking the connector;
+4. creates an opaque operation id;
+5. invokes the selected flow; and
+6. for authorization code, asks the selected transport for the safe user-facing start URI.
 
-1. A message arrives and `ThreadManager` replaces its boundary sender with the persisted
-   `UserProfile`.
-2. A connection capability derives the user only from that current sender. If `user_id` is null,
-   it returns the visitor explanation and creates nothing.
-3. The capability creates a short-lived, single-use transaction for the requested configured
-   connection. Its API has no `user_id` argument.
-4. Octomate sends the authorization URL privately to the initiating profile. In a group surface it
-   must DM the user; if the channel cannot deliver privately, ask the user to open a private chat
-   with Octomate. Never expose the bearer ticket in a group reply.
-5. The browser presents the ticket to a narrow start endpoint. The endpoint verifies its hash,
-   expiry, unused state, linked profile, and configured connection before redirecting to the
-   provider or MCP authorization server with `state` and PKCE.
-6. The callback verifies `state`, exchanges the code, obtains a safe account/workspace label, and
-   atomically stores the encrypted connection for the transaction's user.
-7. The transaction is consumed and Octomate privately confirms the connected account and granted
-   scopes. Tokens never appear in the response, model context, URL, or telemetry.
+This stage deliberately stops before durable operations and tokens. Their exact schema should be
+driven by the first real connector rather than preserving the obsolete `provider | mcp` hierarchy.
 
-The same owner-only rule applies to status, disconnect, and replacement. Reauthorization must not
-silently overwrite an active connection: show the existing safe label and require an explicit
-replacement action from a currently linked profile of that user.
+## Security requirements for implementation stages
 
-Removing a YAML user declaration is not connection revocation. Reconciliation unlinks the user's
-profiles and retains both the durable user and encrypted connections. Re-adding the same stable
-username restores access through newly declared profiles. A future explicit user-deletion workflow,
-if introduced, must revoke connections before deleting the user; YAML removal must not impersonate
-that workflow.
-
-## OAuth clients
-
-### Provider OAuth
-
-Use Authlib's async Starlette/FastAPI client for authorization URL construction, code exchange, and
-standard refresh behavior. Keep the small GitHub and Linear differences in their provider-owned
-configuration/code; do not introduce a generic provider framework until a third provider requires
-it.
-
-- GitHub: prefer a GitHub App user access token with expiring tokens enabled. The token's effective
-  permission is the intersection of the app and user permissions.
-- Linear: request user authorization when work should be attributed to the user. Persist every new
-  rotating refresh token in the same transaction that replaces the access token.
-
-### MCP OAuth
-
-Use `mcp.client.auth.OAuthClientProvider` from the installed MCP Python SDK, with:
-
-- an Arcanus-backed `TokenStorage` bound to exactly one `(user_id, MCP server)` connection;
-- redirect and callback handlers backed by `OAuthTransaction`, rather than FastMCP's default local
-  browser and localhost callback;
-- a pre-registered client for servers such as GitHub that require the host application to register;
-- dynamic client registration only when the discovered authorization server supports it.
-
-Do not use FastMCP's default in-memory token storage in the server. Do not copy MCP access tokens
-into the provider-connection variant: OAuth tokens are resource/audience-specific even when the
-same upstream account granted them.
-
-## Refresh and revocation
-
-- Resolve a valid token immediately before constructing a personal toolset.
-- Serialize refresh by connection id in one process and use the `version` column to reject a stale
-  write across processes.
-- Replace the entire encrypted token document atomically; this is required for rotating refresh
-  tokens.
-- On `invalid_grant` or an unrecoverable 401, mark the connection invalid and tell that user to
-  reconnect. Do not fall back to a process-wide/operator credential.
-- Disconnect first calls the advertised/provider revocation endpoint when supported, then deletes
-  the local encrypted material even if remote revocation reports an already-invalid token.
-
-## MCP runtime integration
-
-The current GitHub and Linear MCP toolsets are process-wide and warmed with one configured bearer
-token. Personal MCP access changes the ownership boundary:
-
-1. Resolve the triggering message's persisted profile and optional YAML user.
-2. Ask `ConnectionManager` for that user's active connections.
-3. Build additional MCP toolsets for that run only and pass them through Pydantic AI's per-run
-   `toolsets` argument.
-4. A visitor, or a registered user without a connection, receives no personal provider toolset.
-5. Open and close personal MCP sessions per run initially. Add a bounded `(user_id, connection_id)`
-   session pool only after measurements justify it.
-
-Static operator tokens must never be a fallback for personal tools. When personal OAuth ships, the
-existing GitHub/Linear token configuration is either removed or retained only as an explicitly
-separate system/service-account feature with its own policy and no visitor access.
+- A connection is unique per `(user, connector)` until multiple accounts are explicitly designed.
+- Device codes, authorization codes, PKCE verifiers, access tokens, refresh tokens, and dynamically
+  issued client secrets are encrypted at rest and absent from logs, traces, prompts, URLs sent to
+  channels, exceptions, and public schemas.
+- Authorization operations are durable, short-lived, single-use, and bound to the initiating user
+  and profile. Completion rechecks that the profile is still linked to the same user.
+- A completed connection is not activated until the initiating channel identity confirms it. Slack
+  DM delivery is not available yet, so the device link/code and confirmation are sent back to the
+  originating Slack conversation, including a group or thread when that is where the request came
+  from. No operation secret or user selector appears in the tool arguments.
+- Token refresh replaces the entire encrypted token response atomically. Rotating refresh tokens
+  must not be lost to concurrent refreshes.
+- Visitors and unconnected users never inherit a process-wide/operator credential.
+- Removing a YAML declaration makes retained connections dormant; it does not transfer or silently
+  revoke them.
 
 ## Delivery stages
 
-### 1. Identity prerequisite
+### 1. YAML user identity — complete
 
-- YAML-created durable `User` rows with stable usernames.
-- Nullable visitor profiles.
-- No runtime link-code, user merge, or administrator linking API.
-- Current sender is available to run dependencies as the authorization principal.
+- Durable users keyed by YAML username.
+- Cross-channel profiles linked to the same user.
+- Ownerless visitor profiles for admitted unknown senders.
 
-### 2. Connection persistence
+### 2. Connector foundation — implemented
 
-- Polymorphic connection schemas/models and migration.
-- Encrypted token codec with key rotation.
-- Durable transaction store and expiry cleanup.
-- Connection manager with owner-bound begin, complete, get-token, replace, and disconnect methods.
+- `OAuthConnector` composed from a flow and optional callback transport.
+- Device and authorization-code flow contracts.
+- Direct HTTP and relay callback-transport contracts.
+- `OAuthManager` connector registry and `UserManager` principal resolution.
+- No provider, MCP, route, relay, token, or connection implementation.
 
-### 3. Private channel authorization UX
+### 3. GitHub device OAuth — first usable slice implemented
 
-- Connection capability whose public arguments contain only the connection key, never a user id.
-- Slack/Lark/private-channel delivery of single-use links.
-- Narrow start/callback routes owned by the project-level Octomate FastAPI application.
-- Safe success, denied, expired, and reconnect messages.
+- GitHub connector using device flow.
+- Durable encrypted operation and connection storage, with the schema generated from this concrete
+  lifecycle rather than provider/MCP inheritance.
+- Owner-bound device-code presentation and explicit confirmation from Slack.
+- The bare verification message is emitted to the originating Slack conversation; DM routing is a
+  later channel enhancement.
+- Connection replacement is implemented; owner-bound refresh and disconnect remain.
 
-### 4. Provider OAuth
+### 4. Authorization-code transports
 
-- GitHub App user connection.
-- Linear user connection with rotating refresh tests.
-- Direct API consumers, if any, resolve tokens through `ConnectionManager`.
+- Durable state and PKCE operation data.
+- Narrow project-level start/callback routes for direct HTTP.
+- Relay implementation using the same manager completion boundary.
+- Replay, expiry, denial, unlinking, and confirmation tests.
 
-### 5. MCP OAuth and per-run toolsets
+### 5. MCP OAuth — GitHub path implemented
 
-- Arcanus-backed MCP `TokenStorage`.
-- Custom MCP redirect/callback coordination.
-- Linear MCP OAuth, followed by GitHub MCP OAuth with the registered client.
-- Remove personal GitHub/Linear toolsets from startup warming and attach them per run.
+- MCP connector using authorization-server discovery and the appropriate injected flow/transport.
+- Per-user token storage and per-run GitHub MCP toolsets are implemented. The configured GitHub API
+  token has been removed; an ownerless visitor receives neither OAuth nor MCP tools.
+- General MCP authorization-server discovery remains for later connectors.
+- Dynamic client registration only when advertised and required.
 
 ## Acceptance
 
-- An unknown but channel-admitted sender can converse and has no `User` or OAuth connection.
-- A YAML-linked sender can privately authorize only their own connection.
-- A visitor, model-generated id, callback parameter, or administrator-facing route cannot choose a
-  target user.
-- Group messages never contain connection bearer tickets.
-- A callback cannot be replayed, used after expiry, or completed for a different user/provider.
-- Tokens and client secrets are encrypted at rest and absent from logs, traces, prompts, exceptions,
-  and serialized public schemas.
-- Concurrent refresh preserves the newest rotating refresh token.
-- Removing a YAML user declaration retains its encrypted connections but makes them inaccessible;
-  removing one profile only makes that profile a visitor and does not expose or transfer the user's
-  connections.
-- Visitors and unconnected users receive no personal MCP tools and never inherit a global token.
-- GitHub and Linear MCP calls execute with the triggering user's connection and cannot cross user
-  boundaries under concurrent runs.
+- Connector construction rejects invalid flow/transport combinations.
+- An unknown connector is rejected before any OAuth work starts.
+- A visitor cannot start OAuth; a YAML-linked sender can start only for themselves.
+- No public manager method accepts a target user id or username.
+- Authorization-code provider state is staged behind a UUID-only user-facing URI.
+- GitHub uses the generic manager without adding GitHub branches to `OAuthManager`.
+- A later MCP connector can reuse the same manager without being modeled as a provider subclass.

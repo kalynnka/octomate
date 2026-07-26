@@ -166,18 +166,24 @@ octomate:
   #     # or: profile_name: my-profile
   #     # or: api_key: <AWS_BEARER_TOKEN_BEDROCK>
 
-  # Vendor MCP servers (GitHub, Linear) connected over Streamable HTTP with one
-  # operator token each. Tools are deferred-loaded: hidden until the model
-  # discovers them via ToolSearch. Put real tokens in octomate.yaml or env.
+  # Vendor MCP servers connected over Streamable HTTP. GitHub is authorized by
+  # each registered user from Slack; Linear still uses one operator token. Tools
+  # are deferred-loaded until the model discovers them through ToolSearch.
   mcp: {}
   # mcp:
   #   github:
   #     enabled: true
-  #     token: ghp_xxx            # or OCTOMATE__MCP__GITHUB__TOKEN
+  #     client_id: Iv1.xxxxx      # OAuth App with Device Flow enabled
+  #     scopes: [repo, read:org]  # choose the access this deployment needs
   #     read_only: false          # true => the /readonly endpoint variant
   #   linear:
   #     enabled: true
   #     token: lin_api_xxx        # or OCTOMATE__MCP__LINEAR__TOKEN
+
+  # Encrypts pending device codes and user OAuth tokens in SQLite. Prefer the
+  # OCTOMATE__OAUTH__ENCRYPTION_KEY environment variable over YAML. Generate a
+  # key with: openssl rand -base64 32 | tr '+/' '-_'
+  oauth: {}
 
 # Live-replay test targets (`pytest tests/trigger/`).
 # This section sits OUTSIDE `octomate:` — the application never reads it.
