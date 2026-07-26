@@ -7,8 +7,10 @@ Implemented on this branch. OAuth connection work is planned separately in
 
 ## Decision
 
-The `users:` section of `octomate.yaml` is the only authority that declares a registered
-Octomate user and says which channel profiles belong to that person.
+The `users:` section of `octomate.yaml` is the current authority that declares an active
+Octomate user and says which channel profiles belong to that person. User rows are durable:
+removing a declaration unlinks its profiles but does not delete the human's record. This leaves a
+stable owner for future registration sources and user-owned data.
 
 Channel access and registration are deliberately different:
 
@@ -16,7 +18,7 @@ Channel access and registration are deliberately different:
 - Their observed channel account is persisted as a `UserProfile`.
 - If YAML does not declare that exact `(channel_tentacle_id, channel_user_id)`, the profile is an
   ownerless visitor.
-- Only YAML reconciliation creates a `User` or attaches a profile to one.
+- Only YAML reconciliation currently creates a `User` or attaches a profile to one.
 - There is no runtime link code, claim/confirm flow, merge, birth user, or administrator mutation
   API.
 
@@ -27,7 +29,7 @@ by itself a declaration that a registered human exists.
 
 ### `User`
 
-One YAML-declared human across channels:
+One durable human identity across channels, initially created by YAML:
 
 ```text
 id          UUID
@@ -58,8 +60,8 @@ user                  Relation[User | None]
 ```
 
 `(channel_tentacle_id, channel_user_id)` is unique. `user_id=None` is normal and means visitor.
-The FK uses `ON DELETE SET NULL`, and reconciliation explicitly nulls links before deleting a user
-because the current SQLite deployment does not rely on FK enforcement.
+The FK uses `ON DELETE SET NULL` if a user is ever explicitly deleted. Normal YAML reconciliation
+retains user rows and nulls ownership for profiles no longer declared.
 
 There is no link method or verification timestamp: with one authority, such fields would only
 restate that the row came from YAML.
@@ -69,12 +71,12 @@ transmuter. Boundary instances have an empty `channel_tentacle_id` and no owner.
 creates or reloads the registry instance and stamps the channel id.
 
 There is no legacy `user_id` input translation. YAML profiles use Arcanus's generated
-`UserProfile.Create` schema, which excludes the server-generated identity and relationship, inherits
-strict extra-field validation, and validates writable fields with their real types. A config
-boundary validator additionally requires `channel_user_id` in mapping syntax. Internal profile
-construction also uses `channel_user_id`; `user_id` means only the optional registered-owner FK.
-Platform adapters may map externally fixed wire fields such as OneBot's `user_id` at their parsing
-boundary and explicitly ignore unrelated provider fields.
+`UserProfile.Create` schema, which excludes the server-generated identity and relationship and
+validates writable fields with their real types. Unknown input fields are ignored consistently with
+the shared channel profile boundary. A config boundary validator additionally requires
+`channel_user_id` in mapping syntax. Internal profile construction also uses `channel_user_id`;
+`user_id` means only the optional registered-owner FK. Platform adapters may map externally fixed
+wire fields such as OneBot's `user_id` at their parsing boundary.
 
 ## Configuration
 
@@ -113,8 +115,9 @@ Reconciliation makes persistence exactly match YAML ownership:
 3. Load currently owned profiles.
 4. Null ownership for profiles no longer declared.
 5. Attach each declared profile to its configured user, creating an unseen profile when necessary.
-6. Delete users whose usernames no longer exist in YAML.
-7. Commit once and refresh the small registered-user cache.
+6. Retain user rows whose usernames no longer exist in YAML for future registration sources and
+   user-owned data.
+7. Commit once and cache every persisted user.
 
 The resulting transitions are:
 
@@ -122,7 +125,7 @@ The resulting transitions are:
 |---|---|
 | Add user | Create registered `User` |
 | Rename user under same key | Update presentation, preserve id |
-| Remove user | Delete `User`; profiles remain as visitors |
+| Remove user | Retain `User`; profiles become visitors |
 | Add existing visitor profile | Attach it without replacing observed display fields |
 | Add unseen profile | Seed and attach it |
 | Remove profile | Preserve row, set `user_id=None` |
@@ -145,8 +148,8 @@ until YAML adds a profile.
 It never creates a `User` and never changes `user_id`. Concurrent first sightings are serialized so
 the unique identity row is created once.
 
-Profiles are not cached without bound. Registered users use a small LRU because profile-to-owner
-resolution is repeated and the registered set is small.
+Profiles are not cached without bound. The user registry is expected to remain small, so every
+persisted user is cached for repeated profile-to-owner resolution.
 
 `UserManager.owner(profile)` returns the registered user or `None` for a visitor. Callers should not
 manufacture a visitor `User` or interpret the profile display name as a canonical identity.
@@ -186,19 +189,20 @@ A future connection flow starts from the current persisted sender and proceeds o
 `sender.user_id` is set. It may neither attach a visitor profile nor accept a target user argument.
 
 Removing one profile makes that channel account a visitor without transferring the user's OAuth
-connections. Removing the YAML user deletes all of that user's connection records. See
-[oauth-connections.md](oauth-connections.md) for the full owner-only flow.
+connections. Removing the YAML user retains the durable user and connections, but unlinks every
+profile, so no sender can reach those connections. Re-adding the same stable username restores the
+same user record. See [oauth-connections.md](oauth-connections.md) for the full owner-only flow.
 
 ## Acceptance
 
 - A first message from an undeclared sender creates one ownerless profile and no user.
 - Repeated observations refresh the profile and preserve its YAML ownership or visitor status.
 - Concurrent first sightings create one profile.
-- YAML is the only code path that creates users or changes profile ownership.
+- YAML is currently the only code path that creates users or changes profile ownership.
 - Multiple declared profiles resolve to the same stable user.
 - Duplicate declarations fail before partial reconciliation.
 - User display-name changes are stable by username.
-- Removed users and profiles leave their observations as visitors.
+- Removed user declarations retain their user rows and leave their profiles as visitors.
 - Thread history and live events show a cross-channel user marker only for registered senders.
 - Focused user and thread-manager tests cover visitor, attach, move, remove, seed, refresh, and
   idempotent reconciliation behavior.

@@ -2,15 +2,16 @@
 
 ## Status
 
-Planned. This document defines the connection boundary that follows the YAML-only user registry.
-It does not add CLI or administrator connection workflows.
+The identity prerequisite is implemented. Connection persistence is the next delivery stage. This
+document does not add CLI or administrator connection workflows.
 
 ## Decision
 
 Octomate has no public account-registration system. The `users:` section of `octomate.yaml` is the
-only authority that declares a registered human and links that human's channel profiles. Everyone
-else who can reach Octomate through an admitted channel remains a visitor and may converse without
-personal integrations.
+current authority that creates a durable human record and links that human's channel profiles.
+Removing the YAML declaration retains the user record but unlinks its profiles. Everyone else who
+can reach Octomate through an admitted channel remains a visitor and may converse without personal
+integrations.
 
 OAuth connections are self-service secrets. A connection may be started, replaced, inspected, or
 revoked only from a channel profile already linked to its owning YAML user. No route, tool, or
@@ -25,13 +26,16 @@ must nevertheless never ask an administrator to receive, paste, or authorize ano
 
 ### Registered user and visitor
 
-- `User` is created only by YAML reconciliation and has a stable `username` equal to its YAML key.
+- `User` is currently created only by YAML reconciliation and has a stable `username` equal to its
+  YAML key. Its row remains when the declaration is removed.
 - `UserProfile.user_id` is nullable. A linked profile belongs to its YAML user; an unlinked profile
   is an observed visitor identity.
 - An admitted visitor receives normal conversational responses but has no personal OAuth or MCP
   toolsets.
 - A registered person speaking from an undeclared channel profile is a visitor until that profile
   is added to the same YAML user.
+- Connections owned by a retained user with no linked profile are dormant: they remain encrypted
+  in storage but no sender can inspect, use, replace, or disconnect them.
 
 ### Provider OAuth connection
 
@@ -130,6 +134,12 @@ The same owner-only rule applies to status, disconnect, and replacement. Reautho
 silently overwrite an active connection: show the existing safe label and require an explicit
 replacement action from a currently linked profile of that user.
 
+Removing a YAML user declaration is not connection revocation. Reconciliation unlinks the user's
+profiles and retains both the durable user and encrypted connections. Re-adding the same stable
+username restores access through newly declared profiles. A future explicit user-deletion workflow,
+if introduced, must revoke connections before deleting the user; YAML removal must not impersonate
+that workflow.
+
 ## OAuth clients
 
 ### Provider OAuth
@@ -191,7 +201,7 @@ separate system/service-account feature with its own policy and no visitor acces
 
 ### 1. Identity prerequisite
 
-- YAML-only `User` rows with stable usernames.
+- YAML-created durable `User` rows with stable usernames.
 - Nullable visitor profiles.
 - No runtime link-code, user merge, or administrator linking API.
 - Current sender is available to run dependencies as the authorization principal.
@@ -234,8 +244,9 @@ separate system/service-account feature with its own policy and no visitor acces
 - Tokens and client secrets are encrypted at rest and absent from logs, traces, prompts, exceptions,
   and serialized public schemas.
 - Concurrent refresh preserves the newest rotating refresh token.
-- Removing a YAML user deletes their connections; removing one profile only makes that profile a
-  visitor and does not expose or transfer the user's connections.
+- Removing a YAML user declaration retains its encrypted connections but makes them inaccessible;
+  removing one profile only makes that profile a visitor and does not expose or transfer the user's
+  connections.
 - Visitors and unconnected users receive no personal MCP tools and never inherit a global token.
 - GitHub and Linear MCP calls execute with the triggering user's connection and cannot cross user
   boundaries under concurrent runs.
