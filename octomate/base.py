@@ -13,6 +13,7 @@ from rich.color import Color
 from rich.style import Style
 
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.connection import ConnectionManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
@@ -83,6 +84,7 @@ class Octomate:
         default_factory=DeferredActionManager
     )
     users: UserManager = field(default_factory=UserManager)
+    connections: ConnectionManager | None = None
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
     routers: list[APIRouter] = field(default_factory=list)

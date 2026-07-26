@@ -2,12 +2,13 @@
 
 ## Overview
 
-All schemas live under `octomate/schemas/` and are organized into four modules:
+All schemas live under `octomate/schemas/` and are organized by domain:
 
 | Module        | Purpose                                            |
 | ------------- | -------------------------------------------------- |
 | `conversation`| Agent-conversation and channel-address identity    |
 | `user`        | Registered users and observed channel profiles     |
+| `oauth`       | Personal provider/MCP connections and transactions |
 | `segments` | Message segment data types (text, image, at, etc.) |
 | `events`   | Inbound events from IM platforms                   |
 | `actions`  | Outbound actions toward IM platforms               |
@@ -40,6 +41,16 @@ thread — not a human chat log. The user-facing chat ledger is the `Thread` /
 | ------------- | ------------------- | --------------------- | -------------------------------------------------------------- |
 | `User`        | Persisted transmuter | internal              | YAML-declared human with a stable username                     |
 | `UserProfile` | Persisted transmuter | IM → Tentacle → Agent | Channel profile; optionally owned by a registered YAML user    |
+
+### oauth.py
+
+| Schema                     | Type                 | Direction | Summary                                                      |
+| -------------------------- | -------------------- | --------- | ------------------------------------------------------------ |
+| `ProviderOAuthConnection`  | Persisted transmuter | internal  | Encrypted personal provider authorization                    |
+| `McpOAuthConnection`       | Persisted transmuter | internal  | Encrypted resource-bound MCP authorization                   |
+| `OAuthTransaction`         | Persisted transmuter | internal  | Durable single-use browser transaction                       |
+| `OAuthAuthorizationTicket` | Model                | internal  | Short-lived private ticket with secret-safe serialization    |
+| `OAuthConnectionSummary`   | Model                | internal  | Connection metadata without tokens or client secrets         |
 
 ### segments.py
 

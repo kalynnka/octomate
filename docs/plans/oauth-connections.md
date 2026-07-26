@@ -2,8 +2,9 @@
 
 ## Status
 
-The identity prerequisite is implemented. Connection persistence is the next delivery stage. This
-document does not add CLI or administrator connection workflows.
+The identity prerequisite and connection persistence are implemented. Private channel
+authorization UX is the next delivery stage. This document does not add CLI or administrator
+connection workflows.
 
 ## Decision
 
@@ -95,12 +96,15 @@ OAuthTransaction
   profile_id                      initiating linked channel profile
   kind
   key
+  replace_existing
   ticket_hash                     hash of the private channel URL's bearer ticket
   state_hash
-  encrypted_code_verifier
-  encrypted_discovery/client data needed to finish the flow
+  encrypted_data                  state, PKCE verifier, discovery/client callback data
   expires_at
+  started_at                      ticket has been redeemed
+  callback_started_at             state has been claimed
   consumed_at
+  version                         optimistic single-use coordination
 ```
 
 Transactions are durable so a process restart does not silently change the security model. Expired
@@ -110,6 +114,30 @@ Tokens, refresh tokens, PKCE verifiers, and dynamically issued client secrets ar
 authenticated payload. The encryption key comes from deployment secrets, never YAML or the
 database. Support a primary key plus old decryption keys so key rotation can re-encrypt existing
 connections.
+
+Configured connection definitions are safe YAML metadata:
+
+```yaml
+oauth:
+  connections:
+    github:
+      kind: provider
+      provider: github
+    linear-mcp:
+      kind: mcp
+      resource_url: https://mcp.linear.app/mcp
+```
+
+Encryption keys are deliberately separate environment-only settings. The primary id chooses the
+write key; every key in the JSON mapping remains available for decryption during rotation:
+
+```text
+OCTOMATE_OAUTH_PRIMARY_KEY_ID=2026-07
+OCTOMATE_OAUTH_ENCRYPTION_KEYS={"2026-07":"<base64url-32-byte-key>","old":"..."}
+```
+
+`ConnectionManager` is created only when at least one connection is configured, so deployments
+that do not offer personal OAuth require no encryption settings.
 
 ## Self-service flow
 
@@ -206,7 +234,7 @@ separate system/service-account feature with its own policy and no visitor acces
 - No runtime link-code, user merge, or administrator linking API.
 - Current sender is available to run dependencies as the authorization principal.
 
-### 2. Connection persistence
+### 2. Connection persistence — implemented
 
 - Polymorphic connection schemas/models and migration.
 - Encrypted token codec with key rotation.

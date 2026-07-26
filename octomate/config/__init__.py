@@ -49,6 +49,12 @@ from octomate.config.models import (
     supported_providers,
 )
 from octomate.config.observability import LogfireConfig, LoggingConfig, LogLevel
+from octomate.config.oauth import (
+    McpOAuthConnectionConfig,
+    OAuthConfig,
+    OAuthSecuritySettings,
+    ProviderOAuthConnectionConfig,
+)
 from octomate.config.providers import (
     AnthropicProviderConfig,
     BedrockProviderConfig,
@@ -93,6 +99,7 @@ class OctomateConfig(BaseSettings):
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     mcp: McpConfig = Field(default_factory=McpConfig)
+    oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     users: dict[str, UserConfig] = Field(
         default_factory=dict,
         description=(
@@ -296,6 +303,11 @@ __all__ = [
     "McpConfig",
     "GitHubMcpConfig",
     "LinearMcpConfig",
+    # oauth
+    "McpOAuthConnectionConfig",
+    "OAuthConfig",
+    "OAuthSecuritySettings",
+    "ProviderOAuthConnectionConfig",
     # users
     "UserConfig",
     # channels

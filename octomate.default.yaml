@@ -179,6 +179,20 @@ octomate:
   #     enabled: true
   #     token: lin_api_xxx        # or OCTOMATE__MCP__LINEAR__TOKEN
 
+  # Personal OAuth connection definitions. These entries contain no user
+  # credentials; encrypted tokens are created only by the self-service flow.
+  # Encryption keys are environment-only:
+  # OCTOMATE_OAUTH_PRIMARY_KEY_ID and OCTOMATE_OAUTH_ENCRYPTION_KEYS.
+  oauth: {}
+  # oauth:
+  #   connections:
+  #     github:
+  #       kind: provider
+  #       provider: github
+  #     linear-mcp:
+  #       kind: mcp
+  #       resource_url: https://mcp.linear.app/mcp
+
 # Live-replay test targets (`pytest tests/trigger/`).
 # This section sits OUTSIDE `octomate:` — the application never reads it.
 # Configure it in the gitignored octomate.yaml, next to the channel credentials:
