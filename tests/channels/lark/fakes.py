@@ -19,6 +19,7 @@ from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.output import DefaultSegmentsFeeler
 from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
 from octomate.tentacles.channel.lark.feelers.approvals import LarkApprovalFeeler
+from octomate.tentacles.channel.lark.feelers.oauth import LarkOAuthFeeler
 from octomate.tentacles.channel.lark.feelers.output import (
     LarkMarkdownFeeler,
     LarkTimelineFeeler,
@@ -171,6 +172,7 @@ def compose_lark_feelers(
     markdown_feeler = LarkMarkdownFeeler(ink=ink, chromo=chromo)
     approvals = LarkApprovalFeeler(ink)
     ask_questions = LarkAskQuestionFeeler(ink)
+    oauth = LarkOAuthFeeler(ink)
     actions = deferred_actions or DeferredActionManager()
     channel.feelers = Feelers(
         markdown=markdown_feeler,
@@ -180,9 +182,11 @@ def compose_lark_feelers(
             stream_config=channel.config.stream,
             ask_questions=ask_questions,
             approvals=approvals,
+            oauth=oauth,
             deferred_actions=actions,
         ),
         segments=DefaultSegmentsFeeler(ink=ink, chromo=chromo),
         approvals=approvals,
         ask_questions=ask_questions,
+        oauth=oauth,
     )

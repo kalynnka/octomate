@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -62,6 +62,7 @@ if TYPE_CHECKING:
         ApprovalFeeler,
         QuestionFeeler,
     )
+    from octomate.tentacles.channel.feelers.oauth import OAuthFeeler
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,7 @@ class LarkRunStateCards(TimelineState):
     answer_batcher: TextStreamBatcher
     ask_questions: QuestionFeeler
     approvals: ApprovalFeeler
+    oauth: OAuthFeeler
     deferred_actions: DeferredActionManager
 
     message_id: IMMessageID | None = None
@@ -192,7 +194,7 @@ class LarkRunStateCards(TimelineState):
     async def open_subagent(
         self,
         activity: SubagentActivity,
-    ) -> AsyncIterator[LarkSubagentTimelineState]:
+    ) -> AsyncGenerator[LarkSubagentTimelineState]:
         state = LarkSubagentTimelineState(
             ink=self.ink,
             activity=activity,
@@ -299,11 +301,7 @@ class LarkRunStateCards(TimelineState):
         self.thinking_patched_len = 0
         elapsed = max(1, round(time.monotonic() - self.thinking_started_at))
         folded = cards.card_v2(
-            [
-                cards.collapsible_panel(
-                    f"Thought for {elapsed}s", [cards.markdown(body)]
-                )
-            ]
+            [cards.collapsible_panel(f"Thought for {elapsed}s", [cards.markdown(body)])]
         )
         await self.ink.patch_card(
             card_id, json.dumps(folded, ensure_ascii=False, separators=(",", ":"))
@@ -397,9 +395,7 @@ class LarkRunStateCards(TimelineState):
                 await self.answer_delta(f"<at id={segment.data.user_id}></at>")
             case ImageSegment():
                 await self.fold_thinking()
-                image_key = await self.ink.upload_media(
-                    segment.data.path.read_bytes()
-                )
+                image_key = await self.ink.upload_media(segment.data.path.read_bytes())
                 if image_key is None:
                     raise RuntimeError("failed to upload Lark image")
                 await self.ink.send_message(
@@ -497,6 +493,7 @@ class LarkTimelineFeeler(TimelineFeeler):
         stream_config: ChannelStreamConfig,
         ask_questions: QuestionFeeler,
         approvals: ApprovalFeeler,
+        oauth: OAuthFeeler,
         deferred_actions: DeferredActionManager,
     ) -> None:
         self.ink = ink
@@ -504,10 +501,11 @@ class LarkTimelineFeeler(TimelineFeeler):
         self.stream_config = stream_config
         self.ask_questions = ask_questions
         self.approvals = approvals
+        self.oauth = oauth
         self.deferred_actions = deferred_actions
 
     @asynccontextmanager
-    async def open(self, address: ChannelAddress) -> AsyncIterator[LarkRunStateCards]:
+    async def open(self, address: ChannelAddress) -> AsyncGenerator[LarkRunStateCards]:
         reply_to = address.thread_id if address.thread_id.startswith("om_") else None
         state = LarkRunStateCards(
             ink=self.ink,
@@ -524,6 +522,7 @@ class LarkTimelineFeeler(TimelineFeeler):
             ),
             ask_questions=self.ask_questions,
             approvals=self.approvals,
+            oauth=self.oauth,
             deferred_actions=self.deferred_actions,
         )
         try:

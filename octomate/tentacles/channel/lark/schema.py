@@ -30,6 +30,14 @@ class LarkApprovalActionValue(TypedDict):
     tool_name: NotRequired[str]
 
 
+class LarkOAuthActionValue(TypedDict):
+    action: NonEmptyStr
+    connector_id: NonEmptyStr
+    label: NonEmptyStr
+    verification_uri: NonEmptyStr
+    user_code: NonEmptyStr
+
+
 class LarkQuestionActionValue(TypedDict):
     action: NonEmptyStr
     batch_id: UUID
