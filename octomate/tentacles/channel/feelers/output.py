@@ -45,9 +45,10 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_core import to_json
 from typing_extensions import TypeVar
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
+    OAuthAuthorizationEvent,
     ResultSegmentEvent,
     StreamEvents,
     SubagentActivity,
@@ -66,7 +67,12 @@ from octomate.capabilities.gateway import (
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
-from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
+from octomate.schemas.segments import (
+    MarkdownSegment,
+    MessageSegment,
+    ReplySegment,
+    Segment,
+)
 from octomate.schemas.todos import Todo
 from octomate.telemetry import channel_logfire
 from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
@@ -774,6 +780,9 @@ class TimelineState:
                     case MessageSentEvent():
                         answered = True
                         await self.message_sent(event)
+                    case OAuthAuthorizationEvent():
+                        answered = True
+                        await self.oauth_authorization(event)
                     case ActionBatchEvent():
                         answered = answered or bool(event.questions or event.approvals)
                         await self.present_actions(event)
@@ -887,6 +896,31 @@ class TimelineState:
         for segment in body:
             await self.answer_segment(segment)
         await self.begin_entry()
+
+    async def oauth_authorization(self, event: OAuthAuthorizationEvent) -> None:
+        """An integration is waiting for this user to authorize it.
+
+        The link and the one-time code reach the user here rather than through the
+        model's reply, which must never repeat the code. This plain-timeline rendering
+        asks the user to come back and say so; a channel whose platform can carry a
+        button overrides this and continues the flow from the card itself.
+        """
+        await self.message_sent(
+            MessageSentEvent(
+                segments=[
+                    MarkdownSegment(
+                        data={
+                            "text": (
+                                f"[Connect {event.label}]({event.verification_uri})\n\n"
+                                f"Code: `{event.user_code}`\n\n"
+                                f"After {event.label} accepts the code, return here "
+                                "and tell me to confirm."
+                            )
+                        }
+                    )
+                ]
+            )
+        )
 
 
 class TimelineFeeler(Protocol):

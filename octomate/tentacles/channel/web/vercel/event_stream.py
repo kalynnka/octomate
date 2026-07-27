@@ -13,6 +13,7 @@ Octomate-specific ones onto the Vercel protocol:
 - a send capability's ``MessageSentEvent`` streams as its own closed text block,
 - todo events render as a markdown text note (the stock dev UI does not render
   custom ``data-*`` parts, so they would otherwise be invisible),
+- a pending OAuth authorization renders as its link and code in text,
 - a suspended run's deferred-action batch renders as a markdown text summary,
 - everything else (thinking, tool calls, the run result) passes to the stock
   handlers.
@@ -42,9 +43,10 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     TextStartChunk,
 )
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
+    OAuthAuthorizationEvent,
     ResultSegmentEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
@@ -53,7 +55,7 @@ from octomate.capabilities.events import (
     TodoUpdatedEvent,
 )
 from octomate.capabilities.gateway import SCHEME_TOOL_NAME, WHISPER_TOOL_NAME
-from octomate.capabilities.react import ReactStreamEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.tentacles.agent.inkling.base import InklingOutput
 
 
@@ -114,6 +116,15 @@ class VercelEventStream(VercelAIEventStream[None, InklingOutput]):
                 if self.reply_id is not None:
                     text = f"\n\n{text}"
                 async for chunk in self.reply_delta(text):
+                    yield chunk
+            case OAuthAuthorizationEvent():
+                # A pending authorization the user must complete; the dev UI has no
+                # card to put a button on, so it renders the link and code as text.
+                note = (
+                    f"\n\n**Connect {event.label}**: {event.verification_uri} — "
+                    f"code `{event.user_code}`"
+                )
+                async for chunk in self.reply_delta(note):
                     yield chunk
             case ActionBatchEvent():
                 lines = ["\n\n**Pending input** _(noop in dev UI)_"]
