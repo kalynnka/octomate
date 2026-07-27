@@ -84,6 +84,13 @@ class SlackApprovalActionValue(TypedDict):
     decisions: dict[UUID, bool]
 
 
+class SlackOAuthActionValue(TypedDict):
+    connector_id: str
+    label: str
+    verification_uri: str
+    user_code: str
+
+
 class SlackQuestionActionValue(TypedDict):
     batch_id: UUID
     questions: Annotated[list[DeferredQuestion], Field(min_length=1)]
@@ -94,6 +101,11 @@ class SlackQuestionActionValue(TypedDict):
 class SlackApprovalBlockAction(TypedDict):
     action_id: NonEmptyStr
     value: Json[SlackApprovalActionValue]
+
+
+class SlackOAuthBlockAction(TypedDict):
+    action_id: NonEmptyStr
+    value: Json[SlackOAuthActionValue]
 
 
 class SlackQuestionBlockAction(TypedDict):
@@ -124,6 +136,13 @@ class SlackQuestionState(TypedDict):
 
 class SlackApprovalActionBody(TypedDict):
     actions: Annotated[tuple[SlackApprovalBlockAction, ...], Field(min_length=1)]
+    user: SlackActionUser
+    channel: SlackActionChannel
+    message: SlackActionMessage
+
+
+class SlackOAuthActionBody(TypedDict):
+    actions: Annotated[tuple[SlackOAuthBlockAction, ...], Field(min_length=1)]
     user: SlackActionUser
     channel: SlackActionChannel
     message: SlackActionMessage

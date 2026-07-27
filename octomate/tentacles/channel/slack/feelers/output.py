@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
         ApprovalFeeler,
         QuestionFeeler,
     )
+    from octomate.tentacles.channel.feelers.oauth import OAuthFeeler
 from octomate.types.todos import TodoStatus
 
 DEFAULT_PLAN_TITLE = "Working..."
@@ -131,6 +132,7 @@ class SlackTimelineState(TimelineState):
     thread_ts: str
     ask_questions: QuestionFeeler
     approvals: ApprovalFeeler
+    oauth: OAuthFeeler
     deferred_actions: DeferredActionManager
     answer_batcher: TextStreamBatcher
     recipient_user_id: str | None = None
@@ -162,7 +164,7 @@ class SlackTimelineState(TimelineState):
     async def open_subagent(
         self,
         activity: SubagentActivity,
-    ) -> AsyncIterator[SlackSubagentTimelineState]:
+    ) -> AsyncGenerator[SlackSubagentTimelineState]:
         state = SlackSubagentTimelineState(
             ink=self.ink,
             activity=activity,
@@ -578,6 +580,7 @@ class SlackTimelineFeeler(TimelineFeeler):
         chromo: SlackChromo,
         ask_questions: QuestionFeeler,
         approvals: ApprovalFeeler,
+        oauth: OAuthFeeler,
         deferred_actions: DeferredActionManager,
         stream_config: ChannelStreamConfig,
     ) -> None:
@@ -585,11 +588,12 @@ class SlackTimelineFeeler(TimelineFeeler):
         self.chromo = chromo
         self.ask_questions = ask_questions
         self.approvals = approvals
+        self.oauth = oauth
         self.deferred_actions = deferred_actions
         self.stream_config = stream_config
 
     @asynccontextmanager
-    async def open(self, address: ChannelAddress) -> AsyncIterator[SlackTimelineState]:
+    async def open(self, address: ChannelAddress) -> AsyncGenerator[SlackTimelineState]:
         context = self.chromo.thread_context(address)
         channel = address.chat_id or address.user_id
         # Streams open lazily: the first thinking/tool event starts a plan, the
@@ -602,6 +606,7 @@ class SlackTimelineFeeler(TimelineFeeler):
             thread_ts=context.thread_ts,
             ask_questions=self.ask_questions,
             approvals=self.approvals,
+            oauth=self.oauth,
             deferred_actions=self.deferred_actions,
             answer_batcher=TextStreamBatcher(
                 flush_interval=self.stream_config.flush_interval,
