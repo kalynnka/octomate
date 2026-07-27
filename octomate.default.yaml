@@ -166,19 +166,31 @@ octomate:
   #     # or: profile_name: my-profile
   #     # or: api_key: <AWS_BEARER_TOKEN_BEDROCK>
 
-  # Vendor MCP servers connected over Streamable HTTP. GitHub is authorized by
-  # each registered user from Slack; Linear still uses one operator token. Tools
-  # are deferred-loaded until the model discovers them through ToolSearch.
+  # Bare vendor MCP servers connected over Streamable HTTP with one operator token.
+  # Tools are deferred-loaded until the model discovers them through ToolSearch.
   mcp: {}
   # mcp:
+  #   linear:                     # the key names the server: MCP session id and tool prefix
+  #     url: https://mcp.linear.app/mcp
+  #     token: lin_api_xxx        # or OCTOMATE__MCP__LINEAR__TOKEN
+  #     prefix: lin               # tool-name prefix (default: the key above)
+  #     enabled: true             # default: true
+  #     warm_timeout_seconds: 16  # seconds to warm this server (default 16)
+
+  # Per-user OAuth integrations. Unlike a bare mcp server, each registered user
+  # authorizes their own account from Slack and the integration mounts its MCP
+  # server with that user's encrypted token.
+  integrations: {}
+  # integrations:
   #   github:
   #     enabled: true
-  #     client_id: Iv1.xxxxx      # OAuth App with Device Flow enabled
-  #     scopes: [repo, read:org]  # choose the access this deployment needs
-  #     read_only: false          # true => the /readonly endpoint variant
-  #   linear:
-  #     enabled: true
-  #     token: lin_api_xxx        # or OCTOMATE__MCP__LINEAR__TOKEN
+  #     id: github                  # the id the model loads this capability under
+  #     client_id: Iv1.xxxxx        # required — OAuth App with Device Flow enabled
+  #     scopes: [repo, read:org]    # choose the access this deployment needs
+  #     max_cached_users: 32        # warm GitHub sessions kept before LRU close
+  #     mcp:                        # the shared MCP connection config, reused here
+  #       read_only: false          # true => the /readonly endpoint variant
+  #       warm_timeout_seconds: 16  # seconds to warm this server (default 16)
 
   # Encrypts pending device codes and user OAuth tokens in SQLite. Prefer the
   # OCTOMATE__OAUTH__ENCRYPTION_KEY environment variable over YAML. Generate a

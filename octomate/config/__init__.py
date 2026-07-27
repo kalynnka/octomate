@@ -19,8 +19,8 @@ from pydantic_settings import (
 )
 
 from octomate.config.agents import (
-    AgentsConfig,
     AgentRouteModelName,
+    AgentsConfig,
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     CodexConfig,
@@ -39,7 +39,12 @@ from octomate.config.channels import (
     SlackStreamConfig,
 )
 from octomate.config.database import DatabaseSettings, database_settings
-from octomate.config.mcp import GitHubMcpConfig, LinearMcpConfig, McpConfig
+from octomate.config.integrations import (
+    GitHubIntegrationConfig,
+    GitHubMcpConfig,
+    IntegrationsConfig,
+)
+from octomate.config.mcp import McpConfig, McpServerConfig
 from octomate.config.models import (
     AnthropicModelSettings,
     BedrockModelSettings,
@@ -48,6 +53,7 @@ from octomate.config.models import (
     OpenAIModelSettings,
     supported_providers,
 )
+from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig, LogLevel
 from octomate.config.providers import (
     AnthropicProviderConfig,
@@ -69,6 +75,7 @@ class OctomateConfig(BaseSettings):
         yaml_file=("octomate.default.yaml", "octomate.yaml"),
         yaml_config_section="octomate",
         nested_model_default_partial_update=True,
+        hide_input_in_errors=True,
         extra="ignore",
     )
 
@@ -92,7 +99,16 @@ class OctomateConfig(BaseSettings):
     logfire: LogfireConfig = Field(default_factory=LogfireConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
-    mcp: McpConfig = Field(default_factory=McpConfig)
+    mcp: dict[str, McpServerConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Bare vendor MCP servers mounted process-wide, each connected with one "
+            "operator credential. The key names the server: its MCP session id, and "
+            "the prefix its tools are exposed under."
+        ),
+    )
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
+    oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     users: dict[str, UserConfig] = Field(
         default_factory=dict,
         description=(
@@ -100,6 +116,18 @@ class OctomateConfig(BaseSettings):
             "reconciled into the registry at startup."
         ),
     )
+
+    @model_validator(mode="after")
+    def validate_oauth_configuration(self) -> Self:
+        if (
+            self.integrations.github is not None
+            and self.integrations.github.enabled
+            and self.oauth.encryption_key is None
+        ):
+            raise ValueError(
+                "oauth.encryption_key is required when integrations.github is enabled"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_channel_agent_routes(self) -> Self:
@@ -294,8 +322,11 @@ __all__ = [
     "database_settings",
     # mcp
     "McpConfig",
+    "McpServerConfig",
+    # integrations
+    "IntegrationsConfig",
+    "GitHubIntegrationConfig",
     "GitHubMcpConfig",
-    "LinearMcpConfig",
     # users
     "UserConfig",
     # channels

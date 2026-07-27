@@ -4,7 +4,7 @@ from pathlib import Path
 
 from openai_codex import CodexConfig as CodexSdkConfig
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from pydantic_settings import SettingsConfigDict
 
 from octomate.config.observability import LogfireConfig
@@ -14,10 +14,9 @@ from octomate.config import (
     ChannelsConfig,
     ClaudeCodeConfig,
     CodexConfig,
-    GitHubMcpConfig,
+    GitHubIntegrationConfig,
     LarkChannelConfig,
-    LinearMcpConfig,
-    McpConfig,
+    McpServerConfig,
     NapcatChannelConfig,
     OctomateConfig,
     SlackChannelConfig,
@@ -511,42 +510,110 @@ def test_channel_inkling_routes_must_reference_configured_model() -> None:
     assert error["msg"] == "'openai:gpt-5.2' is not configured in agents.inkling.models"
 
 
-def test_mcp_defaults_to_no_servers() -> None:
-    mcp = McpConfig()
-    assert mcp.github is None
-    assert mcp.linear is None
+def test_each_connection_carries_its_own_warm_timeout() -> None:
+    # Both reuse the shared McpConfig, so the warm timeout is the same field, defaulting
+    # to 16s with no general fallback.
+    assert (
+        McpServerConfig(
+            url="https://mcp.linear.app/mcp", token=SecretStr("lin_x")
+        ).warm_timeout_seconds
+        == 16.0
+    )
+    assert (
+        GitHubIntegrationConfig(client_id="Iv1.test").mcp.warm_timeout_seconds == 16.0
+    )
 
-
-def test_mcp_config_parses_servers() -> None:
     config = OctomateConfig.model_validate(
         {
             "mcp": {
-                "github": {"enabled": True, "token": "ghp_test", "read_only": True},
-                "linear": {"enabled": True, "token": "lin_test"},
-            }
+                "linear": {
+                    "url": "https://mcp.linear.app/mcp",
+                    "token": "lin_x",
+                    "warm_timeout_seconds": 3.0,
+                },
+            },
+            "integrations": {
+                "github": {
+                    "client_id": "Iv1.test",
+                    "mcp": {"warm_timeout_seconds": 7.0},
+                },
+            },
+        }
+    )
+    assert config.mcp["linear"].warm_timeout_seconds == 3.0
+    assert config.integrations.github is not None
+    assert config.integrations.github.mcp.warm_timeout_seconds == 7.0
+    # A partial mcp override still keeps the GitHub endpoint default.
+    assert config.integrations.github.mcp.url == "https://api.githubcopilot.com/mcp/"
+
+
+def test_github_integration_cache_size_default_and_override() -> None:
+    assert GitHubIntegrationConfig(client_id="Iv1.test").max_cached_users == 32
+
+    config = OctomateConfig.model_validate(
+        {"integrations": {"github": {"client_id": "Iv1.test", "max_cached_users": 8}}}
+    )
+    assert config.integrations.github is not None
+    assert config.integrations.github.max_cached_users == 8
+
+
+def test_config_parses_integrations_and_mcp_servers() -> None:
+    config = OctomateConfig.model_validate(
+        {
+            "integrations": {
+                "github": {
+                    "enabled": True,
+                    "client_id": "Iv1.test",
+                    "scopes": ["repo", "read:org"],
+                    "mcp": {"read_only": True},
+                },
+            },
+            "mcp": {
+                "linear": {"url": "https://mcp.linear.app/mcp", "token": "lin_test"},
+            },
+            "oauth": {"encryption_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="},
         }
     )
 
-    assert isinstance(config.mcp.github, GitHubMcpConfig)
-    assert config.mcp.github.enabled is True
-    assert config.mcp.github.read_only is True
-    assert config.mcp.github.token is not None
-    assert config.mcp.github.token.get_secret_value() == "ghp_test"
-    assert config.mcp.github.url == "https://api.githubcopilot.com/mcp/"
+    assert isinstance(config.integrations.github, GitHubIntegrationConfig)
+    assert config.integrations.github.enabled is True
+    assert config.integrations.github.mcp.read_only is True
+    assert config.integrations.github.client_id == "Iv1.test"
+    assert config.integrations.github.scopes == ["repo", "read:org"]
+    assert config.integrations.github.mcp.url == "https://api.githubcopilot.com/mcp/"
 
-    assert isinstance(config.mcp.linear, LinearMcpConfig)
-    assert config.mcp.linear.url == "https://mcp.linear.app/mcp"
+    linear = config.mcp["linear"]
+    assert linear.prefix is None
+    assert linear.enabled is True
+    assert linear.url == "https://mcp.linear.app/mcp"
 
 
-def test_mcp_token_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__ENABLED", "true")
-    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__TOKEN", "ghp_env")
+def test_mcp_server_token_comes_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Structure in YAML, secret in the environment: the key names the env var.
+    monkeypatch.setenv("OCTOMATE__MCP__LINEAR__TOKEN", "lin_from_env")
+
+    config = OctomateConfig.model_validate(
+        {"mcp": {"linear": {"url": "https://mcp.linear.app/mcp"}}}
+    )
+
+    assert config.mcp["linear"].token.get_secret_value() == "lin_from_env"
+
+
+def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OCTOMATE__INTEGRATIONS__GITHUB__ENABLED", "true")
+    monkeypatch.setenv("OCTOMATE__INTEGRATIONS__GITHUB__CLIENT_ID", "Iv1.env")
+    monkeypatch.setenv(
+        "OCTOMATE__OAUTH__ENCRYPTION_KEY",
+        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    )
 
     config = OctomateConfig()
 
-    assert config.mcp.github is not None
-    assert config.mcp.github.token is not None
-    assert config.mcp.github.token.get_secret_value() == "ghp_env"
+    assert config.integrations.github is not None
+    assert config.integrations.github.client_id == "Iv1.env"
+    assert config.oauth.encryption_key is not None
 
 
 def test_channel_stream_config_uses_partial_defaults_from_yaml(
