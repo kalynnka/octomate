@@ -74,7 +74,12 @@ async def github_host_and_profile() -> tuple[
     users = UserManager(
         {
             "alice": UserConfig.model_validate(
-                {"profiles": {"slack": {"channel_user_id": "U1"}}}
+                {
+                    "profiles": {
+                        "slack": {"channel_user_id": "U1"},
+                        "lark": {"channel_user_id": "L1"},
+                    }
+                }
             )
         }
     )
@@ -343,7 +348,7 @@ async def test_connected_slack_user_receives_their_github_mcp_token(
     }
 
 
-async def test_slack_visitor_receives_no_github_connection_tools(
+async def test_visitor_receives_no_github_connection_tools(
     in_memory_engine: AsyncEngine,
 ) -> None:
     host, _profile, github = await github_host_and_profile()
@@ -355,6 +360,25 @@ async def test_slack_visitor_receives_no_github_connection_tools(
     capabilities = await github_tentacle(host, github).user_capabilities(visitor)
 
     assert capabilities == []
+
+
+async def test_registered_user_connects_from_any_channel(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    # The `users:` registry is the authority on who may connect, not the channel
+    # they happen to be speaking from — every channel can present an authorization.
+    host, _profile, github = await github_host_and_profile()
+    async with async_session() as session:
+        lark_profile = await session.one_or_none(
+            UserProfile,
+            expressions=[UserProfile["channel_user_id"] == "L1"],
+        )
+    assert lark_profile is not None
+
+    [capability] = await github_tentacle(host, github).user_capabilities(lark_profile)
+
+    assert isinstance(capability, GitHubCapability)
+    assert capability.access_token is None
 
 
 async def test_cache_reuses_and_warms_a_key_once() -> None:

@@ -100,15 +100,16 @@ class GitHubCapability(AbstractCapability[None]):
     async def for_profile(self, profile: UserProfile) -> GitHubCapability | None:
         """This run's copy of the capability, bound to the user driving the run.
 
-        `None` when GitHub has nothing to offer this profile — a non-Slack channel, or
-        a visitor the deployment never registered. A registered user gets a fresh copy
-        every run, since their connection can appear between two messages; what the
-        copy shares with this instance is everything else, the warm MCP session
-        included — keyed in the cache by the durable user id and rebuilt only when
-        their token changes.
+        `None` when GitHub has nothing to offer this profile — a visitor the
+        deployment never registered. The channel does not matter: the `users:`
+        registry is the authority on who is a real human, and every channel can
+        present an authorization, with a card where the platform has them.
+
+        A registered user gets a fresh copy every run, since their connection can
+        appear between two messages; what the copy shares with this instance is
+        everything else, the warm MCP session included — keyed in the cache by the
+        durable user id and rebuilt only when their token changes.
         """
-        if profile.channel_tentacle_id != "slack":
-            return None
         user = await self.manager.users.owner(profile)
         if user is None:
             return None
