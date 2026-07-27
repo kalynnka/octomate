@@ -37,6 +37,10 @@ OAuthConnector
 - An authorization-code flow must select exactly one callback transport.
 - The connector owns upstream-specific behavior such as endpoints, scopes, token exchange, refresh,
   revocation, account discovery, and MCP authorization-server discovery.
+- A concrete agent capability owns its connector composition and user-facing tools. Application
+  bootstrap builds and registers the GitHub device connector once, then injects that connector
+  into each GitHub capability. A user-bound instance exposes either OAuth tools or an authenticated
+  MCP toolset for the initiating user's agent run without mutating the connector registry.
 - The callback transport owns only how the browser start/callback crosses the deployment boundary.
   It does not own provider tokens or choose the user.
 - The manager owns connector registration and the user authorization boundary.
@@ -81,6 +85,16 @@ driven by the first real connector rather than preserving the obsolete `provider
   from. No operation secret or user selector appears in the tool arguments.
 - Token refresh replaces the entire encrypted token response atomically. Rotating refresh tokens
   must not be lost to concurrent refreshes.
+- MCP credential caches compare the connection subject and normalized granted scopes, not only the
+  access token. A refreshed token may be swapped into a retained mutable `httpx.Auth` object only
+  when both subject and scopes are unchanged. A changed or unknown subject/scope set requires the
+  old MCP session to close and a new toolset to initialize and fetch `tools/list` before use.
+- Pydantic AI caches `MCPToolset.list_tools()` until the server sends
+  `notifications/tools/list_changed` or the session closes. Changing client authentication does not
+  guarantee that notification, while MCP permits tool listings to depend on request authorization.
+  Octomate must therefore invalidate by rebuilding on scope changes rather than reuse a stale tool
+  cache. GitHub remote OAuth may challenge for a missing scope instead of hiding the tool, but that
+  provider behavior is not a safe cross-provider assumption.
 - Visitors and unconnected users never inherit a process-wide/operator credential.
 - Removing a YAML declaration makes retained connections dormant; it does not transfer or silently
   revoke them.
@@ -103,7 +117,8 @@ driven by the first real connector rather than preserving the obsolete `provider
 
 ### 3. GitHub device OAuth — first usable slice implemented
 
-- GitHub connector using device flow.
+- GitHub capability building its device connector for one-time application registration and
+  receiving the registered connector in every run-scoped instance.
 - Durable encrypted operation and connection storage, with the schema generated from this concrete
   lifecycle rather than provider/MCP inheritance.
 - Owner-bound device-code presentation and explicit confirmation from Slack.
@@ -121,8 +136,14 @@ driven by the first real connector rather than preserving the obsolete `provider
 ### 5. MCP OAuth — GitHub path implemented
 
 - MCP connector using authorization-server discovery and the appropriate injected flow/transport.
-- Per-user token storage and per-run GitHub MCP toolsets are implemented. The configured GitHub API
-  token has been removed; an ownerless visitor receives neither OAuth nor MCP tools.
+- Per-user token storage and per-run GitHub capabilities are implemented. A bound capability exposes
+  OAuth tools before connection and the authenticated GitHub MCP toolset afterward. The configured
+  capability caches and keeps one MCP session warm per registered user across agent runs. The
+  configured GitHub API token has been removed; an ownerless visitor receives neither OAuth nor MCP
+  tools.
+- Future refresh support must return a credential snapshot containing the access token, subject,
+  and granted scopes. Same-subject/same-scope refreshes can update the cached toolset's mutable auth
+  object without warm-up; identity or scope changes replace and re-warm the toolset.
 - General MCP authorization-server discovery remains for later connectors.
 - Dynamic client registration only when advertised and required.
 
@@ -134,4 +155,6 @@ driven by the first real connector rather than preserving the obsolete `provider
 - No public manager method accepts a target user id or username.
 - Authorization-code provider state is staged behind a UUID-only user-facing URI.
 - GitHub uses the generic manager without adding GitHub branches to `OAuthManager`.
+- A token-only refresh with unchanged subject and scopes preserves the warm MCP session; a subject
+  or scope change produces a new authorization-aware tool listing.
 - A later MCP connector can reuse the same manager without being modeled as a provider subclass.
