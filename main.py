@@ -6,22 +6,23 @@ import logfire
 import uvicorn
 from fastapi import FastAPI
 from pydantic import SecretStr
+from pydantic_ai import AgentCapability
 
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
+from octomate.capabilities.github import GitHubCapability
 from octomate.capabilities.history import HistoryCapability
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
+from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
+from octomate.oauth.github import GitHubDeviceOAuthFlow
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.codex import CodexTentacle
-from octomate.tentacles.agent.inkling import (
-    InklingTentacle,
-    build_mcp_toolsets,
-)
+from octomate.tentacles.agent.inkling import InklingTentacle, build_mcp_toolsets
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.base import TentacleLogFormatter
 from octomate.tentacles.channel.lark import LarkTentacle
@@ -88,7 +89,52 @@ def create_app() -> FastAPI:
     if config.logfire.instrument.sqlalchemy:
         logfire.instrument_sqlalchemy(engine=db_engine())
 
-    octomate = Octomate(users=UserManager(config.users))
+    octomate = Octomate(
+        users=UserManager(config.users),
+        oauth_encryption_key=config.oauth.encryption_key,
+    )
+
+    inkling_capabilities: list[AgentCapability[None]] = [
+        AskCapability(),
+        SendCapability(),
+        TodoCapability(
+            id="todos",
+            description="Persisted task list for planning and tracking "
+            "multi-step work.",
+            defer_loading=True,
+        ),
+        HistoryCapability(
+            octomate.conversations,
+            octomate.thread_manager,
+            id="history",
+            description="Search and page this thread's chat ledger and "
+            "this conversation's model ledger.",
+            defer_loading=True,
+        ),
+    ]
+    # One capability for the whole deployment; each run mounts its own copy of it,
+    # bound to the user that run is answering.
+    if (
+        github_config := config.integrations.github
+    ) is not None and github_config.enabled:
+        connector = OAuthConnector(
+            id=github_config.id,
+            flow=GitHubDeviceOAuthFlow(
+                client_id=github_config.client_id,
+                scopes=github_config.scopes,
+            ),
+        )
+        octomate.oauth.register(connector)
+        inkling_capabilities.append(
+            GitHubCapability(
+                manager=octomate.oauth,
+                connector=connector,
+                mcp_config=github_config.mcp,
+                max_cached_users=github_config.max_cached_users,
+                id=github_config.id,
+                defer_loading=True,
+            )
+        )
 
     console_handler = logging.StreamHandler()
     # Tint the level + each tentacle's header, but only on a real terminal so the
@@ -126,30 +172,8 @@ def create_app() -> FastAPI:
                 for model in config.agents.inkling.models
             },
             claims=config.agents.inkling.claims,
-            toolsets=[
-                *build_mcp_toolsets(config.mcp),
-            ],
-            capabilities=[
-                AskCapability(),
-                SendCapability(),
-                # Deferred: the todo/history tools stay out of the schema until
-                # the model loads the capability, keeping the everyday tool
-                # surface small.
-                TodoCapability(
-                    id="todos",
-                    description="Persisted task list for planning and tracking "
-                    "multi-step work.",
-                    defer_loading=True,
-                ),
-                HistoryCapability(
-                    octomate.conversations,
-                    octomate.thread_manager,
-                    id="history",
-                    description="Search and page this thread's chat ledger and "
-                    "this conversation's model ledger.",
-                    defer_loading=True,
-                ),
-            ],
+            toolsets=build_mcp_toolsets(config.mcp),
+            capabilities=inkling_capabilities,
             system_prompt=SYSTEM_PROMPT,
         ),
     )
