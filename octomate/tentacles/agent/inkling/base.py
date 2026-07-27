@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from contextlib import AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Self, TypeAlias, overload
 
@@ -31,13 +31,14 @@ from pydantic_ai.settings import ModelSettings, ThinkingEffort, merge_model_sett
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.capabilities.agent import Agent
-from octomate.capabilities.deferred import (
+from octomate.capabilities import UserScopedCapability
+from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.deferred import (
     DeclineResolver,
     DeferredResolver,
     DeferredSuspender,
 )
-from octomate.capabilities.react import (
+from octomate.capabilities.harness.react import (
     ReactDeps,
     ReactEventStream,
     ReactState,
@@ -50,6 +51,7 @@ from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import Claim
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import inkling_logfire
 from octomate.tentacles.agent.base import (
     AgentSpecInput,
@@ -75,7 +77,13 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     """Inkling agent wrapper with pydantic-ai-style run entrypoints."""
 
     agent: Agent[None, InklingOutput] = field(init=False)
+    # Held on the tentacle, not baked into the Agent: every run decides what to
+    # mount — an accomplice run gets none of them.
     capabilities: list[AgentCapability[None]] = field(init=False)
+    # The mounted capabilities that serve a run through a per-user copy instead of
+    # themselves; held apart from `capabilities` so a run never mounts the unbound
+    # original beside the copy.
+    user_scoped_capabilities: list[UserScopedCapability[None]] = field(init=False)
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
 
@@ -105,9 +113,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.models = dict(models or {})
-        # Held on the tentacle, not baked into the Agent: every run decides what
-        # to mount — an accomplice run gets none of them.
-        self.capabilities = list(capabilities or [])
+        self.capabilities = [
+            capability
+            for capability in (capabilities or [])
+            if not isinstance(capability, UserScopedCapability)
+        ]
+        self.user_scoped_capabilities = [
+            capability
+            for capability in (capabilities or [])
+            if isinstance(capability, UserScopedCapability)
+        ]
         if agent is None:
             default_model = next(iter(self.models.values()), None)
             if default_model is None:
@@ -131,10 +146,67 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self._exit_stack = AsyncExitStack()
         self.toolsets = list(toolsets or [])
 
+    async def user_capabilities(
+        self,
+        profile: UserProfile,
+    ) -> list[AgentCapability[None]]:
+        bound = [
+            await capability.for_profile(profile)
+            for capability in self.user_scoped_capabilities
+        ]
+        return [capability for capability in bound if capability is not None]
+
     async def __aenter__(self) -> Self:
-        # Enter the wrapped pydantic-ai agent once for the tentacle's lifetime so
-        # its MCP toolsets open + `initialize` a single warm session, reused across
-        # every react-graph run instead of reconnecting per turn.
+        # A capability holding warm resources of its own (the per-user GitHub MCP
+        # sessions) opens for the tentacle's lifetime, so the copies serving individual
+        # runs find them warm.
+        for capability in (*self.capabilities, *self.user_scoped_capabilities):
+            if isinstance(capability, AbstractAsyncContextManager):
+                await self._exit_stack.enter_async_context(capability)
+        # Warm each operator MCP toolset. Opening the session and priming `tools/list`
+        # here (the first run would otherwise block on a multi-second listing) keeps a
+        # warm reference for the tentacle's lifetime; the agent enter below reuses it
+        # (reference-counted). Each server's own connect budget rides on its toolset as
+        # `init_timeout`; this bound only keeps one stuck server from hanging startup.
+        servers: list[MCPToolset[None]] = []
+
+        def collect(candidate: AbstractToolset[None]) -> None:
+            if isinstance(candidate, MCPToolset):
+                servers.append(candidate)
+
+        for toolset in self.toolsets:
+            servers.clear()
+            toolset.apply(collect)
+            if not servers:
+                continue
+            try:
+                with inkling_logfire.span(
+                    "inkling.warm_mcp_tools",
+                    mcp_servers=[server.id for server in servers],
+                ):
+                    await asyncio.wait_for(
+                        self._exit_stack.enter_async_context(toolset),
+                        timeout=MCP_WARM_TIMEOUT,
+                    )
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *(server.list_tools() for server in servers),
+                            return_exceptions=True,
+                        ),
+                        timeout=MCP_WARM_TIMEOUT,
+                    )
+            except Exception:
+                logger.warning(
+                    "Agent %s: failed to warm MCP server(s) %s at startup; "
+                    "runs will reconnect on demand",
+                    self.id,
+                    [server.id for server in servers],
+                    exc_info=True,
+                )
+        # Enter the wrapped agent once for the tentacle's lifetime so any toolset it
+        # holds that was not warmed above (e.g. one passed directly rather than via
+        # `toolsets=`) opens too and the agent stays warm; already-open servers
+        # refcount instantly.
         try:
             await asyncio.wait_for(
                 self._exit_stack.enter_async_context(self.agent),
@@ -142,44 +214,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             )
         except Exception:
             logger.warning(
-                "Agent %s: failed to warm agent/MCP sessions at startup "
+                "Agent %s: failed to warm agent session at startup "
                 "(a stuck MCP server times out here); runs will reconnect on demand",
                 self.id,
                 exc_info=True,
             )
-            return self
-        # Opening the session does not fetch each MCP server's tool list, so the
-        # first run would otherwise block on a multi-second `tools/list` before the
-        # first token. Prime the per-toolset caches now (concurrently), off the
-        # request path. Priming is best-effort too.
-        mcp_servers: list[MCPToolset[None]] = []
-
-        def collect(toolset: AbstractToolset[None]) -> None:
-            if isinstance(toolset, MCPToolset):
-                mcp_servers.append(toolset)
-
-        for toolset in self.toolsets:
-            toolset.apply(collect)
-        if mcp_servers:
-            try:
-                with inkling_logfire.span(
-                    "inkling.warm_mcp_tools",
-                    mcp_servers=[server.id for server in mcp_servers],
-                ):
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            *(server.list_tools() for server in mcp_servers),
-                            return_exceptions=True,
-                        ),
-                        timeout=MCP_WARM_TIMEOUT,
-                    )
-            except Exception:
-                logger.warning(
-                    "Agent %s: failed to prime MCP tool lists at startup; "
-                    "runs will list on demand",
-                    self.id,
-                    exc_info=True,
-                )
         return self
 
     async def __aexit__(self, *exc: object) -> None:

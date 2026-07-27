@@ -28,10 +28,11 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.capabilities.react import ReactEventStream
+from octomate.capabilities.harness.react import ReactEventStream
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.user import UserProfile
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.schemas.triage import AgentRoute, Claim
@@ -39,7 +40,7 @@ from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
-    from octomate.capabilities.deferred import DeferredSuspender
+    from octomate.capabilities.harness.deferred import DeferredSuspender
 
 # The tentacle's output type is whatever its builder's agent produces (a deferring
 # agent includes DeferredToolRequests in it); run-level output_type overrides are
@@ -85,6 +86,13 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     pending: dict[uuid.UUID, asyncio.Future[DeferredActionBatchResponse]]
 
     models: dict[str, Model | str]
+
+    async def user_capabilities(
+        self,
+        profile: UserProfile,
+    ) -> list[AgentCapability[AgentDepsT]]:
+        """Build capabilities whose credentials belong to this run's user."""
+        return []
 
     @overload
     async def run(

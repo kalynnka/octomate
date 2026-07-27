@@ -17,7 +17,7 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 # deprecated for v2; pinned <2 in pyproject.toml until then.
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
-from octomate.capabilities.events import StreamEvents
+from octomate.capabilities.harness.events import StreamEvents
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
@@ -29,6 +29,7 @@ from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import Thread
+from octomate.schemas.user import UserProfile
 from octomate.schemas.triage import (
     AgentRoute,
     ResponseTargetMode,
@@ -104,6 +105,7 @@ class ReflexState:
     claim_handoff: bool = False
     handoff_from_agent_tentacle_id: str | None = None
     user_prompt: str | Sequence[UserContent] | None = None
+    user_profile: UserProfile | None = None
 
 
 @dataclass
@@ -274,6 +276,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         ctx.state.source_target = source_target
         ctx.state.thread = await ctx.deps.thread_manager.ensure(address)
         ctx.state.trigger_thread_message_id = self.signal.trigger_thread_message_id
+        ctx.state.user_profile = self.signal.messages[-1].sender
 
         user_prompt = "\n\n".join(str(event) for event in self.signal.messages).strip()
         ctx.state.user_prompt = user_prompt
@@ -537,6 +540,11 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             thread_id=thread_id,
             conversation_address=target_address,
         )
+        user_capabilities = (
+            await agent.user_capabilities(state.user_profile)
+            if state.user_profile is not None
+            else []
+        )
 
         deferred_results = self.teleport_results
         if self.resume_batch_id is not None:
@@ -588,7 +596,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         effort=decision.effort,
                         deferred_tool_results=deferred_results,
                         deferred_suspender=suspender,
-                        capabilities=[gate],
+                        capabilities=[gate, *user_capabilities],
                     ) as stream:
                         async for event in stream:
                             if isinstance(event, AgentRunResultEvent):
@@ -653,7 +661,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     effort=decision.effort,
                     deferred_tool_results=deferred_results,
                     deferred_suspender=suspender,
-                    capabilities=[gate],
+                    capabilities=[gate, *user_capabilities],
                 )
                 run_output: ChannelOutput = run_result.output
                 if isinstance(run_output, str):

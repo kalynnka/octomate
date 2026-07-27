@@ -38,9 +38,10 @@ octomate_package.__path__ = [str(REPO_ROOT / "octomate")]
 sys.modules.setdefault("octomate", octomate_package)
 
 from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.base import Octomate
-from octomate.capabilities.agent import Agent
+from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.gateway import SCHEME_TOOL_NAME, GatewayCapability
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
@@ -143,7 +144,7 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mcp",
         action="store_true",
-        help="Attach the GitHub/Linear MCP toolsets (GitHub forced read-only).",
+        help="Attach the operator MCP toolsets configured under `mcp`.",
     )
     parser.add_argument(
         "--run-name",
@@ -182,16 +183,9 @@ async def capture(
     conversations = ConversationManager()
     threads = ThreadManager()
     registry = ProviderRegistry(config.providers)
-    toolsets = []
+    toolsets: list[AbstractToolset[None]] = []
     if with_mcp:
-        # Force GitHub read-only for captures so a recording can never mutate a
-        # real repo, regardless of the operator's octomate.yaml setting.
-        mcp = config.mcp
-        if mcp.github is not None:
-            mcp = mcp.model_copy(
-                update={"github": mcp.github.model_copy(update={"read_only": True})}
-            )
-        toolsets = [*build_mcp_toolsets(mcp)]
+        toolsets = build_mcp_toolsets(config.mcp)
     model_config = config.agents.inkling.default_model
     agent: Agent[None, InklingOutput] = Agent(
         registry.build_model(model_config),
