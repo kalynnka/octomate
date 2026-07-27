@@ -24,7 +24,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import FunctionToolResultEvent, ToolReturn, ToolReturnPart
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
-from octomate.capabilities.events import MessageSentEvent
+from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 

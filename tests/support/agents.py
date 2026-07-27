@@ -39,9 +39,9 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate import Octomate
-from octomate.capabilities.agent import Agent
-from octomate.capabilities.deferred import DeferredSuspender
-from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
+from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.deferred import DeferredSuspender
+from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.capabilities.gateway import (
     SUMMON_TOOL_NAME,
     TELEPORT_KIND,

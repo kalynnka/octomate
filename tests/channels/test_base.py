@@ -20,7 +20,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.result import FinalResult
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     StreamEvents,
     TodoCompletedEvent,

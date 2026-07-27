@@ -33,7 +33,7 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     ToolOutputAvailableChunk,
 )
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     StreamEvents,
     SubagentActivity,
     SubagentActivityStatus,

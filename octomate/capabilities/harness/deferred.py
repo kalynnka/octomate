@@ -19,7 +19,7 @@ from typing import Protocol
 from pydantic_ai import ToolDenied
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
-from octomate.capabilities.events import ActionBatchEvent
+from octomate.capabilities.harness.events import ActionBatchEvent
 
 
 class DeferredResolver(Protocol):

@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from watchfiles import awatch
 
-from octomate.capabilities.events import StreamEvents
+from octomate.capabilities.harness.events import StreamEvents
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.base import sqlalchemy_materia

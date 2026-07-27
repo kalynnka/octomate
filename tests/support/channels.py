@@ -27,12 +27,12 @@ from pydantic_ai.messages import (
 from typing_extensions import NotRequired, TypedDict
 
 from octomate import Octomate
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     SubagentActivity,
     SubagentActivityStatus,
     TodoEvent,
 )
-from octomate.capabilities.react import ReactStreamEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal

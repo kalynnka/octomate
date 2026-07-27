@@ -31,14 +31,14 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     ToolOutputAvailableChunk,
 )
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
     ResultSegmentEvent,
     SubagentActivity,
     TodoCreatedEvent,
 )
-from octomate.capabilities.react import ReactStreamEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.segments import MarkdownSegment

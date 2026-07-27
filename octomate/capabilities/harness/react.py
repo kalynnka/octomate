@@ -34,9 +34,9 @@ from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 from typing_extensions import TypeAliasType
 
-from octomate.capabilities.agent import Agent
-from octomate.capabilities.deferred import DeferredResolver, DeferredSuspender
-from octomate.capabilities.events import StreamEvents
+from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.deferred import DeferredResolver, DeferredSuspender
+from octomate.capabilities.harness.events import StreamEvents
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.conversation import ChannelAddress, Conversation

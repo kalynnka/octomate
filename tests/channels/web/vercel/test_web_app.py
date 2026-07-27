@@ -16,7 +16,7 @@ from pydantic_ai.ui.vercel_ai.request_types import (
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.agent import Agent
+from octomate.capabilities.harness.agent import Agent
 from octomate.config.channels import AgentModelConfig, VercelChannelConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment

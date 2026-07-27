@@ -59,7 +59,7 @@ from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import AgentDepsT, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     StreamEvents,
 )

@@ -13,7 +13,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.agent import Agent
+from octomate.capabilities.harness.agent import Agent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.database import async_session
 from octomate.schemas.awakes import UserMessageSignal

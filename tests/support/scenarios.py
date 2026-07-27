@@ -2,7 +2,7 @@
 
 Each factory returns the event list a real agent run would stream — the
 `StreamEvents` dialect `ChannelTentacle.consume` accepts (see
-octomate/capabilities/events.py). The same scripts back the mocked channel
+octomate/capabilities/harness/events.py). The same scripts back the mocked channel
 tests, the `@trigger` live-replay tests, and `FakeAgent`'s reception output,
 so the whole suite speaks one event dialect.
 """
@@ -33,7 +33,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
     ResultSegmentEvent,
@@ -43,7 +43,7 @@ from octomate.capabilities.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
-from octomate.capabilities.react import ReactStreamEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,

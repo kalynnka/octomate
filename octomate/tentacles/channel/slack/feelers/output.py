@@ -18,7 +18,7 @@ from pydantic_ai.messages import (
 from slack_sdk.models.messages.chunk import Chunk, PlanUpdateChunk, TaskUpdateChunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     MessageSentEvent,
     SubagentActivity,
     SubagentActivityStatus,

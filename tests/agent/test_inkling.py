@@ -16,10 +16,10 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
-from octomate.capabilities.deferred import DeclineResolver
-from octomate.capabilities.agent import Agent
-from octomate.capabilities.events import ActionBatchEvent
-from octomate.capabilities.react import ReactStreamEvent
+from octomate.capabilities.harness.deferred import DeclineResolver
+from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.conversation import ChannelAddress

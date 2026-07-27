@@ -19,8 +19,8 @@ from pydantic_ai.models.test import TestModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.agent import Agent
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.events import (
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,

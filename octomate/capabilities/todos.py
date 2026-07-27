@@ -23,7 +23,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import FunctionToolResultEvent, ToolReturn, ToolReturnPart
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,

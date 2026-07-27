@@ -16,7 +16,7 @@ from pydantic import JsonValue
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.events import StreamEvents
+from octomate.capabilities.harness.events import StreamEvents
 from octomate.database import async_session
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun

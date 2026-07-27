@@ -53,8 +53,8 @@ from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.deferred import DeferredSuspender
-from octomate.capabilities.react import ReactEventStream, ReactStreamEvent
+from octomate.capabilities.harness.deferred import DeferredSuspender
+from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import CodexApprovalMode, CodexConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (

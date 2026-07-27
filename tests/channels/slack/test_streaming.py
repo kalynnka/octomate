@@ -29,7 +29,7 @@ from pydantic_ai.result import FinalResult
 from slack_sdk.models.messages.chunk import Chunk, TaskUpdateChunk
 
 from octomate import Octomate
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     StreamEvents,
     SubagentActivity,

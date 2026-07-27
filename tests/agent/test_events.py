@@ -15,7 +15,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.todos import Todo
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     DisplayEvent,
     ResultSegmentEvent,

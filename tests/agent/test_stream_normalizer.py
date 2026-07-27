@@ -31,8 +31,8 @@ from pydantic_ai.result import FinalResult
 from pydantic_ai.toolsets import FunctionToolset
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.agent import Agent
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     TodoCreatedEvent,
 )

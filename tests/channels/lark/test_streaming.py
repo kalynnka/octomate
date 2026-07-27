@@ -23,7 +23,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     StreamEvents,
     SubagentActivity,

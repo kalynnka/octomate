@@ -17,8 +17,8 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.agent import Agent
-from octomate.capabilities.events import MessageSentEvent
+from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.segments import MarkdownSegment, MessageSegment

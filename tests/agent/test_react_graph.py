@@ -17,9 +17,9 @@ from pydantic_graph import End, Graph, GraphRunContext
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.agent import Agent
-from octomate.capabilities.events import ActionBatchEvent
-from octomate.capabilities.react import (
+from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.react import (
     REACT_NODES,
     ReactDeps,
     ReactState,

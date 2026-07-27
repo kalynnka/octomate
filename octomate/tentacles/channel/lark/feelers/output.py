@@ -20,7 +20,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.events import (
+from octomate.capabilities.harness.events import (
     SubagentActivity,
     SubagentActivityStatus,
     TodoDeletedEvent,

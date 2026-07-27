@@ -19,7 +19,7 @@ One stream, with these event families:
 
 Display and action events are emitted by capabilities (a capability bundles a tool
 + instructions + `wrap_run_event_stream`); the output events are emitted by
-`Agent.stream_events` (see octomate/capabilities/agent.py).
+`Agent.stream_events` (see octomate/capabilities/harness/agent.py).
 
 Serialization (a wire format for dev_ui) is intentionally not modelled here yet:
 the output events are generic, so a single discriminated `TypeAdapter` no longer
@@ -119,6 +119,22 @@ class MessageSentEvent(DisplayEvent):
     segments: list[MessageSegment]
 
 
+class OAuthAuthorizationEvent(DisplayEvent):
+    """An integration is waiting for this user to authorize their own account.
+
+    Carries the authorization itself rather than a rendered message, so each channel
+    presents it as well as it can — a link and code in a plain timeline, a card whose
+    button continues the flow where the platform has one. `connector_id` is what a
+    consumer completes the connection against once the user acts.
+    """
+
+    event_kind: Literal["oauth_authorization"] = "oauth_authorization"
+    connector_id: str
+    label: str
+    verification_uri: str
+    user_code: str
+
+
 class ActionBatchEvent(BaseModel):
     """A persisted batch of deferred actions presented as one unit; the run
     suspends until the user replies.
@@ -143,6 +159,7 @@ StreamEvents = TypeAliasType(
     | FinalResult[OutputT]
     | TodoEvent
     | MessageSentEvent
+    | OAuthAuthorizationEvent
     | ActionBatchEvent,
     type_params=(OutputT,),
 )
