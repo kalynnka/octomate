@@ -5,6 +5,10 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextAskQuestionFeeler,
     QuestionFeeler,
 )
+from octomate.tentacles.channel.feelers.oauth import (
+    OAuthFeeler,
+    PlainTextOAuthFeeler,
+)
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
     IMMessageID,
@@ -17,7 +21,9 @@ __all__ = [
     "Feelers",
     "IMMessageID",
     "MarkdownFeeler",
+    "OAuthFeeler",
     "PlainTextApprovalFeeler",
+    "PlainTextOAuthFeeler",
     "PlainTextAskQuestionFeeler",
     "QuestionFeeler",
 ]

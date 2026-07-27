@@ -18,6 +18,7 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
+from octomate.tentacles.channel.feelers.oauth import PlainTextOAuthFeeler
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
     DefaultSegmentsFeeler,
@@ -225,6 +226,7 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
     markdown_feeler = DefaultMarkdownFeeler(ink=ink, chromo=chromo)
     approvals = PlainTextApprovalFeeler(markdown_feeler)
     ask_questions = PlainTextAskQuestionFeeler(markdown_feeler)
+    oauth = PlainTextOAuthFeeler(markdown_feeler)
     channel.feelers = Feelers(
         markdown=markdown_feeler,
         timeline=DefaultTimelineFeeler(
@@ -232,11 +234,13 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
             chromo=chromo,
             ask_questions=ask_questions,
             approvals=approvals,
+            oauth=oauth,
             deferred_actions=DeferredActionManager(),
         ),
         segments=DefaultSegmentsFeeler(ink=ink, chromo=chromo),
         approvals=approvals,
         ask_questions=ask_questions,
+        oauth=oauth,
     )
     address = ChannelAddress(
         channel_tentacle_id="napcat",

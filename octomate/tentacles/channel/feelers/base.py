@@ -15,6 +15,7 @@ from octomate.tentacles.channel.feelers.deferred import (
     ApprovalFeeler,
     QuestionFeeler,
 )
+from octomate.tentacles.channel.feelers.oauth import OAuthFeeler
 from octomate.tentacles.channel.feelers.output import (
     MarkdownFeeler,
     SegmentsFeeler,
@@ -34,6 +35,7 @@ class Feelers:
     segments: SegmentsFeeler
     approvals: ApprovalFeeler
     ask_questions: QuestionFeeler
+    oauth: OAuthFeeler
 
     async def present_actions(
         self,

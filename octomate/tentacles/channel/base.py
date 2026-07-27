@@ -31,9 +31,9 @@ from uuid_utils import uuid7
 from octomate.config import ChannelConfig
 from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel.feelers.base import Feelers
@@ -41,6 +41,7 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
+from octomate.tentacles.channel.feelers.oauth import PlainTextOAuthFeeler
 from octomate.tentacles.channel.feelers.output import (
     DefaultMarkdownFeeler,
     DefaultSegmentsFeeler,
@@ -164,23 +165,26 @@ class ChannelTentacle(
         self.user_profiles: dict[str, UserProfile] = {}
 
         markdown_feeler = DefaultMarkdownFeeler(ink=self.ink, chromo=self.chromo)
-        approvals = PlainTextApprovalFeeler(markdown_feeler)
-        ask_questions = PlainTextAskQuestionFeeler(markdown_feeler)
+        approvals_feeler = PlainTextApprovalFeeler(markdown_feeler)
+        questions_feeler = PlainTextAskQuestionFeeler(markdown_feeler)
+        oauth_feeler = PlainTextOAuthFeeler(markdown_feeler)
 
         self.feelers = Feelers(
             markdown=markdown_feeler,
             timeline=DefaultTimelineFeeler[RawT, MessageT](
                 ink=self.ink,
                 chromo=self.chromo,
-                ask_questions=ask_questions,
-                approvals=approvals,
+                ask_questions=questions_feeler,
+                approvals=approvals_feeler,
+                oauth=oauth_feeler,
                 deferred_actions=self.octomate.deferred_actions,
             ),
             segments=DefaultSegmentsFeeler[RawT, MessageT](
                 ink=self.ink, chromo=self.chromo
             ),
-            approvals=approvals,
-            ask_questions=ask_questions,
+            approvals=approvals_feeler,
+            ask_questions=questions_feeler,
+            oauth=oauth_feeler,
         )
 
     async def probe(self) -> None:
@@ -268,7 +272,8 @@ class ChannelTentacle(
                     )
                 except Exception:
                     logger.warning(
-                        "Channel %s: failed to deliver error notice", self.id,
+                        "Channel %s: failed to deliver error notice",
+                        self.id,
                         exc_info=True,
                     )
 

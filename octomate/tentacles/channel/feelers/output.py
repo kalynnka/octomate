@@ -4,7 +4,13 @@ import asyncio
 import logging
 import re
 import time
-from collections.abc import AsyncIterator, Awaitable, Iterable, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Iterable,
+    Sequence,
+)
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import (
@@ -67,12 +73,7 @@ from octomate.capabilities.gateway import (
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
-from octomate.schemas.segments import (
-    MarkdownSegment,
-    MessageSegment,
-    ReplySegment,
-    Segment,
-)
+from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
 from octomate.schemas.todos import Todo
 from octomate.telemetry import channel_logfire
 from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
         ApprovalFeeler,
         QuestionFeeler,
     )
+    from octomate.tentacles.channel.feelers.oauth import OAuthFeeler
 
 logger = logging.getLogger(__name__)
 
@@ -600,6 +602,7 @@ class TimelineState:
     address: ChannelAddress
     ask_questions: QuestionFeeler
     approvals: ApprovalFeeler
+    oauth: OAuthFeeler
     deferred_actions: DeferredActionManager
     subagent_timelines: dict[str, OpenSubagentTimeline] | None = None
 
@@ -607,7 +610,7 @@ class TimelineState:
     async def open_subagent(
         self,
         activity: SubagentActivity,
-    ) -> AsyncIterator[SubagentTimelineState]:
+    ) -> AsyncGenerator[SubagentTimelineState]:
         """Ignore child activity when this timeline has no streaming renderer."""
         yield SubagentTimelineState()
 
@@ -900,27 +903,12 @@ class TimelineState:
     async def oauth_authorization(self, event: OAuthAuthorizationEvent) -> None:
         """An integration is waiting for this user to authorize it.
 
-        The link and the one-time code reach the user here rather than through the
-        model's reply, which must never repeat the code. This plain-timeline rendering
-        asks the user to come back and say so; a channel whose platform can carry a
-        button overrides this and continues the flow from the card itself.
+        Rotates the open entry first: the authorization goes out as its own message
+        — a card where the platform has them — so whatever streamed before it stays
+        above rather than merging into it.
         """
-        await self.message_sent(
-            MessageSentEvent(
-                segments=[
-                    MarkdownSegment(
-                        data={
-                            "text": (
-                                f"[Connect {event.label}]({event.verification_uri})\n\n"
-                                f"Code: `{event.user_code}`\n\n"
-                                f"After {event.label} accepts the code, return here "
-                                "and tell me to confirm."
-                            )
-                        }
-                    )
-                ]
-            )
-        )
+        await self.begin_entry()
+        await self.oauth.present(self.address, event)
 
 
 class TimelineFeeler(Protocol):
@@ -1092,6 +1080,7 @@ class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
     address: ChannelAddress
     ask_questions: QuestionFeeler
     approvals: ApprovalFeeler
+    oauth: OAuthFeeler
     deferred_actions: DeferredActionManager
     parts: list[str] = field(default_factory=list)
     todos: dict[str, Todo] = field(default_factory=dict)
@@ -1154,24 +1143,27 @@ class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
         chromo: Chromo[RawT, MessageT],
         ask_questions: QuestionFeeler,
         approvals: ApprovalFeeler,
+        oauth: OAuthFeeler,
         deferred_actions: DeferredActionManager,
     ) -> None:
         self.ink = ink
         self.chromo = chromo
         self.ask_questions = ask_questions
         self.approvals = approvals
+        self.oauth = oauth
         self.deferred_actions = deferred_actions
 
     @asynccontextmanager
     async def open(
         self, address: ChannelAddress
-    ) -> AsyncIterator[DefaultTimelineState[RawT, MessageT]]:
+    ) -> AsyncGenerator[DefaultTimelineState[RawT, MessageT]]:
         state = DefaultTimelineState(
             ink=self.ink,
             chromo=self.chromo,
             address=address,
             ask_questions=self.ask_questions,
             approvals=self.approvals,
+            oauth=self.oauth,
             deferred_actions=self.deferred_actions,
         )
         try:
