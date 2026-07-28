@@ -108,15 +108,24 @@ TodoEvent: TypeAlias = (
 )
 
 
+# Where a `send` call is delivered: this conversation, or the asking user's
+# direct messages. Static — every run offers both and the consumer falls back when
+# `dm` cannot be reached, so the tool block never varies with the address. Threading
+# a send under a particular message is not a destination: lead the segments with a
+# reply segment naming that message, which every send path already honours.
+SendDestination = Literal["here", "dm"]
+
+
 class MessageSentEvent(DisplayEvent):
-    """The send capability emitted `segments` to be delivered to the run's
-    conversation mid-run, without ending the turn. Emit-only: the tool does not
-    touch any channel — the consumer rendering this run's stream (the channel
-    timeline, or the web event stream) renders these segments into the current
-    conversation, the same way it renders a streamed reply."""
+    """The send capability emitted `segments` to be delivered mid-run, without
+    ending the turn. Emit-only: the tool names a destination but touches no
+    channel and resolves no address — the consumer rendering this run's stream
+    (the channel timeline, or the web event stream) does that, because it is the
+    part that already knows where the run is and what the channel can open."""
 
     event_kind: Literal["message_sent"] = "message_sent"
     segments: list[MessageSegment]
+    destination: SendDestination = "here"
 
 
 class OAuthAuthorizationEvent(DisplayEvent):

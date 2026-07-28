@@ -43,7 +43,6 @@ from pydantic_ai.toolsets import AbstractToolset
 from octomate.base import Octomate
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.gateway import COMMISSION_TOOL_NAME, GatewayCapability
-from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.config.agents import AgentRouteModelName
@@ -181,7 +180,10 @@ async def capture(
 ) -> dict[str, int]:
     config = OctomateConfig()
     conversations = ConversationManager()
-    threads = ThreadManager()
+    # The host owns the ledger manager, built around its one identity registry —
+    # every recorded row references a sender's profile from it.
+    host = Octomate(conversations=conversations)
+    threads = host.thread_manager
     registry = ProviderRegistry(config.providers)
     toolsets: list[AbstractToolset[None]] = []
     if with_mcp:
@@ -193,12 +195,11 @@ async def capture(
         name="octomate-inkling",
         output_type=[str, list[MessageSegment], DeferredToolRequests],
         toolsets=toolsets,
-        capabilities=[AskCapability(), TodoCapability(), SendCapability()],
+        capabilities=[AskCapability(), TodoCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
     accomplice: InklingTentacle | None = None
     if any(case.subagents for case in cases):
-        host = Octomate(thread_manager=threads, conversations=conversations)
         accomplice = InklingTentacle(
             "capture-accomplice",
             host,

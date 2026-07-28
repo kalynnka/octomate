@@ -12,24 +12,36 @@ so the instruction opens with plain words for what they actually do:
   and return its report — an ordinary awaited tool call, never a deferral; the caller
   keeps the conversation and the user sees none of it.
 - `whisper`: a quiet follow-up to an accomplice by name; it keeps its own context.
+- `send`: deliver content mid-run without ending the turn, here or in the
+  asking user's direct messages. It lives here rather than in its own capability
+  because naming somewhere other than "here" is a routing decision, and this is
+  where the channel registry and the run's own address already are.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Iterable
+from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
-from pydantic_ai import CallDeferred, RunContext
+from pydantic_ai import AgentStreamEvent, CallDeferred, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.settings import ThinkingEffort
+from pydantic_ai.messages import (
+    FunctionToolResultEvent,
+    ToolReturn,
+    ToolReturnPart,
+)
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
+from octomate.capabilities.harness.events import MessageSentEvent, SendDestination
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.messages import SEND_TOOL_NAME
+from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     AgentRoute,
     SchemeDecision,
@@ -57,8 +69,8 @@ WHISPER_TOOL_NAME = "whisper"
 # wait must not be unbounded (`approval_timeout` is the precedent). Seconds.
 COMMISSION_TIMEOUT = 900.0
 # Why `scheme` has nowhere to land, and the sentence each reason refuses with.
-SchemeBlocker = Literal["no_surface", "already_private", "no_user"]
-SCHEME_REFUSALS: dict[SchemeBlocker, str] = {
+PrivateBlocker = Literal["no_surface", "already_private", "no_user"]
+PRIVATE_REFUSALS: dict[PrivateBlocker, str] = {
     "no_surface": "This channel has no direct messages.",
     "already_private": (
         "This conversation is already that user's direct messages, so there is "
@@ -127,6 +139,25 @@ what you can do unaided; if something is under-specified or unapprovable, state 
 assumption or the blocker in your report and proceed.
 """
 
+SEND_INSTRUCTION = """\
+
+### `send` — deliver something now, without ending your turn
+For a progress update, an intermediate result, or an image/file you produced along
+the way. Anything sent this way is already delivered: your final reply continues from
+there — summarize or extend it, never restate it. If everything worth saying went out
+already, close with a short wrap-up rather than re-sending it.
+
+`destination` is `here` by default. `dm` delivers to the person who asked, privately —
+for something that is *for them*, like a summary sent over; say in your reply that you
+sent it. `dm` hands nothing over: you keep this conversation and nobody picks the work
+up there, so use `scheme` when the work itself should continue privately. Asking for
+`dm` while already in that person's direct messages is fine — it lands here.
+
+To thread onto a specific message in a busy chat, lead with a reply segment whose id
+is that message's `#msg:<id>` handle — it must be the first segment. To ping someone,
+use an `at` segment with their user id.
+"""
+
 COMMISSION_INSTRUCTION = """\
 
 ### `commission` — put another agent to work in the background (you keep the conversation)
@@ -156,7 +187,7 @@ class GatewayCapability(AbstractCapability[None]):
     agents: dict[str, AgentTentacle] | None = None
     conversations: ConversationManager | None = None
     thread_id: uuid.UUID | None = None
-    # Where this run lives; also what `allow_here` and `scheme_blocked_by` read.
+    # Where this run lives; also what `allow_here` and `private_blocked_by` read.
     conversation_address: ChannelAddress | None = None
     commission_timeout: float = COMMISSION_TIMEOUT
     commissioning: bool = field(default=False, init=False)
@@ -181,6 +212,7 @@ class GatewayCapability(AbstractCapability[None]):
         toolset.tool(name=SUMMON_TOOL_NAME, retries=2)(self.summon)
         toolset.tool(name=TELEPORT_TOOL_NAME)(self.teleport)
         toolset.tool(name=SCHEME_TOOL_NAME, retries=2)(self.scheme)
+        toolset.tool(name=SEND_TOOL_NAME, retries=2)(self.send)
         if (
             self.agents is not None
             and self.conversations is not None
@@ -228,7 +260,7 @@ class GatewayCapability(AbstractCapability[None]):
         return not (address.is_group and not address.thread_id)
 
     @property
-    def scheme_blocked_by(self) -> SchemeBlocker | None:
+    def private_blocked_by(self) -> PrivateBlocker | None:
         """Why `scheme` has nowhere to land from this run, or None when it does.
 
         A gate that knows no channels can reach no direct messages."""
@@ -420,13 +452,40 @@ class GatewayCapability(AbstractCapability[None]):
                 cannot see this conversation, so give the goal, the relevant context and
                 decisions, what's been tried, and what a finished result looks like.
         """
-        if (blocker := self.scheme_blocked_by) is not None:
+        if (blocker := self.private_blocked_by) is not None:
             raise ModelRetry(
-                f"{SCHEME_REFUSALS[blocker]} Handle it here, or `summon` "
+                f"{PRIVATE_REFUSALS[blocker]} Handle it here, or `summon` "
                 "into a `thread`."
             )
         self.decision = SchemeDecision(hint=hint, brief=brief)
         return "Taking this to their direct messages."
+
+    async def send(
+        self,
+        ctx: RunContext[None],
+        segments: list[MessageSegment],
+        destination: SendDestination = "here",
+    ) -> ToolReturn[str]:
+        """Deliver these segments immediately, without ending your turn — a progress
+        update, an intermediate result, an image or a file. What you send here is
+        already delivered: do NOT repeat it in your final reply.
+
+        Args:
+            segments: What to deliver.
+            destination: `here` for this conversation (the default), or `dm` to
+                deliver it to the asking user privately — say in your reply that
+                you sent it there.
+        """
+        blocker = self.private_blocked_by if destination == "dm" else None
+        # Being in their direct messages already stops a `scheme` — there is nowhere
+        # to move the conversation to — but never a send: this *is* where it was
+        # asked to go, so it simply lands here.
+        if blocker is not None and blocker != "already_private":
+            raise ModelRetry(f"{PRIVATE_REFUSALS[blocker]} Send it `here` instead.")
+        return ToolReturn(
+            return_value="sent",
+            metadata=[MessageSentEvent(segments=segments, destination=destination)],
+        )
 
     async def commission(
         self,
@@ -539,8 +598,29 @@ class GatewayCapability(AbstractCapability[None]):
 
     def get_instructions(self) -> str:
         if self.commissioning:
-            return GATE_INSTRUCTION + COMMISSION_INSTRUCTION
-        return GATE_INSTRUCTION
+            return GATE_INSTRUCTION + SEND_INSTRUCTION + COMMISSION_INSTRUCTION
+        return GATE_INSTRUCTION + SEND_INSTRUCTION
+
+    async def wrap_run_event_stream(
+        self,
+        ctx: RunContext[None],
+        *,
+        stream: AsyncIterable[AgentStreamEvent],
+    ) -> AsyncIterable[AgentStreamEvent]:
+        """Put each `send`'s stashed `MessageSentEvent` on the run stream,
+        where the consumer rendering this run delivers it."""
+        async for event in stream:
+            yield event
+            if (
+                isinstance(event, FunctionToolResultEvent)
+                and isinstance(event.part, ToolReturnPart)
+                and event.part.tool_name == SEND_TOOL_NAME
+                and isinstance(event.part.metadata, list)
+            ):
+                for sent_event in event.part.metadata:
+                    # One dynamic-boundary cast: pydantic-ai types the stream as
+                    # AgentStreamEvent, consumers match the concrete octomate event.
+                    yield cast(AgentStreamEvent, sent_event)
 
     def get_toolset(self) -> AbstractToolset[None] | None:
         return self.toolset

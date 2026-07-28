@@ -17,7 +17,7 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 # deprecated for v2; pinned <2 in pyproject.toml until then.
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
-from octomate.capabilities.harness.events import StreamEvents
+from octomate.capabilities.harness.events import MessageSentEvent, StreamEvents
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
@@ -606,6 +606,48 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         async for event in stream:
                             if isinstance(event, AgentRunResultEvent):
                                 stream_results.append(event.result)
+                            # A send bound for the asking user's DM: the timeline
+                            # renders one surface and this is another, so deliver it
+                            # here and keep it off the stream. In a private chat
+                            # there is nothing to divert — `dm` and `here` are the
+                            # same place — so it falls through and renders normally.
+                            # The gate refuses a `dm` it cannot reach at all, so what
+                            # is left is this boundary's own check: a
+                            # `MessageSentEvent` is data on a stream, not a promise
+                            # that someone already looked.
+                            if (
+                                isinstance(event, MessageSentEvent)
+                                and event.destination == "dm"
+                                and target_channel.surfaces.direct_message
+                                and target_address.chat_type != "private"
+                                and target_address.user_id
+                            ):
+                                dm = await target_channel.open_dm(
+                                    target_address.user_id
+                                )
+                                if dm is not None:
+                                    # A bare message, with nobody taking the work up
+                                    # there — what separates this from `scheme`. The
+                                    # ledger row touches no conversation's model
+                                    # messages, so the DM's own agent meets it as
+                                    # pending context on its next turn.
+                                    await target_channel.feelers.segments.present(
+                                        dm, event.segments
+                                    )
+                                    await ctx.deps.thread_manager.record_outbound(
+                                        dm,
+                                        agent_tentacle_id=agent.id,
+                                        segments=event.segments,
+                                        sender=target_channel.self_profile,
+                                    )
+                                    continue
+                                logger.warning(
+                                    "Channel %s could not open a DM with %s; "
+                                    "delivering the send to %s",
+                                    target_channel.id,
+                                    target_address.user_id,
+                                    target_address,
+                                )
                             yield event
 
                 try:

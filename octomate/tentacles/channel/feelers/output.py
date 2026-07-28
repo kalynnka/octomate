@@ -443,7 +443,7 @@ def format_stream_value(value: JsonValue, *, max_chars: int = 2000) -> str:
 
 
 # Tools the timeline draws nothing for: ask_questions and final_result render
-# through their own surfaces, and `send_message` renders itself — its
+# through their own surfaces, and `send` renders itself — its
 # `MessageSentEvent` lands as a mid-run message in the timeline. Each name is
 # sourced from its defining module so the literal lives in exactly one place.
 SKIPPED_PLAN_TOOL_NAMES = frozenset(
@@ -892,7 +892,7 @@ class TimelineState:
             self.reply_captured = True
 
     async def message_sent(self, event: MessageSentEvent) -> None:
-        """A `send_message` tool delivered these segments mid-run. Render them as
+        """A `send` tool delivered these segments mid-run. Render them as
         reply content (images/cards land natively via `answer_segment`), then
         `begin_entry()` to rotate the just-rendered notice out as its own message —
         the run continues afterward, so the final reply lands separately."""

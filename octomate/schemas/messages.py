@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 # send call is recognized in run history, so the `send` capability that registers
 # the tool and the feelers projection that renders it share one value without the
 # schema layer importing the capability layer.
-SEND_TOOL_NAME = "send_message"
+SEND_TOOL_NAME = "send"
 
 # `metadata` is reserved on SQLAlchemy's DeclarativeBase, so the ORM column
 # lives on the `meta` Python attribute. arcanus' bless resolves ORM attributes
@@ -140,7 +140,7 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     @model_validator(mode="after")
     def _derive_message_fields(self) -> Self:
         # A response is always assistant-side (the default). Its spoken text is the
-        # answer parts plus anything delivered via send_message; thinking and other
+        # answer parts plus anything delivered via `send`; thinking and other
         # tool calls are excluded.
         if self.message_text is None:
             fragments: list[str] = []

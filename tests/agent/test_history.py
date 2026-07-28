@@ -41,7 +41,7 @@ def _send_args(*texts: str) -> dict[str, Any]:
 
 
 def _sent_text(*texts: str) -> str:
-    """The message_text a text-only `send_message` yields: its raw args dict,
+    """The message_text a text-only `send` yields: its raw args dict,
     `str()`'d — matching the projection."""
     return str(_send_args(*texts))
 
@@ -86,11 +86,11 @@ def test_response_text() -> None:
 
 
 @pytest.mark.parametrize("as_json_str", [False, True])
-def test_response_send_message_text(as_json_str: bool) -> None:
+def test_response_send_text(as_json_str: bool) -> None:
     args = _send_args("sent hi")
     payload: Any = json.dumps(args) if as_json_str else args
     message = ModelResponse(
-        parts=[ToolCallPart(tool_name="send_message", args=payload, tool_call_id="c1")]
+        parts=[ToolCallPart(tool_name="send", args=payload, tool_call_id="c1")]
     )
     assert message.message_text == _sent_text("sent hi")
 
@@ -105,7 +105,7 @@ def test_response_send_stores_raw_segments_searchable() -> None:
     message = ModelResponse(
         parts=[
             ToolCallPart(
-                tool_name="send_message",
+                tool_name="send",
                 args={"segments": segments},
                 tool_call_id="c1",
             )
@@ -127,7 +127,7 @@ def test_response_text_and_send_combined_other_tool_excluded() -> None:
         parts=[
             TextPart(content="answer"),
             ToolCallPart(
-                tool_name="send_message", args=_send_args("update"), tool_call_id="c1"
+                tool_name="send", args=_send_args("update"), tool_call_id="c1"
             ),
             ToolCallPart(tool_name="other", args={"x": 1}, tool_call_id="c2"),
         ]
@@ -195,7 +195,7 @@ async def _seed(manager: ConversationManager) -> Any:
                 parts=[
                     ThinkingPart(content="secret reasoning"),
                     ToolCallPart(
-                        tool_name="send_message",
+                        tool_name="send",
                         args=_send_args("on it"),
                         tool_call_id="c1",
                     ),

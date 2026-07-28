@@ -12,7 +12,7 @@ from octomate.capabilities.gateway import (
     SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
-    SchemeBlocker,
+    PrivateBlocker,
     GatewayCapability,
 )
 from pydantic_ai.settings import ThinkingEffort
@@ -40,10 +40,10 @@ class _NoDmChannel(FakeChannelTentacle):
 
 def _capability(
     allow_here: bool = True,
-    scheme_blocked_by: SchemeBlocker | None = None,
+    private_blocked_by: PrivateBlocker | None = None,
 ) -> GatewayCapability:
     """A gate that allows `summon here` for `allow_here`, and whose `scheme` is
-    refused for `scheme_blocked_by` or reachable for None.
+    refused for `private_blocked_by` or reachable for None.
 
     Both are derived from the channel's surfaces and the run's own address, so ask
     for the pair you want and get the channel and address producing it — the closing
@@ -68,21 +68,21 @@ def _capability(
         channels={
             "im": (
                 _NoDmChannel()
-                if scheme_blocked_by == "no_surface"
+                if private_blocked_by == "no_surface"
                 else FakeChannelTentacle()
             )
         },
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="private" if scheme_blocked_by == "already_private" else "group",
+            chat_type="private" if private_blocked_by == "already_private" else "group",
             chat_id="room",
             # A group's main channel is the one place `summon here` is refused.
             thread_id="" if not allow_here else "t-1",
-            user_id="" if scheme_blocked_by == "no_user" else "alice",
+            user_id="" if private_blocked_by == "no_user" else "alice",
         ),
     )
     assert capability.allow_here == allow_here
-    assert capability.scheme_blocked_by == scheme_blocked_by
+    assert capability.private_blocked_by == private_blocked_by
     return capability
 
 
@@ -339,9 +339,9 @@ def test_tool_schemas_do_not_vary_with_dm_availability() -> None:
     # the cached prefix, so anything address-derived is refused in the tool body rather
     # than kept out of the schema. If this ever fails, a conversation that moves
     # busts its whole prefix — system prompt included.
-    reachable = _schemas(_capability(scheme_blocked_by=None))
+    reachable = _schemas(_capability(private_blocked_by=None))
     for reason in ("no_surface", "already_private", "no_user"):
-        assert _schemas(_capability(scheme_blocked_by=reason)) == reachable
+        assert _schemas(_capability(private_blocked_by=reason)) == reachable
 
     assert _schemas(_capability(allow_here=False)) == reachable
 
@@ -369,10 +369,10 @@ def test_tool_schemas_do_not_carry_the_live_routes() -> None:
     ],
 )
 async def test_scheme_refuses_with_the_reason_it_cannot_land(
-    reason: SchemeBlocker,
+    reason: PrivateBlocker,
     expected: str,
 ) -> None:
-    capability = _capability(scheme_blocked_by=reason)
+    capability = _capability(private_blocked_by=reason)
     assert capability.toolset is not None
     scheme = capability.toolset.tools[SCHEME_TOOL_NAME].function
 

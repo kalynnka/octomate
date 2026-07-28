@@ -12,7 +12,6 @@ from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.github import GitHubCapability
 from octomate.capabilities.history import HistoryCapability
-from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
@@ -96,7 +95,6 @@ def create_app() -> FastAPI:
 
     inkling_capabilities: list[AgentCapability[None]] = [
         AskCapability(),
-        SendCapability(),
         TodoCapability(
             id="todos",
             description="Persisted task list for planning and tracking "

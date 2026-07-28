@@ -10,20 +10,21 @@ from dataclasses import replace
 from typing import ClassVar, cast
 
 import pytest
-from pydantic_ai import RunContext
+from pydantic_ai import AgentRunResult, AgentRunResultEvent, RunContext
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.capabilities.gateway import SCRY_TOOL_NAME, GatewayCapability
+from octomate.capabilities.harness.events import MessageSentEvent, SendDestination
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
-from octomate.schemas.thread import Thread
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.channel.base import ChannelSurfaces
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import TextSegment
+from octomate.schemas.segments import MarkdownSegment, TextSegment
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.schemas.triage import (
@@ -613,23 +614,23 @@ async def _gate_for(
 async def test_scheme_is_reachable_only_from_a_group_with_an_asker() -> None:
     # The reason travels with the refusal, so the model is told which of the three
     # walls it hit. None of it reaches the tool schema — see test_gateway.
-    assert (await _gate_for(_group_key())).scheme_blocked_by is None
-    assert (await _gate_for(_group_key("in-thread"))).scheme_blocked_by is None
+    assert (await _gate_for(_group_key())).private_blocked_by is None
+    assert (await _gate_for(_group_key("in-thread"))).private_blocked_by is None
 
     # Already one-to-one with this person, thread inside it or not.
-    assert (await _gate_for(_key())).scheme_blocked_by == "already_private"
+    assert (await _gate_for(_key())).private_blocked_by == "already_private"
     private = await _gate_for(_private_key("assistant"))
-    assert private.scheme_blocked_by == "already_private"
+    assert private.private_blocked_by == "already_private"
 
     # Nobody in particular asked (a scheduled or awake run).
     anonymous = replace(_group_key(), user_id="")
-    assert (await _gate_for(anonymous)).scheme_blocked_by == "no_user"
+    assert (await _gate_for(anonymous)).private_blocked_by == "no_user"
 
     class NoDmChannel(FakeChannelTentacle):
         surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
 
     without = NoDmChannel(config=_two_reception_config(stream=False))
-    assert (await _gate_for(_group_key(), without)).scheme_blocked_by == "no_surface"
+    assert (await _gate_for(_group_key(), without)).private_blocked_by == "no_surface"
 
 
 async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
@@ -1065,3 +1066,84 @@ async def test_resume_keeps_incomplete_reception_batch_deferred() -> None:
     assert result.requests is batch.requests
     assert agent.streams == []
     assert action_manager.marked == []
+
+
+async def _run_send(
+    im: FakeChannelTentacle,
+    destination: SendDestination,
+) -> tuple[FakeThreadManager, FakeChannelTentacle]:
+    """One reception whose only act is a `send` for `destination`."""
+    address = _group_key()
+    agent = FakeAgent(
+        id="other",
+        allow_reception_run=True,
+        reception_script=[
+            MessageSentEvent(
+                segments=[MarkdownSegment(data={"text": "the summary"})],
+                destination=destination,
+            ),
+            AgentRunResultEvent(AgentRunResult("sent it over")),
+        ],
+    )
+    threads = FakeThreadManager()
+    deps = _deps(
+        conversations=FakeConversationManager(), channels={"im": im}, agent=agent
+    )
+    deps.thread_manager = threads
+    target = _source_target(address)
+    await reflex_graph.run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=deps,
+    )
+    return threads, im
+
+
+async def test_send_to_dm_delivers_privately_and_leaves_the_group_alone() -> None:
+    # No handoff: the DM gets a bare message, and this run keeps the conversation.
+    threads, im = await _run_send(_channel(stream=True), "dm")
+
+    assert im.opened_dms == ["alice"]
+    delivered = [chat_id for chat_id, *_ in im.sent]
+    assert "alice" in delivered
+
+    # It is on the DM's ledger — so whoever handles that DM meets it as pending
+    # context next turn — while no conversation's model messages were touched.
+    dm_thread = threads.threads_by_key[
+        ThreadKey.from_address(
+            ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type="private",
+                chat_id="alice",
+                user_id="alice",
+            )
+        )
+    ]
+    dm_rows = [
+        message for message in threads.outbounds if message.thread_id == dm_thread.id
+    ]
+    assert [row.message_text for row in dm_rows] == ["the summary"]
+
+
+async def test_send_to_dm_falls_back_to_here_where_there_are_none() -> None:
+    # The tool cannot know the surface, so content meant for the user lands in the
+    # conversation they asked from rather than nowhere.
+    class NoDmChannel(FakeChannelTentacle):
+        surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
+
+    im = NoDmChannel(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=True),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    _threads, im = await _run_send(im, "dm")
+
+    assert im.opened_dms == []
+    assert all(chat_id == "team" for chat_id, *_ in im.sent)

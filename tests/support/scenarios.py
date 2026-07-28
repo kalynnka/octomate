@@ -355,7 +355,7 @@ def message_sent(
     *,
     answer: str = "all set",
 ) -> ChannelScript:
-    """A `send_message` tool call/result pair (which the timeline skips) plus the
+    """A `send` tool call/result pair (which the timeline skips) plus the
     `MessageSentEvent` the capability injects, then the closing streamed reply."""
     if segments is None:
         segments = [MarkdownSegment(data={"text": "progress update"})]
@@ -363,14 +363,14 @@ def message_sent(
     return [
         FunctionToolCallEvent(
             part=ToolCallPart(
-                tool_name="send_message",
+                tool_name="send",
                 args={"segments": [seg.model_dump() for seg in segments]},
                 tool_call_id="call_send_1",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="send_message",
+                tool_name="send",
                 content="sent",
                 tool_call_id="call_send_1",
                 metadata=[event],

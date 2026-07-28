@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from octomate.capabilities.harness.events import MessageSentEvent
-from octomate.capabilities.send import SendCapability
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtData,
@@ -51,17 +51,20 @@ def test_split_reply_takes_first_reply_anywhere_and_strips_all() -> None:
     assert split_reply(body) == (None, body)
 
 
-async def test_send_message_tool_accepts_reply_and_mention() -> None:
-    capability = SendCapability()
+async def test_send_tool_accepts_reply_and_mention() -> None:
+    capability = GatewayCapability(
+        routes=[],
+        current_agent_id="inkling",
+    )
     assert capability.toolset is not None
-    send_message = capability.toolset.tools["send_message"].function
+    send = capability.toolset.tools["send"].function
     segments = [
         ReplySegment(data={"id": "msg-3"}),
         AtSegment(data=AtData(user_id="U42")),
         MarkdownSegment(data={"text": "over to you"}),
     ]
 
-    result = await send_message(cast(Any, None), segments)
+    result = await send(cast(Any, None), segments)
 
     assert result.metadata == [MessageSentEvent(segments=segments)]
 

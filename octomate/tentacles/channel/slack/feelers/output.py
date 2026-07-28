@@ -465,7 +465,7 @@ class SlackTimelineState(TimelineState):
         await self.finish_text()
 
     async def message_sent(self, event: MessageSentEvent) -> None:
-        # A `send_message` delivery is output too: render its segments as a
+        # A `send` delivery is output too: render its segments as a
         # discrete message and close it, rather than folding it into a plan.
         reply_to, body = split_reply(event.segments)
         self.capture_reply(reply_to)

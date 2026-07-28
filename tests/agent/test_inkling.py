@@ -20,7 +20,7 @@ from octomate.capabilities.harness.deferred import DeclineResolver
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.capabilities.send import SendCapability
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment, Segment
@@ -46,7 +46,14 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
         deps_type=type(None),
         name="octomate-inkling",
         output_type=[str, list[MessageSegment], DeferredToolRequests],
-        capabilities=[AskCapability(), TodoCapability(), SendCapability()],
+        capabilities=[
+            AskCapability(),
+            TodoCapability(),
+            GatewayCapability(
+                routes=[],
+                current_agent_id="inkling",
+            ),
+        ],
         system_prompt=SYSTEM_PROMPT,
     )
 

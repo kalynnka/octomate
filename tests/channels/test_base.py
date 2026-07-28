@@ -489,7 +489,7 @@ async def test_drive_timeline_renders_message_sent_and_skips_the_tool(
 
     await bound(state, channel, _key()).drive(play(message_sent()))
 
-    # The send_message tool call/result render nothing (skipped); the
+    # The `send` tool call/result render nothing (skipped); the
     # MessageSentEvent renders its segments as reply content.
     names = state.names()
     assert "tool_start" not in names
