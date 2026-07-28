@@ -70,7 +70,9 @@ class Feelers:
             span.set_attribute("approvals", len(approvals))
             span.set_attribute("questions", len(questions))
 
-            approval_message_ids = await self.approvals.present(target_address, approvals)
+            approval_message_ids = await self.approvals.present(
+                target_address, approvals
+            )
             for action in approvals:
                 await action_manager.mark_action_presented(
                     action.id,

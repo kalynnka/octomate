@@ -107,9 +107,7 @@ async def test_napcat_segments_feeler_threads_leading_reply() -> None:
 
     _chat_id, _chat_type, messages, reply_to, _thread = ink.sent[0]
     assert reply_to == "999"
-    assert cast(Any, messages[0]).segments == [
-        {"type": "text", "data": {"text": "hi"}}
-    ]
+    assert cast(Any, messages[0]).segments == [{"type": "text", "data": {"text": "hi"}}]
 
 
 async def test_napcat_chromo_renders_native_mention() -> None:

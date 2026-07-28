@@ -57,9 +57,7 @@ class TranscriptAssistantLine(TranscriptSessionLine):
     type: Literal["assistant"]
     message: AnthropicMessage
     request_id: str | None = Field(default=None, alias="requestId")
-    is_api_error_message: bool | None = Field(
-        default=None, alias="isApiErrorMessage"
-    )
+    is_api_error_message: bool | None = Field(default=None, alias="isApiErrorMessage")
 
 
 class TranscriptSystemLine(TranscriptSessionLine):

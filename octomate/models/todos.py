@@ -45,14 +45,14 @@ class Todo(Base, TransmuterProxiedMixin):
     ref: Mapped[str] = mapped_column(String, nullable=False, index=True)
     content: Mapped[str] = mapped_column(String, nullable=False)
     active_form: Mapped[str] = mapped_column(String, nullable=False, default="")
-    status: Mapped[TodoStatus] = mapped_column(String, nullable=False, default="pending")
+    status: Mapped[TodoStatus] = mapped_column(
+        String, nullable=False, default="pending"
+    )
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # parent_ref/depends_on hold other todos' `ref`s — app-level, not DB FKs
     # (matching the reference); cycle/blocking is validated in the toolset.
     parent_ref: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    depends_on: Mapped[JsonValue] = mapped_column(
-        JSON, nullable=False, default=list
-    )
+    depends_on: Mapped[JsonValue] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,

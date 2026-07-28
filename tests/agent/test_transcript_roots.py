@@ -16,7 +16,9 @@ from pathlib import Path
 import pytest
 
 
-def projects_dirs(monkeypatch: pytest.MonkeyPatch, value: str | None) -> tuple[Path, ...]:
+def projects_dirs(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> tuple[Path, ...]:
     """`CLAUDE_PROJECTS_DIRS` as it resolves for a given CLAUDE_CONFIG_DIR. Re-imported
     because it is read once at import, which is what the running app does too."""
     if value is None:
@@ -29,7 +31,9 @@ def projects_dirs(monkeypatch: pytest.MonkeyPatch, value: str | None) -> tuple[P
     return module.CLAUDE_PROJECTS_DIRS
 
 
-def test_the_default_is_the_documented_location(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_default_is_the_documented_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert projects_dirs(monkeypatch, None) == (Path.home() / ".claude" / "projects",)
 
 
@@ -66,7 +70,9 @@ def test_a_configured_root_expands_home() -> None:
     assert codex.transcript_root == Path.home() / "elsewhere" / "sessions"
 
 
-def test_codex_home_relocates_the_sessions_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_codex_home_relocates_the_sessions_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
     module = importlib.reload(
         importlib.import_module("octomate.tentacles.agent.codex.transcript")

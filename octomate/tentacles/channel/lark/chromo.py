@@ -93,7 +93,9 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
             "schema": "2.0",
             "body": {"elements": [{"tag": "markdown", "content": text}]},
         }
-        return [LarkOutboundMessage(msg_type="interactive", content=json.dumps(payload))]
+        return [
+            LarkOutboundMessage(msg_type="interactive", content=json.dumps(payload))
+        ]
 
     async def outbound_segments(
         self, segments: list[MessageSegment]

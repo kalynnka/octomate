@@ -299,7 +299,9 @@ def wired(
     tailer = ClaudeTranscriptTailer(
         octomate.conversations, octomate.thread_manager, locks
     )
-    return ClaudeHookIngest(octomate, tailer, locks, extra_transcript_roots=roots), tailer
+    return ClaudeHookIngest(
+        octomate, tailer, locks, extra_transcript_roots=roots
+    ), tailer
 
 
 def hook_event(
@@ -502,7 +504,10 @@ async def test_line_split_across_pumps_is_not_half_parsed(tmp_path: Path) -> Non
 
     # Complete the line and append the answer; now both frame and process.
     with transcript.open("ab") as handle:
-        handle.write(b"\n" + line_bytes(assistant_record("a1", 2, [{"type": "text", "text": "hi"}])))
+        handle.write(
+            b"\n"
+            + line_bytes(assistant_record("a1", 2, [{"type": "text", "text": "hi"}]))
+        )
     await tailer.pump(state)
     assert state.open_turn is not None
     assert state.open_turn.prompt_id == "p1"
@@ -516,14 +521,21 @@ async def test_line_split_across_pumps_is_not_half_parsed(tmp_path: Path) -> Non
 
 def sidechain_record(uid: str, second: int) -> JsonObject:
     """A sub-agent's assistant line — must never land in the parent timeline."""
-    record = assistant_record(uid, second, [{"type": "text", "text": "subagent chatter"}])
+    record = assistant_record(
+        uid, second, [{"type": "text", "text": "subagent chatter"}]
+    )
     record["isSidechain"] = True
     return record
 
 
 def hook(prompt_id: str, **body: str) -> ClaudeHookInput:
     return ClaudeHookInput.model_validate(
-        {"hook_event_name": "x", "session_id": SESSION_ID, "prompt_id": prompt_id, **body}
+        {
+            "hook_event_name": "x",
+            "session_id": SESSION_ID,
+            "prompt_id": prompt_id,
+            **body,
+        }
     )
 
 
@@ -1112,9 +1124,7 @@ async def test_subagent_stop_waits_for_the_answer_line_to_land(tmp_path: Path) -
     sub_path = write_subagent(tmp_path, SUB_TURN_ONE[:-1])
     octomate = Octomate()
     ingest, tailer = wired(octomate, (tmp_path,))
-    await ingest.handle(
-        subagent_hook("SubagentStart", transcript_path=str(transcript))
-    )
+    await ingest.handle(subagent_hook("SubagentStart", transcript_path=str(transcript)))
 
     async def late_writer() -> None:
         await anyio.sleep(0.3)
@@ -1147,9 +1157,7 @@ async def test_subagent_stop_never_hangs_on_an_answer_that_never_lands(
     sub_path = write_subagent(tmp_path, SUB_TURN_ONE[:-1])
     octomate = Octomate()
     ingest, tailer = wired(octomate, (tmp_path,))
-    await ingest.handle(
-        subagent_hook("SubagentStart", transcript_path=str(transcript))
-    )
+    await ingest.handle(subagent_hook("SubagentStart", transcript_path=str(transcript)))
 
     await ingest.handle(
         subagent_hook("SubagentStop", last_assistant_message="words never written")
@@ -1172,9 +1180,7 @@ async def test_a_diverging_announced_answer_settles_on_quiescence(
     sub_path = write_subagent(tmp_path, SUB_TURN_ONE)  # complete file on disk
     octomate = Octomate()
     ingest, tailer = wired(octomate, (tmp_path,))
-    await ingest.handle(
-        subagent_hook("SubagentStart", transcript_path=str(transcript))
-    )
+    await ingest.handle(subagent_hook("SubagentStart", transcript_path=str(transcript)))
 
     from time import monotonic as now
 

@@ -48,7 +48,9 @@ def upgrade() -> None:
             existing_type=sa.DateTime(),
             nullable=False,
         )
-    op.create_index("ix_thread_messages_happened_at", "thread_messages", ["happened_at"])
+    op.create_index(
+        "ix_thread_messages_happened_at", "thread_messages", ["happened_at"]
+    )
 
 
 def downgrade() -> None:

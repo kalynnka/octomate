@@ -58,9 +58,7 @@ def client_for(path: str) -> TestClient:
         pytest.param({"Authorization": "the-hook-secret"}, id="bare-secret-no-scheme"),
     ],
 )
-def test_an_unauthenticated_hook_is_refused(
-    path: str, headers: dict[str, str]
-) -> None:
+def test_an_unauthenticated_hook_is_refused(path: str, headers: dict[str, str]) -> None:
     response = client_for(path).post(path, json=EVENT, headers=headers)
     assert response.status_code == 401
 

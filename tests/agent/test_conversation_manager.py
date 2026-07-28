@@ -558,9 +558,7 @@ async def test_one_bare_conversation_per_agent_is_enforced() -> None:
     await ConversationManager().ensure(_thread(), agent_tentacle_id="inkling")
     with pytest.raises(sqlalchemy.exc.IntegrityError):
         async with async_session() as session:
-            session.add(
-                Conversation(thread_id=_thread(), agent_tentacle_id="inkling")
-            )
+            session.add(Conversation(thread_id=_thread(), agent_tentacle_id="inkling"))
             await session.commit()
 
 

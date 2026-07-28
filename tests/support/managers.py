@@ -71,9 +71,7 @@ class FakeConversationManager(ConversationManager):
     runs: list[tuple[FakeConversation, str, list[ModelMessage]]] = field(
         default_factory=list
     )
-    parent_links: list[tuple[str, str | None, str | None]] = field(
-        default_factory=list
-    )
+    parent_links: list[tuple[str, str | None, str | None]] = field(default_factory=list)
 
     async def ensure(
         self,

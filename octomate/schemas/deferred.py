@@ -198,7 +198,9 @@ def from_deferred_requests(
                 tool_name=call.tool_name,
                 args=cast(JsonObject, call.args_as_dict()),
             ),
-            metadata=cast(JsonObject, request.metadata.get(call.tool_call_id, {}) or {}),
+            metadata=cast(
+                JsonObject, request.metadata.get(call.tool_call_id, {}) or {}
+            ),
         )
         for call in request.approvals
     )

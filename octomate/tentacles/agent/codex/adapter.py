@@ -272,7 +272,9 @@ class CodexRunAccumulator:
             yield from self.consume_item_completed(payload, event)
         elif isinstance(payload, ErrorNotification):
             self.consume_error(payload, event)
-        elif isinstance(payload, TurnPlanUpdatedNotification | ConfigWarningNotification):
+        elif isinstance(
+            payload, TurnPlanUpdatedNotification | ConfigWarningNotification
+        ):
             self.pending_events.append(event)
         elif isinstance(payload, ThreadTokenUsageUpdatedNotification):
             self.thread_id = payload.thread_id
@@ -561,9 +563,13 @@ class CodexRunAccumulator:
         elif isinstance(item, PlanThreadItem):
             yield from self.complete_plan(item, event)
         elif isinstance(item, FileChangeThreadItem):
-            yield from self.complete_native_tool(item, event, outcome=patch_outcome(item.status))
+            yield from self.complete_native_tool(
+                item, event, outcome=patch_outcome(item.status)
+            )
         elif isinstance(item, McpToolCallThreadItem):
-            yield from self.complete_native_tool(item, event, outcome=mcp_outcome(item.status))
+            yield from self.complete_native_tool(
+                item, event, outcome=mcp_outcome(item.status)
+            )
         elif isinstance(item, DynamicToolCallThreadItem):
             yield from self.complete_native_tool(
                 item,
@@ -689,7 +695,11 @@ class CodexRunAccumulator:
             )
             yield FunctionToolCallEvent(part=live_call)
         state.events.append(event)
-        content = item.aggregated_output if item.aggregated_output is not None else state.output
+        content = (
+            item.aggregated_output
+            if item.aggregated_output is not None
+            else state.output
+        )
         live_return = ToolReturnPart(
             tool_name=state.live_call.tool_name,
             content=content,
@@ -741,7 +751,9 @@ class CodexRunAccumulator:
                 break
         else:
             if payload.turn.status == TurnStatus.failed:
-                provider_details: JsonObject = {"turn_status": payload.turn.status.value}
+                provider_details: JsonObject = {
+                    "turn_status": payload.turn.status.value
+                }
                 if payload.turn.error is not None:
                     provider_details["error"] = payload.turn.error.message
                 self.messages.append(

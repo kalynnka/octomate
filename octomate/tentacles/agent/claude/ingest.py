@@ -84,8 +84,7 @@ class ClaudeHookIngest:
         # Resolved once: the test is `is_relative_to`, which is lexical, so both sides
         # must be resolved for `..` to mean anything.
         self.transcript_roots = tuple(
-            root.resolve()
-            for root in (*CLAUDE_PROJECTS_DIRS, *extra_transcript_roots)
+            root.resolve() for root in (*CLAUDE_PROJECTS_DIRS, *extra_transcript_roots)
         )
         # Serialize a session's events so the existence check and the write can't race
         # (Claude fires the next event without waiting for our commit). Shared with the
@@ -195,9 +194,7 @@ class ClaudeHookIngest:
         # Outside the lock, like every tailer wait: give the child its first pump now
         # instead of waiting for the parent's next event or the 60s poll tick.
         await self.tailer.poke_subagent(event.session_id, event.agent_id)
-        logger.info(
-            "session %s: subagent %s started", event.session_id, event.agent_id
-        )
+        logger.info("session %s: subagent %s started", event.session_id, event.agent_id)
 
     @claude_logfire.instrument(
         "claude.hook SubagentStop [{event.session_id}/{event.agent_id}]",
@@ -221,9 +218,7 @@ class ClaudeHookIngest:
             await self.tailer.recover(
                 event.session_id, self.session_transcript_path(event)
             )
-        logger.info(
-            "session %s: subagent %s stopped", event.session_id, event.agent_id
-        )
+        logger.info("session %s: subagent %s stopped", event.session_id, event.agent_id)
 
     def session_transcript_path(self, event: ClaudeHookInput) -> Path | None:
         """The *session* transcript a subagent event names. Whether its

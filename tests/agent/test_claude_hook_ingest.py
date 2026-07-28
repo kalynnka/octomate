@@ -140,7 +140,10 @@ async def ledger(octomate: Octomate) -> list[tuple[str, str | None, str | None]]
 
 async def test_a_turn_writes_inbound_and_outbound_tagged_by_prompt_id() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     await submit(ingest, "p1", "list the files")
     await stop(ingest, "p1", "Here are the files.")
@@ -153,7 +156,10 @@ async def test_a_turn_writes_inbound_and_outbound_tagged_by_prompt_id() -> None:
 
 async def test_multiple_turns_accumulate_in_order() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     await submit(ingest, "p1", "first")
     await stop(ingest, "p1", "first done")
@@ -170,7 +176,10 @@ async def test_multiple_turns_accumulate_in_order() -> None:
 
 async def test_refiring_events_is_idempotent() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     await submit(ingest, "p1", "list the files")
     await submit(ingest, "p1", "list the files")  # retry
@@ -185,7 +194,10 @@ async def test_refiring_events_is_idempotent() -> None:
 
 async def test_crash_before_stop_leaves_a_clean_inbound_only_turn() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     await submit(ingest, "p1", "do a thing")
     # no Stop — the session died mid-turn
@@ -199,7 +211,10 @@ async def test_hooks_sketch_the_turns_run_live() -> None:
     timeline lands. The sketch carries no byte range: that is what marks it provisional
     and lets the tailer replace it."""
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     await submit(ingest, "p1", "hello")
 
@@ -221,7 +236,10 @@ async def test_a_session_octomate_drives_is_answered_but_not_recorded() -> None:
     tentacle is already recording as it drives it — otherwise the same conversation
     would be written twice, once by the runner and once by its own hooks."""
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     # as the tentacle holds it: from before the session is launched until its client's
     # teardown has waited the CLI out.
@@ -240,7 +258,10 @@ async def test_a_session_octomate_does_not_drive_is_still_recorded() -> None:
     """Claiming one session says nothing about the next: a native client's session runs
     alongside the tentacle's and is ingested as usual."""
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     with ingest.driving("some-other-session"):
         await submit(ingest, "p1", "hello")
@@ -253,10 +274,15 @@ async def test_the_claim_outlives_the_first_of_two_overlapping_runs() -> None:
     while the first unwinds. The claim is counted, so the run that ends first does not
     strip it from the one still driving."""
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     with ingest.driving(SESSION_ID):  # the superseded run
-        with ingest.driving(SESSION_ID):  # the follow-up, taken before the first unwinds
+        with ingest.driving(
+            SESSION_ID
+        ):  # the follow-up, taken before the first unwinds
             pass
         await submit(ingest, "p1", "hello")  # still driven, so still not ingested
 
@@ -273,7 +299,10 @@ async def test_a_sketch_is_dated_so_it_sorts_after_the_history() -> None:
     sketch would sort ahead of every turn before it, putting the live prompt at the head
     of the history it belongs at the end of."""
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     await submit(ingest, "p1", "first")
     await stop(ingest, "p1", "done")
@@ -306,7 +335,10 @@ async def sketched(octomate: Octomate) -> list[tuple[str, list[str | None]]]:
 
 async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     await ingest.handle(hook("UserPromptSubmit", "p1", prompt=""))
     await ingest.handle(hook("Stop", "p1", last_assistant_message=""))
@@ -317,7 +349,8 @@ async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
 async def test_session_locks_self_clean_and_session_end_finalizes() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
     )
 
     await submit(ingest, "p1", "hello")
@@ -335,7 +368,10 @@ async def test_session_locks_self_clean_and_session_end_finalizes() -> None:
 
 async def test_unhandled_events_are_ignored() -> None:
     octomate = Octomate()
-    ingest = ClaudeHookIngest(octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager))
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
 
     await ingest.handle(
         hook("PreToolUse", "p1", tool_name="Bash", tool_input={"command": "ls"})
@@ -352,7 +388,8 @@ async def test_a_live_turn_is_dated_when_it_happened() -> None:
     turn or history the tailer replayed."""
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
     )
     before = datetime.now(timezone.utc)
 

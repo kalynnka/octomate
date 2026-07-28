@@ -22,7 +22,12 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import MarkdownSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage, ThreadMessageDirection
+from octomate.schemas.thread import (
+    Thread,
+    ThreadKey,
+    ThreadMessage,
+    ThreadMessageDirection,
+)
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, NATIVE_USER
@@ -200,7 +205,11 @@ class ClaudeTranscriptTailer:
         same path is returned as-is, so a repeated start (e.g. `SessionStart` then the
         first `UserPromptSubmit`) is a no-op. `offset` seeds the cursor for a resume."""
         existing = self.sessions.get(session_id)
-        if existing is not None and existing.task is not None and not existing.task.done():
+        if (
+            existing is not None
+            and existing.task is not None
+            and not existing.task.done()
+        ):
             if existing.transcript_path == transcript_path:
                 return existing
             # Same session, new transcript path (its slug moved): the bytes are the same,
@@ -316,7 +325,9 @@ class ClaudeTranscriptTailer:
                 state.conversation = conversation
                 state.recorded = set(committed)
                 try:
-                    await self.pump(state)  # read [start .. EOF), committing on boundaries
+                    await self.pump(
+                        state
+                    )  # read [start .. EOF), committing on boundaries
                     await self.close_turn(state)  # commit the trailing turn
                     await self.close_subagent_turns(state)
                 finally:

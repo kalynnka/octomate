@@ -16,9 +16,7 @@ def test_db_url_defaults_when_config_is_silent(
     assert DatabaseSettings().db_url == DEFAULT_DB_URL
 
 
-def test_db_url_env_beats_yaml(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_db_url_env_beats_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "octomate.yaml").write_text(
         "octomate:\n  db_url: sqlite+aiosqlite:///from-yaml.db\n"
     )

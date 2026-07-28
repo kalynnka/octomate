@@ -158,9 +158,7 @@ class CodexHookIngest:
         )
         self.tailer.start(event.session_id, path)
 
-    def accepted_transcript_path(
-        self, session_id: str, claimed: Path
-    ) -> Path | None:
+    def accepted_transcript_path(self, session_id: str, claimed: Path) -> Path | None:
         # Resolved before the root test: `is_relative_to` is lexical, so an unresolved
         # `.../sessions/../../elsewhere` would pass it. The path is the caller's claim,
         # and following it means reading whatever it names into this session's history.

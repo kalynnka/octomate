@@ -68,7 +68,9 @@ class SSHTransport(SubprocessCLITransport):
         # Expand a leading ~ on the remote (shlex.quote would wrap it and defeat
         # the shell's tilde expansion).
         cwd_expr = (
-            '"$HOME"' + shlex.quote(cwd[1:]) if cwd.startswith("~") else shlex.quote(cwd)
+            '"$HOME"' + shlex.quote(cwd[1:])
+            if cwd.startswith("~")
+            else shlex.quote(cwd)
         )
         remote = f"cd {cwd_expr} && export {exports} && " + " ".join(
             shlex.quote(arg) for arg in remote_argv

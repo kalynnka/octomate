@@ -77,9 +77,7 @@ async def test_segment_output_streams_one_event_per_segment() -> None:
         {"type": "markdown", "data": {"text": "**hi**"}},
         {"type": "at", "data": {"user_id": "u1"}},
     ]
-    agent = Agent(
-        TestModel(custom_output_args=reply), output_type=list[MessageSegment]
-    )
+    agent = Agent(TestModel(custom_output_args=reply), output_type=list[MessageSegment])
 
     events = [event async for event in agent.stream_events("go")]
 

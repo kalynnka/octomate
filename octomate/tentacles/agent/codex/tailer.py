@@ -383,9 +383,7 @@ class CodexTranscriptTailer:
                 consumed = True
         return consumed
 
-    def discover_subagent(
-        self, state: TailState, path: Path
-    ) -> SubagentTail | None:
+    def discover_subagent(self, state: TailState, path: Path) -> SubagentTail | None:
         for tail in state.subagents.values():
             if tail.path == path:
                 return tail
@@ -504,9 +502,7 @@ class CodexTranscriptTailer:
         if line.type == "response_item":
             self.consume_response_item(turn, line)
 
-    async def close_subagent_turn(
-        self, state: TailState, tail: SubagentTail
-    ) -> None:
+    async def close_subagent_turn(self, state: TailState, tail: SubagentTail) -> None:
         turn = tail.open_turn
         tail.open_turn = None
         if turn is None or turn.turn_id in tail.recorded or not turn.messages:
@@ -515,8 +511,7 @@ class CodexTranscriptTailer:
             (
                 candidate
                 for candidate in reversed(state.subagent_calls.get(tail.thread_id, []))
-                if candidate.occurred_at_ms
-                <= int(turn.timestamp.timestamp() * 1000)
+                if candidate.occurred_at_ms <= int(turn.timestamp.timestamp() * 1000)
                 and candidate.parent_tool_call_id not in tail.linked_call_ids
             ),
             None,
@@ -541,9 +536,7 @@ class CodexTranscriptTailer:
             end_offset=turn.end_offset,
             messages=len(turn.messages),
         ) as span:
-            async with self.locks.hold(
-                state.session_id, timeout=COMMIT_LOCK_TIMEOUT
-            ):
+            async with self.locks.hold(state.session_id, timeout=COMMIT_LOCK_TIMEOUT):
                 run = await self.conversation_manager.record_external_run(
                     conversation,
                     run_id=turn.turn_id,
@@ -561,8 +554,7 @@ class CodexTranscriptTailer:
                     return
                 tail.recorded.add(turn.turn_id)
                 logger.info(
-                    "session %s: subagent %s turn %s synced — %d messages, "
-                    "bytes %d-%d",
+                    "session %s: subagent %s turn %s synced — %d messages, bytes %d-%d",
                     state.session_id,
                     tail.thread_id,
                     turn.turn_id,

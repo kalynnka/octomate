@@ -73,8 +73,10 @@ class NapcatUserProfile(UserProfile):
             # `user_id` is popped, not kept: on the registry schema that name is
             # the owner FK, and the payload's value is the platform id.
             data["channel_user_id"] = (
-                data.get("channel_user_id") or data.pop("user_id", None)
-                or data.get("uin") or ""
+                data.get("channel_user_id")
+                or data.pop("user_id", None)
+                or data.get("uin")
+                or ""
             )
             if not data.get("nick") and not data.get("name"):
                 data["name"] = (

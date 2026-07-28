@@ -55,7 +55,9 @@ class NapcatChromo(Chromo[str | bytes, NapcatOutboundMessage]):
         if not stripped:
             return []
         return [
-            NapcatOutboundMessage(segments=[{"type": "text", "data": {"text": stripped}}])
+            NapcatOutboundMessage(
+                segments=[{"type": "text", "data": {"text": stripped}}]
+            )
         ]
 
     async def outbound_segments(
@@ -78,7 +80,9 @@ class NapcatChromo(Chromo[str | bytes, NapcatOutboundMessage]):
                     file = await inline_base64(seg.data.path)
                     onebot.append({"type": "image", "data": {"file": file}})
                 case FileSegment():
-                    data: JsonObject = {"file": await inline_base64(Path(seg.data.file))}
+                    data: JsonObject = {
+                        "file": await inline_base64(Path(seg.data.file))
+                    }
                     if seg.data.name:
                         data["name"] = seg.data.name
                     onebot.append({"type": "file", "data": data})

@@ -32,8 +32,6 @@ async def db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
     yield
 
 
-
-
 def write_rollout(path: Path) -> None:
     records = [
         {
@@ -100,7 +98,9 @@ def wired(
     tailer = CodexTranscriptTailer(
         octomate.conversations, octomate.thread_manager, locks
     )
-    return CodexHookIngest(octomate, tailer, locks, extra_transcript_roots=roots), tailer
+    return CodexHookIngest(
+        octomate, tailer, locks, extra_transcript_roots=roots
+    ), tailer
 
 
 async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
@@ -289,9 +289,7 @@ def child_metadata(
 def subagent_activity(
     second: int, tool_call_id: str, *, kind: str
 ) -> dict[str, object]:
-    happened_at = datetime(
-        2026, 7, 16, 10, 0, second, tzinfo=timezone.utc
-    )
+    happened_at = datetime(2026, 7, 16, 10, 0, second, tzinfo=timezone.utc)
     return {
         "timestamp": happened_at.isoformat().replace("+00:00", "Z"),
         "type": "event_msg",

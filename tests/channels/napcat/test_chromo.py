@@ -160,7 +160,9 @@ async def test_napcat_chromo_outbound_segments_native_media(tmp_path: Path) -> N
     ]
 
 
-async def test_napcat_chromo_outbound_segments_skips_empty_and_returns_nothing() -> None:
+async def test_napcat_chromo_outbound_segments_skips_empty_and_returns_nothing() -> (
+    None
+):
     chromo = NapcatChromo()
 
     assert await chromo.outbound_segments([TextSegment(data={"text": ""})]) == []

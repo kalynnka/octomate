@@ -249,7 +249,9 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
         user_id="3003",
     )
 
-    message_id = await drive(channel, address, play(plain_answer("hello from octomate")))
+    message_id = await drive(
+        channel, address, play(plain_answer("hello from octomate"))
+    )
 
     assert message_id == "msg-1"
     assert http.posts == [

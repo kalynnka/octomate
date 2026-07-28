@@ -156,12 +156,8 @@ async def test_inkling_loop_emits_deferred_question_batch() -> None:
 
 async def test_decline_resolver_denies_approvals_and_answers_calls() -> None:
     requests = DeferredToolRequests(
-        calls=[
-            ToolCallPart(tool_name="ask_questions", args={}, tool_call_id="c1")
-        ],
-        approvals=[
-            ToolCallPart(tool_name="dangerous", args={}, tool_call_id="a1")
-        ],
+        calls=[ToolCallPart(tool_name="ask_questions", args={}, tool_call_id="c1")],
+        approvals=[ToolCallPart(tool_name="dangerous", args={}, tool_call_id="a1")],
     )
 
     results = await DeclineResolver().resolve(requests)

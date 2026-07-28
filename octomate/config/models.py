@@ -84,7 +84,5 @@ class ModelConfig(BaseModel):
     @model_validator(mode="after")
     def validate_supported_provider(self) -> Self:
         if self.provider is not None and self.provider not in supported_providers:
-            raise ValueError(
-                f"unsupported model provider prefix in {self.name!r}"
-            )
+            raise ValueError(f"unsupported model provider prefix in {self.name!r}")
         return self

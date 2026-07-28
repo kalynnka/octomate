@@ -566,9 +566,7 @@ async def test_run_with_output_type_passes_schema_and_validates_json(
 
     assert result.output == StructuredCodexResult(answer="ok")
     [turn_call] = FakeCodex.turn_calls
-    assert turn_call.output_schema == TypeAdapter(
-        StructuredCodexResult
-    ).json_schema()
+    assert turn_call.output_schema == TypeAdapter(StructuredCodexResult).json_schema()
 
 
 async def test_failed_run_persists_before_raising(
@@ -904,11 +902,12 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
         assert len([c for c in FakeCodex.thread_calls if c.kind == "start"]) == 1
         assert len(FakeCodex.turn_calls) == 2
 
-        await tentacle.run("elsewhere", conversation_address=KEY, thread_id=other_thread)
+        await tentacle.run(
+            "elsewhere", conversation_address=KEY, thread_id=other_thread
+        )
         # A different thread gets its own client and its own thread_start.
         assert FakeCodex.builds == 2
 
     # Exiting the tentacle drains the pool, closing every warm client.
     assert FakeCodex.closed == 2
     assert tentacle.pool is None
-

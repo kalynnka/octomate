@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import Header, HTTPException, status
 from pydantic import SecretStr
 
+
 def hook_guard(secret: SecretStr) -> Callable[[str | None], Awaitable[None]]:
     """A bearer check for a hook router, as a FastAPI dependency.
 

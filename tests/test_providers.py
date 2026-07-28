@@ -95,9 +95,7 @@ def test_bedrock_model_name_with_colon_is_preserved() -> None:
 
 
 def test_anthropic_cache_breakpoints_are_default() -> None:
-    model = make_registry().build_model(
-        ModelConfig(name="anthropic:claude-sonnet-4-6")
-    )
+    model = make_registry().build_model(ModelConfig(name="anthropic:claude-sonnet-4-6"))
     assert model.settings == {
         "anthropic_cache_tool_definitions": True,
         "anthropic_cache_instructions": True,
@@ -119,16 +117,12 @@ def test_bedrock_cache_breakpoints_are_default() -> None:
 
 
 def test_openai_cache_retention_is_default() -> None:
-    model = make_registry().build_model(
-        ModelConfig(name="openai:gpt-5.2")
-    )
+    model = make_registry().build_model(ModelConfig(name="openai:gpt-5.2"))
     assert model.settings == {"openai_prompt_cache_retention": "24h"}
 
 
 def test_deepseek_has_no_cache_settings() -> None:
-    model = make_registry().build_model(
-        ModelConfig(name="deepseek:deepseek-chat")
-    )
+    model = make_registry().build_model(ModelConfig(name="deepseek:deepseek-chat"))
     assert not model.settings
 
 

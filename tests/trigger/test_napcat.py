@@ -71,7 +71,8 @@ async def test_napcat_renders_streamed_str_output(
     channel, address = napcat_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, 
+        message_id = await drive(
+            channel,
             address,
             play(streamed_text("String ", "output from the octomate test suite.")),
         )

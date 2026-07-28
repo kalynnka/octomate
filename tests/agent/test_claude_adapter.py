@@ -330,7 +330,9 @@ def test_adapter_maps_server_tools_to_native_parts() -> None:
         acc.consume(
             AssistantMessage(
                 content=[
-                    ServerToolUseBlock(id="s1", name="web_search", input={"query": "x"}),
+                    ServerToolUseBlock(
+                        id="s1", name="web_search", input={"query": "x"}
+                    ),
                     ServerToolResultBlock(tool_use_id="s1", content={"results": []}),
                     TextBlock(text="here you go"),
                 ],
@@ -537,9 +539,7 @@ def test_adapter_falls_back_to_block_render_without_partial_stream() -> None:
     # still render the text as a start/end pair so nothing is silently dropped.
     acc = ClaudeRunAccumulator()
     events = list(
-        acc.consume(
-            AssistantMessage(content=[TextBlock(text="instant")], model="m")
-        )
+        acc.consume(AssistantMessage(content=[TextBlock(text="instant")], model="m"))
     )
     assert [type(event).__name__ for event in events] == [
         "PartStartEvent",

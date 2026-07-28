@@ -114,8 +114,14 @@ def test_install_replaces_a_stale_octomate_url(tmp_path: Path) -> None:
     for port in (1111, 2222):
         runner.invoke(
             claude_typer,
-            ["hooks", "install", "--url", f"http://127.0.0.1:{port}/hooks/claude",
-             "--settings", str(path)],
+            [
+                "hooks",
+                "install",
+                "--url",
+                f"http://127.0.0.1:{port}/hooks/claude",
+                "--settings",
+                str(path),
+            ],
         )
     stop = read(path)["hooks"]["Stop"]
     urls = {hook["url"] for group in stop for hook in group["hooks"]}
@@ -135,7 +141,8 @@ def test_hints_but_does_not_block_when_claude_is_unconfigured(
     monkeypatch.setattr("octomate.config.OctomateConfig", Config)
 
     result = runner.invoke(
-        claude_typer, ["hooks", "install", "--url", URL, "--settings", str(tmp_path / "s.json")]
+        claude_typer,
+        ["hooks", "install", "--url", URL, "--settings", str(tmp_path / "s.json")],
     )
     assert result.exit_code == 0  # the command still runs
     assert "config.agents.claude" in result.output  # but hints that Claude is absent
@@ -183,7 +190,9 @@ def test_codex_install_replaces_a_handler_left_by_an_older_version(
     )
 
     commands = [
-        hook["command"] for group in read(path)["hooks"]["Stop"] for hook in group["hooks"]
+        hook["command"]
+        for group in read(path)["hooks"]["Stop"]
+        for hook in group["hooks"]
     ]
     assert stale["command"] not in commands  # the stale handler is gone, not duplicated
     assert "echo done" in commands  # an unrelated hook of the operator's survives
@@ -306,7 +315,7 @@ def test_secret_quotes_a_credential_that_is_not_shell_safe(
     # And eval'ing it really does reproduce the secret, quoting and all.
     assert (
         subprocess.run(
-            [f"{result.stdout.strip()}; printf %s \"${{OCTOMATE__HOOK_SECRET}}\""],
+            [f'{result.stdout.strip()}; printf %s "${{OCTOMATE__HOOK_SECRET}}"'],
             shell=True,
             capture_output=True,
             text=True,
@@ -341,9 +350,13 @@ def test_installing_without_a_configured_secret_says_so(
 
 def test_uninstall_removes_only_octomate_hooks(tmp_path: Path) -> None:
     path = settings_with(tmp_path, {"hooks": {"Stop": [{"hooks": [COMMAND_HOOK]}]}})
-    runner.invoke(claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)])
+    runner.invoke(
+        claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)]
+    )
 
-    result = runner.invoke(claude_typer, ["hooks", "uninstall", "--settings", str(path)])
+    result = runner.invoke(
+        claude_typer, ["hooks", "uninstall", "--settings", str(path)]
+    )
     assert result.exit_code == 0
 
     # Only the command hook remains; the events that held just Octomate's are dropped.

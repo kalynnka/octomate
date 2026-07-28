@@ -57,9 +57,7 @@ CodexReasoningSummary: TypeAlias = Literal[
     "none",
 ]
 CodexSandbox: TypeAlias = Literal["read_only", "workspace_write", "full_access"]
-AgentRouteModelName: TypeAlias = (
-    KnownModelName | ClaudeCodeModelName | CodexModelName
-)
+AgentRouteModelName: TypeAlias = KnownModelName | ClaudeCodeModelName | CodexModelName
 
 
 @dataclass(frozen=True)
