@@ -185,19 +185,19 @@ async def test_native_events_pass_through_to_stock_handlers() -> None:
     assert any(isinstance(chunk, ReasoningStartChunk) for chunk in chunks)
 
 
-async def test_parent_stream_hides_scheme_tool_row() -> None:
+async def test_parent_stream_hides_commission_tool_row() -> None:
     chunks = await _chunks(
         [
             FunctionToolCallEvent(
                 ToolCallPart(
-                    tool_name="scheme",
+                    tool_name="commission",
                     args={"name": "audit"},
                     tool_call_id="call-a",
                 )
             ),
             FunctionToolResultEvent(
                 ToolReturnPart(
-                    tool_name="scheme",
+                    tool_name="commission",
                     content="report",
                     tool_call_id="call-a",
                 )
@@ -205,9 +205,7 @@ async def test_parent_stream_hides_scheme_tool_row() -> None:
         ]
     )
 
-    assert not any(
-        getattr(chunk, "tool_call_id", None) == "call-a" for chunk in chunks
-    )
+    assert not any(getattr(chunk, "tool_call_id", None) == "call-a" for chunk in chunks)
 
 
 async def test_subagents_render_as_independent_standard_tool_parts() -> None:
@@ -226,11 +224,14 @@ async def test_subagents_render_as_independent_standard_tool_parts() -> None:
     )
     try:
         async with feeler.open(address) as timeline:
-            async with timeline.open_subagent(
-                SubagentActivity("call-a", "scheme", "audit")
-            ) as first, timeline.open_subagent(
-                SubagentActivity("call-b", "scheme", "tests")
-            ) as second:
+            async with (
+                timeline.open_subagent(
+                    SubagentActivity("call-a", "commission", "audit")
+                ) as first,
+                timeline.open_subagent(
+                    SubagentActivity("call-b", "commission", "tests")
+                ) as second,
+            ):
                 await first.append_response("audit result")
                 await second.append_response("test result")
                 await first.settle("completed")
@@ -243,7 +244,7 @@ async def test_subagents_render_as_independent_standard_tool_parts() -> None:
     inputs = [item for item in items if isinstance(item, ToolInputAvailableChunk)]
     outputs = [item for item in items if isinstance(item, ToolOutputAvailableChunk)]
     assert [item.tool_call_id for item in inputs] == ["call-a", "call-b"]
-    assert [item.tool_name for item in inputs] == ["scheme", "scheme"]
+    assert [item.tool_name for item in inputs] == ["commission", "commission"]
     first_outputs = [item for item in outputs if item.tool_call_id == "call-a"]
     second_outputs = [item for item in outputs if item.tool_call_id == "call-b"]
     assert first_outputs[-1].preliminary is False

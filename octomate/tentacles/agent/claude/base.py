@@ -347,7 +347,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             if tool_name in session_allowed:
                 return PermissionResultAllow(updated_input=input_data)
             if not interactive:
-                # A non-interactive run (an accomplice in a scheme) has no
+                # A non-interactive run (a commissioned accomplice) has no
                 # human to ask — decline at once instead of presenting a card.
                 return PermissionResultDeny(
                     message=f"{tool_name} needs an approval and this run has no "

@@ -286,6 +286,10 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
     """Channel that serves the pydantic-ai Vercel dev UI over `octomate.kick`."""
 
     SDK_VERSION: ClassVar[Literal[6]] = 6
+    # Routing only: the chromo always sets a thread_id, so a reply continues its
+    # own chat without triage. There is no seam to open a sub-thread and no DM
+    # surface, so `surfaces` stays empty — this is the channel that proves the two
+    # are different questions.
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
 
     def __init__(self, id: str, octomate: Octomate, *, config: ChannelConfig) -> None:
@@ -334,7 +338,8 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
             (
                 agent_config
                 for agent_config in self.routable_agents()
-                if f"{agent_config.agent}{ROUTE_SEP}{agent_config.model}" == selected_model
+                if f"{agent_config.agent}{ROUTE_SEP}{agent_config.model}"
+                == selected_model
             ),
             None,
         )

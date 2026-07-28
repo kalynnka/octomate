@@ -35,6 +35,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.triage import SummonDecision
+from octomate.tentacles.channel.base import ChannelSurfaces
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
@@ -53,6 +54,7 @@ from octomate.tentacles.channel.lark import LarkTentacle
 from octomate.tentacles.channel.napcat import NapcatTentacle
 from octomate.tentacles.channel.slack import SlackTentacle
 from octomate.tentacles.channel.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
+from octomate.tentacles.channel.web.vercel import VercelTentacle
 
 from tests.support.channels import (
     FakeChannelTentacle,
@@ -112,15 +114,37 @@ def _approval(*, batch_id: uuid.UUID | None = None) -> DeferredApproval:
     )
 
 
-def test_thread_strategies_are_declared() -> None:
+def test_channel_surfaces_and_routing_are_declared_apart() -> None:
+    # `thread_strategy` is routing: does an inbound threaded message continue its
+    # thread without triage. `surfaces` is capability: what this platform can be asked
+    # to open. Vercel is why they are two questions — it wants the routing and can
+    # open nothing.
     assert SlackTentacle.thread_strategy == "flat_thread"
+    assert SlackTentacle.surfaces == ChannelSurfaces(
+        sub_thread=True, direct_message=True
+    )
+
     assert LarkTentacle.thread_strategy == "flat_thread"
+    assert LarkTentacle.surfaces == ChannelSurfaces(
+        sub_thread=True, direct_message=True
+    )
+
+    # DM-capable but thread-incapable: the pair that proves they are independent.
     assert NapcatTentacle.thread_strategy == "main_only"
+    assert NapcatTentacle.surfaces == ChannelSurfaces(
+        sub_thread=False, direct_message=True
+    )
+
+    assert VercelTentacle.thread_strategy == "flat_thread"
+    assert VercelTentacle.surfaces == ChannelSurfaces()
 
 
 def test_parent_timeline_hides_subagent_tool_rows() -> None:
-    assert should_skip_plan_tool("scheme")
+    assert should_skip_plan_tool("commission")
     assert should_skip_plan_tool("whisper")
+    # `scheme` is a routing spell like `summon`: the timeline draws its row.
+    assert not should_skip_plan_tool("scheme")
+    assert not should_skip_plan_tool("summon")
 
 
 async def test_timeline_pairs_parallel_subagent_calls_with_their_results() -> None:
@@ -130,38 +154,38 @@ async def test_timeline_pairs_parallel_subagent_calls_with_their_results() -> No
     events = [
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={"name": "audit", "brief": "Audit the repo."},
                 tool_call_id="call-a",
             )
         ),
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={"name": "tests", "brief": "Run tests."},
                 tool_call_id="call-b",
             )
         ),
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={"name": "docs", "brief": "Review docs."},
                 tool_call_id="call-c",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="scheme", content="test report", tool_call_id="call-b"
+                tool_name="commission", content="test report", tool_call_id="call-b"
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="scheme", content="audit report", tool_call_id="call-a"
+                tool_name="commission", content="audit report", tool_call_id="call-a"
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="scheme", content="docs report", tool_call_id="call-c"
+                tool_name="commission", content="docs report", tool_call_id="call-c"
             )
         ),
     ]
@@ -170,16 +194,13 @@ async def test_timeline_pairs_parallel_subagent_calls_with_their_results() -> No
         await state.drive(play(events))
 
     assert len(timeline.subagent_states) == 3
-    states = {
-        state.activity.invocation_id: state for state in timeline.subagent_states
-    }
+    states = {state.activity.invocation_id: state for state in timeline.subagent_states}
     assert states["call-a"].response == "audit report"
     assert states["call-b"].response == "test report"
     assert states["call-c"].response == "docs report"
     assert len({id(state) for state in timeline.subagent_states}) == 3
     assert all(
-        state.settlements == [("completed", None)]
-        for state in timeline.subagent_states
+        state.settlements == [("completed", None)] for state in timeline.subagent_states
     )
     assert all(state.closed for state in timeline.subagent_states)
     assert "tool_start" not in timeline.names()
@@ -239,21 +260,21 @@ async def test_timeline_folds_retry_and_pending_subagent_failures() -> None:
     events = [
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={"name": "timeout"},
                 tool_call_id="call-timeout",
             )
         ),
         FunctionToolResultEvent(
             RetryPromptPart(
-                tool_name="scheme",
+                tool_name="commission",
                 content="The accomplice exceeded its timeout.",
                 tool_call_id="call-timeout",
             )
         ),
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={"name": "broken"},
                 tool_call_id="call-broken",
             )
@@ -274,14 +295,14 @@ async def test_subagent_renderer_failures_do_not_interrupt_the_parent_stream() -
     events = [
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={"name": "resilient"},
                 tool_call_id="call-a",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="scheme", content="report", tool_call_id="call-a"
+                tool_name="commission", content="report", tool_call_id="call-a"
             )
         ),
     ]
@@ -304,7 +325,7 @@ async def test_timeline_closes_an_unfinished_subagent_on_cancellation() -> None:
     async def source() -> AsyncIterator[FunctionToolCallEvent]:
         yield FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={"name": "cancelled"},
                 tool_call_id="call-a",
             )
@@ -332,14 +353,14 @@ async def test_default_timeline_omits_subagent_activity() -> None:
     events = [
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={"name": "audit"},
                 tool_call_id="call-a",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="scheme",
+                tool_name="commission",
                 content="audit report",
                 tool_call_id="call-a",
             )

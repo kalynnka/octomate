@@ -43,6 +43,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.tentacles.channel.base import (
     ChannelOutput,
+    ChannelSurfaces,
     ChannelTentacle,
     Chromo,
     DownloadedImage,
@@ -230,11 +231,15 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     stream); the recording timeline feeler logs each run into `consumed`."""
 
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
+    surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
+        sub_thread=True, direct_message=True
+    )
 
     recording_ink: RecordingInk
     sent: list[tuple[str, str, list[NativeMessage], str | None, bool]]
     consumed: list[tuple[ChannelAddress, IMMessageID | None]]
     sub_threads: list[tuple[ChannelAddress, str]]
+    opened_dms: list[str]
 
     def __init__(
         self,
@@ -260,6 +265,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.sent = self.recording_ink.sent
         self.consumed = []
         self.sub_threads = []
+        self.opened_dms = []
         self.self_profile = self.recording_ink.self_profile
         self.feelers.timeline = RecordingTimelineFeeler(
             self.feelers.timeline, self.consumed
@@ -271,6 +277,19 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
     ) -> IMMessageID | None:
         return await drive(self, address, stream)
+
+    async def open_dm(self, user_id: str) -> ChannelAddress | None:
+        # A user's own id is their private chat id, as on Lark and NapCat — and what
+        # an inbound private message decodes to, so a DM seeded by one is the same
+        # thread this opens.
+        self.opened_dms.append(user_id)
+        return ChannelAddress(
+            channel_tentacle_id=self.id,
+            chat_type="private",
+            chat_id=user_id,
+            user_id=user_id,
+            thread_id="",
+        )
 
     async def start_sub_thread(
         self,
@@ -289,6 +308,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
 
 class MainOnlyChannelTentacle(FakeChannelTentacle):
     thread_strategy: ClassVar[ThreadStrategy] = "main_only"
+    surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(direct_message=True)
 
 
 class NoopTimeline(TimelineState):
@@ -304,9 +324,7 @@ class RecordingTimeline(TimelineState):
     dispatch is observable too."""
 
     calls: list[tuple[str, object]] = field(default_factory=list)
-    subagent_states: list[RecordingSubagentTimelineState] = field(
-        default_factory=list
-    )
+    subagent_states: list[RecordingSubagentTimelineState] = field(default_factory=list)
     fail_subagent_open: bool = False
     fail_subagent_updates: bool = False
     message_id: IMMessageID | None = None

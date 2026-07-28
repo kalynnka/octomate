@@ -55,10 +55,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ThreadStrategy = Literal["main_only", "flat_thread", "nested_thread"]
+ThreadStrategy = Literal["main_only", "flat_thread"]
 ChannelOutput: TypeAlias = str | Sequence[MessageSegment] | DeferredToolRequests | None
 MessageT = TypeVar("MessageT")
 RawT = TypeVar("RawT")
+
+
+@dataclass(frozen=True)
+class ChannelSurfaces:
+    """Which places this channel can open, as opposed to how it routes them.
+
+    `thread_strategy` says how an inbound *threaded* message is routed; these say what
+    the platform can be asked to create. They are separate because a channel can want
+    thread routing without having threads: the dev UI declares `flat_thread` to skip
+    triage and can open nothing.
+
+    Declared per channel class rather than probed — a spell has to know before it runs,
+    and asking the platform every turn would spend a round-trip to answer a constant.
+    """
+
+    sub_thread: bool = False
+    direct_message: bool = False
 
 
 @dataclass(frozen=True)
@@ -139,7 +156,11 @@ class ChannelTentacle(
     """
 
     FILES_ROOT: ClassVar[Path] = Path(".octomate/files")
+    # How an inbound *threaded* message is routed, not what the bot can open:
+    # `flat_thread` means a message carrying a thread_id continues that thread without
+    # triage (reflex.Route). Vercel declares it and can open nothing — see `surfaces`.
     thread_strategy: ClassVar[ThreadStrategy] = "main_only"
+    surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces()
 
     # The platform account this tentacle is logged in as (the bot's own
     # identity on the channel) — probe() fills it from ink.inspect().
@@ -276,6 +297,17 @@ class ChannelTentacle(
                         self.id,
                         exc_info=True,
                     )
+
+    async def open_dm(self, user_id: str) -> ChannelAddress | None:
+        """The 1:1 conversation with `user_id`, opening it if the platform needs to.
+
+        `None` when this channel has no DM surface — the default, since a channel
+        opts in by declaring `surfaces.direct_message` and overriding this. Opening is
+        idempotent on every platform that has it: the returned address may already
+        carry a history, which is why a `teleport` there lands in a fresh thread or
+        stays put rather than forking onto it.
+        """
+        return None
 
     async def start_sub_thread(
         self,

@@ -54,6 +54,26 @@ class SlackInk(Ink[SlackOutboundMessage]):
             title=profile.get("title") or None,
         )
 
+    async def open_dm(self, user_id: str) -> str | None:
+        """The `D…` channel id of the bot's 1:1 with `user_id`.
+
+        `conversations.open` is idempotent — it returns the existing DM when there is
+        one — so this never creates a second surface for the same pair.
+        """
+        try:
+            resp = await self.client.conversations_open(users=user_id)
+        except Exception:
+            # Usually a missing `im:write` scope, which would otherwise degrade every
+            # DM move with nothing to diagnose it by.
+            logger.warning(
+                "SlackInk: conversations.open failed for %s",
+                user_id,
+                exc_info=True,
+            )
+            return None
+        channel = resp.get("channel") or {}
+        return channel.get("id") or None
+
     async def get_user_profile(self, user_id: str) -> SlackUserProfile:
         try:
             resp = await self.client.users_info(user=user_id)

@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -43,6 +49,7 @@ from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.capabilities.gateway import (
+    SCHEME_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_KIND,
     TELEPORT_TOOL_NAME,
@@ -52,7 +59,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.conversation import ChannelAddress
 from pydantic_ai.settings import ThinkingEffort
 
-from octomate.schemas.triage import Claim, SummonDecision
+from octomate.schemas.triage import Claim, SchemeDecision, SummonDecision
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.capabilities.ask import AskCapability
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
@@ -65,7 +72,7 @@ FakeRunOutput = ChannelOutput
 ScriptedOutput = str | DeferredToolRequests
 
 
-def _teleport_requests(hint: str) -> DeferredToolRequests:
+def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRequests:
     """A reception run's `teleport` deferral — the suspender skips it and the graph
     forks + resumes. On the resumed run (deferred results present) the fake answers
     normally, so a teleport turn does not loop."""
@@ -73,12 +80,35 @@ def _teleport_requests(hint: str) -> DeferredToolRequests:
         calls=[
             ToolCallPart(
                 tool_name=TELEPORT_TOOL_NAME,
-                args={"hint": hint},
+                args={"hint": hint, "destination": destination},
                 tool_call_id="call_teleport",
             )
         ],
-        metadata={"call_teleport": {"kind": TELEPORT_KIND, "hint": hint}},
+        metadata={
+            "call_teleport": {
+                "kind": TELEPORT_KIND,
+                "hint": hint,
+                "destination": destination,
+            }
+        },
     )
+
+
+def _gate_tool(
+    capabilities: Sequence[AgentCapability[None]] | None,
+    tool_name: str,
+) -> Callable[..., Awaitable[str]]:
+    gate = next(
+        (
+            capability
+            for capability in capabilities or []
+            if isinstance(capability, GatewayCapability)
+        ),
+        None,
+    )
+    if gate is None or gate.toolset is None:
+        raise AssertionError("a gate decision requires a mounted gate toolset")
+    return gate.toolset.tools[tool_name].function
 
 
 @dataclass
@@ -111,9 +141,11 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     octomate: Octomate | None = None
     reception_output: ChannelOutput = "handled"
     reception_summon: SummonDecision | None = None
+    reception_scheme: SchemeDecision | None = None
     # When set, the first reception run emits a `teleport` deferral with this hint;
     # the resumed run (deferred results present) falls through to `reception_output`.
     reception_teleport: str | None = None
+    reception_teleport_destination: str = "thread"
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
     allow_reception_run: bool = False
     models: dict[str, Model | str] = field(
@@ -183,9 +215,22 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         if not self.allow_reception_run:
             raise AssertionError("reception should use run_stream_events")
         if self.reception_teleport is not None and deferred_tool_results is None:
-            output: FakeRunOutput = _teleport_requests(self.reception_teleport)
+            output: FakeRunOutput = _teleport_requests(
+                self.reception_teleport, self.reception_teleport_destination
+            )
         else:
             output = self.reception_output
+        scheme_decision = self.reception_scheme
+        if scheme_decision is not None:
+            # Cast once, like a model would: the receiving run in the DM must not
+            # re-cast it, where the gate would (rightly) refuse.
+            self.reception_scheme = None
+            await _gate_tool(capabilities, SCHEME_TOOL_NAME)(
+                cast(RunContext[None], None),
+                hint=scheme_decision.hint,
+                brief=scheme_decision.brief,
+            )
+            return AgentRunResult("")
         summon_decision = self.reception_summon
         if summon_decision is not None:
             summon = next(
@@ -248,6 +293,23 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 capabilities=list(capabilities or []),
             )
         )
+        scheme_decision = self.reception_scheme
+        if scheme_decision is not None:
+            # Cast once, like a model would — see the non-streaming path.
+            self.reception_scheme = None
+
+            async def scheme_events() -> AsyncGenerator[
+                ReactStreamEvent[ChannelOutput], None
+            ]:
+                await _gate_tool(capabilities, SCHEME_TOOL_NAME)(
+                    cast(RunContext[None], None),
+                    hint=scheme_decision.hint,
+                    brief=scheme_decision.brief,
+                )
+                yield AgentRunResultEvent(AgentRunResult(""))
+
+            return ReactEventStream(scheme_events())
+
         summon_decision = self.reception_summon
         if summon_decision is not None:
 

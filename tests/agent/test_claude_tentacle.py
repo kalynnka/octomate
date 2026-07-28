@@ -170,7 +170,7 @@ async def test_a_run_addressed_by_conversation_id_lands_there(
         "audit the repo",
         conversation_address=KEY,
         thread_id=_THREAD,
-        run_name="scheme",
+        run_name="commission",
         conversation_id=child.id,
     )
 
@@ -243,7 +243,9 @@ async def test_a_non_interactive_run_declines_approvals_and_questions(
 async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
-    conversations.store[(_THREAD, "claude", "")] = FakeConversation(external_id="prev-sess")
+    conversations.store[(_THREAD, "claude", "")] = FakeConversation(
+        external_id="prev-sess"
+    )
     tentacle = _tentacle(conversations)
 
     result = await tentacle.run("again", conversation_address=KEY, thread_id=_THREAD)
@@ -293,7 +295,8 @@ async def test_run_with_output_type_returns_structured(
 
     result = await tentacle.run(
         "triage this",
-        conversation_address=KEY, thread_id=_THREAD,
+        conversation_address=KEY,
+        thread_id=_THREAD,
         output_type=SummonDecision,
     )
 
@@ -314,7 +317,8 @@ async def test_run_uses_literal_output_schema(
 
     result = await tentacle.run(
         "triage this",
-        conversation_address=KEY, thread_id=_THREAD,
+        conversation_address=KEY,
+        thread_id=_THREAD,
         output_type=Literal["accepted"],
     )
 
@@ -333,7 +337,8 @@ async def test_run_extracts_structured_candidate_from_union(
 
     result = await tentacle.run(
         "triage this",
-        conversation_address=KEY, thread_id=_THREAD,
+        conversation_address=KEY,
+        thread_id=_THREAD,
         output_type=SummonDecision | Literal["ignored"],
     )
 
@@ -353,7 +358,8 @@ async def test_run_rejects_deferred_output_type(
     with pytest.raises(ValueError, match="DeferredToolRequests"):
         await tentacle.run(
             "triage this",
-            conversation_address=KEY, thread_id=_THREAD,
+            conversation_address=KEY,
+            thread_id=_THREAD,
             output_type=[SummonDecision, DeferredToolRequests],
         )
 
@@ -511,9 +517,7 @@ async def test_new_run_interrupts_the_prior_live_run(
 
     assert client_a.interrupted
     # B superseded A: the live entry for the conversation is now B's client.
-    assert (
-        tentacle.live_clients.get(conversation.id) is GatedClaudeClient.instances[1]
-    )
+    assert tentacle.live_clients.get(conversation.id) is GatedClaudeClient.instances[1]
 
 
 async def test_shutdown_interrupts_live_runs(

@@ -16,6 +16,7 @@ from octomate.capabilities.harness.events import OAuthAuthorizationEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import OAuthPending
 from octomate.tentacles.channel.base import (
+    ChannelSurfaces,
     ChannelTentacle,
     ThreadStrategy,
 )
@@ -77,6 +78,9 @@ IGNORED_SUBTYPES = frozenset(
 
 class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
+    surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
+        sub_thread=True, direct_message=True
+    )
     feelers: Feelers
     ink: SlackInk
     chromo: SlackChromo
@@ -173,7 +177,10 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
         subtype = event.get("subtype")
         if subtype in IGNORED_SUBTYPES:
             return
-        if event.get("bot_id") or event.get("user") == self.self_profile.channel_user_id:
+        if (
+            event.get("bot_id")
+            or event.get("user") == self.self_profile.channel_user_id
+        ):
             return
         # Run the turn off the socket listener so bolt acks the envelope right
         # away. Awaiting `ingest` here would hold the ack until the whole run
@@ -449,6 +456,21 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             # the first message would otherwise create it on ingest.
             await self.octomate.thread_manager.ensure(address)
         logger.info("Channel %s: ensured Slack assistant thread %s", self.id, address)
+
+    async def open_dm(self, user_id: str) -> ChannelAddress | None:
+        """The user's DM with the bot, opened through `conversations.open`."""
+        if not user_id:
+            return None
+        channel_id = await self.ink.open_dm(user_id)
+        if channel_id is None:
+            return None
+        return ChannelAddress(
+            channel_tentacle_id=self.id,
+            chat_type="private",
+            chat_id=channel_id,
+            user_id=user_id,
+            thread_id="",
+        )
 
     async def start_sub_thread(
         self,

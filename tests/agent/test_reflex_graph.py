@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from typing import cast
+from dataclasses import replace
+from typing import ClassVar, cast
 
 import pytest
 from pydantic_ai import RunContext
@@ -18,13 +19,19 @@ from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
 from octomate.schemas.thread import Thread
+from octomate.tentacles.channel.base import ChannelSurfaces
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from pydantic_ai.settings import ThinkingEffort
 
-from octomate.schemas.triage import AgentRoute, Claim, SummonDestination
+from octomate.schemas.triage import (
+    AgentRoute,
+    Claim,
+    SchemeDecision,
+    SummonDestination,
+)
 from octomate.reflex import (
     DeferredResult,
     SummonDecision,
@@ -70,7 +77,9 @@ class DroppingTimelineState(TimelineState):
 
 class DroppingTimelineFeeler:
     @asynccontextmanager
-    async def open(self, address: ChannelAddress) -> AsyncGenerator[DroppingTimelineState]:
+    async def open(
+        self, address: ChannelAddress
+    ) -> AsyncGenerator[DroppingTimelineState]:
         yield DroppingTimelineState()
 
 
@@ -240,9 +249,7 @@ def test_agent_routes_evict_models_the_agent_does_not_serve() -> None:
     served = Claim(ability="fake agent")
     agent = FakeAgent(claims={"test": served, "haiku": Claim(ability="phantom")})
 
-    assert agent.routes == [
-        AgentRoute(agent_id="inkling", model="test", claim=served)
-    ]
+    assert agent.routes == [AgentRoute(agent_id="inkling", model="test", claim=served)]
 
 
 def test_available_routes_are_the_exposed_agents_own_routes() -> None:
@@ -404,7 +411,7 @@ async def test_non_stream_reception_presents_only_the_final_output() -> None:
     assert im.sent[-1][2][0]["text"] == "done"
 
 
-async def test_react_mounts_a_scheming_gate_in_a_thread() -> None:
+async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
     address = _key("t1")
     agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
     conversations = FakeConversationManager()
@@ -427,10 +434,10 @@ async def test_react_mounts_a_scheming_gate_in_a_thread() -> None:
     )
 
     gate = _recorded_gate_capability(agent.turns[0])
-    assert gate.scheming
+    assert gate.commissioning
     assert gate.thread_id == thread.id
     assert gate.conversation_address == address
-    assert gate.toolset is not None and "scheme" in gate.toolset.tools
+    assert gate.toolset is not None and "commission" in gate.toolset.tools
 
 
 async def test_react_passes_the_decision_effort_to_the_run() -> None:
@@ -540,7 +547,9 @@ async def test_summon_here_takes_over_current_conversation() -> None:
         reception_summon=_summon(agent_id="second", destination="here"),
         allow_reception_run=True,
     )
-    second = FakeAgent(id="second", reception_output="took over", allow_reception_run=True)
+    second = FakeAgent(
+        id="second", reception_output="took over", allow_reception_run=True
+    )
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     target = _source_target(address)
 
@@ -548,7 +557,10 @@ async def test_summon_here_takes_over_current_conversation() -> None:
         await reflex_graph.run(
             React(),
             state=ReflexState(
-                source_target=target, target=target, decision=_summon(), thread=_thread(address)
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
             ),
             deps=_summon_deps(im, entry, second),
         )
@@ -557,6 +569,183 @@ async def test_summon_here_takes_over_current_conversation() -> None:
     assert not isinstance(result, DeferredResult)
     assert im.sub_threads == []
     assert second.turns[0].address == address
+
+
+def _group_key(thread_id: str = "") -> ChannelAddress:
+    return ChannelAddress(
+        channel_tentacle_id="im",
+        chat_type="group",
+        chat_id="team",
+        user_id="alice",
+        thread_id=thread_id,
+    )
+
+
+def _private_key(thread_id: str = "") -> ChannelAddress:
+    return ChannelAddress(
+        channel_tentacle_id="im",
+        chat_type="private",
+        chat_id="alice",
+        user_id="alice",
+        thread_id=thread_id,
+    )
+
+
+async def _gate_for(
+    address: ChannelAddress,
+    channel: FakeChannelTentacle | None = None,
+) -> GatewayCapability:
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    im = channel or FakeChannelTentacle(config=_two_reception_config(stream=False))
+    target = _source_target(address)
+    await reflex_graph.run(
+        React(),
+        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        deps=_deps(
+            conversations=FakeConversationManager(),
+            channels={"im": im},
+            agent=agent,
+        ),
+    )
+    return _recorded_gate_capability(agent.turns[0])
+
+
+async def test_scheme_is_reachable_only_from_a_group_with_an_asker() -> None:
+    # The reason travels with the refusal, so the model is told which of the three
+    # walls it hit. None of it reaches the tool schema — see test_gateway.
+    assert (await _gate_for(_group_key())).scheme_blocked_by is None
+    assert (await _gate_for(_group_key("in-thread"))).scheme_blocked_by is None
+
+    # Already one-to-one with this person, thread inside it or not.
+    assert (await _gate_for(_key())).scheme_blocked_by == "already_private"
+    private = await _gate_for(_private_key("assistant"))
+    assert private.scheme_blocked_by == "already_private"
+
+    # Nobody in particular asked (a scheduled or awake run).
+    anonymous = replace(_group_key(), user_id="")
+    assert (await _gate_for(anonymous)).scheme_blocked_by == "no_user"
+
+    class NoDmChannel(FakeChannelTentacle):
+        surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
+
+    without = NoDmChannel(config=_two_reception_config(stream=False))
+    assert (await _gate_for(_group_key(), without)).scheme_blocked_by == "no_surface"
+
+
+async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
+    address = _group_key()
+    entry = FakeAgent(
+        id="other",
+        reception_scheme=SchemeDecision(
+            hint="Continuing with you privately",
+            brief="Finish the migration write-up.",
+        ),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="on it", allow_reception_run=True)
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    threads = FakeThreadManager()
+    # alice's DM already belongs to `second`; the group cannot change that.
+    dm_thread = await threads.ensure(
+        ChannelAddress(
+            channel_tentacle_id="im",
+            chat_type="private",
+            chat_id="alice",
+            user_id="alice",
+        )
+    )
+    await threads.record_handoff(dm_thread, to_agent_tentacle_id="second")
+    deps = _summon_deps(im, entry, second)
+    deps.thread_manager = threads
+    target = _source_target(address)
+
+    result = (
+        await reflex_graph.run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
+            ),
+            deps=deps,
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    assert im.opened_dms == ["alice"]
+    # The DM's own owner picked it up, with the brief as its prompt.
+    assert second.turns[0].prompt == "Finish the migration write-up."
+    assert second.turns[0].address.chat_type == "private"
+    # And the group was told the work moved, so it is not left watching silence.
+    assert im.recording_ink.sent[0][2][0]["text"] == "Continuing with you privately"
+
+
+async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> None:
+    address = _group_key()
+    entry = FakeAgent(
+        id="other",
+        reception_scheme=SchemeDecision(hint="Taking this private", brief="Do it."),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    target = _source_target(address)
+
+    result = (
+        await reflex_graph.run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
+            ),
+            deps=_summon_deps(im, entry, second),
+        )
+    ).output
+
+    assert not isinstance(result, DeferredResult)
+    # No owner to defer to, so the channel's first configured agent takes it.
+    assert entry.turns[-1].prompt == "Do it."
+    assert entry.turns[-1].address.chat_type == "private"
+
+
+async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
+    class NoDmChannel(FakeChannelTentacle):
+        async def open_dm(self, user_id: str) -> ChannelAddress | None:
+            self.opened_dms.append(user_id)
+            return None
+
+    address = _group_key()
+    entry = FakeAgent(
+        id="other",
+        reception_scheme=SchemeDecision(hint="Taking this private", brief="Do it."),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    im = NoDmChannel(config=_two_reception_config(stream=False))
+    target = _source_target(address)
+
+    result = (
+        await reflex_graph.run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
+            ),
+            deps=_summon_deps(im, entry, second),
+        )
+    ).output
+
+    # The platform refused at the moment of asking: nothing moved, nobody was handed
+    # anything, and the origin agent's own reply already landed.
+    assert not isinstance(result, DeferredResult)
+    assert im.opened_dms == ["alice"]
+    assert result.target.address == address
+    assert second.turns == []
 
 
 async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
@@ -580,7 +769,10 @@ async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
         await reflex_graph.run(
             React(),
             state=ReflexState(
-                source_target=target, target=target, decision=_summon(), thread=_thread(address)
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
             ),
             deps=_summon_deps(im, entry, second),
         )

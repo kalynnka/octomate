@@ -102,7 +102,9 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
         # teleport is internal routing (deferred, no result) — skipped from the
         # timeline; its call id must not surface as a task chunk below.
         yield FunctionToolCallEvent(
-            ToolCallPart(tool_name="teleport", args={"hint": "x"}, tool_call_id="call_tp")
+            ToolCallPart(
+                tool_name="teleport", args={"hint": "x"}, tool_call_id="call_tp"
+            )
         )
         yield FunctionToolCallEvent(
             ToolCallPart(tool_name="lookup", args={"query": "x"}, tool_call_id="call_1")
@@ -228,7 +230,9 @@ async def test_slack_consume_renders_image_and_card_segments(
             segment=ImageSegment(data=ImageData(file=str(image_path)))
         )
         yield ResultSegmentEvent(
-            segment=CardSegment(data=CardData(payload={"blocks": [{"type": "divider"}]}))
+            segment=CardSegment(
+                data=CardData(payload={"blocks": [{"type": "divider"}]})
+            )
         )
 
     await drive(channel, slack_key(), events())
@@ -327,9 +331,7 @@ async def test_slack_consume_renders_action_batch_blocks() -> None:
     assert isinstance(request_text, str)
     assert "*Permission Required: `deploy`*" in request_text
     approval_buttons = _json_objects(approval_msg.blocks[-1]["elements"])
-    assert approval_buttons[0]["action_id"] == (
-        SlackBlockAction.APPROVAL_APPROVE.value
-    )
+    assert approval_buttons[0]["action_id"] == (SlackBlockAction.APPROVAL_APPROVE.value)
     # Each presented action is marked with its platform message id.
     marked = {action_id: message_id for action_id, message_id in actions.marked}
     assert len(actions.marked) == 2
@@ -494,17 +496,17 @@ async def test_slack_subagents_own_streams_separate_from_parent_and_siblings() -
     ink = FakeSlackInk()
     channel = slack_channel(ink)
 
-    first_activity = SubagentActivity("call-a", "scheme", "audit")
-    second_activity = SubagentActivity("call-b", "scheme", "tests")
-    third_activity = SubagentActivity("call-c", "scheme", "docs")
+    first_activity = SubagentActivity("call-a", "commission", "audit")
+    second_activity = SubagentActivity("call-b", "commission", "tests")
+    third_activity = SubagentActivity("call-c", "commission", "docs")
     async with channel.feelers.timeline.open(slack_key()) as parent:
         await parent.thinking_start()
         await parent.thinking_delta("parent work")
-        async with parent.open_subagent(
-            first_activity
-        ) as first, parent.open_subagent(
-            second_activity
-        ) as second, parent.open_subagent(third_activity) as third:
+        async with (
+            parent.open_subagent(first_activity) as first,
+            parent.open_subagent(second_activity) as second,
+            parent.open_subagent(third_activity) as third,
+        ):
             await first.append_response("audit result")
             await second.append_response("test result")
             await third.append_response("docs result")
@@ -515,9 +517,10 @@ async def test_slack_subagents_own_streams_separate_from_parent_and_siblings() -
 
     assert len(ink.stream_objects) == 4
     first_stream, second_stream, third_stream = ink.stream_objects[1:]
-    assert len(
-        {id(parent_stream), id(first_stream), id(second_stream), id(third_stream)}
-    ) == 4
+    assert (
+        len({id(parent_stream), id(first_stream), id(second_stream), id(third_stream)})
+        == 4
+    )
     parent_ids = {
         chunk.id
         for group in parent_stream.chunks

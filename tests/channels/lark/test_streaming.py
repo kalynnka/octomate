@@ -255,7 +255,8 @@ async def test_lark_consume_renders_action_batch_cards() -> None:
     question = question.model_copy(update={"batch_id": batch_id})
     approval = approval.model_copy(update={"batch_id": batch_id})
 
-    await drive(channel, 
+    await drive(
+        channel,
         address,
         play(
             action_batch(
@@ -409,14 +410,15 @@ async def test_lark_subagents_own_cards_separate_from_parent_and_siblings() -> N
         user_id="u1",
     )
 
-    first_activity = SubagentActivity("call-a", "scheme", "audit")
-    second_activity = SubagentActivity("call-b", "scheme", "tests")
+    first_activity = SubagentActivity("call-a", "commission", "audit")
+    second_activity = SubagentActivity("call-b", "commission", "tests")
     async with channel.feelers.timeline.open(address) as parent:
         await parent.thinking_start()
         await parent.thinking_delta("parent work")
-        async with parent.open_subagent(
-            first_activity
-        ) as first, parent.open_subagent(second_activity) as second:
+        async with (
+            parent.open_subagent(first_activity) as first,
+            parent.open_subagent(second_activity) as second,
+        ):
             await first.append_response("audit result")
             await second.append_response("test result")
             await first.settle("completed")

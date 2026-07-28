@@ -11,8 +11,9 @@ from octomate.config.agents import AgentRouteModelName, Claim
 
 ResponseTargetMode = Literal["main", "sub"]
 # Where a summon lands: `here` transmits ownership of the current thread in place;
-# `thread` hands off into a new sub-thread of the current chat. (A brand-new DM and
-# cross-channel targets are parked — see docs/plans/self-routing-dispatch.md.)
+# `thread` hands off into a new sub-thread of the current chat. Moving to the asking
+# user's DM is its own spell (`scheme`), not a destination — it hands the work to
+# whoever owns that DM rather than to an agent this one picked.
 SummonDestination = Literal["here", "thread"]
 # How the react loop was entered, and thus what to call the agent run it drives:
 # `react` (an initial reaction to an inbound message), `summon` (a handoff to another
@@ -41,6 +42,20 @@ class SummonDecision(BaseModel):
     @property
     def key(self) -> AgentRouteKey:
         return AgentRouteKey(agent_id=self.agent_id, model=self.model)
+
+
+class SchemeDecision(BaseModel):
+    """Take this turn to the asking user's DM, from a brief.
+
+    No agent is named: whoever already handles that user's DM picks the work up, so a
+    group can never point someone's private assistant at an agent it chose. The
+    receiver is resolved against the DM's own thread, which is why this carries a brief
+    rather than a route.
+    """
+
+    action: Literal["scheme"] = "scheme"
+    hint: str
+    brief: str
 
 
 @dataclass(frozen=True)

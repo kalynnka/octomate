@@ -115,7 +115,7 @@ class ConversationManager:
     async def get(self, conversation_id: uuid.UUID) -> Conversation:
         """Resolve a conversation by id — a cache hit or one fresh read; raises
         on an unknown id. This is the by-id path for a run addressed at a
-        pre-ensured conversation (a schemed accomplice's child context): the
+        pre-ensured conversation (a commissioned accomplice's child context): the
         caller ensured it and owns any thread/agent validation."""
         for cached in self.conversations.values():
             if cached.id == conversation_id:

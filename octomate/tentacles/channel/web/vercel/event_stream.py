@@ -54,7 +54,7 @@ from octomate.capabilities.harness.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
-from octomate.capabilities.gateway import SCHEME_TOOL_NAME, WHISPER_TOOL_NAME
+from octomate.capabilities.gateway import COMMISSION_TOOL_NAME, WHISPER_TOOL_NAME
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.tentacles.agent.inkling.base import InklingOutput
 
@@ -68,10 +68,9 @@ class VercelEventStream(VercelAIEventStream[None, InklingOutput]):
         event: NativeEvent | ReactStreamEvent[InklingOutput] | BaseChunk,
     ) -> AsyncIterator[BaseChunk]:
         match event:
-            case (
-                FunctionToolCallEvent()
-                | FunctionToolResultEvent()
-            ) if event.part.tool_name in {SCHEME_TOOL_NAME, WHISPER_TOOL_NAME}:
+            case FunctionToolCallEvent() | FunctionToolResultEvent() if (
+                event.part.tool_name in {COMMISSION_TOOL_NAME, WHISPER_TOOL_NAME}
+            ):
                 return
             case BaseChunk():
                 async for chunk in self.close_reply():

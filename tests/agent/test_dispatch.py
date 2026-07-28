@@ -17,7 +17,7 @@ from octomate.capabilities.harness.agent import Agent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.database import async_session
 from octomate.schemas.awakes import UserMessageSignal
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadMessage
@@ -68,12 +68,13 @@ def _event(
     user_id: str = "alice",
     text: str = "hi",
     thread_id: str = "",
+    chat_type: ChatType = "private",
 ) -> MessageEvent:
     return MessageEvent(
         tentacle_id=tentacle_id,
         message_id=message_id,
-        chat_type="private",
-        chat_id="alice",
+        chat_type=chat_type,
+        chat_id="team" if chat_type == "group" else "alice",
         user_id=user_id,
         thread_id=thread_id,
         segments=[TextSegment(data={"text": text})],
@@ -146,7 +147,9 @@ async def test_entry_agent_summons_into_a_sub_thread() -> None:
         ),
         allow_reception_run=True,
     )
-    claude = FakeAgent(id="claude", reception_output="debugged", allow_reception_run=True)
+    claude = FakeAgent(
+        id="claude", reception_output="debugged", allow_reception_run=True
+    )
     channel = FakeChannelTentacle(config=_summon_config(stream=False))
     _register_agents(octomate, entry, claude)
     octomate.connect(channel)
@@ -174,7 +177,9 @@ async def test_summon_here_transmits_current_dm_ownership() -> None:
         ),
         allow_reception_run=True,
     )
-    claude = FakeAgent(id="claude", reception_output="took over", allow_reception_run=True)
+    claude = FakeAgent(
+        id="claude", reception_output="took over", allow_reception_run=True
+    )
     channel = FakeChannelTentacle(config=_summon_config(stream=False))
     _register_agents(octomate, entry, claude)
     octomate.connect(channel)
@@ -455,7 +460,9 @@ async def test_streamed_reception_records_output_without_timeline_source() -> No
 async def test_streamed_reception_persists_when_presentation_fails() -> None:
     octomate = Octomate()
     entry = FakeAgent(reception_output="survives render failure")
-    channel = FakeChannelTentacle(ink=FailingSendInk(), config=_entry_config(stream=True))
+    channel = FakeChannelTentacle(
+        ink=FailingSendInk(), config=_entry_config(stream=True)
+    )
     _register_agents(octomate, entry)
     octomate.connect(channel)
 

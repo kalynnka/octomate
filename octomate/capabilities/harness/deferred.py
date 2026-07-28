@@ -31,7 +31,7 @@ class DeferredResolver(Protocol):
 @dataclass
 class DeclineResolver:
     """Resolves every deferred action by declining it immediately — the
-    resolver for a non-interactive run (e.g. an accomplice in a scheme). There is no
+    resolver for a non-interactive run (e.g. a commissioned accomplice). There is no
     human to ask, so approvals are denied and asks are answered with the
     decline, and the react loop continues to a final answer in-process instead
     of parking anything for review."""

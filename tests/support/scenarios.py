@@ -393,8 +393,8 @@ def agent_run() -> ChannelScript:
     rendering the streaming feelers drive."""
     answer = (
         "All read-only — here's what I found 🐙\n\n"
-        "*GitHub `pydantic/pydantic-ai`* — \"AI Agent Framework, the Pydantic "
-        "way\", 17,812⭐, 635 open issues. Recent: #5966 Native minimax support, "
+        '*GitHub `pydantic/pydantic-ai`* — "AI Agent Framework, the Pydantic '
+        'way", 17,812⭐, 635 open issues. Recent: #5966 Native minimax support, '
         "#5964 AGUIAdapter reorders ToolReturnPart.\n\n"
         "*Linear* — teams China, Vita, DevOps. Recent in Vita: VITA-909 "
         "progressive-loading taxonomy (Triaged), VITA-908 New Chat loading state "
@@ -605,7 +605,7 @@ def mid_run_notice(
 
 
 def subagent_run() -> ChannelScript:
-    """Two parallel schemes from a real DeepSeek Flash Inkling capture, condensed
+    """Two parallel commissions from a real DeepSeek Flash Inkling capture, condensed
     to stable tool events and de-identified for live channel replay."""
     timeline_report = (
         "1. **Append-Only** — Once an event is added, it cannot be modified, "
@@ -652,9 +652,7 @@ def subagent_run() -> ChannelScript:
                     {
                         "agent_id": "capture-accomplice",
                         "model": "deepseek:deepseek-v4-flash",
-                        "claim": {
-                            "ability": "independent analysis for capture tests"
-                        },
+                        "claim": {"ability": "independent analysis for capture tests"},
                     }
                 ],
                 tool_call_id="call_scry_subagents",
@@ -663,40 +661,40 @@ def subagent_run() -> ChannelScript:
         *narration("I found the route and am starting both reviews in parallel."),
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={
                     "name": "timeline-contract",
                     "agent_id": "capture-accomplice",
                     "model": "deepseek:deepseek-v4-flash",
                     "brief": "List three invariants for an independent timeline.",
                 },
-                tool_call_id="call_scheme_timeline",
+                tool_call_id="call_commission_timeline",
             )
         ),
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scheme",
+                tool_name="commission",
                 args={
                     "name": "failure-review",
                     "agent_id": "capture-accomplice",
                     "model": "deepseek:deepseek-v4-flash",
                     "brief": "List three failures where partial work must survive.",
                 },
-                tool_call_id="call_scheme_failures",
+                tool_call_id="call_commission_failures",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="scheme",
+                tool_name="commission",
                 content=timeline_report,
-                tool_call_id="call_scheme_timeline",
+                tool_call_id="call_commission_timeline",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="scheme",
+                tool_name="commission",
                 content=failure_report,
-                tool_call_id="call_scheme_failures",
+                tool_call_id="call_commission_failures",
             )
         ),
         *streamed_text(answer),

@@ -43,6 +43,7 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import ModelRequest
 
 from octomate.telemetry import react_logfire
+
 logger = logging.getLogger(__name__)
 # The react graph is generic machinery: the run's output type is whatever the
 # builder's agent/output_type produce, so neither type variable is bounded.
@@ -70,7 +71,7 @@ class ReactState:
     agent_tentacle_id: str
     thread_id: uuid.UUID
     # A pre-ensured conversation to run in, by id — the caller that spawned this
-    # run chose the context (e.g. a schemed accomplice's child conversation).
+    # run chose the context (e.g. a commissioned accomplice's child conversation).
     # None resolves the agent's own (thread, agent) conversation as usual.
     conversation_id: uuid.UUID | None = None
     source_thread_address: ChannelAddress | None = None

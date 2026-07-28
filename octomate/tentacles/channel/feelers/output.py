@@ -67,7 +67,7 @@ from octomate.capabilities.harness.events import (
     TodoUpdatedEvent,
 )
 from octomate.capabilities.gateway import (
-    SCHEME_TOOL_NAME,
+    COMMISSION_TOOL_NAME,
     TELEPORT_TOOL_NAME,
     WHISPER_TOOL_NAME,
 )
@@ -452,7 +452,7 @@ SKIPPED_PLAN_TOOL_NAMES = frozenset(
         DEFAULT_OUTPUT_TOOL_NAME,
         SEND_TOOL_NAME,
         # Subagent calls render as separate timelines instead of parent plan rows.
-        SCHEME_TOOL_NAME,
+        COMMISSION_TOOL_NAME,
         WHISPER_TOOL_NAME,
         TELEPORT_TOOL_NAME,  # Teleport is internal routing plumbing (relocate the conversation)
     }
@@ -619,7 +619,7 @@ class TimelineState:
         part: ToolCallPart | ToolReturnPart | RetryPromptPart,
     ) -> None:
         if isinstance(part, ToolCallPart):
-            if part.tool_name not in {SCHEME_TOOL_NAME, WHISPER_TOOL_NAME}:
+            if part.tool_name not in {COMMISSION_TOOL_NAME, WHISPER_TOOL_NAME}:
                 return
             args = part.args_as_dict()
             name = args.get("name")
@@ -631,7 +631,9 @@ class TimelineState:
                 return
             activity = SubagentActivity(
                 invocation_id=part.tool_call_id,
-                kind="scheme" if part.tool_name == SCHEME_TOOL_NAME else "whisper",
+                kind="commission"
+                if part.tool_name == COMMISSION_TOOL_NAME
+                else "whisper",
                 name=name,
             )
             context = self.open_subagent(activity)

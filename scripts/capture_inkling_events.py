@@ -42,7 +42,7 @@ from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.base import Octomate
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.gateway import SCHEME_TOOL_NAME, GatewayCapability
+from octomate.capabilities.gateway import COMMISSION_TOOL_NAME, GatewayCapability
 from octomate.capabilities.send import SendCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
@@ -78,7 +78,7 @@ SEGMENTS_PROMPT = (
 )
 SUBAGENTS_PROMPT = (
     "This is a subagent capture test. First call scry. Then, in one assistant "
-    "turn, call scheme twice using the route scry returns. Name the accomplices "
+    "turn, call commission twice using the route scry returns. Name the accomplices "
     "timeline-contract and failure-review. Ask timeline-contract for three "
     "invariants of an independent subagent activity timeline. Ask failure-review "
     "for three failure cases whose partial report should remain reviewable. After "
@@ -139,7 +139,7 @@ def parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--subagents",
         action="store_true",
-        help="Capture one real Inkling run that completes two scheme calls.",
+        help="Capture one real Inkling run that completes two commission calls.",
     )
     parser.add_argument(
         "--mcp",
@@ -279,8 +279,8 @@ async def capture_case(
                 conversation_address=address,
             )
         )
-    scheme_calls = 0
-    scheme_results = 0
+    commission_calls = 0
+    commission_results = 0
     async with agent.iter(
         case.prompt,
         output_type=case.output_type,
@@ -295,14 +295,14 @@ async def capture_case(
                         count = write_event(file, count, event)
                         if (
                             isinstance(event, FunctionToolCallEvent)
-                            and event.part.tool_name == SCHEME_TOOL_NAME
+                            and event.part.tool_name == COMMISSION_TOOL_NAME
                         ):
-                            scheme_calls += 1
+                            commission_calls += 1
                         elif (
                             isinstance(event, FunctionToolResultEvent)
-                            and event.part.tool_name == SCHEME_TOOL_NAME
+                            and event.part.tool_name == COMMISSION_TOOL_NAME
                         ):
-                            scheme_results += 1
+                            commission_results += 1
         if run.result is None:
             raise RuntimeError(f"{case.name} capture completed without a run result")
 
@@ -332,10 +332,10 @@ async def capture_case(
 
         result_event = AgentRunResultEvent(run.result)
         count = write_event(file, count, result_event)
-        if case.subagents and (scheme_calls < 2 or scheme_results < 2):
+        if case.subagents and (commission_calls < 2 or commission_results < 2):
             raise RuntimeError(
-                f"subagent capture expected two scheme pairs, got "
-                f"calls={scheme_calls}, results={scheme_results}"
+                f"subagent capture expected two commission pairs, got "
+                f"calls={commission_calls}, results={commission_results}"
             )
         await conversations.record_agent_run(
             conversation,

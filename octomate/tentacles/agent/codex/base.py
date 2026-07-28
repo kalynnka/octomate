@@ -566,7 +566,9 @@ class CodexTentacle(AgentTentacle[str, None]):
 
     @staticmethod
     def question_from_sdk_request(method: str, params: JsonObject) -> QuestionRequest:
-        question = params.get("message") or params.get("question") or params.get("prompt")
+        question = (
+            params.get("message") or params.get("question") or params.get("prompt")
+        )
         if not isinstance(question, str) or not question.strip():
             question = f"Codex is requesting input for {method}."
         return QuestionRequest(question=question)
@@ -764,7 +766,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             or None
         )
 
-        # A non-interactive run (an accomplice in a scheme) never asks a human:
+        # A non-interactive run (a commissioned accomplice) never asks a human:
         # the SDK's own deny_all mode declines every approval at the source.
         approval_mode = self.config.approval_mode if interactive else "deny_all"
         approval_plan = codex_approval_plan(approval_mode)
@@ -875,7 +877,9 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         if source_thread_message_ids:
             if recorded_run is None:
-                raise RuntimeError("prompt-source bindings require a persisted Codex run")
+                raise RuntimeError(
+                    "prompt-source bindings require a persisted Codex run"
+                )
             prompt_request = next(
                 (
                     message

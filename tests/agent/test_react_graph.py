@@ -306,7 +306,7 @@ async def test_a_run_addressed_by_conversation_id_lands_there() -> None:
         subagent_id="repo-audit",
         parent_conversation_id=parent.id,
     )
-    deps = _deps(agent=agent, conversations=conversations, run_name="scheme")
+    deps = _deps(agent=agent, conversations=conversations, run_name="commission")
 
     await _graph().run(
         StartTurn(user_prompt="do the delegated work"),

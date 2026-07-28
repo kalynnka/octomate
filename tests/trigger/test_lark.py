@@ -86,7 +86,8 @@ async def test_lark_renders_streamed_str_output(
     channel, address = lark_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, 
+        message_id = await drive(
+            channel,
             address,
             play(streamed_text("String ", "output from the octomate test suite.")),
         )
@@ -104,8 +105,8 @@ async def test_lark_renders_streamed_segments_showcase(
     channel, address = lark_channel
 
     with caplog.at_level("WARNING"):
-        message_id = await drive(channel, 
-            address, play(showcase(image_file=scenario_image))
+        message_id = await drive(
+            channel, address, play(showcase(image_file=scenario_image))
         )
 
     assert message_id is not None
@@ -169,8 +170,8 @@ async def test_lark_renders_subagent_timelines(
     lark_channel: tuple[LarkTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Two parallel schemes open sibling cards and fold their reports without
-    adding scheme rows to the parent timeline."""
+    """Two parallel commissions open sibling cards and fold their reports without
+    adding commission rows to the parent timeline."""
     channel, address = lark_channel
 
     with caplog.at_level("WARNING"):

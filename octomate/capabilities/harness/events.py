@@ -42,7 +42,7 @@ from octomate.schemas.todos import Todo
 
 OutputT = TypeVar("OutputT")
 
-SubagentActivityKind = Literal["scheme", "whisper"]
+SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
 
 

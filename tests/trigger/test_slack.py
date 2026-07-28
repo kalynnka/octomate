@@ -179,8 +179,8 @@ async def test_slack_renders_subagent_timelines(
     slack_channel: tuple[SlackTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Two parallel schemes open sibling streams and fold their reports without
-    adding scheme rows to the parent plan stream."""
+    """Two parallel commissions open sibling streams and fold their reports without
+    adding commission rows to the parent plan stream."""
     channel, address = slack_channel
 
     with caplog.at_level("WARNING"):

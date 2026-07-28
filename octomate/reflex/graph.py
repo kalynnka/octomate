@@ -32,6 +32,7 @@ from octomate.schemas.thread import Thread
 from octomate.schemas.user import UserProfile
 from octomate.schemas.triage import (
     AgentRoute,
+    SchemeDecision,
     ResponseTargetMode,
     RunName,
     SummonDecision,
@@ -52,6 +53,8 @@ logger = logging.getLogger(__name__)
 class ResponseTarget:
     channel_id: str
     address: ChannelAddress | None = None
+    # Routing only — how an inbound threaded message is handled (`Route`). What this
+    # channel can actually open lives on the channel itself, as `surfaces`.
     thread_strategy: ThreadStrategy = "main_only"
     mode: ResponseTargetMode = "main"
 
@@ -428,7 +431,8 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # Take over the current conversation in place — no new surface. The
             # allow_here gate already refused this on a group main (Case 1).
             target = replace(target, address=target_address)
-        elif target.thread_strategy == "main_only":
+        elif not channel.surfaces.sub_thread:
+            # Nothing to open on this platform — the handoff lands in the main chat.
             target = replace(target, mode="main")
         elif not target_address.thread_id:
             try:
@@ -465,7 +469,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> Handoff | Teleport | End[ReflexGraphResult]:
+    ) -> Handoff | Teleport | Scheme | End[ReflexGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target
@@ -526,13 +530,14 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             if route.agent_id != agent.id
         ]
         state.summon_routes = routes
-        # `summon here` is refused on a group main (Case 1): pinning an owner there
-        # would route every gated-in message, from any user, to one agent.
         gate = GatewayCapability(
             routes=routes,
             current_agent_id=agent.id,
-            allow_here=not (target_address.is_group and not target_address.thread_id),
-            # The scheme spells need to actually run an accomplice; without
+            # Every channel, not just this one: the gate reads `surfaces` off the
+            # address's own channel to know whether `scheme` can land, and a
+            # cross-channel move will ask the same of the others.
+            channels=ctx.deps.channels,
+            # The accomplice spells need to actually run one; without
             # a thread there is nowhere for a child conversation to live, and
             # the gate then simply does not offer them.
             agents=ctx.deps.agents,
@@ -754,20 +759,31 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     )
                 )
 
-            summon_decision = gate.decision
-            if summon_decision is not None:
-                state.decision = summon_decision
+            gate_decision = gate.decision
+            if isinstance(gate_decision, SchemeDecision):
+                span.set_attribute("react.action", gate_decision.action)
+                reflex_logfire.info(
+                    "react -> scheme into the asker's dm",
+                    hint=gate_decision.hint,
+                )
+                return Scheme(
+                    request=gate_decision,
+                    origin=target,
+                    agent_id=agent.id,
+                )
+            if gate_decision is not None:
+                state.decision = gate_decision
                 state.target = target
                 state.claim_handoff = True
                 state.handoff_from_agent_tentacle_id = agent.id
                 state.run_name = "summon"
-                span.set_attribute("react.action", summon_decision.action)
-                span.set_attribute("react.next_agent_id", summon_decision.agent_id)
+                span.set_attribute("react.action", gate_decision.action)
+                span.set_attribute("react.next_agent_id", gate_decision.agent_id)
                 reflex_logfire.info(
                     "react -> {action} agent={agent_id}",
-                    action=summon_decision.action,
-                    agent_id=summon_decision.agent_id,
-                    reason=summon_decision.reason,
+                    action=gate_decision.action,
+                    agent_id=gate_decision.agent_id,
+                    reason=gate_decision.reason,
                 )
                 return Handoff()
 
@@ -778,6 +794,87 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     result=run_result,
                 )
             )
+
+
+@dataclass
+class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
+    """A `scheme` call: hand this turn's brief to the asking user's direct messages.
+
+    The receiver is whoever already owns that DM, or the channel's default agent when
+    nobody does — never an agent this run picked, so a group can't point someone's
+    private assistant somewhere. From there it is an ordinary handoff: the brief becomes
+    the receiving agent's prompt and the handoff is recorded on the DM's own thread, the
+    same way `Route` re-enters `React` with a decision it resolved itself.
+    """
+
+    request: SchemeDecision
+    origin: ResponseTarget
+    agent_id: str
+
+    @reflex_logfire.instrument("reflex.scheme", extract_args=False)
+    async def run(
+        self,
+        ctx: GraphRunContext[ReflexState, ReflexDeps],
+    ) -> React | End[ReflexGraphResult]:
+        state = ctx.state
+        origin = self.origin
+        if origin.address is None:
+            raise ValueError("Scheme requires a resolved origin")
+        origin_address = origin.address
+        channel = ctx.deps.channel(origin)
+
+        dm_address = await channel.open_dm(origin_address.user_id)
+        if dm_address is None:
+            # The gate refused the cases we can know in advance, so this is the platform
+            # failing at the moment of asking. Nothing has moved: leave the turn where
+            # it is, with the origin agent's own reply already delivered.
+            logger.warning(
+                "Channel %s could not open a DM with %s; leaving the turn here",
+                origin.channel_id,
+                origin_address.user_id,
+            )
+            return End(ReflexResult(decision=None, target=origin))
+
+        dm_thread = await ctx.deps.thread_manager.ensure(dm_address)
+        receiver = dm_thread.active_agent_tentacle_id
+        resolved = ctx.deps.resolve_agent(
+            origin.channel_id,
+            receiver,
+            dm_thread.active_model if receiver else None,
+        )
+        # Say so where it came from: a move into a DM posts nothing in the origin chat,
+        # so without this the group is left watching silence while the work continues
+        # somewhere it cannot see. (`summon thread` announces itself by opening the
+        # thread with the same hint.)
+        try:
+            await channel.feelers.markdown.present(origin_address, self.request.hint)
+        except Exception:
+            logger.warning(
+                "Channel %s failed to announce the move to a DM",
+                origin.channel_id,
+                exc_info=True,
+            )
+
+        state.run_name = "summon"
+        state.thread = dm_thread
+        state.target = ResponseTarget(
+            channel_id=origin.channel_id,
+            address=dm_address,
+            thread_strategy=channel.thread_strategy,
+            mode="main",
+        )
+        state.decision = SummonDecision(
+            action="summon",
+            agent_id=resolved.agent,
+            model=resolved.model,
+            destination="here",
+            reason="Continuing with this user privately.",
+            hint=self.request.hint,
+            summon=self.request.brief,
+        )
+        state.claim_handoff = True
+        state.handoff_from_agent_tentacle_id = self.agent_id
+        return React()
 
 
 @dataclass
@@ -803,12 +900,11 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         origin_address = origin.address
         hint = self.request.hint or "Octomate is continuing this request here."
 
+        channel = ctx.deps.channel(origin)
         new_target = origin
-        if origin.thread_strategy != "main_only" and not origin_address.thread_id:
+        if channel.surfaces.sub_thread and not origin_address.thread_id:
             try:
-                new_address = await ctx.deps.channel(origin).start_sub_thread(
-                    origin_address, hint
-                )
+                new_address = await channel.start_sub_thread(origin_address, hint)
                 new_target = replace(origin, address=new_address, mode="sub")
             except Exception:
                 logger.warning(
@@ -944,6 +1040,7 @@ reflex_graph = Graph[ReflexState, ReflexDeps, ReflexGraphResult](
         Route,
         Handoff,
         React,
+        Scheme,
         Teleport,
         ResumeDeferred,
     ],
