@@ -42,7 +42,11 @@ from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.base import Octomate
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.gateway import COMMISSION_TOOL_NAME, GatewayCapability
+from octomate.capabilities.gateway import (
+    COMMISSION_TOOL_NAME,
+    SCHEME_TOOL_NAME,
+    GatewayCapability,
+)
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.config.agents import AgentRouteModelName
@@ -51,6 +55,7 @@ from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.capabilities.ask import AskCapability
@@ -61,6 +66,8 @@ from octomate.tentacles.agent.inkling.base import (
     InklingTentacle,
 )
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channel.slack.base import SlackTentacle
 from octomate.types.json import JsonObject
 
 DEFAULT_PROMPT = (
@@ -84,10 +91,19 @@ SUBAGENTS_PROMPT = (
     "both reports return, give a concise synthesis. Do not summon, teleport, "
     "whisper, or do the delegated work yourself."
 )
+SEND_DM_PROMPT = (
+    "In two sentences, what is the difference between TCP and UDP? Do not put the "
+    "answer in this channel — send it to me privately, then reply here with one "
+    "short line saying you have."
+)
+SCHEME_PROMPT = (
+    "I want to go over my own performance review with you, line by line. Not in "
+    "front of the channel — take this somewhere private and we will continue there."
+)
 DEFAULT_OUTPUT_DIR = Path("tests/src/events")
 DEFAULT_IMAGE = Path("tests/src/images/usagi.jpg")
 RawCapturedEvent: TypeAlias = AgentStreamEvent | AgentRunResultEvent[InklingOutput]
-Expectation: TypeAlias = Literal["plain_text", "segments_with_image"]
+Expectation: TypeAlias = Literal["plain_text", "segments_with_image", "private"]
 
 
 @dataclass(frozen=True)
@@ -99,6 +115,12 @@ class CaptureCase:
     expectation: Expectation
     required_image: str | None = None
     subagents: bool = False
+    # Mount a gate that can reach the asker's direct messages, and assert the run
+    # took one of the two ways there. Unit tests can prove the spells behave; only a
+    # real model can show whether the instructions get it to reach for them.
+    private: bool = False
+    # The gate tool this case expects to see called.
+    expect_tool: str | None = None
 
 
 def event_payload(event: RawCapturedEvent) -> JsonObject:
@@ -139,6 +161,12 @@ def parser() -> argparse.ArgumentParser:
         "--subagents",
         action="store_true",
         help="Capture one real Inkling run that completes two commission calls.",
+    )
+    parser.add_argument(
+        "--private",
+        action="store_true",
+        help="Capture two real runs that route to the asker's direct messages: one "
+        "`send` with destination=dm, one `scheme`.",
     )
     parser.add_argument(
         "--mcp",
@@ -198,6 +226,13 @@ async def capture(
         capabilities=[AskCapability(), TodoCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
+    # A real channel, constructed but never served: the gate reads `surfaces` off
+    # it, which is a ClassVar, so nothing here opens a connection.
+    dm_channel: ChannelTentacle | None = None
+    if any(case.private for case in cases):
+        if config.channels.slack is None:
+            raise RuntimeError("a private-routing capture needs the slack channel")
+        dm_channel = SlackTentacle("slack", host, config=config.channels.slack)
     accomplice: InklingTentacle | None = None
     if any(case.subagents for case in cases):
         accomplice = InklingTentacle(
@@ -224,6 +259,7 @@ async def capture(
                     user_id=user_id,
                     thread_id=thread_id,
                     accomplice=accomplice,
+                    dm_channel=dm_channel,
                     subagent_model=model_config.name,
                 )
     return case_counts
@@ -242,14 +278,17 @@ async def capture_case(
     thread_id: str,
     accomplice: InklingTentacle | None,
     subagent_model: AgentRouteModelName,
+    dm_channel: ChannelTentacle | None = None,
 ) -> int:
     print(f"capture case: {case.name}")
     effective_chat_id = (
         f"{chat_id}-{case.name}" if chat_id else f"capture-{case.name}-{uuid4().hex}"
     )
+    if case.private and dm_channel is None:
+        raise RuntimeError("a private-routing capture needs a channel")
     address = ChannelAddress(
-        channel_tentacle_id="capture",
-        chat_type="private",
+        channel_tentacle_id=dm_channel.id if dm_channel and case.private else "capture",
+        chat_type="group" if case.private else "private",
         chat_id=effective_chat_id,
         user_id=user_id,
         thread_id=thread_id,
@@ -260,6 +299,21 @@ async def capture_case(
     conversation = await conversations.ensure(thread.id, agent_tentacle_id="inkling")
     message_history = cast("list[ModelMessage]", list(conversation.messages))
     capabilities: list[AgentCapability[None]] = []
+    if case.private and dm_channel is not None:
+        capabilities.append(
+            GatewayCapability(
+                routes=[
+                    AgentRoute(
+                        agent_id="claude",
+                        model=subagent_model,
+                        claim=Claim(ability="coding work in a real repository"),
+                    )
+                ],
+                current_agent_id="inkling",
+                channels={dm_channel.id: dm_channel},
+                conversation_address=address,
+            )
+        )
     if case.subagents:
         if accomplice is None:
             raise RuntimeError("subagent capture requires an accomplice")
@@ -282,6 +336,7 @@ async def capture_case(
         )
     commission_calls = 0
     commission_results = 0
+    called_tools: set[str] = set()
     async with agent.iter(
         case.prompt,
         output_type=case.output_type,
@@ -294,6 +349,8 @@ async def capture_case(
                 async with node.stream(run.ctx) as stream:
                     async for event in stream:
                         count = write_event(file, count, event)
+                        if isinstance(event, FunctionToolCallEvent):
+                            called_tools.add(event.part.tool_name)
                         if (
                             isinstance(event, FunctionToolCallEvent)
                             and event.part.tool_name == COMMISSION_TOOL_NAME
@@ -308,7 +365,7 @@ async def capture_case(
             raise RuntimeError(f"{case.name} capture completed without a run result")
 
         output = run.result.output
-        if case.expectation == "plain_text":
+        if case.expectation in ("plain_text", "private"):
             if not isinstance(output, str):
                 raise RuntimeError(
                     f"{case.name} expected str output, got {type(output)}"
@@ -333,6 +390,11 @@ async def capture_case(
 
         result_event = AgentRunResultEvent(run.result)
         count = write_event(file, count, result_event)
+        if case.expect_tool is not None and case.expect_tool not in called_tools:
+            raise RuntimeError(
+                f"{case.name} expected the model to call {case.expect_tool!r}; "
+                f"it called {sorted(called_tools) or 'nothing'}"
+            )
         if case.subagents and (commission_calls < 2 or commission_results < 2):
             raise RuntimeError(
                 f"subagent capture expected two commission pairs, got "
@@ -349,7 +411,28 @@ async def capture_case(
 
 def main() -> None:
     args = parser().parse_args()
-    if args.subagents:
+    if args.private:
+        cases = [
+            CaptureCase(
+                name="send_dm",
+                file_name="inkling_send_dm.jsonl",
+                prompt=SEND_DM_PROMPT,
+                output_type=str,
+                expectation="private",
+                private=True,
+                expect_tool=SEND_TOOL_NAME,
+            ),
+            CaptureCase(
+                name="scheme",
+                file_name="inkling_scheme.jsonl",
+                prompt=SCHEME_PROMPT,
+                output_type=str,
+                expectation="private",
+                private=True,
+                expect_tool=SCHEME_TOOL_NAME,
+            ),
+        ]
+    elif args.subagents:
         cases = [
             CaptureCase(
                 name="subagents",
