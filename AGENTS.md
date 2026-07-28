@@ -15,6 +15,7 @@
 5. Remove imports, variables, functions, or other code made unused by your own changes. Do not remove pre-existing unused code unless asked.
 6. Do not add fallback control flow or error handling unless it is explicitly required by the product behavior or caller contract. Prefer fail-fast errors with clear messages over silent retries, alternate execution paths, or best-effort recovery that hides broken assumptions.
 7. When an attribute needs documentation, put it at the definition: a Pydantic `Field(description=...)` for model fields, and a brief comment on the field for dataclass, `TypedDict`, or plain-class attributes (which have no description slot). Prefer this over a free-floating comment above the attribute.
+8. The tree is `ruff format`ed. Run `uv run ruff format` and `uv run ruff check` on the files your change touches, and pass paths explicitly — never format the whole tree, which buries the change under unrelated reflow.
 
 ### Helpers
 
