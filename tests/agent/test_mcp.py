@@ -108,7 +108,7 @@ def _prefixed(toolset: AbstractToolset[None]) -> PrefixedToolset[None]:
     return prefixed
 
 
-def _toolset(toolset: AbstractToolset[None]) -> MCPToolset:
+def _toolset(toolset: AbstractToolset[None]) -> MCPToolset[None]:
     inner = _prefixed(toolset).wrapped
     assert isinstance(inner, MCPToolset)
     return inner

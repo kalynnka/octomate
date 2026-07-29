@@ -13,6 +13,7 @@ from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.github import GitHubCapability
 from octomate.capabilities.history import HistoryCapability
 from octomate.capabilities.todos import TodoCapability
+from octomate.capabilities.tools import ToolFailureCapability
 from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
 from octomate.managers.oauth import OAuthConnector
@@ -94,6 +95,7 @@ def create_app() -> FastAPI:
     )
 
     inkling_capabilities: list[AgentCapability[None]] = [
+        ToolFailureCapability(),
         AskCapability(),
         TodoCapability(
             id="todos",

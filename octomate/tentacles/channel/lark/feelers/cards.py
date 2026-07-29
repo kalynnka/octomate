@@ -42,6 +42,7 @@ def button(
     button_type: str = "default",
     value: JsonObject | None = None,
     action_type: str | None = None,
+    url: str | None = None,
     name: str | None = None,
 ) -> JsonObject:
     element: JsonObject = {
@@ -51,6 +52,10 @@ def button(
     }
     if action_type is not None:
         element["action_type"] = action_type
+    # A `link` button's target belongs here, on the element itself — Lark never
+    # reads `value` for a jump, and rejects the whole card if this is missing.
+    if url is not None:
+        element["url"] = url
     if name is not None:
         element["name"] = name
     if value is not None:

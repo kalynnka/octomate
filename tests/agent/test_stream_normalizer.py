@@ -213,6 +213,9 @@ async def test_capability_injected_events_reach_consumer() -> None:
     )
     agent = Agent(
         TestModel(custom_output_text="ok"),
+        # v2 infers `object` deps by default; the capability below is typed on
+        # `None`, so say so.
+        deps_type=type(None),
         capabilities=[InjectingCapability(event=injected)],
     )
 

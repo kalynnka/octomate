@@ -688,8 +688,14 @@ async def test_recover_overlapping_a_live_follow_leaves_it_tailing(
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
 
-    tailer.start(SESSION_ID, transcript)
-    await anyio.sleep(0.1)  # the loop commits p1, and holds p2 open at EOF
+    state = tailer.start(SESSION_ID, transcript)
+    # Wait for the loop to have p1 down and p2 still open at EOF, rather than guess
+    # at how long that takes — a busy machine outlasts any sleep worth hard-coding.
+    # Read the loop's own record of what it committed: asking the ledger here would
+    # race the loop to create this session's thread row.
+    with anyio.fail_after(5):
+        while "p1" not in state.recorded:
+            await anyio.sleep(0.05)
     # A second reader resumes past p1 and commits p2 — the turn the loop still holds.
     assert await tailer.recover(SESSION_ID, transcript) == ["p2"]
 

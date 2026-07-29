@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import get_args
 
 from openai_codex import CodexConfig as CodexSdkConfig
 import pytest
 from pydantic import SecretStr, ValidationError
+from pydantic_ai.settings import ThinkingEffort
 from pydantic_settings import SettingsConfigDict
 
 from octomate.config.observability import LogfireConfig
@@ -547,6 +549,27 @@ def test_each_connection_carries_its_own_warm_timeout() -> None:
     assert config.integrations.github.mcp.url == "https://api.githubcopilot.com/mcp/"
 
 
+def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
+    # GitHub ignores a scope it does not recognise and returns a token quietly
+    # missing that access, so a typo has to fail here instead.
+    config = OctomateConfig.model_validate(
+        {
+            "integrations": {
+                "github": {"client_id": "Iv1.test", "scopes": ["repo", "workflow"]}
+            },
+            "oauth": {"encryption_key": "x" * 43 + "="},
+        }
+    )
+    assert config.integrations.github is not None
+    assert config.integrations.github.scopes == ["repo", "workflow"]
+
+    # Validated, not constructed: a scope arrives as untyped YAML.
+    with pytest.raises(ValidationError, match="Input should be"):
+        GitHubIntegrationConfig.model_validate(
+            {"client_id": "Iv1.test", "scopes": ["workfl0w"]}
+        )
+
+
 def test_github_integration_cache_size_default_and_override() -> None:
     assert GitHubIntegrationConfig(client_id="Iv1.test").max_cached_users == 32
 
@@ -679,6 +702,13 @@ def test_logfire_instrumentation_defaults_off() -> None:
     assert not instrument.pydantic_ai
     assert not instrument.httpx
     assert not instrument.sqlalchemy
+
+
+def test_claim_efforts_default_matches_pydantic_ais_thinking_scale() -> None:
+    # The default is written out rather than derived from `get_args`, so a
+    # pydantic-ai release that adds or drops a grade has to be looked at per route
+    # instead of silently widening every claim that omits `efforts`.
+    assert Claim(ability="anything").efforts == get_args(ThinkingEffort)
 
 
 def test_agent_claims_override_parses_from_config() -> None:

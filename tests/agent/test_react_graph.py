@@ -20,14 +20,15 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import (
-    REACT_NODES,
     ReactDeps,
+    ReactGraphInput,
     ReactState,
     ReactStreamEvent,
     ResolveDeferred,
     ResumeTurn,
     RunAgent,
     StartTurn,
+    build_react_graph,
     iter_react_graph_events,
 )
 from octomate.database import async_session
@@ -135,12 +136,15 @@ def _ctx(
     )
 
 
-def _graph() -> Graph[
+def _graph(
+    start_node: ReactGraphInput[ScriptedOutput, None],
+) -> Graph[
     ReactState,
     ReactDeps[ScriptedOutput, None],
+    ReactGraphInput[ScriptedOutput, None],
     AgentRunResult[ScriptedOutput],
 ]:
-    return Graph(nodes=REACT_NODES, name="react")
+    return build_react_graph(start_node)
 
 
 async def test_start_turn_drops_trailing_deferral_on_new_prompt() -> None:
@@ -257,8 +261,9 @@ async def test_graph_ends_after_immediate_final_response() -> None:
     agent = build_non_stream_agent()
     deps = _deps(agent=agent)
 
-    result = await _graph().run(
-        StartTurn(user_prompt="just say done"),
+    start = StartTurn(user_prompt="just say done")
+    result = await _graph(start).run(
+        inputs=start,
         state=ReactState(
             conversation_address=_key(),
             agent_tentacle_id="inkling",
@@ -267,7 +272,7 @@ async def test_graph_ends_after_immediate_final_response() -> None:
         deps=deps,
     )
 
-    assert result.output.output == "all done!"
+    assert result.output == "all done!"
 
 
 async def test_run_agent_records_new_messages_with_run_name() -> None:
@@ -275,8 +280,9 @@ async def test_run_agent_records_new_messages_with_run_name() -> None:
     conversations = FakeConversationManager()
     deps = _deps(agent=agent, conversations=conversations, run_name="custom")
 
-    await _graph().run(
-        StartTurn(user_prompt="just say done"),
+    start = StartTurn(user_prompt="just say done")
+    await _graph(start).run(
+        inputs=start,
         state=ReactState(
             conversation_address=_key(),
             agent_tentacle_id="inkling",
@@ -308,8 +314,9 @@ async def test_a_run_addressed_by_conversation_id_lands_there() -> None:
     )
     deps = _deps(agent=agent, conversations=conversations, run_name="commission")
 
-    await _graph().run(
-        StartTurn(user_prompt="do the delegated work"),
+    start = StartTurn(user_prompt="do the delegated work")
+    await _graph(start).run(
+        inputs=start,
         state=ReactState(
             conversation_address=_key(),
             agent_tentacle_id="inkling",
@@ -338,8 +345,9 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
     conversations = ConversationManager()
     agent = build_non_stream_agent()
 
-    await _graph().run(
-        StartTurn(user_prompt="first detail\n\nsecond detail\n\nwake now"),
+    start = StartTurn(user_prompt="first detail\n\nsecond detail\n\nwake now")
+    await _graph(start).run(
+        inputs=start,
         state=ReactState(
             conversation_address=address,
             agent_tentacle_id="inkling",

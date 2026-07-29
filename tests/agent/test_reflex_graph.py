@@ -39,13 +39,14 @@ from octomate.reflex import (
     ResponseTarget,
     ReflexDeps,
     ReflexState,
-    reflex_graph,
 )
 from octomate.reflex.graph import (
     Awake,
+    ReflexGraphResult,
     ResumeDeferred,
     Route,
     React,
+    build_reflex_graph,
 )
 from octomate.tentacles.channel.feelers.output import TimelineState
 from tests.support.agents import FakeAgent, RecordedRun
@@ -59,6 +60,20 @@ from tests.support.managers import (
 )
 
 FAKE_CONTEXT = cast(RunContext[None], None)
+
+
+async def _run(
+    entry: Awake | Route | React | ResumeDeferred,
+    *,
+    state: ReflexState,
+    deps: ReflexDeps,
+) -> ReflexGraphResult:
+    """Run the reflex nodes from `entry`. Production always enters at `Awake`; a
+    test wires the same nodes with a different door to exercise a stretch of them
+    on its own."""
+    return await build_reflex_graph(type(entry)).run(
+        inputs=entry, state=state, deps=deps
+    )
 
 
 def _channel(*, stream: bool = True) -> FakeChannelTentacle:
@@ -330,13 +345,11 @@ async def test_route_runs_entry_agent_directly() -> None:
     conversations = FakeConversationManager()
     im = _channel()
 
-    result = (
-        await reflex_graph.run(
-            Route(),
-            state=_state(address, user_prompt="hi"),
-            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
-        )
-    ).output
+    result = await _run(
+        Route(),
+        state=_state(address, user_prompt="hi"),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
 
     assert not isinstance(result, DeferredResult)
     assert result.result is not None and result.result.output == "hello"
@@ -353,7 +366,7 @@ async def test_route_entry_run_claims_no_ownership() -> None:
     conversations = FakeConversationManager()
     im = _channel()
 
-    await reflex_graph.run(
+    await _run(
         Route(),
         state=_state(address, user_prompt="hi", thread=thread),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
@@ -375,7 +388,7 @@ async def test_reception_mounts_gate_capability() -> None:
     )
     target = _source_target(address)
 
-    await reflex_graph.run(
+    await _run(
         React(),
         state=ReflexState(source_target=target, target=target, decision=_summon()),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
@@ -404,7 +417,7 @@ async def test_non_stream_reception_presents_only_the_final_output() -> None:
     )
     target = _source_target(address)
 
-    await reflex_graph.run(
+    await _run(
         React(),
         state=ReflexState(source_target=target, target=target, decision=_summon()),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
@@ -430,7 +443,7 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
     target = _source_target(address)
     thread = _thread(address)
 
-    await reflex_graph.run(
+    await _run(
         React(),
         state=ReflexState(
             source_target=target, target=target, decision=_summon(), thread=thread
@@ -458,7 +471,7 @@ async def test_react_passes_the_decision_effort_to_the_run() -> None:
     )
     target = _source_target(address)
 
-    await reflex_graph.run(
+    await _run(
         React(),
         state=ReflexState(
             source_target=target, target=target, decision=_summon(effort="high")
@@ -492,7 +505,7 @@ async def test_reception_allow_here_false_on_group_main() -> None:
         channel_id="im", address=address, thread_strategy="flat_thread", mode="main"
     )
 
-    await reflex_graph.run(
+    await _run(
         React(),
         state=ReflexState(source_target=target, target=target, decision=_summon()),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
@@ -522,19 +535,17 @@ async def test_reception_summons_another_agent_into_sub_thread() -> None:
     conversations = FakeConversationManager()
     target = _source_target(address)
 
-    result = (
-        await reflex_graph.run(
-            React(),
-            state=ReflexState(source_target=target, target=target, decision=_summon()),
-            deps=ReflexDeps(
-                channels={"im": im},
-                agents={"other": entry, "second": second},
-                conversation_manager=conversations,
-                thread_manager=FakeThreadManager(),
-                action_manager=cast(DeferredActionManager, FakeActionManager()),
-            ),
-        )
-    ).output
+    result = await _run(
+        React(),
+        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        deps=ReflexDeps(
+            channels={"im": im},
+            agents={"other": entry, "second": second},
+            conversation_manager=conversations,
+            thread_manager=FakeThreadManager(),
+            action_manager=cast(DeferredActionManager, FakeActionManager()),
+        ),
+    )
 
     assert not isinstance(result, DeferredResult)
     assert isinstance(result.decision, SummonDecision)
@@ -558,18 +569,16 @@ async def test_summon_here_takes_over_current_conversation() -> None:
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     target = _source_target(address)
 
-    result = (
-        await reflex_graph.run(
-            React(),
-            state=ReflexState(
-                source_target=target,
-                target=target,
-                decision=_summon(),
-                thread=_thread(address),
-            ),
-            deps=_summon_deps(im, entry, second),
-        )
-    ).output
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_summon_deps(im, entry, second),
+    )
 
     assert not isinstance(result, DeferredResult)
     assert im.sub_threads == []
@@ -603,7 +612,7 @@ async def _gate_for(
     agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
     im = channel or FakeChannelTentacle(config=_two_reception_config(stream=False))
     target = _source_target(address)
-    await reflex_graph.run(
+    await _run(
         React(),
         state=ReflexState(source_target=target, target=target, decision=_summon()),
         deps=_deps(
@@ -670,18 +679,16 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     deps.thread_manager = threads
     target = _source_target(address)
 
-    result = (
-        await reflex_graph.run(
-            React(),
-            state=ReflexState(
-                source_target=target,
-                target=target,
-                decision=_summon(),
-                thread=_thread(address),
-            ),
-            deps=deps,
-        )
-    ).output
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=deps,
+    )
 
     assert not isinstance(result, DeferredResult)
     assert im.opened_dms == ["alice"]
@@ -712,18 +719,16 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     target = _source_target(address)
 
-    result = (
-        await reflex_graph.run(
-            React(),
-            state=ReflexState(
-                source_target=target,
-                target=target,
-                decision=_summon(),
-                thread=_thread(address),
-            ),
-            deps=_summon_deps(im, entry, second),
-        )
-    ).output
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_summon_deps(im, entry, second),
+    )
 
     assert not isinstance(result, DeferredResult)
     # No owner to defer to, so the channel's first configured agent takes it.
@@ -756,18 +761,16 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
     im = NoDmChannel(config=_two_reception_config(stream=False))
     target = _source_target(address)
 
-    result = (
-        await reflex_graph.run(
-            React(),
-            state=ReflexState(
-                source_target=target,
-                target=target,
-                decision=_summon(),
-                thread=_thread(address),
-            ),
-            deps=_summon_deps(im, entry, second),
-        )
-    ).output
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_summon_deps(im, entry, second),
+    )
 
     # The platform refused at the moment of asking: nothing moved, nobody was handed
     # anything, and the origin agent's own reply already landed.
@@ -794,18 +797,16 @@ async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
     im = FailingSubThreadChannel(config=_two_reception_config(stream=False))
     target = _source_target(address)
 
-    result = (
-        await reflex_graph.run(
-            React(),
-            state=ReflexState(
-                source_target=target,
-                target=target,
-                decision=_summon(),
-                thread=_thread(address),
-            ),
-            deps=_summon_deps(im, entry, second),
-        )
-    ).output
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_summon_deps(im, entry, second),
+    )
 
     assert not isinstance(result, DeferredResult)
     assert result.target.mode == "main"
@@ -834,23 +835,21 @@ async def test_reception_returns_deferred_result_on_human_question() -> None:
     im = _channel(stream=True)
     target = _source_target(address)
 
-    result = (
-        await reflex_graph.run(
-            React(),
-            state=ReflexState(
-                source_target=target,
-                target=target,
-                decision=decision,
-                thread=_thread(address),
-            ),
-            deps=_deps(
-                conversations=conversations,
-                channels={"im": im},
-                agent=agent,
-                action_manager=action_manager,
-            ),
-        )
-    ).output
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=decision,
+            thread=_thread(address),
+        ),
+        deps=_deps(
+            conversations=conversations,
+            channels={"im": im},
+            agent=agent,
+            action_manager=action_manager,
+        ),
+    )
 
     assert isinstance(result, DeferredResult)
     assert result.run_name == "react"
@@ -872,7 +871,7 @@ async def test_reception_fails_fast_when_stream_produces_no_result() -> None:
     target = _source_target(address)
 
     with pytest.raises(RuntimeError, match="completed without a result"):
-        await reflex_graph.run(
+        await _run(
             React(),
             state=ReflexState(source_target=target, target=target, decision=_summon()),
             deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
@@ -885,13 +884,11 @@ async def test_route_runs_in_place_inside_flat_thread() -> None:
     conversations = FakeConversationManager()
     im = _channel()
 
-    result = (
-        await reflex_graph.run(
-            Route(),
-            state=_state(address, user_prompt="continue"),
-            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
-        )
-    ).output
+    result = await _run(
+        Route(),
+        state=_state(address, user_prompt="continue"),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
 
     assert not isinstance(result, DeferredResult)
     assert result.target.mode == "sub"
@@ -906,13 +903,11 @@ async def test_awake_short_circuits_on_empty_signal() -> None:
     conversations = FakeConversationManager()
     im = _channel()
 
-    result = (
-        await reflex_graph.run(
-            Awake(signal=UserMessageSignal([])),
-            state=ReflexState(),
-            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
-        )
-    ).output
+    result = await _run(
+        Awake(signal=UserMessageSignal([])),
+        state=ReflexState(),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
 
     assert not isinstance(result, DeferredResult)
     assert result.decision is None
@@ -937,13 +932,11 @@ async def test_awake_short_circuits_on_empty_prompt() -> None:
         segments=[],
     )
 
-    result = (
-        await reflex_graph.run(
-            Awake(signal=UserMessageSignal([event])),
-            state=ReflexState(),
-            deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
-        )
-    ).output
+    result = await _run(
+        Awake(signal=UserMessageSignal([event])),
+        state=ReflexState(),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
 
     assert not isinstance(result, DeferredResult)
     assert result.decision is None
@@ -965,7 +958,7 @@ async def test_awake_raises_for_unknown_channel_or_agent() -> None:
     )
 
     with pytest.raises(ValueError, match="unknown channel"):
-        await reflex_graph.run(
+        await _run(
             Awake(signal=UserMessageSignal([event])),
             state=ReflexState(),
             deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
@@ -988,18 +981,16 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
     action_manager = FakeActionManager(batch=batch)
     im = _channel()
 
-    result = (
-        await reflex_graph.run(
-            ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
-            state=ReflexState(),
-            deps=_deps(
-                conversations=conversations,
-                channels={"im": im},
-                agent=agent,
-                action_manager=action_manager,
-            ),
-        )
-    ).output
+    result = await _run(
+        ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
+        state=ReflexState(),
+        deps=_deps(
+            conversations=conversations,
+            channels={"im": im},
+            agent=agent,
+            action_manager=action_manager,
+        ),
+    )
 
     assert not isinstance(result, DeferredResult)
     assert result.result is not None and result.result.output == "resumed answer"
@@ -1040,18 +1031,16 @@ async def test_resume_returns_result_for_already_completed_batch() -> None:
     action_manager = FakeActionManager(batch=batch)
     im = _channel()
 
-    result = (
-        await reflex_graph.run(
-            ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
-            state=ReflexState(),
-            deps=_deps(
-                conversations=conversations,
-                channels={"im": im},
-                agent=agent,
-                action_manager=action_manager,
-            ),
-        )
-    ).output
+    result = await _run(
+        ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
+        state=ReflexState(),
+        deps=_deps(
+            conversations=conversations,
+            channels={"im": im},
+            agent=agent,
+            action_manager=action_manager,
+        ),
+    )
 
     assert not isinstance(result, DeferredResult)
     assert result.decision == decision
@@ -1076,18 +1065,16 @@ async def test_resume_keeps_incomplete_reception_batch_deferred() -> None:
     action_manager = FakeActionManager(batch=batch)
     im = _channel()
 
-    result = (
-        await reflex_graph.run(
-            ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
-            state=ReflexState(),
-            deps=_deps(
-                conversations=conversations,
-                channels={"im": im},
-                agent=agent,
-                action_manager=action_manager,
-            ),
-        )
-    ).output
+    result = await _run(
+        ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
+        state=ReflexState(),
+        deps=_deps(
+            conversations=conversations,
+            channels={"im": im},
+            agent=agent,
+            action_manager=action_manager,
+        ),
+    )
 
     assert isinstance(result, DeferredResult)
     assert result.run_name == "react"
@@ -1119,7 +1106,7 @@ async def _run_send(
     )
     deps.thread_manager = threads
     target = _source_target(address)
-    await reflex_graph.run(
+    await _run(
         React(),
         state=ReflexState(
             source_target=target,

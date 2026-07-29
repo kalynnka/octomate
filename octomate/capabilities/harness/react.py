@@ -27,11 +27,14 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
-
-# TODO: migrate this graph to the pydantic_graph GraphBuilder (Step/Decision/Edge)
-# API once pydantic-graph v2 is officially released. The BaseNode `Graph` runner is
-# deprecated for v2; pinned <2 in pyproject.toml until then.
-from pydantic_graph import BaseNode, End, Graph, GraphRunContext
+from pydantic_graph import (
+    BaseNode,
+    End,
+    Graph,
+    GraphBuilder,
+    GraphRunContext,
+    TypeExpression,
+)
 from typing_extensions import TypeAliasType
 
 from octomate.capabilities.harness.agent import Agent
@@ -41,7 +44,6 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import ModelRequest
-
 from octomate.telemetry import react_logfire
 
 logger = logging.getLogger(__name__)
@@ -371,7 +373,51 @@ class ResolveDeferred(
         )
 
 
-REACT_NODES = [StartTurn, ResumeTurn, RunAgent, ResolveDeferred]
+ReactGraphInput = TypeAliasType(
+    "ReactGraphInput",
+    StartTurn[ReactOutputT, ReactDepsT] | ResumeTurn[ReactOutputT, ReactDepsT],
+    type_params=(ReactOutputT, ReactDepsT),
+)
+
+
+def build_react_graph(
+    start_node: ReactGraphInput[ReactOutputT, ReactDepsT],
+) -> Graph[
+    ReactState,
+    ReactDeps[ReactOutputT, ReactDepsT],
+    ReactGraphInput[ReactOutputT, ReactDepsT],
+    AgentRunResult[ReactOutputT],
+]:
+    """Wire the react nodes into a runnable graph for `start_node` to run through.
+
+    The node it will be run with is what binds the graph's type parameters — the
+    output and deps types live only in annotations, so there is nothing else here
+    to infer them from.
+    """
+    builder = GraphBuilder(
+        name="react",
+        state_type=ReactState,
+        deps_type=ReactDeps[ReactOutputT, ReactDepsT],
+        input_type=TypeExpression[ReactGraphInput[ReactOutputT, ReactDepsT]],
+        output_type=AgentRunResult[ReactOutputT],
+    )
+    # Every other edge comes from the nodes' own `run` return annotations, so a
+    # transition stays declared where it is written. The one thing those cannot
+    # express is where a run *starts* — a turn either begins fresh or resumes
+    # deferred results — so the entry is a decision on the input's own type.
+    entry = (
+        builder.decision(note="a fresh turn, or one resuming deferred results")
+        .branch(builder.match(StartTurn).to(StartTurn))
+        .branch(builder.match(ResumeTurn).to(ResumeTurn))
+    )
+    builder.add(
+        builder.edge_from(builder.start_node).to(entry),
+        builder.node(StartTurn[ReactOutputT, ReactDepsT]),
+        builder.node(ResumeTurn[ReactOutputT, ReactDepsT]),
+        builder.node(RunAgent[ReactOutputT, ReactDepsT]),
+        builder.node(ResolveDeferred[ReactOutputT, ReactDepsT]),
+    )
+    return builder.build()
 
 
 async def iter_react_graph_events(
@@ -393,15 +439,11 @@ async def iter_react_graph_events(
         # mid-event (e.g. blocked on a channel send), which masks the real error
         # and leaves spans unclosed. Closing send_stream ends the consumer loop
         # cleanly; we re-raise below, in the consumer's own frame.
-        graph: Graph[
-            ReactState,
-            ReactDeps[ReactOutputT, ReactDepsT],
-            AgentRunResult[ReactOutputT],
-        ] = Graph(nodes=REACT_NODES, name="react")
+        graph = build_react_graph(start_node)
         try:
             async with send_stream:
                 await graph.run(
-                    start_node,
+                    inputs=start_node,
                     state=state,
                     deps=graph_deps,
                 )

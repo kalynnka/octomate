@@ -12,8 +12,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from pydantic import AnyHttpUrl, BaseModel, SecretStr, TypeAdapter
+from pydantic import BaseModel, SecretStr, TypeAdapter
 
+from octomate.config.integrations import GitHubScope
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
     DeviceOAuthFlow,
@@ -21,6 +22,7 @@ from octomate.schemas.oauth import (
     OAuthGrant,
     OAuthPending,
 )
+from octomate.types.oauth import HttpsUrl
 
 GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
 GITHUB_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -31,7 +33,7 @@ GITHUB_API_VERSION = "2022-11-28"
 class GitHubDeviceCodeResponse(BaseModel):
     device_code: SecretStr
     user_code: SecretStr
-    verification_uri: AnyHttpUrl
+    verification_uri: HttpsUrl
     expires_in: int
     interval: int = 5
 
@@ -65,7 +67,7 @@ class GitHubDeviceOAuthFlow(DeviceOAuthFlow):
         self,
         *,
         client_id: str,
-        scopes: list[str],
+        scopes: list[GitHubScope],
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.client_id = client_id

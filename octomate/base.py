@@ -170,7 +170,7 @@ class Octomate:
                     return
             with sqlalchemy_materia():
                 await reflex_graph.run(
-                    Awake(signal=signal),
+                    inputs=Awake(signal=signal),
                     state=ReflexState(),
                     deps=ReflexDeps(
                         agents=self.agents,

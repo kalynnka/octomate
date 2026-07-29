@@ -10,7 +10,9 @@ from typing import cast
 import pytest
 from pydantic import AnyHttpUrl, SecretStr, TypeAdapter
 from pydantic_ai import RunContext
+from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import ToolReturn
+from pydantic_ai.toolsets import FunctionToolset
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.harness.events import OAuthAuthorizationEvent
@@ -36,8 +38,10 @@ from octomate.schemas.oauth import (
     RelayOAuthCallbackTransport,
 )
 from octomate.schemas.user import UserProfile
+from octomate.types.oauth import HttpsUrl
 
 URL_ADAPTER = TypeAdapter(AnyHttpUrl)
+HTTPS_URL_ADAPTER = TypeAdapter(HttpsUrl)
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
 
 
@@ -49,6 +53,10 @@ async def database(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
 class FakeDeviceFlow(DeviceOAuthFlow):
     def __init__(self) -> None:
         self.context: OAuthFlowContext | None = None
+        self.starts = 0
+        # How long the codes this flow hands out stay good; negative to mint one
+        # that is already past its deadline.
+        self.lifetime = timedelta(minutes=15)
         self.completion: OAuthGrant | OAuthPending = OAuthGrant(
             access_token=SecretStr("github-token"),
             subject="42",
@@ -58,13 +66,14 @@ class FakeDeviceFlow(DeviceOAuthFlow):
 
     async def start(self, context: OAuthFlowContext) -> DeviceAuthorizationResponse:
         self.context = context
+        self.starts += 1
         return DeviceAuthorizationResponse(
-            verification_uri=URL_ADAPTER.validate_python(
+            verification_uri=HTTPS_URL_ADAPTER.validate_python(
                 "https://github.com/login/device"
             ),
             device_code=SecretStr("device-secret"),
             user_code=SecretStr("ABCD-EFGH"),
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+            expires_at=datetime.now(timezone.utc) + self.lifetime,
             interval_seconds=5,
         )
 
@@ -309,8 +318,12 @@ async def test_complete_latest_orders_uuid7_operation_ids() -> None:
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flow=flow)],
     )
+    # The first authorization has to be past its deadline, or starting again would
+    # resume it instead of leaving two operations to order.
+    flow.lifetime = timedelta(seconds=-1)
     first = await manager.start(profile, "github")
     await asyncio.sleep(0.002)
+    flow.lifetime = timedelta(minutes=15)
     second = await manager.start(profile, "github")
     assert second.operation_id.int > first.operation_id.int
 
@@ -318,6 +331,42 @@ async def test_complete_latest_orders_uuid7_operation_ids() -> None:
 
     assert flow.context is not None
     assert flow.context.operation_id == second.operation_id
+
+
+async def test_start_resumes_a_device_authorization_that_is_still_live() -> None:
+    users, profile = await linked_user_manager()
+    flow = FakeDeviceFlow()
+    manager = OAuthManager(
+        users=users,
+        encryption_key=ENCRYPTION_KEY,
+        connectors=[OAuthConnector(id="github", flow=flow)],
+    )
+
+    first = await manager.start(profile, "github")
+    second = await manager.start(profile, "github")
+
+    # Asking again hands back the code the user is already looking at; a second
+    # trip upstream would mint a new one and strand the first.
+    assert flow.starts == 1
+    assert second == first
+
+
+async def test_start_replaces_a_device_authorization_that_has_expired() -> None:
+    users, profile = await linked_user_manager()
+    flow = FakeDeviceFlow()
+    flow.lifetime = timedelta(seconds=-1)
+    manager = OAuthManager(
+        users=users,
+        encryption_key=ENCRYPTION_KEY,
+        connectors=[OAuthConnector(id="github", flow=flow)],
+    )
+
+    first = await manager.start(profile, "github")
+    flow.lifetime = timedelta(minutes=15)
+    second = await manager.start(profile, "github")
+
+    assert flow.starts == 2
+    assert second.operation_id != first.operation_id
 
 
 async def test_device_operation_can_only_be_confirmed_by_its_starting_profile() -> None:
@@ -387,6 +436,26 @@ async def test_github_connect_tool_emits_only_the_link_and_code() -> None:
     model_sees = str(result.return_value)
     assert "ABCD-EFGH" not in model_sees
     assert "operation" not in model_sees.lower()
+
+
+async def test_github_confirm_tool_asks_the_model_to_connect_first() -> None:
+    # Confirming before connecting is an ordering the model can fix itself, so it
+    # comes back as a retry naming `connect_github` rather than ending the turn.
+    users, profile = await linked_user_manager()
+    manager = OAuthManager(users=users, encryption_key=ENCRYPTION_KEY)
+    github = GitHubCapability(
+        manager=manager,
+        connector=manager.register(
+            OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=FakeDeviceFlow())
+        ),
+    )
+    capability = await github.for_profile(profile)
+    assert capability is not None
+    assert isinstance(capability.toolset, FunctionToolset)
+    confirm = capability.toolset.tools["confirm_github"].function
+
+    with pytest.raises(ModelRetry, match="connect_github"):
+        await confirm(cast(RunContext[None], None))
 
 
 async def test_github_confirm_tool_activates_the_connection() -> None:
