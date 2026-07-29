@@ -78,8 +78,11 @@ handoff, so `fork`'s empty-target rule and DM sub-threads never enter it.
   resolved to `(channel, user_id)` internally. **Not in the tool schema**: a per-user list of
   reachable DMs varies far more than the `dm` destination that §1 had to withdraw, and would
   fork the cached tool prefix per user rather than per address. Whatever names remote targets
-  has to reach the model through something that is not the tool schema — a tool *result*
-  (like `scry`) or a dynamic instruction, both of which sit after the cache breakpoint.
+  has to reach the model as a tool **result** — `scry`'s return value. Not a dynamic
+  instruction: `anthropic_cache_instructions` / `bedrock_cache_instructions` are on
+  (`config/providers.py:48-49,64-65`), so instructions are their own cached segment and a
+  per-user one forks it just as a per-user schema forks the tool block. A tool result is
+  the only carrier that sits after every breakpoint.
 - **Consent / product policy** for opening an (unsolicited, possibly cross-platform) DM — a
   product call to settle before building.
 

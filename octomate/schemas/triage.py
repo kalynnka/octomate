@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, NamedTuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config.agents import AgentRouteModelName, Claim
+from octomate.schemas.conversation import ChannelAddress
 
 ResponseTargetMode = Literal["main", "sub"]
 # Where a summon lands: `here` transmits ownership of the current thread in place;
@@ -25,6 +26,31 @@ RunName = Literal["react", "summon", "teleport", "resume"]
 class AgentRouteKey(NamedTuple):
     agent_id: str
     model: AgentRouteModelName
+
+
+@dataclass(frozen=True)
+class Destination:
+    """Somewhere a turn or a message can be put, named once for every spell.
+
+    The model names a `handle` and nothing else — never a chat id, never a user id.
+    That is what keeps an agent from addressing anyone it likes, and it is why the
+    resolved `address` is built here rather than accepted from the model.
+
+    `address` is what the rest of the system already speaks: `thread_manager.ensure`,
+    `conversations.ensure`, `feelers.*.present` and `open_dm` all take one. A
+    destination that has to be *made* before it exists carries `open_sub_thread`
+    instead of a second type — its address is the parent chat.
+    """
+
+    handle: str
+    # What this place is, in words, for `scry` to show.
+    label: str
+    address: ChannelAddress
+    # The place does not exist yet: open a sub-thread of `address` and land there.
+    open_sub_thread: bool = False
+
+    def __str__(self) -> str:
+        return f"- {self.handle}: {self.label}"
 
 
 class SummonDecision(BaseModel):
@@ -56,6 +82,32 @@ class SchemeDecision(BaseModel):
     action: Literal["scheme"] = "scheme"
     hint: str
     brief: str
+    destination: ChannelAddress = Field(
+        description="Which direct messages, resolved by the gate. The model names a "
+        "handle; the address comes from the identity registry, never from the model."
+    )
+
+
+@dataclass(frozen=True)
+class Scrying:
+    """What `scry` reveals: who can take this on, and where else the asker is.
+
+    One tool result rather than two tools, because both answer the same question —
+    where can this conversation go — and a tool result is the only place a per-user
+    list can reach the model without forking a cached prompt segment.
+    """
+
+    routes: list[AgentRoute]
+    # Every place a spell can name, this conversation included — not only the remote
+    # ones. `GatewayCapability.linked_destinations` is the remote half; this is all.
+    destinations: list[Destination]
+
+    def __str__(self) -> str:
+        routes = "\n".join(str(route) for route in self.routes) or "- (none)"
+        places = "\n".join(str(one) for one in self.destinations) or "- (none)"
+        return (
+            f"Agents you can route to:\n{routes}\n\nWhere you can put this:\n{places}"
+        )
 
 
 @dataclass(frozen=True)

@@ -17,8 +17,8 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 # deprecated for v2; pinned <2 in pyproject.toml until then.
 from pydantic_graph import BaseNode, End, Graph, GraphRunContext
 
-from octomate.capabilities.harness.events import MessageSentEvent, StreamEvents
 from octomate.capabilities.gateway import GatewayCapability
+from octomate.capabilities.harness.events import MessageSentEvent, StreamEvents
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
@@ -29,14 +29,14 @@ from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import Thread
-from octomate.schemas.user import UserProfile
 from octomate.schemas.triage import (
     AgentRoute,
-    SchemeDecision,
     ResponseTargetMode,
     RunName,
+    SchemeDecision,
     SummonDecision,
 )
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.channel.base import (
@@ -534,9 +534,11 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             routes=routes,
             current_agent_id=agent.id,
             # Every channel, not just this one: the gate reads `surfaces` off the
-            # address's own channel to know whether `scheme` can land, and a
-            # cross-channel move will ask the same of the others.
+            # address's own channel to know whether `scheme` can land, and asks the
+            # same of the others when it works out where else this person is.
             channels=ctx.deps.channels,
+            users=ctx.deps.thread_manager.users,
+            user_profile=state.user_profile,
             # The accomplice spells need to actually run one; without
             # a thread there is nowhere for a child conversation to live, and
             # the gate then simply does not offer them.
@@ -606,24 +608,21 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         async for event in stream:
                             if isinstance(event, AgentRunResultEvent):
                                 stream_results.append(event.result)
-                            # A send bound for the asking user's DM: the timeline
-                            # renders one surface and this is another, so deliver it
-                            # here and keep it off the stream. In a private chat
-                            # there is nothing to divert — `dm` and `here` are the
-                            # same place — so it falls through and renders normally.
-                            # The gate refuses a `dm` it cannot reach at all, so what
-                            # is left is this boundary's own check: a
-                            # `MessageSentEvent` is data on a stream, not a promise
-                            # that someone already looked.
+                            # A send bound somewhere other than this conversation.
+                            # The timeline renders one surface, so anything else has
+                            # to be delivered here and kept off the stream. Where is
+                            # already settled: the gate resolved and refused, so this
+                            # only addresses what it was handed.
                             if (
                                 isinstance(event, MessageSentEvent)
-                                and event.destination == "dm"
-                                and target_channel.surfaces.direct_message
-                                and target_address.chat_type != "private"
-                                and target_address.user_id
+                                and event.destination is not None
                             ):
-                                dm = await target_channel.open_dm(
-                                    target_address.user_id
+                                destination = event.destination
+                                destination_channel = ctx.deps.channel(
+                                    destination.channel_tentacle_id
+                                )
+                                dm = await destination_channel.open_dm(
+                                    destination.user_id
                                 )
                                 if dm is not None:
                                     # A bare message, with nobody taking the work up
@@ -631,21 +630,21 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                                     # ledger row touches no conversation's model
                                     # messages, so the DM's own agent meets it as
                                     # pending context on its next turn.
-                                    await target_channel.feelers.segments.present(
+                                    await destination_channel.feelers.segments.present(
                                         dm, event.segments
                                     )
                                     await ctx.deps.thread_manager.record_outbound(
                                         dm,
                                         agent_tentacle_id=agent.id,
                                         segments=event.segments,
-                                        sender=target_channel.self_profile,
+                                        sender=destination_channel.self_profile,
                                     )
                                     continue
                                 logger.warning(
                                     "Channel %s could not open a DM with %s; "
-                                    "delivering the send to %s",
-                                    target_channel.id,
-                                    target_address.user_id,
+                                    "delivering the send to %s instead",
+                                    destination.channel_tentacle_id,
+                                    destination.user_id,
                                     target_address,
                                 )
                             yield event
@@ -863,24 +862,30 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if origin.address is None:
             raise ValueError("Scheme requires a resolved origin")
         origin_address = origin.address
-        channel = ctx.deps.channel(origin)
+        # Where the gate resolved this to: this channel's direct messages, or another
+        # channel's, with the account there taken from the identity registry.
+        target = self.request.destination
+        channel = ctx.deps.channel(target.channel_tentacle_id)
 
-        dm_address = await channel.open_dm(origin_address.user_id)
+        dm_address = await channel.open_dm(target.user_id)
         if dm_address is None:
             # The gate refused the cases we can know in advance, so this is the platform
             # failing at the moment of asking. Nothing has moved: leave the turn where
             # it is, with the origin agent's own reply already delivered.
             logger.warning(
                 "Channel %s could not open a DM with %s; leaving the turn here",
-                origin.channel_id,
-                origin_address.user_id,
+                target.channel_tentacle_id,
+                target.user_id,
             )
             return End(ReflexResult(decision=None, target=origin))
 
         dm_thread = await ctx.deps.thread_manager.ensure(dm_address)
         receiver = dm_thread.active_agent_tentacle_id
+        # Resolved against the *target* channel: which agents serve a channel is that
+        # channel's own config, so a cross-channel move lands on an agent configured
+        # there rather than one carried over from where the request came from.
         resolved = ctx.deps.resolve_agent(
-            origin.channel_id,
+            target.channel_tentacle_id,
             receiver,
             dm_thread.active_model if receiver else None,
         )
@@ -889,7 +894,9 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         # somewhere it cannot see. (`summon thread` announces itself by opening the
         # thread with the same hint.)
         try:
-            await channel.feelers.markdown.present(origin_address, self.request.hint)
+            await ctx.deps.channel(origin).feelers.markdown.present(
+                origin_address, self.request.hint
+            )
         except Exception:
             logger.warning(
                 "Channel %s failed to announce the move to a DM",
@@ -900,7 +907,7 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         state.run_name = "summon"
         state.thread = dm_thread
         state.target = ResponseTarget(
-            channel_id=origin.channel_id,
+            channel_id=target.channel_tentacle_id,
             address=dm_address,
             thread_strategy=channel.thread_strategy,
             mode="main",

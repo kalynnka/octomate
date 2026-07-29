@@ -168,15 +168,18 @@ async def test_scry_tool_returns_other_routes() -> None:
     assert capability.toolset is not None
     scry = capability.toolset.tools[SCRY_TOOL_NAME].function
 
-    routes = await scry(FAKE_CONTEXT)
+    scrying = await scry(FAKE_CONTEXT)
 
-    assert routes == [
+    assert scrying.routes == [
         AgentRoute(
             agent_id="claude",
             model="opus",
             claim=CLAUDE_CLAIM,
         )
     ]
+    # The same list every spell resolves against — built-ins, then anywhere the
+    # asker is registered. This run is a group thread, so all three are offered.
+    assert [one.handle for one in scrying.destinations] == ["here", "dm", "thread"]
 
 
 async def test_summon_capability_rejects_self_summon() -> None:
@@ -393,8 +396,14 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
         brief="Finish the migration write-up for this user.",
     )
 
-    assert result == "Taking this to their direct messages."
+    assert result == "Taking this to their direct messages here."
     assert capability.decision == SchemeDecision(
+        destination=ChannelAddress(
+            channel_tentacle_id="im",
+            chat_type="private",
+            chat_id="",
+            user_id="alice",
+        ),
         hint="Continuing with you privately",
         brief="Finish the migration write-up for this user.",
     )

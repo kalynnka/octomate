@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic_ai import AgentStreamEvent, CallDeferred, RunContext
@@ -38,12 +38,14 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
-from octomate.capabilities.harness.events import MessageSentEvent, SendDestination
+from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     AgentRoute,
+    Destination,
+    Scrying,
     SchemeDecision,
     SummonDecision,
     SummonDestination,
@@ -51,6 +53,9 @@ from octomate.schemas.triage import (
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
+
+    from octomate.managers.user import UserManager
+    from octomate.schemas.user import UserProfile
 
     from octomate.managers.conversation import ConversationManager
     from octomate.tentacles.agent.base import AgentTentacle
@@ -182,6 +187,10 @@ class GatewayCapability(AbstractCapability[None]):
     # Every connected channel, so `surfaces` can be read for any of them and not
     # just this run's own — what a cross-channel move needs.
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
+    # The identity registry and the run's own profile: together they say where else
+    # this person is reachable. Both None on a gate built only to route locally.
+    users: UserManager | None = None
+    user_profile: UserProfile | None = None
     # What running an accomplice takes. All None on a gate built only to route,
     # which then does not offer the accomplice spells at all.
     agents: dict[str, AgentTentacle] | None = None
@@ -196,6 +205,11 @@ class GatewayCapability(AbstractCapability[None]):
     # decide where to go: what `scry` reveals, and what every spell validates a
     # chosen route against.
     other_routes: list[AgentRoute] = field(init=False, repr=False)
+    # `destinations` is computed once per gate, and a gate lasts one turn. Held here
+    # rather than recomputed because resolving it reaches the identity registry.
+    computed_destinations: list[Destination] | None = field(
+        default=None, init=False, repr=False
+    )
     toolset: FunctionToolset[None] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -276,6 +290,105 @@ class GatewayCapability(AbstractCapability[None]):
         if not address.user_id:
             return "no_user"
         return None
+
+    @property
+    def built_in_destinations(self) -> list[Destination]:
+        """The places every run has: this chat, its direct messages, a sub-thread of
+        it. Each is offered only where it can actually be reached."""
+        address = self.conversation_address
+        if address is None:
+            return []
+        built_in: list[Destination] = []
+        if self.allow_here:
+            built_in.append(
+                Destination(handle="here", label="this conversation", address=address)
+            )
+        if self.private_blocked_by is None:
+            built_in.append(
+                Destination(
+                    handle="dm",
+                    label="their direct messages here",
+                    address=replace(
+                        address, chat_type="private", chat_id="", thread_id=""
+                    ),
+                )
+            )
+        built_in.append(
+            Destination(
+                handle="thread",
+                label="a new sub-thread of this chat",
+                address=address,
+                open_sub_thread=True,
+            )
+        )
+        return built_in
+
+    async def destinations(self) -> list[Destination]:
+        """Every place this run can name, the built-in ones first.
+
+        One list, so a spell never has its own idea of what a place is — and `scry`
+        shows it whole. Computed on first use and kept: most turns never route, so
+        the registry is not touched at all unless a spell is actually cast.
+        """
+        if self.computed_destinations is None:
+            self.computed_destinations = (
+                self.built_in_destinations + await self.linked_destinations()
+            )
+        return self.computed_destinations
+
+    async def linked_destinations(self) -> list[Destination]:
+        """Their direct messages on other channels they are registered on.
+
+        Only channels that are connected, have direct messages, and serve an agent —
+        a place nobody could answer from is not somewhere this can go.
+        """
+        if self.users is None or self.user_profile is None:
+            return []
+        linked: list[Destination] = []
+        for other in await self.users.linked_profiles(self.user_profile):
+            channel = self.channels.get(other.channel_tentacle_id)
+            if channel is None or not channel.surfaces.direct_message:
+                continue
+            if not [
+                served
+                for served in channel.config.agents
+                if self.agents is None or served.agent in self.agents
+            ]:
+                continue
+            linked.append(
+                Destination(
+                    handle=other.channel_tentacle_id,
+                    label=f"their direct messages on {channel.name}",
+                    address=ChannelAddress(
+                        channel_tentacle_id=other.channel_tentacle_id,
+                        chat_type="private",
+                        chat_id="",
+                        user_id=other.channel_user_id,
+                    ),
+                )
+            )
+        return linked
+
+    async def destination(self, handle: str, *, spell: str) -> Destination:
+        """The place `handle` names, or a `ModelRetry` listing what it could have
+        named. The model never names an address — this is where one comes from."""
+        places = await self.destinations()
+        found = next((one for one in places if one.handle == handle), None)
+        if found is not None:
+            return found
+        available = "\n".join(str(one) for one in places) or "- (none)"
+        # A built-in that is missing was withheld for a reason, and the reason is
+        # what teaches the model something: say which wall it hit rather than
+        # implying the place does not exist.
+        why = ""
+        if handle == "dm" and (blocker := self.private_blocked_by) is not None:
+            why = f"{PRIVATE_REFUSALS[blocker]} "
+        elif handle == "here" and not self.allow_here:
+            why = "Cannot take over a group's main channel in place. "
+        raise ModelRetry(
+            f"{why}No such destination {handle!r} for {spell}. Copy one of these "
+            f"exactly:\n{available}"
+        )
 
     def claimed_route(
         self,
@@ -375,9 +488,11 @@ class GatewayCapability(AbstractCapability[None]):
             return "\n\n".join(str(part) for part in output)
         return str(output)
 
-    async def scry(self, ctx: RunContext[None]) -> list[AgentRoute]:
-        """Reveal the Octomate agent tentacles that can be summoned from you."""
-        return self.other_routes
+    async def scry(self, ctx: RunContext[None]) -> Scrying:
+        """Reveal what this conversation can reach: the Octomate agent tentacles
+        that can be summoned or commissioned, and anywhere other than here that the
+        person you are answering can be reached privately."""
+        return Scrying(routes=self.other_routes, destinations=await self.destinations())
 
     async def summon(
         self,
@@ -438,7 +553,13 @@ class GatewayCapability(AbstractCapability[None]):
         user-facing thread-starter message."""
         raise CallDeferred(metadata={"kind": TELEPORT_KIND, "hint": hint})
 
-    async def scheme(self, ctx: RunContext[None], hint: str, brief: str) -> str:
+    async def scheme(
+        self,
+        ctx: RunContext[None],
+        hint: str,
+        brief: str,
+        destination: str = "dm",
+    ) -> str:
         """Continue this with the user one-to-one, in their direct messages.
 
         Whoever already handles that user's direct messages picks the work up — you do
@@ -451,20 +572,21 @@ class GatewayCapability(AbstractCapability[None]):
             brief: The self-contained brief whoever answers there starts from. They
                 cannot see this conversation, so give the goal, the relevant context and
                 decisions, what's been tried, and what a finished result looks like.
+            destination: `dm` for their direct messages on this channel (the
+                default), or
+                the id of another channel from `scry` to continue there instead.
         """
-        if (blocker := self.private_blocked_by) is not None:
-            raise ModelRetry(
-                f"{PRIVATE_REFUSALS[blocker]} Handle it here, or `summon` "
-                "into a `thread`."
-            )
-        self.decision = SchemeDecision(hint=hint, brief=brief)
-        return "Taking this to their direct messages."
+        where = await self.destination(destination, spell="scheme")
+        self.decision = SchemeDecision(
+            hint=hint, brief=brief, destination=where.address
+        )
+        return f"Taking this to {where.label}."
 
     async def send(
         self,
         ctx: RunContext[None],
         segments: list[MessageSegment],
-        destination: SendDestination = "here",
+        destination: str = "here",
     ) -> ToolReturn[str]:
         """Deliver these segments immediately, without ending your turn — a progress
         update, an intermediate result, an image or a file. What you send here is
@@ -472,19 +594,25 @@ class GatewayCapability(AbstractCapability[None]):
 
         Args:
             segments: What to deliver.
-            destination: `here` for this conversation (the default), or `dm` to
-                deliver it to the asking user privately — say in your reply that
-                you sent it there.
+            destination: `here` for this conversation (the default), `dm` for the
+                asking user's direct messages on this channel, or the id of another
+                channel from `scry` to reach them there. Say in your reply when you
+                sent it somewhere other than here.
         """
-        blocker = self.private_blocked_by if destination == "dm" else None
-        # Being in their direct messages already stops a `scheme` — there is nowhere
-        # to move the conversation to — but never a send: this *is* where it was
-        # asked to go, so it simply lands here.
-        if blocker is not None and blocker != "already_private":
-            raise ModelRetry(f"{PRIVATE_REFUSALS[blocker]} Send it `here` instead.")
+        # Being in their direct messages already stops a `scheme` — nowhere to move
+        # the conversation to — but never a send: that *is* where it was asked to go,
+        # so it lands here rather than being refused.
+        already_there = (
+            destination == "dm" and self.private_blocked_by == "already_private"
+        )
+        address = (
+            None
+            if destination == "here" or already_there
+            else (await self.destination(destination, spell="send")).address
+        )
         return ToolReturn(
             return_value="sent",
-            metadata=[MessageSentEvent(segments=segments, destination=destination)],
+            metadata=[MessageSentEvent(segments=segments, destination=address)],
         )
 
     async def commission(

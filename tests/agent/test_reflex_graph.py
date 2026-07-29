@@ -15,7 +15,7 @@ from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.capabilities.gateway import SCRY_TOOL_NAME, GatewayCapability
-from octomate.capabilities.harness.events import MessageSentEvent, SendDestination
+from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
@@ -384,7 +384,11 @@ async def test_reception_mounts_gate_capability() -> None:
     gate = _recorded_gate_capability(agent.turns[0])
     assert gate.toolset is not None
     scry = gate.toolset.tools[SCRY_TOOL_NAME].function
-    assert await scry(FAKE_CONTEXT) == []
+    scrying = await scry(FAKE_CONTEXT)
+    assert scrying.routes == []
+    # One list for every spell: this run is a DM, so `dm` is not among them — it is
+    # already where it would go — and nothing links this asker to another channel.
+    assert [one.handle for one in scrying.destinations] == ["here", "thread"]
 
 
 async def test_non_stream_reception_presents_only_the_final_output() -> None:
@@ -640,6 +644,12 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
         reception_scheme=SchemeDecision(
             hint="Continuing with you privately",
             brief="Finish the migration write-up.",
+            destination=ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type="private",
+                chat_id="",
+                user_id="alice",
+            ),
         ),
         allow_reception_run=True,
     )
@@ -686,7 +696,16 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
     address = _group_key()
     entry = FakeAgent(
         id="other",
-        reception_scheme=SchemeDecision(hint="Taking this private", brief="Do it."),
+        reception_scheme=SchemeDecision(
+            hint="Taking this private",
+            brief="Do it.",
+            destination=ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type="private",
+                chat_id="",
+                user_id="alice",
+            ),
+        ),
         allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
@@ -721,7 +740,16 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
     address = _group_key()
     entry = FakeAgent(
         id="other",
-        reception_scheme=SchemeDecision(hint="Taking this private", brief="Do it."),
+        reception_scheme=SchemeDecision(
+            hint="Taking this private",
+            brief="Do it.",
+            destination=ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type="private",
+                chat_id="",
+                user_id="alice",
+            ),
+        ),
         allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
@@ -1070,7 +1098,7 @@ async def test_resume_keeps_incomplete_reception_batch_deferred() -> None:
 
 async def _run_send(
     im: FakeChannelTentacle,
-    destination: SendDestination,
+    destination: ChannelAddress | None,
 ) -> tuple[FakeThreadManager, FakeChannelTentacle]:
     """One reception whose only act is a `send` for `destination`."""
     address = _group_key()
@@ -1106,7 +1134,15 @@ async def _run_send(
 
 async def test_send_to_dm_delivers_privately_and_leaves_the_group_alone() -> None:
     # No handoff: the DM gets a bare message, and this run keeps the conversation.
-    threads, im = await _run_send(_channel(stream=True), "dm")
+    threads, im = await _run_send(
+        _channel(stream=True),
+        ChannelAddress(
+            channel_tentacle_id="im",
+            chat_type="private",
+            chat_id="",
+            user_id="alice",
+        ),
+    )
 
     assert im.opened_dms == ["alice"]
     delivered = [chat_id for chat_id, *_ in im.sent]
@@ -1130,20 +1166,40 @@ async def test_send_to_dm_delivers_privately_and_leaves_the_group_alone() -> Non
     assert [row.message_text for row in dm_rows] == ["the summary"]
 
 
-async def test_send_to_dm_falls_back_to_here_where_there_are_none() -> None:
-    # The tool cannot know the surface, so content meant for the user lands in the
-    # conversation they asked from rather than nowhere.
-    class NoDmChannel(FakeChannelTentacle):
-        surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
+async def test_send_here_is_left_for_the_timeline() -> None:
+    # `destination` is None for this conversation, so nothing is diverted and the
+    # timeline renders it the way it renders any other mid-run notice.
+    _threads, im = await _run_send(_channel(stream=True), None)
 
-    im = NoDmChannel(
+    assert im.opened_dms == []
+    assert all(chat_id == "team" for chat_id, *_ in im.sent)
+
+
+async def test_send_falls_back_to_here_when_the_platform_will_not_open() -> None:
+    # The gate refuses a surface it knows is unreachable, so what is left here is the
+    # platform failing at the moment of asking. Content produced for this user then
+    # belongs in the conversation they asked from rather than nowhere.
+    class ShutChannel(FakeChannelTentacle):
+        async def open_dm(self, user_id: str) -> ChannelAddress | None:
+            self.opened_dms.append(user_id)
+            return None
+
+    im = ShutChannel(
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
             agents=[AgentModelConfig(agent="other", model="test")],
         )
     )
-    _threads, im = await _run_send(im, "dm")
+    _threads, im = await _run_send(
+        im,
+        ChannelAddress(
+            channel_tentacle_id="im",
+            chat_type="private",
+            chat_id="",
+            user_id="alice",
+        ),
+    )
 
-    assert im.opened_dms == []
+    assert im.opened_dms == ["alice"]
     assert all(chat_id == "team" for chat_id, *_ in im.sent)

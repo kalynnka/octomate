@@ -22,6 +22,11 @@ from pydantic_ai.tools import DeferredToolRequests
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.gateway import GatewayCapability
+from octomate.config import AgentModelConfig, ChannelConfig
+from octomate.config.users import UserConfig
+from octomate.managers.user import UserManager
+from octomate.schemas.triage import Destination, Scrying
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel.base import ChannelSurfaces
 from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.segments import MarkdownSegment, MessageSegment
@@ -92,7 +97,10 @@ def test_send_tool_exposes_no_channel_fields() -> None:
     assert isinstance(schema, dict)
     properties = schema["properties"]
     assert isinstance(properties, dict)
-    assert properties["destination"]["enum"] == ["here", "dm"]
+    # A plain string, never an enum of the surfaces this run can reach: that list is
+    # per-user, and the tool block is a cached prompt segment. `scry` carries it.
+    assert properties["destination"]["type"] == "string"
+    assert "enum" not in properties["destination"]
 
 
 async def test_send_carries_the_named_destination() -> None:
@@ -103,7 +111,19 @@ async def test_send_carries_the_named_destination() -> None:
 
     result = await send(cast(RunContext[Any], None), segments, "dm")
 
-    assert result.metadata == [MessageSentEvent(segments=segments, destination="dm")]
+    # The event carries the *resolved* surface, so the consumer addresses it without
+    # deciding anything and a refused surface can never reach one.
+    assert result.metadata == [
+        MessageSentEvent(
+            segments=segments,
+            destination=ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type="private",
+                chat_id="",
+                user_id="alice",
+            ),
+        )
+    ]
 
 
 async def test_wrap_forwards_stashed_message_sent_event() -> None:
@@ -186,4 +206,124 @@ async def test_send_to_dm_from_a_dm_is_not_refused() -> None:
 
     result = await send(cast(RunContext[Any], None), segments, "dm")
 
-    assert result.metadata == [MessageSentEvent(segments=segments, destination="dm")]
+    # The event carries the *resolved* surface, so the consumer addresses it without
+    # deciding anything and a refused surface can never reach one.
+    # Resolved to nowhere else, so it simply lands here — not refused.
+    assert result.metadata == [MessageSentEvent(segments=segments, destination=None)]
+
+
+async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None:
+    # The cross-channel case: the model names a channel and nothing else. Who is
+    # fixed — whoever asked — and their account there came from the identity
+    # registry when the gate was built, so no user id ever reaches the tool args.
+    lark = Destination(
+        handle="lark",
+        label="their direct messages on Lark",
+        address=ChannelAddress(
+            channel_tentacle_id="lark",
+            chat_type="private",
+            chat_id="",
+            user_id="ou_alice",
+        ),
+    )
+    capability = _gate()
+    # Seeded rather than computed: this is about resolving a handle, not about
+    # reaching the identity registry, which `test_user` covers.
+    capability.computed_destinations = capability.built_in_destinations + [lark]
+    assert capability.toolset is not None
+    send = capability.toolset.tools["send"].function
+    segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
+
+    result = await send(cast(RunContext[Any], None), segments, "lark")
+
+    assert result.metadata == [
+        MessageSentEvent(segments=segments, destination=lark.address)
+    ]
+
+    # A channel it was never told about is refused, with the list it could have used.
+    with pytest.raises(ModelRetry, match="No such destination 'napcat'"):
+        await send(cast(RunContext[Any], None), segments, "napcat")
+
+
+async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
+    # The only carrier for a per-user list: a tool result. In the schema it would
+    # fork the cached tool block, in the instructions the cached system block.
+    lark = Destination(
+        handle="lark",
+        label="their direct messages on Lark",
+        address=ChannelAddress(
+            channel_tentacle_id="lark",
+            chat_type="private",
+            chat_id="",
+            user_id="ou_alice",
+        ),
+    )
+    capability = _gate()
+    # Seeded rather than computed: this is about resolving a handle, not about
+    # reaching the identity registry, which `test_user` covers.
+    capability.computed_destinations = capability.built_in_destinations + [lark]
+    assert capability.toolset is not None
+    scry = capability.toolset.tools["scry"].function
+
+    scrying = await scry(cast(RunContext[Any], None))
+
+    assert lark in scrying.destinations
+    assert "lark" in str(scrying)
+
+
+async def test_scry_does_not_file_this_conversation_as_somewhere_else() -> None:
+    # `scry` is the model's only view of where it can go, so the heading has to be
+    # true of every row under it: this chat is neither remote nor private.
+    capability = _gate()
+    scrying = Scrying(routes=[], destinations=await capability.destinations())
+
+    # `thread` is a place in *this* chat, so a heading promising somewhere else, or
+    # somewhere private, would be false of it.
+    assert "thread" in [one.handle for one in scrying.destinations]
+    assert "privately" not in str(scrying)
+    assert "Where else" not in str(scrying)
+    assert "Where you can put this:" in str(scrying)
+
+
+async def test_the_gate_works_out_where_else_the_asker_is(
+    in_memory_engine: None,
+) -> None:
+    """The computation the gate now owns: registry link → reachable destination.
+
+    Only channels that are connected, have direct messages, and serve an agent —
+    somewhere nobody could answer from is not somewhere this can go.
+    """
+    users = UserManager(
+        {
+            "luhui": UserConfig.model_validate(
+                {
+                    "profiles": {
+                        "im": {"channel_user_id": "alice"},
+                        "lark": {"channel_user_id": "ou_alice"},
+                        "mute": {"channel_user_id": "m_alice"},
+                    }
+                }
+            )
+        }
+    )
+    await users.reconcile()
+    here = await users.ensure_profile("im", UserProfile(channel_user_id="alice"))
+
+    lark = FakeChannelTentacle(
+        id="lark",
+        config=ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="other", model="test")]
+        ),
+    )
+    # Serves nobody, so it is not offered however reachable it looks.
+    mute = FakeChannelTentacle(id="mute", config=ChannelConfig(type="fake", agents=[]))
+
+    capability = _gate()
+    capability.users = users
+    capability.user_profile = here
+    capability.channels = {"im": FakeChannelTentacle(), "lark": lark, "mute": mute}
+    capability.agents = {"other": cast(Any, object())}
+
+    assert [one.handle for one in await capability.linked_destinations()] == ["lark"]
+    # Computed once and kept: a gate lasts one turn.
+    assert await capability.destinations() is await capability.destinations()
