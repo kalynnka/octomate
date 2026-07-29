@@ -135,9 +135,14 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
     assert any(chunk.title == "Lookup" for chunk in task_chunks)
     details = "\n\n".join(chunk.details or "" for chunk in task_chunks)
     assert "ask_questions" not in details
-    # The finished thinking task keeps its details (Slack collapses it natively).
-    thinking_done = [c for c in task_chunks if c.id == "thinking-1"][-1]
-    assert thinking_done.status == "complete" and thinking_done.details == "checking"
+    # Slack appends a task's details across chunks, so a task's chunks have to
+    # concatenate back into its text — each section written exactly once.
+    thinking_written = [c for c in task_chunks if c.id == "thinking-1"]
+    assert "".join(c.details or "" for c in thinking_written) == "checking"
+    assert thinking_written[-1].status == "complete"
+    tool_written = "".join(c.details or "" for c in task_chunks if c.id == "call_1")
+    assert tool_written.count("*Arguments*") == 1
+    assert tool_written.count("*Result*") == 1
     # The answer "done" lands in its own text stream, not the plan stream.
     assert len(plan_streams) == 1
     assert "".join(text_streams[-1].appends) == "done"
@@ -208,9 +213,11 @@ async def test_slack_thinking_appends_coalesce_off_the_drive_loop() -> None:
     # was in flight coalesced (no per-delta blocking append) and land in the folded
     # completion rather than another live append.
     assert live == ["checking"]
-    # It folds into a "Thought for …" task keeping the full details.
+    # It folds into a "Thought for …" task carrying only what Slack has not been
+    # sent yet: appended to the live one, that is the thinking block, written once.
     assert thinking_chunks[-1].status == "complete"
-    assert thinking_chunks[-1].details == "checking the docs"
+    assert thinking_chunks[-1].details == " the docs"
+    assert "".join(c.details or "" for c in thinking_chunks) == "checking the docs"
     assert thinking_chunks[-1].title.startswith("Thought for")
 
 

@@ -92,6 +92,10 @@ class SlackStep:
     status: str = "in_progress"
     started_at: float = 0.0
     output: str | None = None
+    # How much of `details` Slack already holds. A task's details are appended
+    # across chunks, never replaced, so the cursor is what keeps a re-emitted
+    # step (a live flush, then the fold) from writing its text twice.
+    emitted_len: int = 0
 
     @property
     def details(self) -> str | None:
@@ -103,13 +107,19 @@ class SlackStep:
             self.sections.append(f"*{title}*\n{text}")
 
     def chunk(self, *, status: str | None = None) -> TaskUpdateChunk:
-        # Details ride along on every status (kept on completion too) so Slack can
-        # collapse a finished task natively while still letting it expand.
+        # Only the text written since the last chunk: Slack appends it to the task,
+        # so the details it holds stay whole across every status (a finished task
+        # collapses natively while still letting it expand). The cursor advances
+        # here rather than around the send, so a flush racing the fold cannot
+        # hand the same text to both.
+        details = self.details or ""
+        appended = details[self.emitted_len :]
+        self.emitted_len = len(details)
         return TaskUpdateChunk(
             id=self.id,
             title=self.title,
             status=status or self.status,
-            details=self.details,
+            details=appended or None,
             output=self.output,
         )
 
@@ -140,7 +150,6 @@ class SlackTimelineState(TimelineState):
     message_id: IMMessageID | None = None
     thinking_seq: int = 0
     active_thinking: SlackStep | None = None
-    thinking_emitted_len: int = 0
     thinking_flusher: StreamFlusher = field(init=False)
     tool_steps: dict[str, SlackStep] = field(default_factory=dict)
     todo_steps: dict[str, SlackStep] = field(default_factory=dict)
@@ -335,7 +344,6 @@ class SlackTimelineState(TimelineState):
         self.active_thinking = step
         await self.set_status(STATUS_THINKING)
         await self.emit(step)
-        self.thinking_emitted_len = 0
 
     async def thinking_delta(self, text: str) -> None:
         if self.active_thinking is None:
@@ -351,17 +359,15 @@ class SlackTimelineState(TimelineState):
 
     async def flush_thinking(self) -> None:
         """Emit the live thinking step off the drive loop: each emit is one
-        chat.appendStream resending the step's latest text; signals coalesce so
-        tool/answer work never waits behind a burst of ~1s thinking appends.
-        `complete_active_thinking` closes the flusher, then re-emits the folded
-        step."""
+        chat.appendStream carrying the text written since the last one; signals
+        coalesce so tool/answer work never waits behind a burst of ~1s thinking
+        appends. `complete_active_thinking` closes the flusher, then emits the
+        remainder under the folded title."""
         step = self.active_thinking
         if step is None:
             return
-        details = step.details or ""
-        if len(details) <= self.thinking_emitted_len:
+        if len(step.details or "") <= step.emitted_len:
             return
-        self.thinking_emitted_len = len(details)
         await self.emit(step)
 
     async def start_tool(
