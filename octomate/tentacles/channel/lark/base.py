@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
@@ -15,11 +14,9 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
 )
 from pydantic import TypeAdapter, ValidationError
 
-from octomate.capabilities.harness.events import OAuthAuthorizationEvent
 from octomate.config import LarkChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.oauth import OAuthPending
 from octomate.tentacles.channel.base import (
     ChannelSurfaces,
     ChannelTentacle,
@@ -35,9 +32,6 @@ from octomate.tentacles.channel.lark.feelers.approvals import (
 )
 from octomate.tentacles.channel.lark.feelers.oauth import (
     LarkOAuthFeeler,
-    authorization_card_data,
-    authorization_connected_card_data,
-    authorization_failed_card_data,
 )
 from octomate.tentacles.channel.lark.feelers.output import (
     LarkMarkdownFeeler,
@@ -52,7 +46,6 @@ from octomate.tentacles.channel.lark.feelers.questions import (
 from octomate.tentacles.channel.lark.ink import LarkInk
 from octomate.tentacles.channel.lark.schema import (
     LarkApprovalActionValue,
-    LarkOAuthActionValue,
     LarkOutboundMessage,
     LarkQuestionActionValue,
     LarkQuestionFormValue,
@@ -63,7 +56,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 LarkApprovalActionValueAdapter = TypeAdapter(LarkApprovalActionValue)
-LarkOAuthActionValueAdapter = TypeAdapter(LarkOAuthActionValue)
 LarkQuestionActionValueAdapter = TypeAdapter(LarkQuestionActionValue)
 LarkQuestionFormValueAdapter = TypeAdapter(LarkQuestionFormValue)
 
@@ -214,54 +206,6 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
 
         task.add_done_callback(log_result)
 
-    async def confirm_oauth(
-        self,
-        *,
-        responder_id: str,
-        message_id: str,
-        value: LarkOAuthActionValue,
-    ) -> None:
-        """Finish the connection the card was posted for, then rewrite the card.
-
-        Scoped to whoever pressed the button: `complete_latest` looks for a pending
-        authorization owned by *their* profile, so a bystander in a group chat
-        completes nothing — there is no operation of theirs to find, and they are
-        told so rather than handed someone else's connection.
-        """
-        label = value["label"]
-        profile = await self.octomate.users.ensure_profile(
-            self.id,
-            await self.get_user_profile(responder_id),
-        )
-        try:
-            result = await self.octomate.oauth.complete_latest(
-                profile,
-                value["connector_id"],
-            )
-        except ValueError as error:
-            card = authorization_failed_card_data(label=label, detail=str(error))
-        else:
-            card = (
-                authorization_card_data(
-                    OAuthAuthorizationEvent(
-                        connector_id=value["connector_id"],
-                        label=label,
-                        verification_uri=value["verification_uri"],
-                        user_code=value["user_code"],
-                    ),
-                    note=(
-                        f"{label} has not accepted the code yet — finish there, "
-                        f"then press again in about {result.retry_after_seconds}s."
-                    ),
-                )
-                if isinstance(result, OAuthPending)
-                else authorization_connected_card_data(
-                    label=label,
-                    account_label=result.account_label,
-                )
-            )
-        await self.ink.patch_card(message_id, json.dumps(card, ensure_ascii=False))
-
     def on_card_action(
         self,
         data: P2CardActionTrigger,
@@ -285,44 +229,6 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             responder_id = (
                 data.event.operator.open_id or data.event.operator.user_id or ""
             )
-        if action == LarkCardAction.OAUTH_CONFIRM:
-            message_id = (
-                data.event.context.open_message_id
-                if data.event.context is not None
-                else None
-            )
-            try:
-                oauth_value = LarkOAuthActionValueAdapter.validate_python(value)
-            except ValidationError:
-                logger.warning(
-                    "Channel %s: malformed oauth card action", self.id, exc_info=True
-                )
-                return P2CardActionTriggerResponse({})
-            if not responder_id or message_id is None:
-                logger.warning(
-                    "Channel %s: oauth card action without responder or message id",
-                    self.id,
-                )
-                return P2CardActionTriggerResponse({})
-            # Completing polls the provider, so the card is rewritten from the task
-            # rather than this response; the toast is what the press acknowledges.
-            task = asyncio.create_task(
-                self.confirm_oauth(
-                    responder_id=responder_id,
-                    message_id=message_id,
-                    value=oauth_value,
-                )
-            )
-            task.add_done_callback(lambda task: log_card_action_result(self.id, task))
-            return P2CardActionTriggerResponse(
-                {
-                    "toast": {
-                        "type": "info",
-                        "content": f"Checking with {oauth_value['label']}…",
-                    }
-                }
-            )
-
         if action in {
             LarkCardAction.APPROVAL_APPROVE,
             LarkCardAction.APPROVAL_DENY,

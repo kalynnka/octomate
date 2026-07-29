@@ -1,14 +1,10 @@
 """Lark's card for a pending OAuth authorization.
 
-The card carries the whole errand: a link button that opens the provider's device
-page, the one-time code to paste there, and a confirm button that finishes the
-connection from the card itself — the user never has to come back and say so. The
-card rewrites in place with the outcome; `LarkTentacle.on_card_action` owns that
-half, since only the tentacle holds the OAuth manager.
-
-The confirm button carries the authorization back with it, so a press that lands
-before the provider has accepted the code can redraw the same card — buttons and
-all — with a note, rather than replacing it with a dead end.
+The card carries the link button that opens the provider's device page and the
+one-time code to paste there. Finishing is the agent's errand, not the card's:
+the user says so in chat and the capability's confirm tool completes the
+connection. A confirm button here would have to come back over Feishu's card
+callback, which needs ingress this deployment does not have.
 """
 
 from __future__ import annotations
@@ -22,7 +18,6 @@ from octomate.telemetry import lark_logfire
 from octomate.tentacles.channel.feelers.oauth import OAuthFeeler
 from octomate.tentacles.channel.feelers.output import IMMessageID
 from octomate.tentacles.channel.lark.feelers import cards
-from octomate.tentacles.channel.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.types.json import JsonObject
 
@@ -58,64 +53,27 @@ class LarkOAuthFeeler(OAuthFeeler):
         )
 
 
-def authorization_card_data(
-    event: OAuthAuthorizationEvent,
-    *,
-    note: str | None = None,
-) -> JsonObject:
+def authorization_card_data(event: OAuthAuthorizationEvent) -> JsonObject:
     # Lark's card markdown has no code span — backticks would render literally —
     # so the code leans on bold to stand apart from the sentence around it.
-    body = [
-        cards.markdown(
-            f"**{event.user_code}**\n\n"
-            f"Enter this code on {event.label} to link your account, then come "
-            "back here and finish up."
-        )
-    ]
-    if note is not None:
-        body.append(cards.markdown(note))
-    body += [
-        cards.divider(),
-        cards.action(
-            [
-                cards.button(
-                    f"Open {event.label} verification page",
-                    button_type="primary",
-                    action_type="link",
-                    url=event.verification_uri,
-                ),
-                cards.button(
-                    "Finish connecting",
-                    value={
-                        "action": LarkCardAction.OAUTH_CONFIRM.value,
-                        "connector_id": event.connector_id,
-                        "label": event.label,
-                        "verification_uri": event.verification_uri,
-                        "user_code": event.user_code,
-                    },
-                ),
-            ]
-        ),
-    ]
     return cards.simple_card(
-        body,
+        [
+            cards.markdown(
+                f"**{event.user_code}**\n\n"
+                f"Enter this code on {event.label} to link your account, then tell "
+                "me here and I will finish the connection."
+            ),
+            cards.divider(),
+            cards.action(
+                [
+                    cards.button(
+                        f"Open {event.label} verification page",
+                        button_type="primary",
+                        action_type="link",
+                        url=event.verification_uri,
+                    )
+                ]
+            ),
+        ],
         header=cards.header(f"{event.label} Device OAuth", template="blue"),
-    )
-
-
-def authorization_connected_card_data(
-    *,
-    label: str,
-    account_label: str,
-) -> JsonObject:
-    return cards.simple_card(
-        [cards.markdown(f"{label} connected as **@{account_label}**.")],
-        header=cards.header(f"{label} connected", template="green"),
-    )
-
-
-def authorization_failed_card_data(*, label: str, detail: str) -> JsonObject:
-    return cards.simple_card(
-        [cards.markdown(f"Could not connect {label}: {detail}")],
-        header=cards.header(f"{label} Device OAuth", template="red"),
     )
