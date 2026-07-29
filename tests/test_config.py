@@ -549,6 +549,27 @@ def test_each_connection_carries_its_own_warm_timeout() -> None:
     assert config.integrations.github.mcp.url == "https://api.githubcopilot.com/mcp/"
 
 
+def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
+    # GitHub ignores a scope it does not recognise and returns a token quietly
+    # missing that access, so a typo has to fail here instead.
+    config = OctomateConfig.model_validate(
+        {
+            "integrations": {
+                "github": {"client_id": "Iv1.test", "scopes": ["repo", "workflow"]}
+            },
+            "oauth": {"encryption_key": "x" * 43 + "="},
+        }
+    )
+    assert config.integrations.github is not None
+    assert config.integrations.github.scopes == ["repo", "workflow"]
+
+    # Validated, not constructed: a scope arrives as untyped YAML.
+    with pytest.raises(ValidationError, match="Input should be"):
+        GitHubIntegrationConfig.model_validate(
+            {"client_id": "Iv1.test", "scopes": ["workfl0w"]}
+        )
+
+
 def test_github_integration_cache_size_default_and_override() -> None:
     assert GitHubIntegrationConfig(client_id="Iv1.test").max_cached_users == 32
 
