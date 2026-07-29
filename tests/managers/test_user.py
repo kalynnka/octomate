@@ -368,3 +368,41 @@ async def test_owner_loads_a_registered_user_with_a_fresh_manager() -> None:
     owner = await UserManager().owner(profile)
 
     assert owner is not None and owner.username == "luhui"
+
+
+async def test_linked_profiles_follow_a_registered_human(
+    in_memory_engine: None,
+) -> None:
+    """The reverse of `owner`: not whose account this is, but where else they are."""
+    manager = UserManager(
+        {
+            "luhui": UserConfig.model_validate(
+                {
+                    "name": "Kalynnka",
+                    "profiles": {
+                        "slack": {"channel_user_id": "U1"},
+                        "lark": {"channel_user_id": "ou_1"},
+                    },
+                }
+            )
+        }
+    )
+    await manager.reconcile()
+    here = await manager.ensure_profile("slack", UserProfile(channel_user_id="U1"))
+
+    linked = await manager.linked_profiles(here)
+
+    assert [(p.channel_tentacle_id, p.channel_user_id) for p in linked] == [
+        ("lark", "ou_1")
+    ]
+
+
+async def test_linked_profiles_are_empty_for_a_visitor(
+    in_memory_engine: None,
+) -> None:
+    # An unregistered account is one account: nothing links it anywhere, so a
+    # cross-channel move can never follow a stranger.
+    manager = UserManager()
+    visitor = await manager.ensure_profile("slack", UserProfile(channel_user_id="U9"))
+
+    assert await manager.linked_profiles(visitor) == []

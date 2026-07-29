@@ -47,6 +47,43 @@ class UserManager:
         self.cache_user(user)
         return user
 
+    async def linked_profiles(
+        self,
+        profile: UserProfile,
+    ) -> list[UserProfile]:
+        """This human's other channel identities — the same person on another
+        platform, reachable precisely because the registry links the accounts.
+
+        Empty for a visitor: only a registered `User` links identities, so an
+        unregistered account is one account and can be followed nowhere. `owner`
+        answers "whose is this"; this answers "where else are they".
+        """
+        user = await self.owner(profile)
+        if user is None:
+            return []
+        # Sessions do not expire on commit, so a user cached with its profiles still
+        # has them and `peek` answers without IO. It returns None only when the
+        # relation was never loaded — touching it then would lazy-load a detached
+        # instance into a DetachedInstanceError, so query instead.
+        if user.profiles.peek() is None:
+            async with async_session() as session:
+                return list(
+                    await session.list(
+                        UserProfile,
+                        limit=None,
+                        expressions=[
+                            UserProfile["user_id"] == user.id,
+                            UserProfile["channel_tentacle_id"]
+                            != profile.channel_tentacle_id,
+                        ],
+                    )
+                )
+        return [
+            other
+            for other in user.profiles
+            if other.channel_tentacle_id != profile.channel_tentacle_id
+        ]
+
     async def ensure_profile(
         self, channel_tentacle_id: str, observed: UserProfile
     ) -> UserProfile:
