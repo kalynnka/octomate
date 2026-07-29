@@ -16,6 +16,7 @@ from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.bedrock import BedrockProvider
 from pydantic_ai.providers.deepseek import DeepSeekProvider
 from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.providers.google_cloud import GoogleCloudProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings, merge_model_settings
 
@@ -126,8 +127,7 @@ class ProviderRegistry:
                     credentials = service_account.Credentials.from_service_account_file(
                         cfg.credentials_file
                     )
-                return GoogleProvider(
-                    vertexai=True,
+                return GoogleCloudProvider(
                     **present(
                         project=cfg.project,
                         location=cfg.location,

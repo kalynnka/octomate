@@ -5,17 +5,21 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
-from typing import Any, Iterable, TypeAlias, overload
+from typing import Any, Iterable, TypeAlias, TypeVar, overload
 
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
-# TODO: migrate this graph to the pydantic_graph GraphBuilder (Step/Decision/Edge)
-# API once pydantic-graph v2 is officially released. The BaseNode `Graph` runner is
-# deprecated for v2; pinned <2 in pyproject.toml until then.
-from pydantic_graph import BaseNode, End, Graph, GraphRunContext
+from pydantic_graph import (
+    BaseNode,
+    End,
+    Graph,
+    GraphBuilder,
+    GraphRunContext,
+    TypeExpression,
+)
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent, StreamEvents
@@ -85,6 +89,10 @@ class DeferredResult:
 
 
 ReflexGraphResult: TypeAlias = ReflexResult | DeferredResult
+# The node a reflex graph is entered at — see `build_reflex_graph`.
+ReflexEntryT = TypeVar(
+    "ReflexEntryT", bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]"
+)
 
 
 @dataclass
@@ -1083,15 +1091,39 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         return React(resume_batch_id=batch.id)
 
 
-reflex_graph = Graph[ReflexState, ReflexDeps, ReflexGraphResult](
-    nodes=[
-        Awake,
-        Route,
-        Handoff,
-        React,
-        Scheme,
-        Teleport,
-        ResumeDeferred,
-    ],
-    name="reflex",
-)
+def build_reflex_graph(
+    entry: type[ReflexEntryT] = Awake,
+) -> Graph[ReflexState, ReflexDeps, ReflexEntryT, ReflexGraphResult]:
+    """Wire the reflex nodes into a runnable graph, entered at `entry`.
+
+    Every edge comes from the nodes' own `run` return annotations, so the shape
+    stays declared where the transition is written rather than in a second list
+    here. A graph declares the one node it is entered at: a signal wakes the
+    whole reflex, so that is `Awake`, and only a test wires the same nodes with
+    a different door to exercise a stretch of them on its own.
+    """
+    builder = GraphBuilder(
+        name="reflex",
+        state_type=ReflexState,
+        deps_type=ReflexDeps,
+        input_type=entry,
+        # `TypeExpression` is pydantic-graph's stand-in for a union in a
+        # `type[...]` position — the result is one of two variants.
+        output_type=TypeExpression[ReflexGraphResult],
+    )
+    builder.add(
+        builder.edge_from(builder.start_node).to(entry),
+        builder.node(Awake),
+        builder.node(Route),
+        builder.node(Handoff),
+        builder.node(React),
+        builder.node(Scheme),
+        builder.node(Teleport),
+        builder.node(ResumeDeferred),
+    )
+    # Entering anywhere but the top necessarily strands the nodes above it, so the
+    # reachability check only means something for the real entry.
+    return builder.build(validate_graph_structure=entry is Awake)
+
+
+reflex_graph = build_reflex_graph()
