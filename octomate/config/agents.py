@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias, get_args
+from typing import Annotated, Literal, TypeAlias
 
 from openai_codex import CodexConfig as CodexSdkConfig
 from pydantic import AfterValidator, BaseModel, Field
@@ -10,7 +10,6 @@ from pydantic_ai.models import KnownModelName
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config.models import ModelConfig
-
 
 # A filesystem path from config, with `~` meaning what the person writing it meant:
 # pydantic keeps `~/...` literal, and `Path("~/x").resolve()` yields `<cwd>/~/x` rather
@@ -65,10 +64,11 @@ class Claim:
     # What this route is for — per-route, not per-agent, so two models of one
     # agent can advertise differently.
     ability: str
-    # The effort levels this route accepts from a caller — pydantic-ai's thinking
-    # scale, the one effort vocabulary across all agents; each tentacle maps it
-    # onto its runtime's knob. Defaults to the full scale.
-    efforts: tuple[ThinkingEffort, ...] = get_args(ThinkingEffort)
+    # The effort levels this route accepts from a caller — the one effort
+    # vocabulary across all agents; each tentacle maps it onto its runtime's
+    # knob. Defaults to the full scale, so a route whose provider takes less
+    # (DeepSeek has no `minimal`) must say so.
+    efforts: tuple[ThinkingEffort, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
     def __str__(self) -> str:
         return f"[effort {'/'.join(self.efforts)}] {self.ability}"

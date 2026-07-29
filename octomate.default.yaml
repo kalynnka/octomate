@@ -13,14 +13,21 @@ octomate:
       # replaces this file's `octomate:` tree wholesale — a deployment that
       # lists its own models lists its own claims; `efforts` omitted means the
       # full scale.
+      #
+      # `efforts` is pydantic-ai's thinking scale, and for an OpenAI-compatible
+      # provider the level is passed through to `reasoning_effort` verbatim —
+      # nothing downgrades a grade the provider lacks. DeepSeek takes low,
+      # medium, high and xhigh, so a claim that offers `minimal` advertises a
+      # summon that answers 400.
       claims:
         "deepseek:deepseek-v4-flash":
           ability: Quick general assistant for everyday questions, chat, and
             light coordination.
-          efforts: [minimal, low, medium]
+          efforts: [low, medium]
         "deepseek:deepseek-v4-pro":
           ability: General assistant for writing, analysis, and coordinating
             multi-step work.
+          efforts: [low, medium, high, xhigh]
     # Anthropic Claude Code agent (opt-in; omitted => absent). Runs the Claude
     # Agent SDK locally, or on a remote host when `ssh` is set. List it in a
     # channel's `agents:` to make it a summon candidate.

@@ -551,8 +551,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         resolver = self.deferred_resolver if interactive else DeclineResolver()
         resolved_run_name = run_name or "react"
         # Effort IS pydantic-ai's `thinking` scale; pass it through, layered over
-        # any run settings the caller passed. The library maps a grade a provider
-        # lacks to its closest available one.
+        # any run settings the caller passed. Nothing downgrades a grade the
+        # provider lacks — an OpenAI-compatible model sends the level on as
+        # `reasoning_effort` verbatim — so a route's `efforts` claim has to
+        # advertise only what its provider actually takes.
         if effort is not None:
             if callable(model_settings):
                 raise ValueError(
