@@ -16,6 +16,7 @@ from octomate.schemas.oauth import (
     AuthorizationLink,
     DeviceAuthorization,
     DeviceOAuthFlow,
+    DeviceOperationPayload,
     OAuthCipher,
     OAuthCallbackTransport,
     OAuthFlowContext,
@@ -27,6 +28,15 @@ from octomate.schemas.oauth import (
     OAuthTokenPayload,
 )
 from octomate.schemas.user import UserProfile
+
+
+class NoPendingAuthorization(ValueError):
+    """Nothing of this connector's is waiting on this user to authorize it.
+
+    A `ValueError` still, so the channel handlers reporting a failed connection
+    keep catching it unchanged; the narrower type is what lets a tool tell the
+    model to start an authorization rather than reporting the turn as broken.
+    """
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -104,14 +114,27 @@ class OAuthManager:
             cipher = self.cipher
             if cipher is None:
                 raise ValueError("OAuth persistence requires an encryption key")
+            resumed = await self.live_device_authorization(
+                user_id=user.id,
+                profile_id=profile.id,
+                connector_id=connector.id,
+            )
+            if resumed is not None:
+                return resumed
             authorization = await connector.flow.start(context)
+            payload = DeviceOperationPayload(
+                device_code=authorization.device_code,
+                user_code=authorization.user_code,
+                verification_uri=authorization.verification_uri,
+                verification_uri_complete=authorization.verification_uri_complete,
+            )
             operation = OAuthOperation(
                 id=context.operation_id,
                 user_id=user.id,
                 profile_id=profile.id,
                 connector_id=connector.id,
                 encrypted_data=cipher.encrypt(
-                    authorization.device_code.get_secret_value(),
+                    payload.model_dump_json(),
                     context=f"operation:{context.operation_id}",
                 ),
                 expires_at=authorization.expires_at,
@@ -147,6 +170,54 @@ class OAuthManager:
             expires_at=authorization.expires_at,
         )
 
+    async def live_device_authorization(
+        self,
+        *,
+        user_id: uuid.UUID,
+        profile_id: uuid.UUID,
+        connector_id: str,
+    ) -> DeviceAuthorization | None:
+        """This user's device authorization that is still worth returning to.
+
+        Asking to connect again while one is open would strand the code the user is
+        already looking at, so the open one is handed back untouched; only once it
+        has expired is a fresh flow the right answer.
+        """
+        cipher = self.cipher
+        if cipher is None:
+            raise ValueError("OAuth persistence requires an encryption key")
+        async with async_session() as session:
+            operation = await session.first(
+                OAuthOperation,
+                order_bys=[OAuthOperation["id"].desc()],
+                expressions=[
+                    OAuthOperation["user_id"] == user_id,
+                    OAuthOperation["profile_id"] == profile_id,
+                    OAuthOperation["connector_id"] == connector_id,
+                    OAuthOperation["consumed_at"].is_(None),
+                    OAuthOperation["expires_at"] > datetime.now(timezone.utc),
+                ],
+            )
+        if operation is None:
+            return None
+        expires_at = operation.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        payload = DeviceOperationPayload.model_validate_json(
+            cipher.decrypt(
+                operation.encrypted_data,
+                context=f"operation:{operation.id}",
+            )
+        )
+        return DeviceAuthorization(
+            operation_id=operation.id,
+            verification_uri=payload.verification_uri,
+            verification_uri_complete=payload.verification_uri_complete,
+            user_code=payload.user_code,
+            expires_at=expires_at,
+            interval_seconds=operation.interval_seconds,
+        )
+
     async def complete_latest(
         self,
         profile: UserProfile,
@@ -169,7 +240,7 @@ class OAuthManager:
                 ],
             )
         if not operations:
-            raise ValueError(f"no pending {connector_id} authorization")
+            raise NoPendingAuthorization(f"no pending {connector_id} authorization")
         return await self.complete(profile, operations[0].id)
 
     async def complete(
@@ -213,13 +284,13 @@ class OAuthManager:
                 user=user,
                 profile=profile,
             )
-            device_code = SecretStr(
+            payload = DeviceOperationPayload.model_validate_json(
                 cipher.decrypt(
                     operation.encrypted_data,
                     context=f"operation:{operation.id}",
                 )
             )
-            result = await flow.complete(context, device_code)
+            result = await flow.complete(context, payload.device_code)
             if isinstance(result, OAuthPending):
                 return result
 

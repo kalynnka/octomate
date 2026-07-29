@@ -9,6 +9,7 @@ from pydantic import SecretStr
 from pydantic_ai import AgentStreamEvent, RunContext
 from pydantic_ai.agent.abstract import AgentInstructions
 from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import FunctionToolResultEvent, ToolReturn, ToolReturnPart
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
@@ -16,7 +17,11 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 from octomate.capabilities.harness.events import OAuthAuthorizationEvent
 from octomate.capabilities.harness.mcp_cache import McpToolsetCache
 from octomate.config import GitHubMcpConfig
-from octomate.managers.oauth import OAuthConnector, OAuthManager
+from octomate.managers.oauth import (
+    NoPendingAuthorization,
+    OAuthConnector,
+    OAuthManager,
+)
 from octomate.schemas.oauth import (
     DeviceAuthorization,
     DeviceOAuthFlow,
@@ -204,10 +209,19 @@ class GitHubCapability(AbstractCapability[None]):
             """Confirm that this user authorized their pending GitHub connection."""
             if self.profile is None:
                 raise RuntimeError("GitHub capability is not bound to a user")
-            result = await self.manager.complete_latest(
-                self.profile,
-                self.connector.id,
-            )
+            try:
+                result = await self.manager.complete_latest(
+                    self.profile,
+                    self.connector.id,
+                )
+            except NoPendingAuthorization:
+                # Confirming before connecting: an ordering the model can fix
+                # itself, so say which tool opens one rather than ending the turn.
+                raise ModelRetry(
+                    f"Nothing to confirm — this user has no GitHub authorization "
+                    f"waiting. Call `{GITHUB_CONNECT_TOOL}` to start one, then "
+                    "confirm once they have entered the code."
+                ) from None
             if isinstance(result, OAuthPending):
                 return (
                     "GitHub is still waiting for authorization. Complete the link "

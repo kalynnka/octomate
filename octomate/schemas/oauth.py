@@ -24,7 +24,7 @@ from uuid_utils.compat import uuid7
 from octomate.models import oauth as oauth_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.user import User, UserProfile
-from octomate.types.oauth import OAuthConnectionStatus
+from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus
 
 
 class OAuthCipher:
@@ -75,8 +75,8 @@ class DeviceAuthorizationResponse(BaseModel):
     boundary; the future completion step polls with server-side operation state.
     """
 
-    verification_uri: AnyHttpUrl
-    verification_uri_complete: AnyHttpUrl | None = None
+    verification_uri: HttpsUrl
+    verification_uri_complete: HttpsUrl | None = None
     device_code: SecretStr = Field(exclude=True, repr=False)
     user_code: SecretStr = Field(repr=False)
     expires_at: datetime
@@ -104,8 +104,8 @@ class DeviceAuthorization(BaseModel):
     """
 
     operation_id: uuid.UUID
-    verification_uri: AnyHttpUrl
-    verification_uri_complete: AnyHttpUrl | None = None
+    verification_uri: HttpsUrl
+    verification_uri_complete: HttpsUrl | None = None
     user_code: SecretStr = Field(repr=False)
     expires_at: datetime
     interval_seconds: int = Field(ge=1)
@@ -238,6 +238,24 @@ class OAuthTokenPayload(BaseModel):
     @field_serializer("access_token", "refresh_token", when_used="json")
     def serialize_secret(self, value: SecretStr | None) -> str | None:
         return value.get_secret_value() if value is not None else None
+
+
+class DeviceOperationPayload(BaseModel):
+    """The plaintext device-authorization envelope immediately before encryption.
+
+    A provider mints a fresh code on every start, so an authorization that is still
+    pending can only be shown to its user again out of what was sealed here when it
+    began — nothing but the operation row survives the turn that started it.
+    """
+
+    device_code: SecretStr = Field(repr=False)
+    user_code: SecretStr = Field(repr=False)
+    verification_uri: HttpsUrl
+    verification_uri_complete: HttpsUrl | None = None
+
+    @field_serializer("device_code", "user_code", when_used="json")
+    def serialize_secret(self, value: SecretStr) -> str:
+        return value.get_secret_value()
 
 
 @sqlalchemy_materia.bless(oauth_models.OAuthOperation)
