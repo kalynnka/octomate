@@ -1,7 +1,9 @@
 # Plan (rough): DM + cross-channel continuation
 
-> **Status:** §1 shipped, as a spell rather than a destination; §2 still parked ·
-> **Owner:** @luhui · **Created:** 2026-07-06 · **Updated:** 2026-07-28
+> **Status:** §1 shipped, as a spell rather than a destination; §2 shipped for
+> `send`/`scheme`, with `summon`/`teleport` deliberately left local — consent policy is
+> the one prerequisite still open ·
+> **Owner:** @luhui · **Created:** 2026-07-06 · **Updated:** 2026-07-29
 > **Builds on:** [done/self-routing-dispatch.md](done/self-routing-dispatch.md) — unparks its
 > two deferred `gate` destinations. **Reference:** [cancelled/channel-retargeting.md](cancelled/channel-retargeting.md) §0b.
 
@@ -61,21 +63,30 @@ handoff, so `fork`'s empty-target rule and DM sub-threads never enter it.
 
 ## 2. Cross-channel / cross-platform continuation
 
-**Requirements**
+**Requirements** — met for `send` and `scheme`; see the decision below for the other two.
 - An agent can continue on a **different `channel_tentacle_id`** (Slack→Lark, or another Slack
-  workspace) — `summon`/`teleport` into that channel's DM with the same user.
+  workspace) — `scheme` into that channel's DM with the same user, or `send` an artifact there.
 - Only the **same user** (a linked identity), never a third party; the move is announced, not silent.
+
+**Decision: `summon` and `teleport` do not cross channels.** Landing a handoff on a DM
+re-points that person's assistant, because `Route` short-circuits on the thread's
+`active_agent_tentacle_id` — §1's finding, and worse across channels, where a Slack channel
+would be choosing someone's Lark assistant. `scheme` exists precisely so nobody chooses:
+it hands to whoever already owns those DMs. `teleport` has a second wall — it relocates
+history through `fork`, which refuses a non-empty target, and a DM that has been used before
+is never empty.
 
 **Prerequisites**
 - ~~**Everything in §1**~~ (open-DM primitive + reconciliation) — **done**; cross-channel
   materialization is §1 applied on the *target* channel, which `open_dm` now supports.
 - ~~**Cross-platform identity registry**~~ — **done** ([user-identity.md](user-identity.md)):
   `users:` declares which channel profiles belong to one durable human, and `UserManager.owner`
-  resolves a profile to that person. The remaining gap is the reverse lookup — *this user's
-  profile on that other channel* — plus the two items below.
-- **A way to name a remote target without leaking channel/user ids into tool args** (the
-  send-toolset invariant) — offer reachable DMs as opaque, labeled handles the agent picks from,
-  resolved to `(channel, user_id)` internally. **Not in the tool schema**: a per-user list of
+  resolves a profile to that person. ~~The remaining gap is the reverse lookup~~ — **done**:
+  `UserManager.linked_profiles` follows a registered human to their other accounts, and is
+  empty for a visitor, so an unregistered account can be followed nowhere.
+- ~~**A way to name a remote target without leaking channel/user ids into tool args**~~ (the
+  send-toolset invariant) — **done**: `Destination(handle, label, address)` is one vocabulary for
+  every spell, the model names only a handle, and the gate resolves the address. **Not in the tool schema**: a per-user list of
   reachable DMs varies far more than the `dm` destination that §1 had to withdraw, and would
   fork the cached tool prefix per user rather than per address. Whatever names remote targets
   has to reach the model as a tool **result** — `scry`'s return value. Not a dynamic
@@ -84,7 +95,11 @@ handoff, so `fork`'s empty-target rule and DM sub-threads never enter it.
   per-user one forks it just as a per-user schema forks the tool block. A tool result is
   the only carrier that sits after every breakpoint.
 - **Consent / product policy** for opening an (unsolicited, possibly cross-platform) DM — a
-  product call to settle before building.
+  product call, and now the only prerequisite left. Nothing today asks whether a person wants
+  to be reached on Lark because a Slack conversation decided to.
+- **Group chats on other channels** are not offered. The destination list comes from the
+  identity registry, so it can only ever be the asker's own direct messages; sourcing it from
+  chat search is a different trust model and belongs with those tools.
 
 ## Notes
 
