@@ -12,9 +12,7 @@ from slack_bolt.async_app import AsyncApp, AsyncSay
 from octomate.config import SlackChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.capabilities.harness.events import OAuthAuthorizationEvent
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.oauth import OAuthPending
 from octomate.tentacles.channel.base import (
     ChannelSurfaces,
     ChannelTentacle,
@@ -32,9 +30,6 @@ from octomate.tentacles.channel.slack.feelers.approvals import (
 )
 from octomate.tentacles.channel.slack.feelers.oauth import (
     SlackOAuthFeeler,
-    authorization_blocks,
-    authorization_connected_blocks,
-    authorization_failed_blocks,
 )
 from octomate.tentacles.channel.slack.feelers.output import SlackTimelineFeeler
 from octomate.tentacles.channel.slack.feelers.questions import (
@@ -50,7 +45,6 @@ from octomate.tentacles.channel.slack.schema import (
     SlackApprovalActionBody,
     SlackAssistantThreadEvent,
     SlackMessageEvent,
-    SlackOAuthActionBody,
     SlackOutboundMessage,
     SlackQuestionActionBody,
 )
@@ -60,7 +54,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 SlackApprovalActionBodyAdapter = TypeAdapter(SlackApprovalActionBody)
-SlackOAuthActionBodyAdapter = TypeAdapter(SlackOAuthActionBody)
 SlackQuestionActionBodyAdapter = TypeAdapter(SlackQuestionActionBody)
 
 IGNORED_SUBTYPES = frozenset(
@@ -125,7 +118,6 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
         self.app.action(SlackBlockAction.ASK_QUESTION_CHOICE.value)(
             self.on_question_nav
         )
-        self.app.action(SlackBlockAction.OAUTH_CONFIRM.value)(self.on_oauth_action)
         # A url button still posts an interaction; ack it so Slack does not mark the
         # message as failed.
         self.app.action(SlackBlockAction.OAUTH_OPEN.value)(self.on_link_action)
@@ -206,70 +198,6 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
     async def on_link_action(self, ack) -> None:
         """A url button opens the link client-side; Slack still expects the ack."""
         await ack()
-
-    async def on_oauth_action(self, ack, body: SlackOAuthActionBody) -> None:
-        """Finish the connection this message was posted for, then rewrite it.
-
-        Scoped to whoever pressed the button: `complete_latest` looks for a pending
-        authorization owned by *their* profile, so a bystander in a shared channel
-        completes nothing — there is no operation of theirs to find, and they are
-        told so rather than handed someone else's connection.
-        """
-        await ack()
-        try:
-            action_body = SlackOAuthActionBodyAdapter.validate_python(body)
-        except ValidationError as error:
-            logger.warning(
-                "Channel %s: ignored invalid Slack oauth action: %s",
-                self.id,
-                error.errors(
-                    include_url=False,
-                    include_context=False,
-                    include_input=False,
-                ),
-            )
-            return
-        value = action_body["actions"][0]["value"]
-        label = value["label"]
-        profile = await self.octomate.users.ensure_profile(
-            self.id,
-            await self.get_user_profile(action_body["user"]["id"]),
-        )
-        try:
-            result = await self.octomate.oauth.complete_latest(
-                profile,
-                value["connector_id"],
-            )
-        except ValueError as error:
-            text = f"Could not connect {label}"
-            blocks = authorization_failed_blocks(label=label, detail=str(error))
-        else:
-            if isinstance(result, OAuthPending):
-                text = f"Connect {label}"
-                blocks = authorization_blocks(
-                    OAuthAuthorizationEvent(
-                        connector_id=value["connector_id"],
-                        label=label,
-                        verification_uri=value["verification_uri"],
-                        user_code=value["user_code"],
-                    ),
-                    note=(
-                        f"{label} has not accepted the code yet — finish there, "
-                        f"then press again in about {result.retry_after_seconds}s."
-                    ),
-                )
-            else:
-                text = f"{label} connected"
-                blocks = authorization_connected_blocks(
-                    label=label,
-                    account_label=result.account_label,
-                )
-        await self.ink.update_message(
-            action_body["channel"]["id"],
-            action_body["message"]["ts"],
-            text=text,
-            blocks=blocks,
-        )
 
     async def on_approval_action(self, ack, body: SlackApprovalActionBody) -> None:
         await ack()

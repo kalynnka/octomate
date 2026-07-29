@@ -12,4 +12,3 @@ class SlackBlockAction(StrEnum):
     ASK_QUESTION_CHOICE = "octomate_question_choice"
     ASK_QUESTION_ANSWER = "octomate_question_answer"
     OAUTH_OPEN = "octomate_oauth_open"
-    OAUTH_CONFIRM = "octomate_oauth_confirm"
