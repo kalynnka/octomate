@@ -273,7 +273,13 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
         try:
             action = LarkCardAction(str(value.get("action") or ""))
         except ValueError:
+            logger.warning(
+                "Channel %s: unrecognized card action %r",
+                self.id,
+                value.get("action"),
+            )
             return P2CardActionTriggerResponse({})
+        logger.info("Channel %s: card action %s", self.id, action.value)
         responder_id = ""
         if data.event.operator is not None:
             responder_id = (
@@ -288,8 +294,15 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             try:
                 oauth_value = LarkOAuthActionValueAdapter.validate_python(value)
             except ValidationError:
+                logger.warning(
+                    "Channel %s: malformed oauth card action", self.id, exc_info=True
+                )
                 return P2CardActionTriggerResponse({})
             if not responder_id or message_id is None:
+                logger.warning(
+                    "Channel %s: oauth card action without responder or message id",
+                    self.id,
+                )
                 return P2CardActionTriggerResponse({})
             # Completing polls the provider, so the card is rewritten from the task
             # rather than this response; the toast is what the press acknowledges.

@@ -63,9 +63,13 @@ def authorization_card_data(
     *,
     note: str | None = None,
 ) -> JsonObject:
+    # Lark's card markdown has no code span — backticks would render literally —
+    # so the code leans on bold to stand apart from the sentence around it.
     body = [
         cards.markdown(
-            f"Open {event.label} and enter this code:\n\n**`{event.user_code}`**"
+            f"**{event.user_code}**\n\n"
+            f"Enter this code on {event.label} to link your account, then come "
+            "back here and finish up."
         )
     ]
     if note is not None:
@@ -75,13 +79,13 @@ def authorization_card_data(
         cards.action(
             [
                 cards.button(
-                    f"Open {event.label}",
+                    f"Open {event.label} verification page",
                     button_type="primary",
                     action_type="link",
-                    value={"url": event.verification_uri},
+                    url=event.verification_uri,
                 ),
                 cards.button(
-                    "I've authorized",
+                    "Finish connecting",
                     value={
                         "action": LarkCardAction.OAUTH_CONFIRM.value,
                         "connector_id": event.connector_id,
@@ -95,7 +99,7 @@ def authorization_card_data(
     ]
     return cards.simple_card(
         body,
-        header=cards.header(f"Connect {event.label}", template="blue"),
+        header=cards.header(f"{event.label} Device OAuth", template="blue"),
     )
 
 
@@ -113,5 +117,5 @@ def authorization_connected_card_data(
 def authorization_failed_card_data(*, label: str, detail: str) -> JsonObject:
     return cards.simple_card(
         [cards.markdown(f"Could not connect {label}: {detail}")],
-        header=cards.header(f"Connect {label}", template="red"),
+        header=cards.header(f"{label} Device OAuth", template="red"),
     )

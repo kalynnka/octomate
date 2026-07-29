@@ -169,11 +169,19 @@ async def test_lark_feeler_sends_a_card_carrying_the_authorization() -> None:
     assert message_id == "lark-1"
     [(_chat_id, _chat_type, messages, _reply_to, _in_thread)] = ink.sent
     card = _obj(json.loads(messages[0].content))
-    assert _text(_obj(_obj(card["header"])["title"])["content"]) == "Connect GitHub"
+    assert (
+        _text(_obj(_obj(card["header"])["title"])["content"]) == "GitHub Device OAuth"
+    )
     elements = _objs(card["elements"])
+    # Lark card markdown has no code span, so a backticked code would show its
+    # backticks to the user.
     assert "ABCD-EFGH" in _text(elements[0]["content"])
+    assert "`" not in _text(elements[0]["content"])
     open_button, confirm_button = _objs(elements[2]["actions"])
-    assert open_button["value"] == {"url": "https://github.com/login/device"}
+    # Lark reads a link button's target from the element, not from `value`, and
+    # rejects the card outright when it is missing.
+    assert open_button["url"] == "https://github.com/login/device"
+    assert "value" not in open_button
     # The confirm button carries the authorization back, so a press that lands
     # early can redraw this same card rather than replacing it with a dead end.
     assert confirm_button["value"] == {
@@ -252,7 +260,9 @@ async def test_lark_confirm_before_authorization_keeps_the_buttons() -> None:
 
     [(_message_id, card)] = ink.patched
     # Redrawn as itself plus a note: the user still needs the link and the code.
-    assert _text(_obj(_obj(card["header"])["title"])["content"]) == "Connect GitHub"
+    assert (
+        _text(_obj(_obj(card["header"])["title"])["content"]) == "GitHub Device OAuth"
+    )
     elements = _objs(card["elements"])
     assert "ABCD-EFGH" in _text(elements[0]["content"])
     assert "not accepted the code yet" in _text(elements[1]["content"])
