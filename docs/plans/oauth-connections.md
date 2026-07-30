@@ -2,10 +2,21 @@
 
 ## Status
 
-The YAML user registry and provider-neutral connector foundation are complete. GitHub is the first
-concrete connector: registered Slack users can authorize with device flow, confirm from Slack, and
-use the GitHub MCP server with their own encrypted OAuth token. Authorization-code transports,
-other providers/channels, refresh, revocation, and disconnect are not implemented yet.
+Stages 1–3 are **finished**. The YAML user registry and provider-neutral connector foundation are
+complete, and GitHub is the first concrete connector: a registered user on any card-capable channel
+authorizes with device flow and then uses the GitHub MCP server with their own encrypted token.
+A pending authorization is reused until it expires rather than reissued.
+
+~~registered Slack users can authorize with device flow, confirm from Slack~~ — confirmation is no
+longer a channel affordance; see [Confirmation](#confirmation--superseded).
+
+Stage 4 (authorization-code transports) is **not started**, and two things below are open and
+easy to miss:
+
+- **Nothing ever sets `status = "invalid"`.** See [Revocation](#revocation--unimplemented).
+- **The stage 4 transport classes cannot be instantiated.** See [stage 4](#4-authorization-code-transports--not-started).
+
+Other providers/channels, refresh, revocation, and disconnect are not implemented yet.
 
 ## Decisions
 
@@ -79,10 +90,16 @@ driven by the first real connector rather than preserving the obsolete `provider
   channels, exceptions, and public schemas.
 - Authorization operations are durable, short-lived, single-use, and bound to the initiating user
   and profile. Completion rechecks that the profile is still linked to the same user.
-- A completed connection is not activated until the initiating channel identity confirms it. Slack
-  DM delivery is not available yet, so the device link/code and confirmation are sent back to the
-  originating Slack conversation, including a group or thread when that is where the request came
-  from. No operation secret or user selector appears in the tool arguments.
+- A completed connection is not activated until the initiating channel identity confirms it. No
+  operation secret or user selector appears in the tool arguments.
+  ~~Slack DM delivery is not available yet, so the device link/code and confirmation are sent back
+  to the originating Slack conversation, including a group or thread when that is where the request
+  came from.~~ **Superseded** — `ChannelTentacle.open_dm` shipped with
+  [dm-and-cross-channel-continuation.md](dm-and-cross-channel-continuation.md) §1, so the
+  compromise this recorded is over. `OAuthFeeler.deliver_to` now routes an authorization asked for
+  in a group into that person's direct messages; a channel with no DM surface keeps the
+  conversation it came from, and a channel that has one but fails to open it raises rather than
+  reading a one-time code out to a group.
 - Token refresh replaces the entire encrypted token response atomically. Rotating refresh tokens
   must not be lost to concurrent refreshes.
 - MCP credential caches compare the connection subject and normalized granted scopes, not only the
@@ -101,13 +118,47 @@ driven by the first real connector rather than preserving the obsolete `provider
 
 ## Delivery stages
 
-### 1. YAML user identity — complete
+### Confirmation — superseded
+
+The original design finished a connection from the message that started it:
+
+> ~~A card carries the whole errand — the link, the code, and a confirm button that finishes the
+> connection from the card itself, so the user never has to come back and say so. The card rewrites
+> in place with the outcome, and the confirm button carries the authorization back with it so a
+> press that lands early can redraw the same card with a note.~~
+
+**Dropped.** A press only reaches Octomate over Feishu's `card.action.trigger` 回调, and neither
+transport is available here — 长连接 is enterprise-only on this tenant, and there is no public
+ingress for a request URL. Slack's equivalent worked but is gone too, so one flow serves every
+channel.
+
+The user now tells the agent they have authorized, and the capability's confirm tool calls
+`complete_latest`. That keeps every property this section cared about: the tool takes no arguments,
+so no operation secret or user selector crosses the model, and completion is bound to the profile
+driving the run. What is lost is the card rewriting itself with the outcome — the agent's reply is
+the acknowledgement instead.
+
+### Revocation — unimplemented
+
+`OAuthConnectionStatus` is `Literal["active", "invalid"]`, and `connection.status = "active"` is the
+only assignment in the tree. **Nothing ever sets `"invalid"`.**
+
+So a token the user revokes at GitHub stays "active" forever: `access_token` keeps handing it out,
+every MCP call 401s, and there is no path back — the user cannot see they are disconnected and
+cannot reconnect, because a live connection means the capability mounts the MCP toolset instead of
+`connect_github`. This is the failure a real user hits first, and it is not covered by the refresh
+and disconnect work listed below.
+
+Whatever implements it has to decide where an authorization failure is observed (the MCP session,
+not the manager) and how it gets back to the connection row.
+
+### 1. YAML user identity — finished
 
 - Durable users keyed by YAML username.
 - Cross-channel profiles linked to the same user.
 - Ownerless visitor profiles for admitted unknown senders.
 
-### 2. Connector foundation — implemented
+### 2. Connector foundation — finished
 
 - `OAuthConnector` composed from a flow and optional callback transport.
 - Device and authorization-code flow contracts.
@@ -115,25 +166,35 @@ driven by the first real connector rather than preserving the obsolete `provider
 - `OAuthManager` connector registry and `UserManager` principal resolution.
 - No provider, MCP, route, relay, token, or connection implementation.
 
-### 3. GitHub device OAuth — first usable slice implemented
+### 3. GitHub device OAuth — finished
 
 - GitHub capability building its device connector for one-time application registration and
   receiving the registered connector in every run-scoped instance.
 - Durable encrypted operation and connection storage, with the schema generated from this concrete
   lifecycle rather than provider/MCP inheritance.
-- Owner-bound device-code presentation and explicit confirmation from Slack.
-- The bare verification message is emitted to the originating Slack conversation; DM routing is a
-  later channel enhancement.
-- Connection replacement is implemented; owner-bound refresh and disconnect remain.
+- Owner-bound device-code presentation on every channel, ~~and explicit confirmation from Slack~~
+  with confirmation through the agent (see [Confirmation](#confirmation--superseded)).
+- ~~The bare verification message is emitted to the originating Slack conversation; DM routing is a
+  later channel enhancement.~~ An authorization asked for in a group is delivered to the asker's
+  direct messages.
+- A pending authorization is resumed until it expires; asking again does not mint a second code.
+- Connection replacement is implemented; owner-bound refresh, revocation
+  ([above](#revocation--unimplemented)) and disconnect remain.
 
-### 4. Authorization-code transports
+### 4. Authorization-code transports — not started
+
+`DirectHttpOAuthCallbackTransport` and `RelayOAuthCallbackTransport` exist and override only
+`kind`; `callback_uri` and `prepare_authorization` are still abstract, so **neither class can be
+instantiated** — constructing one raises `TypeError`. `OAuthManager.start`'s authorization-code
+branch is therefore unreachable by construction. The contracts from stage 2 are real; the
+transports behind them are named placeholders, and nothing here should be read as working code.
 
 - Durable state and PKCE operation data.
 - Narrow project-level start/callback routes for direct HTTP.
 - Relay implementation using the same manager completion boundary.
 - Replay, expiry, denial, unlinking, and confirmation tests.
 
-### 5. MCP OAuth — GitHub path implemented
+### 5. MCP OAuth — GitHub path finished
 
 - MCP connector using authorization-server discovery and the appropriate injected flow/transport.
 - Per-user token storage and per-run GitHub capabilities are implemented. A bound capability exposes
@@ -144,17 +205,27 @@ driven by the first real connector rather than preserving the obsolete `provider
 - Future refresh support must return a credential snapshot containing the access token, subject,
   and granted scopes. Same-subject/same-scope refreshes can update the cached toolset's mutable auth
   object without warm-up; identity or scope changes replace and re-warm the toolset.
+  **Precondition, unmet:** the cache is keyed on the access token alone
+  (`fingerprint=access_token.get_secret_value()`), not on subject and normalized scopes as the
+  security requirement above demands. That is safe today — a token only changes when the user
+  re-authorizes, which changes subject and scopes too — but the first refresh will drop a warm
+  session it was supposed to keep.
 - General MCP authorization-server discovery remains for later connectors.
 - Dynamic client registration only when advertised and required.
 
 ## Acceptance
 
+Two of these are not met yet and are marked so — the rest hold.
+
 - Connector construction rejects invalid flow/transport combinations.
 - An unknown connector is rejected before any OAuth work starts.
 - A visitor cannot start OAuth; a YAML-linked sender can start only for themselves.
 - No public manager method accepts a target user id or username.
-- Authorization-code provider state is staged behind a UUID-only user-facing URI.
+- Authorization-code provider state is staged behind a UUID-only user-facing URI. **Not met** —
+  no transport exists to stage it ([stage 4](#4-authorization-code-transports--not-started)).
 - GitHub uses the generic manager without adding GitHub branches to `OAuthManager`.
 - A token-only refresh with unchanged subject and scopes preserves the warm MCP session; a subject
-  or scope change produces a new authorization-aware tool listing.
+  or scope change produces a new authorization-aware tool listing. **Not met** — the cache is keyed
+  on the token alone, so any refresh drops the session ([stage 5](#5-mcp-oauth--github-path-finished)).
+- An authorization asked for in a group reaches only the person who asked.
 - A later MCP connector can reuse the same manager without being modeled as a provider subclass.
