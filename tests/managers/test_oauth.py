@@ -1,25 +1,38 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 from base64 import urlsafe_b64encode
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
-import inspect
 from typing import cast
 
+import httpx
 import pytest
+from fastmcp.client.transports import StreamableHttpTransport
 from pydantic import AnyHttpUrl, SecretStr, TypeAdapter
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import ToolReturn
-from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.toolsets import (
+    DeferredLoadingToolset,
+    FunctionToolset,
+    PrefixedToolset,
+)
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from octomate.capabilities.github import (
+    GITHUB_OAUTH_INSTRUCTION,
+    GITHUB_RETIRED_INSTRUCTION,
+    GitHubCapability,
+)
 from octomate.capabilities.harness.events import OAuthAuthorizationEvent
-from octomate.capabilities.github import GitHubCapability
 from octomate.config.integrations import GITHUB_CONNECTOR_ID
 from octomate.config.users import UserConfig
 from octomate.database import async_session
+from octomate.oauth.base import McpConnectionAuth
 from octomate.managers.oauth import OAuthConnector, OAuthManager
 from octomate.managers.user import UserManager
 from octomate.schemas.oauth import (
@@ -159,6 +172,30 @@ async def linked_user_manager() -> tuple[UserManager, UserProfile]:
         )
     assert profile is not None
     return users, profile
+
+
+def _mcp_auth(capability: GitHubCapability) -> McpConnectionAuth:
+    """The credential object inside a bound capability's MCP session."""
+    toolset = capability.toolset
+    assert isinstance(toolset, DeferredLoadingToolset)
+    prefixed = toolset.wrapped
+    assert isinstance(prefixed, PrefixedToolset)
+    inner = prefixed.wrapped
+    assert isinstance(inner, MCPToolset)
+    transport = inner.client.transport
+    assert isinstance(transport, StreamableHttpTransport)
+    auth = transport.auth
+    assert isinstance(auth, McpConnectionAuth)
+    return auth
+
+
+async def _drive_auth(auth: McpConnectionAuth, *, status: int) -> httpx.Request:
+    """Run one request/response round of the auth flow and return what it sent."""
+    flow = auth.async_auth_flow(httpx.Request("POST", "https://mcp.example/mcp"))
+    request = await anext(flow)
+    with contextlib.suppress(StopAsyncIteration):
+        await flow.asend(httpx.Response(status, request=request))
+    return request
 
 
 def test_connector_requires_the_transport_appropriate_to_its_flow() -> None:
@@ -482,3 +519,146 @@ async def test_github_confirm_tool_activates_the_connection() -> None:
     assert "@luhui" in result
     token = await manager.access_token(profile, "github")
     assert token is not None
+
+
+async def _connected(
+    flow: FakeDeviceFlow | None = None,
+) -> tuple[OAuthManager, UserProfile, GitHubCapability]:
+    """A registered user who has finished a device authorization."""
+    users, profile = await linked_user_manager()
+    manager = OAuthManager(users=users, encryption_key=ENCRYPTION_KEY)
+    connector = manager.register(
+        OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=flow or FakeDeviceFlow())
+    )
+    await manager.start(profile, GITHUB_CONNECTOR_ID)
+    await manager.complete_latest(profile, GITHUB_CONNECTOR_ID)
+    github = GitHubCapability(manager=manager, connector=connector)
+    return manager, profile, github
+
+
+async def test_an_unauthorized_mcp_response_retires_the_connection() -> None:
+    manager, profile, github = await _connected()
+    capability = await github.for_profile(profile)
+    assert capability is not None
+    assert capability.access_token is not None
+    auth = _mcp_auth(capability)
+
+    await _drive_auth(auth, status=401)
+
+    # The provider is the only thing that can say a token is gone, so the session
+    # that heard it is what records it.
+    assert await manager.access_token(profile, GITHUB_CONNECTOR_ID) is None
+
+
+async def test_a_retired_connection_offers_to_authorize_again() -> None:
+    manager, profile, github = await _connected()
+    connected = await github.for_profile(profile)
+    assert connected is not None
+
+    # `_mcp_auth` only resolves against a real MCP session, so reaching it is the
+    # assertion that this run had one.
+    await _drive_auth(_mcp_auth(connected), status=401)
+    after = await github.for_profile(profile)
+
+    # The next run finds no usable connection and offers the way back rather than
+    # tools that can only fail.
+    assert after is not None
+    assert after.access_token is None
+    assert isinstance(after.toolset, FunctionToolset)
+    assert set(after.toolset.tools) == {"connect_github", "confirm_github"}
+
+
+async def test_a_retired_connection_is_told_apart_from_never_connecting() -> None:
+    manager, profile, github = await _connected()
+    connected = await github.for_profile(profile)
+    assert connected is not None
+
+    await _drive_auth(_mcp_auth(connected), status=401)
+    after = await github.for_profile(profile)
+
+    # A user who was connected a moment ago cannot see that they no longer are, so
+    # the model is told to raise it rather than wait to be asked.
+    assert after is not None
+    assert after.connection_retired
+    assert after.get_instructions() == GITHUB_RETIRED_INSTRUCTION
+
+
+async def test_never_connecting_reads_as_itself() -> None:
+    users, profile = await linked_user_manager()
+    manager = OAuthManager(users=users, encryption_key=ENCRYPTION_KEY)
+    github = GitHubCapability(
+        manager=manager,
+        connector=manager.register(
+            OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=FakeDeviceFlow())
+        ),
+    )
+
+    capability = await github.for_profile(profile)
+
+    assert capability is not None
+    assert not capability.connection_retired
+    assert capability.get_instructions() == GITHUB_OAUTH_INSTRUCTION
+
+
+async def test_reconnecting_stops_the_stale_warning() -> None:
+    manager, profile, github = await _connected()
+    connected = await github.for_profile(profile)
+    assert connected is not None
+    await _drive_auth(_mcp_auth(connected), status=401)
+
+    await manager.start(profile, GITHUB_CONNECTOR_ID)
+    await manager.complete_latest(profile, GITHUB_CONNECTOR_ID)
+    after = await github.for_profile(profile)
+
+    assert after is not None
+    assert after.access_token is not None
+    assert not after.connection_retired
+    assert after.get_instructions() is None
+
+
+async def test_an_ordinary_mcp_failure_leaves_the_connection_alone() -> None:
+    manager, profile, github = await _connected()
+    capability = await github.for_profile(profile)
+    assert capability is not None
+
+    await _drive_auth(_mcp_auth(capability), status=500)
+
+    # A server that broke says nothing about the credential it was handed.
+    assert await manager.access_token(profile, GITHUB_CONNECTOR_ID) is not None
+
+
+async def test_the_token_still_reaches_the_provider() -> None:
+    _manager, profile, github = await _connected()
+    capability = await github.for_profile(profile)
+    assert capability is not None
+    assert capability.access_token is not None
+
+    request = await _drive_auth(_mcp_auth(capability), status=200)
+
+    assert request.headers["Authorization"] == (
+        f"Bearer {capability.access_token.get_secret_value()}"
+    )
+
+
+async def test_an_expired_connection_records_itself_on_the_way_out() -> None:
+    manager, profile, github = await _connected()
+    async with async_session() as session:
+        connection = await session.one_or_none(
+            OAuthConnection,
+            expressions=[OAuthConnection["connector_id"] == GITHUB_CONNECTOR_ID],
+        )
+        assert connection is not None
+        connection.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await session.commit()
+
+    assert await manager.access_token(profile, GITHUB_CONNECTOR_ID) is None
+
+    # Expiry is the one death the row can announce by itself; reading it once is
+    # enough to stop it being offered again.
+    async with async_session() as session:
+        connection = await session.one_or_none(
+            OAuthConnection,
+            expressions=[OAuthConnection["connector_id"] == GITHUB_CONNECTOR_ID],
+        )
+        assert connection is not None
+        assert connection.status == "invalid"

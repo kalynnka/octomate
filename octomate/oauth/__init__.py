@@ -1,4 +1,5 @@
-"""Provider OAuth flows: one module per upstream Octomate can connect a user to.
+"""Provider OAuth flows: one module per upstream Octomate can connect a user to,
+over the provider-neutral pieces in `base`.
 
 A flow owns only what its provider does differently — endpoints, token exchange,
 scope and account discovery — and is composed into an `OAuthConnector` by whoever

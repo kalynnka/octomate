@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.github import GitHubCapability
+from octomate.oauth.base import McpConnectionAuth
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.mcp_cache import McpToolsetCache
 from octomate.config import GitHubMcpConfig, McpServerConfig
@@ -120,6 +121,14 @@ def _transport(toolset: AbstractToolset[None]) -> StreamableHttpTransport:
     return transport
 
 
+def _auth(toolset: AbstractToolset[None]) -> McpConnectionAuth:
+    # The credential rides the transport's auth rather than a fixed header, so the
+    # same object that sends it sees the 401 that retires it.
+    auth = _transport(toolset).auth
+    assert isinstance(auth, McpConnectionAuth)
+    return auth
+
+
 LINEAR_URL = "https://mcp.linear.app/mcp"
 
 
@@ -152,7 +161,8 @@ def test_github_toolset_is_deferred_with_bearer_header() -> None:
     assert _prefixed(capability.toolset).prefix == "github"
     transport = _transport(capability.toolset)
     assert transport.url == "https://api.githubcopilot.com/mcp/"
-    assert transport.headers == {"Authorization": "Bearer github-oauth-token"}
+    auth = _auth(capability.toolset)
+    assert auth.access_token.get_secret_value() == "github-oauth-token"
 
 
 def test_github_read_only_selects_readonly_endpoint() -> None:
@@ -302,7 +312,7 @@ async def test_github_capability_instances_reuse_connector_and_mcp_session(
 ) -> None:
     host, profile, github = await github_host_and_profile()
     spy = SpyToolset()
-    github.mcp_toolset_factory = lambda access_token: spy
+    github.mcp_toolset_factory = lambda profile, access_token: spy
     await host.oauth.start(profile, "github")
     await host.oauth.complete_latest(profile, "github")
     tentacle = github_tentacle(host, github)
@@ -343,9 +353,9 @@ async def test_connected_slack_user_receives_their_github_mcp_token(
     capability = capabilities[0]
     assert isinstance(capability, GitHubCapability)
     assert capability.toolset is not None
-    assert _transport(capability.toolset).headers == {
-        "Authorization": "Bearer github-user-token"
-    }
+    assert (
+        _auth(capability.toolset).access_token.get_secret_value() == "github-user-token"
+    )
 
 
 async def test_visitor_receives_no_github_connection_tools(

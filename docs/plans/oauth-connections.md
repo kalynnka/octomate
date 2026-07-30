@@ -10,13 +10,13 @@ A pending authorization is reused until it expires rather than reissued.
 ~~registered Slack users can authorize with device flow, confirm from Slack~~ — confirmation is no
 longer a channel affordance; see [Confirmation](#confirmation--superseded).
 
-Stage 4 (authorization-code transports) is **not started**, and two things below are open and
-easy to miss:
+Stage 4 (authorization-code transports) is **not started**, and one thing below is open and easy
+to miss:
 
-- **Nothing ever sets `status = "invalid"`.** See [Revocation](#revocation--unimplemented).
 - **The stage 4 transport classes cannot be instantiated.** See [stage 4](#4-authorization-code-transports--not-started).
 
-Other providers/channels, refresh, revocation, and disconnect are not implemented yet.
+A revoked credential now retires itself ([Revocation](#revocation--finished)). Other
+providers/channels, refresh, revoking at the provider, and disconnect are not implemented yet.
 
 ## Decisions
 
@@ -138,19 +138,40 @@ so no operation secret or user selector crosses the model, and completion is bou
 driving the run. What is lost is the card rewriting itself with the outcome — the agent's reply is
 the acknowledgement instead.
 
-### Revocation — unimplemented
+### Revocation — finished
 
-`OAuthConnectionStatus` is `Literal["active", "invalid"]`, and `connection.status = "active"` is the
-only assignment in the tree. **Nothing ever sets `"invalid"`.**
+~~`OAuthConnectionStatus` is `Literal["active", "invalid"]` and nothing ever sets `"invalid"`, so a
+token the user revokes at GitHub stays "active" forever: `access_token` keeps handing it out, every
+MCP call 401s, and there is no path back.~~
 
-So a token the user revokes at GitHub stays "active" forever: `access_token` keeps handing it out,
-every MCP call 401s, and there is no path back — the user cannot see they are disconnected and
-cannot reconnect, because a live connection means the capability mounts the MCP toolset instead of
-`connect_github`. This is the failure a real user hits first, and it is not covered by the refresh
-and disconnect work listed below.
+Only the provider can say a credential is gone, so the thing that talks to it brings the news back.
+`ConnectionAuth` is an `httpx.Auth` carrying one user's bearer token into their MCP session; a 401
+answering it is reported once to `OAuthManager.invalidate`, which marks the connection `"invalid"`.
 
-Whatever implements it has to decide where an authorization failure is observed (the MCP session,
-not the manager) and how it gets back to the connection row.
+It sits on the transport rather than in a tool hook because that is the only place that sees the
+whole session. The same 401 answers the `initialize` that warms a session and the tool call that
+uses it, and `McpToolsetCache.warm` logs a failure and moves on — so a revoked token would
+otherwise fail quietly on every run forever, never reaching a hook at all. It also sidesteps
+`ToolFailureCapability`, which implements `on_tool_execute_error` too and would make the outcome
+depend on capability order.
+
+Recovery needed nothing new: `access_token` already filters on `status == "active"`, so an
+invalidated connection reads as none, and `for_profile` mounts `connect_github` with its
+instruction instead of the MCP toolset. `access_token` also records the expiry it was already
+silently rejecting, which is the same failure a connector with expiring tokens will hit.
+
+`OAuthManager.connection_status` is what separates never having connected from having connected and
+lost it — `access_token` collapses both to no token, which is right for using one and wrong for
+explaining its absence. A retired connection gets its own instruction telling the model to raise it
+unprompted, since the user cannot see that tools they were using are gone.
+
+The turn that discovers the 401 still has MCP tools mounted and fails as a `ToolFailed` the model
+explains; the turn after it says the connection went stale and offers to reconnect. Closing that lag means re-reading the connection
+after `acquire`, a query per run to save one degraded turn — not taken. The dead session also stays
+in the toolset cache until LRU eviction, unreachable because no token resolves to it.
+
+Still open: nothing revokes the token *at* GitHub, and there is no `disconnect_github` for a user
+who wants out deliberately rather than because the provider ended it.
 
 ### 1. YAML user identity — finished
 
@@ -178,8 +199,8 @@ not the manager) and how it gets back to the connection row.
   later channel enhancement.~~ An authorization asked for in a group is delivered to the asker's
   direct messages.
 - A pending authorization is resumed until it expires; asking again does not mint a second code.
-- Connection replacement is implemented; owner-bound refresh, revocation
-  ([above](#revocation--unimplemented)) and disconnect remain.
+- Connection replacement is implemented, and a revoked credential now retires itself
+  ([above](#revocation--finished)); owner-bound refresh and disconnect remain.
 
 ### 4. Authorization-code transports — not started
 

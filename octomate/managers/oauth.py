@@ -28,6 +28,7 @@ from octomate.schemas.oauth import (
     OAuthTokenPayload,
 )
 from octomate.schemas.user import UserProfile
+from octomate.types.oauth import OAuthConnectionStatus
 
 
 class NoPendingAuthorization(ValueError):
@@ -329,6 +330,62 @@ class OAuthManager:
             await session.commit()
         return result
 
+    async def invalidate(self, profile: UserProfile, connector_id: str) -> None:
+        """Record that this user's credentials for a connector no longer work.
+
+        Only the provider can say so — a revoked token answers 401 while nothing
+        about the stored row changed — so something that spoke to it has to bring
+        the news back. Marking it is what stops `access_token` handing the dead
+        credential out again, which is what turns a capability that can only fail
+        into an offer to authorize afresh.
+
+        Nothing to mark is a normal outcome, not an error: a visitor has no
+        connection, and a second 401 from the same dead session finds it already
+        recorded.
+        """
+        user = await self.users.owner(profile)
+        if user is None:
+            return
+        async with async_session() as session:
+            connection = await session.one_or_none(
+                OAuthConnection,
+                expressions=[
+                    OAuthConnection["user_id"] == user.id,
+                    OAuthConnection["connector_id"] == connector_id,
+                    OAuthConnection["status"] == "active",
+                ],
+            )
+            if connection is None:
+                return
+            connection.status = "invalid"
+            connection.updated_at = datetime.now(timezone.utc)
+            await session.commit()
+
+    async def connection_status(
+        self,
+        profile: UserProfile,
+        connector_id: str,
+    ) -> OAuthConnectionStatus | None:
+        """Whether this user has a connection to a connector, and whether it works.
+
+        `None` is never having connected; `"invalid"` is having connected and lost
+        it. `access_token` collapses both to no token, which is right for using one
+        and wrong for explaining its absence — a user who was connected a moment ago
+        cannot see that they no longer are, and only this tells them apart.
+        """
+        user = await self.users.owner(profile)
+        if user is None:
+            return None
+        async with async_session() as session:
+            connection = await session.one_or_none(
+                OAuthConnection,
+                expressions=[
+                    OAuthConnection["user_id"] == user.id,
+                    OAuthConnection["connector_id"] == connector_id,
+                ],
+            )
+        return connection.status if connection is not None else None
+
     async def access_token(
         self,
         profile: UserProfile,
@@ -357,6 +414,10 @@ class OAuthManager:
             if expires_at.tzinfo is None:
                 expires_at = expires_at.replace(tzinfo=timezone.utc)
             if expires_at <= datetime.now(timezone.utc):
+                # Expiry is the one death the row can announce by itself; record it
+                # so the next run offers a fresh authorization rather than re-reading
+                # the same dead token.
+                await self.invalidate(profile, connector_id)
                 return None
         payload = OAuthTokenPayload.model_validate_json(
             cipher.decrypt(

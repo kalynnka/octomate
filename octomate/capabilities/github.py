@@ -22,6 +22,7 @@ from octomate.managers.oauth import (
     OAuthConnector,
     OAuthManager,
 )
+from octomate.oauth.base import McpConnectionAuth
 from octomate.schemas.oauth import (
     DeviceAuthorization,
     DeviceOAuthFlow,
@@ -53,6 +54,21 @@ GitHub tools are unavailable until this user connects their own account.
   GitHub tools become available on their next message.
 """
 
+GITHUB_RETIRED_INSTRUCTION = """\
+## GitHub connection
+
+This user WAS connected to GitHub and no longer is: GitHub rejected their
+authorization, so it was revoked, expired, or had access withdrawn. Their GitHub
+tools are gone until they connect again, and nothing has told them.
+- Say so once in your next reply, briefly, even if they asked about something else
+  — they cannot see this and may be waiting on work that can no longer happen.
+- Offer to reconnect. Call `connect_github` when they agree; it sends a fresh
+  verification link and code to this conversation. Do not repeat the code in your
+  final response.
+- After the user says they authorized it, call `confirm_github` once. If connected,
+  GitHub tools become available on their next message.
+"""
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,23 +94,34 @@ class GitHubCapability(AbstractCapability[None]):
     profile: UserProfile | None = None
     access_token: SecretStr | None = field(default=None, repr=False)
     mcp_toolset: AbstractToolset[None] | None = field(default=None, repr=False)
-    mcp_toolset_factory: Callable[[SecretStr], AbstractToolset[None]] | None = field(
-        default=None, repr=False
-    )
+    # This user connected once and the provider has since rejected the credential,
+    # which reads as unconnected everywhere except in what the model is told.
+    connection_retired: bool = False
+    mcp_toolset_factory: (
+        Callable[[UserProfile, SecretStr], AbstractToolset[None]] | None
+    ) = field(default=None, repr=False)
     toolset: AbstractToolset[None] | None = field(default=None, init=False, repr=False)
 
-    def build_mcp_toolset(self, access_token: SecretStr) -> AbstractToolset[None]:
+    def build_mcp_toolset(
+        self,
+        profile: UserProfile,
+        access_token: SecretStr,
+    ) -> AbstractToolset[None]:
         """Build the authenticated GitHub MCP toolset cached for one user.
 
         Named after the connector, so the one id a deployment configures reaches the
-        MCP session and the prefix its tools carry as well.
+        MCP session and the prefix its tools carry as well. The profile is whose
+        connection this session spends, and so whose connection a 401 retires.
         """
         server = self.mcp_config
         url = server.url.rstrip("/") + "/readonly" if server.read_only else server.url
         return (
             MCPToolset(
                 url,
-                headers={"Authorization": f"Bearer {access_token.get_secret_value()}"},
+                auth=McpConnectionAuth(
+                    access_token,
+                    lambda: self.manager.invalidate(profile, self.connector.id),
+                ),
                 id=self.connector.id,
                 init_timeout=server.warm_timeout_seconds,
             )
@@ -128,7 +155,7 @@ class GitHubCapability(AbstractCapability[None]):
                 fingerprint=access_token.get_secret_value(),
                 max_entries=self.max_cached_users,
                 warm_timeout=self.mcp_config.warm_timeout_seconds,
-                build=lambda: build_mcp_toolset(access_token),
+                build=lambda: build_mcp_toolset(profile, access_token),
             )
 
         return replace(
@@ -136,6 +163,11 @@ class GitHubCapability(AbstractCapability[None]):
             profile=profile,
             access_token=access_token,
             mcp_toolset=mcp_toolset,
+            # Only worth asking when there is no token to explain: a connection that
+            # works is its own explanation.
+            connection_retired=access_token is None
+            and await self.manager.connection_status(profile, self.connector.id)
+            == "invalid",
         )
 
     async def __aenter__(self) -> GitHubCapability:
@@ -167,7 +199,7 @@ class GitHubCapability(AbstractCapability[None]):
         if self.access_token is not None:
             self.toolset = self.mcp_toolset or (
                 self.mcp_toolset_factory or self.build_mcp_toolset
-            )(self.access_token)
+            )(self.profile, self.access_token)
             return
 
         toolset: FunctionToolset[None] = FunctionToolset(id="github-oauth")
@@ -238,9 +270,11 @@ class GitHubCapability(AbstractCapability[None]):
         return self.toolset
 
     def get_instructions(self) -> AgentInstructions[None] | None:
-        if self.profile is not None and self.access_token is None:
-            return GITHUB_OAUTH_INSTRUCTION
-        return None
+        if self.profile is None or self.access_token is not None:
+            return None
+        if self.connection_retired:
+            return GITHUB_RETIRED_INSTRUCTION
+        return GITHUB_OAUTH_INSTRUCTION
 
     async def wrap_run_event_stream(
         self,
