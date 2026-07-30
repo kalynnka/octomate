@@ -12,7 +12,10 @@ from typing import cast
 import pytest
 from pydantic import JsonValue
 
-from octomate.capabilities.harness.events import OAuthAuthorizationEvent
+from octomate.capabilities.harness.events import (
+    OAuthAuthorizationEvent,
+    OAuthDeviceAuthorizationEvent,
+)
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.tentacles.channel.base import Ink
 from octomate.tentacles.channel.feelers.oauth import PlainTextOAuthFeeler
@@ -26,11 +29,17 @@ from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkCardsInk
 from tests.support.channels import FakeOAuthInk, RecordingMarkdownFeeler
 
-AUTHORIZATION = OAuthAuthorizationEvent(
+AUTHORIZATION = OAuthDeviceAuthorizationEvent(
     connector_id="github",
     label="GitHub",
-    verification_uri="https://github.com/login/device",
+    authorization_uri="https://github.com/login/device",
     user_code="ABCD-EFGH",
+)
+
+LINK_AUTHORIZATION = OAuthAuthorizationEvent(
+    connector_id="linear",
+    label="Linear",
+    authorization_uri="http://127.0.0.1:8000/oauth/linear/start/0198-op",
 )
 
 
@@ -161,3 +170,47 @@ async def test_a_platform_with_nowhere_private_refuses_to_use_the_group() -> Non
         )
 
     assert ink.sent == []
+
+
+async def test_plain_text_feeler_asks_for_nothing_a_link_flow_cannot_give() -> None:
+    markdown = RecordingMarkdownFeeler()
+
+    await PlainTextOAuthFeeler(cast(Ink[str], FakeOAuthInk()), markdown).present(
+        _address("napcat"), LINK_AUTHORIZATION
+    )
+
+    [(_address_, text)] = markdown.calls
+    assert "http://127.0.0.1:8000/oauth/linear/start/0198-op" in text
+    # No code to type and nothing to come back for: the callback finishes it.
+    assert "Code:" not in text
+    assert "confirm" not in text
+
+
+async def test_lark_card_drops_the_code_line_for_a_link_flow() -> None:
+    ink = FakeLarkCardsInk()
+
+    await LarkOAuthFeeler(cast(LarkInk, ink)).present(
+        _address("lark"), LINK_AUTHORIZATION
+    )
+
+    [(_chat_id, _chat_type, messages, _reply_to, _in_thread)] = ink.sent
+    card = _obj(json.loads(messages[0].content))
+    assert _text(_obj(_obj(card["header"])["title"])["content"]) == "Linear OAuth"
+    elements = _objs(card["elements"])
+    [open_button] = _objs(elements[2]["actions"])
+    assert open_button["url"] == "http://127.0.0.1:8000/oauth/linear/start/0198-op"
+
+
+async def test_slack_blocks_drop_the_code_block_for_a_link_flow() -> None:
+    ink = RecordingSlackInk()
+
+    await SlackOAuthFeeler(cast(SlackInk, ink)).present(
+        _address("slack"), LINK_AUTHORIZATION
+    )
+
+    [(_chat_id, _chat_type, messages, _thread)] = ink.sent
+    blocks = _objs(cast(JsonValue, messages[0].blocks))
+    # Body then actions, with no code section wedged between them.
+    assert len(blocks) == 2
+    [open_button] = _objs(blocks[1]["elements"])
+    assert open_button["url"] == "http://127.0.0.1:8000/oauth/linear/start/0198-op"

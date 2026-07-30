@@ -129,16 +129,42 @@ class OAuthAuthorizationEvent(DisplayEvent):
     """An integration is waiting for this user to authorize their own account.
 
     Carries the authorization itself rather than a rendered message, so each channel
-    presents it as well as it can — a link and code in a plain timeline, a card whose
-    button continues the flow where the platform has one. `connector_id` is what a
-    consumer completes the connection against once the user acts.
+    presents it as well as it can — a link in a plain timeline, a card whose button
+    opens the page where the platform has one. `connector_id` is the connection this
+    authorization belongs to.
+
+    Emitted as it stands by an authorization-code flow, where opening the link and
+    approving is the whole errand: nothing to copy, and nothing to come back for
+    because the provider's callback finishes the connection.
     """
 
-    event_kind: Literal["oauth_authorization"] = "oauth_authorization"
+    event_kind: Literal["oauth_authorization", "oauth_device_authorization"] = (
+        "oauth_authorization"
+    )
     connector_id: str
     label: str
-    verification_uri: str
-    user_code: str
+    authorization_uri: str = Field(
+        description="The page the user opens. A device flow's verification page, or "
+        "the UUID-only link an authorization-code flow staged its provider request "
+        "behind."
+    )
+
+
+class OAuthDeviceAuthorizationEvent(OAuthAuthorizationEvent):
+    """A device flow, which asks the user for one thing more.
+
+    Finishing is a second errand they have to come back for, which is why the code
+    travels with the link and why a presenter asks them to return. A presenter that
+    does not distinguish the two renders this as its base and simply leaves the code
+    out — wrong, but not misleading.
+    """
+
+    # The declared type has to stay the base's, or the override is a narrowing of a
+    # mutable field; only the default changes, which is what names this on the wire.
+    event_kind: Literal["oauth_authorization", "oauth_device_authorization"] = (
+        "oauth_device_authorization"
+    )
+    user_code: str = Field(description="The one-time code the user types on the page.")
 
 
 class ActionBatchEvent(BaseModel):

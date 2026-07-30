@@ -23,17 +23,25 @@ from pydantic_ai.toolsets import (
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from octomate.capabilities.harness.mcp import OAuthMcpCapability
 from octomate.capabilities.github import (
     GITHUB_OAUTH_INSTRUCTION,
     GITHUB_RETIRED_INSTRUCTION,
     GitHubCapability,
 )
-from octomate.capabilities.harness.events import OAuthAuthorizationEvent
-from octomate.config.integrations import GITHUB_CONNECTOR_ID
+from octomate.capabilities.harness.events import (
+    OAuthAuthorizationEvent,
+    OAuthDeviceAuthorizationEvent,
+)
+from octomate.capabilities.linear import LinearCapability
 from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.oauth.base import McpConnectionAuth
-from octomate.managers.oauth import OAuthConnector, OAuthManager
+from octomate.managers.oauth import (
+    OAuthConnector,
+    OAuthManager,
+    UnusableOAuthOperation,
+)
 from octomate.managers.user import UserManager
 from octomate.schemas.oauth import (
     AuthorizationCodeOAuthFlow,
@@ -53,6 +61,8 @@ from octomate.schemas.oauth import (
 from octomate.schemas.user import UserProfile
 from octomate.types.oauth import HttpsUrl
 
+GITHUB_CONNECTOR_ID = "github"
+LINEAR_CONNECTOR_ID = "linear"
 URL_ADAPTER = TypeAdapter(AnyHttpUrl)
 HTTPS_URL_ADAPTER = TypeAdapter(HttpsUrl)
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
@@ -104,40 +114,68 @@ class FakeAuthorizationCodeFlow(AuthorizationCodeOAuthFlow):
     def __init__(self) -> None:
         self.context: OAuthFlowContext | None = None
         self.callback: AnyHttpUrl | None = None
+        self.state: SecretStr | None = None
+        self.exchanges: list[tuple[str, str | None]] = []
+        # How long the link this flow hands out stays good; negative to mint one
+        # that is already past its deadline.
+        self.lifetime = timedelta(minutes=10)
+        self.grant = OAuthGrant(
+            access_token=SecretStr("linear-token"),
+            refresh_token=SecretStr("linear-refresh"),
+            subject="usr_42",
+            account_label="Alice",
+            scopes=["read", "write"],
+        )
+        self.refreshed = OAuthGrant(
+            access_token=SecretStr("linear-token-2"),
+            refresh_token=SecretStr("linear-refresh-2"),
+            subject="usr_42",
+            account_label="Alice",
+            scopes=["read", "write"],
+        )
+        # Set to refuse the refresh the way a provider that ended the grant does.
+        self.refresh_refused = False
+        # Set to fail the token exchange the way a misconfigured client does.
+        self.exchange_refused: Exception | None = None
 
     async def start(
         self,
         context: OAuthFlowContext,
         callback_uri: AnyHttpUrl,
+        state: SecretStr,
     ) -> AuthorizationRequest:
         self.context = context
         self.callback = callback_uri
+        self.state = state
         return AuthorizationRequest(
             authorization_uri=URL_ADAPTER.validate_python(
                 "https://example.com/authorize?state=provider-secret-state"
             ),
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            code_verifier=SecretStr("pkce-verifier"),
+            expires_at=datetime.now(timezone.utc) + self.lifetime,
         )
 
-
-class FakeDirectHttpTransport(DirectHttpOAuthCallbackTransport):
-    def __init__(self) -> None:
-        self.staged: dict[str, AnyHttpUrl] = {}
-
-    async def callback_uri(self, connector_id: str) -> AnyHttpUrl:
-        return URL_ADAPTER.validate_python(
-            f"https://octomate.example/oauth/callback/{connector_id}"
-        )
-
-    async def prepare_authorization(
+    async def exchange(
         self,
         context: OAuthFlowContext,
-        authorization_uri: AnyHttpUrl,
-    ) -> AnyHttpUrl:
-        self.staged[str(context.operation_id)] = authorization_uri
-        return URL_ADAPTER.validate_python(
-            f"https://octomate.example/oauth/start/{context.operation_id}"
+        *,
+        code: str,
+        code_verifier: SecretStr | None,
+        callback_uri: AnyHttpUrl,
+    ) -> OAuthGrant:
+        self.context = context
+        self.exchanges.append(
+            (code, code_verifier.get_secret_value() if code_verifier else None)
         )
+        if self.exchange_refused is not None:
+            raise self.exchange_refused
+        return self.grant
+
+    async def refresh(self, refresh_token: SecretStr) -> OAuthGrant:
+        if self.refresh_refused:
+            raise ValueError("Linear authorization failed: refresh token is spent")
+        assert refresh_token.get_secret_value() == "linear-refresh"
+        return self.refreshed
 
 
 class FakeRelayTransport(RelayOAuthCallbackTransport):
@@ -154,6 +192,32 @@ class FakeRelayTransport(RelayOAuthCallbackTransport):
         return URL_ADAPTER.validate_python(
             f"https://relay.example/oauth/start/{context.operation_id}"
         )
+
+
+def direct_http() -> DirectHttpOAuthCallbackTransport:
+    return DirectHttpOAuthCallbackTransport(
+        URL_ADAPTER.validate_python("http://127.0.0.1:8000")
+    )
+
+
+async def linear_manager(
+    flow: FakeAuthorizationCodeFlow | None = None,
+) -> tuple[OAuthManager, UserProfile, FakeAuthorizationCodeFlow]:
+    """A registered user and a Linear connector on the real direct-HTTP transport."""
+    users, profile = await linked_user_manager()
+    flow = flow or FakeAuthorizationCodeFlow()
+    manager = OAuthManager(
+        users=users,
+        encryption_key=ENCRYPTION_KEY,
+        connectors=[
+            OAuthConnector(
+                id=LINEAR_CONNECTOR_ID,
+                flow=flow,
+                callback_transport=direct_http(),
+            )
+        ],
+    )
+    return manager, profile, flow
 
 
 async def linked_user_manager() -> tuple[UserManager, UserProfile]:
@@ -174,7 +238,7 @@ async def linked_user_manager() -> tuple[UserManager, UserProfile]:
     return users, profile
 
 
-def _mcp_auth(capability: GitHubCapability) -> McpConnectionAuth:
+def _mcp_auth(capability: OAuthMcpCapability) -> McpConnectionAuth:
     """The credential object inside a bound capability's MCP session."""
     toolset = capability.toolset
     assert isinstance(toolset, DeferredLoadingToolset)
@@ -203,7 +267,7 @@ def test_connector_requires_the_transport_appropriate_to_its_flow() -> None:
         OAuthConnector(
             id="github",
             flow=FakeDeviceFlow(),
-            callback_transport=FakeDirectHttpTransport(),
+            callback_transport=direct_http(),
         )
 
     with pytest.raises(ValueError, match="requires a callback"):
@@ -256,53 +320,238 @@ async def test_visitor_cannot_start_oauth() -> None:
 
 
 async def test_authorization_code_flow_uses_the_selected_transport() -> None:
-    users, profile = await linked_user_manager()
-    flow = FakeAuthorizationCodeFlow()
-    transport = FakeDirectHttpTransport()
-    manager = OAuthManager(
-        users=users,
-        connectors=[
-            OAuthConnector(
-                id="linear",
-                flow=flow,
-                callback_transport=transport,
-            )
-        ],
-    )
+    manager, profile, flow = await linear_manager()
 
-    authorization = await manager.start(profile, "linear")
+    authorization = await manager.start(profile, LINEAR_CONNECTOR_ID)
 
     assert isinstance(authorization, AuthorizationLink)
     assert flow.callback == URL_ADAPTER.validate_python(
-        "https://octomate.example/oauth/callback/linear"
+        "http://127.0.0.1:8000/oauth/linear/callback"
     )
     assert authorization.authorization_uri == URL_ADAPTER.validate_python(
-        f"https://octomate.example/oauth/start/{authorization.operation_id}"
+        f"http://127.0.0.1:8000/oauth/linear/start/{authorization.operation_id}"
     )
-    staged = transport.staged[str(authorization.operation_id)]
-    assert "provider-secret-state" in str(staged)
+
+
+async def test_the_user_facing_link_carries_only_the_operation_uuid() -> None:
+    manager, profile, flow = await linear_manager()
+
+    authorization, _ = await started(manager, profile, flow)
+    staged = await manager.staged_authorization(
+        LINEAR_CONNECTOR_ID, authorization.operation_id
+    )
+
+    # The provider request and everything in it is reachable only by opening the
+    # link; nothing of it travels in the link itself.
+    assert "provider-secret-state" in str(staged.authorization_uri)
     assert "provider-secret-state" not in str(authorization.authorization_uri)
+    assert flow.state is not None
+    assert flow.state.get_secret_value() not in str(authorization.authorization_uri)
+    # The state names its operation but is not the operation id: the id is public.
+    assert flow.state.get_secret_value().startswith(f"{authorization.operation_id}.")
+    assert flow.state.get_secret_value() != str(authorization.operation_id)
+
+
+async def test_a_started_authorization_seals_its_state_and_verifier() -> None:
+    manager, profile, _ = await linear_manager()
+
+    await manager.start(profile, LINEAR_CONNECTOR_ID)
+
+    async with async_session() as session:
+        [operation] = await session.list(OAuthOperation, limit=None)
+    assert b"pkce-verifier" not in operation.encrypted_data
+    assert b"provider-secret-state" not in operation.encrypted_data
+    # Nothing to poll: an authorization-code operation is finished by its callback.
+    assert operation.interval_seconds is None
 
 
 async def test_authorization_code_connector_can_select_a_relay() -> None:
     users, profile = await linked_user_manager()
     manager = OAuthManager(
         users=users,
+        encryption_key=ENCRYPTION_KEY,
         connectors=[
             OAuthConnector(
-                id="linear",
+                id=LINEAR_CONNECTOR_ID,
                 flow=FakeAuthorizationCodeFlow(),
                 callback_transport=FakeRelayTransport(),
             )
         ],
     )
 
-    authorization = await manager.start(profile, "linear")
+    authorization = await manager.start(profile, LINEAR_CONNECTOR_ID)
 
     assert isinstance(authorization, AuthorizationLink)
     assert str(authorization.authorization_uri).startswith(
         "https://relay.example/oauth/start/"
     )
+
+
+async def started(
+    manager: OAuthManager,
+    profile: UserProfile,
+    flow: FakeAuthorizationCodeFlow,
+) -> tuple[AuthorizationLink, str]:
+    """Start an authorization and read back the state only the provider would know."""
+    authorization = await manager.start(profile, LINEAR_CONNECTOR_ID)
+    assert isinstance(authorization, AuthorizationLink)
+    assert flow.state is not None
+    return authorization, flow.state.get_secret_value()
+
+
+async def test_the_callback_stores_an_owner_bound_encrypted_token() -> None:
+    manager, profile, flow = await linear_manager()
+    _, state = await started(manager, profile, flow)
+
+    grant = await manager.complete_callback(
+        LINEAR_CONNECTOR_ID, state=state, code="auth-code"
+    )
+
+    assert grant.account_label == "Alice"
+    # The verifier the operation was holding is what the exchange spent.
+    assert flow.exchanges == [("auth-code", "pkce-verifier")]
+    token = await manager.access_token(profile, LINEAR_CONNECTOR_ID)
+    assert token is not None
+    assert token.get_secret_value() == "linear-token"
+    async with async_session() as session:
+        [connection] = await session.list(OAuthConnection, limit=None)
+    assert b"linear-token" not in connection.encrypted_tokens
+
+
+async def test_a_replayed_callback_is_refused() -> None:
+    manager, profile, flow = await linear_manager()
+    _, state = await started(manager, profile, flow)
+    await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
+
+    with pytest.raises(UnusableOAuthOperation, match="already been consumed"):
+        await manager.complete_callback(
+            LINEAR_CONNECTOR_ID, state=state, code="auth-code"
+        )
+
+    # One exchange, not two: the replay never reached the provider.
+    assert flow.exchanges == [("auth-code", "pkce-verifier")]
+
+
+async def test_an_expired_authorization_cannot_be_completed() -> None:
+    flow = FakeAuthorizationCodeFlow()
+    flow.lifetime = timedelta(seconds=-1)
+    manager, profile, flow = await linear_manager(flow)
+    _, state = await started(manager, profile, flow)
+
+    with pytest.raises(UnusableOAuthOperation, match="expired"):
+        await manager.complete_callback(
+            LINEAR_CONNECTOR_ID, state=state, code="auth-code"
+        )
+
+    assert flow.exchanges == []
+
+
+async def test_a_guessed_state_cannot_finish_an_authorization() -> None:
+    manager, profile, flow = await linear_manager()
+    authorization, _ = await started(manager, profile, flow)
+
+    # The operation id is public — it is in the link the user opened — so naming it
+    # has to be worth nothing without the random half of the state.
+    with pytest.raises(UnusableOAuthOperation, match="does not match"):
+        await manager.complete_callback(
+            LINEAR_CONNECTOR_ID,
+            state=f"{authorization.operation_id}.guessed",
+            code="auth-code",
+        )
+
+    assert flow.exchanges == []
+    assert await manager.access_token(profile, LINEAR_CONNECTOR_ID) is None
+
+
+async def test_another_connectors_operation_is_not_reachable() -> None:
+    manager, profile, flow = await linear_manager()
+    _, state = await started(manager, profile, flow)
+
+    with pytest.raises(UnusableOAuthOperation, match="unknown OAuth operation"):
+        await manager.complete_callback("github", state=state, code="auth-code")
+
+
+async def test_a_declined_authorization_is_closed() -> None:
+    manager, profile, flow = await linear_manager()
+    _, state = await started(manager, profile, flow)
+
+    await manager.abandon_callback(LINEAR_CONNECTOR_ID, state=state)
+
+    # Declining is an answer, so the link the user turned down stops working now
+    # rather than at the end of its lifetime.
+    with pytest.raises(UnusableOAuthOperation, match="already been consumed"):
+        await manager.complete_callback(
+            LINEAR_CONNECTOR_ID, state=state, code="auth-code"
+        )
+    assert await manager.connection_status(profile, LINEAR_CONNECTOR_ID) is None
+
+
+async def test_unlinking_the_profile_stops_its_callback() -> None:
+    manager, profile, flow = await linear_manager()
+    _, state = await started(manager, profile, flow)
+    # The YAML declaration goes away while the user is at the provider's page.
+    manager.users.config = {}
+    await manager.users.reconcile()
+
+    with pytest.raises(UnusableOAuthOperation, match="no longer linked"):
+        await manager.complete_callback(
+            LINEAR_CONNECTOR_ID, state=state, code="auth-code"
+        )
+
+    assert flow.exchanges == []
+
+
+async def test_a_near_expiry_token_is_refreshed_before_it_is_used() -> None:
+    manager, profile, flow = await linear_manager()
+    _, state = await started(manager, profile, flow)
+    flow.grant = flow.grant.model_copy(
+        update={"expires_at": datetime.now(timezone.utc) + timedelta(seconds=30)}
+    )
+    await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
+
+    token = await manager.access_token(profile, LINEAR_CONNECTOR_ID)
+
+    # Spent while there is still room to replace it: a token that dies mid-run fails
+    # the same way a revoked one does.
+    assert token is not None
+    assert token.get_secret_value() == "linear-token-2"
+    async with async_session() as session:
+        [connection] = await session.list(OAuthConnection, limit=None)
+    assert connection.status == "active"
+
+
+async def test_a_refused_refresh_retires_the_connection() -> None:
+    manager, profile, flow = await linear_manager()
+    _, state = await started(manager, profile, flow)
+    flow.grant = flow.grant.model_copy(
+        update={"expires_at": datetime.now(timezone.utc) + timedelta(seconds=30)}
+    )
+    await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
+    flow.refresh_refused = True
+
+    assert await manager.access_token(profile, LINEAR_CONNECTOR_ID) is None
+
+    # A provider that will not renew the grant has ended it, which reads the same as
+    # the 401 a revoked token answers with.
+    assert await manager.connection_status(profile, LINEAR_CONNECTOR_ID) == "invalid"
+
+
+async def test_concurrent_reads_spend_one_refresh_token_once() -> None:
+    manager, profile, flow = await linear_manager()
+    _, state = await started(manager, profile, flow)
+    flow.grant = flow.grant.model_copy(
+        update={"expires_at": datetime.now(timezone.utc) + timedelta(seconds=30)}
+    )
+    await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
+
+    tokens = await asyncio.gather(
+        *(manager.access_token(profile, LINEAR_CONNECTOR_ID) for _ in range(4))
+    )
+
+    # A rotating refresh token is spendable once, so the runs that lost the race
+    # have to find the winner's result rather than send the spent one upstream —
+    # `FakeAuthorizationCodeFlow.refresh` asserts it is only ever handed the first.
+    assert {token.get_secret_value() for token in tokens if token} == {"linear-token-2"}
 
 
 async def test_device_completion_persists_an_owner_bound_encrypted_token() -> None:
@@ -455,7 +704,7 @@ async def test_github_connect_tool_emits_only_the_link_and_code() -> None:
     )
     capability = await github.for_profile(profile)
     assert capability is not None
-    assert capability.toolset is not None
+    assert isinstance(capability.toolset, FunctionToolset)
     connect = capability.toolset.tools["connect_github"].function
     assert set(inspect.signature(connect).parameters) == {"ctx"}
 
@@ -465,10 +714,10 @@ async def test_github_connect_tool_emits_only_the_link_and_code() -> None:
     # in the return value the model reads back.
     assert isinstance(result, ToolReturn)
     [event] = result.metadata
-    assert isinstance(event, OAuthAuthorizationEvent)
+    assert isinstance(event, OAuthDeviceAuthorizationEvent)
     assert event.connector_id == "github"
     assert event.label == "GitHub"
-    assert event.verification_uri == "https://github.com/login/device"
+    assert event.authorization_uri == "https://github.com/login/device"
     assert event.user_code == "ABCD-EFGH"
     model_sees = str(result.return_value)
     assert "ABCD-EFGH" not in model_sees
@@ -510,7 +759,7 @@ async def test_github_confirm_tool_activates_the_connection() -> None:
     await manager.start(profile, "github")
     capability = await github.for_profile(profile)
     assert capability is not None
-    assert capability.toolset is not None
+    assert isinstance(capability.toolset, FunctionToolset)
     confirm = capability.toolset.tools["confirm_github"].function
 
     result = await confirm(cast(RunContext[None], None))
@@ -662,3 +911,93 @@ async def test_an_expired_connection_records_itself_on_the_way_out() -> None:
         )
         assert connection is not None
         assert connection.status == "invalid"
+
+
+async def linear_capability() -> tuple[
+    OAuthManager, UserProfile, FakeAuthorizationCodeFlow, LinearCapability
+]:
+    manager, profile, flow = await linear_manager()
+    return (
+        manager,
+        profile,
+        flow,
+        LinearCapability(
+            manager=manager,
+            connector=manager.connector(LINEAR_CONNECTOR_ID),
+        ),
+    )
+
+
+async def test_linear_connect_tool_emits_a_link_and_no_code() -> None:
+    _manager, profile, _flow, linear = await linear_capability()
+    capability = await linear.for_profile(profile)
+    assert capability is not None
+    assert isinstance(capability.toolset, FunctionToolset)
+    connect = capability.toolset.tools["connect_linear"].function
+    assert set(inspect.signature(connect).parameters) == {"ctx"}
+
+    result = await connect(cast(RunContext[None], None))
+
+    assert isinstance(result, ToolReturn)
+    [event] = result.metadata
+    assert isinstance(event, OAuthAuthorizationEvent)
+    assert event.connector_id == LINEAR_CONNECTOR_ID
+    assert event.label == "Linear"
+    # Nothing for the user to type, so a presenter is never handed a code at all —
+    # and the provider's own request never reaches the channel.
+    assert not hasattr(event, "user_code")
+    assert event.authorization_uri.startswith(
+        "http://127.0.0.1:8000/oauth/linear/start/"
+    )
+    assert "provider-secret-state" not in str(result.return_value)
+
+
+async def test_linear_confirm_tool_reports_without_finishing_anything() -> None:
+    manager, profile, flow, linear = await linear_capability()
+    capability = await linear.for_profile(profile)
+    assert capability is not None
+    assert isinstance(capability.toolset, FunctionToolset)
+    confirm = capability.toolset.tools["confirm_linear"].function
+    assert set(inspect.signature(confirm).parameters) == {"ctx"}
+
+    waiting = await confirm(cast(RunContext[None], None))
+
+    # The browser finishes this connection; confirming only looks.
+    assert "not connected yet" in waiting
+    _, state = await started(manager, profile, flow)
+    await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
+
+    assert "connected" in await confirm(cast(RunContext[None], None))
+
+
+async def test_a_connected_user_gets_the_linear_mcp_toolset() -> None:
+    manager, profile, flow, linear = await linear_capability()
+    _, state = await started(manager, profile, flow)
+    await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
+
+    capability = await linear.for_profile(profile)
+
+    assert capability is not None
+    assert capability.access_token is not None
+    request = await _drive_auth(_mcp_auth(capability), status=200)
+    assert request.headers["Authorization"] == "Bearer linear-token"
+
+
+async def test_a_visitor_gets_no_linear_tools() -> None:
+    manager, _profile, _flow, linear = await linear_capability()
+    visitor = await manager.users.ensure_profile(
+        "slack",
+        UserProfile(channel_user_id="visitor", name="Visitor"),
+    )
+
+    assert await linear.for_profile(visitor) is None
+
+
+def test_a_capability_refuses_a_connector_of_the_wrong_flow() -> None:
+    manager = OAuthManager(users=UserManager(), encryption_key=ENCRYPTION_KEY)
+    device = manager.register(
+        OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=FakeDeviceFlow())
+    )
+
+    with pytest.raises(ValueError, match="AuthorizationCodeOAuthFlow"):
+        LinearCapability(manager=manager, connector=device)

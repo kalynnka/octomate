@@ -42,9 +42,11 @@ from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.integrations import (
     GitHubIntegrationConfig,
     GitHubMcpConfig,
-    IntegrationsConfig,
+    IntegrationConfig,
+    LinearIntegrationConfig,
+    LinearMcpConfig,
 )
-from octomate.config.mcp import McpConfig, McpServerConfig
+from octomate.config.mcp import McpConfig, McpIntegrationConfig, McpServerConfig
 from octomate.config.models import (
     AnthropicModelSettings,
     BedrockModelSettings,
@@ -107,7 +109,15 @@ class OctomateConfig(BaseSettings):
             "the prefix its tools are exposed under."
         ),
     )
-    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
+    integrations: dict[str, IntegrationConfig] = Field(
+        default_factory=dict,
+        description=(
+            "Per-user OAuth integrations, each authorizing its own account from the "
+            "channel. The key names the integration: its connector id, the capability "
+            "the model loads, and the prefix its tools carry; `type` selects the "
+            "provider that builds it, so one vendor can be mounted once per account."
+        ),
+    )
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     users: dict[str, UserConfig] = Field(
         default_factory=dict,
@@ -119,13 +129,12 @@ class OctomateConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_oauth_configuration(self) -> Self:
-        if (
-            self.integrations.github is not None
-            and self.integrations.github.enabled
-            and self.oauth.encryption_key is None
-        ):
+        """Every enabled integration stores credentials, so one of them needs the key."""
+        enabled = [name for name, it in self.integrations.items() if it.enabled]
+        if enabled and self.oauth.encryption_key is None:
+            names = ", ".join(f"integrations.{name}" for name in enabled)
             raise ValueError(
-                "oauth.encryption_key is required when integrations.github is enabled"
+                f"oauth.encryption_key is required when {names} is enabled"
             )
         return self
 
@@ -322,11 +331,14 @@ __all__ = [
     "database_settings",
     # mcp
     "McpConfig",
+    "McpIntegrationConfig",
     "McpServerConfig",
     # integrations
-    "IntegrationsConfig",
+    "IntegrationConfig",
     "GitHubIntegrationConfig",
     "GitHubMcpConfig",
+    "LinearIntegrationConfig",
+    "LinearMcpConfig",
     # users
     "UserConfig",
     # channels

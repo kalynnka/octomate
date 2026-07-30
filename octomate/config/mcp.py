@@ -18,6 +18,29 @@ class McpConfig(BaseModel):
         "one degrades to connecting on the next run. Carried by the toolset as its "
         "`init_timeout`, and by a per-user session as its warming budget.",
     )
+    prefix: str | None = Field(
+        default=None,
+        description="Prefix every tool of this server is exposed under. Defaults to "
+        "the name the server is configured against — the `mcp:` key for a bare server, "
+        "the connector id for an integration. Worth setting when one vendor is mounted "
+        "twice, since two accounts on the same MCP server would otherwise offer the "
+        "model two sets of identically named tools.",
+    )
+
+
+class McpIntegrationConfig(McpConfig):
+    """The account-scoped MCP server behind a per-user OAuth integration.
+
+    Connected with the initiating user's own token rather than an operator
+    credential, so it carries no ``token``; what it adds is the one choice a
+    deployment still makes about the server itself.
+    """
+
+    read_only: bool = Field(
+        default=False,
+        description="Mount the server's read-only endpoint variant, so a connection "
+        "that could write is not asked to.",
+    )
 
 
 class McpServerConfig(McpConfig):
@@ -30,8 +53,3 @@ class McpServerConfig(McpConfig):
 
     enabled: bool = True
     token: SecretStr
-    prefix: str | None = Field(
-        default=None,
-        description="Prefix every tool of this server is exposed under. Defaults to "
-        "the key it is configured against.",
-    )

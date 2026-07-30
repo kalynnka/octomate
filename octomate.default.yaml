@@ -177,31 +177,44 @@ octomate:
   # Tools are deferred-loaded until the model discovers them through ToolSearch.
   mcp: {}
   # mcp:
-  #   linear:                     # the key names the server: MCP session id and tool prefix
-  #     url: https://mcp.linear.app/mcp
-  #     token: lin_api_xxx        # or OCTOMATE__MCP__LINEAR__TOKEN
-  #     prefix: lin               # tool-name prefix (default: the key above)
+  #   notion:                     # the key names the server: MCP session id and tool prefix
+  #     url: https://mcp.notion.com/mcp
+  #     token: ntn_xxx            # or OCTOMATE__MCP__NOTION__TOKEN
+  #     prefix: nt                # tool-name prefix (default: the key above)
   #     enabled: true             # default: true
   #     warm_timeout_seconds: 16  # seconds to warm this server (default 16)
 
-  # Per-user OAuth integrations. Unlike a bare mcp server, each registered user
-  # authorizes their own account from Slack and the integration mounts its MCP
-  # server with that user's encrypted token.
+  # Per-user OAuth integrations: each registered user authorizes their own account
+  # from their channel, and the integration mounts its MCP server with that user's
+  # encrypted token. The key is the connector id — it keys stored connections, names
+  # the capability, and prefixes the tools — so one vendor can be mounted once per
+  # account. `type` picks the provider that builds it.
   integrations: {}
   # integrations:
-  #   github:
+  #   github:                       # device flow: the user types a code, no callback
+  #     type: github
   #     enabled: true
-  #     id: github                  # the id the model loads this capability under
   #     client_id: Iv1.xxxxx        # required — OAuth App with Device Flow enabled
-  #     scopes: [repo, read:org]    # choose the access this deployment needs
-  #     max_cached_users: 32        # warm GitHub sessions kept before LRU close
-  #     mcp:                        # the shared MCP connection config, reused here
+  #     scopes: [repo, read:org]    # fixed at authorization; widening = reconnect
+  #     max_cached_users: 32        # warm per-user sessions before LRU close
+  #     mcp:
   #       read_only: false          # true => the /readonly endpoint variant
-  #       warm_timeout_seconds: 16  # seconds to warm this server (default 16)
+  #       prefix: gh                # tool-name prefix (default: the key above)
+  #   linear_me:                    # authorization code: approved in a browser
+  #     type: linear
+  #     enabled: true
+  #     client_id: xxxxx            # required — OAuth application in Linear settings
+  #     client_secret: xxxxx        # optional (PKCE covers it); prefer the env var
+  #     # Where the authorizing BROWSER reaches Octomate, not where the internet
+  #     # does — Linear redirects the user agent, it never connects here. Register
+  #     # <callback_base_uri>/oauth/<key>/callback on the Linear application; it
+  #     # must match character for character.
+  #     callback_base_uri: http://localhost:8000
+  #     scopes: [read, write]
 
-  # Encrypts pending device codes and user OAuth tokens in SQLite. Prefer the
-  # OCTOMATE__OAUTH__ENCRYPTION_KEY environment variable over YAML. Generate a
-  # key with: openssl rand -base64 32 | tr '+/' '-_'
+  # Encrypts pending device codes, authorization-code state and PKCE verifiers, and
+  # user OAuth tokens at rest. Prefer the OCTOMATE__OAUTH__ENCRYPTION_KEY environment
+  # variable over YAML. Generate a key with: openssl rand -base64 32 | tr '+/' '-_'
   oauth: {}
 
 # Live-replay test targets (`pytest tests/trigger/`).

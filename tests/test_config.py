@@ -17,6 +17,7 @@ from octomate.config import (
     ClaudeCodeConfig,
     CodexConfig,
     GitHubIntegrationConfig,
+    LinearIntegrationConfig,
     LarkChannelConfig,
     McpServerConfig,
     NapcatChannelConfig,
@@ -536,6 +537,7 @@ def test_each_connection_carries_its_own_warm_timeout() -> None:
             },
             "integrations": {
                 "github": {
+                    "type": "github",
                     "client_id": "Iv1.test",
                     "mcp": {"warm_timeout_seconds": 7.0},
                 },
@@ -543,10 +545,10 @@ def test_each_connection_carries_its_own_warm_timeout() -> None:
         }
     )
     assert config.mcp["linear"].warm_timeout_seconds == 3.0
-    assert config.integrations.github is not None
-    assert config.integrations.github.mcp.warm_timeout_seconds == 7.0
+    assert config.integrations["github"] is not None
+    assert config.integrations["github"].mcp.warm_timeout_seconds == 7.0
     # A partial mcp override still keeps the GitHub endpoint default.
-    assert config.integrations.github.mcp.url == "https://api.githubcopilot.com/mcp/"
+    assert config.integrations["github"].mcp.url == "https://api.githubcopilot.com/mcp/"
 
 
 def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
@@ -555,13 +557,17 @@ def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
     config = OctomateConfig.model_validate(
         {
             "integrations": {
-                "github": {"client_id": "Iv1.test", "scopes": ["repo", "workflow"]}
+                "github": {
+                    "type": "github",
+                    "client_id": "Iv1.test",
+                    "scopes": ["repo", "workflow"],
+                }
             },
             "oauth": {"encryption_key": "x" * 43 + "="},
         }
     )
-    assert config.integrations.github is not None
-    assert config.integrations.github.scopes == ["repo", "workflow"]
+    assert config.integrations["github"] is not None
+    assert config.integrations["github"].scopes == ["repo", "workflow"]
 
     # Validated, not constructed: a scope arrives as untyped YAML.
     with pytest.raises(ValidationError, match="Input should be"):
@@ -574,10 +580,18 @@ def test_github_integration_cache_size_default_and_override() -> None:
     assert GitHubIntegrationConfig(client_id="Iv1.test").max_cached_users == 32
 
     config = OctomateConfig.model_validate(
-        {"integrations": {"github": {"client_id": "Iv1.test", "max_cached_users": 8}}}
+        {
+            "integrations": {
+                "github": {
+                    "type": "github",
+                    "client_id": "Iv1.test",
+                    "max_cached_users": 8,
+                }
+            }
+        }
     )
-    assert config.integrations.github is not None
-    assert config.integrations.github.max_cached_users == 8
+    assert config.integrations["github"] is not None
+    assert config.integrations["github"].max_cached_users == 8
 
 
 def test_config_parses_integrations_and_mcp_servers() -> None:
@@ -585,6 +599,7 @@ def test_config_parses_integrations_and_mcp_servers() -> None:
         {
             "integrations": {
                 "github": {
+                    "type": "github",
                     "enabled": True,
                     "client_id": "Iv1.test",
                     "scopes": ["repo", "read:org"],
@@ -598,12 +613,12 @@ def test_config_parses_integrations_and_mcp_servers() -> None:
         }
     )
 
-    assert isinstance(config.integrations.github, GitHubIntegrationConfig)
-    assert config.integrations.github.enabled is True
-    assert config.integrations.github.mcp.read_only is True
-    assert config.integrations.github.client_id == "Iv1.test"
-    assert config.integrations.github.scopes == ["repo", "read:org"]
-    assert config.integrations.github.mcp.url == "https://api.githubcopilot.com/mcp/"
+    assert isinstance(config.integrations["github"], GitHubIntegrationConfig)
+    assert config.integrations["github"].enabled is True
+    assert config.integrations["github"].mcp.read_only is True
+    assert config.integrations["github"].client_id == "Iv1.test"
+    assert config.integrations["github"].scopes == ["repo", "read:org"]
+    assert config.integrations["github"].mcp.url == "https://api.githubcopilot.com/mcp/"
 
     linear = config.mcp["linear"]
     assert linear.prefix is None
@@ -634,8 +649,8 @@ def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None
 
     config = OctomateConfig()
 
-    assert config.integrations.github is not None
-    assert config.integrations.github.client_id == "Iv1.env"
+    assert config.integrations["github"] is not None
+    assert config.integrations["github"].client_id == "Iv1.env"
     assert config.oauth.encryption_key is not None
 
 
@@ -819,3 +834,35 @@ def test_user_links_accept_configured_channels() -> None:
         "napcat": "9",
         "dev_ui": "dev",
     }
+
+
+def test_one_vendor_can_be_mounted_once_per_account() -> None:
+    # The key is the connector id, so two Linears differ by name rather than by
+    # anything the config has to invent.
+    config = OctomateConfig.model_validate(
+        {
+            "integrations": {
+                "linear_work": {"type": "linear", "client_id": "lin_a"},
+                "linear_home": {
+                    "type": "linear",
+                    "client_id": "lin_b",
+                    "callback_base_uri": "http://localhost:9000",
+                },
+            }
+        }
+    )
+
+    work = config.integrations["linear_work"]
+    home = config.integrations["linear_home"]
+    assert isinstance(work, LinearIntegrationConfig)
+    assert isinstance(home, LinearIntegrationConfig)
+    assert (work.client_id, home.client_id) == ("lin_a", "lin_b")
+    assert str(home.callback_base_uri) == "http://localhost:9000/"
+
+
+def test_an_integration_without_a_type_is_refused() -> None:
+    # Nothing else in the block says which provider builds it.
+    with pytest.raises(ValidationError, match="tag"):
+        OctomateConfig.model_validate(
+            {"integrations": {"linear_home": {"client_id": "lin_b"}}}
+        )

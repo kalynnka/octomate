@@ -9,7 +9,10 @@ carry no state back and never redraw.
 from __future__ import annotations
 
 
-from octomate.capabilities.harness.events import OAuthAuthorizationEvent
+from octomate.capabilities.harness.events import (
+    OAuthAuthorizationEvent,
+    OAuthDeviceAuthorizationEvent,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import slack_logfire
 from octomate.tentacles.channel.feelers.oauth import OAuthFeeler
@@ -45,13 +48,26 @@ class SlackOAuthFeeler(OAuthFeeler[SlackOutboundMessage]):
 
 
 def authorization_blocks(event: OAuthAuthorizationEvent) -> list[SlackBlock]:
-    body = (
-        f"*Connect {event.label}*\nEnter this code on {event.label} to link your "
-        f"account, then tell me here and I will finish the connection."
-    )
+    if isinstance(event, OAuthDeviceAuthorizationEvent):
+        body = (
+            f"*Connect {event.label}*\nEnter this code on {event.label} to link your "
+            f"account, then tell me here and I will finish the connection."
+        )
+        code_blocks: list[SlackBlock] = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"`{event.user_code}`"},
+            }
+        ]
+    else:
+        body = (
+            f"*Connect {event.label}*\nOpen {event.label} and approve the request to "
+            "link your account. Approving is the whole of it."
+        )
+        code_blocks = []
     return [
         {"type": "section", "text": {"type": "mrkdwn", "text": body}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"`{event.user_code}`"}},
+        *code_blocks,
         {
             "type": "actions",
             "elements": [
@@ -62,7 +78,7 @@ def authorization_blocks(event: OAuthAuthorizationEvent) -> list[SlackBlock]:
                         "text": f"Open {event.label} verification page",
                     },
                     "style": "primary",
-                    "url": event.verification_uri,
+                    "url": event.authorization_uri,
                     "action_id": SlackBlockAction.OAUTH_OPEN.value,
                 }
             ],

@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import json
 
-from octomate.capabilities.harness.events import OAuthAuthorizationEvent
+from octomate.capabilities.harness.events import (
+    OAuthAuthorizationEvent,
+    OAuthDeviceAuthorizationEvent,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import lark_logfire
 from octomate.tentacles.channel.feelers.oauth import OAuthFeeler
@@ -48,15 +51,24 @@ class LarkOAuthFeeler(OAuthFeeler[LarkOutboundMessage]):
 
 
 def authorization_card_data(event: OAuthAuthorizationEvent) -> JsonObject:
-    # Lark's card markdown has no code span — backticks would render literally —
-    # so the code leans on bold to stand apart from the sentence around it.
+    if isinstance(event, OAuthDeviceAuthorizationEvent):
+        # Lark's card markdown has no code span — backticks would render literally —
+        # so the code leans on bold to stand apart from the sentence around it.
+        body = (
+            f"**{event.user_code}**\n\n"
+            f"Enter this code on {event.label} to link your account, then tell "
+            "me here and I will finish the connection."
+        )
+        title = f"{event.label} Device OAuth"
+    else:
+        body = (
+            f"Open {event.label} and approve the request to link your account. "
+            "Approving is the whole of it — nothing to come back and type."
+        )
+        title = f"{event.label} OAuth"
     return cards.simple_card(
         [
-            cards.markdown(
-                f"**{event.user_code}**\n\n"
-                f"Enter this code on {event.label} to link your account, then tell "
-                "me here and I will finish the connection."
-            ),
+            cards.markdown(body),
             cards.divider(),
             cards.action(
                 [
@@ -64,10 +76,10 @@ def authorization_card_data(event: OAuthAuthorizationEvent) -> JsonObject:
                         f"Open {event.label} verification page",
                         button_type="primary",
                         action_type="link",
-                        url=event.verification_uri,
+                        url=event.authorization_uri,
                     )
                 ]
             ),
         ],
-        header=cards.header(f"{event.label} Device OAuth", template="blue"),
+        header=cards.header(title, template="blue"),
     )

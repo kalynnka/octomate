@@ -10,15 +10,13 @@ from pydantic_ai import AgentCapability
 
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
-from octomate.capabilities.github import GitHubCapability
 from octomate.capabilities.history import HistoryCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.capabilities.tools import ToolFailureCapability
 from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
-from octomate.managers.oauth import OAuthConnector
+from octomate.integrations import build_integration
 from octomate.managers.user import UserManager
-from octomate.oauth.github import GitHubDeviceOAuthFlow
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.codex import CodexTentacle
@@ -112,29 +110,13 @@ def create_app() -> FastAPI:
             defer_loading=True,
         ),
     ]
-    # One capability for the whole deployment; each run mounts its own copy of it,
+    # One capability per configured integration; each run mounts its own copy of one,
     # bound to the user that run is answering.
-    if (
-        github_config := config.integrations.github
-    ) is not None and github_config.enabled:
-        connector = OAuthConnector(
-            id=github_config.id,
-            flow=GitHubDeviceOAuthFlow(
-                client_id=github_config.client_id,
-                scopes=github_config.scopes,
-            ),
-        )
-        octomate.oauth.register(connector)
-        inkling_capabilities.append(
-            GitHubCapability(
-                manager=octomate.oauth,
-                connector=connector,
-                mcp_config=github_config.mcp,
-                max_cached_users=github_config.max_cached_users,
-                id=github_config.id,
-                defer_loading=True,
-            )
-        )
+    inkling_capabilities.extend(
+        build_integration(name, integration, octomate.oauth)
+        for name, integration in config.integrations.items()
+        if integration.enabled
+    )
 
     console_handler = logging.StreamHandler()
     # Tint the level + each tentacle's header, but only on a real terminal so the

@@ -19,17 +19,27 @@ from pydantic_ai.toolsets import (
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.github import GitHubCapability
 from octomate.oauth.base import McpConnectionAuth
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.mcp_cache import McpToolsetCache
+from octomate.capabilities.harness.mcp import McpToolsetCache
 from octomate.config import GitHubMcpConfig, McpServerConfig
-from octomate.config.integrations import GITHUB_CONNECTOR_ID
 from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
+from octomate.integrations import (
+    GitHubCapability,
+    LinearCapability,
+    build_integration,
+)
+from octomate.config.integrations import (
+    GitHubIntegrationConfig,
+    LinearIntegrationConfig,
+    LinearMcpConfig,
+)
 from octomate.oauth.github import GitHubDeviceOAuthFlow
+from octomate.oauth.linear import LinearAuthorizationCodeOAuthFlow
+from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
     DeviceOAuthFlow,
@@ -43,6 +53,8 @@ from octomate.tentacles.agent.inkling import InklingTentacle, build_mcp_toolsets
 from octomate.tentacles.agent.inkling.base import InklingOutput
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
+
+GITHUB_CONNECTOR_ID = "github"
 
 
 class StaticGitHubFlow(DeviceOAuthFlow):
@@ -521,3 +533,98 @@ async def test_cache_bounds_each_kind_independently() -> None:
         # A one-slot bound on github does not evict a different kind's session.
         assert (github_spy.entered, github_spy.exited) == (1, 0)
         assert (linear_spy.entered, linear_spy.exited) == (1, 0)
+
+
+def test_an_integration_prefix_overrides_its_connector_id() -> None:
+    # One vendor mounted twice — a bare company server and a personal OAuth
+    # connection — would otherwise offer the model two sets of identically named
+    # tools. The connector id is durable (it keys stored connections), so the
+    # prefix is what moves.
+    manager = Octomate().oauth
+    connector = manager.register(
+        OAuthConnector(
+            id="linear_personal",
+            flow=LinearAuthorizationCodeOAuthFlow(
+                client_id="lin_client", client_secret=None, scopes=["read"]
+            ),
+            callback_transport=DirectHttpOAuthCallbackTransport(
+                AnyHttpUrl("http://127.0.0.1:8000")
+            ),
+        )
+    )
+    capability = LinearCapability(
+        manager=manager,
+        connector=connector,
+        mcp_config=LinearMcpConfig(prefix="linme"),
+        profile=UserProfile(channel_tentacle_id="lark", channel_user_id="OU1"),
+        access_token=SecretStr("linear-token"),
+    )
+    assert capability.toolset is not None
+
+    # The session keeps the connector's name; only what the model reads changes.
+    assert _toolset(capability.toolset).id == "linear_personal"
+    assert _prefixed(capability.toolset).prefix == "linme"
+
+
+def test_an_integration_prefix_defaults_to_its_connector_id() -> None:
+    manager = Octomate().oauth
+    connector = manager.register(
+        OAuthConnector(
+            id="linear_personal",
+            flow=LinearAuthorizationCodeOAuthFlow(
+                client_id="lin_client", client_secret=None, scopes=["read"]
+            ),
+            callback_transport=DirectHttpOAuthCallbackTransport(
+                AnyHttpUrl("http://127.0.0.1:8000")
+            ),
+        )
+    )
+    capability = LinearCapability(
+        manager=manager,
+        connector=connector,
+        profile=UserProfile(channel_tentacle_id="lark", channel_user_id="OU1"),
+        access_token=SecretStr("linear-token"),
+    )
+    assert capability.toolset is not None
+
+    assert _prefixed(capability.toolset).prefix == "linear_personal"
+
+
+def test_bootstrap_composes_each_type_and_keys_it_by_name() -> None:
+    # `type` is the only place a provider is named; everything below the connector
+    # is provider-neutral, and the configured key is the connector id throughout.
+    manager = Octomate().oauth
+    github = build_integration(
+        "gh", GitHubIntegrationConfig(type="github", client_id="Iv1.test"), manager
+    )
+    linear = build_integration(
+        "linear_home", LinearIntegrationConfig(type="linear", client_id="lin"), manager
+    )
+
+    assert isinstance(github, GitHubCapability)
+    assert isinstance(linear, LinearCapability)
+    assert sorted(manager.connectors) == ["gh", "linear_home"]
+    assert github.id == "gh" and linear.id == "linear_home"
+    # Only the authorization-code half carries a transport, and it is what makes
+    # `Octomate.app` serve the routes its URIs point at.
+    assert manager.connector("gh").callback_transport is None
+    assert isinstance(
+        manager.connector("linear_home").callback_transport,
+        DirectHttpOAuthCallbackTransport,
+    )
+
+
+def test_two_accounts_of_one_vendor_get_their_own_connectors() -> None:
+    manager = Octomate().oauth
+    work = build_integration(
+        "linear_work", LinearIntegrationConfig(type="linear", client_id="a"), manager
+    )
+    home = build_integration(
+        "linear_home", LinearIntegrationConfig(type="linear", client_id="b"), manager
+    )
+
+    # Separate connectors, so separate stored connections and separate tool names —
+    # the model is never offered two identically named sets.
+    assert sorted(manager.connectors) == ["linear_home", "linear_work"]
+    assert work.toolset is None and home.toolset is None  # unbound until a run
+    assert work.connector.id != home.connector.id

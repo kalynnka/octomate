@@ -15,7 +15,10 @@ from abc import ABC, abstractmethod
 from dataclasses import replace
 from typing import TYPE_CHECKING, Generic, TypeVar
 
-from octomate.capabilities.harness.events import OAuthAuthorizationEvent
+from octomate.capabilities.harness.events import (
+    OAuthAuthorizationEvent,
+    OAuthDeviceAuthorizationEvent,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.channel.feelers.output import IMMessageID, MarkdownFeeler
@@ -69,12 +72,14 @@ class PlainTextOAuthFeeler(OAuthFeeler[MessageT]):
         address: ChannelAddress,
         event: OAuthAuthorizationEvent,
     ) -> IMMessageID | None:
-        return await self.markdown.present(
-            await self.deliver_to(address),
-            (
-                f"[Connect {event.label}]({event.verification_uri})\n\n"
+        link = f"[Connect {event.label}]({event.authorization_uri})"
+        if isinstance(event, OAuthDeviceAuthorizationEvent):
+            body = (
+                f"{link}\n\n"
                 f"Code: `{event.user_code}`\n\n"
                 f"After {event.label} accepts the code, return here and tell me "
                 "to confirm."
-            ),
-        )
+            )
+        else:
+            body = f"{link}\n\nOpen the link and approve it — that finishes it."
+        return await self.markdown.present(await self.deliver_to(address), body)

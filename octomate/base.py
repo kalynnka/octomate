@@ -18,6 +18,7 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.oauth.routes import oauth_router
 from octomate.reflex import (
     Awake,
     ReflexDeps,
@@ -30,6 +31,7 @@ from octomate.schemas.awakes import (
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.telemetry import octomate_logfire
 from octomate.tentacles.agent.base import AgentTentacle
 from octomate.tentacles.base import Tentacle
@@ -232,6 +234,16 @@ class Octomate:
         ) -> Response:
             with sqlalchemy_materia():
                 return await call_next(request)
+
+        # The OAuth router is the project's own, not a tentacle's, and it is mounted
+        # only when a registered connector actually points a browser at it — the two
+        # routes are the deployment's public surface, and a deployment with no
+        # authorization-code integration should not be serving them at all.
+        if any(
+            isinstance(connector.callback_transport, DirectHttpOAuthCallbackTransport)
+            for connector in self.oauth.connectors.values()
+        ):
+            app.include_router(oauth_router)
 
         for router in self.routers:
             app.include_router(router)

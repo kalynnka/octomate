@@ -42,7 +42,9 @@ class OAuthOperation(Base, TransmuterProxiedMixin):
     connector_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     encrypted_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
-    interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Device flow only: the seconds between polls. An authorization-code operation
+    # is finished by its callback and has nothing to poll.
+    interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,

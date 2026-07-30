@@ -47,6 +47,7 @@ from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
     OAuthAuthorizationEvent,
+    OAuthDeviceAuthorizationEvent,
     ResultSegmentEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
@@ -118,11 +119,11 @@ class VercelEventStream(VercelAIEventStream[None, InklingOutput]):
                     yield chunk
             case OAuthAuthorizationEvent():
                 # A pending authorization the user must complete; the dev UI has no
-                # card to put a button on, so it renders the link and code as text.
-                note = (
-                    f"\n\n**Connect {event.label}**: {event.verification_uri} — "
-                    f"code `{event.user_code}`"
-                )
+                # card to put a button on, so it renders it as text — with the code
+                # only when there is one to type.
+                note = f"\n\n**Connect {event.label}**: {event.authorization_uri}"
+                if isinstance(event, OAuthDeviceAuthorizationEvent):
+                    note += f" — code `{event.user_code}`"
                 async for chunk in self.reply_delta(note):
                     yield chunk
             case ActionBatchEvent():

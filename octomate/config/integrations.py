@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr
 
-from octomate.config.mcp import McpConfig
+from octomate.config.mcp import McpIntegrationConfig
 
-GITHUB_CONNECTOR_ID = "github"
 
 # Every scope GitHub documents for an OAuth App, in the order its table lists
 # them (parents first, then what each includes). Spelling one wrong is otherwise
@@ -56,29 +55,68 @@ GitHubScope: TypeAlias = Literal[
 ]
 
 
-class GitHubMcpConfig(McpConfig):
+# Every scope Linear documents for an OAuth application. A literal for the same
+# reason `GitHubScope` is one: a misspelled scope is otherwise only discovered at
+# the consent screen, where the user grants whatever Linear did recognise.
+LinearScope: TypeAlias = Literal[
+    "read",
+    "write",
+    "issues:create",
+    "comments:create",
+    "timeSchedule:write",
+    "admin",
+]
+
+
+class GitHubMcpConfig(McpIntegrationConfig):
     """GitHub's account-scoped MCP server, reusing the shared MCP connection config."""
 
     url: str = "https://api.githubcopilot.com/mcp/"
-    read_only: bool = False
 
 
-class GitHubIntegrationConfig(BaseModel):
-    """Per-user GitHub integration: device OAuth plus the account-scoped MCP server.
+class LinearMcpConfig(McpIntegrationConfig):
+    """Linear's account-scoped MCP server, reusing the shared MCP connection config."""
 
-    Unlike a bare ``mcp`` server with one operator token, this integration produces a
-    ``GitHubCapability`` that authorizes each registered user from their channel and
-    mounts the GitHub MCP toolset with that user's own encrypted token.
+    url: str = "https://mcp.linear.app/mcp"
+
+
+class OAuthIntegrationConfig(BaseModel):
+    """What every per-user OAuth integration is configured with.
+
+    Unlike a bare ``mcp`` server with one operator token, an integration authorizes
+    each registered user from their channel and mounts that vendor's MCP server with
+    that user's own encrypted token. What varies below this is the flow: which
+    credentials the provider takes, which scopes it names, and whether a browser has
+    to come back anywhere.
+
+    Configured under ``integrations`` against a key of the deployment's choosing.
+    That key is the connector id — so it keys stored connections, names the
+    capability the model loads, and, unless ``mcp.prefix`` says otherwise, prefixes
+    the tools. One vendor can therefore be mounted more than once, a key per account.
     """
 
     model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
     enabled: bool = False
-    id: str = Field(
-        default=GITHUB_CONNECTOR_ID,
-        description="Names this integration to the model: the id it loads the "
-        "capability under, and the id that capability is referenced by in a run.",
+    client_id: str = Field(
+        description="The OAuth application's client id. Required even while `enabled` "
+        "is false: an integration block without one describes nothing."
     )
+    max_cached_users: int = Field(
+        default=32,
+        ge=1,
+        description="Warm MCP sessions kept — one per connected user — before the "
+        "least-recently-used session is closed.",
+    )
+    # `mcp` is deliberately each integration's own, not declared here: the field's
+    # type is what supplies its server URL, so widening it to the shared class would
+    # make a deployment spell the URL out to override anything else in the block.
+
+
+class GitHubIntegrationConfig(OAuthIntegrationConfig):
+    """Per-user GitHub integration: device OAuth plus the account-scoped MCP server."""
+
+    type: Literal["github"] = "github"
     client_id: str = Field(
         description="OAuth App client id, with Device Flow enabled. Required even "
         "while `enabled` is false: an integration block without one describes nothing."
@@ -88,16 +126,43 @@ class GitHubIntegrationConfig(BaseModel):
         description="The access each user is asked for when they connect. Fixed at "
         "authorization: widening this later means every connected user reconnects.",
     )
-    max_cached_users: int = Field(
-        default=32,
-        ge=1,
-        description="Warm GitHub MCP sessions kept — one per connected user — before "
-        "the least-recently-used session is closed.",
-    )
     mcp: GitHubMcpConfig = Field(default_factory=GitHubMcpConfig)
 
 
-class IntegrationsConfig(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+class LinearIntegrationConfig(OAuthIntegrationConfig):
+    """Per-user Linear integration: authorization-code OAuth plus its MCP server."""
 
-    github: GitHubIntegrationConfig | None = None
+    type: Literal["linear"] = "linear"
+    client_id: str = Field(
+        description="OAuth application client id, from Linear's workspace settings. "
+        "Required even while `enabled` is false: an integration block without one "
+        "describes nothing."
+    )
+    client_secret: SecretStr | None = Field(
+        default=None,
+        description="OAuth application client secret. Optional — Linear accepts PKCE "
+        "without one, and this deployment holds the verifier either way. Prefer the "
+        "environment over YAML.",
+    )
+    callback_base_uri: AnyHttpUrl = Field(
+        default=AnyHttpUrl("http://localhost:8000"),
+        description="Where the authorizing BROWSER reaches this deployment — not "
+        "where the internet does, since Linear only redirects the user agent and "
+        "never connects here. `<this>/oauth/<key>/callback` is the redirect URL the "
+        "Linear application must register, character for character.",
+    )
+    scopes: list[LinearScope] = Field(
+        default_factory=lambda: ["read", "write"],
+        description="The access each user is asked for when they connect. Fixed at "
+        "authorization: widening this later means every connected user reconnects.",
+    )
+    mcp: LinearMcpConfig = Field(default_factory=LinearMcpConfig)
+
+
+IntegrationConfig: TypeAlias = Annotated[
+    GitHubIntegrationConfig | LinearIntegrationConfig,
+    Field(discriminator="type"),
+]
+"""One configured integration, resolved from its `type` to the provider that builds
+it. A new provider is a variant here plus a branch in bootstrap's composition; no
+other module learns its name."""

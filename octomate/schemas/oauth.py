@@ -92,6 +92,13 @@ class AuthorizationRequest(BaseModel):
     """
 
     authorization_uri: AnyHttpUrl = Field(repr=False)
+    code_verifier: SecretStr | None = Field(
+        default=None,
+        repr=False,
+        description="The PKCE verifier whose challenge the authorization URI carries, "
+        "returned so the manager can seal it into the operation and spend it at the "
+        "token exchange. None for a provider that does not offer PKCE.",
+    )
     expires_at: datetime
 
 
@@ -178,8 +185,37 @@ class AuthorizationCodeOAuthFlow(ABC):
         self,
         context: OAuthFlowContext,
         callback_uri: AnyHttpUrl,
+        state: SecretStr,
     ) -> AuthorizationRequest:
-        """Create the upstream authorization request for this operation."""
+        """Create the upstream authorization request for this operation.
+
+        The manager mints ``state`` rather than the provider half, because matching
+        it is what finds the operation a callback belongs to — a concern of the
+        boundary the callback arrives at, not of any one upstream.
+        """
+
+    @abstractmethod
+    async def exchange(
+        self,
+        context: OAuthFlowContext,
+        *,
+        code: str,
+        code_verifier: SecretStr | None,
+        callback_uri: AnyHttpUrl,
+    ) -> OAuthGrant:
+        """Trade an authorization code for this user's credentials.
+
+        ``callback_uri`` is replayed from the operation rather than rebuilt: the
+        provider compares it against the one that started the authorization.
+        """
+
+    @abstractmethod
+    async def refresh(self, refresh_token: SecretStr) -> OAuthGrant:
+        """Trade a refresh token for a fresh grant.
+
+        Reached only when the provider issued a refresh token in the first place; a
+        provider that issues none can raise here, since nothing will call it.
+        """
 
 
 class OAuthCallbackTransport(ABC):
@@ -209,12 +245,55 @@ class OAuthCallbackTransport(ABC):
         """Stage a provider URI and return the UUID-only link sent to the user."""
 
 
+# The two paths of the direct-HTTP browser round trip, shared by the transport that
+# builds URIs out of them and the router that serves them, so the link a user opens
+# and the route waiting for them cannot drift apart. The callback carries no
+# operation of its own: a provider redirects to one registered URI per connector, so
+# the operation is found by matching the state it comes back with.
+OAUTH_START_PATH = "/oauth/{connector_id}/start/{operation_id}"
+OAUTH_CALLBACK_PATH = "/oauth/{connector_id}/callback"
+
+
 class DirectHttpOAuthCallbackTransport(OAuthCallbackTransport):
-    """Authorization-code transport backed by Octomate's public HTTP routes."""
+    """Authorization-code transport backed by Octomate's own HTTP routes.
+
+    ``base_uri`` is where a browser reaches this deployment, which is the only thing
+    the two paths below need to become real URIs. A loopback address serves local
+    development, where the browser and Octomate are the same machine; a tunnel or
+    domain replaces it for anyone else, and nothing but this value changes.
+    """
+
+    def __init__(self, base_uri: AnyHttpUrl) -> None:
+        self.base_uri = str(base_uri).rstrip("/")
 
     @property
     def kind(self) -> Literal["direct_http"]:
         return "direct_http"
+
+    async def callback_uri(self, connector_id: str) -> AnyHttpUrl:
+        return AnyHttpUrl(
+            self.base_uri + OAUTH_CALLBACK_PATH.format(connector_id=connector_id)
+        )
+
+    async def prepare_authorization(
+        self,
+        context: OAuthFlowContext,
+        authorization_uri: AnyHttpUrl,
+    ) -> AnyHttpUrl:
+        """Return the UUID-only link, ignoring the provider URI it stands in for.
+
+        Staging already happened: the manager sealed that URI into this operation's
+        encrypted payload before asking for a link, and the start route reads it back
+        from there. Nothing crosses a deployment boundary, which is the whole
+        difference between this transport and a relay.
+        """
+        return AnyHttpUrl(
+            self.base_uri
+            + OAUTH_START_PATH.format(
+                connector_id=context.connector_id,
+                operation_id=context.operation_id,
+            )
+        )
 
 
 class RelayOAuthCallbackTransport(OAuthCallbackTransport):
@@ -258,6 +337,26 @@ class DeviceOperationPayload(BaseModel):
         return value.get_secret_value()
 
 
+class AuthorizationCodeOperationPayload(BaseModel):
+    """The plaintext authorization-code envelope immediately before encryption.
+
+    Everything the browser round trip needs and nothing the browser can be trusted
+    to carry: the state a callback must match, the PKCE verifier the token exchange
+    spends, the redirect URI that exchange has to replay, and the provider URI the
+    start route redirects to. All of it is sealed here because the request that
+    started the authorization is long gone by the time any of it is used.
+    """
+
+    state: SecretStr = Field(repr=False)
+    code_verifier: SecretStr | None = Field(default=None, repr=False)
+    callback_uri: AnyHttpUrl
+    authorization_uri: AnyHttpUrl = Field(repr=False)
+
+    @field_serializer("state", "code_verifier", when_used="json")
+    def serialize_secret(self, value: SecretStr | None) -> str | None:
+        return value.get_secret_value() if value is not None else None
+
+
 @sqlalchemy_materia.bless(oauth_models.OAuthOperation)
 class OAuthOperation(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
@@ -268,7 +367,10 @@ class OAuthOperation(BaseTransmuter):
     connector_id: str
     encrypted_data: bytes = Field(repr=False)
     expires_at: datetime
-    interval_seconds: int
+    # How long the user's channel waits between polls, which only a device flow
+    # does; an authorization-code operation is finished by its callback and has
+    # nothing to poll.
+    interval_seconds: int | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     consumed_at: datetime | None = None
 
