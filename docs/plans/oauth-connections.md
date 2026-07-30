@@ -2,21 +2,26 @@
 
 ## Status
 
-Stages 1–3 are **finished**. The YAML user registry and provider-neutral connector foundation are
-complete, and GitHub is the first concrete connector: a registered user on any card-capable channel
-authorizes with device flow and then uses the GitHub MCP server with their own encrypted token.
-A pending authorization is reused until it expires rather than reissued.
+Stages 1–4 are **finished**, and stage 5 has both its connectors. The YAML user registry and
+provider-neutral connector foundation are complete, and there are now two concrete connectors,
+one per flow:
+
+- **GitHub** — device flow. A registered user on any channel authorizes with a code and then uses
+  the GitHub MCP server with their own encrypted token. A pending authorization is reused until it
+  expires rather than reissued.
+- **Linear** — authorization code with PKCE over the direct-HTTP transport. Linear has no device
+  grant, which is what finally made stage 4 necessary. A registered user opens a UUID-only link,
+  approves in a browser, and the callback finishes the connection by itself.
 
 ~~registered Slack users can authorize with device flow, confirm from Slack~~ — confirmation is no
 longer a channel affordance; see [Confirmation](#confirmation--superseded).
 
-Stage 4 (authorization-code transports) is **not started**, and one thing below is open and easy
-to miss:
+Token refresh is implemented, because Linear's access tokens last 24 hours and an integration that
+died daily would not be one. Revoking at the provider and a deliberate disconnect are still not.
+A revoked credential retires itself ([Revocation](#revocation--finished)).
 
-- **The stage 4 transport classes cannot be instantiated.** See [stage 4](#4-authorization-code-transports--not-started).
-
-A revoked credential now retires itself ([Revocation](#revocation--finished)). Other
-providers/channels, refresh, revoking at the provider, and disconnect are not implemented yet.
+The relay transport is still a named placeholder, now deliberately rather than incidentally — see
+[stage 4](#4-authorization-code-transports--finished).
 
 ## Decisions
 
@@ -65,9 +70,8 @@ completion boundary.
 ## Connector foundation
 
 `OAuthConnector` is a composition object, not a provider base class. Its flow and callback transport
-are injected strategies. This lets GitHub choose device flow first, while a future Linear or MCP
-connector can choose authorization code plus direct HTTP or relay without branching inside the
-manager.
+are injected strategies. This let GitHub choose device flow first and Linear choose authorization
+code plus direct HTTP afterwards, without either adding a branch inside the manager.
 
 `OAuthManager` belongs to the project-level `Octomate` instance and shares its `UserManager`. Starting
 an authorization:
@@ -92,6 +96,9 @@ driven by the first real connector rather than preserving the obsolete `provider
   and profile. Completion rechecks that the profile is still linked to the same user.
 - A completed connection is not activated until the initiating channel identity confirms it. No
   operation secret or user selector appears in the tool arguments.
+  **Narrowed to device flow** — an authorization-code callback is itself the notification that the
+  user acted, and a second confirmation could check nothing about it; see
+  [stage 4](#4-authorization-code-transports--finished) for what is kept in its place.
   ~~Slack DM delivery is not available yet, so the device link/code and confirmation are sent back
   to the originating Slack conversation, including a group or thread when that is where the request
   came from.~~ **Superseded** — `ChannelTentacle.open_dm` shipped with
@@ -202,51 +209,93 @@ who wants out deliberately rather than because the provider ended it.
 - Connection replacement is implemented, and a revoked credential now retires itself
   ([above](#revocation--finished)); owner-bound refresh and disconnect remain.
 
-### 4. Authorization-code transports — not started
+### 4. Authorization-code transports — finished
 
-`DirectHttpOAuthCallbackTransport` and `RelayOAuthCallbackTransport` exist and override only
-`kind`; `callback_uri` and `prepare_authorization` are still abstract, so **neither class can be
-instantiated** — constructing one raises `TypeError`. `OAuthManager.start`'s authorization-code
-branch is therefore unreachable by construction. The contracts from stage 2 are real; the
-transports behind them are named placeholders, and nothing here should be read as working code.
+~~`DirectHttpOAuthCallbackTransport` and `RelayOAuthCallbackTransport` exist and override only
+`kind` … neither class can be instantiated.~~ `DirectHttpOAuthCallbackTransport` is real. It takes
+one thing, the base URI a browser reaches this deployment at, and turns it into the two paths in
+`schemas/oauth.py` that `oauth/routes.py` serves — shared constants, so the link a user opens and
+the route waiting for them cannot drift apart.
 
-- Durable state and PKCE operation data.
-- Narrow project-level start/callback routes for direct HTTP.
-- Relay implementation using the same manager completion boundary.
-- Replay, expiry, denial, unlinking, and confirmation tests.
+**What only the browser has to reach.** An authorization server never connects to the callback; it
+redirects the user agent. The token exchange is outbound. So the requirement is a stable HTTPS-or-
+loopback address *the authorizing browser* can resolve, not public ingress — which is why
+`http://127.0.0.1:8000` is a working default and a tunnel or domain is a config change, not a
+design change.
 
-### 5. MCP OAuth — GitHub path finished
+- **Durable state and PKCE operation data.** The manager mints the state, the flow returns the PKCE
+  verifier, and both are sealed into the operation's encrypted payload along with the redirect URI
+  the token exchange must replay and the provider URI the start route redirects to.
+- **State names its own operation.** A provider redirects to one registered URI per connector, with
+  no room to say which authorization came back, so the state is `{operation_id}.{random}` and the
+  row is found by its prefix and then matched on the whole value with `compare_digest`. The
+  operation id alone will not do: it travels in the public start link.
+- **Narrow project-level start/callback routes for direct HTTP.** Two `GET`s, mounted by
+  `Octomate.app` only when a registered connector actually points a browser at them. They answer
+  with a page rather than JSON, and every refusal — unknown, spent, expired, mismatched, another
+  connector's — is the same page, so guessing teaches nothing.
+- **Relay implementation — deliberately not built.** A relay earns its keep only where no stable
+  URL is possible at all, and it costs a deployed function, a store, a shared secret and a polling
+  loop. A tunnel makes `direct_http` work instead, and the two produce identical Octomate code.
+  `RelayOAuthCallbackTransport` stays abstract until a deployment genuinely cannot have a URL.
+- **Replay, expiry, denial, unlinking, and confirmation tests** — all present, at the manager and
+  through the real router.
+
+**Confirmation, deliberately different here.** The security requirement below says a completed
+connection is not activated until the initiating channel identity confirms it. That was written
+when the only flow was device polling, where Octomate cannot otherwise know the user finished. An
+authorization-code callback *is* that notification, and a second channel confirmation could verify
+nothing about it — the confirm tool takes no arguments by design. So the callback activates the
+connection, and everything the requirement was protecting is kept at that moment instead: the
+operation is single-use, short-lived, bound to the initiating user and profile, and completion
+rechecks that the profile still resolves to the same registered user before the code is spent.
+`confirm_linear` reports status rather than advancing anything.
+
+### 5. MCP OAuth — GitHub and Linear paths finished
 
 - MCP connector using authorization-server discovery and the appropriate injected flow/transport.
-- Per-user token storage and per-run GitHub capabilities are implemented. A bound capability exposes
-  OAuth tools before connection and the authenticated GitHub MCP toolset afterward. The configured
-  capability caches and keeps one MCP session warm per registered user across agent runs. The
-  configured GitHub API token has been removed; an ownerless visitor receives neither OAuth nor MCP
-  tools.
-- Future refresh support must return a credential snapshot containing the access token, subject,
-  and granted scopes. Same-subject/same-scope refreshes can update the cached toolset's mutable auth
-  object without warm-up; identity or scope changes replace and re-warm the toolset.
-  **Precondition, unmet:** the cache is keyed on the access token alone
+- Per-user token storage and per-run capabilities are implemented for both providers. A bound
+  capability exposes OAuth tools before connection and the authenticated MCP toolset afterward. The
+  configured capability caches and keeps one MCP session warm per registered user across agent runs.
+  The configured GitHub API token has been removed, and Linear's operator MCP token with it; an
+  ownerless visitor receives neither OAuth nor MCP tools.
+- **The shared shape is now shared code.** Two integrations differing only in flow made the
+  duplication real, so `OAuthMcpCapability` owns the per-user machinery — binding, the toolset
+  cache, retirement, the event injection — and `GitHubCapability`/`LinearCapability` supply their
+  flow type, tool names and prose. Neither Linear nor GitHub uses dynamic client registration:
+  both MCP servers accept the provider's own OAuth bearer token, which is what let stage 5 skip
+  discovery entirely for now.
+- Refresh is implemented, and returns a whole grant — access token, refresh token, subject, granted
+  scopes, expiry — which `store_grant` writes over the connection atomically. Refreshes are
+  serialized and re-read under the lock, so a rotating refresh token is never spent twice by two
+  runs racing on the same near-expired connection.
+  **Precondition, still unmet:** the cache is keyed on the access token alone
   (`fingerprint=access_token.get_secret_value()`), not on subject and normalized scopes as the
-  security requirement above demands. That is safe today — a token only changes when the user
-  re-authorizes, which changes subject and scopes too — but the first refresh will drop a warm
-  session it was supposed to keep.
+  security requirement above demands. This is now a live cost rather than a theoretical one —
+  Linear tokens last 24 hours, so every daily refresh drops a warm session it was supposed to keep.
+  It is a wasted warm-up, not a correctness bug: a changed fingerprint rebuilds, which is the safe
+  direction.
 - General MCP authorization-server discovery remains for later connectors.
 - Dynamic client registration only when advertised and required.
 
 ## Acceptance
 
-Two of these are not met yet and are marked so — the rest hold.
+One of these is not met yet and is marked so — the rest hold.
 
 - Connector construction rejects invalid flow/transport combinations.
 - An unknown connector is rejected before any OAuth work starts.
 - A visitor cannot start OAuth; a YAML-linked sender can start only for themselves.
-- No public manager method accepts a target user id or username.
-- Authorization-code provider state is staged behind a UUID-only user-facing URI. **Not met** —
-  no transport exists to stage it ([stage 4](#4-authorization-code-transports--not-started)).
-- GitHub uses the generic manager without adding GitHub branches to `OAuthManager`.
+- No public manager method accepts a target user id or username. The callback boundary takes a
+  connector id, a state and a code, and derives the user from the operation the state names.
+- Authorization-code provider state is staged behind a UUID-only user-facing URI.
+- GitHub uses the generic manager without adding GitHub branches to `OAuthManager`, and so does
+  Linear — the manager knows flows and transports, not providers.
+- A replayed, expired, declined, or mismatched callback cannot produce a connection, and a profile
+  unlinked mid-flow cannot finish one.
 - A token-only refresh with unchanged subject and scopes preserves the warm MCP session; a subject
   or scope change produces a new authorization-aware tool listing. **Not met** — the cache is keyed
-  on the token alone, so any refresh drops the session ([stage 5](#5-mcp-oauth--github-path-finished)).
-- An authorization asked for in a group reaches only the person who asked.
+  on the token alone, so any refresh drops the session
+  ([stage 5](#5-mcp-oauth--github-and-linear-paths-finished)).
+- An authorization asked for in a group reaches only the person who asked, with or without a code
+  to read out.
 - A later MCP connector can reuse the same manager without being modeled as a provider subclass.
