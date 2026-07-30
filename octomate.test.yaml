@@ -1,0 +1,18 @@
+# The deployment unit tests validate against: none.
+#
+# `BaseSettings` merges its file sources even under `model_validate`, so a config
+# built from a literal payload also reads whatever yaml the machine running it
+# happens to have. octomate.yaml is gitignored, which makes it a payload no test
+# can be written against — a suite that passes here would fail on a bare checkout,
+# and adding a user or an integration locally would break tests that never
+# mentioned either.
+#
+# So `tests.support.config.IsolatedConfig` reads this file instead, and it declares
+# nothing: a unit test sees exactly the payload it passed plus the code defaults.
+# Anything a test needs belongs in that test, where it can be read next to the
+# assertion it explains.
+#
+# The live replay suites under tests/trigger are the exception and build a real
+# `OctomateConfig` — they need this machine's actual credentials, which is the
+# whole point of them.
+octomate: {}

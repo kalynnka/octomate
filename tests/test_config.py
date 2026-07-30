@@ -3,28 +3,29 @@ from __future__ import annotations
 from pathlib import Path
 from typing import get_args
 
-from openai_codex import CodexConfig as CodexSdkConfig
 import pytest
+from openai_codex import CodexConfig as CodexSdkConfig
 from pydantic import SecretStr, ValidationError
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_settings import SettingsConfigDict
 
-from octomate.config.observability import LogfireConfig
-from octomate.schemas.triage import Claim
 from octomate.config import (
     AgentModelConfig,
     ChannelsConfig,
     ClaudeCodeConfig,
     CodexConfig,
     GitHubIntegrationConfig,
-    LinearIntegrationConfig,
     LarkChannelConfig,
+    LinearIntegrationConfig,
     McpServerConfig,
     NapcatChannelConfig,
     OctomateConfig,
     SlackChannelConfig,
     UserConfig,
 )
+from octomate.config.observability import LogfireConfig
+from octomate.schemas.triage import Claim
+from tests.support.config import IsolatedTestConfig
 
 
 class DefaultYamlOnlyConfig(OctomateConfig):
@@ -58,7 +59,7 @@ def test_channels_default_to_none() -> None:
 
 
 def test_channel_config_parses_supported_channels() -> None:
-    config = OctomateConfig.model_validate(
+    config = IsolatedTestConfig.model_validate(
         {
             "channels": {
                 "dev_ui": None,
@@ -90,7 +91,7 @@ def test_channel_config_parses_supported_channels() -> None:
 
 
 def test_channel_config_parses_agent_model_routes() -> None:
-    config = OctomateConfig.model_validate(
+    config = IsolatedTestConfig.model_validate(
         {
             "agents": {
                 "claude": {"models": ["opus"]},
@@ -265,7 +266,7 @@ def test_codex_config_validates_sdk_setting_names() -> None:
 
 def test_channel_agent_routes_must_reference_configured_agent() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "channels": {
                     "slack": {
@@ -291,7 +292,7 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
 
 def test_channel_agent_route_validation_reports_all_errors() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "agents": {"claude": {"models": ["opus"]}},
                 "channels": {
@@ -354,7 +355,7 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
 
 def test_disabled_channel_agent_routes_are_validated() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "channels": {
                     "slack": {
@@ -380,7 +381,7 @@ def test_disabled_channel_agent_routes_are_validated() -> None:
 
 def test_channel_claude_route_requires_claude_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "agents": {"claude": None},
                 "channels": {
@@ -404,7 +405,7 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
 
 def test_channel_routes_require_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "agents": {"claude": {"models": ["opus"]}},
                 "channels": {
@@ -427,7 +428,7 @@ def test_channel_routes_require_model() -> None:
 
 def test_channel_claude_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "agents": {"claude": {"models": ["opus"]}},
                 "channels": {
@@ -450,7 +451,7 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
 
 def test_channel_codex_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "agents": {"codex": {"models": ["gpt-5.3-codex"]}},
                 "channels": {
@@ -473,7 +474,7 @@ def test_channel_codex_routes_must_reference_configured_model() -> None:
 
 def test_channel_codex_route_requires_enabled_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "agents": {"codex": {"enabled": False}},
                 "channels": {
@@ -496,7 +497,7 @@ def test_channel_codex_route_requires_enabled_agent_config() -> None:
 
 def test_channel_inkling_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "channels": {
                     "slack": {
@@ -526,7 +527,7 @@ def test_each_connection_carries_its_own_warm_timeout() -> None:
         GitHubIntegrationConfig(client_id="Iv1.test").mcp.warm_timeout_seconds == 16.0
     )
 
-    config = OctomateConfig.model_validate(
+    config = IsolatedTestConfig.model_validate(
         {
             "mcp": {
                 "linear": {
@@ -554,7 +555,7 @@ def test_each_connection_carries_its_own_warm_timeout() -> None:
 def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
     # GitHub ignores a scope it does not recognise and returns a token quietly
     # missing that access, so a typo has to fail here instead.
-    config = OctomateConfig.model_validate(
+    config = IsolatedTestConfig.model_validate(
         {
             "integrations": {
                 "github": {
@@ -579,7 +580,7 @@ def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
 def test_github_integration_cache_size_default_and_override() -> None:
     assert GitHubIntegrationConfig(client_id="Iv1.test").max_cached_users == 32
 
-    config = OctomateConfig.model_validate(
+    config = IsolatedTestConfig.model_validate(
         {
             "integrations": {
                 "github": {
@@ -595,7 +596,7 @@ def test_github_integration_cache_size_default_and_override() -> None:
 
 
 def test_config_parses_integrations_and_mcp_servers() -> None:
-    config = OctomateConfig.model_validate(
+    config = IsolatedTestConfig.model_validate(
         {
             "integrations": {
                 "github": {
@@ -632,7 +633,7 @@ def test_mcp_server_token_comes_from_the_environment(
     # Structure in YAML, secret in the environment: the key names the env var.
     monkeypatch.setenv("OCTOMATE__MCP__LINEAR__TOKEN", "lin_from_env")
 
-    config = OctomateConfig.model_validate(
+    config = IsolatedTestConfig.model_validate(
         {"mcp": {"linear": {"url": "https://mcp.linear.app/mcp"}}}
     )
 
@@ -640,6 +641,9 @@ def test_mcp_server_token_comes_from_the_environment(
 
 
 def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # `type` too: it is the discriminator, so without it the block resolves to no
+    # provider at all — the local octomate.yaml used to supply it by accident.
+    monkeypatch.setenv("OCTOMATE__INTEGRATIONS__GITHUB__TYPE", "github")
     monkeypatch.setenv("OCTOMATE__INTEGRATIONS__GITHUB__ENABLED", "true")
     monkeypatch.setenv("OCTOMATE__INTEGRATIONS__GITHUB__CLIENT_ID", "Iv1.env")
     monkeypatch.setenv(
@@ -647,7 +651,7 @@ def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None
         "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
     )
 
-    config = OctomateConfig()
+    config = IsolatedTestConfig()
 
     assert config.integrations["github"] is not None
     assert config.integrations["github"].client_id == "Iv1.env"
@@ -748,7 +752,7 @@ def test_agent_claims_override_parses_from_config() -> None:
 
 def test_user_links_must_reference_configured_channel() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {
                 "users": {
                     "luhui": {
@@ -812,7 +816,7 @@ def test_user_profile_config_rejects_scalar_id_shorthand() -> None:
 
 
 def test_user_links_accept_configured_channels() -> None:
-    config = OctomateConfig.model_validate(
+    config = IsolatedTestConfig.model_validate(
         {
             "channels": {
                 "napcat": {"ws_url": "ws://x", "http_url": "http://x"},
@@ -839,7 +843,7 @@ def test_user_links_accept_configured_channels() -> None:
 def test_one_vendor_can_be_mounted_once_per_account() -> None:
     # The key is the connector id, so two Linears differ by name rather than by
     # anything the config has to invent.
-    config = OctomateConfig.model_validate(
+    config = IsolatedTestConfig.model_validate(
         {
             "integrations": {
                 "linear_work": {"type": "linear", "client_id": "lin_a"},
@@ -863,6 +867,6 @@ def test_one_vendor_can_be_mounted_once_per_account() -> None:
 def test_an_integration_without_a_type_is_refused() -> None:
     # Nothing else in the block says which provider builds it.
     with pytest.raises(ValidationError, match="tag"):
-        OctomateConfig.model_validate(
+        IsolatedTestConfig.model_validate(
             {"integrations": {"linear_home": {"client_id": "lin_b"}}}
         )
