@@ -41,6 +41,7 @@ from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
+from octomate.tentacles.channel.base import Ink
 from octomate.tentacles.channel.feelers.oauth import PlainTextOAuthFeeler
 from octomate.tentacles.channel.feelers.output import (
     MarkdownChunker,
@@ -58,6 +59,7 @@ from octomate.tentacles.channel.web.vercel import VercelTentacle
 
 from tests.support.channels import (
     FakeChannelTentacle,
+    FakeOAuthInk,
     NoopSegmentsFeeler,
     NoopTimeline,
     RecordingApprovalFeeler,
@@ -469,7 +471,9 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
         segments=NoopSegmentsFeeler(),
         approvals=approvals,
         ask_questions=ask_questions,
-        oauth=PlainTextOAuthFeeler(RecordingMarkdownFeeler()),
+        oauth=PlainTextOAuthFeeler(
+            cast(Ink[str], FakeOAuthInk()), RecordingMarkdownFeeler()
+        ),
     ).present_actions(
         action_manager=cast(DeferredActionManager, manager),
         conversation=conversation,

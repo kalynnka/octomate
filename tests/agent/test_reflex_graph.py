@@ -50,7 +50,7 @@ from octomate.reflex.graph import (
 )
 from octomate.tentacles.channel.feelers.output import TimelineState
 from tests.support.agents import FakeAgent, RecordedRun
-from tests.support.channels import FakeChannelTentacle
+from tests.support.channels import FakeChannelTentacle, RecordingInk
 from tests.support.managers import (
     FakeActionManager,
     FakeThreadManager,
@@ -737,11 +737,6 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
 
 
 async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
-    class NoDmChannel(FakeChannelTentacle):
-        async def open_dm(self, user_id: str) -> ChannelAddress | None:
-            self.opened_dms.append(user_id)
-            return None
-
     address = _group_key()
     entry = FakeAgent(
         id="other",
@@ -758,7 +753,10 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
         allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
-    im = NoDmChannel(config=_two_reception_config(stream=False))
+    im = FakeChannelTentacle(
+        ink=RecordingInk(dm_opens=False),
+        config=_two_reception_config(stream=False),
+    )
     target = _source_target(address)
 
     result = await _run(
@@ -1166,17 +1164,13 @@ async def test_send_falls_back_to_here_when_the_platform_will_not_open() -> None
     # The gate refuses a surface it knows is unreachable, so what is left here is the
     # platform failing at the moment of asking. Content produced for this user then
     # belongs in the conversation they asked from rather than nowhere.
-    class ShutChannel(FakeChannelTentacle):
-        async def open_dm(self, user_id: str) -> ChannelAddress | None:
-            self.opened_dms.append(user_id)
-            return None
-
-    im = ShutChannel(
+    im = FakeChannelTentacle(
+        ink=RecordingInk(dm_opens=False),
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
             agents=[AgentModelConfig(agent="other", model="test")],
-        )
+        ),
     )
     _threads, im = await _run_send(
         im,

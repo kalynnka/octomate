@@ -130,6 +130,14 @@ class FakeLarkCardsInk:
     sent: list[tuple[str, str, list[LarkOutboundMessage], str | None, bool]] = field(
         default_factory=list
     )
+    # What `open_dm` answers, so a test says whether this platform has anywhere
+    # private to reach the user; `opened` records who was asked for.
+    dm_chat_id: str | None = None
+    opened: list[str] = field(default_factory=list)
+
+    async def open_dm(self, user_id: str) -> str | None:
+        self.opened.append(user_id)
+        return self.dm_chat_id
 
     async def send_message(
         self,

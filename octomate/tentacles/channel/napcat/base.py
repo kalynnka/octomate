@@ -9,7 +9,6 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from octomate.config import NapcatChannelConfig
-from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel.base import ChannelSurfaces, ChannelTentacle
 from octomate.tentacles.channel.napcat.chromo import NapcatChromo
 from octomate.tentacles.channel.napcat.ink import NapcatInk
@@ -62,18 +61,6 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
         self.ws_client = None
         self.stop_event = None
         self.serve_task = None
-
-    async def open_dm(self, user_id: str) -> ChannelAddress | None:
-        """A QQ user's own id is their private chat id, so nothing has to be opened."""
-        if not user_id:
-            return None
-        return ChannelAddress(
-            channel_tentacle_id=self.id,
-            chat_type="private",
-            chat_id=user_id,
-            user_id=user_id,
-            thread_id="",
-        )
 
     async def __aenter__(self) -> Self:
         await super().__aenter__()

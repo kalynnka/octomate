@@ -10,7 +10,6 @@ callback, which needs ingress this deployment does not have.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
 
 from octomate.capabilities.harness.events import OAuthAuthorizationEvent
 from octomate.schemas.conversation import ChannelAddress
@@ -21,20 +20,15 @@ from octomate.tentacles.channel.lark.feelers import cards
 from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
 from octomate.types.json import JsonObject
 
-if TYPE_CHECKING:
-    from octomate.tentacles.channel.lark.ink import LarkInk
 
-
-class LarkOAuthFeeler(OAuthFeeler):
-    def __init__(self, ink: LarkInk) -> None:
-        self.ink = ink
-
+class LarkOAuthFeeler(OAuthFeeler[LarkOutboundMessage]):
     @lark_logfire.instrument("lark.oauth.present", extract_args=False)
     async def present(
         self,
         address: ChannelAddress,
         event: OAuthAuthorizationEvent,
     ) -> IMMessageID | None:
+        address = await self.deliver_to(address)
         reply_to = address.thread_id if address.thread_id.startswith("om_") else None
         return await self.ink.send_message(
             address.chat_id or address.user_id,

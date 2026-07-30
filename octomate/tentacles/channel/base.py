@@ -144,6 +144,16 @@ class Ink(ABC, Generic[MessageT]):
     ) -> IMMessageID | None:
         """Send platform-native message payloads."""
 
+    async def open_dm(self, user_id: str) -> str | None:
+        """The chat id of this bot's 1:1 with `user_id`, opening it if needed.
+
+        `None` when the platform offers nowhere private to reach them — no DM
+        surface at all, or an open that failed. Both leave a caller that needs
+        privacy with no answer, which is the only distinction it can act on.
+        Opening is idempotent wherever it is a call at all.
+        """
+        return None
+
 
 class ChannelTentacle(
     Tentacle[RawT, MessageT],
@@ -188,7 +198,7 @@ class ChannelTentacle(
         markdown_feeler = DefaultMarkdownFeeler(ink=self.ink, chromo=self.chromo)
         approvals_feeler = PlainTextApprovalFeeler(markdown_feeler)
         questions_feeler = PlainTextAskQuestionFeeler(markdown_feeler)
-        oauth_feeler = PlainTextOAuthFeeler(markdown_feeler)
+        oauth_feeler = PlainTextOAuthFeeler(self.ink, markdown_feeler)
 
         self.feelers = Feelers(
             markdown=markdown_feeler,
@@ -301,13 +311,23 @@ class ChannelTentacle(
     async def open_dm(self, user_id: str) -> ChannelAddress | None:
         """The 1:1 conversation with `user_id`, opening it if the platform needs to.
 
-        `None` when this channel has no DM surface — the default, since a channel
-        opts in by declaring `surfaces.direct_message` and overriding this. Opening is
-        idempotent on every platform that has it: the returned address may already
-        carry a history, which is why a `teleport` there lands in a fresh thread or
-        stays put rather than forking onto it.
+        `None` when this channel has nowhere private to reach them; a channel opts
+        in by declaring `surfaces.direct_message` and giving its ink an `open_dm`.
+        The returned address may already carry a history, which is why a `teleport`
+        there lands in a fresh thread or stays put rather than forking onto it.
         """
-        return None
+        if not user_id:
+            return None
+        chat_id = await self.ink.open_dm(user_id)
+        if chat_id is None:
+            return None
+        return ChannelAddress(
+            channel_tentacle_id=self.id,
+            chat_type="private",
+            chat_id=chat_id,
+            user_id=user_id,
+            thread_id="",
+        )
 
     async def start_sub_thread(
         self,

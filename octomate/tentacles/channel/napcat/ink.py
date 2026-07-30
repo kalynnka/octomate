@@ -93,6 +93,10 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
             logger.warning("NapcatInk: download_image failed", exc_info=True)
             return None
 
+    async def open_dm(self, user_id: str) -> str | None:
+        """A QQ user's own id is their private chat id, so nothing has to be opened."""
+        return user_id or None
+
     async def send_message(
         self,
         chat_id: str,

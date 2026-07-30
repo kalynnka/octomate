@@ -165,18 +165,6 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 pass
         await self.ws_client._disconnect()  # type: ignore[attr-defined]
 
-    async def open_dm(self, user_id: str) -> ChannelAddress | None:
-        """A user's own id is their 1:1 chat id here, so nothing has to be opened."""
-        if not user_id:
-            return None
-        return ChannelAddress(
-            channel_tentacle_id=self.id,
-            chat_type="private",
-            chat_id=user_id,
-            user_id=user_id,
-            thread_id="",
-        )
-
     async def start_sub_thread(
         self,
         address: ChannelAddress,

@@ -8,7 +8,6 @@ carry no state back and never redraw.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
 from octomate.capabilities.harness.events import OAuthAuthorizationEvent
 from octomate.schemas.conversation import ChannelAddress
@@ -21,20 +20,15 @@ from octomate.tentacles.channel.slack.schema import (
     SlackOutboundMessage,
 )
 
-if TYPE_CHECKING:
-    from octomate.tentacles.channel.slack.ink import SlackInk
 
-
-class SlackOAuthFeeler(OAuthFeeler):
-    def __init__(self, ink: SlackInk) -> None:
-        self.ink = ink
-
+class SlackOAuthFeeler(OAuthFeeler[SlackOutboundMessage]):
     @slack_logfire.instrument("slack.oauth.present", extract_args=False)
     async def present(
         self,
         address: ChannelAddress,
         event: OAuthAuthorizationEvent,
     ) -> IMMessageID | None:
+        address = await self.deliver_to(address)
         text = f"Connect {event.label}"
         return await self.ink.send_message(
             address.chat_id or address.user_id,

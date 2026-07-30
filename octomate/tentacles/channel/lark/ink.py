@@ -186,6 +186,10 @@ class LarkInk(Ink[LarkOutboundMessage]):
         data, file_name = result
         return DownloadedImage(data=data, file_name=file_name)
 
+    async def open_dm(self, user_id: str) -> str | None:
+        """A user's own open_id is their 1:1 chat id, so nothing has to be opened."""
+        return user_id or None
+
     async def send_message(
         self,
         chat_id: str,

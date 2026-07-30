@@ -385,21 +385,6 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             await self.octomate.thread_manager.ensure(address)
         logger.info("Channel %s: ensured Slack assistant thread %s", self.id, address)
 
-    async def open_dm(self, user_id: str) -> ChannelAddress | None:
-        """The user's DM with the bot, opened through `conversations.open`."""
-        if not user_id:
-            return None
-        channel_id = await self.ink.open_dm(user_id)
-        if channel_id is None:
-            return None
-        return ChannelAddress(
-            channel_tentacle_id=self.id,
-            chat_type="private",
-            chat_id=channel_id,
-            user_id=user_id,
-            thread_id="",
-        )
-
     async def start_sub_thread(
         self,
         address: ChannelAddress,

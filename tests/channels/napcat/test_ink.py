@@ -226,7 +226,7 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
     markdown_feeler = DefaultMarkdownFeeler(ink=ink, chromo=chromo)
     approvals = PlainTextApprovalFeeler(markdown_feeler)
     ask_questions = PlainTextAskQuestionFeeler(markdown_feeler)
-    oauth = PlainTextOAuthFeeler(markdown_feeler)
+    oauth = PlainTextOAuthFeeler(ink, markdown_feeler)
     channel.feelers = Feelers(
         markdown=markdown_feeler,
         timeline=DefaultTimelineFeeler(

@@ -131,6 +131,10 @@ class RecordingInk(Ink[NativeMessage]):
         default_factory=list
     )
     downloads: dict[str, DownloadedImage] = field(default_factory=dict)
+    opened_dms: list[str] = field(default_factory=list)
+    # Whether this platform will hand back a private chat; False is the open
+    # failing at the moment of asking.
+    dm_opens: bool = True
 
     async def inspect(self) -> UserProfile:
         return self.self_profile
@@ -140,6 +144,13 @@ class RecordingInk(Ink[NativeMessage]):
             user_id,
             UserProfile(channel_user_id=user_id, name=f"user-{user_id}"),
         )
+
+    async def open_dm(self, user_id: str) -> str | None:
+        # A user's own id is their private chat id, as on Lark and NapCat — and what
+        # an inbound private message decodes to, so a DM seeded by one is the same
+        # thread the channel's `open_dm` builds.
+        self.opened_dms.append(user_id)
+        return user_id if self.dm_opens else None
 
     async def upload_media(self, data: bytes) -> str | None:
         return None
@@ -265,7 +276,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.sent = self.recording_ink.sent
         self.consumed = []
         self.sub_threads = []
-        self.opened_dms = []
+        self.opened_dms = self.recording_ink.opened_dms
         self.self_profile = self.recording_ink.self_profile
         self.feelers.timeline = RecordingTimelineFeeler(
             self.feelers.timeline, self.consumed
@@ -277,19 +288,6 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
     ) -> IMMessageID | None:
         return await drive(self, address, stream)
-
-    async def open_dm(self, user_id: str) -> ChannelAddress | None:
-        # A user's own id is their private chat id, as on Lark and NapCat — and what
-        # an inbound private message decodes to, so a DM seeded by one is the same
-        # thread this opens.
-        self.opened_dms.append(user_id)
-        return ChannelAddress(
-            channel_tentacle_id=self.id,
-            chat_type="private",
-            chat_id=user_id,
-            user_id=user_id,
-            thread_id="",
-        )
 
     async def start_sub_thread(
         self,
@@ -453,3 +451,19 @@ class RecordingQuestionFeeler(QuestionFeeler):
     ) -> dict[UUID, IMMessageID | None]:
         self.presented.append((address, list(actions)))
         return {action.id: f"question-{action.id}" for action in actions}
+
+
+@dataclass
+class FakeOAuthInk:
+    """The ink an `OAuthFeeler` asks for somewhere private to put a one-time code.
+
+    `dm_chat_id` is what `open_dm` answers, so a test says whether this platform
+    has one; `opened` records who it was asked for.
+    """
+
+    dm_chat_id: str | None = None
+    opened: list[str] = field(default_factory=list)
+
+    async def open_dm(self, user_id: str) -> str | None:
+        self.opened.append(user_id)
+        return self.dm_chat_id
