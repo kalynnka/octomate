@@ -28,6 +28,7 @@ dependencies = [
     "claude-agent-sdk>=0.1",
     "cryptography>=48",
     "google-genai>=1.55.0",
+    "fastapi>=0.115",
     "uvicorn>=0.34",
     "logfire[httpx,sqlalchemy]>=4.29.0",
     "rich>=13",
@@ -64,7 +65,6 @@ dev = [
     "watchfiles>=1.1.1",
     "pytest>=8",
     "pytest-asyncio>=0.24",
-    "fastapi>=0.115",
     "httpx>=0.28.1",
 ]
 

@@ -1596,6 +1596,7 @@ dependencies = [
     { name = "arcanus" },
     { name = "claude-agent-sdk" },
     { name = "cryptography" },
+    { name = "fastapi" },
     { name = "google-genai" },
     { name = "httpx" },
     { name = "lark-oapi" },
@@ -1619,7 +1620,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "fastapi" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1635,6 +1635,7 @@ requires-dist = [
     { name = "arcanus", specifier = ">=0.0.25" },
     { name = "claude-agent-sdk", specifier = ">=0.1" },
     { name = "cryptography", specifier = ">=48" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "google-genai", specifier = ">=1.55.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "lark-oapi", specifier = ">=1.4.8" },
@@ -1658,7 +1659,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
