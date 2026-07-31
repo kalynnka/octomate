@@ -25,13 +25,12 @@ from octomate.types.json import JsonObject
 
 
 class LarkOAuthFeeler(OAuthFeeler[LarkOutboundMessage]):
-    @lark_logfire.instrument("lark.oauth.present", extract_args=False)
-    async def present(
+    @lark_logfire.instrument("lark.oauth.send", extract_args=False)
+    async def send(
         self,
         address: ChannelAddress,
         event: OAuthAuthorizationEvent,
     ) -> IMMessageID | None:
-        address = await self.deliver_to(address)
         reply_to = address.thread_id if address.thread_id.startswith("om_") else None
         return await self.ink.send_message(
             address.chat_id or address.user_id,

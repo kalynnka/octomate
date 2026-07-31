@@ -6,7 +6,9 @@ reaches this feeler as the authorization itself rather than as rendered text, so
 a channel with interactive cards can put the link on a button; channels without
 cards fall back to the markdown feeler.
 
-Where it lands is this layer's decision, not each channel's — see `deliver_to`.
+Where it lands is this layer's decision, not each channel's: `present` resolves the
+private address and a channel only fills in `send`, so there is no way for one to
+render an authorization onto an address it chose itself.
 """
 
 from __future__ import annotations
@@ -35,6 +37,18 @@ class OAuthFeeler(ABC, Generic[MessageT]):
     def __init__(self, ink: Ink[MessageT]) -> None:
         self.ink = ink
 
+    async def present(
+        self,
+        address: ChannelAddress,
+        event: OAuthAuthorizationEvent,
+    ) -> IMMessageID | None:
+        """The only way an authorization reaches a channel.
+
+        Concrete so the private address is settled here for every channel; a
+        subclass fills in `send` and never gets to pick where it sends.
+        """
+        return await self.send(await self.deliver_to(address), event)
+
     async def deliver_to(self, address: ChannelAddress) -> ChannelAddress:
         """Where this authorization has to land.
 
@@ -54,11 +68,13 @@ class OAuthFeeler(ABC, Generic[MessageT]):
         return replace(address, chat_type="private", chat_id=chat_id, thread_id="")
 
     @abstractmethod
-    async def present(
+    async def send(
         self,
         address: ChannelAddress,
         event: OAuthAuthorizationEvent,
-    ) -> IMMessageID | None: ...
+    ) -> IMMessageID | None:
+        """Render this authorization onto `address`, which `present` has already
+        made private. Never call this with an address of your own."""
 
 
 class PlainTextOAuthFeeler(OAuthFeeler[MessageT]):
@@ -66,8 +82,8 @@ class PlainTextOAuthFeeler(OAuthFeeler[MessageT]):
         super().__init__(ink)
         self.markdown = markdown
 
-    @channel_logfire.instrument("plaintext.oauth.present", extract_args=False)
-    async def present(
+    @channel_logfire.instrument("plaintext.oauth.send", extract_args=False)
+    async def send(
         self,
         address: ChannelAddress,
         event: OAuthAuthorizationEvent,
@@ -82,4 +98,4 @@ class PlainTextOAuthFeeler(OAuthFeeler[MessageT]):
             )
         else:
             body = f"{link}\n\nOpen the link and approve it — that finishes it."
-        return await self.markdown.present(await self.deliver_to(address), body)
+        return await self.markdown.present(address, body)

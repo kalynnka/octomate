@@ -37,8 +37,9 @@ GITHUB_OAUTH_INSTRUCTION = """\
 
 GitHub tools are unavailable until this user connects their own account.
 - Call `connect_github` when the user asks to connect GitHub or needs a GitHub tool.
-- It sends the verification link and code directly to this conversation. Do not
-  repeat the code in your final response.
+- It sends the verification link and code to this user's direct messages — never to
+  a group, so point them there rather than saying it is in this conversation. You are
+  not given the link or the code and cannot repeat them.
 - After the user says they authorized it, call `confirm_github` once. If connected,
   GitHub tools become available on their next message.
 """
@@ -52,8 +53,8 @@ tools are gone until they connect again, and nothing has told them.
 - Say so once in your next reply, briefly, even if they asked about something else
   — they cannot see this and may be waiting on work that can no longer happen.
 - Offer to reconnect. Call `connect_github` when they agree; it sends a fresh
-  verification link and code to this conversation. Do not repeat the code in your
-  final response.
+  verification link and code to their direct messages, never to a group. You are not
+  given the link or the code and cannot repeat them.
 - After the user says they authorized it, call `confirm_github` once. If connected,
   GitHub tools become available on their next message.
 """
@@ -92,8 +93,8 @@ class GitHubCapability(OAuthMcpCapability):
             # reads and could repeat into a reply.
             return ToolReturn(
                 return_value=(
-                    "The authorization link and code are on their way to this "
-                    "conversation."
+                    "The authorization link and code are on their way to this user's "
+                    "direct messages."
                 ),
                 metadata=[
                     OAuthDeviceAuthorizationEvent(
@@ -126,8 +127,9 @@ class GitHubCapability(OAuthMcpCapability):
                 ) from None
             if isinstance(result, OAuthPending):
                 return (
-                    "GitHub is still waiting for authorization. Complete the link "
-                    f"above, then try again in {result.retry_after_seconds} seconds."
+                    "GitHub is still waiting for authorization. They have to finish "
+                    "it from the link in their direct messages, then try again in "
+                    f"{result.retry_after_seconds} seconds."
                 )
             return (
                 f"GitHub connected as @{result.account_label}. GitHub tools will be "

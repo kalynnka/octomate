@@ -34,8 +34,9 @@ LINEAR_OAUTH_INSTRUCTION = """\
 
 Linear tools are unavailable until this user connects their own workspace.
 - Call `connect_linear` when the user asks to connect Linear or needs a Linear tool.
-- It sends an authorization link directly to this conversation. Do not repeat or
-  rebuild the link in your final response.
+- It sends an authorization link to this user's direct messages — never to a group,
+  so point them there rather than saying it is in this conversation. You are not
+  given the link and cannot repeat or rebuild it.
 - Opening that link and approving it is the whole of the connection; nothing here
   finishes it. If the user asks whether it worked, call `confirm_linear` to check.
   Once connected, Linear tools become available on their next message.
@@ -50,8 +51,8 @@ tools are gone until they connect again, and nothing has told them.
 - Say so once in your next reply, briefly, even if they asked about something else
   — they cannot see this and may be waiting on work that can no longer happen.
 - Offer to reconnect. Call `connect_linear` when they agree; it sends a fresh
-  authorization link to this conversation. Do not repeat or rebuild the link in your
-  final response.
+  authorization link to their direct messages, never to a group. You are not given
+  the link and cannot repeat or rebuild it.
 - Opening that link and approving it is the whole of the connection. Once connected,
   Linear tools become available on their next message.
 """
@@ -92,7 +93,8 @@ class LinearCapability(OAuthMcpCapability):
             # reads and could repeat into a reply.
             return ToolReturn(
                 return_value=(
-                    "The authorization link is on its way to this conversation."
+                    "The authorization link is on its way to this user's direct "
+                    "messages."
                 ),
                 metadata=[
                     OAuthAuthorizationEvent(

@@ -77,6 +77,14 @@ class RecordingSlackInk:
     sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
         default_factory=list
     )
+    # What `open_dm` answers, so a test says whether this platform has anywhere
+    # private to reach the user; `opened` records who was asked for.
+    dm_chat_id: str | None = None
+    opened: list[str] = field(default_factory=list)
+
+    async def open_dm(self, user_id: str) -> str | None:
+        self.opened.append(user_id)
+        return self.dm_chat_id
 
     async def send_message(
         self,
@@ -159,6 +167,28 @@ async def test_a_group_request_delivers_the_code_to_the_user_dm() -> None:
     [(chat_id, chat_type, _messages, reply_to, _in_thread)] = ink.sent
     assert (chat_id, chat_type) == ("D1", "private")
     assert reply_to is None
+
+
+async def test_every_channel_routes_a_group_request_the_same_way() -> None:
+    # The rule belongs to the base feeler's `present`, so a channel that renders
+    # cards and one that renders text cannot disagree about where a code may land.
+    slack = RecordingSlackInk(dm_chat_id="D1")
+    markdown = RecordingMarkdownFeeler()
+    plain_ink = FakeOAuthInk(dm_chat_id="D2")
+
+    await SlackOAuthFeeler(cast(SlackInk, slack)).present(
+        _address("slack", "group"), AUTHORIZATION
+    )
+    await PlainTextOAuthFeeler(cast(Ink[str], plain_ink), markdown).present(
+        _address("napcat", "group"), AUTHORIZATION
+    )
+
+    assert slack.opened == ["U1"]
+    [(chat_id, chat_type, _messages, _thread)] = slack.sent
+    assert (chat_id, chat_type) == ("D1", "private")
+    assert plain_ink.opened == ["U1"]
+    [(address, _text_)] = markdown.calls
+    assert (address.chat_id, address.chat_type) == ("D2", "private")
 
 
 async def test_a_platform_with_nowhere_private_refuses_to_use_the_group() -> None:

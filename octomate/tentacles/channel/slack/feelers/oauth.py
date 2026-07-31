@@ -25,13 +25,12 @@ from octomate.tentacles.channel.slack.schema import (
 
 
 class SlackOAuthFeeler(OAuthFeeler[SlackOutboundMessage]):
-    @slack_logfire.instrument("slack.oauth.present", extract_args=False)
-    async def present(
+    @slack_logfire.instrument("slack.oauth.send", extract_args=False)
+    async def send(
         self,
         address: ChannelAddress,
         event: OAuthAuthorizationEvent,
     ) -> IMMessageID | None:
-        address = await self.deliver_to(address)
         text = f"Connect {event.label}"
         return await self.ink.send_message(
             address.chat_id or address.user_id,
