@@ -153,12 +153,12 @@ class ToolOutputConfig(BaseModel):
     bands: list[ToolOutputBand] = Field(
         default_factory=lambda: [
             ToolOutputBand(over=10_000, action=SpillAction()),
-            ToolOutputBand(over=200_000, action=SummarizeAction()),
+            ToolOutputBand(over=100_000, action=SummarizeAction()),
         ],
         min_length=1,
         description="Size thresholds and their actions. The default spills past ~10k, "
         "keeping the payload readable through `read_tool_result`, and summarizes past "
-        "~200k, where a handle buys the model little — reading a payload that size "
+        "~100k, where a handle buys the model little — reading a payload that size "
         "back costs more calls than the summary it would have to reconstruct. To "
         "reduce nothing, set `enabled: false` rather than emptying this.",
     )

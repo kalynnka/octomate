@@ -29,6 +29,7 @@ from pydantic_ai_harness.tool_output_limits import (
     Truncate,
 )
 
+from octomate.config import OctomateConfig
 from octomate.config.agents import (
     InklingConfig,
     SpillAction,
@@ -86,11 +87,21 @@ def test_default_spills_the_large_and_summarizes_the_enormous() -> None:
     """Left unconfigured: nothing under 10k is touched, the merely-large is kept
     whole behind a handle, and only the truly enormous pays for a summary."""
 
-    bands = ToolOutputConfig().bands
+    config = ToolOutputConfig()
 
-    assert [band.over for band in bands] == [10_000, 200_000]
-    assert isinstance(bands[0].action, SpillAction)
-    assert isinstance(bands[1].action, SummarizeAction)
+    assert config.enabled
+    assert [band.over for band in config.bands] == [10_000, 100_000]
+    assert isinstance(config.bands[0].action, SpillAction)
+    assert isinstance(config.bands[1].action, SummarizeAction)
+
+
+def test_the_shipped_config_leaves_reduction_on() -> None:
+    """`octomate.default.yaml` names no `tool_output`, so a deployment that does
+    not either gets the defaults above rather than unbounded tool returns."""
+
+    shipped = OctomateConfig().agents.inkling.tool_output
+
+    assert shipped == ToolOutputConfig()
 
 
 def test_retention_is_offered_as_a_timedelta() -> None:
