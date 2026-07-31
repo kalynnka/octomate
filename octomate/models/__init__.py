@@ -19,6 +19,7 @@ from octomate.models.messages import (
 )
 from octomate.models.oauth import OAuthConnection, OAuthOperation
 from octomate.models.runs import AgentRun, ExternalAgentRun
+from octomate.models.spills import ToolOutputSpill
 from octomate.models.todos import Todo
 from octomate.models.user import User, UserProfile
 
@@ -41,6 +42,7 @@ __all__ = [
     "OAuthConnection",
     "OAuthOperation",
     "Todo",
+    "ToolOutputSpill",
     "User",
     "UserProfile",
 ]
