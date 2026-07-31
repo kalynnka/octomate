@@ -368,9 +368,12 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AgentRunResult[InklingOutput]:
         """The subagent contract, inkling-shaped: on top of the base policy
-        (addressed conversation, non-interactive), the run mounts exactly the
-        `capabilities` its caller passes — never the tentacle's own set, which
-        is all user- or surface-coupled (ask, send, todos, history)."""
+        (addressed conversation, non-interactive), the run mounts the tentacle's
+        own capabilities and whatever its spawner adds — the same set a plain run
+        gets. An accomplice calls the same tools and answers over the same
+        ledgers, so what bounds one bounds the other; `interactive=False` is what
+        makes the human-facing ones (ask, approvals) decline in-process rather
+        than park a batch nothing resumes."""
         result: AgentRunResult[InklingOutput] | None = None
         async for event in self.iter_graph_events(
             user_prompt=user_prompt,
@@ -382,7 +385,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             model=model,
             effort=effort,
             instructions=instructions,
-            capabilities=capabilities,
+            capabilities=[*self.capabilities, *(capabilities or [])],
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result

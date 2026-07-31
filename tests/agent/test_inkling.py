@@ -306,10 +306,11 @@ async def test_run_resumes_via_resume_turn_when_deferred_results_passed() -> Non
     assert len(conversations.runs) == 2
 
 
-async def test_subagent_run_mounts_no_tentacle_capabilities() -> None:
-    """The tentacle's own capabilities (ask/send/todos/history) are user- or
-    surface-coupled: `subagent_run` mounts none of them, while a plain run —
-    interactive or not — keeps them. `interactive` only governs interaction."""
+async def test_subagent_run_mounts_the_tentacle_capabilities_too() -> None:
+    """An accomplice gets the tentacle's own capabilities, same as a plain run,
+    plus whatever its spawner adds. `interactive=False` governs interaction, not
+    what is mounted: the human-facing tools are still offered, they just decline
+    in-process instead of parking a batch nobody is there to answer."""
     seen_tools: list[list[str]] = []
 
     async def probe(
@@ -330,7 +331,7 @@ async def test_subagent_run_mounts_no_tentacle_capabilities() -> None:
         Octomate(conversations=conversations),
         agent=cast(Agent[None, InklingOutput], agent),
         conversation_manager=conversations,
-        capabilities=[AskCapability(), TodoCapability()],
+        capabilities=[AskCapability()],
     )
 
     await tentacle.run(
@@ -362,10 +363,12 @@ async def test_subagent_run_mounts_no_tentacle_capabilities() -> None:
 
     interactive_tools, accomplice_tools, chosen_tools = seen_tools
     assert "ask_questions" in interactive_tools
-    assert "write_todos" in interactive_tools
-    assert accomplice_tools == []
-    # The spawner controls the set outright: what it passes is what mounts.
-    assert "write_todos" in chosen_tools and "ask_questions" not in chosen_tools
+    # The accomplice is served the same set, without having asked for any of it.
+    assert accomplice_tools == interactive_tools
+    # What the spawner passes is added to that set, not substituted for it — so a
+    # spawner must not pass a capability the tentacle already holds, since two
+    # toolsets offering one name is a hard error.
+    assert "write_todos" in chosen_tools and "ask_questions" in chosen_tools
 
 
 async def test_inkling_default_includes_todo_capability() -> None:
