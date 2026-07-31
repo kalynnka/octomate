@@ -58,6 +58,7 @@ from pydantic_ai.output import OutputDataT, OutputSpec
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import AgentDepsT, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from pydantic_graph import End
 
 from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
@@ -173,7 +174,22 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
             capabilities=capabilities,
             spec=spec,
         ) as run:
-            async for node in run:
+            # Driven by hand rather than `async for node in run`: that path is the
+            # graph's own iteration, which `AgentRun.__anext__` documents as calling
+            # none of the node hooks, so a capability built on them would be silently
+            # inert here while working on a plain agent. The order below is the one
+            # `run_stream_events` uses for the same reason we need it — `before_node_run`
+            # may replace the node, so it has to fire before the node streams, and the
+            # rest of the lifecycle can only run once the stream is drained.
+            node = run.next_node
+            while not isinstance(node, End):
+                # A `wrap_run` hook can answer without the graph running at all.
+                if run.result is not None:
+                    break
+                capability = run.ctx.deps.root_capability
+                node = await capability.before_node_run(
+                    build_run_context(run.ctx), node=node
+                )
                 if self.is_model_request_node(node):
                     # The model node streams thinking/pre-output events unchanged.
                     # Plain-text output (FinalResultEvent.tool_name is None) keeps
@@ -182,7 +198,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                     # outputs instead surface segment-list elements as
                     # ResultSegmentEvent; every output type still reaches FinalResult.
                     async with node.stream(run.ctx) as stream:
-                        wrapped = run.ctx.deps.root_capability.wrap_run_event_stream(
+                        wrapped = capability.wrap_run_event_stream(
                             build_run_context(run.ctx), stream=stream
                         )
                         final_event: FinalResultEvent | None = None
@@ -250,10 +266,19 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                     # run's capabilities lets capability-injected events (e.g. todo
                     # events stashed on a ToolReturn) reach the consumer.
                     async with node.stream(run.ctx) as tool_stream:
-                        wrapped = run.ctx.deps.root_capability.wrap_run_event_stream(
+                        wrapped = capability.wrap_run_event_stream(
                             build_run_context(run.ctx), stream=tool_stream
                         )
                         async for tool_event in wrapped:
                             yield tool_event
+                # `wrap_node_run` → `on_node_run_error` → `after_node_run`, around the
+                # step that advances the graph. The context is rebuilt so those hooks
+                # see the state the streaming above left behind (`run_step`), matching
+                # what `run_stream_events` does at the same point.
+                node = await run._wrap_and_advance(  # pyright: ignore[reportPrivateUsage]
+                    build_run_context(run.ctx),
+                    node,
+                    run._advance_graph,  # pyright: ignore[reportPrivateUsage]
+                )
             if run.result is not None:
                 yield AgentRunResultEvent(run.result)
