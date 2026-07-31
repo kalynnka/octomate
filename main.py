@@ -7,6 +7,14 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import SecretStr
 from pydantic_ai import AgentCapability
+from pydantic_ai_harness.tool_output_limits import (
+    Band,
+    Spill,
+    Summarize,
+    ToolOutputLimits,
+    Truncate,
+)
+from pydantic_ai_harness.warn_on_cache_busts import WarnOnCacheBusts
 
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
@@ -14,8 +22,10 @@ from octomate.capabilities.history import HistoryCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.capabilities.tools import ToolFailureCapability
 from octomate.config import OctomateConfig
+from octomate.config.agents import SpillAction, SummarizeAction, TruncateAction
 from octomate.database import engine as db_engine
 from octomate.integrations import build_integration
+from octomate.managers.spills import SpillStore
 from octomate.managers.user import UserManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
@@ -93,6 +103,9 @@ def create_app() -> FastAPI:
     )
 
     inkling_capabilities: list[AgentCapability[None]] = [
+        # Observational only: it warns, it never edits a request. A collapsed prompt
+        # cache is otherwise invisible — the run still succeeds, just slower and dearer.
+        WarnOnCacheBusts(),
         ToolFailureCapability(),
         AskCapability(),
         TodoCapability(
@@ -118,6 +131,32 @@ def create_app() -> FastAPI:
         if integration.enabled
     )
 
+    # An MCP server answers with whatever it answers with, and a tool return persists
+    # in history, so one oversized reply is re-sent on every later request for the rest
+    # of the conversation. Spill and summarize each fall back to truncation, which is
+    # the floor: a reduction that cannot run must not leave the payload whole.
+    tool_output = config.agents.inkling.tool_output
+    if tool_output.enabled:
+        bands: list[Band] = []
+        for band in tool_output.bands:
+            match band.action:
+                case TruncateAction(strategy=strategy, max_chars=max_chars):
+                    action = Truncate(strategy=strategy, max_chars=max_chars)
+                case SpillAction(preview_chars=preview_chars):
+                    action = Spill(preview_chars=preview_chars, then=Truncate())
+                case SummarizeAction():
+                    action = Summarize(then=Truncate())
+            bands.append(Band(over=band.over, action=action))
+        inkling_capabilities.append(
+            ToolOutputLimits(
+                bands=bands,
+                over_tokens=tool_output.over_tokens,
+                # Spills go to the database, not local disk, so a handle read back a
+                # turn later resolves in whichever process picks that turn up.
+                store=SpillStore(retention=tool_output.retention),
+            )
+        )
+
     console_handler = logging.StreamHandler()
     # Tint the level + each tentacle's header, but only on a real terminal so the
     # ANSI codes don't leak into piped/redirected logs.
@@ -129,6 +168,10 @@ def create_app() -> FastAPI:
         handlers=[console_handler, logfire.LogfireLoggingHandler()],
         force=True,
     )
+    # The inkling agent's cache-bust monitor reports through `warnings`, which otherwise
+    # writes straight to stderr and never reaches Logfire — where a cache collapse is
+    # only visible as a cost and latency regression nobody attributes to a busted prefix.
+    logging.captureWarnings(True)
     registry = ProviderRegistry(config.providers)
     # httpx logs every request at INFO; keep the LLM-provider round-trips and drop
     # the rest (Lark cardkit streaming PUTs especially). Logfire still traces every

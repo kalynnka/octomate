@@ -28,6 +28,18 @@ octomate:
           ability: General assistant for writing, analysis, and coordinating
             multi-step work.
           efforts: [low, medium, high, xhigh]
+      # Oversized tool returns. The largest band a return reaches claims it; a
+      # return under every threshold is left alone. `kind` is spill (lossless, read
+      # back via `read_tool_result`), summarize (one call to the run's model), or
+      # truncate (free, lossy) — and whichever is chosen falls back to truncation
+      # if it cannot run. `retention_hours: null` keeps spills forever.
+      tool_output:
+        bands:
+          - over: 10000
+            action: {kind: spill}
+          - over: 100000
+            action: {kind: summarize}
+        retention_hours: 6
     # Anthropic Claude Code agent (opt-in; omitted => absent). Runs the Claude
     # Agent SDK locally, or on a remote host when `ssh` is set. List it in a
     # channel's `agents:` to make it a summon candidate.
