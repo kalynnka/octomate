@@ -241,8 +241,11 @@ def collect_current_answer(
             ).strip()
         if SlackBlockAction.ASK_QUESTION_CHOICE.value in block:
             select_state = block[SlackBlockAction.ASK_QUESTION_CHOICE.value]
-            if "selected_option" in select_state and select_state["selected_option"]:
-                choice = str(select_state["selected_option"]["value"]).strip()
+            # Bound rather than re-subscripted: `selected_option` is not a required key,
+            # and only `in` narrows a TypedDict — the `.get()` RUF019 wants does not, so
+            # reading it back would be an unchecked access.
+            if (selected := select_state.get("selected_option")) is not None:
+                choice = str(selected["value"]).strip()
     if prefer_choice:
         answers[action_id] = choice or answer or answers.get(action_id, "")
     else:

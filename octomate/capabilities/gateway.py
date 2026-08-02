@@ -29,12 +29,12 @@ from typing import TYPE_CHECKING, Literal, cast
 from pydantic_ai import AgentStreamEvent, CallDeferred, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelRetry
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.messages import (
     FunctionToolResultEvent,
     ToolReturn,
     ToolReturnPart,
 )
+from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
@@ -45,8 +45,8 @@ from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     AgentRoute,
     Destination,
-    Scrying,
     SchemeDecision,
+    Scrying,
     SummonDecision,
     SummonDestination,
 )
@@ -54,10 +54,9 @@ from octomate.schemas.triage import (
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
+    from octomate.managers.conversation import ConversationManager
     from octomate.managers.user import UserManager
     from octomate.schemas.user import UserProfile
-
-    from octomate.managers.conversation import ConversationManager
     from octomate.tentacles.agent.base import AgentTentacle
 
     # Runtime import would cycle: `channel.base` reaches this module through
@@ -460,7 +459,7 @@ class GatewayCapability(AbstractCapability[None]):
                 ),
                 timeout=self.commission_timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise ModelRetry(
                 f"The accomplice {child.subagent_id!r} exceeded "
                 f"{self.commission_timeout:.0f}s and was stopped. What it "

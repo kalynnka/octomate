@@ -14,7 +14,6 @@ import uuid
 from collections.abc import AsyncGenerator, Sequence
 
 import anyio
-
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -22,10 +21,10 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
-    ThinkingPart,
-    ThinkingPartDelta,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     ToolCallPartDelta,
     ToolReturnPart,

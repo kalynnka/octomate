@@ -37,7 +37,6 @@ from octomate.capabilities.harness.events import (
     TodoCreatedEvent,
     TodoStatusChangedEvent,
 )
-from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     CardData,
@@ -46,6 +45,7 @@ from octomate.schemas.segments import (
     ImageSegment,
     MarkdownSegment,
 )
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channel.base import ChannelOutput
 from octomate.tentacles.channel.slack.feelers import output as slack_output
@@ -54,10 +54,9 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     question_choice_block_id,
 )
 from octomate.types.json import JsonObject
-
 from tests.channels.slack.fakes import (
-    FakeSlackStream,
     FakeSlackInk,
+    FakeSlackStream,
     slack_channel,
     slack_key,
 )
@@ -340,7 +339,7 @@ async def test_slack_consume_renders_action_batch_blocks() -> None:
     approval_buttons = _json_objects(approval_msg.blocks[-1]["elements"])
     assert approval_buttons[0]["action_id"] == (SlackBlockAction.APPROVAL_APPROVE.value)
     # Each presented action is marked with its platform message id.
-    marked = {action_id: message_id for action_id, message_id in actions.marked}
+    marked = dict(actions.marked)
     assert len(actions.marked) == 2
     assert marked[question.id] == "fallback-ts"
     assert marked[approval.id] == "fallback-ts"

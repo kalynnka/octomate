@@ -13,7 +13,8 @@ from octomate.capabilities.github import GitHubCapability
 from octomate.capabilities.linear import LinearCapability
 from octomate.integrations.base import build_integration
 
-__all__ = [
+# Ordered by arrival, not alphabetically — the comment below is about that order.
+__all__ = [  # noqa: RUF022
     "build_integration",
     # The integrations this deployment can compose, in the order they arrived: a
     # device flow that needs no callback, and an authorization-code flow that does.

@@ -19,7 +19,7 @@ from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel.lark import LarkTentacle
-
+from tests.support.channels import drive
 from tests.support.scenarios import (
     action_batch,
     agent_run,
@@ -30,7 +30,6 @@ from tests.support.scenarios import (
     streamed_text,
     subagent_run,
 )
-from tests.support.channels import drive
 from tests.trigger.conftest import TriggerTargets, run_banner
 
 pytestmark = pytest.mark.trigger

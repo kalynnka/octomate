@@ -12,51 +12,50 @@ from typing import ClassVar, cast
 import pytest
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, RunContext
 from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.capabilities.gateway import SCRY_TOOL_NAME, GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
+from octomate.reflex import (
+    DeferredResult,
+    ReflexDeps,
+    ReflexState,
+    ResponseTarget,
+    SummonDecision,
+)
+from octomate.reflex.graph import (
+    Awake,
+    React,
+    ReflexGraphResult,
+    ResumeDeferred,
+    Route,
+    build_reflex_graph,
+)
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
-from octomate.schemas.thread import Thread, ThreadKey
-from octomate.tentacles.channel.base import ChannelSurfaces
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
-from pydantic_ai.settings import ThinkingEffort
-
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
     SchemeDecision,
     SummonDestination,
 )
-from octomate.reflex import (
-    DeferredResult,
-    SummonDecision,
-    ResponseTarget,
-    ReflexDeps,
-    ReflexState,
-)
-from octomate.reflex.graph import (
-    Awake,
-    ReflexGraphResult,
-    ResumeDeferred,
-    Route,
-    React,
-    build_reflex_graph,
-)
+from octomate.tentacles.channel.base import ChannelSurfaces
 from octomate.tentacles.channel.feelers.output import TimelineState
 from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, RecordingInk
 from tests.support.managers import (
     FakeActionManager,
-    FakeThreadManager,
     FakeConversationManager,
     FakeDeferredBatch,
     FakePresentedBatch,
+    FakeThreadManager,
 )
 
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -352,7 +351,8 @@ async def test_route_runs_entry_agent_directly() -> None:
     )
 
     assert not isinstance(result, DeferredResult)
-    assert result.result is not None and result.result.output == "hello"
+    assert result.result is not None
+    assert result.result.output == "hello"
     assert [stream.run_name for stream in agent.streams] == ["react"]
     assert agent.turns == []
     assert im.consumed[0][0] == address
@@ -455,7 +455,8 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
     assert gate.commissioning
     assert gate.thread_id == thread.id
     assert gate.conversation_address == address
-    assert gate.toolset is not None and "commission" in gate.toolset.tools
+    assert gate.toolset is not None
+    assert "commission" in gate.toolset.tools
 
 
 async def test_react_passes_the_decision_effort_to_the_run() -> None:
@@ -991,7 +992,8 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
     )
 
     assert not isinstance(result, DeferredResult)
-    assert result.result is not None and result.result.output == "resumed answer"
+    assert result.result is not None
+    assert result.result.output == "resumed answer"
     assert agent.streams[0].prompt is None
     assert agent.streams[0].address == address
     # The resumed run must carry the batch conversation's thread; without it the

@@ -6,17 +6,17 @@ import pytest
 from pydantic import ValidationError
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import (
     SCHEME_TOOL_NAME,
     SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
-    PrivateBlocker,
     GatewayCapability,
+    PrivateBlocker,
 )
-from pydantic_ai.settings import ThinkingEffort
-
+from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     AgentRoute,
@@ -57,7 +57,7 @@ def _capability(
             ),
             AgentRoute(
                 agent_id="inkling",
-                model="flash",
+                model="deepseek:deepseek-chat",
                 claim=Claim(
                     ability="current agent",
                     efforts=("low", "medium", "high"),
@@ -88,7 +88,7 @@ def _capability(
 
 def _decision(
     agent_id: str = "claude",
-    model: str = "opus",
+    model: AgentRouteModelName = "opus",
     destination: SummonDestination = "thread",
     effort: ThinkingEffort | None = None,
 ) -> SummonDecision:
@@ -106,7 +106,9 @@ def _decision(
 
 def test_summon_decision_requires_model_field() -> None:
     with pytest.raises(ValidationError, match="model"):
-        SummonDecision(
+        # The omission is the input under test: pyright is right that the call is
+        # invalid, and that it is invalid is exactly what this asserts.
+        SummonDecision(  # pyright: ignore[reportCallIssue]
             action="summon",
             agent_id="claude",
             reason="needs coding",
@@ -121,7 +123,8 @@ def test_summon_decision_requires_concrete_model(model: str | None) -> None:
         SummonDecision(
             action="summon",
             agent_id="claude",
-            model=model,
+            # Same: `None` and `""` are the rejected values this parametrises over.
+            model=model,  # pyright: ignore[reportArgumentType]
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -206,7 +209,7 @@ async def test_summon_capability_rejects_self_summon() -> None:
         ("claude", "sonnet"),
         # Both halves belong to a route, but not to the *same* one — validation is
         # pair-wise, which is why the route is matched rather than each arg checked.
-        ("claude", "flash"),
+        ("claude", "deepseek:deepseek-chat"),
     ],
 )
 async def test_summon_tool_retries_invalid_route(agent_id: str, model: str) -> None:

@@ -113,7 +113,8 @@ async def test_commission_runs_the_accomplice_and_returns_its_report() -> None:
     turn = claude.turns[0]
     assert turn.prompt == "Audit the repo."
     assert turn.run_name == "commission"
-    assert turn.thread_id == THREAD and turn.address == ADDRESS
+    assert turn.thread_id == THREAD
+    assert turn.address == ADDRESS
     assert turn.model == "fake-model"
     parent = conversations.store[(THREAD, "inkling", "")]
     child = conversations.store[(THREAD, "claude", "repo-audit")]

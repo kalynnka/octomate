@@ -21,6 +21,7 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.schemas.triage import SummonDecision
+from tests.support.managers import a_thread
 
 
 def _key() -> ChannelAddress:
@@ -54,7 +55,7 @@ def _requests() -> DeferredToolRequests:
 async def _create_batch() -> DeferredActionBatch:
     address = _key()
     conversation = await ConversationManager().ensure(
-        uuid7(), agent_tentacle_id="inkling"
+        await a_thread(), agent_tentacle_id="inkling"
     )
     return await DeferredActionManager().create_batch(
         conversation=conversation,
@@ -162,8 +163,8 @@ async def test_resolve_batch_applies_answers_and_approvals(
     in_memory_engine: AsyncEngine,
 ) -> None:
     created = await _create_batch()
-    question = list(created.questions)[0]
-    approval = list(created.approvals)[0]
+    question = next(iter(created.questions))
+    approval = next(iter(created.approvals))
 
     resolved = await DeferredActionManager().resolve_batch(
         DeferredActionBatchResponse(

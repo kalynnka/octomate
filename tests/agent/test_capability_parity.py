@@ -4,6 +4,10 @@
 Every hook it drives itself is one pydantic-ai would otherwise have driven, and a
 capability has no way to tell it is running here rather than on a plain `Agent` —
 so anything that works against the native API has to work against this.
+
+`RecordingCapability` proves the hooks fire; the stock-capability tests at the end
+prove the ones pydantic-ai actually ships still work when mounted here, which is
+the claim that matters when adopting a new upstream capability.
 """
 
 from __future__ import annotations
@@ -11,18 +15,23 @@ from __future__ import annotations
 from collections.abc import AsyncIterable, AsyncIterator
 
 from pydantic_ai import AgentRunResultEvent
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import (
+    AbstractCapability,
+    PrefixTools,
+    ProcessEventStream,
+    Toolset,
+)
+from pydantic_ai.capabilities.abstract import (
+    AgentNode,
+    NodeResult,
+    WrapNodeRunHandler,
+)
 from pydantic_ai.messages import (
     AgentStreamEvent,
     ModelMessage,
     ModelResponse,
     TextPart,
     ToolCallPart,
-)
-from pydantic_ai.capabilities.abstract import (
-    AgentNode,
-    NodeResult,
-    WrapNodeRunHandler,
 )
 from pydantic_ai.models.function import (
     AgentInfo,
@@ -31,6 +40,7 @@ from pydantic_ai.models.function import (
     FunctionModel,
 )
 from pydantic_ai.tools import RunContext
+from pydantic_ai.toolsets import FunctionToolset
 from pydantic_graph import End
 
 from octomate.capabilities.harness.agent import Agent
@@ -106,7 +116,7 @@ async def reply_stream(
     yield "pong"
 
 
-def build_agent(capability: RecordingCapability) -> Agent[None, str]:
+def build_agent(capability: AbstractCapability[None]) -> Agent[None, str]:
     agent: Agent[None, str] = Agent(
         FunctionModel(reply, stream_function=reply_stream),
         deps_type=type(None),
@@ -181,3 +191,72 @@ async def test_the_run_still_reaches_a_result() -> None:
     assert result is not None
     assert result.output == "pong"
     assert not isinstance(result, End)
+
+
+async def test_a_stock_event_stream_capability_sees_the_same_events() -> None:
+    """`ProcessEventStream` is the shape every event-wrapping capability upstream
+    ships takes — a guardrail, a classifier, a recorder. It is the one this
+    tentacle is most likely to break, because `stream_events` wraps the stream
+    too, so it gets asserted against a plain agent rather than against itself."""
+
+    def collector() -> tuple[list[str], ProcessEventStream[None]]:
+        seen: list[str] = []
+
+        async def handle(
+            ctx: RunContext[None], stream: AsyncIterable[AgentStreamEvent]
+        ) -> None:
+            async for event in stream:
+                seen.append(type(event).__name__)
+
+        return seen, ProcessEventStream(handler=handle)
+
+    native_seen, native_capability = collector()
+    await build_agent(native_capability).run("go")
+
+    wrapper_seen, wrapper_capability = collector()
+    async for _ in build_agent(wrapper_capability).stream_events("go"):
+        pass
+
+    assert native_seen, "the plain run should have forwarded events"
+    assert wrapper_seen == native_seen
+
+
+async def test_a_stock_toolset_capability_still_shapes_the_tools() -> None:
+    """A capability that rewrites tool definitions has to reach the model through
+    the wrapper, or a prefixed tool is offered under its bare name and the call
+    the model makes does not resolve."""
+
+    offered: list[list[str]] = []
+
+    def record(info: AgentInfo) -> None:
+        offered.append(sorted(tool.name for tool in info.function_tools))
+
+    def reply_recording(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        record(info)
+        return ModelResponse(parts=[TextPart("done")])
+
+    async def reply_recording_stream(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        record(info)
+        yield "done"
+
+    def build() -> Agent[None, str]:
+        toolset: FunctionToolset[None] = FunctionToolset()
+        toolset.add_function(lambda: "pong", name="ping")
+        return Agent(
+            FunctionModel(reply_recording, stream_function=reply_recording_stream),
+            deps_type=type(None),
+            output_type=str,
+            capabilities=[PrefixTools(wrapped=Toolset(toolset), prefix="ns")],
+        )
+
+    await build().run("go")
+    native_tools = offered.pop()
+
+    async for _ in build().stream_events("go"):
+        pass
+    wrapper_tools = offered.pop()
+
+    assert native_tools == ["ns_ping"]
+    assert wrapper_tools == native_tools

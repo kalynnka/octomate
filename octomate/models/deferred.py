@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
@@ -10,7 +10,7 @@ from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Uuid, and_
 from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base
+from octomate.models.base import Base, MapperArgs
 from octomate.types.deferred import (
     DeferredActionKind,
     DeferredActionStatus,
@@ -48,14 +48,14 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         index=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         index=True,
     )
     completed_at: Mapped[datetime | None] = mapped_column(
@@ -93,7 +93,7 @@ class DeferredAction(Base, TransmuterProxiedMixin):
     """One user-visible pending action inside a deferred batch."""
 
     __tablename__ = "deferred_actions"
-    __mapper_args__ = {
+    __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_on": "kind",
         "polymorphic_abstract": True,
     }
@@ -131,14 +131,14 @@ class DeferredAction(Base, TransmuterProxiedMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         index=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         index=True,
     )
     resolved_at: Mapped[datetime | None] = mapped_column(
@@ -154,12 +154,12 @@ class DeferredAction(Base, TransmuterProxiedMixin):
 
 
 class DeferredQuestionAction(DeferredAction):
-    __mapper_args__ = {
+    __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_identity": "question",
     }
 
 
 class DeferredApprovalAction(DeferredAction):
-    __mapper_args__ = {
+    __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_identity": "approval",
     }

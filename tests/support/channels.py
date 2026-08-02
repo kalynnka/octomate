@@ -14,9 +14,8 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NotRequired
 from uuid import UUID
-
 
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -24,7 +23,7 @@ from pydantic_ai.messages import (
     OutputToolCallEvent,
     OutputToolResultEvent,
 )
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 from octomate import Octomate
 from octomate.capabilities.harness.events import (
@@ -36,11 +35,11 @@ from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal
-from octomate.schemas.conversation import ChatType, ChannelAddress
-from octomate.schemas.user import UserProfile
+from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel.base import (
     ChannelOutput,
     ChannelSurfaces,

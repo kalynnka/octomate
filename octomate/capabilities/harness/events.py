@@ -36,9 +36,9 @@ from pydantic_ai import AgentStreamEvent
 from pydantic_ai.result import FinalResult
 from typing_extensions import TypeAliasType
 
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.segments import MessageSegment
-from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.todos import Todo
 
 OutputT = TypeVar("OutputT")

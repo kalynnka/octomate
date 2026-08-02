@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NotRequired
 
 from pydantic import (
     AliasGenerator,
@@ -14,9 +14,8 @@ from pydantic import (
     model_validator,
 )
 from pydantic.alias_generators import to_camel
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
-from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import (
     AtData,
@@ -27,6 +26,7 @@ from octomate.schemas.segments import (
     Segment,
     TextSegment,
 )
+from octomate.schemas.user import UserProfile
 from octomate.types.json import JsonObject
 
 

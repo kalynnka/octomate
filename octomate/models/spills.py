@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from arcanus.base import TransmuterProxiedMixin
 from sqlalchemy import DateTime, LargeBinary, String, Uuid
@@ -28,6 +28,6 @@ class ToolOutputSpill(Base, TransmuterProxiedMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         index=True,
     )

@@ -30,6 +30,7 @@ from openai_codex.models import Notification, NotificationPayload
 from pydantic import BaseModel, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartStartEvent
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
@@ -51,7 +52,6 @@ from tests.support.managers import (
     FakeConversationManager,
     FakePresentedBatch,
 )
-from uuid_utils.compat import uuid7
 
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"

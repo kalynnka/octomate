@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy.exc
@@ -15,39 +15,34 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.messages import TextPart, ToolCallPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
-
-import uuid
-
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers import ConversationManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
+from tests.support.managers import a_thread
 
 
 @pytest.fixture(autouse=True)
-async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def _db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
-_THREAD = uuid7()
-
-
-def _thread() -> uuid.UUID:
-    return _THREAD
+async def _thread() -> uuid.UUID:
+    return await a_thread()
 
 
 async def test_ensure_is_idempotent() -> None:
     service = ConversationManager()
-    a = await service.ensure(_thread(), agent_tentacle_id="inkling")
-    b = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    a = await service.ensure(await _thread(), agent_tentacle_id="inkling")
+    b = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert a.id == b.id
 
 
 async def test_subagents_lists_only_the_parents_own_hands() -> None:
     service = ConversationManager()
-    thread = _thread()
+    thread = await _thread()
     parent = await service.ensure(thread, agent_tentacle_id="inkling")
     other = await service.ensure(thread, agent_tentacle_id="claude")
     audit = await service.ensure(
@@ -77,7 +72,7 @@ async def test_subagents_lists_only_the_parents_own_hands() -> None:
 
 async def test_permission_defaults_and_grant_round_trip() -> None:
     service = ConversationManager()
-    convo = await service.ensure(_thread(), agent_tentacle_id="claude")
+    convo = await service.ensure(await _thread(), agent_tentacle_id="claude")
     assert convo.permission_mode == "default"
     assert convo.allowed_tools == []
 
@@ -87,57 +82,61 @@ async def test_permission_defaults_and_grant_round_trip() -> None:
 
     # A fresh manager reads the persisted grants back from the database.
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_thread(), agent_tentacle_id="claude")
+    reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="claude")
     assert reloaded.allowed_tools == ["Bash", "Write"]
 
 
 async def test_ensure_loads_existing_conversation() -> None:
     first = ConversationManager()
-    created = await first.ensure(_thread(), agent_tentacle_id="inkling")
+    created = await first.ensure(await _thread(), agent_tentacle_id="inkling")
 
     fresh = ConversationManager()
-    fetched = await fresh.ensure(_thread(), agent_tentacle_id="inkling")
+    fetched = await fresh.ensure(await _thread(), agent_tentacle_id="inkling")
     assert fetched.id == created.id
 
 
 async def test_ensure_is_per_agent() -> None:
     service = ConversationManager()
-    inkling = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    inkling = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert inkling.agent_tentacle_id == "inkling"
 
     # A different agent at the same location gets its own conversation; the
     # original agent's conversation is untouched, and re-ensuring the original
     # agent returns it.
-    other = await ConversationManager().ensure(_thread(), agent_tentacle_id="other")
+    other = await ConversationManager().ensure(
+        await _thread(), agent_tentacle_id="other"
+    )
     assert other.id != inkling.id
     assert other.agent_tentacle_id == "other"
 
-    again = await ConversationManager().ensure(_thread(), agent_tentacle_id="inkling")
+    again = await ConversationManager().ensure(
+        await _thread(), agent_tentacle_id="inkling"
+    )
     assert again.id == inkling.id
 
 
 async def test_record_run_creates_run_and_persists_messages() -> None:
     service = ConversationManager()
-    conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
 
     run_id = "run-1"
     raw = [
         RawModelRequest(
             parts=[UserPromptPart(content="hi")],
             run_id=run_id,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         ),
         RawModelResponse(
             parts=[TextPart(content="hello")],
             run_id=run_id,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             finish_reason="stop",
         ),
     ]
     await service.record_agent_run(conversation, run_id=run_id, messages=raw)
 
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_thread(), agent_tentacle_id="inkling")
+    reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="inkling")
     runs = list(reloaded.runs)
     assert len(runs) == 1
     assert runs[0].id == run_id
@@ -154,19 +153,21 @@ async def test_external_run_reads_back_as_its_variant() -> None:
     coordinates; record_agent_run stays `octomate`. A fresh manager reads each back as
     its type from the one polymorphic table."""
     service = ConversationManager()
-    conversation = await service.ensure(_thread(), agent_tentacle_id="claude-native")
+    conversation = await service.ensure(
+        await _thread(), agent_tentacle_id="claude-native"
+    )
 
     def _msgs(run_id: str) -> list[RawModelRequest | RawModelResponse]:
         return [
             RawModelRequest(
                 parts=[UserPromptPart(content="hi")],
                 run_id=run_id,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             ),
             RawModelResponse(
                 parts=[TextPart(content="hello")],
                 run_id=run_id,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 finish_reason="stop",
             ),
         ]
@@ -187,7 +188,7 @@ async def test_external_run_reads_back_as_its_variant() -> None:
     )
 
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_thread(), agent_tentacle_id="claude-native")
+    reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="claude-native")
     by_id = {run.id: run for run in reloaded.runs}
 
     octomate_run = by_id["oct"]
@@ -207,7 +208,7 @@ async def test_external_run_reads_back_as_its_variant() -> None:
 async def test_record_run_preserves_finish_reason() -> None:
     """The blessed ModelResponse round-trips pydantic-ai's finish_reason."""
     service = ConversationManager()
-    conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     run_id = "run-fr"
 
     await service.record_agent_run(
@@ -217,14 +218,14 @@ async def test_record_run_preserves_finish_reason() -> None:
             RawModelResponse(
                 parts=[TextPart(content="halt")],
                 run_id=run_id,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 finish_reason="tool_call",
             ),
         ],
     )
 
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_thread(), agent_tentacle_id="inkling")
+    reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="inkling")
     msgs = list(reloaded.messages)
     assert len(msgs) == 1
     assert msgs[0].finish_reason == "tool_call"
@@ -232,7 +233,7 @@ async def test_record_run_preserves_finish_reason() -> None:
 
 async def test_record_run_persists_name() -> None:
     service = ConversationManager()
-    conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
 
     await service.record_agent_run(
         conversation,
@@ -242,14 +243,14 @@ async def test_record_run_persists_name() -> None:
             RawModelResponse(
                 parts=[TextPart(content="route")],
                 run_id="run-named",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 finish_reason="stop",
             ),
         ],
     )
 
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_thread(), agent_tentacle_id="inkling")
+    reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="inkling")
     runs = list(reloaded.runs)
     assert len(runs) == 1
     assert runs[0].name == "triage"
@@ -257,16 +258,16 @@ async def test_record_run_persists_name() -> None:
 
 async def test_record_run_no_op_for_empty_list() -> None:
     service = ConversationManager()
-    conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     await service.record_agent_run(conversation, run_id="empty", messages=[])
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_thread(), agent_tentacle_id="inkling")
+    reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="inkling")
     assert list(reloaded.runs) == []
 
 
 async def test_record_run_syncs_cached_history() -> None:
     service = ConversationManager()
-    conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert list(conversation.messages) == []
 
     await service.record_agent_run(
@@ -276,12 +277,12 @@ async def test_record_run_syncs_cached_history() -> None:
             RawModelRequest(
                 parts=[UserPromptPart(content="hi")],
                 run_id="run-1",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             ),
             RawModelResponse(
                 parts=[TextPart(content="hello")],
                 run_id="run-1",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 finish_reason="stop",
             ),
         ],
@@ -289,7 +290,7 @@ async def test_record_run_syncs_cached_history() -> None:
 
     # record_agent_run keeps the cached conversation coherent; a hot ensure()
     # (cache hit, no cold reload) reflects the new run.
-    hot = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    hot = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert len(list(hot.messages)) == 2
 
 
@@ -299,7 +300,7 @@ async def test_record_second_run_keeps_prior_run_messages() -> None:
     # could null a NOT NULL run_id). Both runs and all their messages survive, and
     # the passed reference is never mutated.
     service = ConversationManager()
-    first = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    first = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     await service.record_agent_run(
         first,
         run_id="run-1",
@@ -307,12 +308,12 @@ async def test_record_second_run_keeps_prior_run_messages() -> None:
             RawModelRequest(
                 parts=[UserPromptPart(content="first")],
                 run_id="run-1",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             ),
             RawModelResponse(
                 parts=[TextPart(content="one")],
                 run_id="run-1",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 finish_reason="stop",
             ),
         ],
@@ -327,12 +328,12 @@ async def test_record_second_run_keeps_prior_run_messages() -> None:
             RawModelRequest(
                 parts=[UserPromptPart(content="second")],
                 run_id="run-2",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             ),
             RawModelResponse(
                 parts=[TextPart(content="two")],
                 run_id="run-2",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 finish_reason="stop",
             ),
         ],
@@ -343,14 +344,14 @@ async def test_record_second_run_keeps_prior_run_messages() -> None:
     assert list(first.runs) == []
 
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(_thread(), agent_tentacle_id="inkling")
+    reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="inkling")
     assert {run.id for run in reloaded.runs} == {"run-1", "run-2"}
     assert len(list(reloaded.messages)) == 4
 
 
 async def test_drop_trailing_deferral_removes_from_cache_and_db() -> None:
     service = ConversationManager()
-    conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     await service.record_agent_run(
         conversation,
         run_id="run-defer",
@@ -358,7 +359,7 @@ async def test_drop_trailing_deferral_removes_from_cache_and_db() -> None:
             RawModelRequest(
                 parts=[UserPromptPart(content="do it")],
                 run_id="run-defer",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             ),
             RawModelResponse(
                 parts=[
@@ -369,30 +370,32 @@ async def test_drop_trailing_deferral_removes_from_cache_and_db() -> None:
                     )
                 ],
                 run_id="run-defer",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             ),
         ],
     )
 
     # ensure() returns the conversation synced by record_agent_run.
-    conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     dropped = await service.drop_trailing_deferral(conversation)
     assert dropped is not None
 
     # The deferral is gone from the cache (hot) and the DB (cold reload).
-    hot = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    hot = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert [type(m).__name__ for m in hot.messages] == ["ModelRequest"]
-    cold = await ConversationManager().ensure(_thread(), agent_tentacle_id="inkling")
+    cold = await ConversationManager().ensure(
+        await _thread(), agent_tentacle_id="inkling"
+    )
     assert [type(m).__name__ for m in cold.messages] == ["ModelRequest"]
 
     # The trailing message is now a request, not a deferral — nothing to drop.
-    conversation = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert await service.drop_trailing_deferral(conversation) is None
 
 
 async def test_fork_copies_history_preserving_trailing_deferral() -> None:
     service = ConversationManager()
-    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    source = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     run_id = "run-src"
     await service.record_agent_run(
         source,
@@ -401,7 +404,7 @@ async def test_fork_copies_history_preserving_trailing_deferral() -> None:
             RawModelRequest(
                 parts=[UserPromptPart(content="hi")],
                 run_id=run_id,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             ),
             RawModelResponse(
                 parts=[
@@ -412,15 +415,15 @@ async def test_fork_copies_history_preserving_trailing_deferral() -> None:
                     )
                 ],
                 run_id=run_id,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 model_name="scripted",
                 finish_reason="tool_call",
             ),
         ],
     )
-    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    source = await service.ensure(await _thread(), agent_tentacle_id="inkling")
 
-    target_thread = uuid7()
+    target_thread = await a_thread("fork-target")
     target = await service.ensure(target_thread, agent_tentacle_id="inkling")
     run = await service.fork(source, target)
     assert run is not None
@@ -435,7 +438,7 @@ async def test_fork_copies_history_preserving_trailing_deferral() -> None:
         "ModelResponse",
     ]
     # Non-trivial columns copy verbatim, not just id/parts.
-    assert list(cold.messages)[0].message_text == "hi"
+    assert next(iter(cold.messages)).message_text == "hi"
     last = list(cold.messages)[-1]
     assert any(
         isinstance(part, ToolCallPart) and part.tool_name == "teleport"
@@ -445,13 +448,15 @@ async def test_fork_copies_history_preserving_trailing_deferral() -> None:
     assert last.finish_reason == "tool_call"
 
     # The origin is untouched — a fork, not a move.
-    origin = await ConversationManager().ensure(_thread(), agent_tentacle_id="inkling")
+    origin = await ConversationManager().ensure(
+        await _thread(), agent_tentacle_id="inkling"
+    )
     assert len(list(origin.messages)) == 2
 
 
 async def test_fork_rejects_non_empty_target() -> None:
     service = ConversationManager()
-    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    source = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     await service.record_agent_run(
         source,
         run_id="run-src",
@@ -459,14 +464,14 @@ async def test_fork_rejects_non_empty_target() -> None:
             RawModelResponse(
                 parts=[TextPart(content="hello")],
                 run_id="run-src",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 finish_reason="stop",
             ),
         ],
     )
-    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    source = await service.ensure(await _thread(), agent_tentacle_id="inkling")
 
-    target_thread = uuid7()
+    target_thread = await a_thread("fork-target")
     target = await service.ensure(target_thread, agent_tentacle_id="inkling")
     await service.record_agent_run(
         target,
@@ -475,7 +480,7 @@ async def test_fork_rejects_non_empty_target() -> None:
             RawModelResponse(
                 parts=[TextPart(content="prior")],
                 run_id="run-existing",
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
                 finish_reason="stop",
             ),
         ],
@@ -488,8 +493,10 @@ async def test_fork_rejects_non_empty_target() -> None:
 
 async def test_fork_empty_source_is_noop() -> None:
     service = ConversationManager()
-    source = await service.ensure(_thread(), agent_tentacle_id="inkling")
-    target = await service.ensure(uuid7(), agent_tentacle_id="inkling")
+    source = await service.ensure(await _thread(), agent_tentacle_id="inkling")
+    target = await service.ensure(
+        await a_thread("fork-target"), agent_tentacle_id="inkling"
+    )
     assert await service.fork(source, target) is None
 
 
@@ -498,9 +505,9 @@ async def test_a_subagent_conversation_is_its_own_context() -> None:
     database and in the cache — so a child's history can never flatten into
     the parent agent's model context."""
     service = ConversationManager()
-    own = await service.ensure(_thread(), agent_tentacle_id="claude")
+    own = await service.ensure(await _thread(), agent_tentacle_id="claude")
     child = await service.ensure(
-        _thread(),
+        await _thread(),
         agent_tentacle_id="claude",
         subagent_id="agent-abc123",
         parent_conversation_id=own.id,
@@ -512,9 +519,11 @@ async def test_a_subagent_conversation_is_its_own_context() -> None:
     assert own.parent_conversation_id is None
 
     # Re-ensuring each identity returns its own conversation, not the other's.
-    assert (await service.ensure(_thread(), agent_tentacle_id="claude")).id == own.id
+    assert (
+        await service.ensure(await _thread(), agent_tentacle_id="claude")
+    ).id == own.id
     again = await service.ensure(
-        _thread(),
+        await _thread(),
         agent_tentacle_id="claude",
         subagent_id="agent-abc123",
         parent_conversation_id=own.id,
@@ -523,10 +532,12 @@ async def test_a_subagent_conversation_is_its_own_context() -> None:
 
     # And a fresh manager resolves both from the database the same way.
     fresh = ConversationManager()
-    assert (await fresh.ensure(_thread(), agent_tentacle_id="claude")).id == own.id
+    assert (
+        await fresh.ensure(await _thread(), agent_tentacle_id="claude")
+    ).id == own.id
     assert (
         await fresh.ensure(
-            _thread(),
+            await _thread(),
             agent_tentacle_id="claude",
             subagent_id="agent-abc123",
             parent_conversation_id=own.id,
@@ -539,14 +550,14 @@ async def test_a_subagent_names_its_parent_or_neither() -> None:
     that spawned it, a bare conversation names nothing. Half-set states are
     refused rather than stored."""
     service = ConversationManager()
-    own = await service.ensure(_thread(), agent_tentacle_id="inkling")
-    with pytest.raises(ValueError):
+    own = await service.ensure(await _thread(), agent_tentacle_id="inkling")
+    with pytest.raises(ValueError, match="requires both subagent_id and"):
         await service.ensure(
-            _thread(), agent_tentacle_id="codex", subagent_id="repo-audit"
+            await _thread(), agent_tentacle_id="codex", subagent_id="repo-audit"
         )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="a bare conversation takes neither"):
         await service.ensure(
-            _thread(), agent_tentacle_id="codex", parent_conversation_id=own.id
+            await _thread(), agent_tentacle_id="codex", parent_conversation_id=own.id
         )
 
 
@@ -555,31 +566,33 @@ async def test_one_bare_conversation_per_agent_is_enforced() -> None:
     unique constraint can catch a duplicate bare (thread, agent) row — NULLs
     are distinct in a unique constraint and would wave it through. If this
     raises nothing, the invariant the conversation cache rests on is gone."""
-    await ConversationManager().ensure(_thread(), agent_tentacle_id="inkling")
-    with pytest.raises(sqlalchemy.exc.IntegrityError):
-        async with async_session() as session:
-            session.add(Conversation(thread_id=_thread(), agent_tentacle_id="inkling"))
+    await ConversationManager().ensure(await _thread(), agent_tentacle_id="inkling")
+    async with async_session() as session:
+        session.add(
+            Conversation(thread_id=await _thread(), agent_tentacle_id="inkling")
+        )
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
             await session.commit()
 
 
 async def test_one_conversation_per_subagent_is_enforced() -> None:
     service = ConversationManager()
-    parent = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    parent = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     await service.ensure(
-        _thread(),
+        await _thread(),
         agent_tentacle_id="codex",
         subagent_id="repo-audit",
         parent_conversation_id=parent.id,
     )
-    with pytest.raises(sqlalchemy.exc.IntegrityError):
-        async with async_session() as session:
-            session.add(
-                Conversation(
-                    thread_id=_thread(),
-                    agent_tentacle_id="codex",
-                    subagent_id="repo-audit",
-                )
+    async with async_session() as session:
+        session.add(
+            Conversation(
+                thread_id=await _thread(),
+                agent_tentacle_id="codex",
+                subagent_id="repo-audit",
             )
+        )
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
             await session.commit()
 
 
@@ -587,7 +600,7 @@ async def test_a_run_remembers_which_call_spawned_it() -> None:
     """The run tree: a child run names its parent run and the tool call it
     answers, and both survive a round trip through a fresh manager."""
     service = ConversationManager()
-    parent = await service.ensure(_thread(), agent_tentacle_id="inkling")
+    parent = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     parent_run = await service.record_agent_run(
         parent,
         str(uuid7()),
@@ -599,7 +612,7 @@ async def test_a_run_remembers_which_call_spawned_it() -> None:
     assert parent_run is not None
 
     child = await service.ensure(
-        _thread(),
+        await _thread(),
         agent_tentacle_id="codex",
         subagent_id="repo-audit",
         parent_conversation_id=parent.id,
@@ -617,7 +630,7 @@ async def test_a_run_remembers_which_call_spawned_it() -> None:
     assert recorded is not None
 
     fresh = await ConversationManager().ensure(
-        _thread(),
+        await _thread(),
         agent_tentacle_id="codex",
         subagent_id="repo-audit",
         parent_conversation_id=parent.id,
@@ -627,7 +640,7 @@ async def test_a_run_remembers_which_call_spawned_it() -> None:
     assert reloaded.parent_tool_call_id == "call-1"
     # The parent agent's own conversation never sees the child's messages.
     parent_fresh = await ConversationManager().ensure(
-        _thread(), agent_tentacle_id="inkling"
+        await _thread(), agent_tentacle_id="inkling"
     )
     assert [m.message_text for m in parent_fresh.messages] == [
         "audit the repo",

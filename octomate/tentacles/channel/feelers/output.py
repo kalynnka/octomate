@@ -8,6 +8,7 @@ from collections.abc import (
     AsyncGenerator,
     AsyncIterator,
     Awaitable,
+    Callable,
     Iterable,
     Sequence,
 )
@@ -16,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     ClassVar,
     Generic,
     Literal,
@@ -51,6 +51,12 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_core import to_json
 from typing_extensions import TypeVar
 
+from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
+from octomate.capabilities.gateway import (
+    COMMISSION_TOOL_NAME,
+    TELEPORT_TOOL_NAME,
+    WHISPER_TOOL_NAME,
+)
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
@@ -66,17 +72,11 @@ from octomate.capabilities.harness.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
-from octomate.capabilities.gateway import (
-    COMMISSION_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
-    WHISPER_TOOL_NAME,
-)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
 from octomate.schemas.todos import Todo
 from octomate.telemetry import channel_logfire
-from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
 from octomate.types.todos import STATUS_MARKERS
 
 if TYPE_CHECKING:
@@ -480,7 +480,7 @@ def truncate_task_detail(text: str, *, max_chars: int = MAX_TASK_DETAIL_CHARS) -
     return f"{text[: max_chars - 16].rstrip()}\n...[truncated]"
 
 
-def format_inline_value(value: Any) -> str:
+def format_inline_value(value: JsonValue) -> str:
     if value is None:
         return "_None_"
     if isinstance(value, bool):

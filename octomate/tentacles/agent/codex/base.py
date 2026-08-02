@@ -48,6 +48,7 @@ from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import TextContent, ToolCallPart, UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
+from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
@@ -64,8 +65,6 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
-from pydantic_ai.settings import ThinkingEffort
-
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agent.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agent.codex.adapter import (
@@ -73,8 +72,11 @@ from octomate.tentacles.agent.codex.adapter import (
     CodexRunAccumulator,
     json_object_adapter,
 )
-from octomate.tentacles.agent.codex.hooks import CODEX_HOOK_PATH, CodexHookInput
-from octomate.tentacles.agent.codex.hooks import DRIVEN_ENV
+from octomate.tentacles.agent.codex.hooks import (
+    CODEX_HOOK_PATH,
+    DRIVEN_ENV,
+    CodexHookInput,
+)
 from octomate.tentacles.agent.codex.ingest import CodexHookIngest
 from octomate.tentacles.agent.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.agent.hooks import hook_guard
@@ -282,7 +284,12 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.live_turns = {}
         self.bridge_contexts = {}
         self.pending = {}
-        self.claims = {model: claim for model, claim in config.claims.items()}
+        # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
+        # runtime's own narrower literal, and `Mapping`'s key is invariant — only the
+        # comprehension widens them to `AgentRouteModelName` without a cast.
+        self.claims = {  # noqa: C416
+            model: claim for model, claim in config.claims.items()
+        }
         self.models = {model: model for model in config.models}
         self.session_locks = SessionLocks()
         self.session_tailer = CodexTranscriptTailer(
@@ -397,7 +404,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             response = await asyncio.wait_for(
                 asyncio.shield(future), self.config.approval_timeout
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
             return batch, None
         finally:

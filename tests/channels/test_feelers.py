@@ -26,7 +26,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.conversation import Conversation, ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -35,13 +35,12 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.triage import SummonDecision
-from octomate.tentacles.channel.base import ChannelSurfaces
+from octomate.tentacles.channel.base import ChannelSurfaces, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
-from octomate.tentacles.channel.base import Ink
 from octomate.tentacles.channel.feelers.oauth import PlainTextOAuthFeeler
 from octomate.tentacles.channel.feelers.output import (
     MarkdownChunker,
@@ -56,7 +55,6 @@ from octomate.tentacles.channel.napcat import NapcatTentacle
 from octomate.tentacles.channel.slack import SlackTentacle
 from octomate.tentacles.channel.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
 from octomate.tentacles.channel.web.vercel import VercelTentacle
-
 from tests.support.channels import (
     FakeChannelTentacle,
     FakeOAuthInk,
@@ -290,7 +288,8 @@ async def test_timeline_folds_retry_and_pending_subagent_failures() -> None:
     assert timed_out.response.startswith("The accomplice exceeded its timeout.")
     assert timed_out.settlements == [("failed", None)]
     assert broken.settlements == [("failed", None)]
-    assert timed_out.closed and broken.closed
+    assert timed_out.closed
+    assert broken.closed
 
 
 async def test_subagent_renderer_failures_do_not_interrupt_the_parent_stream() -> None:

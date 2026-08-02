@@ -55,8 +55,10 @@ def test_identity_file_and_ssh_options_are_threaded() -> None:
     )
     cmd = SSHTransport("hi", _options(), ssh=ssh)._build_command()
 
-    assert "-i" in cmd and cmd[cmd.index("-i") + 1] == "/keys/id_ed25519"
-    assert "-p" in cmd and cmd[cmd.index("-p") + 1] == "2222"
+    assert "-i" in cmd
+    assert cmd[cmd.index("-i") + 1] == "/keys/id_ed25519"
+    assert "-p" in cmd
+    assert cmd[cmd.index("-p") + 1] == "2222"
 
 
 async def _can_use_tool(*_a: object, **_k: object) -> None:

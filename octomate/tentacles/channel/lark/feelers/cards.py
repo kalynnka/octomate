@@ -91,7 +91,7 @@ def collapsible_panel(
 def card_v2(
     elements: Sequence[JsonValue],
     *,
-    header: JsonObject | None = None,  # noqa: A002 - card field name
+    header: JsonObject | None = None,
 ) -> JsonObject:
     """A schema-2.0 card envelope — required for 2.0-only components like
     `collapsible_panel` (the legacy ``{header, elements}`` form rejects them)."""
@@ -105,7 +105,7 @@ def card_v2(
 def simple_card(
     elements: Sequence[JsonValue],
     *,
-    header: JsonObject | None = None,  # noqa: A002 - card field name
+    header: JsonObject | None = None,
 ) -> JsonObject:
     card: JsonObject = {}
     if header is not None:

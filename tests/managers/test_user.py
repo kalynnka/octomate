@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -13,8 +13,8 @@ from octomate.schemas.user import User, UserProfile
 
 
 @pytest.fixture(autouse=True)
-async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def _db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 def config(spec: Mapping[str, object]) -> dict[str, UserConfig]:
@@ -123,7 +123,8 @@ async def test_reconcile_groups_declared_profiles_under_one_yaml_user() -> None:
 
     slack = await find_profile("slack", "U1")
     napcat = await find_profile("napcat", "9")
-    assert slack is not None and napcat is not None
+    assert slack is not None
+    assert napcat is not None
     assert slack.user_id == napcat.user_id
     owner = await manager.owner(slack)
     assert owner is not None
@@ -223,8 +224,10 @@ async def test_reconcile_removing_a_user_retains_it_and_unlinks_profiles() -> No
 
     slack = await find_profile("slack", "U1")
     lark = await find_profile("lark", "ou_1")
-    assert slack is not None and slack.user_id is None
-    assert lark is not None and lark.user_id is None
+    assert slack is not None
+    assert slack.user_id is None
+    assert lark is not None
+    assert lark.user_id is None
     async with async_session() as session:
         retained = await session.get(User, removed_user_id)
     assert retained is not None
@@ -255,8 +258,10 @@ async def test_reconcile_removing_one_profile_makes_only_it_a_visitor() -> None:
 
     slack = await find_profile("slack", "U1")
     lark = await find_profile("lark", "ou_1")
-    assert slack is not None and slack.user_id == user_id
-    assert lark is not None and lark.user_id is None
+    assert slack is not None
+    assert slack.user_id == user_id
+    assert lark is not None
+    assert lark.user_id is None
 
 
 async def test_reconcile_moves_a_profile_between_yaml_users() -> None:
@@ -344,7 +349,8 @@ async def test_config_seeds_a_never_seen_profile() -> None:
     assert seeded is not None
     assert seeded.name == "Lu on Lark"
     owner = await manager.owner(seeded)
-    assert owner is not None and owner.username == "luhui"
+    assert owner is not None
+    assert owner.username == "luhui"
 
 
 async def test_yaml_can_declare_a_registered_user_without_profiles() -> None:
@@ -367,7 +373,8 @@ async def test_owner_loads_a_registered_user_with_a_fresh_manager() -> None:
 
     owner = await UserManager().owner(profile)
 
-    assert owner is not None and owner.username == "luhui"
+    assert owner is not None
+    assert owner.username == "luhui"
 
 
 async def test_linked_profiles_follow_a_registered_human(

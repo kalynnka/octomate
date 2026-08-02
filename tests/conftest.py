@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 import octomate.database as database
 from octomate.models import Base
@@ -15,11 +15,7 @@ async def in_memory_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[AsyncEngine]:
     """An in-memory SQLite DB with all tables created, wired into `async_session`."""
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        json_serializer=database.json_serializer,
-        json_deserializer=database.json_deserializer,
-    )
+    engine = database.create_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

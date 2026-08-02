@@ -9,8 +9,6 @@ from anthropic.types import Message as AnthropicMessage
 from anthropic.types import TextBlock as AnthropicTextBlock
 from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
 from anthropic.types import ToolUseBlock as AnthropicToolUseBlock
-from pydantic import TypeAdapter
-
 from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
@@ -24,6 +22,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import ContentBlock, Message
+from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResult
 
 # GraphAgentState is private pydantic-ai internals. A Claude run produces no real

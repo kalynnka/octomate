@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -23,8 +22,8 @@ SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "private", SESSION_ID, "")
 
 
 @pytest.fixture(autouse=True)
-async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def _db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 def hook(name: str, prompt_id: str | None = None, **body: JsonValue) -> ClaudeHookInput:
@@ -391,12 +390,12 @@ async def test_a_live_turn_is_dated_when_it_happened() -> None:
         octomate,
         ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
     )
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
 
     await submit(ingest, "p1", "list the files")
     await stop(ingest, "p1", "Here are the files.")
 
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
     thread = await octomate.thread_manager.ensure(SESSION_KEY)
     stamps = [message.happened_at for message in thread.messages]
     assert len(stamps) == 2

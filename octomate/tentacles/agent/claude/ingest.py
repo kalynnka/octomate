@@ -4,7 +4,7 @@ import logging
 from collections import Counter
 from collections.abc import Generator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,7 +16,6 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import (
@@ -25,6 +24,7 @@ from octomate.schemas.thread import (
     ThreadMessage,
     ThreadMessageDirection,
 )
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agent.claude.transcript import CLAUDE_PROJECTS_DIRS
@@ -239,7 +239,9 @@ class ClaudeHookIngest:
         no clock, and an undated run sorts ahead of the history it belongs at the end
         of. Skipped when the event carries no `prompt_id` (the field is undocumented
         for subagent events); the tailer covers the turn from the file either way."""
-        assert event.agent_id and event.prompt_id  # guarded by the caller
+        # Both guarded by the caller.
+        assert event.agent_id
+        assert event.prompt_id
         thread = await self.session_thread(event.session_id)
         parent = await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
@@ -256,7 +258,7 @@ class ClaudeHookIngest:
             messages=[
                 ModelRequest(
                     parts=[UserPromptPart(content=event.prompt or "")],
-                    timestamp=datetime.now(timezone.utc),
+                    timestamp=datetime.now(UTC),
                 )
             ],
             name=CLAUDE_NATIVE_ID,

@@ -6,7 +6,6 @@ from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, SecretStr
 
 from octomate.config.mcp import McpIntegrationConfig
 
-
 # Every scope GitHub documents for an OAuth App, in the order its table lists
 # them (parents first, then what each includes). Spelling one wrong is otherwise
 # only discovered at the authorization itself, where GitHub ignores what it does

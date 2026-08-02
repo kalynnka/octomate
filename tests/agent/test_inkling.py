@@ -13,14 +13,15 @@ from pydantic_ai.messages import ModelMessage, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
-from octomate.capabilities.harness.deferred import DeclineResolver
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.deferred import DeclineResolver
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment, Segment
@@ -35,7 +36,6 @@ from tests.support.agents import (
     build_scripted_agent,
 )
 from tests.support.managers import FakeConversationManager
-from uuid_utils.compat import uuid7
 
 InklingTestEvent: TypeAlias = ReactStreamEvent[ScriptedOutput]
 
@@ -170,7 +170,8 @@ async def test_decline_resolver_denies_approvals_and_answers_calls() -> None:
     results = await DeclineResolver().resolve(requests)
 
     denied = results.approvals["a1"]
-    assert isinstance(denied, ToolDenied) and "no user" in denied.message
+    assert isinstance(denied, ToolDenied)
+    assert "no user" in denied.message
     assert "no user" in cast(str, results.calls["c1"])
 
 
@@ -368,7 +369,8 @@ async def test_subagent_run_mounts_the_tentacle_capabilities_too() -> None:
     # What the spawner passes is added to that set, not substituted for it — so a
     # spawner must not pass a capability the tentacle already holds, since two
     # toolsets offering one name is a hard error.
-    assert "write_todos" in chosen_tools and "ask_questions" in chosen_tools
+    assert "write_todos" in chosen_tools
+    assert "ask_questions" in chosen_tools
 
 
 async def test_inkling_default_includes_todo_capability() -> None:
@@ -431,7 +433,9 @@ async def test_inkling_loop_propagates_graph_error_streaming() -> None:
     conversations = FakeConversationManager()
     tentacle = _tentacle(_boom_agent(), conversations)
 
-    with pytest.raises(RuntimeError, match="model boom"):
+    # The block cannot shrink to one statement: what is asserted is that the error
+    # escapes the streaming loop rather than the call that opened it.
+    with pytest.raises(RuntimeError, match="model boom"):  # noqa: PT012
         async with tentacle.run_stream_events(
             "hi octomate",
             conversation_address=_test_conversation_address(),

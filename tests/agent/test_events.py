@@ -8,13 +8,6 @@ from __future__ import annotations
 
 from uuid_utils.compat import uuid7
 
-from octomate.schemas.deferred import (
-    ApprovalRequest,
-    DeferredApproval,
-    DeferredQuestion,
-)
-from octomate.schemas.segments import TextSegment
-from octomate.schemas.todos import Todo
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     DisplayEvent,
@@ -25,6 +18,13 @@ from octomate.capabilities.harness.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
+from octomate.schemas.deferred import (
+    ApprovalRequest,
+    DeferredApproval,
+    DeferredQuestion,
+)
+from octomate.schemas.segments import TextSegment
+from octomate.schemas.todos import Todo
 
 
 def _todo(**overrides: object) -> Todo:

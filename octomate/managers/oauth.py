@@ -5,7 +5,7 @@ import secrets
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from arcanus.materia.sqlalchemy import AsyncSession
 from pydantic import SecretStr
@@ -20,14 +20,14 @@ from octomate.schemas.oauth import (
     DeviceAuthorization,
     DeviceOAuthFlow,
     DeviceOperationPayload,
-    OAuthCipher,
     OAuthCallbackTransport,
+    OAuthCipher,
+    OAuthConnection,
     OAuthFlowContext,
     OAuthGrant,
+    OAuthOperation,
     OAuthPending,
     OAuthStartResult,
-    OAuthConnection,
-    OAuthOperation,
     OAuthTokenPayload,
 )
 from octomate.schemas.user import UserProfile
@@ -250,7 +250,7 @@ class OAuthManager:
                     OAuthOperation["profile_id"] == profile_id,
                     OAuthOperation["connector_id"] == connector_id,
                     OAuthOperation["consumed_at"].is_(None),
-                    OAuthOperation["expires_at"] > datetime.now(timezone.utc),
+                    OAuthOperation["expires_at"] > datetime.now(UTC),
                 ],
             )
         if operation is None:
@@ -262,7 +262,7 @@ class OAuthManager:
             )
         expires_at = operation.expires_at
         if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
+            expires_at = expires_at.replace(tzinfo=UTC)
         payload = DeviceOperationPayload.model_validate_json(
             cipher.decrypt(
                 operation.encrypted_data,
@@ -328,9 +328,9 @@ class OAuthManager:
                 raise ValueError("OAuth operation has already been consumed")
             expires_at = operation.expires_at
             if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=timezone.utc)
-            if expires_at <= datetime.now(timezone.utc):
-                operation.consumed_at = datetime.now(timezone.utc)
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at <= datetime.now(UTC):
+                operation.consumed_at = datetime.now(UTC)
                 await session.commit()
                 raise ValueError("OAuth operation has expired")
 
@@ -372,7 +372,7 @@ class OAuthManager:
                     existing=existing,
                 )
             )
-            operation.consumed_at = datetime.now(timezone.utc)
+            operation.consumed_at = datetime.now(UTC)
             await session.commit()
         return result
 
@@ -419,7 +419,7 @@ class OAuthManager:
         connection.account_label = grant.account_label
         connection.scopes = grant.scopes
         connection.expires_at = grant.expires_at
-        connection.updated_at = datetime.now(timezone.utc)
+        connection.updated_at = datetime.now(UTC)
         return connection
 
     async def staged_authorization(
@@ -477,7 +477,7 @@ class OAuthManager:
             # Spent before the exchange, inside the same transaction: a code is
             # single-use at the provider too, and burning the operation first is what
             # makes a replayed callback fail here rather than upstream.
-            operation.consumed_at = datetime.now(timezone.utc)
+            operation.consumed_at = datetime.now(UTC)
             grant = await flow.exchange(
                 OAuthFlowContext(
                     operation_id=operation.id,
@@ -518,7 +518,7 @@ class OAuthManager:
         """
         async with self.completion_lock, async_session() as session:
             operation, _ = await self.operation_for_state(session, connector_id, state)
-            operation.consumed_at = datetime.now(timezone.utc)
+            operation.consumed_at = datetime.now(UTC)
             await session.commit()
 
     async def operation_for_state(
@@ -556,8 +556,8 @@ class OAuthManager:
             raise UnusableOAuthOperation("OAuth operation has already been consumed")
         expires_at = operation.expires_at
         if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at <= datetime.now(timezone.utc):
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at <= datetime.now(UTC):
             raise UnusableOAuthOperation("OAuth operation has expired")
         return operation
 
@@ -603,7 +603,7 @@ class OAuthManager:
             if connection is None:
                 return
             connection.status = "invalid"
-            connection.updated_at = datetime.now(timezone.utc)
+            connection.updated_at = datetime.now(UTC)
             await session.commit()
 
     async def connection_status(
@@ -724,7 +724,7 @@ class OAuthManager:
                 grant = await flow.refresh(payload.refresh_token)
             except ValueError:
                 connection.status = "invalid"
-                connection.updated_at = datetime.now(timezone.utc)
+                connection.updated_at = datetime.now(UTC)
                 await session.commit()
                 return None
             # Already loaded and already this user's, so it is handed straight
@@ -742,5 +742,5 @@ class OAuthManager:
     def expiring(expires_at: datetime) -> bool:
         """Whether a credential has too little life left to start a run on."""
         if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        return expires_at <= datetime.now(timezone.utc) + TOKEN_REFRESH_LEEWAY
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return expires_at <= datetime.now(UTC) + TOKEN_REFRESH_LEEWAY

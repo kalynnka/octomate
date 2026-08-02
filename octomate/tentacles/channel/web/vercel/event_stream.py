@@ -43,6 +43,7 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     TextStartChunk,
 )
 
+from octomate.capabilities.gateway import COMMISSION_TOOL_NAME, WHISPER_TOOL_NAME
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
@@ -55,7 +56,6 @@ from octomate.capabilities.harness.events import (
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
 )
-from octomate.capabilities.gateway import COMMISSION_TOOL_NAME, WHISPER_TOOL_NAME
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.tentacles.agent.inkling.base import InklingOutput
 

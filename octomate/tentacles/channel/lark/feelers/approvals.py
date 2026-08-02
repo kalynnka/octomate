@@ -4,7 +4,6 @@ import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,

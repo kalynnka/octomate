@@ -14,7 +14,7 @@ back somewhere — which is the whole reason the callback transports exist.
 from __future__ import annotations
 
 from base64 import urlsafe_b64encode
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from secrets import token_urlsafe
 
@@ -127,7 +127,7 @@ class LinearAuthorizationCodeOAuthFlow(AuthorizationCodeOAuthFlow):
         return AuthorizationRequest(
             authorization_uri=AnyHttpUrl(str(authorization_uri)),
             code_verifier=SecretStr(verifier),
-            expires_at=datetime.now(timezone.utc) + AUTHORIZATION_LIFETIME,
+            expires_at=datetime.now(UTC) + AUTHORIZATION_LIFETIME,
         )
 
     async def exchange(
@@ -207,8 +207,7 @@ class LinearAuthorizationCodeOAuthFlow(AuthorizationCodeOAuthFlow):
             subject=viewer.viewer.id,
             account_label=viewer.viewer.name,
             expires_at=(
-                datetime.now(timezone.utc)
-                + timedelta(seconds=token_response.expires_in)
+                datetime.now(UTC) + timedelta(seconds=token_response.expires_in)
                 if token_response.expires_in is not None
                 else None
             ),

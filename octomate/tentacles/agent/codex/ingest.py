@@ -15,10 +15,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessageDirection
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agent.codex.hooks import CodexHookInput
 from octomate.tentacles.agent.codex.transcript import CODEX_SESSIONS_DIRS

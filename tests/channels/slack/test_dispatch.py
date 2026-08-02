@@ -11,8 +11,7 @@ import asyncio
 from typing import ClassVar, cast
 
 import pytest
-from slack_bolt.async_app import AsyncSay
-from slack_bolt.async_app import AsyncApp
+from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel.slack import base as slack_base
@@ -50,7 +49,6 @@ async def test_enter_connects_socket_mode_without_parking(
     monkeypatch.setattr(slack_base, "AsyncSocketModeHandler", FakeSocketModeHandler)
     channel = slack_channel(FakeSlackInk())
     channel.app = AsyncApp(token="xoxb-test")
-    channel.app_token = channel.config.app_token
     channel.handler = None
 
     async with channel:

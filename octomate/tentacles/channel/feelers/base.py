@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.schemas.conversation import Conversation, ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.telemetry import channel_logfire

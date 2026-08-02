@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from octomate.database import async_session
 from octomate.schemas.todos import Todo, TodoWrite
@@ -96,7 +96,7 @@ class TodoManager:
                 todo.parent_ref = parent_ref
             if depends_on is not None:
                 todo.depends_on = depends_on
-            todo.updated_at = datetime.now(timezone.utc)
+            todo.updated_at = datetime.now(UTC)
             await session.commit()
         return todo
 

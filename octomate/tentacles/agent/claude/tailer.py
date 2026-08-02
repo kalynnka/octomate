@@ -558,7 +558,9 @@ class ClaudeTranscriptTailer:
             end_offset=turn.end_offset,
             messages=len(turn.accumulator.messages),
         ) as span:
-            async with self.locks.hold(state.session_id, timeout=COMMIT_LOCK_TIMEOUT):
+            async with self.locks.hold(
+                state.session_id, acquire_timeout=COMMIT_LOCK_TIMEOUT
+            ):
                 run = await self.conversation_manager.record_external_run(
                     conversation,
                     run_id=turn.prompt_id,
@@ -810,7 +812,9 @@ class ClaudeTranscriptTailer:
             end_offset=turn.end_offset,
             messages=len(turn.accumulator.messages),
         ) as span:
-            async with self.locks.hold(state.session_id, timeout=COMMIT_LOCK_TIMEOUT):
+            async with self.locks.hold(
+                state.session_id, acquire_timeout=COMMIT_LOCK_TIMEOUT
+            ):
                 run = await self.conversation_manager.record_external_run(
                     conversation,
                     run_id=run_id,

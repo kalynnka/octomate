@@ -14,9 +14,9 @@ from pydantic_ai.messages import (
     ModelMessage,
     PartDeltaEvent,
     PartStartEvent,
-    ThinkingPart,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
 )
 from pydantic_ai.models.function import (
     AgentInfo,

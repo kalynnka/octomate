@@ -1,9 +1,10 @@
-"""Canonical in-memory manager fakes.
+"""Canonical in-memory manager fakes, plus the real rows a test needs on disk.
 
 `FakeConversationManager` keeps per-address message lists so graph tests run
 without a database; `FakeActionManager` records batch lifecycle calls and
 returns scriptable batches. Tests of the *real* managers use the actual
-classes with the `in_memory_engine` fixture instead.
+classes with the `in_memory_engine` fixture instead — and `a_thread` gives
+them the parent row SQLite's foreign keys require.
 """
 
 from __future__ import annotations
@@ -11,11 +12,11 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import cast
 
-from pydantic_ai.messages import ModelMessage
 from arcanus import Relation
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
@@ -29,7 +30,6 @@ from octomate.schemas.conversation import (
     Conversation,
     ConversationPermissionMode,
 )
-from octomate.schemas.user import UserProfile
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment
@@ -42,7 +42,18 @@ from octomate.schemas.thread import (
     ThreadMessage,
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
+from octomate.schemas.user import UserProfile
 from octomate.types.deferred import DeferredBatchStatus
+
+
+async def a_thread(chat_id: str = "chat") -> uuid.UUID:
+    """A persisted `threads` row to hang conversations off, idempotent per
+    `chat_id`. A conversation's `thread_id` is a real foreign key, so a bare
+    `uuid7()` names a parent that does not exist."""
+    thread = await ThreadManager(users=UserManager()).ensure(
+        ThreadKey(channel_tentacle_id="test", chat_type="private", chat_id=chat_id)
+    )
+    return thread.id
 
 
 @dataclass
@@ -251,7 +262,7 @@ class FakeThreadManager(ThreadManager):
             reply_id=reply_id,
             # As the real manager does: a row is never undated, because the ledger
             # orders on this.
-            happened_at=happened_at or datetime.now(timezone.utc),
+            happened_at=happened_at or datetime.now(UTC),
             direction="outbound",
             actor_kind=actor_kind,
             user_id="",

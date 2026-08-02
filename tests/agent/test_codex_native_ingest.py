@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -28,8 +27,8 @@ CHILD_TURN_TWO = "019f6b2d-b541-7090-8ea7-95bbe0b68c27"
 
 
 @pytest.fixture(autouse=True)
-async def db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 def write_rollout(path: Path) -> None:
@@ -289,7 +288,7 @@ def child_metadata(
 def subagent_activity(
     second: int, tool_call_id: str, *, kind: str
 ) -> dict[str, object]:
-    happened_at = datetime(2026, 7, 16, 10, 0, second, tzinfo=timezone.utc)
+    happened_at = datetime(2026, 7, 16, 10, 0, second, tzinfo=UTC)
     return {
         "timestamp": happened_at.isoformat().replace("+00:00", "Z"),
         "type": "event_msg",
@@ -418,8 +417,8 @@ async def test_a_backfilled_row_is_dated_by_the_rollout_not_the_replay(
     assert dated  # the tailer did write the ledger
 
     # The user_message record says 10:00:02, the final assistant message 10:00:05.
-    assert dated["inbound"] == datetime(2026, 7, 16, 10, 0, 2, tzinfo=timezone.utc)
-    assert dated["outbound"] == datetime(2026, 7, 16, 10, 0, 5, tzinfo=timezone.utc)
+    assert dated["inbound"] == datetime(2026, 7, 16, 10, 0, 2, tzinfo=UTC)
+    assert dated["outbound"] == datetime(2026, 7, 16, 10, 0, 5, tzinfo=UTC)
     await tailer.shutdown()
 
 
@@ -431,7 +430,7 @@ async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
     octomate = Octomate()
     ingest, tailer = wired(octomate, (tmp_path,))
     common = {"session_id": SESSION_ID, "turn_id": TURN_ID, "transcript_path": path}
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
 
     await ingest.handle(
         CodexHookInput.model_validate(
@@ -444,7 +443,7 @@ async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
         )
     )
 
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
     )

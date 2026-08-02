@@ -23,10 +23,11 @@ def json_deserializer(value: str | bytes) -> JsonValue:
     return from_json(value)
 
 
-@cache
-def engine() -> AsyncEngine:
+def create_engine(url: str) -> AsyncEngine:
+    """The engine every caller gets, tests included — so the constraints a test
+    runs under are the ones production runs under."""
     created = create_async_engine(
-        database_settings.db_url,
+        url,
         json_serializer=json_serializer,
         json_deserializer=json_deserializer,
     )
@@ -48,14 +49,24 @@ def engine() -> AsyncEngine:
             last transactions to a power cut but cannot corrupt the file. The busy
             timeout is what makes concurrent writers wait their turn rather than
             fail outright on `SQLITE_BUSY`.
+
+            `foreign_keys` is off in every SQLite connection by default, which
+            parses the schema's `ON DELETE CASCADE` clauses and then ignores them.
+            It is per-connection, so it belongs here rather than in a migration.
             """
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
 
     return created
+
+
+@cache
+def engine() -> AsyncEngine:
+    return create_engine(database_settings.db_url)
 
 
 @cache

@@ -19,7 +19,7 @@ from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel.napcat import NapcatTentacle
-
+from tests.support.channels import drive
 from tests.support.scenarios import (
     action_batch,
     batch_actions,
@@ -27,7 +27,6 @@ from tests.support.scenarios import (
     showcase,
     streamed_text,
 )
-from tests.support.channels import drive
 from tests.trigger.conftest import TriggerTargets, run_banner
 
 pytestmark = pytest.mark.trigger

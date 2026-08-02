@@ -302,7 +302,9 @@ class OctomateConfig(BaseSettings):
         )
 
 
-__all__ = [
+# Grouped by subsystem behind the section comments below, which say more than
+# alphabetical order would; sorting this would strand each comment on the wrong name.
+__all__ = [  # noqa: RUF022
     "OctomateConfig",
     # agents
     "AgentsConfig",
