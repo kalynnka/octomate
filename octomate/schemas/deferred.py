@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import (
     Annotated,
     Literal,
@@ -39,7 +39,6 @@ from octomate.types.deferred import (
     DeferredBatchStatus,
 )
 from octomate.types.json import JsonObject
-
 
 # Max suggested choices a question may carry — octomate keeps question cards to a
 # small, consistent set. It bounds what the inkling ask tool may suggest, and
@@ -123,8 +122,8 @@ class DeferredAction(BaseTransmuter):
     result: DeferredQuestionResult | DeferredApprovalResult = None
     platform_message_id: str | None = None
     responder_id: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     resolved_at: datetime | None = None
 
     batch: Relation[DeferredActionBatch] = Relationship()
@@ -229,8 +228,8 @@ class DeferredActionBatch(BaseTransmuter):
     target_mode: ResponseTargetMode = "main"
     decision: SummonDecision | None = None
     requests: DeferredToolRequests
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
 
     questions: RelationCollection[DeferredQuestion] = Relationships()

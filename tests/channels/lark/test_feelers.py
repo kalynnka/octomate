@@ -290,8 +290,10 @@ def test_lark_submitted_card_includes_answers() -> None:
     )
     content = _json_objects(data["elements"])[0]["content"]
     assert isinstance(content, str)
-    assert "Region?" in content and "us-east" in content
-    assert "Confirm?" in content and "yes" in content
+    assert "Region?" in content
+    assert "us-east" in content
+    assert "Confirm?" in content
+    assert "yes" in content
 
     missing = submitted_card_data([region], {})
     missing_content = _json_objects(missing["elements"])[0]["content"]

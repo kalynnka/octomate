@@ -9,7 +9,7 @@ capabilities or MCP: application bootstrap composes this flow into an
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from pydantic import BaseModel, SecretStr, TypeAdapter
@@ -90,8 +90,7 @@ class GitHubDeviceOAuthFlow(DeviceOAuthFlow):
             verification_uri=authorization.verification_uri,
             device_code=authorization.device_code,
             user_code=authorization.user_code,
-            expires_at=datetime.now(timezone.utc)
-            + timedelta(seconds=authorization.expires_in),
+            expires_at=datetime.now(UTC) + timedelta(seconds=authorization.expires_in),
             interval_seconds=authorization.interval,
         )
 

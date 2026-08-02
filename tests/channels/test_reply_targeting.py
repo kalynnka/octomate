@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.gateway import GatewayCapability
+from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtData,

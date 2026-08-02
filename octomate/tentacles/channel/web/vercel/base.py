@@ -42,10 +42,10 @@ from octomate.config import ChannelConfig
 from octomate.config.channels import AgentModelConfig
 from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, TextSegment
 from octomate.schemas.thread import Thread
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel.base import (
     ChannelOutput,
     ChannelTentacle,
@@ -196,7 +196,10 @@ class VercelTimelineState(TimelineState):
         stream: AsyncIterator[VercelStreamItem],
     ) -> None:
         async for event in stream:
-            await self.observe_subagent_event(event)
+            # A `BaseChunk` is UI transport, not an agent event — it reaches the sink
+            # but has no subagent activity to observe.
+            if not isinstance(event, BaseChunk):
+                await self.observe_subagent_event(event)
             await self.sink.send(event)
 
 

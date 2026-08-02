@@ -137,7 +137,8 @@ async def test_lark_thinking_patches_coalesce_off_the_drive_loop() -> None:
     assert "docs" not in live[0]
     # It folds into a "Thought for Ns" collapsible panel with the full text.
     folded = [content for _id, content in ink.patched if "Thought for" in content]
-    assert folded and "checking the docs" in folded[0]
+    assert folded
+    assert "checking the docs" in folded[0]
 
 
 async def test_lark_consume_renders_image_and_card_segments(
@@ -439,7 +440,9 @@ async def test_lark_subagents_own_cards_separate_from_parent_and_siblings() -> N
         if message_id == "created-3"
     )
     assert '"expanded":false' in first_final
-    assert "audit result" in first_final and "test result" not in first_final
+    assert "audit result" in first_final
+    assert "test result" not in first_final
     assert '"expanded":false' in second_final
-    assert "test result" in second_final and "audit result" not in second_final
+    assert "test result" in second_final
+    assert "audit result" not in second_final
     assert patched_ids.count(parent_card_id) >= 1

@@ -124,7 +124,8 @@ def test_action_is_a_discriminated_union() -> None:
         }
     )
     action = parsed.tool_output.bands[0].action
-    assert isinstance(action, TruncateAction) and action.max_chars == 9
+    assert isinstance(action, TruncateAction)
+    assert action.max_chars == 9
 
     with pytest.raises(ValidationError):
         ToolOutputConfig.model_validate(

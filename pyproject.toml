@@ -53,12 +53,38 @@ packages = ["octomate"]
 line-length = 88
 
 [tool.ruff.lint]
-# Ruff's default set (pyflakes + the pycodestyle errors it enables by default), pinned
-# for the same reason.
-select = ["E4", "E7", "E9", "F"]
+# Ruff is the gate: what it accepts is what the tree is allowed to contain. Pylance
+# runs pyright in the editor, but its inference reports enough false positives here
+# to make it advice rather than a verdict — so nothing is suppressed to satisfy it.
+# Rules are listed one per line so adding one is a one-line, reviewable diff.
+select = [
+    "E4",     # imports: not-at-top, multiple on one line
+    "E7",     # statement-level errors ruff enables by default
+    "E9",     # syntax and IO errors
+    "F",      # pyflakes: undefined names, unused imports and locals
+    "ANN401", # `Any` in an annotation — AGENTS.md Typing 3
+    "ASYNC",  # blocking calls and sleep-polling in async code
+    "B",      # bugbear: mutable defaults, loop-variable capture, silent `zip` truncation
+    "C4",     # comprehensions that rebuild what they already have
+    "I",      # import order, matching what the editor already does on save
+    "LOG",    # logging called in ways that drop the record
+    "PGH",    # blanket `type: ignore` / `noqa` with no code — AGENTS.md Typing 7
+    "PIE",    # statements with no effect
+    "PT",     # pytest idiom: composite asserts, fixture returns, bare `raises`
+    "RUF",    # ruff's own, incl. RUF012 mutable class defaults — AGENTS.md Typing 1
+    "UP",     # syntax this `requires-python` has made redundant
+]
+ignore = [
+    # Deprecated by ruff itself: `isinstance(x, A | B)` is not recommended practice, it
+    # implies other typing syntax works there when it does not, and it is slower than the
+    # tuple form. Ruff warns when it is selected by name; the `UP` prefix picks it up
+    # silently, so it is turned off here rather than obeyed.
+    "UP038",
+]
 
-[tool.ruff.lint.per-file-ignores]
-"main.py" = ["E402"]
+# No `per-file-ignores`: a rule that has to bend bends at the line that bends it, with a
+# `noqa` naming the rule and a reason. A pattern ignored file-wide keeps applying to code
+# written later that never earned the exemption.
 
 [dependency-groups]
 dev = [

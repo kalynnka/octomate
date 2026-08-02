@@ -4,8 +4,7 @@ import asyncio
 import contextlib
 import inspect
 from base64 import urlsafe_b64encode
-from collections.abc import AsyncIterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import httpx
@@ -23,7 +22,6 @@ from pydantic_ai.toolsets import (
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from octomate.capabilities.harness.mcp import OAuthMcpCapability
 from octomate.capabilities.github import (
     GITHUB_OAUTH_INSTRUCTION,
     GITHUB_RETIRED_INSTRUCTION,
@@ -33,16 +31,17 @@ from octomate.capabilities.harness.events import (
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
+from octomate.capabilities.harness.mcp import OAuthMcpCapability
 from octomate.capabilities.linear import LinearCapability
 from octomate.config.users import UserConfig
 from octomate.database import async_session
-from octomate.oauth.base import McpConnectionAuth
 from octomate.managers.oauth import (
     OAuthConnector,
     OAuthManager,
     UnusableOAuthOperation,
 )
 from octomate.managers.user import UserManager
+from octomate.oauth.base import McpConnectionAuth
 from octomate.schemas.oauth import (
     AuthorizationCodeOAuthFlow,
     AuthorizationLink,
@@ -69,8 +68,8 @@ ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
 
 
 @pytest.fixture(autouse=True)
-async def database(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def database(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 class FakeDeviceFlow(DeviceOAuthFlow):
@@ -96,7 +95,7 @@ class FakeDeviceFlow(DeviceOAuthFlow):
             ),
             device_code=SecretStr("device-secret"),
             user_code=SecretStr("ABCD-EFGH"),
-            expires_at=datetime.now(timezone.utc) + self.lifetime,
+            expires_at=datetime.now(UTC) + self.lifetime,
             interval_seconds=5,
         )
 
@@ -152,7 +151,7 @@ class FakeAuthorizationCodeFlow(AuthorizationCodeOAuthFlow):
                 "https://example.com/authorize?state=provider-secret-state"
             ),
             code_verifier=SecretStr("pkce-verifier"),
-            expires_at=datetime.now(timezone.utc) + self.lifetime,
+            expires_at=datetime.now(UTC) + self.lifetime,
         )
 
     async def exchange(
@@ -505,7 +504,7 @@ async def test_a_near_expiry_token_is_refreshed_before_it_is_used() -> None:
     manager, profile, flow = await linear_manager()
     _, state = await started(manager, profile, flow)
     flow.grant = flow.grant.model_copy(
-        update={"expires_at": datetime.now(timezone.utc) + timedelta(seconds=30)}
+        update={"expires_at": datetime.now(UTC) + timedelta(seconds=30)}
     )
     await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
 
@@ -524,7 +523,7 @@ async def test_a_refused_refresh_retires_the_connection() -> None:
     manager, profile, flow = await linear_manager()
     _, state = await started(manager, profile, flow)
     flow.grant = flow.grant.model_copy(
-        update={"expires_at": datetime.now(timezone.utc) + timedelta(seconds=30)}
+        update={"expires_at": datetime.now(UTC) + timedelta(seconds=30)}
     )
     await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
     flow.refresh_refused = True
@@ -540,7 +539,7 @@ async def test_concurrent_reads_spend_one_refresh_token_once() -> None:
     manager, profile, flow = await linear_manager()
     _, state = await started(manager, profile, flow)
     flow.grant = flow.grant.model_copy(
-        update={"expires_at": datetime.now(timezone.utc) + timedelta(seconds=30)}
+        update={"expires_at": datetime.now(UTC) + timedelta(seconds=30)}
     )
     await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
 
@@ -678,7 +677,8 @@ async def test_device_operation_can_only_be_confirmed_by_its_starting_profile() 
             UserProfile,
             expressions=[UserProfile["channel_user_id"] == "OU1"],
         )
-    assert slack is not None and lark is not None
+    assert slack is not None
+    assert lark is not None
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
@@ -897,7 +897,7 @@ async def test_an_expired_connection_records_itself_on_the_way_out() -> None:
             expressions=[OAuthConnection["connector_id"] == GITHUB_CONNECTOR_ID],
         )
         assert connection is not None
-        connection.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        connection.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         await session.commit()
 
     assert await manager.access_token(profile, GITHUB_CONNECTOR_ID) is None

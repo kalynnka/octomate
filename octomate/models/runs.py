@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from octomate.models.base import Base
+from octomate.models.base import Base, MapperArgs
 
 if TYPE_CHECKING:
     from octomate.models.conversation import Conversation
@@ -28,7 +28,7 @@ class AgentRun(Base, TransmuterProxiedMixin):
     """
 
     __tablename__ = "agent_runs"
-    __mapper_args__ = {
+    __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_on": "kind",
         "polymorphic_identity": "octomate",
         # Load every variant's columns on a base-class query or relationship (e.g.
@@ -101,7 +101,7 @@ class ExternalAgentRun(AgentRun):
     and recovery resume from.
     """
 
-    __mapper_args__ = {"polymorphic_identity": "external"}
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "external"}
 
     external_session_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True

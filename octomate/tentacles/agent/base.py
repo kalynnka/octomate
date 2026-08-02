@@ -3,14 +3,15 @@ from __future__ import annotations
 import asyncio
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import cached_property
+from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, TypeAlias, TypeVar, overload
 
 from pydantic_ai import (
-    AgentNativeTool,
     AgentCapability,
     AgentModelSettings,
+    AgentNativeTool,
     AgentRunResult,
     AgentSpec,
     RunUsage,
@@ -25,6 +26,7 @@ from pydantic_ai.agent.abstract import (
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
+from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
@@ -32,10 +34,8 @@ from octomate.capabilities.harness.react import ReactEventStream
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.user import UserProfile
-from pydantic_ai.settings import ThinkingEffort
-
 from octomate.schemas.triage import AgentRoute, Claim
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
 
@@ -61,9 +61,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # are the agent's to make — its config block owns them; a channel only
     # chooses which agents to expose (and their entry models). A model with no
     # claim advertises nothing: it is not offered as a route, so it cannot be
-    # summoned (or commissioned). Subclasses assign it in `__init__`; the empty
-    # class default is never mutated.
-    claims: dict[AgentRouteModelName, Claim] = {}
+    # summoned (or commissioned). Subclasses assign it in `__init__`; the default
+    # is read-only, so the empty one cannot be shared into.
+    claims: Mapping[AgentRouteModelName, Claim] = MappingProxyType({})
 
     @cached_property
     def routes(self) -> list[AgentRoute]:

@@ -142,7 +142,12 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self.conversation_manager = conversation_manager or octomate.conversations
         self.deferred_resolver = deferred_resolver
         self.description = description or self.description
-        self.claims = {model: claim for model, claim in (claims or {}).items()}
+        # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
+        # runtime's own narrower literal, and `Mapping`'s key is invariant — only the
+        # comprehension widens them to `AgentRouteModelName` without a cast.
+        self.claims = {  # noqa: C416
+            model: claim for model, claim in (claims or {}).items()
+        }
         self._exit_stack = AsyncExitStack()
         self.toolsets = list(toolsets or [])
 

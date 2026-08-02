@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import mimetypes
 from pathlib import Path
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal, NotRequired
 
 from pydantic import BaseModel, Discriminator, field_validator
 from pydantic_ai import BinaryContent
 from pydantic_ai.messages import UserContent
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 from octomate.types.json import JsonObject
 
@@ -158,14 +158,12 @@ class CardSegment(Segment):
 
 
 MessageSegment = Annotated[
-    Union[
-        TextSegment,
-        AtSegment,
-        ImageSegment,
-        MarkdownSegment,
-        ReplySegment,
-        FileSegment,
-        CardSegment,
-    ],
+    TextSegment
+    | AtSegment
+    | ImageSegment
+    | MarkdownSegment
+    | ReplySegment
+    | FileSegment
+    | CardSegment,
     Discriminator("type"),
 ]

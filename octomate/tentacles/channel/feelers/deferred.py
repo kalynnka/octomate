@@ -6,7 +6,6 @@ import re
 from abc import ABC, abstractmethod
 from uuid import UUID
 
-
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredApproval,

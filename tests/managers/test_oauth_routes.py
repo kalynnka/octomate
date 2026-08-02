@@ -7,8 +7,6 @@ is to give nothing away when they refuse.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -17,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.managers.oauth import OAuthManager
 from octomate.oauth.routes import oauth_manager, oauth_router
 from octomate.schemas.user import UserProfile
-
 from tests.managers.test_oauth import (
     LINEAR_CONNECTOR_ID,
     FakeAuthorizationCodeFlow,
@@ -27,8 +24,8 @@ from tests.managers.test_oauth import (
 
 
 @pytest.fixture(autouse=True)
-async def database(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def database(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 def browser(manager: OAuthManager) -> httpx.AsyncClient:

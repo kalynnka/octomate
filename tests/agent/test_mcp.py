@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import uuid
 from base64 import urlsafe_b64encode
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from types import TracebackType
 
 from fastmcp.client.transports import StreamableHttpTransport
 from pydantic import AnyHttpUrl, SecretStr
@@ -19,30 +19,30 @@ from pydantic_ai.toolsets import (
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.oauth.base import McpConnectionAuth
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.mcp import McpToolsetCache
 from octomate.config import GitHubMcpConfig, McpServerConfig
-from octomate.config.users import UserConfig
-from octomate.database import async_session
-from octomate.managers.oauth import OAuthConnector
-from octomate.managers.user import UserManager
-from octomate.integrations import (
-    GitHubCapability,
-    LinearCapability,
-    build_integration,
-)
 from octomate.config.integrations import (
     GitHubIntegrationConfig,
     LinearIntegrationConfig,
     LinearMcpConfig,
 )
+from octomate.config.users import UserConfig
+from octomate.database import async_session
+from octomate.integrations import (
+    GitHubCapability,
+    LinearCapability,
+    build_integration,
+)
+from octomate.managers.oauth import OAuthConnector
+from octomate.managers.user import UserManager
+from octomate.oauth.base import McpConnectionAuth
 from octomate.oauth.github import GitHubDeviceOAuthFlow
 from octomate.oauth.linear import LinearAuthorizationCodeOAuthFlow
-from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
     DeviceOAuthFlow,
+    DirectHttpOAuthCallbackTransport,
     OAuthFlowContext,
     OAuthGrant,
     OAuthPending,
@@ -63,7 +63,7 @@ class StaticGitHubFlow(DeviceOAuthFlow):
             verification_uri=AnyHttpUrl("https://github.com/login/device"),
             device_code=SecretStr("device-secret"),
             user_code=SecretStr("ABCD-EFGH"),
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
             interval_seconds=5,
         )
 
@@ -247,7 +247,12 @@ class SpyToolset(FunctionToolset[None]):
         self.entered += 1
         return self
 
-    async def __aexit__(self, *args: Any) -> bool | None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
         self.exited += 1
         return None
 
@@ -259,7 +264,12 @@ class FailingToolset(FunctionToolset[None]):
     async def __aenter__(self) -> FailingToolset:
         raise RuntimeError("Failed to initialize server session")
 
-    async def __aexit__(self, *args: Any) -> bool | None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
         return None
 
 
@@ -337,7 +347,8 @@ async def test_github_capability_instances_reuse_connector_and_mcp_session(
 
         assert isinstance(first, GitHubCapability)
         assert isinstance(second, GitHubCapability)
-        assert first is not github and second is not github
+        assert first is not github
+        assert second is not github
         assert first.connector is github.connector
         assert second.connector is github.connector
         assert host.oauth.connector("github") is github.connector
@@ -426,7 +437,8 @@ async def test_cache_reuses_and_warms_a_key_once() -> None:
             warm_timeout=16.0,
             build=lambda: SpyToolset(),
         )
-        assert first is spy and second is spy
+        assert first is spy
+        assert second is spy
         assert (spy.entered, spy.exited) == (1, 0)
 
     assert (spy.entered, spy.exited) == (1, 1)
@@ -454,7 +466,8 @@ async def test_cache_rebuilds_and_closes_on_fingerprint_change() -> None:
             warm_timeout=16.0,
             build=lambda: new,
         )
-        assert first is old and second is new
+        assert first is old
+        assert second is new
         # A changed credential closes the stale session before serving the new one.
         assert (old.entered, old.exited) == (1, 1)
         assert (new.entered, new.exited) == (1, 0)
@@ -468,7 +481,7 @@ async def test_cache_evicts_least_recently_used_per_kind() -> None:
     spies = [SpyToolset() for _ in range(3)]
 
     async with cache:
-        for key, spy in zip(keys, spies):
+        for key, spy in zip(keys, spies, strict=False):
             await cache.acquire(
                 kind="github",
                 key=key,
@@ -604,7 +617,8 @@ def test_bootstrap_composes_each_type_and_keys_it_by_name() -> None:
     assert isinstance(github, GitHubCapability)
     assert isinstance(linear, LinearCapability)
     assert sorted(manager.connectors) == ["gh", "linear_home"]
-    assert github.id == "gh" and linear.id == "linear_home"
+    assert github.id == "gh"
+    assert linear.id == "linear_home"
     # Only the authorization-code half carries a transport, and it is what makes
     # `Octomate.app` serve the routes its URIs point at.
     assert manager.connector("gh").callback_transport is None
@@ -626,5 +640,6 @@ def test_two_accounts_of_one_vendor_get_their_own_connectors() -> None:
     # Separate connectors, so separate stored connections and separate tool names —
     # the model is never offered two identically named sets.
     assert sorted(manager.connectors) == ["linear_home", "linear_work"]
-    assert work.toolset is None and home.toolset is None  # unbound until a run
+    assert work.toolset is None
+    assert home.toolset is None
     assert work.connector.id != home.connector.id

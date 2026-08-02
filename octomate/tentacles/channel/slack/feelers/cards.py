@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from octomate.tentacles.channel.slack.schema import SlackBlock
 
-
 APPROVAL_CARD_ICON = "check"
 QUESTION_CARD_ICON = "comment"
 

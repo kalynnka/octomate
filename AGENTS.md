@@ -38,12 +38,15 @@
 ## Typing
 
 1. Class attributes should be explicitly defined with proper type hints. Use `ClassVar` for class variables.
-2. Do not leave Python type hint warnings or type checker errors. Always satisfy the configured type checker.
-3. Do not use `typing.Any` or `object` in type hints. Use precise concrete types, `TypeVar` generics, discriminated unions, `TypedDict`, or narrow `Protocol` contracts. Validate external payloads at clear boundaries before passing them deeper.
-4. Prefer precise collection types in annotations when the runtime shape is known (`list[T]` or `tuple[...]`) instead of broad abstractions like `Sequence[T]`; this also keeps Pydantic validation cheaper and clearer.
-5. Prefer `TypedDict` for simple structured tool arguments and request payloads when a full model adds no behavior. Use `TypedDict` plus `**payload` unpacking to pass structured payloads through typed call sites instead of building ad hoc dict wrappers.
-6. Do not duplicate the same payload shape as both a model and a `TypedDict` without a concrete reason.
-7. Do not use `cast`, `type: ignore`, or pyright suppressions merely to satisfy the type checker. Fix the annotation, model the optional/variant shape honestly, or move validation to the correct boundary. Use casts only at true dynamic boundaries where the runtime type has already been established and cannot be expressed otherwise.
+2. `ruff` is the source of truth: `uv run ruff check` and `uv run ruff format --check` must both pass, and its configured rule set in `pyproject.toml` is what "clean" means.
+3. Pylance is what the human actually reads, so a clean editor matters too — leave no pyright squiggle behind. It runs at `typeCheckingMode: "basic"` (`.vscode/settings.json`), which is what "clean" means for it; the CLI defaults to the stricter `standard`, so measure in `basic` before claiming parity. Satisfy it by fixing the type wherever fixing it is honest. Suppress with `# pyright: ignore[<rule>]` plus a comment naming which of exactly three cases applies: it contradicts ruff, it is plainly wrong about the runtime, or the rejected call *is* the input under test (a test asserting that a bad value is refused). Anything else is a real finding — fix it. A bare `# type: ignore`, or one with no reason, is not acceptable.
+4. Ruff and pyright do disagree, and neither wins by default — the fix that satisfies both is almost always available and is the one to find. Where it genuinely is not, keep the code the type checker can verify and suppress the ruff rule, because a lint preference costs less than a checked type: C416's `dict(x)` loses the key-widening a comprehension does, and RUF019's `.get()` loses the `in` narrowing a `TypedDict` needs. Both are real conflicts already suppressed in-tree; add to that list rather than trading a checked type for a tidier line.
+5. Do not use `typing.Any` or `object` in type hints. Use precise concrete types, `TypeVar` generics, discriminated unions, `TypedDict`, or narrow `Protocol` contracts. Validate external payloads at clear boundaries before passing them deeper.
+6. Prefer precise collection types in annotations when the runtime shape is known (`list[T]` or `tuple[...]`) instead of broad abstractions like `Sequence[T]`; this also keeps Pydantic validation cheaper and clearer.
+7. Prefer `TypedDict` for simple structured tool arguments and request payloads when a full model adds no behavior. Use `TypedDict` plus `**payload` unpacking to pass structured payloads through typed call sites instead of building ad hoc dict wrappers.
+8. Do not duplicate the same payload shape as both a model and a `TypedDict` without a concrete reason.
+9. Do not use `cast`, `type: ignore`, or pyright suppressions merely to satisfy the type checker — silencing a true positive is the failure this guards against, and it is not what rule 3's three cases license. Fix the annotation, model the optional/variant shape honestly, or move validation to the correct boundary. Use casts only at true dynamic boundaries where the runtime type has already been established and cannot be expressed otherwise.
+10. A rule that has to bend bends at the line that bends it. Suppress with `# noqa: <CODE>` on that line, and give the reason in a comment above it — or once at the first occurrence in a file when the same suppression repeats for one library contract. Never add to `pyproject.toml`'s `per-file-ignores`: a file-wide ignore silently exempts code written later that never earned it, and nothing detects it once it stops applying, whereas RUF100 flags a `noqa` the moment it goes stale. A suppression with no code, or with no reason, is not acceptable either way.
 
 ## Data Modeling
 
@@ -58,6 +61,7 @@
 
 1. Always leverage Arcanus for database persistence. Application code should use Pydantic schema/transmuter types and Arcanus session APIs; do not import, query, update, or delete ORM models directly unless you are defining the schema/model mapping itself.
 2. Prefer ORM-style persistence through loaded transmuter objects. When an object is already in the session, mutate its typed attributes and commit instead of issuing manual SQL `update()` calls or copying the transmuter to mirror the change.
+3. Foreign keys are enforced (`PRAGMA foreign_keys=ON`, set per connection in `octomate/database.py`), and tests run under the same constraint via `database.create_engine`. A row therefore needs its parents to exist: build them, or use `tests.support.managers.a_thread`, rather than minting a bare `uuid7()` for a parent id.
 
 ## Observability
 

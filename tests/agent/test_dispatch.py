@@ -13,6 +13,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
+from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.database import async_session
@@ -22,7 +23,6 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadMessage
 from octomate.schemas.triage import Claim, SummonDecision
-from octomate.capabilities.ask import AskCapability
 from octomate.tentacles.agent.inkling import InklingTentacle
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.base import Tentacle
@@ -37,8 +37,8 @@ from tests.support.scenarios import mid_run_notice
 
 
 @pytest.fixture(autouse=True)
-async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def _db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 def _entry_config(*, stream: bool, entry: str = "inkling") -> ChannelConfig:

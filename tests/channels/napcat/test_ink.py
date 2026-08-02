@@ -26,7 +26,6 @@ from octomate.tentacles.channel.feelers.output import (
 )
 from octomate.tentacles.channel.napcat import NapcatChromo, NapcatInk, NapcatTentacle
 from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
-
 from tests.channels.napcat.fakes import FakeNapcatHTTP
 from tests.support.channels import drive
 from tests.support.scenarios import plain_answer, play

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
@@ -14,9 +14,9 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress, ChatType
-from octomate.schemas.user import UserProfile
 from octomate.schemas.messages import native_utc
 from octomate.schemas.segments import MessageSegment
+from octomate.schemas.user import UserProfile
 
 if TYPE_CHECKING:
     from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -68,7 +68,7 @@ class ThreadMessage(BaseTransmuter):
     # answer to "when was this written", which for replayed history is a different
     # instant entirely.
     happened_at: Annotated[datetime, AfterValidator(native_utc)] = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
     direction: ThreadMessageDirection
     actor_kind: ChannelActorKind
@@ -85,9 +85,9 @@ class ThreadMessage(BaseTransmuter):
     segments: list[MessageSegment] = Field(default_factory=list)
     message_text: str | None = None
     raw: str = ""
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
-    model_messages: RelationCollection["ModelRequest | ModelResponse"] = Relationships()
+    model_messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
 
 @sqlalchemy_materia.bless(thread_models.MessageBinding)
@@ -100,7 +100,7 @@ class MessageBinding(BaseTransmuter):
     run_id: str
     tool_call_id: str | None = None
     position: int = 0
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 @sqlalchemy_materia.bless(thread_models.Handoff)
@@ -119,7 +119,7 @@ class Handoff(BaseTransmuter):
     target_conversation_id: uuid.UUID | None = None
     source_run_id: str | None = None
     source_model_message_id: uuid.UUID | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def __lt__(self, other: Handoff) -> bool:
         return self.id < other.id
@@ -139,8 +139,8 @@ class Thread(BaseTransmuter):
     thread_id: str = ""
     source_cursor_message_id: uuid.UUID | None = None
     status: ThreadStatus = "active"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     messages: RelationCollection[ThreadMessage] = Relationships()
     handoffs: RelationCollection[Handoff] = Relationships()

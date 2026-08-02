@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from arcanus.materia.sqlalchemy import selectinload
 from sqlalchemy import and_, or_
@@ -134,7 +134,7 @@ class ThreadManager:
             )
         )
         if happened_at is None and event.timestamp > 0:
-            happened_at = datetime.fromtimestamp(event.timestamp, timezone.utc)
+            happened_at = datetime.fromtimestamp(event.timestamp, UTC)
         sender = await self.users.ensure_profile(
             thread.channel_tentacle_id, event.sender
         )
@@ -145,7 +145,7 @@ class ThreadManager:
             thread_id=thread.id,
             platform_message_id=event.message_id or None,
             reply_id=event.reply_id,
-            happened_at=happened_at or datetime.now(timezone.utc),
+            happened_at=happened_at or datetime.now(UTC),
             direction="inbound",
             actor_kind=actor_kind,
             user_id=event.user_id,
@@ -185,7 +185,7 @@ class ThreadManager:
             thread_id=thread.id,
             platform_message_id=platform_message_id,
             reply_id=reply_id,
-            happened_at=happened_at or datetime.now(timezone.utc),
+            happened_at=happened_at or datetime.now(UTC),
             direction="outbound",
             actor_kind=actor_kind,
             user_id="",

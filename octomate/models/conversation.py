@@ -4,16 +4,16 @@ import uuid
 from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import ARRAY, ForeignKey, JSON, String, UniqueConstraint, Uuid
+from sqlalchemy import ARRAY, JSON, ForeignKey, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
 
 if TYPE_CHECKING:
-    from octomate.models.thread import Thread
     from octomate.models.messages import ModelMessage
     from octomate.models.runs import AgentRun
+    from octomate.models.thread import Thread
 
 
 class Conversation(Base, TransmuterProxiedMixin):

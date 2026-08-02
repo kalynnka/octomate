@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from arcanus import RelationCollection
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.database import async_session
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import Conversation, ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     DeferredAction,
     DeferredActionBatch,
@@ -102,7 +102,7 @@ class DeferredActionManager:
                     return batch
                 questions_by_id = {action.id: action for action in batch.questions}
                 approvals_by_id = {action.id: action for action in batch.approvals}
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
 
                 for action_id, answer in awake.answers.items():
                     action = questions_by_id.get(action_id)
@@ -158,7 +158,7 @@ class DeferredActionManager:
             if action is None:
                 return
             action.platform_message_id = platform_message_id
-            action.updated_at = datetime.now(timezone.utc)
+            action.updated_at = datetime.now(UTC)
             await session.commit()
 
     async def mark_batch(
@@ -172,7 +172,7 @@ class DeferredActionManager:
             batch = await session.get(DeferredActionBatch, batch_id)
             if batch is None:
                 return
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             batch.status = status
             batch.updated_at = now
             if completed:

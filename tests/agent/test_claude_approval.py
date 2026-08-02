@@ -13,7 +13,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import cast
+from typing import ClassVar, cast
 
 import pytest
 from claude_agent_sdk import (
@@ -30,9 +30,9 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import Message, ToolPermissionContext
-from pydantic_ai.tools import DeferredToolRequests
-
 from pydantic import SecretStr
+from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
@@ -54,7 +54,6 @@ from tests.support.managers import (
     FakeConversationManager,
     FakePresentedBatch,
 )
-from uuid_utils.compat import uuid7
 
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
@@ -105,10 +104,10 @@ class ScriptedClaudeClient:
 
     mode: str = "approval"
     last_options: ClaudeAgentOptions | None = None
-    decisions: list[object] = []
+    decisions: ClassVar[list[object]] = []
     # Option labels the AskUserQuestion hook is fed; overridden to exercise
     # truncation when a question offers more than the choice cap.
-    question_option_labels: list[str] = ["A", "B"]
+    question_option_labels: ClassVar[list[str]] = ["A", "B"]
 
     def __init__(
         self, options: ClaudeAgentOptions | None = None, transport: object = None
@@ -349,7 +348,8 @@ async def test_permission_mode_drives_the_sdk(
     await task
 
     options = ScriptedClaudeClient.last_options
-    assert options is not None and options.permission_mode == "acceptEdits"
+    assert options is not None
+    assert options.permission_mode == "acceptEdits"
 
 
 async def test_approval_timeout_denies_and_expires(
@@ -399,7 +399,8 @@ async def test_ask_user_question_hook_feeds_answer_back(
     reason = cast(dict[str, dict[str, str]], output)["hookSpecificOutput"][
         "permissionDecisionReason"
     ]
-    assert "A" in reason and "Pick one" in reason
+    assert "A" in reason
+    assert "Pick one" in reason
 
 
 async def test_ask_user_question_truncates_choices_to_cap(
@@ -446,4 +447,5 @@ async def test_kick_routes_response_to_live_waiter() -> None:
     response = DeferredActionBatchResponse(batch_id=batch_id, approvals={})
     await tentacle.octomate.kick(response)
 
-    assert future.done() and future.result() is response
+    assert future.done()
+    assert future.result() is response

@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import uuid
-
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.todos import TodoManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.todos import TodoWrite
+from tests.support.managers import a_thread
 
 
 async def _conversation(chat_id: str = "alice") -> Conversation:
     return await ConversationManager().ensure(
-        uuid.uuid5(uuid.NAMESPACE_OID, chat_id),
+        await a_thread(chat_id),
         agent_tentacle_id="agent",
     )
 

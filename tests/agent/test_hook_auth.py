@@ -5,8 +5,6 @@ read back."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -25,8 +23,8 @@ EVENT = {"hook_event_name": "SessionEnd", "session_id": "s1"}
 
 
 @pytest.fixture(autouse=True)
-async def db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 def client_for(path: str) -> TestClient:

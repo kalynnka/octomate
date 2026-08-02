@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Literal, NamedTuple
 
 from pydantic import BaseModel, Field
-
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config.agents import AgentRouteModelName, Claim

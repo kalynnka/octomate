@@ -4,7 +4,7 @@ import uuid
 from abc import ABC, abstractmethod
 from base64 import b64decode
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from os import urandom
 from typing import Annotated, ClassVar, Literal
 
@@ -371,7 +371,7 @@ class OAuthOperation(BaseTransmuter):
     # does; an authorization-code operation is finished by its callback and has
     # nothing to poll.
     interval_seconds: int | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     consumed_at: datetime | None = None
 
 
@@ -388,5 +388,5 @@ class OAuthConnection(BaseTransmuter):
     account_label: str
     scopes: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

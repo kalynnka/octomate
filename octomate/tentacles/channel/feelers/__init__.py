@@ -23,7 +23,7 @@ __all__ = [
     "MarkdownFeeler",
     "OAuthFeeler",
     "PlainTextApprovalFeeler",
-    "PlainTextOAuthFeeler",
     "PlainTextAskQuestionFeeler",
+    "PlainTextOAuthFeeler",
     "QuestionFeeler",
 ]

@@ -17,6 +17,7 @@ from pydantic_graph import End, Graph, GraphRunContext
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import (
@@ -38,7 +39,6 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest as OctomateModelRequest
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, ThreadMessage
-from octomate.capabilities.ask import AskCapability
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import (
     ScriptedOutput,
@@ -395,7 +395,9 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
         second.id,
         trigger.id,
     ]
-    assert {binding.run_id for binding in bindings} == {list(conversation.runs)[0].id}
+    assert {binding.run_id for binding in bindings} == {
+        next(iter(conversation.runs)).id
+    }
     assert stored_first.model_messages[0].id == prompt_request.id
     assert fresh_thread.source_cursor_message_id == trigger.id
 
@@ -523,7 +525,9 @@ async def test_iter_react_graph_events_reraises_graph_error_after_drain() -> Non
     deps = _deps(agent=agent)
     received: list[ReactStreamEvent[ScriptedOutput]] = []
 
-    with pytest.raises(RuntimeError, match="model boom"):
+    # The block cannot shrink to one statement: what is asserted is that the error
+    # escapes the streaming loop rather than the call that opened it.
+    with pytest.raises(RuntimeError, match="model boom"):  # noqa: PT012
         async for event in iter_react_graph_events(
             StartTurn(user_prompt="hi"),
             state=ReactState(

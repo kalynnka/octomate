@@ -114,14 +114,16 @@ def test_adapter_maps_a_full_turn_to_messages_and_events() -> None:
     assert turn.model_name == "claude-opus-4-8"
     call = turn.parts[2]
     assert isinstance(call, ToolCallPart)
-    assert call.tool_name == "Read" and call.tool_call_id == "t1"
+    assert call.tool_name == "Read"
+    assert call.tool_call_id == "t1"
 
     tool_return = acc.messages[2]
     assert isinstance(tool_return, ModelRequest)
     ret = tool_return.parts[0]
     assert isinstance(ret, ToolReturnPart)
     # Tool name is recovered from the call by tool_use_id.
-    assert ret.tool_name == "Read" and ret.tool_call_id == "t1"
+    assert ret.tool_name == "Read"
+    assert ret.tool_call_id == "t1"
     assert ret.content == "def login(): ..."
 
     assert acc.result_text == "found it"
@@ -151,7 +153,8 @@ def test_adapter_error_tool_result_becomes_retry_prompt() -> None:
     assert isinstance(request, ModelRequest)
     retry = request.parts[0]
     assert isinstance(retry, RetryPromptPart)
-    assert retry.tool_name == "Bash" and retry.content == "boom"
+    assert retry.tool_name == "Bash"
+    assert retry.content == "boom"
 
 
 def test_adapter_build_result_synthesizes_agent_run_result() -> None:
@@ -445,7 +448,8 @@ def test_adapter_streams_partial_text_as_token_deltas() -> None:
     assert isinstance(start, PartStartEvent)
     # The started part is mutated in place as deltas arrive, so it accumulates the
     # full text (the channel consumes the empty PartStart before the deltas land).
-    assert isinstance(start.part, TextPart) and start.part.content == "Hello world"
+    assert isinstance(start.part, TextPart)
+    assert start.part.content == "Hello world"
     first_delta = events[1]
     assert isinstance(first_delta, PartDeltaEvent)
     assert isinstance(first_delta.delta, TextPartDelta)
@@ -459,7 +463,8 @@ def test_adapter_streams_partial_text_as_token_deltas() -> None:
     responses = [m for m in acc.messages if isinstance(m, ModelResponse)]
     assert len(responses) == 1
     [text_part] = responses[0].parts
-    assert isinstance(text_part, TextPart) and text_part.content == "Hello world"
+    assert isinstance(text_part, TextPart)
+    assert text_part.content == "Hello world"
 
 
 def test_adapter_streams_partial_thinking_with_signature() -> None:
@@ -531,7 +536,8 @@ def test_adapter_streams_partial_thinking_with_signature() -> None:
     assert len(responses) == 1
     [thinking_part] = responses[0].parts
     assert isinstance(thinking_part, ThinkingPart)
-    assert thinking_part.content == "weigh it" and thinking_part.signature == "sig"
+    assert thinking_part.content == "weigh it"
+    assert thinking_part.signature == "sig"
 
 
 def test_adapter_falls_back_to_block_render_without_partial_stream() -> None:
@@ -547,5 +553,7 @@ def test_adapter_falls_back_to_block_render_without_partial_stream() -> None:
     ]
 
     empty = map_usage(None)
-    assert empty.input_tokens == 0 and empty.output_tokens == 0
-    assert empty.cache_write_tokens == 0 and empty.cache_read_tokens == 0
+    assert empty.input_tokens == 0
+    assert empty.output_tokens == 0
+    assert empty.cache_write_tokens == 0
+    assert empty.cache_read_tokens == 0

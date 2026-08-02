@@ -88,7 +88,7 @@ class ModelMessage(BaseTransmuter, ABC):
     conversation_id: str | None = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
-    thread_messages: RelationCollection["ThreadMessage"] = Relationships()
+    thread_messages: RelationCollection[ThreadMessage] = Relationships()
 
     @abstractmethod
     def _concrete_message(self) -> None:

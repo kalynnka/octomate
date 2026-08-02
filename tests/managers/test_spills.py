@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import zlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -25,7 +25,7 @@ async def seed(handle: str, payload: bytes, *, age: timedelta) -> None:
             ToolOutputSpill(
                 handle=handle,
                 payload=zlib.compress(payload, COMPRESSION_LEVEL),
-                created_at=datetime.now(timezone.utc) - age,
+                created_at=datetime.now(UTC) - age,
             )
         )
         await session.commit()

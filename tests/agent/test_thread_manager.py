@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic_ai.messages import ModelRequest as RawModelRequest
@@ -13,15 +12,15 @@ from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.user import UserProfile
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, ThreadKey, ThreadMessage
+from octomate.schemas.user import UserProfile
 
 
 @pytest.fixture(autouse=True)
-async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def _db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 def address(user_id: str = "alice") -> ChannelAddress:
@@ -164,7 +163,8 @@ async def test_record_inbound_stamps_linked_identity_on_the_event() -> None:
     # One human, two channels, one stable marker in both prompts — resolved
     # through event.sender.user, not a stamped field.
     slack_owner = await slack.sender.user
-    assert slack_owner is not None and slack_owner.name == "Lu Hui"
+    assert slack_owner is not None
+    assert slack_owner.name == "Lu Hui"
     assert "(U1, user:luhui)" in str(slack)
     assert "(ou_1, user:luhui)" in str(lark)
 
@@ -238,7 +238,7 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
                 parts=[UserPromptPart(content="alpha first\nbeta second")],
                 run_id=run_id,
                 conversation_id=str(conversation.id),
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
         ],
     )
@@ -290,13 +290,13 @@ async def test_assistant_reply_binding_uses_persisted_response() -> None:
                 parts=[UserPromptPart(content="question")],
                 run_id=run_id,
                 conversation_id=str(conversation.id),
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             ),
             RawModelResponse(
                 parts=[TextPart(content="visible answer")],
                 run_id=run_id,
                 conversation_id=str(conversation.id),
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             ),
         ],
     )
@@ -339,8 +339,8 @@ async def test_history_written_late_still_sorts_where_it_happened() -> None:
     writing, so ordering on it puts a newcomer at the head of its own history.
     """
     manager = ThreadManager(users=UserManager())
-    earlier = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
-    later = datetime(2026, 7, 9, 11, 0, tzinfo=timezone.utc)
+    earlier = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    later = datetime(2026, 7, 9, 11, 0, tzinfo=UTC)
 
     # The live turn lands first...
     live = await manager.record_inbound(
@@ -365,7 +365,7 @@ async def test_one_instant_keeps_the_order_it_was_written_in() -> None:
     messages at one instant, and a clock has finite resolution. `id` breaks the tie, so
     rows sharing an instant stay in the order they were written rather than shuffling."""
     manager = ThreadManager(users=UserManager())
-    same = datetime(2026, 7, 9, 10, 0, tzinfo=timezone.utc)
+    same = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
 
     first = await manager.record_inbound(
         event("m-1", "alice", "first"), happened_at=same

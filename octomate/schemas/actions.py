@@ -4,8 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from octomate.schemas.segments import MessageSegment
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.segments import MessageSegment
 from octomate.types.json import JsonObject
 
 

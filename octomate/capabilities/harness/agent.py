@@ -27,9 +27,9 @@ from typing import Any, cast, overload
 from pydantic import ValidationError
 from pydantic_ai import Agent as PydanticAgent
 from pydantic_ai import (
-    AgentNativeTool,
     AgentCapability,
     AgentModelSettings,
+    AgentNativeTool,
     AgentRunResultEvent,
     AgentSpec,
     RunUsage,

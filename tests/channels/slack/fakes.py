@@ -16,8 +16,8 @@ from slack_sdk.web.async_chat_stream import AsyncChatStream
 from octomate.config import SlackChannelConfig, SlackStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.user import UserProfile
 from octomate.schemas.segments import ImageSegment
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel.base import DownloadedImage, Ink
 from octomate.tentacles.channel.feelers.base import Feelers
 from octomate.tentacles.channel.feelers.output import (
@@ -229,12 +229,16 @@ def slack_channel(
     channel.id = "slack"
     channel.ink = cast(SlackInkType, ink)
     channel.chromo = SlackChromo()
-    channel.config = SlackChannelConfig(
+    config = SlackChannelConfig(
         app_id="A-test",
         bot_token=SecretStr("xoxb-test"),
         app_token=SecretStr("xapp-test"),
         stream=SlackStreamConfig(flush_interval=0),
     )
+    channel.config = config
+    # `__init__` is bypassed here, so mirror the one field it lifts off the concrete
+    # config — the base class types `config` as `ChannelConfig`, which has no token.
+    channel.app_token = config.app_token
     compose_slack_feelers(channel, deferred_actions)
     return channel
 

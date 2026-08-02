@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import gc
 from collections.abc import AsyncIterator, Callable
-from typing import ClassVar, Literal
+from types import SimpleNamespace
+from typing import ClassVar, Literal, cast
 
 import pytest
 from claude_agent_sdk import (
@@ -20,8 +21,6 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import Message
-from types import SimpleNamespace
-from typing import cast
 from pydantic import SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -29,19 +28,18 @@ from pydantic_ai.messages import (
     FunctionToolResultEvent,
     PartStartEvent,
 )
-
 from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.agents import Claim, ClaudeCodeConfig, ClaudeSSHConfig
 from octomate.schemas.conversation import ChannelAddress
-from octomate.tentacles.agent.claude.transport import SSHTransport
 from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.agent.claude import ClaudeCodeTentacle
 from octomate.tentacles.agent.claude import base as claude_base
 from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.agent.claude.transport import SSHTransport
 from tests.support.managers import FakeConversation, FakeConversationManager
-from uuid_utils.compat import uuid7
 
 SummonDecisionAdapter = TypeAdapter(SummonDecision)
 

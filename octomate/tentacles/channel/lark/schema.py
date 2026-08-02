@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Protocol, TypeAlias, runtime_checkable
+from typing import Annotated, NotRequired, Protocol, TypeAlias, runtime_checkable
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
-from octomate.schemas.user import UserProfile
 from octomate.schemas.deferred import DeferredQuestion
+from octomate.schemas.user import UserProfile
 from octomate.types.json import JsonObject
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]

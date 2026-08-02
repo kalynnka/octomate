@@ -28,7 +28,11 @@ def settings_with(tmp_path: Path, document: dict[str, Any]) -> Path:
     return path
 
 
-def read(path: Path) -> Any:
+# Typing this `JsonObject` satisfies ANN401 and costs 72 pyright errors: every
+# `document["hooks"]["Stop"]` below then subscripts a `JsonValue` union. The document is
+# a settings file this test wrote itself, and asserting on it is the whole point, so the
+# dynamic type is the honest one here rather than a shape re-declared to please the rule.
+def read(path: Path) -> Any:  # noqa: ANN401
     return json.loads(path.read_text())
 
 

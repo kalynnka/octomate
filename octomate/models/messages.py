@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
@@ -10,16 +10,16 @@ from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base
+from octomate.models.base import Base, MapperArgs
 
 if TYPE_CHECKING:
-    from octomate.models.thread import ThreadMessage
     from octomate.models.runs import AgentRun
+    from octomate.models.thread import ThreadMessage
 
 
 class ModelMessage(Base, TransmuterProxiedMixin):
     __tablename__ = "model_messages"
-    __mapper_args__ = {
+    __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_on": "kind",
         "polymorphic_abstract": True,
     }
@@ -82,8 +82,8 @@ class ModelMessage(Base, TransmuterProxiedMixin):
 
 
 class ModelRequest(ModelMessage):
-    __mapper_args__ = {"polymorphic_identity": "request"}
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "request"}
 
 
 class ModelResponse(ModelMessage):
-    __mapper_args__ = {"polymorphic_identity": "response"}
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "response"}

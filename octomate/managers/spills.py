@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import zlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from anyio import to_thread
 from sqlalchemy import delete
@@ -54,7 +54,7 @@ class SpillStore:
                 await session.execute(
                     delete(ToolOutputSpill).where(
                         ToolOutputSpill["created_at"]
-                        < datetime.now(timezone.utc) - self.retention
+                        < datetime.now(UTC) - self.retention
                     )
                 )
             await session.commit()

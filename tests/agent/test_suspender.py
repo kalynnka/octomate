@@ -12,11 +12,11 @@ from typing import cast
 
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
-
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
+from octomate.reflex.suspender import HumanReviewSuspender
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -24,7 +24,6 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.schemas.triage import SummonDecision
-from octomate.reflex.suspender import HumanReviewSuspender
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeActionManager,

@@ -7,11 +7,10 @@ channel's surfaces, so an unreachable `dm` is refused rather than redirected.
 from __future__ import annotations
 
 import inspect
-
-import pytest
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar, cast
 
+import pytest
 from pydantic_ai import AgentStreamEvent, RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import FunctionToolResultEvent, ToolReturn, ToolReturnPart
@@ -19,23 +18,23 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests
 
+from octomate.capabilities.ask import AskCapability
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import MessageSentEvent
-from octomate.capabilities.gateway import GatewayCapability
+from octomate.capabilities.todos import TodoCapability
 from octomate.config import AgentModelConfig, ChannelConfig
 from octomate.config.users import UserConfig
 from octomate.managers.user import UserManager
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.segments import MarkdownSegment, MessageSegment
 from octomate.schemas.triage import Destination, Scrying
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channel.base import ChannelSurfaces
-from octomate.capabilities.todos import TodoCapability
-from octomate.schemas.segments import MarkdownSegment, MessageSegment
-from octomate.capabilities.ask import AskCapability
-from octomate.schemas.conversation import ChannelAddress
-from tests.support.channels import FakeChannelTentacle
 from octomate.tentacles.agent.inkling.base import InklingOutput
 from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.channel.base import ChannelSurfaces
 from tests.support.agents import ScriptedStream, ScriptedTurn
+from tests.support.channels import FakeChannelTentacle
 
 
 class _NoDmChannel(FakeChannelTentacle):
@@ -229,7 +228,7 @@ async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None
     capability = _gate()
     # Seeded rather than computed: this is about resolving a handle, not about
     # reaching the identity registry, which `test_user` covers.
-    capability.computed_destinations = capability.built_in_destinations + [lark]
+    capability.computed_destinations = [*capability.built_in_destinations, lark]
     assert capability.toolset is not None
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
@@ -261,7 +260,7 @@ async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
     capability = _gate()
     # Seeded rather than computed: this is about resolving a handle, not about
     # reaching the identity registry, which `test_user` covers.
-    capability.computed_destinations = capability.built_in_destinations + [lark]
+    capability.computed_destinations = [*capability.built_in_destinations, lark]
     assert capability.toolset is not None
     scry = capability.toolset.tools["scry"].function
 

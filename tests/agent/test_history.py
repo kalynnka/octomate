@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -24,16 +23,14 @@ from pydantic_ai.messages import ModelResponse as RawModelResponse
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncEngine
-from uuid_utils.compat import uuid7
 
 from octomate.capabilities.history import HistoryCapability
 from octomate.managers import ConversationManager, ThreadManager, UserManager
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.segments import TextSegment
-
-_THREAD = uuid7()
+from tests.support.managers import a_thread
 
 
 def _send_args(*texts: str) -> dict[str, Any]:
@@ -140,8 +137,8 @@ def test_response_text_and_send_combined_other_tool_excluded() -> None:
 
 
 @pytest.fixture(autouse=True)
-async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def _db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 def _key() -> ChannelAddress:
@@ -173,14 +170,14 @@ def _ctx(conversation_id: uuid.UUID) -> RunContext[Any]:
     )
 
 
-async def _seed(manager: ConversationManager) -> Any:
+async def _seed(manager: ConversationManager) -> Conversation:
     """One run: user turn, an assistant turn that thinks then sends, the tool
     return for that send, and a final assistant answer. conversation_id is stamped
     on each message exactly as pydantic-ai does for a real run."""
-    conversation = await manager.ensure(_THREAD, agent_tentacle_id="inkling")
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="inkling")
     cid = str(conversation.id)
     run_id = "run-1"
-    ts = datetime.now(timezone.utc)
+    ts = datetime.now(UTC)
     await manager.record_agent_run(
         conversation,
         run_id=run_id,

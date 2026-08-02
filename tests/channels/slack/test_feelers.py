@@ -45,7 +45,6 @@ from octomate.tentacles.channel.slack.schema import (
     SlackQuestionState,
 )
 from octomate.types.json import JsonObject
-
 from tests.channels.slack.fakes import FakeSlackBlocksInk
 
 JsonObjectAdapter = TypeAdapter(JsonObject)

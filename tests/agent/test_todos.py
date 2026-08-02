@@ -31,11 +31,12 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.todos import TodoManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.todos import Todo
+from tests.support.managers import a_thread
 
 
 async def _conversation() -> Conversation:
     return await ConversationManager().ensure(
-        uuid7(),
+        await a_thread(),
         agent_tentacle_id="agent",
     )
 

@@ -6,10 +6,10 @@ from octomate.managers.todos import TodoManager
 from octomate.managers.user import UserManager
 
 __all__ = [
-    "ThreadManager",
     "ConversationManager",
-    "OAuthManager",
     "DeferredActionManager",
+    "OAuthManager",
+    "ThreadManager",
     "TodoManager",
     "UserManager",
 ]

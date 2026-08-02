@@ -6,6 +6,7 @@ from functools import cached_property
 from typing import TypeAlias
 
 from pydantic import BaseModel, Field
+
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 

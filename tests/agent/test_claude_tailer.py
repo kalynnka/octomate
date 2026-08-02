@@ -6,8 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
@@ -21,9 +20,9 @@ from octomate.database import async_session
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import MessageBinding, ThreadKey
+from octomate.tentacles.agent.claude import tailer as tailer_mod
 from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
-from octomate.tentacles.agent.claude import tailer as tailer_mod
 from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer, TailState
 from octomate.tentacles.agent.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -33,8 +32,8 @@ SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "private", SESSION_ID, "")
 
 
 @pytest.fixture(autouse=True)
-async def _db(in_memory_engine: AsyncEngine) -> AsyncIterator[None]:
-    yield
+async def _db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 def prompt_record(prompt_id: str, text: str, second: int) -> JsonObject:
@@ -281,7 +280,11 @@ async def test_live_append_is_picked_up_by_the_watch(tmp_path: Path) -> None:
         handle.write(b"".join(line_bytes(record) for record in TURN_TWO))
 
     with anyio.fail_after(5):
-        while not any(run.id == "p1" for run in await runs_of(octomate)):
+        # ASYNC110 wants an `anyio.Event`, but the tailer signals nothing to wait on: it is a
+        # background watch loop, and adding an event to it purely for tests would be production
+        # surface bought for test convenience. Each poll is bounded by the `fail_after` above and
+        # reads the loop's own real state, which is what 2e3e10c replaced a blind sleep with.
+        while not any(run.id == "p1" for run in await runs_of(octomate)):  # noqa: ASYNC110
             await anyio.sleep(0.05)
 
     await tailer.finalize(SESSION_ID)
@@ -437,7 +440,7 @@ async def test_idle_loop_self_finalizes(
     # window the loop self-finalizes — commits the trailing turn and drops itself.
     tailer.start(SESSION_ID, transcript)
     with anyio.fail_after(5):
-        while tailer.is_following(SESSION_ID):
+        while tailer.is_following(SESSION_ID):  # noqa: ASYNC110
             await anyio.sleep(0.05)
 
     assert tailer.sessions == {}
@@ -462,7 +465,7 @@ async def test_a_commit_that_times_out_stops_the_tail_rather_than_skipping_it(
     async with locks.hold(SESSION_ID):  # a wedged holder the commit can't get past
         tailer.start(SESSION_ID, transcript)
         with anyio.fail_after(5):
-            while tailer.is_following(SESSION_ID):
+            while tailer.is_following(SESSION_ID):  # noqa: ASYNC110
                 await anyio.sleep(0.02)
 
     assert await runs_of(octomate) == []  # p2 did not commit over p1's failure
@@ -485,7 +488,8 @@ async def test_shutdown_cancels_the_follow_loop(tmp_path: Path) -> None:
 
     assert not tailer.is_following(SESSION_ID)
     assert tailer.sessions == {}
-    assert state.task is not None and state.task.done()
+    assert state.task is not None
+    assert state.task.done()
 
 
 async def test_line_split_across_pumps_is_not_half_parsed(tmp_path: Path) -> None:
@@ -541,7 +545,7 @@ def hook(prompt_id: str, **body: str) -> ClaudeHookInput:
 
 async def test_recover_reconstructs_full_fidelity(tmp_path: Path) -> None:
     transcript = tmp_path / f"{SESSION_ID}.jsonl"
-    write_records(transcript, TURN_ONE + [sidechain_record("side", 5)] + TURN_TWO)
+    write_records(transcript, [*TURN_ONE, sidechain_record("side", 5), *TURN_TWO])
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
 
@@ -558,7 +562,8 @@ async def test_recover_reconstructs_full_fidelity(tmp_path: Path) -> None:
     response = first.messages[1]
     assert isinstance(response, ModelResponse)
     part_kinds = [type(part).__name__ for part in response.parts]
-    assert "ThinkingPart" in part_kinds and "ToolCallPart" in part_kinds
+    assert "ThinkingPart" in part_kinds
+    assert "ToolCallPart" in part_kinds
     assert response.model_name == "claude-opus-4-8"
     assert response.usage.output_tokens == 7
     assert first.started_at is not None
@@ -694,7 +699,7 @@ async def test_recover_overlapping_a_live_follow_leaves_it_tailing(
     # Read the loop's own record of what it committed: asking the ledger here would
     # race the loop to create this session's thread row.
     with anyio.fail_after(5):
-        while "p1" not in state.recorded:
+        while "p1" not in state.recorded:  # noqa: ASYNC110
             await anyio.sleep(0.05)
     # A second reader resumes past p1 and commits p2 — the turn the loop still holds.
     assert await tailer.recover(SESSION_ID, transcript) == ["p2"]
@@ -735,8 +740,8 @@ async def test_a_backfilled_row_is_dated_by_the_transcript_not_the_replay(
     assert dated  # the tailer did write the ledger
 
     # The prompt line says 10:00:01, the final assistant line 10:00:04.
-    assert dated["inbound"] == datetime(2026, 7, 9, 10, 0, 1, tzinfo=timezone.utc)
-    assert dated["outbound"] == datetime(2026, 7, 9, 10, 0, 4, tzinfo=timezone.utc)
+    assert dated["inbound"] == datetime(2026, 7, 9, 10, 0, 1, tzinfo=UTC)
+    assert dated["outbound"] == datetime(2026, 7, 9, 10, 0, 4, tzinfo=UTC)
 
 
 AGENT_ID = "abc123def"
@@ -1009,7 +1014,7 @@ async def test_subagent_start_sketches_the_child_run_when_keyed(tmp_path: Path) 
     octomate = Octomate()
     ingest, tailer = wired(octomate, (tmp_path,))
 
-    before = datetime.now(timezone.utc)
+    before = datetime.now(UTC)
     await ingest.handle(
         subagent_hook(
             "SubagentStart",
@@ -1018,13 +1023,14 @@ async def test_subagent_start_sketches_the_child_run_when_keyed(tmp_path: Path) 
             prompt="audit the repo",
         )
     )
-    after = datetime.now(timezone.utc)
+    after = datetime.now(UTC)
 
     [sketch] = await subagent_runs_of(octomate)
     assert sketch.id == f"{AGENT_ID}:p1"
     assert sketch.end_offset is None  # provisional: no byte range yet
     assert sketch.parent_run_id == "p1"
-    assert sketch.started_at is not None and before <= sketch.started_at <= after
+    assert sketch.started_at is not None
+    assert before <= sketch.started_at <= after
     assert [message.message_text for message in sketch.messages] == ["audit the repo"]
 
     # The child's file lands and the subagent stops: the full timeline replaces the
