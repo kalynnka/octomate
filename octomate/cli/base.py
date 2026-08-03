@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import typer
 
-from octomate.tentacles.agent.claude.typer import claude_typer
-from octomate.tentacles.agent.codex.typer import codex_typer
-from octomate.tentacles.agent.typer import hooks_typer
+from octomate.cli.serve import serve
+from octomate.tentacles.agents.claude.typer import claude_typer
+from octomate.tentacles.agents.codex.typer import codex_typer
+from octomate.tentacles.agents.typer import hooks_typer
 
 app = typer.Typer(help="Octomate operator CLI.", no_args_is_help=True)
+app.command("serve")(serve)
 app.add_typer(claude_typer, name="claude")
 app.add_typer(codex_typer, name="codex")
 # Cross-tentacle: the hook credential is one secret every agent's router shares.

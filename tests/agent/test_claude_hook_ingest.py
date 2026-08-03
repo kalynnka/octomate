@@ -13,9 +13,9 @@ from octomate import Octomate
 from octomate.database import async_session
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import ThreadKey
-from octomate.tentacles.agent.claude.hooks import ClaudeHookInput
-from octomate.tentacles.agent.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
-from octomate.tentacles.agent.claude.tailer import ClaudeTranscriptTailer
+from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
+from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
+from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
 
 SESSION_ID = "sess-1"
 SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "private", SESSION_ID, "")

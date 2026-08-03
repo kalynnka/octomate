@@ -8,8 +8,8 @@ import json
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 
 from octomate.schemas.conversation import ChannelAddress
-from octomate.tentacles.channel.lark import LarkTentacle
-from octomate.tentacles.channel.lark.schema import LarkOutboundMessage
+from octomate.tentacles.channels.lark import LarkTentacle
+from octomate.tentacles.channels.lark.schema import LarkOutboundMessage
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 
 

@@ -35,10 +35,10 @@ from octomate import Octomate
 from octomate.config.agents import Claim, ClaudeCodeConfig, ClaudeSSHConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
-from octomate.tentacles.agent.claude import ClaudeCodeTentacle
-from octomate.tentacles.agent.claude import base as claude_base
-from octomate.tentacles.agent.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.agent.claude.transport import SSHTransport
+from octomate.tentacles.agents.claude import ClaudeCodeTentacle
+from octomate.tentacles.agents.claude import base as claude_base
+from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.agents.claude.transport import SSHTransport
 from tests.support.managers import FakeConversation, FakeConversationManager
 
 SummonDecisionAdapter = TypeAdapter(SummonDecision)

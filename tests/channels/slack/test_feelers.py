@@ -19,14 +19,14 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
     QuestionRequest,
 )
-from octomate.tentacles.channel.slack.base import SlackTentacle
-from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
-from octomate.tentacles.channel.slack.feelers.approvals import (
+from octomate.tentacles.channels.slack.base import SlackTentacle
+from octomate.tentacles.channels.slack.feelers.actions import SlackBlockAction
+from octomate.tentacles.channels.slack.feelers.approvals import (
     SlackApprovalActionsAdapter,
     SlackApprovalFeeler,
     approval_blocks,
 )
-from octomate.tentacles.channel.slack.feelers.questions import (
+from octomate.tentacles.channels.slack.feelers.questions import (
     SlackAskQuestionFeeler,
     SlackQuestionActionsAdapter,
     ask_question_blocks,
@@ -34,8 +34,8 @@ from octomate.tentacles.channel.slack.feelers.questions import (
     question_answer_block_id,
     question_choice_block_id,
 )
-from octomate.tentacles.channel.slack.ink import SlackInk
-from octomate.tentacles.channel.slack.schema import (
+from octomate.tentacles.channels.slack.ink import SlackInk
+from octomate.tentacles.channels.slack.schema import (
     SlackActionMessage,
     SlackApprovalActionBody,
     SlackApprovalActionValue,

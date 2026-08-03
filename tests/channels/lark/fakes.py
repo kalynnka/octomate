@@ -15,17 +15,17 @@ from pydantic import SecretStr
 
 from octomate.config import LarkChannelConfig, LarkStreamConfig
 from octomate.managers.deferred import DeferredActionManager
-from octomate.tentacles.channel.feelers.base import Feelers
-from octomate.tentacles.channel.feelers.output import DefaultSegmentsFeeler
-from octomate.tentacles.channel.lark import LarkChromo, LarkInk, LarkTentacle
-from octomate.tentacles.channel.lark.feelers.approvals import LarkApprovalFeeler
-from octomate.tentacles.channel.lark.feelers.oauth import LarkOAuthFeeler
-from octomate.tentacles.channel.lark.feelers.output import (
+from octomate.tentacles.channels.feelers.base import Feelers
+from octomate.tentacles.channels.feelers.output import DefaultSegmentsFeeler
+from octomate.tentacles.channels.lark import LarkChromo, LarkInk, LarkTentacle
+from octomate.tentacles.channels.lark.feelers.approvals import LarkApprovalFeeler
+from octomate.tentacles.channels.lark.feelers.oauth import LarkOAuthFeeler
+from octomate.tentacles.channels.lark.feelers.output import (
     LarkMarkdownFeeler,
     LarkTimelineFeeler,
 )
-from octomate.tentacles.channel.lark.feelers.questions import LarkAskQuestionFeeler
-from octomate.tentacles.channel.lark.schema import LarkOutboundMessage, LarkStreamCard
+from octomate.tentacles.channels.lark.feelers.questions import LarkAskQuestionFeeler
+from octomate.tentacles.channels.lark.schema import LarkOutboundMessage, LarkStreamCard
 
 
 class FakeLarkInk(LarkInk):

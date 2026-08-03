@@ -12,7 +12,7 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, RunName, SummonDecision
 from octomate.telemetry import reflex_logfire
-from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channels.base import ChannelTentacle
 
 
 @dataclass(frozen=True)

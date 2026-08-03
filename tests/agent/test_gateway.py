@@ -25,7 +25,7 @@ from octomate.schemas.triage import (
     SummonDecision,
     SummonDestination,
 )
-from octomate.tentacles.channel.base import ChannelSurfaces
+from octomate.tentacles.channels.base import ChannelSurfaces
 from tests.support.channels import FakeChannelTentacle
 
 FAKE_CONTEXT = cast(RunContext[None], None)

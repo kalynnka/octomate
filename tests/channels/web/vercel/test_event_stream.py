@@ -43,13 +43,13 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.todos import Todo
-from octomate.tentacles.agent.inkling.base import InklingOutput
-from octomate.tentacles.channel.web.vercel.base import (
+from octomate.tentacles.agents.inkling.base import InklingOutput
+from octomate.tentacles.channels.web.vercel.base import (
     VercelStreamItem,
     VercelTimelineFeeler,
     current_sink,
 )
-from octomate.tentacles.channel.web.vercel.event_stream import VercelEventStream
+from octomate.tentacles.channels.web.vercel.event_stream import VercelEventStream
 from tests.support.channels import RecordingApprovalFeeler, RecordingQuestionFeeler
 
 

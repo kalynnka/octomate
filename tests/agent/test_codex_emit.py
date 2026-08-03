@@ -16,15 +16,15 @@ from threading import Thread
 
 import pytest
 
-from octomate.tentacles.agent.codex.emit import (
+from octomate.tentacles.agents.codex.emit import (
     DRIVEN_ENV,
     HOOK_SECRET_ENV,
     HOOK_TIMEOUT,
 )
-from octomate.tentacles.agent.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
-from octomate.tentacles.agent.codex.hooks import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
-from octomate.tentacles.agent.codex.typer import EMIT_SCRIPT
-from octomate.tentacles.agent.typer import HOOK_SECRET_ENV as CANONICAL_HOOK_SECRET_ENV
+from octomate.tentacles.agents.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
+from octomate.tentacles.agents.codex.hooks import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
+from octomate.tentacles.agents.codex.typer import EMIT_SCRIPT
+from octomate.tentacles.agents.typer import HOOK_SECRET_ENV as CANONICAL_HOOK_SECRET_ENV
 
 SECRET = "the-hook-secret"
 PAYLOAD = {"hook_event_name": "Stop", "session_id": "s1", "turn_id": "t1"}

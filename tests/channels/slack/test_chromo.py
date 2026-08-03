@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from octomate.schemas.segments import AtSegment, ImageSegment, TextSegment
-from octomate.tentacles.channel.slack import SlackChromo
+from octomate.tentacles.channels.slack import SlackChromo
 
 
 async def test_slack_chromo_decodes_mentions_and_images() -> None:

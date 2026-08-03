@@ -11,11 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
-from octomate.tentacles.agent.codex.hooks import CodexHookInput
-from octomate.tentacles.agent.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
-from octomate.tentacles.agent.codex.tailer import CodexTranscriptTailer
-from octomate.tentacles.agent.codex.transcript import rollout_line_adapter
-from octomate.tentacles.agent.locks import SessionLocks
+from octomate.tentacles.agents.codex.hooks import CodexHookInput
+from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
+from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.agents.codex.transcript import rollout_line_adapter
+from octomate.tentacles.agents.locks import SessionLocks
 
 SESSION_ID = "codex-session"
 TURN_ID = "codex-turn"

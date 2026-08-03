@@ -60,9 +60,9 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import Claim, SchemeDecision, SummonDecision
-from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
-from octomate.tentacles.channel.base import ChannelOutput
+from octomate.tentacles.agents.base import AgentTentacle
+from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.channels.base import ChannelOutput
 from octomate.types.json import JsonObject
 from tests.support.scenarios import plain_answer, play
 

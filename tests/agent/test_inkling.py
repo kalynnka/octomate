@@ -25,11 +25,11 @@ from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment, Segment
-from octomate.tentacles.agent.inkling import (
+from octomate.tentacles.agents.inkling import (
     InklingTentacle,
 )
-from octomate.tentacles.agent.inkling.base import InklingOutput
-from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.agents.inkling.base import InklingOutput
+from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import (
     ScriptedOutput,
     ScriptedTurn,

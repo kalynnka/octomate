@@ -26,7 +26,7 @@ from octomate.capabilities.gateway import (
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import AgentRoute, Claim
-from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agents.base import AgentTentacle
 from tests.support.agents import FakeAgent
 from tests.support.managers import FakeConversationManager
 

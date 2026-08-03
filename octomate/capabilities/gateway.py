@@ -57,11 +57,11 @@ if TYPE_CHECKING:
     from octomate.managers.conversation import ConversationManager
     from octomate.managers.user import UserManager
     from octomate.schemas.user import UserProfile
-    from octomate.tentacles.agent.base import AgentTentacle
+    from octomate.tentacles.agents.base import AgentTentacle
 
     # Runtime import would cycle: `channel.base` reaches this module through
     # `feelers.output`, which skips the accomplice spells' timeline rows by name.
-    from octomate.tentacles.channel.base import ChannelTentacle
+    from octomate.tentacles.channels.base import ChannelTentacle
 
 SCRY_TOOL_NAME = "scry"
 SUMMON_TOOL_NAME = "summon"

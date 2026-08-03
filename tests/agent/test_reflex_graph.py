@@ -46,8 +46,8 @@ from octomate.schemas.triage import (
     SchemeDecision,
     SummonDestination,
 )
-from octomate.tentacles.channel.base import ChannelSurfaces
-from octomate.tentacles.channel.feelers.output import TimelineState
+from octomate.tentacles.channels.base import ChannelSurfaces
+from octomate.tentacles.channels.feelers.output import TimelineState
 from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, RecordingInk
 from tests.support.managers import (

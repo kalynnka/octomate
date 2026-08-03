@@ -20,10 +20,13 @@ from octomate.schemas.segments import (
     ReplySegment,
     TextSegment,
 )
-from octomate.tentacles.channel.feelers.output import DefaultSegmentsFeeler, split_reply
-from octomate.tentacles.channel.lark.chromo import LarkChromo
-from octomate.tentacles.channel.napcat.chromo import NapcatChromo
-from octomate.tentacles.channel.slack.chromo import SlackChromo
+from octomate.tentacles.channels.feelers.output import (
+    DefaultSegmentsFeeler,
+    split_reply,
+)
+from octomate.tentacles.channels.lark.chromo import LarkChromo
+from octomate.tentacles.channels.napcat.chromo import NapcatChromo
+from octomate.tentacles.channels.slack.chromo import SlackChromo
 from tests.support.channels import FakeChromo, RecordingInk
 
 

@@ -20,12 +20,12 @@ from octomate.capabilities.harness.agent import Agent
 from octomate.config.channels import AgentModelConfig, VercelChannelConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
-from octomate.tentacles.agent.inkling import InklingTentacle
-from octomate.tentacles.agent.inkling.base import InklingOutput
-from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
-from octomate.tentacles.channel.base import ChannelTentacle
-from octomate.tentacles.channel.web.vercel import VercelTentacle, build_vercel_router
-from octomate.tentacles.channel.web.vercel.base import ROUTE_SEP
+from octomate.tentacles.agents.inkling import InklingTentacle
+from octomate.tentacles.agents.inkling.base import InklingOutput
+from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.channels.base import ChannelTentacle
+from octomate.tentacles.channels.web.vercel import VercelTentacle, build_vercel_router
+from octomate.tentacles.channels.web.vercel.base import ROUTE_SEP
 from tests.support.agents import build_non_stream_agent, build_scripted_agent
 
 # The dev UI drives one configured reception agent through octomate.kick.

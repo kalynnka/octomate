@@ -49,8 +49,8 @@ from octomate.schemas.oauth import (
 )
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agent.inkling import InklingTentacle, build_mcp_toolsets
-from octomate.tentacles.agent.inkling.base import InklingOutput
+from octomate.tentacles.agents.inkling import InklingTentacle, build_mcp_toolsets
+from octomate.tentacles.agents.inkling.base import InklingOutput
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
 

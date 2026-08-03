@@ -19,8 +19,8 @@ from octomate.schemas.segments import (
     ReplySegment,
     TextSegment,
 )
-from octomate.tentacles.channel.napcat import NapcatChromo
-from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
+from octomate.tentacles.channels.napcat import NapcatChromo
+from octomate.tentacles.channels.napcat.schema import NapcatOutboundMessage
 
 
 async def test_napcat_chromo_decodes_group_message_segments() -> None:

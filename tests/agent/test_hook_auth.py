@@ -13,10 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig, CodexConfig
-from octomate.tentacles.agent.claude import ClaudeCodeTentacle
-from octomate.tentacles.agent.claude.hooks import CLAUDE_HOOK_PATH
-from octomate.tentacles.agent.codex import CodexTentacle
-from octomate.tentacles.agent.codex.hooks import CODEX_HOOK_PATH
+from octomate.tentacles.agents.claude import ClaudeCodeTentacle
+from octomate.tentacles.agents.claude.hooks import CLAUDE_HOOK_PATH
+from octomate.tentacles.agents.codex import CodexTentacle
+from octomate.tentacles.agents.codex.hooks import CODEX_HOOK_PATH
 
 SECRET = SecretStr("the-hook-secret")
 EVENT = {"hook_event_name": "SessionEnd", "session_id": "s1"}

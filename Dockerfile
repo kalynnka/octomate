@@ -8,7 +8,6 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY octomate/ octomate/
-COPY octotools/ octotools/
 COPY main.py octomate.default.yaml ./
 
-CMD ["uv", "run", "python", "main.py"]
+CMD ["uv", "run", "octomate", "serve"]

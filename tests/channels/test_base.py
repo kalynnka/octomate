@@ -40,7 +40,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.todos import Todo
-from octomate.tentacles.channel.base import (
+from octomate.tentacles.channels.base import (
     ChannelOutput,
     ChannelTentacle,
     DownloadedImage,

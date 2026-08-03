@@ -41,33 +41,33 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.base import Octomate
-from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.gateway import (
     COMMISSION_TOOL_NAME,
     SCHEME_TOOL_NAME,
     GatewayCapability,
 )
+from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig
 from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.thread import ThreadManager
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.managers.thread import ThreadManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.triage import AgentRoute, Claim
-from octomate.capabilities.ask import AskCapability
-from octomate.tentacles.agent.base import AgentTentacle
-from octomate.tentacles.agent.inkling import build_mcp_toolsets
-from octomate.tentacles.agent.inkling.base import (
+from octomate.tentacles.agents.base import AgentTentacle
+from octomate.tentacles.agents.inkling import build_mcp_toolsets
+from octomate.tentacles.agents.inkling.base import (
     InklingOutput,
     InklingTentacle,
 )
-from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
-from octomate.tentacles.channel.base import ChannelTentacle
-from octomate.tentacles.channel.slack.base import SlackTentacle
+from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.channels.base import ChannelTentacle
+from octomate.tentacles.channels.slack.base import SlackTentacle
 from octomate.types.json import JsonObject
 
 DEFAULT_PROMPT = (

@@ -35,7 +35,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.tentacles.agent.claude.adapter import (
+from octomate.tentacles.agents.claude.adapter import (
     ClaudeRunAccumulator,
     map_usage,
     normalize_tool_result_content,

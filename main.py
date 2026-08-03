@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 import logfire
-import uvicorn
 from fastapi import FastAPI
 from pydantic import SecretStr
 from pydantic_ai import AgentCapability
@@ -28,15 +27,15 @@ from octomate.integrations import build_integration
 from octomate.managers.spills import SpillStore
 from octomate.managers.user import UserManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
-from octomate.tentacles.agent.claude import ClaudeCodeTentacle
-from octomate.tentacles.agent.codex import CodexTentacle
-from octomate.tentacles.agent.inkling import InklingTentacle, build_mcp_toolsets
-from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.agents.claude import ClaudeCodeTentacle
+from octomate.tentacles.agents.codex import CodexTentacle
+from octomate.tentacles.agents.inkling import InklingTentacle, build_mcp_toolsets
+from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.base import TentacleLogFormatter
-from octomate.tentacles.channel.lark import LarkTentacle
-from octomate.tentacles.channel.napcat import NapcatTentacle
-from octomate.tentacles.channel.slack import SlackTentacle
-from octomate.tentacles.channel.web.vercel import VercelTentacle
+from octomate.tentacles.channels.lark import LarkTentacle
+from octomate.tentacles.channels.napcat import NapcatTentacle
+from octomate.tentacles.channels.slack import SlackTentacle
+from octomate.tentacles.channels.web.vercel import VercelTentacle
 
 config = OctomateConfig()
 
@@ -269,14 +268,3 @@ def create_app() -> FastAPI:
         )
 
     return octomate.app(title="Octomate")
-
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "main:create_app",
-        factory=True,
-        host=str(config.host),
-        port=config.port,
-        reload=True,
-        log_level=config.logging.level.lower(),
-    )

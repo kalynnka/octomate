@@ -23,8 +23,8 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadMessage
 from octomate.schemas.triage import Claim, SummonDecision
-from octomate.tentacles.agent.inkling import InklingTentacle
-from octomate.tentacles.agent.inkling.base import InklingOutput
+from octomate.tentacles.agents.inkling import InklingTentacle
+from octomate.tentacles.agents.inkling.base import InklingOutput
 from octomate.tentacles.base import Tentacle
 from tests.support.agents import FakeAgent
 from tests.support.channels import (

@@ -43,9 +43,9 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.tentacles.agent.codex import CodexTentacle
-from octomate.tentacles.agent.codex import base as codex_base
-from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.agents.codex import CodexTentacle
+from octomate.tentacles.agents.codex import base as codex_base
+from octomate.tentacles.channels.base import ChannelTentacle
 from octomate.types.json import JsonObject
 from tests.support.managers import (
     FakeConversation,

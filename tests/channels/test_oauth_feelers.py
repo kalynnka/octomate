@@ -17,14 +17,14 @@ from octomate.capabilities.harness.events import (
     OAuthDeviceAuthorizationEvent,
 )
 from octomate.schemas.conversation import ChannelAddress, ChatType
-from octomate.tentacles.channel.base import Ink
-from octomate.tentacles.channel.feelers.oauth import PlainTextOAuthFeeler
-from octomate.tentacles.channel.lark.feelers.oauth import LarkOAuthFeeler
-from octomate.tentacles.channel.lark.ink import LarkInk
-from octomate.tentacles.channel.slack.feelers.actions import SlackBlockAction
-from octomate.tentacles.channel.slack.feelers.oauth import SlackOAuthFeeler
-from octomate.tentacles.channel.slack.ink import SlackInk
-from octomate.tentacles.channel.slack.schema import SlackOutboundMessage
+from octomate.tentacles.channels.base import Ink
+from octomate.tentacles.channels.feelers.oauth import PlainTextOAuthFeeler
+from octomate.tentacles.channels.lark.feelers.oauth import LarkOAuthFeeler
+from octomate.tentacles.channels.lark.ink import LarkInk
+from octomate.tentacles.channels.slack.feelers.actions import SlackBlockAction
+from octomate.tentacles.channels.slack.feelers.oauth import SlackOAuthFeeler
+from octomate.tentacles.channels.slack.ink import SlackInk
+from octomate.tentacles.channels.slack.schema import SlackOutboundMessage
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkCardsInk
 from tests.support.channels import FakeOAuthInk, RecordingMarkdownFeeler

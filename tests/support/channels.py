@@ -40,7 +40,7 @@ from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channel.base import (
+from octomate.tentacles.channels.base import (
     ChannelOutput,
     ChannelSurfaces,
     ChannelTentacle,
@@ -49,11 +49,11 @@ from octomate.tentacles.channel.base import (
     Ink,
     ThreadStrategy,
 )
-from octomate.tentacles.channel.feelers.deferred import (
+from octomate.tentacles.channels.feelers.deferred import (
     ApprovalFeeler,
     QuestionFeeler,
 )
-from octomate.tentacles.channel.feelers.output import (
+from octomate.tentacles.channels.feelers.output import (
     IMMessageID,
     SubagentTimelineState,
     TimelineFeeler,

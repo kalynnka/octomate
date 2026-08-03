@@ -30,9 +30,9 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment, MessageSegment
 from octomate.schemas.triage import Destination, Scrying
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agent.inkling.base import InklingOutput
-from octomate.tentacles.agent.inkling.prompts import SYSTEM_PROMPT
-from octomate.tentacles.channel.base import ChannelSurfaces
+from octomate.tentacles.agents.inkling.base import InklingOutput
+from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.channels.base import ChannelSurfaces
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.channels import FakeChannelTentacle
 

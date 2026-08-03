@@ -33,9 +33,9 @@ from octomate.schemas.awakes import (
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.telemetry import octomate_logfire
-from octomate.tentacles.agent.base import AgentTentacle
+from octomate.tentacles.agents.base import AgentTentacle
 from octomate.tentacles.base import Tentacle
-from octomate.tentacles.channel.base import ChannelTentacle
+from octomate.tentacles.channels.base import ChannelTentacle
 
 TentacleT = TypeVar("TentacleT", bound=Tentacle)
 logger = logging.getLogger(__name__)

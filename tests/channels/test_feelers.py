@@ -35,14 +35,14 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.triage import SummonDecision
-from octomate.tentacles.channel.base import ChannelSurfaces, Ink
-from octomate.tentacles.channel.feelers.base import Feelers
-from octomate.tentacles.channel.feelers.deferred import (
+from octomate.tentacles.channels.base import ChannelSurfaces, Ink
+from octomate.tentacles.channels.feelers.base import Feelers
+from octomate.tentacles.channels.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
-from octomate.tentacles.channel.feelers.oauth import PlainTextOAuthFeeler
-from octomate.tentacles.channel.feelers.output import (
+from octomate.tentacles.channels.feelers.oauth import PlainTextOAuthFeeler
+from octomate.tentacles.channels.feelers.output import (
     MarkdownChunker,
     StreamBlock,
     TextStreamBatcher,
@@ -50,11 +50,11 @@ from octomate.tentacles.channel.feelers.output import (
     render_stream_event_delta,
     should_skip_plan_tool,
 )
-from octomate.tentacles.channel.lark import LarkTentacle
-from octomate.tentacles.channel.napcat import NapcatTentacle
-from octomate.tentacles.channel.slack import SlackTentacle
-from octomate.tentacles.channel.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
-from octomate.tentacles.channel.web.vercel import VercelTentacle
+from octomate.tentacles.channels.lark import LarkTentacle
+from octomate.tentacles.channels.napcat import NapcatTentacle
+from octomate.tentacles.channels.slack import SlackTentacle
+from octomate.tentacles.channels.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
+from octomate.tentacles.channels.web.vercel import VercelTentacle
 from tests.support.channels import (
     FakeChannelTentacle,
     FakeOAuthInk,

@@ -13,19 +13,19 @@ from websockets.asyncio.client import ClientConnection
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageData, ImageSegment, TextSegment
-from octomate.tentacles.channel.feelers.base import Feelers
-from octomate.tentacles.channel.feelers.deferred import (
+from octomate.tentacles.channels.feelers.base import Feelers
+from octomate.tentacles.channels.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
-from octomate.tentacles.channel.feelers.oauth import PlainTextOAuthFeeler
-from octomate.tentacles.channel.feelers.output import (
+from octomate.tentacles.channels.feelers.oauth import PlainTextOAuthFeeler
+from octomate.tentacles.channels.feelers.output import (
     DefaultMarkdownFeeler,
     DefaultSegmentsFeeler,
     DefaultTimelineFeeler,
 )
-from octomate.tentacles.channel.napcat import NapcatChromo, NapcatInk, NapcatTentacle
-from octomate.tentacles.channel.napcat.schema import NapcatOutboundMessage
+from octomate.tentacles.channels.napcat import NapcatChromo, NapcatInk, NapcatTentacle
+from octomate.tentacles.channels.napcat.schema import NapcatOutboundMessage
 from tests.channels.napcat.fakes import FakeNapcatHTTP
 from tests.support.channels import drive
 from tests.support.scenarios import plain_answer, play

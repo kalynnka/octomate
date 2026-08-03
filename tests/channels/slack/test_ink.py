@@ -7,7 +7,7 @@ from typing import cast
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
 
-from octomate.tentacles.channel.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT, SlackInk
+from octomate.tentacles.channels.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT, SlackInk
 from tests.channels.slack.fakes import FakeSlackClient
 
 
