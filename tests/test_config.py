@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import get_args
 
@@ -838,6 +839,141 @@ def test_user_links_accept_configured_channels() -> None:
         "napcat": "9",
         "dev_ui": "dev",
     }
+
+
+def test_projects_validate_from_yaml_with_tilde_expanded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A declared root has to exist, so `~` is pointed somewhere this test built
+    # rather than at whatever the machine running it happens to have.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "Projects/octoverse/inky").mkdir(parents=True)
+    (tmp_path / "Library/Application Support/Code/User").mkdir(parents=True)
+
+    config = IsolatedTestConfig.model_validate(
+        {
+            "projects": [
+                {
+                    "root": "~/Projects/octoverse/inky",
+                    "extra_roots": ["~/Library/Application Support/Code/User"],
+                    "description": "Octomate itself.",
+                    "permission_mode": "accept_edits",
+                }
+            ]
+        }
+    )
+
+    [inky] = config.projects
+    assert inky.root == tmp_path / "Projects/octoverse/inky"
+    assert inky.extra_roots == [tmp_path / "Library/Application Support/Code/User"]
+    assert inky.description == "Octomate itself."
+    assert inky.permission_mode == "accept_edits"
+    # Unnamed, so it is called after its root's directory.
+    assert inky.name == "inky"
+
+
+def test_a_project_can_name_itself(tmp_path: Path) -> None:
+    config = IsolatedTestConfig.model_validate(
+        {"projects": [{"root": str(tmp_path), "name": "Inky"}]}
+    )
+
+    assert config.projects[0].name == "Inky"
+
+
+def test_projects_load_from_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A list has no key to name one entry, so the override is the whole block as
+    # JSON; `OCTOMATE__PROJECTS__0__ROOT` is not a form pydantic-settings accepts.
+    monkeypatch.setenv(
+        "OCTOMATE__PROJECTS",
+        json.dumps([{"root": str(tmp_path), "permission_mode": "bypass_permissions"}]),
+    )
+
+    config = IsolatedTestConfig()
+
+    [inky] = config.projects
+    assert inky.root == tmp_path
+    assert inky.permission_mode == "bypass_permissions"
+
+
+@pytest.mark.parametrize(
+    "root", ["file:///srv/inky", "file://minidock/srv/inky", "ssh://minidock/srv/inky"]
+)
+def test_a_project_root_written_as_a_url_is_refused(root: str) -> None:
+    # `Path("file:///srv/inky").absolute()` is a real path under the cwd that matches
+    # nothing, so a url has to be refused rather than quietly converted.
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate({"projects": [{"root": root}]})
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("projects", 0, "root")
+    assert "a root is a plain local path" in error["msg"]
+
+
+def test_a_project_root_that_is_a_file_is_refused() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate(
+            {"projects": [{"root": "octomate.default.yaml"}]}
+        )
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("projects", 0, "root")
+    assert "is a file; a root is a directory" in error["msg"]
+
+
+def test_a_project_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
+    # Declaring a project claims something about this machine, so a root that is not
+    # there fails at config load rather than at the first cwd that should have matched.
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate(
+            {"projects": [{"root": str(tmp_path / "not-cloned-yet")}]}
+        )
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("projects", 0, "root")
+    assert "does not exist" in error["msg"]
+
+
+def test_a_project_extra_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate(
+            {
+                "projects": [
+                    {"root": str(tmp_path), "extra_roots": [str(tmp_path / "gone")]}
+                ]
+            }
+        )
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("projects", 0, "extra_roots", 0)
+    assert "does not exist" in error["msg"]
+
+
+def test_the_filesystem_root_is_refused_as_a_project_root() -> None:
+    # It is a directory and it exists, but it has no name to be called by — the one
+    # case that would leave a project unnameable.
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate({"projects": [{"root": "/"}]})
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("projects", 0, "root")
+    assert "is the filesystem root" in error["msg"]
+
+
+def test_a_relative_project_root_is_made_absolute() -> None:
+    config = IsolatedTestConfig.model_validate({"projects": [{"root": "octomate"}]})
+
+    assert config.projects[0].root == Path.cwd() / "octomate"
+
+
+def test_a_project_without_a_root_is_refused() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate({"projects": [{"description": "no root"}]})
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("projects", 0, "root")
+    assert error["type"] == "missing"
 
 
 def test_one_vendor_can_be_mounted_once_per_account() -> None:

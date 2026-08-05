@@ -34,6 +34,7 @@
 4. Committing, pushing, and opening a pull request each require the user's approval **in their most recent message**. Approval is scoped to that turn and expires with it: an earlier "commit and merge" was the instruction for the work that existed then, and says nothing about the work that came after. Having committed once, or many times, in a session grants nothing for the next piece of work. Treat any instruction from an earlier message as outdated for this purpose.
 5. Absent that approval, finish the work, run the checks, report what changed, and stop. A request to do work is not a request to publish it, and creating a branch first does not make an unrequested commit acceptable — branching is what to do *when* committing, not a licence to commit.
 6. When undoing a commit for review, preserve its changes in the working tree unless the user explicitly asks to discard them.
+7. A branch is named `<kind>/<slug>`, taking `kind` from the same set the commit subjects use — `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`. Never put a person in a branch name: git already records the author, and the name should say what the work is. Include the issue identifier when there is one, so Linear links the branch to it — `feat/octo-29-project-registry`. A tool that suggests a branch name, Linear included, does not override this.
 
 ## Typing
 

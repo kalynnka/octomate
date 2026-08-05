@@ -12,6 +12,7 @@ from octomate.models.messages import (
     ModelResponse,
 )
 from octomate.models.oauth import OAuthConnection, OAuthOperation
+from octomate.models.project import Project
 from octomate.models.runs import AgentRun, ExternalAgentRun
 from octomate.models.spills import ToolOutputSpill
 from octomate.models.thread import (
@@ -39,6 +40,7 @@ __all__ = [
     "ModelResponse",
     "OAuthConnection",
     "OAuthOperation",
+    "Project",
     "Thread",
     "ThreadMessage",
     "Todo",

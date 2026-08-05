@@ -8,6 +8,7 @@ All schemas live under `octomate/schemas/` and are organized into four modules:
 | ------------- | -------------------------------------------------- |
 | `conversation`| Agent-conversation and channel-address identity    |
 | `user`        | Registered users and observed channel profiles     |
+| `project`     | Declared projects a working directory resolves to  |
 | `segments` | Message segment data types (text, image, at, etc.) |
 | `events`   | Inbound events from IM platforms                   |
 | `actions`  | Outbound actions toward IM platforms               |
@@ -40,6 +41,13 @@ thread — not a human chat log. The user-facing chat ledger is the `Thread` /
 | ------------- | ------------------- | --------------------- | -------------------------------------------------------------- |
 | `User`        | Persisted transmuter | internal              | YAML-declared human with a stable username                     |
 | `UserProfile` | Persisted transmuter | IM → Tentacle → Agent | Channel profile; optionally owned by a registered YAML user    |
+
+### project.py
+
+| Schema     | Type                 | Direction | Summary                                                       |
+| ---------- | -------------------- | --------- | ------------------------------------------------------------- |
+| `Project`  | Persisted transmuter | internal  | YAML-declared project: roots, description, initial permission mode; named after its root's directory unless it says otherwise |
+| `LocalPath` | Annotated type      | internal  | A root as an absolute local path; `~` expanded, and a url, a file, or a missing directory refused |
 
 ### segments.py
 
