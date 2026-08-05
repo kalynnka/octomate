@@ -16,6 +16,7 @@ from rich.style import Style
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.oauth import OAuthManager
+from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.oauth.routes import oauth_router
@@ -87,6 +88,7 @@ class Octomate:
         default_factory=DeferredActionManager
     )
     users: UserManager = field(default_factory=UserManager)
+    projects: ProjectManager = field(default_factory=ProjectManager)
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
@@ -191,6 +193,10 @@ class Octomate:
                 # YAML users and their declared profiles exist from the first
                 # ingested message; every other sender remains a visitor.
                 await self.users.reconcile()
+                # Likewise the project registry: reconciling here is what builds
+                # the resolution index, so a declared project resolves before
+                # anything is running that could ask.
+                await self.projects.reconcile()
                 # Each tentacle is an async context manager owning its own
                 # long-lived resources (agents: warm MCP sessions; channels:
                 # the inbound receive loop). Enter agents first so their tools

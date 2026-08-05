@@ -222,6 +222,27 @@ octomate:
   # variable over YAML. Generate a key with: openssl rand -base64 32 | tr '+/' '-_'
   oauth: {}
 
+  # The directories Octomate knows by name — what a working directory under one of
+  # their roots resolves to. A project is named after its root's directory unless it
+  # gives a `name`, and two projects cannot share a name. Declared only: nothing is
+  # detected from git, and a cwd under no declared root resolves to nothing, which is
+  # a normal outcome rather than an error. Nested roots resolve to the deeper
+  # project, so a monorepo and a package inside it can both be declared.
+  #
+  # Unrelated to `~/.claude/projects/`, which is where Claude Code stores its
+  # transcripts. Same word, different thing.
+  #
+  # Roots are stored as absolute local paths, with `~` expanded. Write an absolute
+  # path — a relative one hangs off wherever Octomate was started, which is rarely
+  # what you meant — and write a path, not a `file://` url. Every root must be a
+  # directory that exists: declaring a project claims something about this machine,
+  # so a missing one fails at startup rather than at the first cwd that should have
+  # matched it. An uncloned checkout is therefore not declarable until it is cloned.
+  #
+  # The env override takes the whole list as JSON, since a list has no key to name a
+  # single entry: OCTOMATE__PROJECTS='[{"root": "/srv/inky"}]'
+  projects: []
+  
 # Live-replay test targets (`pytest tests/trigger/`).
 # This section sits OUTSIDE `octomate:` — the application never reads it.
 # Configure it in the gitignored octomate.yaml, next to the channel credentials:
