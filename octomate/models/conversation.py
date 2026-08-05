@@ -12,6 +12,7 @@ from octomate.models.base import Base
 
 if TYPE_CHECKING:
     from octomate.models.messages import ModelMessage
+    from octomate.models.project import Project
     from octomate.models.runs import AgentRun
     from octomate.models.thread import Thread
 
@@ -73,6 +74,20 @@ class Conversation(Base, TransmuterProxiedMixin):
         ),
     )
 
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment=(
+            "The declared project this conversation's work is in, taken from its "
+            "thread when the conversation is created and never changed after; NULL "
+            "is unattributed, and runs at the agent's configured directory. Its "
+            "root is where the runs happen, so re-binding a thread moves new "
+            "conversations and leaves this one where its external session was "
+            "started — that session's history is full of absolute paths."
+        ),
+    )
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     permission_mode: Mapped[str] = mapped_column(
@@ -97,6 +112,10 @@ class Conversation(Base, TransmuterProxiedMixin):
         "Thread",
         back_populates="conversations",
     )
+    # No back reference, as on Thread: a project collecting every conversation ever
+    # held in it is a question nothing asks. Eager, because a reader of a
+    # conversation's project wants the row, not the id.
+    project: Mapped[Project | None] = relationship("Project", lazy="selectin")
     # Read-only flat view of every message in the conversation, joined through
     # agent_runs. Writes go through `runs` and each run's `messages`.
     messages: Mapped[list[ModelMessage]] = relationship(

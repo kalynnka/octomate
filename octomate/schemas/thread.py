@@ -15,6 +15,7 @@ from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.messages import native_utc
+from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
 
@@ -137,11 +138,26 @@ class Thread(BaseTransmuter):
     chat_type: ChatType
     chat_id: str
     thread_id: str = ""
+    project_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "The declared project this thread's work is in; None is unattributed, "
+            "which is what a directory no project claims produces. Set when the "
+            "thread is created and left alone after, so declaring a project later "
+            "attributes new threads without rewriting old ones."
+        ),
+    )
     source_cursor_message_id: uuid.UUID | None = None
     status: ThreadStatus = "active"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    project: Relation[Project | None] = Field(
+        default_factory=Relation,
+        frozen=True,
+        exclude=True,
+        description="The project this thread's work is in, eagerly loaded.",
+    )
     messages: RelationCollection[ThreadMessage] = Relationships()
     handoffs: RelationCollection[Handoff] = Relationships()
 

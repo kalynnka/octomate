@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Annotated, Literal, NamedTuple
 
-from arcanus import BaseTransmuter, RelationCollection, Relationships
+from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
 from pydantic import ConfigDict, Field
 from uuid_utils.compat import uuid7
@@ -13,15 +13,11 @@ from uuid_utils.compat import uuid7
 from octomate.models.conversation import Conversation as ConversationModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.schemas.project import Project
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
+from octomate.types.conversations import ConversationPermissionMode
 
 ChatType = Literal["private", "group"]
-
-# The approval level a conversation grants an external coding agent (Claude):
-# prompt every gated tool ("default"), auto-accept edits, or skip all gating
-# ("bypass_permissions"). Our values are snake_case; the Claude tentacle maps
-# them to the SDK's camelCase `permission_mode` at the boundary.
-ConversationPermissionMode = Literal["default", "accept_edits", "bypass_permissions"]
 
 
 @dataclass(frozen=True)
@@ -108,6 +104,18 @@ class Conversation(BaseTransmuter):
         ),
     )
 
+    project_id: uuid.UUID | None = Field(
+        default=None,
+        frozen=True,
+        description=(
+            "The declared project this conversation's work is in, taken from its "
+            "thread when the conversation is created; None is unattributed, and "
+            "runs at the agent's configured directory. Frozen, because its root is "
+            "where the runs happen: an external session's history is full of "
+            "absolute paths, so re-binding a thread moves new conversations and "
+            "leaves this one resumable where it belongs."
+        ),
+    )
     name: str | None = None
     status: str = "active"
     permission_mode: ConversationPermissionMode = Field(
@@ -125,6 +133,12 @@ class Conversation(BaseTransmuter):
         ),
     )
 
+    project: Relation[Project | None] = Field(
+        default_factory=Relation,
+        frozen=True,
+        exclude=True,
+        description="The project this conversation's work is in, eagerly loaded.",
+    )
     runs: RelationCollection[AgentRun | ExternalAgentRun] = Relationships()
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 

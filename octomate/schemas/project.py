@@ -11,7 +11,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.models.project import Project as ProjectModel
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ConversationPermissionMode
+from octomate.types.conversations import ConversationPermissionMode
 
 
 def local_path(value: str | Path) -> Path:
@@ -99,3 +99,19 @@ class Project(BaseTransmuter):
         """
         self.name = self.name or self.root.name
         return self
+
+    @property
+    def roots(self) -> tuple[Path, ...]:
+        """Every directory that is this project: `root`, then any `extra_roots`."""
+        return (self.root, *self.extra_roots)
+
+    def contains(self, path: Path) -> bool:
+        """Whether `path` is one of this project's roots, or inside one.
+
+        Both sides are resolved, because `is_relative_to` is lexical: a `..` and a
+        symlink are the whole attack surface of a check that compares the string it
+        was handed. A path that does not exist resolves fine, which is what a write
+        creating a file needs.
+        """
+        resolved = path.resolve()
+        return any(resolved.is_relative_to(root.resolve()) for root in self.roots)

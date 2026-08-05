@@ -229,6 +229,10 @@ octomate:
   # a normal outcome rather than an error. Nested roots resolve to the deeper
   # project, so a monorepo and a package inside it can both be declared.
   #
+  # A declared root also bounds Claude's writes: a Write/Edit/NotebookEdit resolving
+  # outside one is refused in every approval mode, naming the project it left.
+  # Scoping, not sandboxing — reads and Bash still reach wherever the process can.
+  #
   # Unrelated to `~/.claude/projects/`, which is where Claude Code stores its
   # transcripts. Same word, different thing.
   #
