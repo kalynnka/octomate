@@ -1,0 +1,29 @@
+/* ============================================================================
+   LONETRAIL — Constructivist decorators
+   Schedule: routes · circle downbeat · dot bands · survey grid.
+   Routes / circle / arcs are compositional SVG — copy-ready markup lives in
+   preview/brand-decorators.html. The tileable helpers live here.
+   ========================================================================== */
+
+/* Survey-grid paper — diamond graph-paper at whisper opacity. Layer over any
+   surface (heroes, panels); pairs with (or replaces) .paper-texture. */
+.deco-gridpaper {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M24 0H0V24' fill='none' stroke='%23C8BFA8' stroke-opacity='.45' stroke-width='1'/%3E%3Cpath d='M0 0L24 24M24 0L0 24' fill='none' stroke='%23C8BFA8' stroke-opacity='.25' stroke-width='.4'/%3E%3C/svg%3E");
+  background-size: 24px 24px;
+}
+[data-theme="dark"] .deco-gridpaper, .deco-gridpaper--inverse {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M24 0H0V24' fill='none' stroke='%2339322A' stroke-width='1'/%3E%3Cpath d='M0 0L24 24M24 0L0 24' fill='none' stroke='%2339322A' stroke-width='.4'/%3E%3C/svg%3E");
+}
+
+/* Perforated dot band — divider / card footer. Dots draw in currentColor —
+   recolor with a modifier or a plain color: override. Overlay a clipped accent
+   span for the "filled portion = progress" idiom. */
+.deco-dotband {
+  color: var(--color-ink, #1A1814);
+  height: 4px;
+  background-image: radial-gradient(circle at 2px 2px, currentColor 1.6px, transparent 1.9px);
+  background-size: 12px 4px;
+  background-repeat: repeat-x;
+}
+.deco-dotband--accent { color: var(--color-accent, #D4621A); }
+.deco-dotband--ghost  { color: var(--color-border, #C8BFA8); }

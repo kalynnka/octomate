@@ -1,0 +1,422 @@
+/* ============================================================================
+   LONETRAIL — Colors & Type
+   "Ad Astra Per Aspera" — a Rhine Lab field-report / dossier aesthetic.
+   Cream paper, burnt-orange accent, near-black ink, sharp 0° corners.
+   Source of truth: ChongxiSama/Lonetrail (src/styles/tokens.css, tailwind.config.cjs)
+   ========================================================================== */
+
+/* ----------------------------------------------------------------------------
+   FONTS
+   - Novecento Sans Wide  → display / headings / watermarks (wide geometric caps)
+   - Plus Jakarta Sans    → body / UI sans
+   - Fira Code            → mono / codes / labels (loaded from CDN below)
+   - Noto Serif SC        → CJK serif fallback for .font-cn (loaded from CDN)
+   Local font files live in /fonts. When embedding in a standalone HTML file,
+   reference them with the correct relative path.
+   -------------------------------------------------------------------------- */
+
+/* CDN faces — self-contained here so any file that links this stylesheet gets
+   the complete type system without needing its own <link>. Fira Code (mono /
+   codes / labels) + Noto Serif SC (serif body / CJK). No local files required. */
+/* CJK glyph coverage for Noto Serif SC stays on the CDN (hundreds of
+   subsets); latin subsets and Fira Code are vendored below so the
+   console's label and prose voices survive offline. */
+@import url("https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;700;900&display=swap");
+
+@font-face {
+  font-family: "Novecento Sans Wide";
+  src: url("/fonts/Novecentosanswide-Light.otf") format("opentype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Novecento Sans Wide";
+  src: url("/fonts/Novecentosanswide-Normal.otf") format("opentype");
+  font-weight: 400 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Novecento Sans Wide";
+  src: url("/fonts/Novecentosanswide-DemiBold.otf") format("opentype");
+  font-weight: 600 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  src: url("/fonts/PlusJakartaSans.woff2") format("woff2");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Vendored latin subsets (Google Fonts, retrieved 2026-08-06) */
+@font-face {
+  font-family: "Fira Code";
+  src: url("/fonts/FiraCode-400-latin-ext.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Fira Code";
+  src: url("/fonts/FiraCode-400-latin.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Fira Code";
+  src: url("/fonts/FiraCode-500-latin-ext.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Fira Code";
+  src: url("/fonts/FiraCode-500-latin.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Fira Code";
+  src: url("/fonts/FiraCode-700-latin-ext.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Fira Code";
+  src: url("/fonts/FiraCode-700-latin.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("/fonts/NotoSerifSC-400-latin-ext.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("/fonts/NotoSerifSC-400-latin.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("/fonts/NotoSerifSC-500-latin-ext.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("/fonts/NotoSerifSC-500-latin.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("/fonts/NotoSerifSC-700-latin-ext.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("/fonts/NotoSerifSC-700-latin.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("/fonts/NotoSerifSC-900-latin-ext.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Noto Serif SC";
+  src: url("/fonts/NotoSerifSC-900-latin.woff2") format("woff2");
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* Fira Code (mono) + Noto Serif SC (CJK) load via the @import above — no <link>
+   needed. To go FULLY OFFLINE, drop the .woff2 files in /fonts, delete the
+   @import at the top, and uncomment these stubs:
+   @font-face { font-family:"Fira Code"; src:url("/fonts/FiraCode-Regular.woff2") format("woff2"); font-weight:400; font-display:swap; }
+   @font-face { font-family:"Fira Code"; src:url("/fonts/FiraCode-Medium.woff2") format("woff2"); font-weight:500; font-display:swap; }
+   @font-face { font-family:"Fira Code"; src:url("/fonts/FiraCode-Bold.woff2") format("woff2"); font-weight:700; font-display:swap; }
+   @font-face { font-family:"Noto Serif SC"; src:url("/fonts/NotoSerifSC-Regular.woff2") format("woff2"); font-weight:400; font-display:swap; }
+   @font-face { font-family:"Noto Serif SC"; src:url("/fonts/NotoSerifSC-SemiBold.woff2") format("woff2"); font-weight:600; font-display:swap; }
+   @font-face { font-family:"Noto Serif SC"; src:url("/fonts/NotoSerifSC-Black.woff2") format("woff2"); font-weight:900; font-display:swap; } */
+
+:root {
+  /* ==========================================================================
+     1. BASE PALETTE — "Rhine Lab" dossier
+     Stored as space-separated RGB triplets so they compose with rgb()/alpha.
+     ======================================================================== */
+  --ce-ink:     26 24 20; /* @kind color */     /* #1A1814  near-black ink — text, borders */
+  --ce-bg:      237 230 214; /* @kind color */  /* #EDE6D6  cream paper — page background */
+  --ce-surface: 228 220 200; /* @kind color */  /* #E4DCC8  warm card / hover surface */
+  --ce-border:  200 191 168; /* @kind color */  /* #C8BFA8  hairline borders, dividers */
+  --ce-accent:  212 98 26; /* @kind color */    /* #D4621A  burnt orange — the one accent */
+  --ce-ghost:   168 159 144; /* @kind color */  /* #A89F90  muted captions, idle states */
+  --ce-muted:   107 100 86; /* @kind color */   /* #6B6456  secondary body text */
+
+  /* Surface steps — raised (dropdowns, modals) and sunken (inputs, wells) */
+  --ce-raised: 246 241 229; /* @kind color */ /* #F6F1E5 lifted layers: dropdown, modal, row-hover-top */
+  --ce-sunken: 220 210 188; /* @kind color */ /* #DCD2BC recessed wells: inputs, code beds, tracks */
+
+  /* Secondary "Rhine Lab" accents — used ONLY as the stripe footer, the "P"
+     stamp block, and small status dots. Never as large fills.
+     Sage joins the canonical teal/gold/red as an extended option. */
+  --rl-sage: 92 127 113; /* @kind color */      /* #5C7F71  green-blue */
+  --rl-teal: 75 141 158; /* @kind color */      /* #4B8D9E */
+  --rl-gold: 194 145 69; /* @kind color */      /* #C29145 */
+  --rl-red:  163 51 50; /* @kind color */       /* #A33332  also the "P" stamp block */
+
+  /* Extended accent set (richer earthen variants — for charts, tags, callouts) */
+  --ex-sage:  92 127 113; /* @kind color */     /* #5C7F71  green-blue */
+  --ex-brick: 128 37 32; /* @kind color */      /* #802520  deep red */
+  --ex-ochre: 186 133 48; /* @kind color */     /* #BA8530  yellow / gold */
+  --ex-terra: 178 101 59; /* @kind color */     /* #B2653B  muted terracotta */
+
+  /* ==========================================================================
+     2. RESOLVED COLOR TOKENS (use these in components)
+     ======================================================================== */
+  --color-ink:     rgb(var(--ce-ink));
+  --color-bg:      rgb(var(--ce-bg));
+  --color-surface: rgb(var(--ce-surface));
+  --color-border:  rgb(var(--ce-border));
+  --color-accent:  rgb(var(--ce-accent));
+  --color-ghost:   rgb(var(--ce-ghost));
+  --color-muted:   rgb(var(--ce-muted));
+  --color-raised:  rgb(var(--ce-raised));
+  --color-sunken:  rgb(var(--ce-sunken));
+
+  --color-teal: rgb(var(--rl-teal));
+  --color-gold: rgb(var(--rl-gold));
+  --color-red:  rgb(var(--rl-red));
+
+  --color-sage:  rgb(var(--ex-sage));
+  --color-brick: rgb(var(--ex-brick));
+  --color-ochre: rgb(var(--ex-ochre));
+  --color-terra: rgb(var(--ex-terra));
+
+  /* ==========================================================================
+     3. SEMANTIC ROLES
+     ======================================================================== */
+  --primary:        var(--color-accent);
+  --page-bg:        var(--color-bg);
+  --card-bg:        var(--color-bg);          /* cards sit ON paper, hover→surface */
+  --card-bg-hover:  var(--color-surface);
+  --surface-raised: var(--color-raised);      /* dropdowns, modals, popovers */
+  --surface-sunken: var(--color-sunken);      /* inputs, code beds, meter tracks */
+  --panel-dark-bg:  var(--color-sunken);      /* sidebar / panel surfaces — sunken paper */
+  --panel-dark-fg:  var(--color-ink);
+  /* Short aliases for "panel" surfaces (avatars, tool bars, solid buttons,
+     nav rail, tags). Light mode: SUNKEN PAPER with ink text — never a dark
+     fill on paper. Dark mode: an ELEVATED dark surface with cream text. */
+  --panel:    var(--panel-dark-bg);
+  --on-panel: var(--panel-dark-fg);
+  --hover:    rgb(26 24 20 / 0.05);            /* subtle hover wash on paper */
+
+  --fg-1: var(--color-ink);     /* headings, primary text */
+  --fg-2: var(--color-muted);   /* body, summaries */
+  --fg-3: var(--color-ghost);   /* captions, metadata, idle */
+
+  --title-active:  var(--color-accent);
+  --line-divider:  rgb(var(--ce-border) / 0.5);
+  --line-color:    rgb(var(--ce-border) / 0.3);
+  --line-strong:   var(--color-ink);          /* the heavy rule above footers */
+
+  /* links are INFO — orange stays reserved for action/emphasis */
+  --link-underline: var(--info);
+  --link-hover:     var(--info-strong);
+  --link-active:    var(--info-strong);
+
+  /* Admonition colors (from tokens.css) */
+  --admon-tip:       #D4621A;
+  --admon-note:      #4B8D9E;
+  --admon-important: #A33332;
+  --admon-warning:   #C29145;
+  --admon-caution:   #D4621A;
+
+  /* INFO BLUE — the cool functional accent: links, info banners, tooltips,
+     metadata tags, selected-inactive rows, progress fills. NEVER
+     success/warning/error/CTA — one color, one job. Tri-stripe (teal-gold-red)
+     is brand decorator only, never UI semantics. */
+  --blue-50:  #EAEEF2;
+  --blue-100: #D2DAE2;
+  --blue-300: #9DACBA;
+  --blue-500: #5D7489;
+  --blue-700: #3C4B5A;
+  --blue-900: #232C35;
+  --info:         var(--blue-500);  /* icons / borders / UI accents (AA large) */
+  --info-strong:  var(--blue-700);  /* links & technical text (AA normal) */
+  --info-surface: var(--blue-50);   /* banner / selected-inactive fill */
+  --info-border:  var(--blue-100);  /* banner / tooltip hairline */
+
+  /* ==========================================================================
+     4. TYPOGRAPHY FAMILIES
+     ======================================================================== */
+  --font-display: "Novecento Sans Wide", system-ui, sans-serif;        /* wide caps */
+  --font-sans:    "Plus Jakarta Sans", system-ui, -apple-system, "PingFang SC",
+                  "Hiragino Sans GB", "Microsoft YaHei", sans-serif;   /* body / UI */
+  --font-mono:    "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-cn:      "Novecento Sans Wide", "Noto Serif SC", serif;       /* CJK / serif body */
+
+  /* ==========================================================================
+     5. TYPE SCALE — headlines run SENTENCE CASE (Novecento lowercase renders as
+     small caps); ALL-CAPS is reserved for labels/captions/tags.
+     ======================================================================== */
+  --display-hero: 700 88px/0.95 var(--font-display);   /* LONETRAIL hero wordmark */
+  --h1:           900 40px/1.05 var(--font-display);   /* page titles, post titles */
+  --h2:           900 28px/1.10 var(--font-display);   /* card titles */
+  --h3:           600 20px/1.20 var(--font-display);   /* nav items, section heads */
+  --year-numeral: 400 48px/1.00 var(--font-display);   /* big archive year markers */
+
+  --body:         400 15px/1.75 var(--font-cn);        /* article body / summaries */
+  --body-sm:      400 14px/1.75 var(--font-cn);
+  --ui:           500 14px/1.5  var(--font-sans);      /* generic UI text */
+
+  /* Mono "field-report" labels — small, bold, UPPERCASE, very wide tracking */
+  --label:        700 11px/1 var(--font-mono);         /* tracking: 0.2em, uppercase */
+  --label-xs:     700 9px/1  var(--font-mono);         /* tracking: 0.2em, uppercase */
+  --meta:         400 11px/1.4 var(--font-mono);       /* RPT_00 · date, codes */
+
+  /* Tracking tokens */
+  --track-label: 0.2em; /* @kind other */    /* mono labels */
+  --track-wide:  0.1em; /* @kind other */    /* nav / chips */
+  --track-tight: -0.02em; /* @kind other */  /* display headings */
+
+  /* ==========================================================================
+     6. SHAPE — two doctrines. (A) Sharp is the default Rhine dossier look.
+        (B) Soft is a secondary scale for friendlier surfaces (avatars, toasts,
+        modals, media thumbs, marketing tiles). Pick one per surface.
+     ======================================================================== */
+  /* A · Sharp (default) */
+  --radius-large:  0px;
+  --radius-medium: 0px;
+  --radius-small:  2px;     /* the few rounded-sm chips/tags only */
+  --radius-dot:    9999px;  /* status dots / 2px square stripes excepted */
+
+  /* B · Soft (secondary) */
+  --radius-soft-sm: 4px;
+  --radius-soft-md: 8px;
+  --radius-soft-lg: 14px;
+
+  /* ==========================================================================
+     7. ELEVATION & TEXTURE
+     Cards float on paper with a deep, soft shadow — never a glossy one.
+     ======================================================================== */
+  --shadow-card: 0 25px 50px -12px rgb(26 24 20 / 0.25);   /* shadow-2xl */
+  --shadow-soft: 0 4px 6px -1px rgb(26 24 20 / 0.10);      /* shadow-md  */
+  --paper-noise-opacity: 0.04; /* @kind other */   /* fractalNoise overlay strength */
+  --watermark-opacity: 0.03; /* @kind other */     /* huge display watermark behind content */
+}
+
+/* ============================================================================
+   DARK THEME — opt-in via [data-theme="dark"] on <html> (or any wrapper).
+   NOTE: Lonetrail's source ships LIGHT-ONLY; this is an addition for the design
+   system. It keeps the warm "darkroom / developed-negative" character — never a
+   cool gray. Page + surfaces go dark; inverted "panel" chips become an ELEVATED
+   dark surface (not a swap), so avatars/bars/buttons stay legible. Accents and
+   the teal·gold·red stripe are brightened a step for contrast on dark.
+   ========================================================================== */
+[data-theme="dark"] {
+  /* base palette — warm dark */
+  --ce-ink:     236 228 212; /* @kind color */  /* #ECE4D4  now the PRIMARY TEXT (light on dark) */
+  --ce-bg:       23 20 16; /* @kind color */    /* #171410  deep warm near-black page */
+  --ce-surface:  33 29 23; /* @kind color */    /* #211D17  lifted card / hover surface */
+  --ce-border:   57 50 42; /* @kind color */    /* #39322A  warm hairline */
+  --ce-accent:  224 116 52; /* @kind color */   /* #E07434  burnt orange, brightened a step */
+  --ce-ghost:   140 132 117; /* @kind color */  /* #8C8475  captions, idle */
+  --ce-muted:   180 170 150; /* @kind color */  /* #B4AA96  secondary body — lifted for dark */
+  --ce-raised: 42 37 30;    /* @kind color */ /* #2A251E lifted layers (dark) */
+  --ce-sunken: 16 13 10;    /* @kind color */ /* #100D0A recessed wells (dark) */
+
+  /* tri-color + extended — brightened for legibility on dark */
+  --rl-teal: 91 163 181; /* @kind color */      /* #5BA3B5 */
+  --rl-gold: 212 164 90; /* @kind color */      /* #D4A45A */
+  --rl-red:  199 84 80; /* @kind color */       /* #C75450 */
+  --ex-sage:  111 160 137; /* @kind color */    /* #6FA089 */
+  --ex-brick: 168 74 66; /* @kind color */      /* #A84A42 */
+  --ex-ochre: 206 158 78; /* @kind color */     /* #CE9E4E */
+  --ex-terra: 198 124 82; /* @kind color */     /* #C67C52 */
+
+  /* inverted panels become an elevated dark surface with cream text */
+  --panel-dark-bg: #2A251E;
+  --panel-dark-fg: #ECE4D4;
+
+  /* info blue — dark remap (same palette, lighter steps for AA) */
+  --info:         var(--blue-300);
+  --info-strong:  var(--blue-100);
+  --info-surface: var(--blue-900);
+  --info-border:  var(--blue-700);
+
+  --hover: rgb(255 255 255 / 0.06);
+  --card-bg:       var(--color-surface);   /* cards lift off the page in dark */
+  --card-bg-hover: #2A251E;
+  --line-divider:  rgb(var(--ce-border) / 0.8);
+  --line-color:    rgb(var(--ce-border) / 0.6);
+
+  --shadow-card: 0 25px 50px -12px rgb(0 0 0 / 0.55);
+  --shadow-soft: 0 4px 6px -1px rgb(0 0 0 / 0.40);
+}
+
+/* ============================================================================
+   SEMANTIC ELEMENT DEFAULTS — apply with a wrapping .lt class to scope safely
+   ========================================================================== */
+.lt {
+  background: var(--page-bg);
+  color: var(--fg-1);
+  font: var(--body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.lt h1 { font: var(--h1); letter-spacing: var(--track-tight); color: var(--fg-1); margin: 0; }
+.lt h2 { font: var(--h2); letter-spacing: var(--track-tight); color: var(--fg-1); margin: 0; }
+.lt h3 { font: var(--h3); letter-spacing: var(--track-wide); color: var(--fg-1); margin: 0; }
+.lt p  { font: var(--body); color: var(--fg-2); margin: 0; text-wrap: pretty; }
+.lt a  { color: var(--info-strong); text-decoration: none; border-bottom: 1px solid var(--link-underline); }
+.lt a:hover { color: var(--link-hover); border-bottom-color: var(--info-strong); }
+.lt code, .lt .mono { font: var(--meta); }
+
+/* Mono field-report label utility */
+.lt-label {
+  font: var(--label);
+  text-transform: uppercase;
+  letter-spacing: var(--track-label);
+  color: var(--fg-1);
+}
+
+/* Paper texture overlay (fractal noise) — apply to card backgrounds */
+.paper-texture {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+}

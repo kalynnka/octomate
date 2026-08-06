@@ -39,5 +39,15 @@
       "console": "integratedTerminal",
       "justMyCode": false
     },
+    {
+      "name": "Trunkline web (reload)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/web",
+      "preLaunchTask": "Vite dev server (web)",
+      "sourceMaps": true,
+      "skipFiles": ["**/node_modules/**"]
+    },
   ]
 }
