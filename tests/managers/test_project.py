@@ -314,7 +314,7 @@ async def test_an_extra_root_colliding_with_another_root_is_refused(
 
 
 async def test_a_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(ValidationError, match="does not exist"):
+    with pytest.raises(ValidationError, match="does not point to a directory"):
         config([{"root": str(tmp_path / "not-cloned-yet")}])
 
 

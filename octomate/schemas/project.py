@@ -6,7 +6,13 @@ from typing import Annotated, Self
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from pydantic import BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import (
+    BeforeValidator,
+    ConfigDict,
+    DirectoryPath,
+    Field,
+    model_validator,
+)
 from uuid_utils.compat import uuid7
 
 from octomate.models.project import Project as ProjectModel
@@ -15,7 +21,7 @@ from octomate.types.conversations import ConversationPermissionMode
 
 
 def local_path(value: str | Path) -> Path:
-    """A project root: an absolute path to a named directory that is there.
+    """Make a project root absolute and named, for `DirectoryPath` to then check.
 
     `~` is expanded here for the reason `ConfigPath` exists: pydantic keeps `~/...`
     literal, and `Path("~/x").resolve()` yields ``<cwd>/~/x`` — a root like that
@@ -26,25 +32,24 @@ def local_path(value: str | Path) -> Path:
     relative path, and it matches nothing. That check runs before the `Path` is built
     because `PurePath` collapses `://` to `:/`, and the scheme stops being visible.
 
-    The rest is what makes a root a root. Declaring a project is a claim about this
-    machine, so a root that is missing or is a file fails at config load, where an
-    operator is looking, rather than at the first cwd that should have matched it.
-    Everything downstream gets a directory with a name it can be called by.
+    Having a name is the one thing a root needs that a directory does not, so that
+    everything downstream gets a directory it can call the project by. `DirectoryPath`
+    owns the rest: declaring a project is a claim about this machine, so a root that
+    is missing or is a file fails at config load, where an operator is looking, rather
+    than at the first cwd that should have matched it.
     """
     if "://" in str(value):
         raise ValueError(f"{value!r} is a url; a root is a plain local path")
     path = Path(value).expanduser().absolute()
-    if not path.exists():
-        raise ValueError(f"{path} does not exist")
-    if not path.is_dir():
-        raise ValueError(f"{path} is a file; a root is a directory")
     if not path.name:
         raise ValueError(f"{path} is the filesystem root, not a project")
     return path
 
 
+# Normalised first, then checked: the validator runs outside `DirectoryPath`, which
+# would otherwise reject a `~/...` root as a directory that is not there.
 # Symlinks are left alone — the manager resolves both sides when it compares.
-LocalPath = Annotated[Path, BeforeValidator(local_path)]
+LocalPath = Annotated[DirectoryPath, BeforeValidator(local_path)]
 
 
 @sqlalchemy_materia.bless(ProjectModel)

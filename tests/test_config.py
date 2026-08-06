@@ -919,7 +919,7 @@ def test_a_project_root_that_is_a_file_is_refused() -> None:
 
     [error] = exc_info.value.errors()
     assert error["loc"] == ("projects", 0, "root")
-    assert "is a file; a root is a directory" in error["msg"]
+    assert error["type"] == "path_not_directory"
 
 
 def test_a_project_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
@@ -932,7 +932,7 @@ def test_a_project_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
 
     [error] = exc_info.value.errors()
     assert error["loc"] == ("projects", 0, "root")
-    assert "does not exist" in error["msg"]
+    assert error["type"] == "path_not_directory"
 
 
 def test_a_project_extra_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
@@ -947,7 +947,7 @@ def test_a_project_extra_root_that_does_not_exist_is_refused(tmp_path: Path) -> 
 
     [error] = exc_info.value.errors()
     assert error["loc"] == ("projects", 0, "extra_roots", 0)
-    assert "does not exist" in error["msg"]
+    assert error["type"] == "path_not_directory"
 
 
 def test_the_filesystem_root_is_refused_as_a_project_root() -> None:
