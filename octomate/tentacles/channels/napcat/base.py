@@ -82,6 +82,7 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
             except asyncio.CancelledError:
                 pass
             self.serve_task = None
+        await super().__aexit__(*exc)
 
     async def serve(self) -> None:
         logger.info("Channel %s: connecting to Napcat at %s", self.id, self.ws_url)

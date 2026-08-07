@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+from typing import Self
 
 import httpx
 import lark_oapi as lark
@@ -26,6 +27,14 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageRequest,
     ReplyMessageRequestBody,
 )
+from lark_oapi.core.http import Transport
+
+# The url/header builders are module-private, but they are the request encoding
+# itself — reusing them is what keeps pooled_aexecute byte-identical to the
+# SDK's own transport.
+from lark_oapi.core.http.transport import _build_header, _build_url
+from lark_oapi.core.json import JSON
+from lark_oapi.core.model import BaseRequest, Config, RawResponse, RequestOption
 from pydantic import SecretStr
 from uuid_utils import uuid7
 
@@ -41,17 +50,77 @@ from octomate.tentacles.channels.lark.schema import (
 logger = logging.getLogger(__name__)
 
 
-def text_message(text: str) -> LarkOutboundMessage:
-    return LarkOutboundMessage(
-        msg_type="text",
-        content=json.dumps({"text": text}, ensure_ascii=False, separators=(",", ":")),
+SDK_AEXECUTE = Transport.aexecute
+
+# Each entered ink's own pooled client, keyed by the `Config` its `lark.Client`
+# dispatches with — the one argument `Transport.aexecute` receives that
+# identifies the calling app (every generated service of a built client shares
+# that exact instance).
+pools: dict[Config, httpx.AsyncClient] = {}
+
+
+async def pooled_aexecute(
+    conf: Config,
+    req: BaseRequest,
+    option: RequestOption | None = None,
+) -> RawResponse:
+    """`Transport.aexecute` reimplemented over long-lived clients — the SDK
+    leaves no polite way to pool. Its own version opens
+    `async with httpx.AsyncClient()` per request: a connection-pooling library
+    used as a disposable, paying a fresh TCP+TLS handshake on every card
+    update. `Config` will configure anything except the client, and the
+    generated `a*` methods call this staticmethod directly, so neither
+    injection nor subclassing gets in. Hence the impolite way: entering a
+    `LarkInk` rebinds the staticmethod to this. The patch is process-wide but
+    each request routes to the calling ink's own pool via `pools`; a config no
+    entered ink owns — some other `lark.Client` in the process — keeps the
+    SDK's stock behavior."""
+    client = pools.get(conf)
+    if client is None:
+        return await SDK_AEXECUTE(conf, req, option)
+    if option is None:
+        option = RequestOption()
+    if req.http_method is None or req.uri is None:
+        raise ValueError(
+            f"lark request is missing http_method or uri "
+            f"(method={req.http_method}, uri={req.uri})"
+        )
+    url = _build_url(conf.domain, req.uri, req.paths)
+    # Side effect: folds the option/token headers into req.headers, exactly as
+    # the SDK transport does before sending.
+    _build_header(req, option, conf)
+    body_json = JSON.marshal(req.body) if req.body is not None else None
+    json_, files, data = None, None, None
+    if req.files:
+        files = req.files
+        if body_json is not None:
+            data = json.loads(body_json)
+    elif body_json is not None:
+        json_ = json.loads(body_json)
+    response = await client.request(
+        str(req.http_method.name),
+        url,
+        headers=req.headers,
+        params=tuple(req.queries),
+        json=json_,
+        data=data,
+        files=files,
+        timeout=conf.timeout,
     )
+    resp = RawResponse()
+    resp.status_code = response.status_code
+    resp.headers = dict(response.headers)
+    resp.content = response.content
+    return resp
 
 
 class LarkInk(Ink[LarkOutboundMessage]):
     app_id: str
     app_secret: SecretStr
     client: lark.Client
+    # `client`'s own Config — the key this ink's requests route by in `pools`.
+    config: Config
+    http: httpx.AsyncClient | None
 
     def __init__(self, app_id: str, app_secret: SecretStr) -> None:
         self.app_id = app_id
@@ -62,6 +131,27 @@ class LarkInk(Ink[LarkOutboundMessage]):
             .app_secret(app_secret.get_secret_value())
             .build()
         )
+        config = self.client.config
+        if config is None:
+            raise ValueError("LarkInk: lark.Client was built without a Config")
+        self.config = config
+        self.http = None
+
+    async def __aenter__(self) -> Self:
+        """Open this ink's own pooled client and route the SDK calls its
+        `lark.Client` makes onto it (see `pooled_aexecute`)."""
+        self.http = httpx.AsyncClient()
+        pools[self.config] = self.http
+        Transport.aexecute = staticmethod(pooled_aexecute)
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        del pools[self.config]
+        if not pools:
+            Transport.aexecute = staticmethod(SDK_AEXECUTE)
+        if self.http is not None:
+            await self.http.aclose()
+            self.http = None
 
     async def inspect(self) -> LarkUserProfile:
         # The bot-info endpoint has no async SDK method, so call it over async
@@ -234,7 +324,14 @@ class LarkInk(Ink[LarkOutboundMessage]):
         return await self.send_message(
             chat_id,
             chat_type,
-            [text_message(text)],
+            [
+                LarkOutboundMessage(
+                    msg_type="text",
+                    content=json.dumps(
+                        {"text": text}, ensure_ascii=False, separators=(",", ":")
+                    ),
+                )
+            ],
             reply_to,
             reply_in_thread=reply_in_thread,
         )

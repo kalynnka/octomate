@@ -164,6 +164,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             except asyncio.CancelledError:
                 pass
         await self.ws_client._disconnect()  # type: ignore[attr-defined]
+        await super().__aexit__(*exc)
 
     async def start_sub_thread(
         self,

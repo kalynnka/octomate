@@ -164,6 +164,7 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
         if self.handler:
             await self.handler.close_async()
             self.handler = None
+        await super().__aexit__(*exc)
 
     async def on_message(self, event: SlackMessageEvent, say: AsyncSay) -> None:
         subtype = event.get("subtype")
