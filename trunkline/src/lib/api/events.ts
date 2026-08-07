@@ -182,6 +182,11 @@ export interface ResultSegmentEvent {
   segment: WireSegment
 }
 
+export interface ResultTextDeltaEvent {
+  event_kind: 'result_text_delta'
+  delta: string
+}
+
 export interface WireTodo {
   ref: string
   content: string
@@ -302,6 +307,7 @@ export type WireEvent =
   | DeferredToolResultsEvent
   | EnqueuedMessagesEvent
   | ResultSegmentEvent
+  | ResultTextDeltaEvent
   | TodoEvent
   | MessageSentEvent
   | OAuthAuthorizationEvent

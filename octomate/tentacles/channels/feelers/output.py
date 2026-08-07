@@ -62,6 +62,7 @@ from octomate.capabilities.harness.events import (
     MessageSentEvent,
     OAuthAuthorizationEvent,
     ResultSegmentEvent,
+    ResultTextDeltaEvent,
     StreamEvents,
     SubagentActivity,
     SubagentActivityStatus,
@@ -774,6 +775,9 @@ class TimelineState:
                     case ResultSegmentEvent():
                         answered = True
                         await self.answer_segment(event.segment)
+                    case ResultTextDeltaEvent():
+                        answered = True
+                        await self.answer_delta(event.delta)
                     case (
                         TodoCreatedEvent()
                         | TodoUpdatedEvent()
