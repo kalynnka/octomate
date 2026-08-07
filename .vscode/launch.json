@@ -2,13 +2,6 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python Debugger: Current File",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${file}",
-      "console": "integratedTerminal"
-    },
-    {
       "name": "Octomate",
       "type": "debugpy",
       "request": "launch",
@@ -40,14 +33,26 @@
       "justMyCode": false
     },
     {
-      "name": "Trunkline web (reload)",
-      "type": "chrome",
+      "name": "Trunkline (reload)",
+      "type": "node",
       "request": "launch",
-      "url": "http://localhost:5173",
-      "webRoot": "${workspaceFolder}/web",
-      "preLaunchTask": "Vite dev server (web)",
-      "sourceMaps": true,
-      "skipFiles": ["**/node_modules/**"]
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "cwd": "${workspaceFolder}/trunkline",
+      "serverReadyAction": {
+        "action": "debugWithChrome",
+        "pattern": "Local:\\s+(https?://\\S+)",
+        "uriFormat": "%s",
+        "webRoot": "${workspaceFolder}/trunkline",
+        "killOnServerStop": true
+      }
+    },
+  ],
+  "compounds": [
+    {
+      "name": "Octomate + Trunkline",
+      "configurations": ["Octomate", "Trunkline (reload)"],
+      "stopAll": true
     },
   ]
 }
