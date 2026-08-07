@@ -15,7 +15,7 @@ from octomate.schemas.conversation import ConversationPermissionMode
 
 
 def local_path(value: str | Path) -> Path:
-    """A project root: an absolute path to a named directory that is there.
+    """A project root, normalized: an absolute local path with a name to go by.
 
     `~` is expanded here for the reason `ConfigPath` exists: pydantic keeps `~/...`
     literal, and `Path("~/x").resolve()` yields ``<cwd>/~/x`` — a root like that
@@ -26,18 +26,15 @@ def local_path(value: str | Path) -> Path:
     relative path, and it matches nothing. That check runs before the `Path` is built
     because `PurePath` collapses `://` to `:/`, and the scheme stops being visible.
 
-    The rest is what makes a root a root. Declaring a project is a claim about this
-    machine, so a root that is missing or is a file fails at config load, where an
-    operator is looking, rather than at the first cwd that should have matched it.
-    Everything downstream gets a directory with a name it can be called by.
+    Whether the directory is actually there is deliberately not this type's claim.
+    That check lives at the config boundary (`octomate.config.projects`), where the
+    operator who declared the project is looking: this type also validates rows
+    rehydrated from the database, which are history and may outlive the directories
+    they named — a registry row must never stop the process that would explain it.
     """
     if "://" in str(value):
         raise ValueError(f"{value!r} is a url; a root is a plain local path")
     path = Path(value).expanduser().absolute()
-    if not path.exists():
-        raise ValueError(f"{path} does not exist")
-    if not path.is_dir():
-        raise ValueError(f"{path} is a file; a root is a directory")
     if not path.name:
         raise ValueError(f"{path} is the filesystem root, not a project")
     return path

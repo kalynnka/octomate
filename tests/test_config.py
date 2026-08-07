@@ -918,21 +918,25 @@ def test_a_project_root_that_is_a_file_is_refused() -> None:
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("projects", 0, "root")
+    assert error["loc"] == ("projects", 0)
+    assert error["type"] == "project_root_not_a_directory"
     assert "is a file; a root is a directory" in error["msg"]
 
 
 def test_a_project_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
     # Declaring a project claims something about this machine, so a root that is not
-    # there fails at config load rather than at the first cwd that should have matched.
+    # there fails at config load rather than at the first cwd that should have
+    # matched — and the error names the project, not just the path.
     with pytest.raises(ValidationError) as exc_info:
         IsolatedTestConfig.model_validate(
             {"projects": [{"root": str(tmp_path / "not-cloned-yet")}]}
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("projects", 0, "root")
-    assert "does not exist" in error["msg"]
+    assert error["loc"] == ("projects", 0)
+    assert error["type"] == "project_root_missing"
+    assert "project 'not-cloned-yet': root" in error["msg"]
+    assert "does not exist on this machine" in error["msg"]
 
 
 def test_a_project_extra_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
@@ -946,8 +950,10 @@ def test_a_project_extra_root_that_does_not_exist_is_refused(tmp_path: Path) -> 
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("projects", 0, "extra_roots", 0)
-    assert "does not exist" in error["msg"]
+    assert error["loc"] == ("projects", 0)
+    assert error["type"] == "project_root_missing"
+    assert "extra root" in error["msg"]
+    assert "does not exist on this machine" in error["msg"]
 
 
 def test_the_filesystem_root_is_refused_as_a_project_root() -> None:
