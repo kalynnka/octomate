@@ -272,10 +272,11 @@ export function TimelinePanel() {
           flexShrink: 0,
         }}
       >
-        <span style={{ ...label(10, '.22em'), color: 'var(--fg-1)' }}>Timeline</span>
-        <span style={{ ...label(8, '.14em'), color: 'var(--fg-3)' }}>of this thread</span>
+        <span style={{ ...label(10, '.22em'), color: 'var(--fg-1)', whiteSpace: 'nowrap', flexShrink: 0 }}>Timeline</span>
+        <span style={{ ...label(8, '.14em'), color: 'var(--fg-3)', ...ellipsis, minWidth: 0 }}>of this thread</span>
         <span style={{ flex: 1 }} />
-        <span style={{ ...mono(8.5, 700), color: 'var(--color-accent)' }}>{detail?.key ?? selThreadId}</span>
+        {/* The full key sits in the row below; this one truncates when squashed. */}
+        <span style={{ ...mono(8.5, 700), color: 'var(--color-accent)', ...ellipsis, minWidth: 0 }}>{detail?.key ?? selThreadId}</span>
       </div>
       <div
         style={{

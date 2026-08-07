@@ -36,10 +36,8 @@ export function ChatLog() {
         {
           '--trk-card-max': cardMax,
           position: 'relative',
-          padding: '20px 24px',
           display: 'flex',
           flexDirection: 'column',
-          gap: 14,
           flex: 1,
           minHeight: 0,
           overflowY: 'auto',
@@ -56,7 +54,7 @@ export function ChatLog() {
           ↑ scroll — earlier messages load step by step
         </div>
       )}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="trk-ledger-col">
         {blank && (
           <div
             className="lt-fade-in"

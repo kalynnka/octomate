@@ -20,12 +20,17 @@ export function useRailDrag(
       const el = document.getElementById(elementId)
       if (!el) return
       const r = el.getBoundingClientRect()
+      // Rect and pointer arrive in zoomed (visual) pixels while the stored
+      // width feeds an unzoomed inline style, so divide the delta back down.
+      const zoom = Number(getComputedStyle(document.documentElement).zoom) || 1
       setRailDrag(key)
       const onMove = (ev: MouseEvent) => {
-        const raw = fromRight ? r.right - ev.clientX : ev.clientX - r.left
+        const raw = (fromRight ? r.right - ev.clientX : ev.clientX - r.left) / zoom
         setRailWidth(
           key,
-          Math.round(Math.min(Math.max(raw, min), Math.min(max, window.innerWidth - 380))),
+          Math.round(
+            Math.min(Math.max(raw, min), Math.min(max, window.innerWidth / zoom - 380)),
+          ),
         )
       }
       const onUp = () => {

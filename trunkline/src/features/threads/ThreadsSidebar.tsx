@@ -103,6 +103,8 @@ export function ThreadsSidebar() {
       >
         {!sbFold && (
           <>
+            {/* The wordmark yields when the rail is squashed, so the toggle
+                stays inside the panel instead of spilling over the chat title. */}
             <span
               style={{
                 ...display(17),
@@ -110,11 +112,13 @@ export function ThreadsSidebar() {
                 letterSpacing: '-.01em',
                 textTransform: 'uppercase',
                 color: 'var(--fg-1)',
+                ...ellipsis,
+                minWidth: 0,
               }}
             >
               Octomate
             </span>
-            <span style={{ ...label(7.5, '.18em'), color: 'var(--fg-3)', paddingTop: 3 }}>
+            <span style={{ ...label(7.5, '.18em'), color: 'var(--fg-3)', paddingTop: 3, whiteSpace: 'nowrap', flexShrink: 0 }}>
               v0.4.1
             </span>
             <span style={{ flex: 1 }} />

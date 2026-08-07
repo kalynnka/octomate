@@ -62,9 +62,20 @@ export const applyThemeAttr = (dark: boolean) => {
   else el.removeAttribute('data-theme')
 }
 
+// Deferred a frame: callers scroll right after a set(), before React commits
+// the new rows — measuring scrollHeight now would stop short of the bottom.
 const scrollChatBottom = (smooth?: boolean) => {
+  requestAnimationFrame(() => {
+    const el = document.getElementById('trk-chatlog')
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+  })
+}
+
+/** Whether the reader is pinned near the ledger's tail (measured pre-commit,
+ * so streaming growth follows only while they haven't scrolled away). */
+const nearChatBottom = () => {
   const el = document.getElementById('trk-chatlog')
-  if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+  return el === null || el.scrollHeight - el.scrollTop - el.clientHeight < 120
 }
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
@@ -113,6 +124,8 @@ export interface ConsoleActions {
   setControlSection(sec: ControlSection): void
   goChat(): void
   toggleTrace(): void
+  /** fold/unfold panels when the window crosses width breakpoints */
+  applyViewport(width: number): void
   setRailWidth(key: RailKey, w: number): void
   setRailDrag(key: RailKey | null): void
   toggleCardOpen(uid: string, def?: boolean): void
@@ -247,6 +260,14 @@ const nextUid = () => `v${++uidN}`
 /** Ledger items rendered per page — the latest page first, earlier pages on scroll-top. */
 const LEDGER_PAGE = 40
 
+/* Width lines the shell folds at: below TRACE_BREAK the timeline gives its
+   column to the chat, below SIDEBAR_BREAK the thread tree collapses to the
+   letter-rail, below PANEL_BREAK the dossier and control close outright. */
+const TRACE_BREAK = 1360
+const SIDEBAR_BREAK = 1120
+const PANEL_BREAK = 880
+let lastViewportWidth: number | null = null
+
 const at = (ms: number, fn: () => void) => {
   timers.push(setTimeout(fn, ms))
 }
@@ -279,7 +300,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   }
 
   const patchLive = (fn: (item: LedgerItem) => LedgerItem) => {
+    const follow = nearChatBottom()
     set((s) => ({ live: s.live.map(fn) }))
+    // Streaming grows cards through patches, not pushes; keep the tail in
+    // view unless the reader has scrolled up.
+    if (follow) scrollChatBottom()
   }
 
   const stream = (text: string, done?: () => void) => {
@@ -291,7 +316,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       i += 2
       const t = words.slice(0, i).join(' ')
       patchLive((x) => (x.uid === uid && x.kind === 'stream' ? { ...x, text: t } : x))
-      scrollChatBottom()
       if (i >= words.length) {
         clearInterval(streamInterval)
         patchLive((x) => (x.uid === uid && x.kind === 'stream' ? { ...x, streaming: false } : x))
@@ -531,6 +555,29 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         scrollChatBottom()
         replayView()
       }, 40)
+    },
+    applyViewport(width: number) {
+      // Crossing-based, not absolute: each downward crossing folds, each
+      // upward crossing restores the default — so a user's manual toggle
+      // survives resizes until the window actually crosses a line again.
+      const before = lastViewportWidth
+      lastViewportWidth = width
+      if (before === null) {
+        // First measurement: fold whatever the initial window cannot fit.
+        if (width < TRACE_BREAK) set({ traceOn: false })
+        if (width < SIDEBAR_BREAK) set({ sbFold: true })
+        if (width < PANEL_BREAK) set({ pvOpen: false, mgmtOpen: false, mgmtSec: '' })
+        return
+      }
+      const crossedDown = (line: number) => before >= line && width < line
+      const crossedUp = (line: number) => before < line && width >= line
+      if (crossedDown(TRACE_BREAK)) set({ traceOn: false })
+      if (crossedUp(TRACE_BREAK)) set({ traceOn: null })
+      if (crossedDown(SIDEBAR_BREAK)) set({ sbFold: true })
+      if (crossedUp(SIDEBAR_BREAK)) set({ sbFold: false })
+      // Dossier and control are explicit opens; a wider window does not
+      // reopen them on the user's behalf.
+      if (crossedDown(PANEL_BREAK)) set({ pvOpen: false, mgmtOpen: false, mgmtSec: '' })
     },
     toggleTrace() {
       set((s) => {

@@ -340,7 +340,9 @@ export class TurnFold {
         const u = event.usage
         this.sink.push({
           kind: 'end',
-          label: `run complete · ${u.requests} req · ${u.input_tokens}→${u.output_tokens} tok`,
+          label:
+            `run complete · ${u.requests} ${u.requests === 1 ? 'request' : 'requests'}` +
+            ` · ${u.input_tokens.toLocaleString('en-US')} tokens in · ${u.output_tokens.toLocaleString('en-US')} out`,
         })
         this.ended = true
         this.sink.done()

@@ -3,11 +3,12 @@
  * design comp. Chat rows carry id "pm-{uid}" (session rules use their own
  * uid) so the timeline can jump to them.
  */
-import { Fragment, useState, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { AgentBlock, AskOption, LedgerItem, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useConsole } from '@/state/console'
 import { Icon, type IconName } from '@/components/Icon'
 import { Disclose, Fold } from '@/components/Fold'
+import { Markdown } from '@/components/Markdown'
 import { cardKind, display, ellipsis, fieldLabel, label, metaLine, microMeta, microSection, mono, sectionLabel, serif, statusNote } from '@/components/text'
 
 const ghost3: CSSProperties = { color: 'var(--fg-3)' }
@@ -185,9 +186,9 @@ function AgentRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'agent'
         {item.blocks.map((b, i) => {
           if (b.type === 'p')
             return (
-              <p key={i} style={{ margin: i === item.blocks.length - 1 ? 0 : '0 0 10px' }}>
-                <InlineCode text={b.text} />
-              </p>
+              <div key={i} style={{ margin: i === item.blocks.length - 1 ? 0 : '0 0 10px' }}>
+                <Markdown text={b.text} />
+              </div>
             )
           if (b.type === 'ul')
             return (
@@ -712,9 +713,19 @@ function ApprovalRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: '
   )
 }
 
+// Ask bodies clamp to roughly two prose lines; anything under that renders
+// whole, with no fade and no "show all".
+const ASK_BODY_CLAMP = 46
+
 function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' }>; cardMax: string; i?: number }) {
   const { answerAsk } = useConsole((s) => s.actions)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [bodyLong, setBodyLong] = useState(false)
   const [bodyMore, setBodyMore] = useState(false)
+  useLayoutEffect(() => {
+    const el = bodyRef.current
+    if (el) setBodyLong(el.scrollHeight > ASK_BODY_CLAMP + 4)
+  }, [item.body])
   const [rowOpen, setRowOpen] = useState(0)
   const [otherOpen, setOtherOpen] = useState(false)
   const [otherText, setOtherText] = useState('')
@@ -778,18 +789,23 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               Ask · waiting · kalynnka
             </span>
           </div>
-          <div style={{ position: 'relative', overflow: 'hidden', maxHeight: bodyMore ? 'none' : 46, marginTop: 6 }}>
+          <div
+            ref={bodyRef}
+            style={{ position: 'relative', overflow: 'hidden', maxHeight: bodyMore || !bodyLong ? 'none' : ASK_BODY_CLAMP, marginTop: 6 }}
+          >
             <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: 'var(--fg-2)' }}>{item.body}</p>
-            {!bodyMore && (
+            {bodyLong && !bodyMore && (
               <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, background: 'linear-gradient(transparent, var(--card-bg))', pointerEvents: 'none' }} />
             )}
           </div>
-          <div style={{ display: 'flex', marginTop: 2 }}>
-            <span style={{ flex: 1 }} />
-            <span onClick={() => setBodyMore((v) => !v)} className="hov-accent" style={{ ...label(8, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}>
-              {bodyMore ? '▾ show less' : '▸ show all'}
-            </span>
-          </div>
+          {bodyLong && (
+            <div style={{ display: 'flex', marginTop: 2 }}>
+              <span style={{ flex: 1 }} />
+              <span onClick={() => setBodyMore((v) => !v)} className="hov-accent" style={{ ...label(8, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}>
+                {bodyMore ? '▾ show less' : '▸ show all'}
+              </span>
+            </div>
+          )}
         </div>
         <div style={{ marginTop: 9, borderTop: '1px solid var(--line-divider)' }}>
           {item.options.map((o, idx) => {
@@ -1028,7 +1044,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
     case 'stream':
       return (
         <div id={`pm-${item.uid}`} className="lt-fade-in" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
-          {item.text}
+          <Markdown text={item.text} />
           {item.streaming && <span className="lt-caret" style={{ verticalAlign: 'text-bottom', marginLeft: 3 }} />}
         </div>
       )
