@@ -220,16 +220,31 @@ class Octomate:
                                 tentacle.id,
                             )
 
-                    # Agents first (concurrently), then channels (concurrently), so
-                    # tools are warm before channels ingest without any one tentacle
-                    # blocking the group.
-                    await asyncio.gather(
-                        *(start(agent) for agent in self.agents.values())
-                    )
-                    await asyncio.gather(
-                        *(start(channel) for channel in self.channels.values())
-                    )
-                    yield
+                    async def start_all() -> None:
+                        # Agents first (concurrently), then channels (concurrently),
+                        # so tools are warm before channels ingest without any one
+                        # tentacle blocking the group.
+                        await asyncio.gather(
+                            *(start(agent) for agent in self.agents.values())
+                        )
+                        await asyncio.gather(
+                            *(start(channel) for channel in self.channels.values())
+                        )
+
+                    # Serve immediately: MCP warms and channel sockets proceed in
+                    # the background so a console connects the moment uvicorn
+                    # binds. `start` already isolates and time-bounds each entry,
+                    # so this task settles on its own and never raises.
+                    starting = asyncio.create_task(start_all())
+                    try:
+                        yield
+                    finally:
+                        # Join before the enclosing stack exits — on every path.
+                        # An error thrown into the yield would otherwise unwind
+                        # the stack while `start_all` is still pushing entries
+                        # onto it. `start` bounds each entry, so this wait is
+                        # bounded too; on a normal shutdown it is a no-op.
+                        await starting
 
         app = FastAPI(title=title, docs_url="/docs", redoc_url=None, lifespan=lifespan)
         app.state.octomate = self
