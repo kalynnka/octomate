@@ -158,10 +158,15 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self,
         profile: UserProfile,
     ) -> list[AgentCapability[None]]:
-        bound = [
-            await capability.for_profile(profile)
-            for capability in self.user_scoped_capabilities
-        ]
+        # Concurrently: binding an integration can cold-build the user's MCP
+        # session (connect + tools/list), so the cost is the slowest server
+        # rather than the sum of them.
+        bound = await asyncio.gather(
+            *(
+                capability.for_profile(profile)
+                for capability in self.user_scoped_capabilities
+            )
+        )
         return [capability for capability in bound if capability is not None]
 
     async def __aenter__(self) -> Self:
