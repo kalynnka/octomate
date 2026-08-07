@@ -36,7 +36,7 @@ from octomate.tentacles.base import TentacleLogFormatter
 from octomate.tentacles.channels.lark import LarkTentacle
 from octomate.tentacles.channels.napcat import NapcatTentacle
 from octomate.tentacles.channels.slack import SlackTentacle
-from octomate.tentacles.channels.web.vercel import VercelTentacle
+from octomate.tentacles.channels.web.trunkline import TrunklineTentacle
 
 config = OctomateConfig()
 
@@ -187,7 +187,6 @@ def create_app() -> FastAPI:
     logging.getLogger("watchfiles").setLevel(logging.WARNING)
     for name, level in config.logging.loggers.items():
         logging.getLogger(name).setLevel(level)
-    logger = logging.getLogger("octomate.main")
 
     octomate.connect(
         InklingTentacle(
@@ -254,19 +253,14 @@ def create_app() -> FastAPI:
         )
 
     if (
-        channel_config := config.channels.dev_ui
+        channel_config := config.channels.trunkline
     ) is not None and channel_config.enabled:
         octomate.connect(
-            VercelTentacle(
-                "dev_ui",
+            TrunklineTentacle(
+                "trunkline",
                 octomate,
                 config=channel_config,
             )
-        )
-        logger.info(
-            "Dev UI (vercel) enabled — open http://%s:%d/",
-            config.host,
-            config.port,
         )
 
     return octomate.app(title="Octomate")

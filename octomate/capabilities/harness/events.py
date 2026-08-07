@@ -21,9 +21,17 @@ Display and action events are emitted by capabilities (a capability bundles a to
 + instructions + `wrap_run_event_stream`); the output events are emitted by
 `Agent.stream_events` (see octomate/capabilities/harness/agent.py).
 
-Serialization (a wire format for dev_ui) is intentionally not modelled here yet:
-the output events are generic, so a single discriminated `TypeAdapter` no longer
-fits — that belongs with the consumer/transport layer when dev_ui adopts this.
+A second, consumer-emitted family lives here too: the wire forms
+(`SubagentStartedEvent`/`SubagentSettledEvent`, `RunResultEvent`,
+`RunErrorEvent`). They are not run-stream members — they carry the subagent
+timeline callbacks and the run result/failure in a serializable shape, for any
+channel that mirrors its timeline onto a wire instead of holding platform
+state.
+
+The run-stream union itself stays generic (`FinalResult[OutputT]`), so it has
+no single serialized form — but the wire family is concrete, so `WireEvent` and
+its `wire_event_adapter` live here too: the run stream as a wire consumer sees
+it, with the generic/unserializable members replaced by their wire forms.
 """
 
 from __future__ import annotations
@@ -31,9 +39,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypeAlias, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_ai import AgentStreamEvent
 from pydantic_ai.result import FinalResult
+from pydantic_ai.usage import RunUsage
 from typing_extensions import TypeAliasType
 
 from octomate.schemas.conversation import ChannelAddress
@@ -54,6 +63,50 @@ class SubagentActivity:
     invocation_id: str
     kind: SubagentActivityKind
     name: str
+
+
+class SubagentStartedEvent(BaseModel):
+    """The event form of `SubagentActivity`: a commissioned child run opened
+    its own timeline.
+
+    Not a run-stream member — subagent lifecycle reaches channels through the
+    timeline callbacks (`TimelineState.open_subagent`); a channel that mirrors
+    its timeline onto a wire emits these instead of holding platform state."""
+
+    event_kind: Literal["subagent_started"] = "subagent_started"
+    invocation_id: str
+    kind: SubagentActivityKind
+    name: str
+
+
+class SubagentSettledEvent(BaseModel):
+    """The child run finished; `response` is its accumulated reply text."""
+
+    event_kind: Literal["subagent_settled"] = "subagent_settled"
+    invocation_id: str
+    status: SubagentActivityStatus
+    detail: str | None = None
+    response: str = ""
+
+
+class RunResultEvent(BaseModel):
+    """The serializable projection of `AgentRunResultEvent`, whose payload
+    drags the run's private graph state and cannot go on a wire. Carries the
+    output value so a reply that never streamed (a plain non-streaming model,
+    a segment-less structured output) still reaches the consumer, and the
+    usage a session display renders."""
+
+    event_kind: Literal["run_result"] = "run_result"
+    output: str | list[MessageSegment] | None = None
+    usage: RunUsage
+
+
+class RunErrorEvent(BaseModel):
+    """A run that failed before producing a result, so a wire consumer can
+    render the failure instead of watching its stream drop."""
+
+    event_kind: Literal["run_error"] = "run_error"
+    message: str
 
 
 @dataclass
@@ -194,4 +247,36 @@ StreamEvents = TypeAliasType(
     | OAuthAuthorizationEvent
     | ActionBatchEvent,
     type_params=(OutputT,),
+)
+
+# The run stream as a wire consumer sees it: `StreamEvents` with the generic /
+# unserializable members replaced by their wire forms (`FinalResult` dropped for
+# `RunResultEvent`, the subagent timeline callbacks as events), every member
+# discriminated by `event_kind`.
+WireEvent = TypeAliasType(
+    "WireEvent",
+    AgentStreamEvent
+    | ResultSegmentEvent
+    | TodoEvent
+    | MessageSentEvent
+    | OAuthDeviceAuthorizationEvent
+    | OAuthAuthorizationEvent
+    | ActionBatchEvent
+    | SubagentStartedEvent
+    | SubagentSettledEvent
+    | RunResultEvent
+    | RunErrorEvent,
+)
+
+# Serialization-only: wire consumers never validate events back in, so the
+# union needs no validation discriminator (the OAuth pair could not carry one
+# anyway — both declare the same two-valued `event_kind` literal). Binary
+# payloads (a `FilePart`, bytes in a tool return) travel base64 like
+# pydantic-ai's own `tool_return_ta` does. Dump with warnings=False: the
+# union's Any-typed provider fields (tool return content, provider_details, a
+# callable thinking-signature slot) trip the serializer warning on ordinary
+# events, which would log once per streamed delta.
+wire_event_adapter: TypeAdapter[WireEvent] = TypeAdapter(
+    WireEvent,
+    config=ConfigDict(ser_json_bytes="base64"),
 )

@@ -9,6 +9,7 @@ from dataclasses import InitVar, dataclass, field
 from typing import TypeVar
 
 from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
@@ -253,5 +254,16 @@ class Octomate:
 
         for router in self.routers:
             app.include_router(router)
+
+        # Channel-declared static surfaces mount after every router, so a
+        # catch-all root (a channel's web UI) always loses to /api, /hooks,
+        # /oauth, and /docs.
+        for channel in self.channels.values():
+            for static in channel.static_mounts():
+                app.mount(
+                    static.path,
+                    StaticFiles(directory=static.directory, html=static.html),
+                    name=static.name,
+                )
 
         return app
