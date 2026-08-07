@@ -1,5 +1,7 @@
+import { awaitingEndpoint } from '@/lib/api'
+import type { SurfaceInfo } from '@/lib/api/types'
 import { useConsole } from '@/state/console'
-import { useSurfaces, useThreads } from '@/lib/api/hooks'
+import { useThreads } from '@/lib/api/hooks'
 import { Icon } from '@/components/Icon'
 import { ellipsis, label, mono, statusNote } from '@/components/text'
 
@@ -15,7 +17,7 @@ export function ChatHeader() {
   const theme = useConsole((s) => s.theme)
   const sysDark = useConsole((s) => s.sysDark)
   const { toggleTeleMenu, teleport, toggleTheme, toggleTrace } = useConsole((s) => s.actions)
-  const { data: surfaces } = useSurfaces()
+  const surfaces = awaitingEndpoint<SurfaceInfo[]>()
   const { data: threads } = useThreads()
 
   const isDark = theme === 'dark' || (theme === 'auto' && sysDark)

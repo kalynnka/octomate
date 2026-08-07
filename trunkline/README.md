@@ -13,9 +13,10 @@ pnpm build      # tsc -b && vite build
 pnpm lint       # oxlint
 ```
 
-The console runs fully on mock data when the Octomate server is down (the
-status bar shows `relay offline`). With the backend running it is an entry
-and a reader: every channel's threads and ledgers are read live from
+The console is live-only for thread data: when the Octomate server is down
+the status bar shows `relay offline` and the ledger surfaces stay empty
+(only the shell's channel/project/control/status panels keep their mock
+stand-ins). With the backend running it is an entry and a reader: every channel's threads and ledgers are read live from
 `/api/trunkline`, directives create or continue threads on the trunkline
 channel itself, and other channels' threads are read-only views. In production there is a single entry — `uvicorn
 main:create_app --factory` serves this app's `dist/` at `/` alongside the API
@@ -43,15 +44,15 @@ trunkline/
     │   │   ├── events.ts       # wire types: 1:1 mirror of the trunkline SSE union
     │   │   ├── client.ts       # /api/trunkline endpoints + SSE reader
     │   │   ├── live.ts         # wire payloads → render shapes (threads, feelers)
-    │   │   ├── index.ts        # api = live trunkline + mock other channels
+    │   │   ├── index.ts        # api = live thread data + mock shell surfaces
     │   │   ├── hooks.ts        # TanStack Query hooks
-    │   │   └── mock/           # design dataset + mock adapter (latency-simulated)
+    │   │   ├── fold.ts         # TurnFold: wire events → ledger cards (live + replay)
+    │   │   └── mock/           # shell-surface stand-ins (channels, control, status)
     │   ├── queryClient.ts      # shared QueryClient (store invalidates after runs)
     │   └── useRailDrag.ts      # drag-to-resize for the four rails
     ├── state/
-    │   ├── console.ts          # zustand store: selection, panels, theme, ledger
-    │   │                       #   overlays, feelers, live run driving, mock demos
-    │   └── eventFold.ts        # TurnFold: SSE events → ledger cards, one per run
+    │   └── console.ts          # zustand store: selection, panels, theme, ledger
+    │                           #   overlays, feelers, live run driving
     └── features/
         ├── shell/              # ConsoleShell (layout), StatusBar (live health)
         ├── threads/            # ThreadsSidebar: channel letter-rail + thread tree
@@ -77,9 +78,9 @@ Architecture rules of thumb:
   not a bubble list.
 - **Live turns** stream over `POST /api/trunkline/threads/{key}/messages` as
   the backend's native event union (`lib/api/events.ts`), folded into ledger
-  cards by `state/eventFold.ts`. Other channels' threads are read-only views
-  of the same ledger; the comp's scripted demo turns survive only as the
-  relay-down fallback.
+  cards by `lib/api/fold.ts` — and a reload folds each recorded run's replay
+  (`GET /threads/{id}.runs`) through the same fold, so history and live render
+  identically. Other channels' threads are read-only views of the same ledger.
 
 ## Backend endpoints used today (`/api/trunkline`)
 
@@ -88,7 +89,7 @@ Architecture rules of thumb:
 | `GET  /health` | status-bar relay chip (offline/degraded/nominal), 15s poll |
 | `GET  /routes` | new-thread agent·model picker; the pick rides only a thread's first directive (routes are fixed after that — re-routing awaits a manual handoff verb) |
 | `GET  /threads` | every channel's threads (sidebar), newest first |
-| `GET  /threads/{id}` | any thread's ledger + sessions (handoffs) + pending feeler batches, by thread row id |
+| `GET  /threads/{id}` | any thread's ledger + sessions (handoffs) + recorded runs replayed as wire events + pending feeler batches, by thread row id |
 | `POST /threads/{id}/messages` | send a directive; SSE of the native run events — a fresh id creates the thread, an existing id continues it |
 | `POST /batches/{id}/resolve` | answer a feeler; SSE of the resumed run |
 
@@ -110,12 +111,11 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
 1. **`GET /api/channels`** — channel tentacles with label/kind/health
    (`Octomate.channels`; sidebar channel rail and status-bar chips still use
    the static mock channel list).
-2. **Paged, typed ledger history** — `GET .../messages?before=` with typed
-   items (thinking, tool calls + results, subagent runs, spills) rehydrated
-   from `ThreadMessage` + `MessageBinding` + model messages
-   (`ThreadManager.chat_messages_before`, `related_model_messages`); today
-   hydration is text-only (`message_text`), so rich cards exist only for
-   turns streamed while the console watched.
+2. **Server-paged ledger history** — `GET /threads/{id}` now replays every
+   recorded run as typed wire events (thinking, tool calls + results), so
+   rich cards survive reload; but the payload is the whole thread, and the
+   console pages it client-side (latest page first, earlier on scroll-up). A
+   `?before=` cursor is still wanted once threads outgrow one response.
 3. **`GET /api/trunkline/events` (standing SSE/WebSocket)** — a live ledger
    stream outside the request/response run call, so native-agent ingests,
    IM-relayed turns, and other-session runs land in an open console. Today

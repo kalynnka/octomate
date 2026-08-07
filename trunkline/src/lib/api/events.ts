@@ -313,6 +313,11 @@ export type WireEvent =
 
 // ---- REST payloads ---------------------------------------------------------
 
+export interface ApiChannelInfo {
+  id: string
+  kind: string // tentacle class name — SlackTentacle, …
+}
+
 export interface ApiRoute {
   id: string // opaque — model names may embed ':', never split this
   agent: string
@@ -353,9 +358,21 @@ export interface ApiSessionEntry {
   created_at: string
 }
 
+/**
+ * One recorded agent run, replayed by the relay as the wire events its live
+ * stream carried — reload folds through the same TurnFold as live streaming.
+ */
+export interface ApiRunReplay {
+  id: string
+  agent: string
+  started_at: string | null
+  events: WireEvent[]
+}
+
 export interface ApiThreadDetail extends ApiThreadSummary {
   entries: ApiLedgerEntry[]
   sessions: ApiSessionEntry[]
+  runs: ApiRunReplay[]
   pending: ActionBatchEvent[]
 }
 

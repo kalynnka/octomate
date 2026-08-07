@@ -168,6 +168,17 @@ export type LedgerItem =
       batchId?: string
       actionId?: string
     }
+  | {
+      kind: 'oauth'
+      uid: string
+      /** integration label — "GitHub" */
+      label: string
+      uri: string
+      /** device-flow one-time code the user types on the page; absent for an
+       *  authorization-code flow, whose callback finishes the connection */
+      code?: string
+      connectorId: string
+    }
   | { kind: 'dots'; uid: string; label: string }
   | { kind: 'stream'; uid: string; text: string; streaming: boolean }
   | { kind: 'end'; uid: string; label: string }
@@ -279,8 +290,6 @@ export interface ThreadDetail {
   msgCount: number
   sessions: SessionInfo[]
   ledger: LedgerItem[]
-  /** history pages, newest-first; each page prepends on scroll-top */
-  history: LedgerItem[][]
   project?: ProjectRef
   artifacts?: ArtifactRef[]
   docs?: Record<string, ReviewDoc>

@@ -5,13 +5,12 @@
  */
 import { Icon } from '@/components/Icon'
 import { mono } from '@/components/text'
-import { useHealth, useStatusData } from '@/lib/api/hooks'
+import { useHealth } from '@/lib/api/hooks'
 import type { StatusChip } from '@/lib/api/types'
 import { useConsole } from '@/state/console'
 
 export function StatusBar() {
   const { toggleControl } = useConsole((s) => s.actions)
-  const status = useStatusData().data
   const health = useHealth().data
 
   const relay: StatusChip | null = health
@@ -25,8 +24,11 @@ export function StatusBar() {
         ? { t: 'relay nominal', dot: 'teal', tip: 'gateway loop healthy' }
         : { t: 'relay degraded', dot: 'gold', tip: 'gateway reachable · health check failing' }
     : null
-  const left = [...(relay ? [relay] : []), ...(status?.left.slice(1) ?? [])]
-  const right = status?.right ?? []
+  // Gateway internals (hooks, tailers, MCP pools) await a status endpoint —
+  // see README's gap list; until then the bar carries only what is real.
+  const left = relay ? [relay] : []
+  const utc = -new Date().getTimezoneOffset() / 60
+  const right: StatusChip[] = [{ t: `UTC${utc >= 0 ? '+' : ''}${utc}`, tip: 'local timezone' }]
 
   return (
     <div

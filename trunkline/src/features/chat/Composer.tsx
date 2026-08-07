@@ -4,8 +4,6 @@ import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useConsole } from '@/state/console'
 import { useChannels, useRoutes } from '@/lib/api/hooks'
 import { shortModel } from '@/lib/api/live'
-import { defaultComposerText } from '@/lib/api/mock/api'
-import { agentRoutes } from '@/lib/api/mock/data'
 import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, microSection, mono } from '@/components/text'
 
@@ -34,26 +32,17 @@ function RouteSelector() {
   const { setNtMenu, setNtRoute } = useConsole((s) => s.actions)
   const { data: routesData } = useRoutes()
   const groups: RouteGroup[] = useMemo(() => {
-    const live = routesData?.source === 'live' ? routesData.routes : []
-    if (live.length) {
-      const byAgent = new Map<string, { id: string | null; model: string }[]>()
-      for (const r of live) {
-        const models = byAgent.get(r.agent) ?? []
-        models.push({ id: r.id, model: shortModel(r.model) })
-        byAgent.set(r.agent, models)
-      }
-      return [...byAgent.entries()].map(([name, models]) => ({
-        name,
-        code: name.slice(0, 2).toUpperCase(),
-        desc: agentRoutes.find((ar) => ar.name === name)?.desc ?? 'configured route',
-        models,
-      }))
+    const byAgent = new Map<string, { id: string | null; model: string }[]>()
+    for (const r of routesData?.routes ?? []) {
+      const models = byAgent.get(r.agent) ?? []
+      models.push({ id: r.id, model: shortModel(r.model) })
+      byAgent.set(r.agent, models)
     }
-    return agentRoutes.map((ar) => ({
-      name: ar.name,
-      code: ar.code,
-      desc: ar.desc,
-      models: ar.models.map((m) => ({ id: null, model: m })),
+    return [...byAgent.entries()].map(([name, models]) => ({
+      name,
+      code: name.slice(0, 2).toUpperCase(),
+      desc: 'configured route',
+      models,
     }))
   }, [routesData])
   const open = ntMenu === 'sel'
@@ -250,16 +239,14 @@ export function Composer() {
   const { removeQueued } = useConsole((s) => s.actions)
   const { data: channels } = useChannels()
 
-  const isReview = selThreadId === 'THR-0195'
+  const isReview = useConsole((s) => s.pvOpen)
   const lastSes = detail?.sessions[detail.sessions.length - 1]
   const routeChip = `${channels?.find((c) => c.id === selChannel)?.label.toLowerCase() ?? 'trunkline'}/${detail?.key ?? selThreadId}`
   const modelChip = ntOn ? `${ntAgent} · ${ntModel}[${ntEffort}]` : (lastSes?.route ?? '')
   const [sesAgent, sesModel] = (lastSes?.route ?? 'claude · opus[1m]').split(' · ')
 
-  // Prefill the CI thread's directive, as the comp does.
   useEffect(() => {
-    if (selThreadId === 'THR-0198') aui.composer.setText(defaultComposerText)
-    else aui.composer.setText('')
+    aui.composer.setText('')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selThreadId])
 

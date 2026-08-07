@@ -5,6 +5,7 @@
  * production the console is mounted on that same app, so the paths hold as-is.
  */
 import type {
+  ApiChannelInfo,
   ApiRoute,
   ApiThreadDetail,
   ApiThreadSummary,
@@ -36,6 +37,10 @@ async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path)
   if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
   return (await res.json()) as T
+}
+
+export function fetchChannels(): Promise<ApiChannelInfo[]> {
+  return getJson<ApiChannelInfo[]>('/api/trunkline/channels')
 }
 
 export function fetchRoutes(): Promise<ApiRoute[]> {

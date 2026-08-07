@@ -889,6 +889,65 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
   )
 }
 
+function OAuthRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'oauth' }>; cardMax: string; i?: number }) {
+  const device = item.code !== undefined
+  return (
+    <div id={`pm-${item.uid}`} className="lt-entry" style={{ '--i': i ?? 0, maxWidth: cardMax } as CSSProperties}>
+      <div style={{ border: '1px solid var(--line-divider)', borderLeft: '3px solid var(--color-gold)', background: 'var(--card-bg)', padding: '11px 15px 12px 16px' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+          <div style={{ ...display(14, 600), lineHeight: 1.2, letterSpacing: '-.01em', textTransform: 'uppercase', color: 'var(--fg-1)' }}>
+            Connect {item.label}
+          </div>
+          <span style={{ flex: 1 }} />
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 1, ...microSection, color: 'var(--color-gold)', whiteSpace: 'nowrap' }}>
+            <i style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--color-gold)', animation: 'trkPulse 1.2s infinite' }} />
+            OAuth · waiting
+          </span>
+        </div>
+        <p style={{ margin: '5px 0 0', ...serif(12.5), lineHeight: 1.65, color: 'var(--fg-2)' }}>
+          {device
+            ? 'Open the authorization page and enter this code — the run resumes once the provider confirms.'
+            : 'Open the authorization page and approve — the provider finishes the connection on its own.'}
+        </p>
+        {device && (
+          <div
+            onClick={() => void navigator.clipboard.writeText(item.code ?? '')}
+            title="click to copy"
+            style={{
+              display: 'inline-block',
+              marginTop: 10,
+              padding: '7px 14px',
+              border: '1px solid var(--color-gold)',
+              ...mono(16, 700),
+              letterSpacing: '.18em',
+              color: 'var(--fg-1)',
+              cursor: 'copy',
+              userSelect: 'all',
+            }}
+          >
+            {item.code}
+          </div>
+        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+          <a
+            href={item.uri}
+            target="_blank"
+            rel="noreferrer"
+            className="hov-panel"
+            style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', textDecoration: 'none' }}
+          >
+            Authorize ↗
+          </a>
+          <span style={{ ...mono(9), color: 'var(--info-strong)', wordBreak: 'break-all', minWidth: 0 }}>{item.uri}</span>
+        </div>
+        <div style={{ marginTop: 9, ...microMeta, color: 'var(--fg-3)' }}>
+          {item.connectorId} · {device ? 'oauth device flow · come back after' : 'oauth authorization'}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function Rule({ children }: { children?: ReactNode }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '2px 0' }}>
@@ -953,6 +1012,8 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       return <ApprovalRow item={item} cardMax={cardMax} i={i} />
     case 'ask':
       return <AskRow item={item} cardMax={cardMax} i={i} />
+    case 'oauth':
+      return <OAuthRow item={item} cardMax={cardMax} i={i} />
     case 'dots':
       return (
         <div className="lt-fade-in" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0' }}>

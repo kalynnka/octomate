@@ -1,10 +1,12 @@
 /**
- * The console's data source. The trunkline channel is live: its threads,
- * ledgers, routes, and runs come from /api/trunkline (falling back to the mock
- * dataset when the relay is unreachable). Every other channel is served by the
- * mock adapter until its endpoint exists — see the API-gap list in README.md.
+ * The console's data source — live against /api/trunkline, no mock
+ * stand-ins. An unreachable relay surfaces as an error state (empty ledger,
+ * `relay offline` in the status bar). Surfaces whose endpoints do not exist
+ * yet (projects, control, status, teleport targets) render their empty
+ * states; see README.md's gap list.
  */
 import {
+  fetchChannels,
   fetchHealth,
   fetchLiveThreadDetail,
   fetchLiveThreads,
@@ -12,71 +14,45 @@ import {
 } from './client'
 import type { HealthState } from './client'
 import type { ApiRoute } from './events'
-import { groupLiveThreads, liveThreadDetail } from './live'
-import { mockApi } from './mock/api'
-import type { ConfigureModel, ThreadDetail, ThreadSummary } from './types'
-
-export interface ConfigureResult {
-  models: ConfigureModel[]
-  source: 'live' | 'mock'
-}
+import { channelMeta, groupLiveThreads, liveThreadDetail } from './live'
+import type { ChannelMeta, ThreadDetail, ThreadSummary } from './types'
 
 export interface RoutesResult {
   routes: ApiRoute[]
-  source: 'live' | 'mock'
+}
+
+/**
+ * A surface whose relay endpoint does not exist yet (README gap list): typed
+ * as absent data so the consuming feature keeps its empty state honest, and
+ * lights up by swapping this for a fetch — never by editing the feature.
+ */
+export function awaitingEndpoint<T>(): T | undefined {
+  return undefined
 }
 
 export const api = {
-  ...mockApi,
-
   health(): Promise<HealthState> {
     return fetchHealth()
   },
 
-  /** The agent-model routes the composer picker offers. */
-  async routes(): Promise<RoutesResult> {
-    try {
-      return { routes: await fetchRoutes(), source: 'live' }
-    } catch {
-      return {
-        routes: mockApi.mockModels().map((model) => {
-          const [agent = 'inkling', ...rest] = model.id.split(':')
-          return { id: model.id, agent, model: rest.join(':') || model.id }
-        }),
-        source: 'mock',
-      }
-    }
+  /** The channels this instance actually connected — drives the sidebar rail. */
+  async listChannels(): Promise<ChannelMeta[]> {
+    return (await fetchChannels()).map((channel) => channelMeta(channel.id))
   },
 
-  async configure(): Promise<ConfigureResult> {
-    const { routes, source } = await api.routes()
-    return {
-      models: routes.map((route) => ({
-        id: route.id,
-        name: `${route.agent} · ${route.model}`,
-      })),
-      source,
-    }
+  /** The agent-model routes the composer picker offers. */
+  async routes(): Promise<RoutesResult> {
+    return { routes: await fetchRoutes() }
   },
 
   async listThreads(): Promise<Record<string, ThreadSummary[]>> {
-    // The console reads every channel's real threads; the mock dataset only
-    // stands in when the relay is unreachable.
-    try {
-      return groupLiveThreads(await fetchLiveThreads())
-    } catch {
-      return mockApi.listThreads()
-    }
+    return groupLiveThreads(await fetchLiveThreads())
   },
 
   async getThreadDetail(id: string): Promise<ThreadDetail> {
-    try {
-      const live = await fetchLiveThreadDetail(id)
-      if (live !== null) return liveThreadDetail(live)
-    } catch {
-      // Relay unreachable — fall through to the mock ledger.
-    }
-    return mockApi.getThreadDetail(id)
+    const live = await fetchLiveThreadDetail(id)
+    if (live === null) throw new Error(`thread ${id} not found on the relay`)
+    return liveThreadDetail(live)
   },
 }
 

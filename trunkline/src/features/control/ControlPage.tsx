@@ -1,10 +1,10 @@
 import { useConsole } from '@/state/console'
+import { awaitingEndpoint } from '@/lib/api'
 import type { ControlSection } from '@/state/console'
-import { useControlData } from '@/lib/api/hooks'
 import { TriStripeInline } from '@/components/TriStripe'
 import { BarChart } from '@/components/BarChart'
 import { chipLabel, display, ellipsis, label, microMeta, microSection, mono, sectionLabel, statusNote } from '@/components/text'
-import type { EffortStep } from '@/lib/api/types'
+import type { ControlData, EffortStep } from '@/lib/api/types'
 
 const pages: Record<Exclude<ControlSection, ''>, { num: string; title: string }> = {
   agents: { num: 'A01', title: 'Agents' },
@@ -49,7 +49,7 @@ const kvColor: Record<'ink' | 'sage' | 'ghost', string> = {
 export function ControlPage() {
   const mgmtSec = useConsole((s) => s.mgmtSec)
   const { goChat } = useConsole((s) => s.actions)
-  const { data } = useControlData()
+  const data = awaitingEndpoint<ControlData>()
   if (!mgmtSec) return null
   const page = pages[mgmtSec]
 

@@ -14,9 +14,14 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, field_serializer
 
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchEvent,
+    WireEvent,
+    replay_wire_events,
+    wire_event_adapter,
+)
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.messages import native_utc
@@ -46,6 +51,11 @@ class RouteInfo(BaseModel):
     id: str = Field(description="The route id a directive's `model` field names.")
     agent: str
     model: AgentRouteModelName
+
+
+class ChannelInfo(BaseModel):
+    id: str = Field(description="The connected channel tentacle's id.")
+    kind: str = Field(description="The tentacle class name — SlackTentacle, …")
 
 
 class ThreadSummaryInfo(BaseModel):
@@ -86,9 +96,34 @@ class SessionEntry(BaseModel):
     created_at: UtcDateTime
 
 
+class RunReplayInfo(BaseModel):
+    """One recorded agent run, replayed as the wire events its live stream
+    carried, so a reader folds history through the same processor as a running
+    stream — never through the transcript, which the agent history tool owns."""
+
+    id: str
+    agent: str
+    started_at: UtcDateTime | None
+    events: list[WireEvent]
+
+    @field_serializer("events")
+    def events_on_the_wire(self, events: list[WireEvent]) -> list[dict[str, object]]:
+        # The adapter dump, not the default: base64 for binary payloads, and
+        # warnings off for the union's Any-typed provider fields — the same
+        # policy the SSE stream applies to these events.
+        return [
+            wire_event_adapter.dump_python(event, mode="json", warnings=False)
+            for event in events
+        ]
+
+
 class ThreadDetailInfo(ThreadSummaryInfo):
     entries: list[LedgerEntry]
     sessions: list[SessionEntry]
+    runs: list[RunReplayInfo] = Field(
+        description="The thread's recorded agent runs (main line only, oldest "
+        "first), each replayed as wire events."
+    )
     pending: list[ActionBatchEvent] = Field(
         description="Unanswered action batches, in the same shape the stream's "
         "`action_batch` events use, so the console re-renders waiting feelers "
@@ -180,6 +215,15 @@ def build_trunkline_router(
             for agent_config in channel.routable_agents()
         ]
 
+    @router.get("/channels")
+    async def list_channels() -> list[ChannelInfo]:
+        """The channels this instance actually connected — the sidebar's rail
+        mirrors this, so a channel disabled in config never appears."""
+        return [
+            ChannelInfo(id=channel_id, kind=type(tentacle).__name__)
+            for channel_id, tentacle in octomate.channels.items()
+        ]
+
     @router.get("/threads")
     async def list_threads() -> list[ThreadSummaryInfo]:
         threads = await octomate.thread_manager.list_threads()
@@ -191,10 +235,36 @@ def build_trunkline_router(
         if thread is None:
             raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
         pending = await octomate.deferred_actions.pending_for_thread(thread.id)
+        conversations = await octomate.conversations.for_thread(thread.id)
+        runs = sorted(
+            (
+                (conversation.agent_tentacle_id, run)
+                for conversation in conversations
+                # The agent's own line; subagent runs surface through the
+                # parent's tool call, not as top-level history.
+                if not conversation.subagent_id
+                for run in conversation.runs
+            ),
+            # The bool first: a None started_at must sort without ever being
+            # compared against a real timestamp (naive/aware would clash).
+            key=lambda pair: (
+                pair[1].started_at is not None,
+                pair[1].started_at or datetime.min,
+            ),
+        )
         summary = thread_summary(thread)
         return ThreadDetailInfo(
             **dict(summary),
             entries=[ledger_entry(message) for message in thread.messages],
+            runs=[
+                RunReplayInfo(
+                    id=run.id,
+                    agent=agent,
+                    started_at=run.started_at,
+                    events=replay_wire_events(list(run.messages)),
+                )
+                for agent, run in runs
+            ],
             sessions=[
                 SessionEntry(
                     id=handoff.id,

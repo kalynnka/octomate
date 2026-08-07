@@ -2,8 +2,8 @@
  * Console state — a faithful port of the design comp's logic class. One store
  * drives selection, panel layout, the live ledger, feelers, the review
  * dossier, and the turn flows. Trunkline threads run live over /api/trunkline
- * (`runLive` + `state/eventFold.ts`); threads on channels without an API yet
- * keep the comp's scripted demo turns (`sendReview`, the mock branches).
+ * (`runLive` + `lib/api/fold.ts`); threads on channels without an API yet
+ * keep the comp's review-dossier demo turn (`sendReview`).
  */
 import { create } from 'zustand'
 import type {
@@ -16,12 +16,10 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, streamDirective } from '@/lib/api'
-import type { HealthState } from '@/lib/api'
 import type { BatchResponseBody, WireEvent } from '@/lib/api/events'
 import { shortModel } from '@/lib/api/live'
-import { defaultComposerText } from '@/lib/api/mock/api'
 import { queryClient } from '@/lib/queryClient'
-import { TurnFold } from './eventFold'
+import { TurnFold } from '@/lib/api/fold'
 
 export type ControlSection = '' | 'agents' | 'mcp' | 'users' | 'dash' | 'settings'
 export type ThemeMode = 'light' | 'dark' | 'auto'
@@ -169,8 +167,8 @@ interface ConsoleState {
   /** live overlay items appended by the running turn */
   live: LedgerItem[]
   running: boolean
-  histN: number
-  histLoading: boolean
+  /** how many trailing ledger items are rendered; scroll-top reveals more */
+  ledgerN: number
   ctxBump: number
   notices: string[]
 
@@ -246,6 +244,9 @@ let streamInterval: ReturnType<typeof setInterval> | undefined
 let uidN = 0
 const nextUid = () => `v${++uidN}`
 
+/** Ledger items rendered per page — the latest page first, earlier pages on scroll-top. */
+const LEDGER_PAGE = 40
+
 const at = (ms: number, fn: () => void) => {
   timers.push(setTimeout(fn, ms))
 }
@@ -315,9 +316,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   const seedRoutePicker = () => {
     void queryClient
       .fetchQuery({ queryKey: ['routes'], queryFn: api.routes, staleTime: 60_000 })
-      .then(({ routes, source }) => {
+      .then(({ routes }) => {
         const first = routes[0]
-        if (source !== 'live' || !first) return
+        if (!first) return
         const s = get()
         if (!s.ntOn || s.ntRouteId !== null) return
         set({
@@ -418,8 +419,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         detail: null,
         live: [],
         running: false,
-        histN: 0,
-        histLoading: false,
+        ledgerN: LEDGER_PAGE,
         ctxBump: 0,
         notices: [],
         ntOn: false,
@@ -441,7 +441,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         queue: [],
         open: { ...defaultOpen },
         tlFold: {},
-        composer: thId === 'THR-0198' ? defaultComposerText : '',
+        composer: '',
       }))
       const detail = await api.getThreadDetail(thId)
       if (get().selThreadId !== thId) return
@@ -452,23 +452,22 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     loadOlder() {
       const s = get()
-      if (s.histLoading || !s.detail || s.histN >= s.detail.history.length) return
-      set({ histLoading: true })
-      at(650, () => {
-        const el = document.getElementById('trk-chatlog')
-        const ph = el?.scrollHeight ?? 0
-        const pt = el?.scrollTop ?? 0
-        set((x) => ({ histN: x.histN + 1, histLoading: false }))
-        requestAnimationFrame(() => {
-          const e2 = document.getElementById('trk-chatlog')
-          if (e2) e2.scrollTop = e2.scrollHeight - ph + pt
-        })
+      if (!s.detail || s.ledgerN >= s.detail.ledger.length) return
+      // Reveal the next page above, keeping the viewport anchored on the
+      // rows the reader was looking at.
+      const el = document.getElementById('trk-chatlog')
+      const ph = el?.scrollHeight ?? 0
+      const pt = el?.scrollTop ?? 0
+      set((x) => ({ ledgerN: x.ledgerN + LEDGER_PAGE }))
+      requestAnimationFrame(() => {
+        const e2 = document.getElementById('trk-chatlog')
+        if (e2) e2.scrollTop = e2.scrollHeight - ph + pt
       })
     },
 
     onChatScroll(scrollTop: number) {
       const s = get()
-      if (s.selThreadId === 'THR-0195' || s.ntOn) return
+      if (s.ntOn) return
       if (scrollTop < 40) actions.loadOlder()
     },
 
@@ -853,63 +852,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         }
         return
       }
-      if (s.selThreadId === 'THR-0195') {
+      if (s.pvOpen) {
         actions.sendReview(text)
         return
       }
-      const body = text.trim() || defaultComposerText
-      set({ running: true, composer: '' })
-      push({ kind: 'user', t: nowClock(), who: 'kalynnka', text: body } as LedgerItem)
-      at(400, () => push({ kind: 'dots', label: 'SES-0522 · claude · opus[1m] · working' } as LedgerItem))
-      at(1600, () => {
-        set((x) => ({ live: x.live.filter((it) => it.kind !== 'dots') }))
-        push({
-          kind: 'think',
-          dur: '1.2s',
-          text: 'Relay, not a repo write — relay.send() this thread to slack/#eng-platform, keep SES-0522 attached, and leave a pointer card at the join.',
-        } as LedgerItem)
-      })
-      at(2400, () =>
-        push({
-          kind: 'tool',
-          name: 'relay.send',
-          icon: 'send',
-          status: 'run',
-          defaultOpen: true,
-          detail: {
-            type: 'plain',
-            args: 'channel: "slack/#eng-platform"\nthread: "THR-0198"   mode: "attach"',
-            res: '',
-          },
-        } as LedgerItem),
-      )
-      at(3700, () =>
-        patchLive((x) =>
-          x.kind === 'tool' && x.status === 'run'
-            ? {
-                ...x,
-                status: 'done',
-                detail: {
-                  type: 'plain',
-                  args: 'channel: "slack/#eng-platform"\nthread: "THR-0198"   mode: "attach"',
-                  res: 'posted ts 1754204381.220 · thread attached\npointer card left in web console',
-                },
-              }
-            : x,
-        ),
-      )
-      at(4400, () =>
-        stream(
-          'Done — this thread now mirrors to slack/#eng-platform. Replies there land back in this ledger as ordinary turns, SES-0522 keeps owning the run, and pointer cards mark the join on both sides.',
-          () => {
-            push({
-              kind: 'end',
-              label: 'End of turn · finished in 4.4s · 1,208 in / 214 out · 1 tool · 0 approvals',
-            } as LedgerItem)
-            set({ running: false, composer: defaultComposerText, ctxBump: 94 })
-          },
-        ),
-      )
     },
 
     sendReview(text: string) {
@@ -1098,76 +1044,41 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       const s = get()
       const body = text.trim()
       if (!body || s.running) return
-      const { ntAgent: ag, ntModel: mo, ntEffort: ef, ntStarted: started } = s
+      const { ntStarted: started } = s
       const title = body.length > 46 ? `${body.slice(0, 46).trimEnd()}…` : body
 
-      const health = queryClient.getQueryData<HealthState>(['health'])
-      if (health?.reachable !== false) {
-        // Live: a fresh key registers the thread on the relay with the first
-        // directive; follow-ups continue it.
-        const threadId =
-          started && !s.selThreadId.startsWith('THR-')
-            ? s.selThreadId
-            : `web-${Math.random().toString(36).slice(2, 10)}`
-        set({
-          running: true,
-          ntMenu: null,
-          composer: '',
-          ntStarted: true,
-          ntTitle: started ? s.ntTitle : title,
-          selThreadId: threadId,
-        })
-        push({ kind: 'user', t: nowClock(), who: 'kalynnka', text: body } as LedgerItem)
-        // The pick is honored only on the first directive; after that the
-        // thread's route is fixed.
-        const routeId = started ? undefined : (s.ntRouteId ?? undefined)
-        void runLive(threadId, (onEvent) =>
-          streamDirective(threadId, { text: body, model: routeId }, onEvent),
-        )
-        return
-      }
-
+      // A fresh key registers the thread on the relay with the first
+      // directive; follow-ups continue it.
+      const threadId =
+        started && !s.selThreadId.startsWith('THR-')
+          ? s.selThreadId
+          : `trunkline-${Math.random().toString(36).slice(2, 10)}`
       set({
         running: true,
         ntMenu: null,
         composer: '',
         ntStarted: true,
         ntTitle: started ? s.ntTitle : title,
-        selThreadId: 'THR-0204',
+        selThreadId: threadId,
       })
       push({ kind: 'user', t: nowClock(), who: 'kalynnka', text: body } as LedgerItem)
-      at(350, () =>
-        push({
-          kind: 'dots',
-          label: `SES-0533 · ${ag} · ${mo}[${ef}] · ${started ? 'working' : 'booting'}`,
-        } as LedgerItem),
+      // The pick is honored only on the first directive; after that the
+      // thread's route is fixed.
+      const routeId = started ? undefined : (s.ntRouteId ?? undefined)
+      void runLive(threadId, (onEvent) =>
+        streamDirective(threadId, { text: body, model: routeId }, onEvent),
       )
-      at(1600, () => {
-        set((x) => ({ live: x.live.filter((it) => it.kind !== 'dots') }))
-        stream(
-          started
-            ? `Acknowledged on SES-0533 — ${ag} · ${mo} picks it up on the next loop.`
-            : `Registered as THR-0204 on web — SES-0533 owns it with ${ag} · ${mo} at effort_${ef}. Ledger is live; next directives land here.`,
-          () => {
-            push({
-              kind: 'end',
-              label: 'End of turn · finished in 2.1s · 312 in / 84 out · 0 tools · 0 approvals',
-            } as LedgerItem)
-            set((x) => ({ running: false, ctxBump: (x.ctxBump || 0) + 6 }))
-          },
-        )
-      })
+
     },
   }
 
   return {
     selChannel: 'trunkline',
-    selThreadId: 'THR-0198',
+    selThreadId: '',
     detail: null,
     live: [],
     running: false,
-    histN: 0,
-    histLoading: false,
+    ledgerN: LEDGER_PAGE,
     ctxBump: 0,
     notices: [],
     theme: loadTheme(),
@@ -1196,7 +1107,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     selMoved: false,
     draft: null,
     queue: [],
-    composer: defaultComposerText,
+    composer: '',
     open: { ...defaultOpen },
     tlFold: {},
     ntOn: false,

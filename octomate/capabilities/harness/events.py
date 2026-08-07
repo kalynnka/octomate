@@ -36,11 +36,22 @@ it, with the generic/unserializable members replaced by their wire forms.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_ai import AgentStreamEvent
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    ModelMessage,
+    ModelResponse,
+    PartStartEvent,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
 from typing_extensions import TypeAliasType
@@ -280,3 +291,38 @@ wire_event_adapter: TypeAdapter[WireEvent] = TypeAdapter(
     WireEvent,
     config=ConfigDict(ser_json_bytes="base64"),
 )
+
+
+def replay_wire_events(messages: Sequence[ModelMessage]) -> list[WireEvent]:
+    """Re-emit a persisted run's model ledger as the events its live stream
+    carried, so a consumer reloading history folds it through the same
+    processor as a running stream — not through a transcript rendering, which
+    is prepared for the agent history tool.
+
+    Response parts come back as `PartStartEvent`s (whole parts, no deltas);
+    tool calls and their returns as the function-tool event pair, mirroring
+    the live stream where a `ToolCallPart` is announced by its own event.
+    Prompt parts are skipped — the chat ledger owns the human side. The
+    closing `RunResultEvent` carries usage summed from the run's responses;
+    its output stays None because the text already replayed as parts.
+    """
+    events: list[WireEvent] = []
+    usage = RunUsage()
+    index = 0
+    for message in messages:
+        if isinstance(message, ModelResponse):
+            usage.requests += 1
+            usage.input_tokens += message.usage.input_tokens
+            usage.output_tokens += message.usage.output_tokens
+            for part in message.parts:
+                if isinstance(part, ToolCallPart):
+                    events.append(FunctionToolCallEvent(part=part))
+                else:
+                    events.append(PartStartEvent(index=index, part=part))
+                index += 1
+        else:
+            for part in message.parts:
+                if isinstance(part, (ToolReturnPart, RetryPromptPart)):
+                    events.append(FunctionToolResultEvent(part=part))
+    events.append(RunResultEvent(usage=usage))
+    return events

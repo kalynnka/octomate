@@ -200,7 +200,7 @@ export function TimelinePanel() {
             route: `${ntAgent} · ${ntModel}`,
             kind: 'entry' as const,
             t: '',
-            reason: `entry route — web console · effort ${ntEffort}`,
+            reason: `entry route — trunkline console · effort ${ntEffort}`,
             status: 'active',
             tone: 'accent' as const,
           },
@@ -290,7 +290,7 @@ export function TimelinePanel() {
         }}
       >
         <span style={{ ...ellipsis, minWidth: 0 }}>
-          key: {ntOn ? 'web / direct / console / —' : (detail?.key ?? '—')}
+          key: {ntOn ? 'trunkline / direct / console / —' : (detail?.key ?? '—')}
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>

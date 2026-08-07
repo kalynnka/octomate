@@ -3,19 +3,35 @@
  * the console renders (types.ts). One direction only — the console never posts
  * these shapes back.
  */
+import type { ApiSessionEntry, ApiThreadDetail, ApiThreadSummary } from './events'
+import { batchFeelers, foldRunReplay } from './fold'
 import type {
-  ActionBatchEvent,
-  ApiSessionEntry,
-  ApiThreadDetail,
-  ApiThreadSummary,
-} from './events'
-import type {
+  ChannelMeta,
   LedgerItem,
   LedgerItemDraft,
   SessionInfo,
   ThreadDetail,
   ThreadSummary,
 } from './types'
+
+/**
+ * Presentation metadata per known channel id — labels, taglines, brand inks
+ * from the comp. The list itself is live (/api/trunkline/channels); an
+ * unknown id falls back to its own name in neutral ink.
+ */
+const CHANNEL_DISPLAY: Record<string, Omit<ChannelMeta, 'id'>> = {
+  trunkline: { label: 'Trunkline', sub: 'mention-free', brand: 'var(--color-accent)' },
+  slack: { label: 'Slack', sub: 'socket', brand: '#746576' },
+  lark: { label: 'Lark', sub: 'webhook', brand: '#666D82' },
+  napcat: { label: 'Napcat', sub: 'ws', brand: '#6A828B' },
+  claude: { label: 'Claude', sub: 'hook · tail', native: true, brand: '#98796A' },
+  codex: { label: 'Codex', sub: 'hook · tail', native: true, brand: '#677D73' },
+}
+
+export function channelMeta(id: string): ChannelMeta {
+  const display = CHANNEL_DISPLAY[id] ?? { label: id, sub: '', brand: 'var(--fg-3)' }
+  return { id, ...display }
+}
 
 /** "deepseek:deepseek-v4-pro" → "deepseek-v4-pro" for tight route chips. */
 export function shortModel(model: string): string {
@@ -68,42 +84,6 @@ function liveSession(s: ApiSessionEntry, index: number): SessionInfo {
   }
 }
 
-/**
- * A pending batch as feeler cards, shared by hydration (detail.pending) and
- * the live stream's `action_batch` events. `uid` is filled by the caller.
- */
-export function batchFeelers(batch: ActionBatchEvent): LedgerItemDraft[] {
-  const items: LedgerItemDraft[] = []
-  for (const q of batch.questions) {
-    items.push({
-      kind: 'ask',
-      title: 'Question',
-      body: q.args.question,
-      options: (q.args.choices ?? []).map((choice) => ({
-        label: choice,
-        sum: choice,
-        desc: '',
-      })),
-      meta: `${q.tool_name} · answer resumes the run`,
-      state: 'waiting',
-      batchId: batch.batch_id,
-      actionId: q.id,
-    })
-  }
-  for (const a of batch.approvals) {
-    items.push({
-      kind: 'approval',
-      title: a.args.title || 'Permission required',
-      desc: a.args.description || JSON.stringify(a.args.args ?? {}),
-      meta: `${a.args.tool_name} · approval resumes the run`,
-      state: 'waiting',
-      batchId: batch.batch_id,
-      actionId: a.id,
-    })
-  }
-  return items
-}
-
 export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
   let uid = 0
   const next = () => `h${++uid}`
@@ -123,6 +103,10 @@ export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
     })
   })
 
+  // With recorded runs, agent turns replay from the model ledger below — the
+  // chat ledger's outbound text rows would render each reply twice.
+  const hasRuns = detail.runs.length > 0
+
   for (const entry of detail.entries) {
     const at = Date.parse(entry.happened_at)
     if (entry.direction === 'inbound' && entry.actor_kind === 'human') {
@@ -137,7 +121,7 @@ export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
       })
     } else if (entry.actor_kind === 'system') {
       dated.push({ at, item: { kind: 'system', text: entry.text } })
-    } else {
+    } else if (!hasRuns) {
       dated.push({
         at,
         item: {
@@ -149,6 +133,15 @@ export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
     }
   }
 
+  for (const run of detail.runs) {
+    const at = run.started_at ? Date.parse(run.started_at) : 0
+    for (const item of foldRunReplay(run.events)) {
+      dated.push({ at, item })
+    }
+  }
+
+  // Stable sort: a run's items share its start time, and a user directive at
+  // the same millisecond was pushed first — insertion order settles both.
   dated.sort((a, b) => a.at - b.at)
   const ledger: LedgerItem[] = dated.map(
     ({ item }) => ({ ...item, uid: next() }) as LedgerItem,
@@ -169,7 +162,6 @@ export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
     msgCount: detail.message_count,
     sessions: detail.sessions.map(liveSession),
     ledger,
-    history: [],
     ctxK: 8,
     usage: {
       chip: routeLabel(detail.agent, detail.model),

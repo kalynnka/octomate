@@ -1,10 +1,11 @@
+import { awaitingEndpoint } from '@/lib/api'
+import type { ProjectInfo } from '@/lib/api/types'
 import { useState } from 'react'
 import { useConsole } from '@/state/console'
-import { useProjects } from '@/lib/api/hooks'
 import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, mono, sectionLabel } from '@/components/text'
 
-/** Project-picker strip shown while composing a new web thread. */
+/** Project-picker strip shown while composing a new trunkline thread. */
 export function NewThreadStrip() {
   const ntMenu = useConsole((s) => s.ntMenu)
   const ntMenuPos = useConsole((s) => s.ntMenuPos)
@@ -14,7 +15,7 @@ export function NewThreadStrip() {
   const vsLaunch = useConsole((s) => s.vsLaunch)
   const { setNtMenu, closeNtMenu, pickNtProject, togglePure, registerProject, pickBranch, forkBranch, vsOpen } =
     useConsole((s) => s.actions)
-  const { data: projects } = useProjects()
+  const projects = awaitingEndpoint<ProjectInfo[]>()
   const [newPath, setNewPath] = useState('')
   const [newBr, setNewBr] = useState('')
 

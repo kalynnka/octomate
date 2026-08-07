@@ -2,7 +2,7 @@
 
 <!-- impeccable:product-schema 1 -->
 
-Scope: this file covers the web console (`octomate/web`) — the web surface of the
+Scope: this file covers the Trunkline console (`trunkline/`) — the web surface of the
 Octomate agent relay. Backend product truth lives in the repository's own docs.
 Written by inference from the build brief and the repository (the brief delegated
 detail decisions); inferred facts are marked [inferred].
@@ -47,9 +47,10 @@ between agents and surfaces. Desktop-first, long-lived tab, both color schemes
 
 ## Capabilities and Constraints
 
-- Backend endpoints largely do not exist yet: the console is built against a
-  typed API layer with mock adapters mirroring the backend's domain schemas, so
-  real endpoints can replace mocks without UI changes. [constraint from brief]
+- Threads, ledgers, routes, and runs are live against `/api/trunkline`; only
+  the shell surfaces with no endpoint yet (channels, projects, control, status)
+  are served by mock adapters behind the same typed API layer, so real
+  endpoints replace them without UI changes. [constraint from brief]
 - Domain vocabulary is binding: threads, sessions (entry/summon/teleport/
   ingest), ledger, directives, feelers (write approvals + asks), spills,
   dossiers/revs, verbs (scry · send · summon · commission · teleport).

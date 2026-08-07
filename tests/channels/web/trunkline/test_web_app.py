@@ -342,6 +342,19 @@ async def test_threads_and_detail_endpoints(
         ]
         assert [session["to_agent"] for session in body["sessions"]] == ["inkling"]
         assert body["pending"] == []
+        # The recorded run replays as the wire events its live stream carried,
+        # so a reload folds through the same processor as live streaming.
+        [run] = body["runs"]
+        assert run["agent"] == "inkling"
+        kinds = [event["event_kind"] for event in run["events"]]
+        assert kinds[-1] == "run_result"
+        replayed = [
+            event["part"]["content"]
+            for event in run["events"]
+            if event["event_kind"] == "part_start"
+            and event["part"]["part_kind"] == "text"
+        ]
+        assert replayed == ["all done!"]
 
         # Any channel's thread is readable through the same endpoint.
         foreign = await client.get(
@@ -349,9 +362,14 @@ async def test_threads_and_detail_endpoints(
         )
         assert foreign.status_code == 200
         assert foreign.json()["channel"] == "slack"
+        assert foreign.json()["runs"] == []
 
         missing = await client.get(f"/api/trunkline/threads/{uuid.UUID(int=7)}")
         assert missing.status_code == 404
+
+        connected = await client.get("/api/trunkline/channels")
+        assert connected.status_code == 200
+        assert [c["id"] for c in connected.json()] == ["trunkline"]
 
         routes = await client.get("/api/trunkline/routes")
         assert routes.json() == [

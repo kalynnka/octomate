@@ -15,18 +15,17 @@ export default function App() {
     mq.addEventListener('change', onChange)
     const s = useConsole.getState()
     applyThemeAttr(s.theme === 'dark' || (s.theme === 'auto' && mq.matches))
-    // Boot into the newest live thread; an empty live relay opens the
-    // new-thread flow, and only an unreachable one falls back to the CI demo.
+    // Boot into the newest live thread; an empty or unreachable relay opens
+    // the new-thread flow (the status bar carries the offline state).
     void (async () => {
+      let first: { channel: string; id: string } | undefined
       try {
-        const live = await fetchLiveThreads()
-        const first = live[0]
-        if (first) void selectThread(first.channel, first.id)
-        else useConsole.getState().actions.startNewThread()
-        return
+        first = (await fetchLiveThreads())[0]
       } catch {
-        void selectThread('trunkline', 'THR-0198')
+        first = undefined
       }
+      if (first) void selectThread(first.channel, first.id)
+      else useConsole.getState().actions.startNewThread()
     })()
     return () => mq.removeEventListener('change', onChange)
     // eslint-disable-next-line react-hooks/exhaustive-deps

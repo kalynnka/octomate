@@ -8,6 +8,7 @@ import { Icon } from '@/components/Icon'
 import { TriStripe } from '@/components/TriStripe'
 import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
+import { channelMeta } from '@/lib/api/live'
 import type { ThreadTone } from '@/lib/api/types'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { useConsole } from '@/state/console'
@@ -28,8 +29,16 @@ interface ThreadRow {
 }
 
 export function ThreadsSidebar() {
-  const channels = useChannels().data ?? []
+  const connected = useChannels().data ?? []
   const threadsByCh = useThreads().data ?? {}
+  // The rail mirrors the relay's connected channels; a channel that is gone
+  // from config but still owns threads keeps a group for its history.
+  const channels = [
+    ...connected,
+    ...Object.keys(threadsByCh)
+      .filter((id) => !connected.some((c) => c.id === id))
+      .map(channelMeta),
+  ]
   const sbFold = useConsole((s) => s.sbFold)
   const chFold = useConsole((s) => s.chFold)
   const chPins = useConsole((s) => s.chPins)
@@ -354,7 +363,7 @@ export function ThreadsSidebar() {
                         e.stopPropagation()
                         startNewThread()
                       }}
-                      title="New web thread"
+                      title="New trunkline thread"
                       className="hov-accent-border-wash"
                       style={{
                         display: 'flex',

@@ -9,8 +9,7 @@ export function ChatLog() {
   const detail = useConsole((s) => s.detail)
   const live = useConsole((s) => s.live)
   const notices = useConsole((s) => s.notices)
-  const histN = useConsole((s) => s.histN)
-  const histLoading = useConsole((s) => s.histLoading)
+  const ledgerN = useConsole((s) => s.ledgerN)
   const ntOn = useConsole((s) => s.ntOn)
   const ntAgent = useConsole((s) => s.ntAgent)
   const ntModel = useConsole((s) => s.ntModel)
@@ -23,9 +22,9 @@ export function ChatLog() {
   const cardMax = ['64%', '78%', '88%', '92%'][
     (sbFold ? 0 : 1) + (mgmtOpen ? 1 : 0) + (traceOn && !pvOpen ? 1 : 0)
   ]
-  const history = detail?.history ?? []
-  const hasHistory = history.length > 0
-  const olderItems = history.slice(0, histN).slice().reverse().flat()
+  const ledger = detail?.ledger ?? []
+  // Latest page first; scroll-top reveals earlier pages (loadOlder).
+  const visible = ledger.slice(-ledgerN)
   const blank = ntOn && live.length === 0
 
   return (
@@ -47,30 +46,14 @@ export function ChatLog() {
         } as CSSProperties
       }
     >
-      {hasHistory && !ntOn && histN >= history.length && (
+      {ledger.length > 0 && !ntOn && visible.length >= ledger.length && (
         <div style={{ textAlign: 'center', ...label(8.5), color: 'var(--fg-3)', padding: '2px 0' }}>
-          // start of thread · Jul 28
+          // start of thread
         </div>
       )}
-      {hasHistory && !ntOn && histN < history.length && !histLoading && (
+      {ledger.length > 0 && !ntOn && visible.length < ledger.length && (
         <div style={{ textAlign: 'center', ...statusNote, color: 'var(--fg-3)', padding: '2px 0' }}>
           ↑ scroll — earlier messages load step by step
-        </div>
-      )}
-      {histLoading && (
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 5, padding: '4px 0' }}>
-          {[0, 0.2, 0.4].map((d) => (
-            <span
-              key={d}
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: 9999,
-                background: 'var(--color-accent)',
-                animation: `trkPulse 1.2s ${d}s infinite`,
-              }}
-            />
-          ))}
         </div>
       )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -88,7 +71,7 @@ export function ChatLog() {
             }}
           >
             <span style={{ ...label(8, '.22em'), color: 'var(--fg-3)' }}>// blank ledger</span>
-            <span style={{ ...display(16, 600), color: 'var(--fg-1)' }}>New web thread</span>
+            <span style={{ ...display(16, 600), color: 'var(--fg-1)' }}>New trunkline thread</span>
             <span style={{ ...mono(9), lineHeight: 1.8, color: 'var(--fg-3)', maxWidth: 340 }}>
               no session yet — the first directive registers the thread and summons{' '}
               <span style={{ color: 'var(--color-accent)', fontWeight: 700 }}>
@@ -98,11 +81,15 @@ export function ChatLog() {
             </span>
           </div>
         )}
-        {olderItems.map((item) => (
-          <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
-        ))}
-        {(detail?.ledger ?? []).map((item, i) => (
-          <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} i={Math.min(i, 7)} />
+        {visible.map((item, i) => (
+          // Motion runs newest-first: the stagger index counts up from the
+          // bottom, so the latest page rises while earlier reveals stay calm.
+          <LedgerRow
+            key={item.uid}
+            item={item}
+            cardMax={CARD_MAX}
+            i={Math.min(visible.length - 1 - i, 7)}
+          />
         ))}
         {live.map((item) => (
           <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
