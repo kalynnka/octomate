@@ -303,6 +303,9 @@ async def test_entering_tentacle_enters_agent_toolsets_once() -> None:
     tentacle = _tentacle_with(spy)
 
     async with tentacle:
+        # Warming runs behind the enter; the warm state is what the task settles.
+        assert tentacle.warm_task is not None
+        await tentacle.warm_task
         assert (spy.entered, spy.exited) == (1, 0)
 
     assert (spy.entered, spy.exited) == (1, 1)
@@ -312,9 +315,11 @@ async def test_warm_up_failure_does_not_abort_startup() -> None:
     tentacle = _tentacle_with(FailingToolset())
 
     # A transient MCP `initialize` failure while warming must not propagate out of
-    # tentacle startup; the agent is left unentered so runs reconnect on demand.
+    # tentacle startup or its background warm task; the agent is left unentered so
+    # runs reconnect on demand.
     async with tentacle:
-        pass
+        assert tentacle.warm_task is not None
+        await tentacle.warm_task
 
 
 async def test_unconnected_slack_user_receives_github_oauth_tools(

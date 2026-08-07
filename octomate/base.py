@@ -217,12 +217,15 @@ class Octomate:
                 await self.projects.reconcile()
                 # Each tentacle is an async context manager owning its own
                 # long-lived resources (agents: warm MCP sessions; channels:
-                # the inbound receive loop). Enter agents first so their tools
-                # are warm before channels start ingesting; the stack tears
-                # everything down in reverse on shutdown.
-                async with AsyncExitStack() as stack:
+                # the inbound receive loop). Channels live on the inner stack so
+                # shutdown closes them first — nothing ingests into agents whose
+                # sessions are already torn down.
+                async with (
+                    AsyncExitStack() as agent_stack,
+                    AsyncExitStack() as channel_stack,
+                ):
 
-                    async def start(tentacle: Tentacle) -> None:
+                    async def start(stack: AsyncExitStack, tentacle: Tentacle) -> None:
                         # Isolate + time-bound each start so one slow or hung
                         # tentacle can't stall the others' startup. A failed start
                         # is logged and skipped, not fatal — the rest still serve.
@@ -238,14 +241,20 @@ class Octomate:
                             )
 
                     async def start_all() -> None:
-                        # Agents first (concurrently), then channels (concurrently),
-                        # so tools are warm before channels ingest without any one
-                        # tentacle blocking the group.
+                        # Everything at once: channels must not queue behind agent
+                        # warmup, which is an optimization, not a precondition — a
+                        # message landing before its agent finished warming enters
+                        # the cold toolsets inside its own run (reference-counted)
+                        # and pays the listing latency once.
                         await asyncio.gather(
-                            *(start(agent) for agent in self.agents.values())
-                        )
-                        await asyncio.gather(
-                            *(start(channel) for channel in self.channels.values())
+                            *(
+                                start(agent_stack, agent)
+                                for agent in self.agents.values()
+                            ),
+                            *(
+                                start(channel_stack, channel)
+                                for channel in self.channels.values()
+                            ),
                         )
 
                     # Serve immediately: MCP warms and channel sockets proceed in

@@ -94,6 +94,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
 
     _exit_stack: AsyncExitStack = field(init=False)
     toolsets: list[AbstractToolset[None]] = field(init=False)
+    # Background MCP/agent warming, spawned by `__aenter__`; `__aexit__` settles it.
+    warm_task: asyncio.Task[None] | None = field(init=False)
 
     def __init__(
         self,
@@ -150,6 +152,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         }
         self._exit_stack = AsyncExitStack()
         self.toolsets = list(toolsets or [])
+        self.warm_task = None
 
     async def user_capabilities(
         self,
@@ -168,22 +171,30 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         for capability in (*self.capabilities, *self.user_scoped_capabilities):
             if isinstance(capability, AbstractAsyncContextManager):
                 await self._exit_stack.enter_async_context(capability)
-        # Warm each operator MCP toolset. Opening the session and priming `tools/list`
-        # here (the first run would otherwise block on a multi-second listing) keeps a
-        # warm reference for the tentacle's lifetime; the agent enter below reuses it
-        # (reference-counted). Each server's own connect budget rides on its toolset as
-        # `init_timeout`; this bound only keeps one stuck server from hanging startup.
+        # Warming runs behind the tentacle, not in front of it: entering returns
+        # immediately, so the host never waits on an MCP server and the agent takes
+        # messages from its first moment — a run that lands before warming finishes
+        # enters the cold toolsets inside its own run (reference-counted) and pays
+        # the listing latency once.
+        self.warm_task = asyncio.create_task(self.warm())
+        return self
+
+    async def warm(self) -> None:
+        # Warm the operator MCP toolsets, all concurrently — cost is the slowest
+        # server, not the sum. Opening the session and priming `tools/list` (the
+        # first run would otherwise block on a multi-second listing) keeps a warm
+        # reference for the tentacle's lifetime; the agent enter below reuses it
+        # (reference-counted). Each server's own connect budget rides on its toolset
+        # as `init_timeout`; this bound only keeps one stuck server warming forever.
         servers: list[MCPToolset[None]] = []
 
         def collect(candidate: AbstractToolset[None]) -> None:
             if isinstance(candidate, MCPToolset):
                 servers.append(candidate)
 
-        for toolset in self.toolsets:
-            servers.clear()
-            toolset.apply(collect)
-            if not servers:
-                continue
+        async def warm_toolset(
+            toolset: AbstractToolset[None], servers: list[MCPToolset[None]]
+        ) -> None:
             try:
                 with inkling_logfire.span(
                     "inkling.warm_mcp_tools",
@@ -208,6 +219,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                     [server.id for server in servers],
                     exc_info=True,
                 )
+
+        warmable: list[tuple[AbstractToolset[None], list[MCPToolset[None]]]] = []
+        for toolset in self.toolsets:
+            servers.clear()
+            toolset.apply(collect)
+            if servers:
+                warmable.append((toolset, list(servers)))
+        await asyncio.gather(
+            *(warm_toolset(toolset, servers) for toolset, servers in warmable)
+        )
         # Enter the wrapped agent once for the tentacle's lifetime so any toolset it
         # holds that was not warmed above (e.g. one passed directly rather than via
         # `toolsets=`) opens too and the agent stays warm; already-open servers
@@ -224,9 +245,17 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 self.id,
                 exc_info=True,
             )
-        return self
 
     async def __aexit__(self, *exc: object) -> None:
+        # Settle warming before the stack unwinds: an exit racing a half-opened
+        # toolset would close sessions the warm task is still entering.
+        if self.warm_task is not None:
+            self.warm_task.cancel()
+            try:
+                await self.warm_task
+            except asyncio.CancelledError:
+                pass
+            self.warm_task = None
         await self._exit_stack.aclose()
 
     @overload
