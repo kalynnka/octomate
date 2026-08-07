@@ -163,7 +163,7 @@ class OctomateConfig(BaseSettings):
             ("slack", self.channels.slack),
             ("lark", self.channels.lark),
             ("napcat", self.channels.napcat),
-            ("dev_ui", self.channels.dev_ui),
+            ("trunkline", self.channels.trunkline),
         )
         for channel_id, channel in channels:
             if channel is None:
@@ -267,7 +267,7 @@ class OctomateConfig(BaseSettings):
                 ("slack", self.channels.slack),
                 ("lark", self.channels.lark),
                 ("napcat", self.channels.napcat),
-                ("dev_ui", self.channels.dev_ui),
+                ("trunkline", self.channels.trunkline),
             )
             if channel is not None
         }

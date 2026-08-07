@@ -6,11 +6,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from typing import ClassVar, cast
 
 import pytest
-from pydantic_ai import AgentRunResult, AgentRunResultEvent, RunContext
+from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent, RunContext
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
@@ -46,6 +46,7 @@ from octomate.schemas.triage import (
     SchemeDecision,
     SummonDestination,
 )
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.channels.base import ChannelSurfaces
 from octomate.tentacles.channels.feelers.output import TimelineState
 from tests.support.agents import FakeAgent, RecordedRun
@@ -56,6 +57,7 @@ from tests.support.managers import (
     FakeDeferredBatch,
     FakePresentedBatch,
     FakeThreadManager,
+    FakeUserManager,
 )
 
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -1004,6 +1006,50 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
         (batch.id, "resuming", False),
         (batch.id, "completed", True),
     ]
+
+
+@dataclass
+class ProfileRecordingAgent(FakeAgent):
+    bound_profiles: list[UserProfile] = field(default_factory=list)
+
+    async def user_capabilities(
+        self, profile: UserProfile
+    ) -> list[AgentCapability[None]]:
+        self.bound_profiles.append(profile)
+        return []
+
+
+async def test_resume_rebinds_the_suspended_run_user() -> None:
+    """A resumed run serves the user the suspended run served: ResumeDeferred
+    resolves their profile from the batch's source address, so React mounts the
+    same per-user capabilities instead of silently running without them."""
+    address = _key(thread_id="hint-thread")
+    batch = FakeDeferredBatch(
+        source_address=_key(),
+        target_address=address,
+        requests=_requests(),
+        deferred_results=_deferred_results(),
+        run_name="react",
+        target_mode="sub",
+    )
+    agent = ProfileRecordingAgent(id="other", reception_output="resumed answer")
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": _channel()},
+        agent=agent,
+        action_manager=FakeActionManager(batch=batch),
+    )
+    profile = UserProfile(channel_tentacle_id="im", channel_user_id="alice")
+    cast(FakeUserManager, deps.thread_manager.users).profiles[("im", "alice")] = profile
+
+    result = await _run(
+        ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
+        state=ReflexState(),
+        deps=deps,
+    )
+
+    assert not isinstance(result, DeferredResult)
+    assert agent.bound_profiles == [profile]
 
 
 async def test_resume_returns_result_for_already_completed_batch() -> None:

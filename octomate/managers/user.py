@@ -84,6 +84,23 @@ class UserManager:
             if other.channel_tentacle_id != profile.channel_tentacle_id
         ]
 
+    async def profile(
+        self, channel_tentacle_id: str, channel_user_id: str
+    ) -> UserProfile | None:
+        """The stored profile for a channel identity, or ``None`` if never observed.
+
+        The read-only sibling of ``ensure_profile``, for callers that hold only a
+        channel identity — e.g. a deferred batch resuming long after the message
+        that carried the sender's profile snapshot."""
+        async with async_session() as session:
+            return await session.one_or_none(
+                UserProfile,
+                expressions=[
+                    UserProfile["channel_tentacle_id"] == channel_tentacle_id,
+                    UserProfile["channel_user_id"] == channel_user_id,
+                ],
+            )
+
     async def ensure_profile(
         self, channel_tentacle_id: str, observed: UserProfile
     ) -> UserProfile:

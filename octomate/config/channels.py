@@ -83,6 +83,33 @@ class VercelChannelConfig(ChannelConfig):
     stream: ChannelStreamConfig = Field(default_factory=VercelStreamConfig)
 
 
+class TrunklineStreamConfig(ChannelStreamConfig):
+    # The console renders tokens as it receives them; stream every event
+    # straight through (the timeline feeler forwards raw events, so batching
+    # is moot).
+    enabled: bool = True
+    flush_interval: float = 0.0
+
+
+class TrunklineChannelConfig(ChannelConfig):
+    """The console has no group surface, so the base `mention_only` never
+    applies to it (there is nothing to be mentioned in)."""
+
+    type: Literal["trunkline"] = "trunkline"
+    # Annotated as the subclass so a YAML `stream:` override keeps the
+    # console defaults (the base class would flip `enabled` back to False).
+    stream: TrunklineStreamConfig = Field(default_factory=TrunklineStreamConfig)
+    serve_console: bool = Field(
+        default=True,
+        description=(
+            "Serve the built console SPA (trunkline/dist) from the app root. Disable "
+            "when the Vite dev server fronts the UI or the SPA is deployed "
+            "separately — the API keeps serving either way "
+            "(OCTOMATE__CHANNELS__TRUNKLINE__SERVE_CONSOLE=false)."
+        ),
+    )
+
+
 class NapcatChannelConfig(ChannelConfig):
     type: Literal["napcat"] = "napcat"
     stream: NapcatStreamConfig = Field(default_factory=NapcatStreamConfig)
@@ -100,10 +127,11 @@ class ChannelsConfig(BaseModel):
     slack: SlackChannelConfig | None = None
     lark: LarkChannelConfig | None = None
     napcat: NapcatChannelConfig | None = None
-    dev_ui: VercelChannelConfig | None = Field(
-        default_factory=VercelChannelConfig,
+    trunkline: TrunklineChannelConfig | None = Field(
+        default_factory=TrunklineChannelConfig,
         description=(
-            "The dev UI ships on by default; disable it with `enabled: false` or "
-            "`null`. Keyed `dev_ui` to match the channel id it is registered under."
+            "The Trunkline web console ships on by default; disable it with "
+            "`enabled: false` or `null`. Keyed `trunkline` to match the channel "
+            "id it is registered under."
         ),
     )

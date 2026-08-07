@@ -90,6 +90,40 @@ class ThreadManager:
         self.cache_thread(thread)
         return thread
 
+    async def get(self, thread_id: uuid.UUID) -> Thread | None:
+        """The thread by primary key, or None. messages/handoffs are
+        lazy="selectin", so the get loads them with the row."""
+        async with async_session() as session:
+            thread = await session.get(Thread, thread_id)
+            if thread is None:
+                return None
+
+        self.cache_thread(thread)
+        return thread
+
+    async def list_threads(
+        self,
+        channel_tentacle_id: str | None = None,
+        *,
+        limit: int = 100,
+    ) -> list[Thread]:
+        """Threads most recently touched first — one channel's, or every
+        channel's when `channel_tentacle_id` is None. messages/handoffs are
+        lazy="selectin", so the list query loads them in one batched pass."""
+        expressions = (
+            []
+            if channel_tentacle_id is None
+            else [Thread["channel_tentacle_id"] == channel_tentacle_id]
+        )
+        async with async_session() as session:
+            rows = await session.list(
+                Thread,
+                limit=limit,
+                order_bys=[Thread["updated_at"].desc(), Thread["id"].desc()],
+                expressions=expressions,
+            )
+        return list(rows)
+
     def cache_thread(self, thread: Thread) -> None:
         self.threads[thread.key] = thread
         self.threads.move_to_end(thread.key)

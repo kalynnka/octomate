@@ -104,6 +104,19 @@ async def test_profile_tracks_the_latest_channel_snapshot() -> None:
     assert blanked.user_id is None
 
 
+async def test_profile_finds_an_observed_identity_and_misses_an_unknown_one() -> None:
+    manager = UserManager()
+    observed = await manager.ensure_profile(
+        "lark", UserProfile(channel_user_id="ou_1", name="Original")
+    )
+
+    found = await manager.profile("lark", "ou_1")
+    assert found is not None
+    assert found.id == observed.id
+    assert await manager.profile("lark", "ou_2") is None
+    assert await manager.profile("slack", "ou_1") is None
+
+
 async def test_reconcile_groups_declared_profiles_under_one_yaml_user() -> None:
     manager = UserManager(
         config(

@@ -68,6 +68,32 @@ class DeferredActionManager:
             async with async_session() as session:
                 return await session.one(DeferredActionBatch, id=batch.id)
 
+    async def pending_for_thread(
+        self,
+        thread_id: uuid.UUID,
+    ) -> list[DeferredActionBatch]:
+        """The thread's unanswered batches, oldest first, so a channel can
+        re-present waiting questions and approvals when the thread is reloaded."""
+        async with async_session() as session:
+            conversations = await session.list(
+                Conversation,
+                expressions=[Conversation["thread_id"] == thread_id],
+            )
+            conversation_ids = [conversation.id for conversation in conversations]
+            if not conversation_ids:
+                return []
+            # questions/approvals are lazy="selectin": the list query loads them
+            # in one batched pass, so no per-row loading is needed here.
+            batches = await session.list(
+                DeferredActionBatch,
+                order_bys=[DeferredActionBatch["id"]],
+                expressions=[
+                    DeferredActionBatch["conversation_id"].in_(conversation_ids),
+                    DeferredActionBatch["status"] == "pending",
+                ],
+            )
+        return list(batches)
+
     async def get_batch(
         self,
         batch_id: uuid.UUID,

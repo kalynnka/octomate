@@ -169,9 +169,23 @@ class FakeConversationManager(ConversationManager):
         return None
 
 
+class FakeUserManager(UserManager):
+    """In-memory profile store, keyed like the real lookup, so graph tests
+    resolve channel identities without a database."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.profiles: dict[tuple[str, str], UserProfile] = {}
+
+    async def profile(
+        self, channel_tentacle_id: str, channel_user_id: str
+    ) -> UserProfile | None:
+        return self.profiles.get((channel_tentacle_id, channel_user_id))
+
+
 @dataclass
 class FakeThreadManager(ThreadManager):
-    users: UserManager = field(default_factory=UserManager)
+    users: UserManager = field(default_factory=FakeUserManager)
     threads_by_key: dict[ThreadKey, Thread] = field(default_factory=dict)
     handoffs: list[Handoff] = field(default_factory=list)
     outbounds: list[ThreadMessage] = field(default_factory=list)

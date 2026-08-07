@@ -53,8 +53,8 @@ def test_channels_default_to_none() -> None:
     assert channels.slack is None
     assert channels.lark is None
     assert channels.napcat is None
-    assert channels.dev_ui is not None
-    assert channels.dev_ui.agents == [
+    assert channels.trunkline is not None
+    assert channels.trunkline.agents == [
         AgentModelConfig(model="deepseek:deepseek-v4-pro")
     ]
 
@@ -63,7 +63,7 @@ def test_channel_config_parses_supported_channels() -> None:
     config = IsolatedTestConfig.model_validate(
         {
             "channels": {
-                "dev_ui": None,
+                "trunkline": None,
                 "slack": {
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
@@ -99,7 +99,7 @@ def test_channel_config_parses_agent_model_routes() -> None:
                 "codex": {"models": ["gpt-5.3-codex"]},
             },
             "channels": {
-                "dev_ui": None,
+                "trunkline": None,
                 "lark": None,
                 "napcat": None,
                 "slack": {
@@ -297,7 +297,7 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
             {
                 "agents": {"claude": {"models": ["opus"]}},
                 "channels": {
-                    "dev_ui": None,
+                    "trunkline": None,
                     "napcat": None,
                     "slack": {
                         "app_id": "A-test",
@@ -386,7 +386,7 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
             {
                 "agents": {"claude": None},
                 "channels": {
-                    "dev_ui": None,
+                    "trunkline": None,
                     "lark": None,
                     "napcat": None,
                     "slack": {
@@ -410,7 +410,7 @@ def test_channel_routes_require_model() -> None:
             {
                 "agents": {"claude": {"models": ["opus"]}},
                 "channels": {
-                    "dev_ui": None,
+                    "trunkline": None,
                     "lark": None,
                     "napcat": None,
                     "slack": {
@@ -433,7 +433,7 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
             {
                 "agents": {"claude": {"models": ["opus"]}},
                 "channels": {
-                    "dev_ui": None,
+                    "trunkline": None,
                     "lark": None,
                     "napcat": None,
                     "slack": {
@@ -456,7 +456,7 @@ def test_channel_codex_routes_must_reference_configured_model() -> None:
             {
                 "agents": {"codex": {"models": ["gpt-5.3-codex"]}},
                 "channels": {
-                    "dev_ui": None,
+                    "trunkline": None,
                     "lark": None,
                     "napcat": None,
                     "slack": {
@@ -479,7 +479,7 @@ def test_channel_codex_route_requires_enabled_agent_config() -> None:
             {
                 "agents": {"codex": {"enabled": False}},
                 "channels": {
-                    "dev_ui": None,
+                    "trunkline": None,
                     "lark": None,
                     "napcat": None,
                     "slack": {
@@ -827,7 +827,7 @@ def test_user_links_accept_configured_channels() -> None:
                     "name": "Lu",
                     "profiles": {
                         "napcat": {"channel_user_id": "9"},
-                        "dev_ui": {"channel_user_id": "dev"},
+                        "trunkline": {"channel_user_id": "dev"},
                     },
                 },
             },
@@ -837,7 +837,7 @@ def test_user_links_accept_configured_channels() -> None:
     profiles = config.users["luhui"].profiles
     assert {key: profile.channel_user_id for key, profile in profiles.items()} == {
         "napcat": "9",
-        "dev_ui": "dev",
+        "trunkline": "dev",
     }
 
 
@@ -918,21 +918,25 @@ def test_a_project_root_that_is_a_file_is_refused() -> None:
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("projects", 0, "root")
+    assert error["loc"] == ("projects", 0)
+    assert error["type"] == "project_root_not_a_directory"
     assert "is a file; a root is a directory" in error["msg"]
 
 
 def test_a_project_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
     # Declaring a project claims something about this machine, so a root that is not
-    # there fails at config load rather than at the first cwd that should have matched.
+    # there fails at config load rather than at the first cwd that should have
+    # matched — and the error names the project, not just the path.
     with pytest.raises(ValidationError) as exc_info:
         IsolatedTestConfig.model_validate(
             {"projects": [{"root": str(tmp_path / "not-cloned-yet")}]}
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("projects", 0, "root")
-    assert "does not exist" in error["msg"]
+    assert error["loc"] == ("projects", 0)
+    assert error["type"] == "project_root_missing"
+    assert "project 'not-cloned-yet': root" in error["msg"]
+    assert "does not exist on this machine" in error["msg"]
 
 
 def test_a_project_extra_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
@@ -946,8 +950,10 @@ def test_a_project_extra_root_that_does_not_exist_is_refused(tmp_path: Path) -> 
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("projects", 0, "extra_roots", 0)
-    assert "does not exist" in error["msg"]
+    assert error["loc"] == ("projects", 0)
+    assert error["type"] == "project_root_missing"
+    assert "extra root" in error["msg"]
+    assert "does not exist on this machine" in error["msg"]
 
 
 def test_the_filesystem_root_is_refused_as_a_project_root() -> None:
