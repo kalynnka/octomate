@@ -40,11 +40,9 @@
       "runtimeArgs": ["dev"],
       "cwd": "${workspaceFolder}/trunkline",
       "serverReadyAction": {
-        "action": "debugWithChrome",
+        "action": "openExternally",
         "pattern": "Local:\\s+(https?://\\S+)",
-        "uriFormat": "%s",
-        "webRoot": "${workspaceFolder}/trunkline",
-        "killOnServerStop": true
+        "uriFormat": "%s"
       }
     },
   ],
