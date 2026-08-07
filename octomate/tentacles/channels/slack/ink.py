@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Self
 
+import aiohttp
 import httpx
 from pydantic import SecretStr
 from slack_sdk.models.messages.chunk import Chunk
@@ -40,6 +42,21 @@ class SlackInk(Ink[SlackOutboundMessage]):
         self.bot_token = bot_token
         token = bot_token.get_secret_value()
         self.client = AsyncWebClient(token=token)
+
+    async def __aenter__(self) -> Self:
+        """Open the pooled aiohttp session every Web API call rides on. Without
+        a running session slack_sdk opens a fresh connection — TCP + TLS
+        handshake — per call, which priced every streaming flush at a full
+        connection setup."""
+        self.client.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=self.client.timeout)
+        )
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        if self.client.session is not None:
+            await self.client.session.close()
+            self.client.session = None
 
     async def inspect(self) -> SlackUserProfile:
         resp = await self.client.auth_test()

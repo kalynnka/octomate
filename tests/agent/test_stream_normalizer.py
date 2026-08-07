@@ -34,6 +34,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
+    ResultTextDeltaEvent,
     TodoCreatedEvent,
 )
 from octomate.schemas.segments import MessageSegment
@@ -88,9 +89,10 @@ async def test_segment_output_streams_one_event_per_segment() -> None:
 
 
 async def test_segment_output_streams_each_segment_exactly_once() -> None:
-    """Multi-round partial validation: a segment streams only once a later one has
-    sealed it; the trailing segment arrives from the final validated output —
-    never truncated mid-growth, never duplicated."""
+    """Multi-round partial validation: a segment streams whole only once a later
+    one has sealed it, and the trailing text segment streams its growth as
+    `ResultTextDeltaEvent`s — the reply renders while the model is still writing
+    it. Nothing is truncated mid-growth or duplicated."""
 
     fragments = [
         '{"response": [{"type": "text", "data": {"text": "one"}},',
@@ -113,9 +115,12 @@ async def test_segment_output_streams_each_segment_exactly_once() -> None:
     events = [event async for event in agent.stream_events("go")]
 
     streamed = [e.segment for e in events if isinstance(e, ResultSegmentEvent)]
+    deltas = [e.delta for e in events if isinstance(e, ResultTextDeltaEvent)]
     final = next(e for e in events if isinstance(e, FinalResult))
-    assert [str(segment) for segment in streamed] == ["one", "two"]
-    assert streamed == final.output
+    assert [str(segment) for segment in streamed] == ["one"]
+    assert deltas == ["tw", "o"]
+    assert isinstance(final.output, list)
+    assert [str(segment) for segment in final.output] == ["one", "two"]
 
 
 async def test_non_segment_structured_output_surfaces_only_at_final() -> None:

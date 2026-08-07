@@ -269,6 +269,9 @@ export class TurnFold {
           (this.streamUid !== null ? '\n\n' : '') + segmentText(event.segment),
         )
         break
+      case 'result_text_delta':
+        this.appendReply(event.delta)
+        break
       case 'todo_created':
       case 'todo_updated':
       case 'todo_status_changed':

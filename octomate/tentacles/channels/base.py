@@ -127,7 +127,18 @@ class Chromo(
 
 
 class Ink(ABC, Generic[MessageT]):
-    """Base class for platform API clients (transport only)."""
+    """Base class for platform API clients (transport only).
+
+    An ink is an async context manager: the owning tentacle enters it as part
+    of its own lifecycle. The base implementation holds no resources; inks
+    whose platform calls can share a pooled connection override
+    `__aenter__`/`__aexit__` to open and close it.
+    """
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None: ...
 
     @abstractmethod
     async def inspect(self) -> UserProfile: ...
@@ -252,11 +263,16 @@ class ChannelTentacle(
         )
 
     async def __aenter__(self) -> Self:
-        # Resolve identity before any inbound event is ingested. Channels with a
+        # The ink first, so the probe already rides its pooled connection; then
+        # resolve identity before any inbound event is ingested. Channels with a
         # persistent connection override this to open it (and `__aexit__` to tear
         # it down); HTTP-driven channels (e.g. the dev UI) need only the probe.
+        await self.ink.__aenter__()
         await self.probe()
         return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.ink.__aexit__(*exc)
 
     @property
     def name(self) -> str:

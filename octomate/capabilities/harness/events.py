@@ -7,9 +7,10 @@ One stream, with these event families:
   events, every validated output type is emitted as Pydantic AI's own
   `FinalResult[OutputT]`, and outputs that validate to `list[MessageSegment]`
   additionally stream one `ResultSegmentEvent` per completed segment as partial
-  validation reveals it. Rendering (typing text, sending segments, or handling
-  any other structured value) is a *consumer* concern; the event just carries the
-  typed value.
+  validation reveals it — except a trailing text segment, whose growth streams
+  as `ResultTextDeltaEvent`s instead. Rendering (typing text, sending segments,
+  or handling any other structured value) is a *consumer* concern; the event
+  just carries the typed value.
 - **Display events** (`DisplayEvent`) — fire-and-forget, e.g. the granular todo
   events (`TodoCreatedEvent`/`TodoUpdatedEvent`/`TodoStatusChangedEvent`/
   `TodoCompletedEvent`/`TodoDeletedEvent`), each carrying the affected `Todo`.
@@ -132,6 +133,22 @@ class ResultSegmentEvent:
     event_kind: Literal["result_segment"] = "result_segment"
 
 
+@dataclass
+class ResultTextDeltaEvent:
+    """The trailing text segment of a `list[MessageSegment]` output, as it grows.
+
+    A tool-backed segment reply carries its visible text inside the output
+    tool's streamed arguments, where no native text events exist; partial
+    validation reveals the trailing segment's text as it grows, and each event
+    carries the newly revealed piece so the channel renders the reply while the
+    model is still writing it. A segment that streamed this way is settled by
+    its last delta and never re-emitted as a `ResultSegmentEvent`.
+    """
+
+    delta: str
+    event_kind: Literal["result_text_delta"] = "result_text_delta"
+
+
 class DisplayEvent(BaseModel):
     """Fire-and-forget outbound event; the run continues after it is emitted."""
 
@@ -252,6 +269,7 @@ StreamEvents = TypeAliasType(
     "StreamEvents",
     AgentStreamEvent
     | ResultSegmentEvent
+    | ResultTextDeltaEvent
     | FinalResult[OutputT]
     | TodoEvent
     | MessageSentEvent
@@ -268,6 +286,7 @@ WireEvent = TypeAliasType(
     "WireEvent",
     AgentStreamEvent
     | ResultSegmentEvent
+    | ResultTextDeltaEvent
     | TodoEvent
     | MessageSentEvent
     | OAuthDeviceAuthorizationEvent
