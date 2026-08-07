@@ -102,7 +102,7 @@ class TrunklineChannelConfig(ChannelConfig):
     serve_console: bool = Field(
         default=True,
         description=(
-            "Serve the built console SPA (web/dist) from the app root. Disable "
+            "Serve the built console SPA (trunkline/dist) from the app root. Disable "
             "when the Vite dev server fronts the UI or the SPA is deployed "
             "separately — the API keeps serving either way "
             "(OCTOMATE__CHANNELS__TRUNKLINE__SERVE_CONSOLE=false)."

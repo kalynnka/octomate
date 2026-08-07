@@ -374,7 +374,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     # The built console SPA, resolved from the serving directory like
     # FILES_ROOT is. `static_mounts` skips it while unbuilt.
-    CONSOLE_DIST: ClassVar[Path] = Path("web/dist")
+    CONSOLE_DIST: ClassVar[Path] = Path("trunkline/dist")
 
     config: TrunklineChannelConfig
 
@@ -421,8 +421,8 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         if not self.CONSOLE_DIST.is_dir():
             logger.info(
                 "Trunkline console assets not built (%s missing); the API still "
-                "serves under /api/trunkline — run `pnpm build` in web/ or use "
-                "the Vite dev server.",
+                "serves under /api/trunkline — run `pnpm build` in trunkline/ or "
+                "use the Vite dev server.",
                 self.CONSOLE_DIST,
             )
             return ()
