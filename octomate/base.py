@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import colorsys
 import logging
+import zlib
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import InitVar, dataclass, field
+from functools import lru_cache
 from typing import TypeVar
 
 from fastapi import APIRouter, FastAPI, Request, Response
@@ -60,13 +62,15 @@ def log_style_for_index(index: int) -> Style:
 
 
 def short_log_name(name: str) -> str:
-    """Trim our package prefix to the subsystem so shared logger tags stay short —
-    `octomate.reflex.graph` -> `reflex`, `octomate.tentacles.channel.base` ->
-    `channel`. Library loggers are left as-is."""
+    """Chop a logger to its module so tags stay one word: our package prefix
+    trims to the subsystem (`octomate.reflex.graph` -> `reflex`,
+    `octomate.tentacles.channels.base` -> `channels`), and a library logger to
+    its top-level module (`mcp.client.streamable_http` -> `mcp`; this also
+    folds uvicorn's confusingly-named `uvicorn.error` into `uvicorn`)."""
     for prefix in ("octomate.tentacles.", "octomate."):
         if name.startswith(prefix):
             return name[len(prefix) :].split(".")[0]
-    return name
+    return name.split(".")[0]
 
 
 # Shared subsystems front no tentacle, so they have neither a brand to claim nor a
@@ -75,8 +79,20 @@ def short_log_name(name: str) -> str:
 # tentacles rather than as another hue competing with them.
 SHARED_LOG_STYLES: dict[str, Style] = {
     "main": Style(color="bright_white", bold=True),
-    "channel": Style(color="grey62", bold=True),
+    "channels": Style(color="grey62", bold=True),
 }
+
+
+@lru_cache(maxsize=256)
+def muted_log_style(tag: str) -> Style:
+    """A stable, muted hue per library tag — hashed rather than dispatched, so
+    `httpx` wears the same color every run without claiming a connection index.
+    The golden-ratio step spreads the hashes over the wheel (a plain modulo let
+    `httpx` and `uvicorn.access` land one degree apart). Low saturation, no
+    bold: libraries stay beneath the tentacles' saturated identity colors."""
+    hue = (zlib.crc32(tag.encode()) * GOLDEN_RATIO_CONJUGATE) % 1.0
+    red, green, blue = colorsys.hsv_to_rgb(hue, 0.35, 0.85)
+    return Style(color=Color.from_rgb(red * 255, green * 255, blue * 255))
 
 
 @dataclass
@@ -136,8 +152,9 @@ class Octomate:
 
     def log_tag(self, logger_name: str) -> tuple[str, Style | None]:
         """A short display tag for a logger plus its color: the owning tentacle's
-        id and dispatched color, or the logger name with our package prefix
-        trimmed (and no color) for shared/library loggers."""
+        id and dispatched color; a neutral style for the host's own subsystems;
+        a stable muted hue for everything else, so every module is tellable at
+        a glance."""
         for tentacle in (*self.agents.values(), *self.channels.values()):
             if any(
                 logger_name == prefix or logger_name.startswith(f"{prefix}.")
@@ -145,7 +162,7 @@ class Octomate:
             ):
                 return tentacle.id, tentacle.log_color
         tag = short_log_name(logger_name)
-        return tag, SHARED_LOG_STYLES.get(tag)
+        return tag, SHARED_LOG_STYLES.get(tag) or muted_log_style(tag)
 
     async def kick(
         self,
