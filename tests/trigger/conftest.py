@@ -26,6 +26,7 @@ you click one) or selects the marker. So both of these fire live:
 from __future__ import annotations
 
 import base64
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -40,6 +41,7 @@ from pydantic_settings import (
 )
 
 from octomate.config import OctomateConfig
+from tests.support.config import PRODUCTION_SOURCES, config_sources
 
 # Real images for the showcase live in tests/src/images (see tests/src/README);
 # the generated 1x1 transparent PNG below is only the fallback when none is there.
@@ -113,8 +115,11 @@ def pytest_collection_modifyitems(
 
 
 @pytest.fixture(scope="session")
-def live_config() -> OctomateConfig:
-    return OctomateConfig()
+def live_config() -> Iterator[OctomateConfig]:
+    """The real deployment, which the suite-wide isolation otherwise hides: these
+    replays need this machine's actual credentials, which is the point of them."""
+    with config_sources(PRODUCTION_SOURCES):
+        yield OctomateConfig()
 
 
 @pytest.fixture(scope="session")

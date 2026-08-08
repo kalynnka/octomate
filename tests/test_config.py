@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import get_args
 
@@ -25,9 +26,12 @@ from octomate.config import (
     SlackChannelConfig,
     UserConfig,
 )
+from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
 from octomate.schemas.triage import Claim
 from tests.support.config import IsolatedTestConfig
+
+IN_MEMORY_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 
 class DefaultYamlOnlyConfig(OctomateConfig):
@@ -39,6 +43,34 @@ class DefaultYamlOnlyConfig(OctomateConfig):
         nested_model_default_partial_update=True,
         extra="ignore",
     )
+
+
+def test_the_suite_never_reads_the_developers_config() -> None:
+    """`octomate.yaml` and `.env` are gitignored, so anything they carry — a
+    project, a user, half a channel's secrets — would make a result depend on the
+    machine. The session fixture repoints the files and clears the environment;
+    this is what notices if either half stops."""
+
+    assert OctomateConfig.model_config.get("yaml_file") == ("octomate.test.yaml",)
+    assert OctomateConfig.model_config.get("env_file") is None
+    # `OCTOMATE_DB_URL` is the harness's own and stays; nothing else survives.
+    assert [name for name in os.environ if name.startswith("OCTOMATE")] == [
+        "OCTOMATE_DB_URL"
+    ]
+
+    live = OctomateConfig()
+    assert live.projects == []
+    assert live.users == {}
+
+
+def test_the_suite_never_points_at_the_real_database() -> None:
+    """`database_settings` is built when its module is imported, before any fixture
+    exists, so pyproject's `env` is the only thing that can move it. A test that
+    forgets `in_memory_engine` must reach memory, not `.octomate/octomate.db`."""
+
+    assert database_settings.db_url == IN_MEMORY_DB_URL
+    # And one built during the run, which is what the singleton alone would miss.
+    assert DatabaseSettings().db_url == IN_MEMORY_DB_URL
 
 
 def test_default_yaml_placeholders_fail_without_override() -> None:
