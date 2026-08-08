@@ -6,7 +6,13 @@ from typing import Annotated, Self
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from pydantic import BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import (
+    BeforeValidator,
+    ConfigDict,
+    DirectoryPath,
+    Field,
+    model_validator,
+)
 from uuid_utils.compat import uuid7
 
 from octomate.models.project import Project as ProjectModel
@@ -26,11 +32,15 @@ def local_path(value: str | Path) -> Path:
     relative path, and it matches nothing. That check runs before the `Path` is built
     because `PurePath` collapses `://` to `:/`, and the scheme stops being visible.
 
-    Whether the directory is actually there is deliberately not this type's claim.
-    That check lives at the config boundary (`octomate.config.projects`), where the
-    operator who declared the project is looking: this type also validates rows
-    rehydrated from the database, which are history and may outlive the directories
-    they named — a registry row must never stop the process that would explain it.
+    Having a name is the one thing a root needs that a directory does not, so that
+    everything downstream gets a directory it can call the project by. `DirectoryPath`
+    owns the rest: declaring a project is a claim about this machine, so a root that
+    is missing or is a file fails at config load, where an operator is looking, rather
+    than at the first cwd that should have matched it.
+
+    The same claim is made of a stored row, since this type is what rehydrates one: a
+    project whose directory has moved must be re-declared at its new root or dropped
+    from the registry, because reconcile reads every row and this refuses a dead path.
     """
     if "://" in str(value):
         raise ValueError(f"{value!r} is a url; a root is a plain local path")
@@ -40,8 +50,10 @@ def local_path(value: str | Path) -> Path:
     return path
 
 
+# Normalised first, then checked: the validator runs outside `DirectoryPath`, which
+# would otherwise reject a `~/...` root as a directory that is not there.
 # Symlinks are left alone — the manager resolves both sides when it compares.
-LocalPath = Annotated[Path, BeforeValidator(local_path)]
+LocalPath = Annotated[DirectoryPath, BeforeValidator(local_path)]
 
 
 @sqlalchemy_materia.bless(ProjectModel)
