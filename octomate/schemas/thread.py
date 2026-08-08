@@ -3,11 +3,11 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Self
 
 from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import AfterValidator, ConfigDict, Field
+from pydantic import AfterValidator, ConfigDict, Field, model_validator
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
@@ -190,6 +190,20 @@ class Thread(BaseTransmuter):
     )
     messages: RelationCollection[ThreadMessage] = Relationships()
     handoffs: RelationCollection[Handoff] = Relationships()
+
+    @model_validator(mode="after")
+    def kind_agrees_with_the_key(self) -> Self:
+        """The channel's key is the fact; this row is our copy of it.
+
+        A copy that contradicts the fact is corrupt, and it would answer questions
+        — chiefly whether a project may be attached — with the wrong surface.
+        """
+        if self.kind != self.key.kind:
+            raise ValueError(
+                f"thread {self.key} is a {self.key.kind}, "
+                f"but the row calls itself a {self.kind}"
+            )
+        return self
 
     @property
     def key(self) -> ThreadKey:

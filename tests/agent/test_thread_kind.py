@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.managers import ThreadManager, UserManager
@@ -17,6 +18,7 @@ from octomate.schemas.project import Project
 from octomate.schemas.thread import (
     CLAUDE_NATIVE_ID,
     CODEX_NATIVE_ID,
+    Thread,
     ThreadKey,
 )
 
@@ -78,6 +80,30 @@ async def test_the_kind_is_on_the_row_a_later_reader_loads() -> None:
     reloaded = await ThreadManager(users=UserManager()).ensure(SLACK_DM)
 
     assert reloaded.kind == "dm"
+
+
+def test_a_row_that_contradicts_its_key_is_refused() -> None:
+    """The key is the channel's fact and the row is our copy, so a copy that
+    disagrees is corrupt rather than a second opinion."""
+    with pytest.raises(ValidationError, match="calls itself a thread"):
+        Thread(
+            channel_tentacle_id="slack",
+            chat_type="dm",
+            chat_id="D1",
+            kind="thread",
+        )
+
+
+def test_a_native_row_cannot_call_itself_a_plain_thread() -> None:
+    """The slip the fourth kind exists to catch: a native thread and a Slack thread
+    share a `chat_type`, and only the tentacle tells them apart."""
+    with pytest.raises(ValidationError, match="is a native_thread"):
+        Thread(
+            channel_tentacle_id=CLAUDE_NATIVE_ID,
+            chat_type="thread",
+            chat_id="sess-1",
+            kind="thread",
+        )
 
 
 async def test_a_dm_is_refused_a_project(tmp_path: Path) -> None:

@@ -120,7 +120,7 @@ class Thread(Base, TransmuterProxiedMixin):
         nullable=False,
         index=True,
         comment=(
-            "Which surface this thread is: dm, group_chat, thread, or native_thread. "
+            "Which surface this thread is: dm, group, thread, or native_thread. "
             "Written when the row is created and never changed. Only a thread and a "
             "native_thread may carry a project_id."
         ),
