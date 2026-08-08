@@ -36,7 +36,7 @@ from octomate.tentacles.base import TentacleLogFormatter
 from octomate.tentacles.channels.lark import LarkTentacle
 from octomate.tentacles.channels.napcat import NapcatTentacle
 from octomate.tentacles.channels.slack import SlackTentacle
-from octomate.tentacles.channels.web.vercel import VercelTentacle
+from octomate.tentacles.channels.web.trunkline import TrunklineTentacle
 
 config = OctomateConfig()
 
@@ -59,6 +59,18 @@ def hook_secret(agent: str) -> SecretStr:
             f"and place it, then re-run `octomate {agent} hooks install`."
         )
     return config.hook_secret
+
+
+def health_probes_are_noise(record: logging.LogRecord) -> bool:
+    """Drop access lines for health polls — the console asks every 15s and a
+    200 says nothing. Sits on the `uvicorn.access` logger, so console and
+    Logfire both skip them; a failing probe still surfaces through the
+    console's own offline chip and Logfire's traces."""
+    args = record.args
+    # uvicorn.access args: (client_addr, method, path, http_version, status).
+    return not (
+        isinstance(args, tuple) and len(args) == 5 and str(args[2]).endswith("/health")
+    )
 
 
 def create_app() -> FastAPI:
@@ -169,6 +181,14 @@ def create_app() -> FastAPI:
         handlers=[console_handler, logfire.LogfireLoggingHandler()],
         force=True,
     )
+    # Uvicorn wired its own handlers before importing this factory, which is why
+    # its lines arrive bare ("INFO: ...") and never reach Logfire. Route its
+    # loggers through the root pipeline instead: one format, one Logfire sink.
+    for uvicorn_logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uvicorn_logger = logging.getLogger(uvicorn_logger_name)
+        uvicorn_logger.handlers.clear()
+        uvicorn_logger.propagate = True
+    logging.getLogger("uvicorn.access").addFilter(health_probes_are_noise)
     # The inkling agent's cache-bust monitor reports through `warnings`, which otherwise
     # writes straight to stderr and never reaches Logfire — where a cache collapse is
     # only visible as a cost and latency regression nobody attributes to a busted prefix.
@@ -187,7 +207,6 @@ def create_app() -> FastAPI:
     logging.getLogger("watchfiles").setLevel(logging.WARNING)
     for name, level in config.logging.loggers.items():
         logging.getLogger(name).setLevel(level)
-    logger = logging.getLogger("octomate.main")
 
     octomate.connect(
         InklingTentacle(
@@ -254,19 +273,14 @@ def create_app() -> FastAPI:
         )
 
     if (
-        channel_config := config.channels.dev_ui
+        channel_config := config.channels.trunkline
     ) is not None and channel_config.enabled:
         octomate.connect(
-            VercelTentacle(
-                "dev_ui",
+            TrunklineTentacle(
+                "trunkline",
                 octomate,
                 config=channel_config,
             )
-        )
-        logger.info(
-            "Dev UI (vercel) enabled — open http://%s:%d/",
-            config.host,
-            config.port,
         )
 
     return octomate.app(title="Octomate")

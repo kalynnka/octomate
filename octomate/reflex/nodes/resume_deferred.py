@@ -106,6 +106,14 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         # The resumed agent run continues the batch's conversation, so bind the
         # thread that owns it (React reads state.thread for the run's thread_id).
         state.thread = await ctx.deps.thread_manager.ensure(batch.target_address)
+        # The resumed run must serve the user the suspended run served: React
+        # mounts their per-user capabilities (and the gate's identity) from
+        # state.user_profile, and without it the run loses tools mid-conversation
+        # — which also breaks the provider prompt cache both ways.
+        state.user_profile = await ctx.deps.thread_manager.users.profile(
+            batch.source_address.channel_tentacle_id,
+            batch.source_address.user_id,
+        )
         state.user_prompt = None
         state.run_name = "resume"
         reflex_logfire.info("resume routes to React", batch_id=str(batch.id))

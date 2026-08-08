@@ -4,12 +4,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from octomate.config.projects import ConfigProject
 from octomate.database import async_session
 from octomate.managers.project import ProjectManager
 from octomate.schemas.project import Project
+
+config_projects: TypeAdapter[list[Project]] = TypeAdapter(list[ConfigProject])
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +28,7 @@ def directory(path: Path) -> Path:
 
 def config(spec: Sequence[Mapping[str, object]]) -> list[Project]:
     """The `projects:` block as the config layer hands it over."""
-    return [Project.shell(Project.Create.model_validate(entry)) for entry in spec]
+    return config_projects.validate_python(spec)
 
 
 async def find_project(name: str) -> Project | None:
@@ -313,13 +316,23 @@ async def test_an_extra_root_colliding_with_another_root_is_refused(
         await manager.reconcile()
 
 
-async def test_a_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(ValidationError, match="does not point to a directory"):
-        config([{"root": str(tmp_path / "not-cloned-yet")}])
-
-
 async def test_a_manager_with_no_config_resolves_nothing(tmp_path: Path) -> None:
     manager = ProjectManager()
     await manager.reconcile()
 
     assert manager.resolve(tmp_path) is None
+
+
+async def test_a_retained_row_whose_root_is_gone_does_not_block_startup(
+    tmp_path: Path,
+) -> None:
+    # Undeclared rows are retained as history, and a directory can move or vanish
+    # after its row was written. Reconcile loads every stored row, so the schema
+    # must accept the dead path — existence is the config boundary's claim only.
+    async with async_session() as session:
+        session.add(Project(name="moved", root=tmp_path / "moved-away"))
+        await session.commit()
+
+    manager = await registry([{"root": str(directory(tmp_path / "inky"))}])
+
+    assert [project.name for project in manager.list()] == ["inky"]

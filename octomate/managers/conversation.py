@@ -164,6 +164,19 @@ class ConversationManager:
             )
         return list(rows)
 
+    async def for_thread(self, thread_id: uuid.UUID) -> list[Conversation]:
+        """The thread's agent conversations, subagents included. `runs` and each
+        run's `messages` are lazy="selectin", so the one list query loads the whole
+        model ledger in batched passes — a reader replaying history needs no
+        per-row loading."""
+        async with async_session() as session:
+            rows = await session.list(
+                Conversation,
+                limit=None,
+                expressions=[Conversation["thread_id"] == thread_id],
+            )
+        return list(rows)
+
     async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
         for conversation in self.conversations.values():
             if conversation.id == conversation_id:

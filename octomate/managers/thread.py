@@ -103,22 +103,39 @@ class ThreadManager:
         self.cache_thread(thread)
         return thread
 
-    async def get(self, thread_id: uuid.UUID) -> Thread:
-        """Resolve a thread by id — a cache hit or one fresh read; raises on an
-        unknown id. The by-id path for a caller holding a thread's id rather than the
-        channel coordinates that key it, which is every agent tentacle."""
-        for cached in self.threads.values():
-            if cached.id == thread_id:
-                return cached
+    async def get(self, thread_id: uuid.UUID) -> Thread | None:
+        """The thread by primary key, or None. messages/handoffs are
+        lazy="selectin", so the get loads them with the row."""
         async with async_session() as session:
             thread = await session.get(Thread, thread_id)
             if thread is None:
-                raise ValueError(f"unknown thread {thread_id}")
-            await thread.messages
-            await thread.handoffs
-            await thread.project
+                return None
+
         self.cache_thread(thread)
         return thread
+
+    async def list_threads(
+        self,
+        channel_tentacle_id: str | None = None,
+        *,
+        limit: int = 100,
+    ) -> list[Thread]:
+        """Threads most recently touched first — one channel's, or every
+        channel's when `channel_tentacle_id` is None. messages/handoffs are
+        lazy="selectin", so the list query loads them in one batched pass."""
+        expressions = (
+            []
+            if channel_tentacle_id is None
+            else [Thread["channel_tentacle_id"] == channel_tentacle_id]
+        )
+        async with async_session() as session:
+            rows = await session.list(
+                Thread,
+                limit=limit,
+                order_bys=[Thread["updated_at"].desc(), Thread["id"].desc()],
+                expressions=expressions,
+            )
+        return list(rows)
 
     def cache_thread(self, thread: Thread) -> None:
         self.threads[thread.key] = thread

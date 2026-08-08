@@ -1,0 +1,84 @@
+/* ============================================================================
+   LONETRAIL — Motion
+   Restrained, archival. Entries rise 8px and fade once (~0.38s ease-out);
+   folds/reveals are 240ms; hover stays a 150ms color swap. No bounce, no
+   parallax, no decorative loops — the only loops are FUNCTIONAL status:
+   skeleton scan, recording pulse, loaders (dots · scan · spin · caret),
+   voice wave. All honor prefers-reduced-motion.
+   Theme-aware via --color-* tokens (colors_and_type.css); hex fallbacks
+   match the light theme so utilities also work standalone.
+   ========================================================================== */
+:root {
+  --motion-fast: 150ms; /* @kind other */   /* hover / press color swaps */
+  --motion-base: 240ms; /* @kind other */   /* fold, expand, dropdown, fade-out */
+  --motion-entry: 380ms; /* @kind other */  /* entry fade-up, fade-in */
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1); /* @kind other */
+  --ease-in-out: cubic-bezier(0.45, 0, 0.25, 1); /* @kind other */
+  --skeleton-bed: var(--surface-sunken, var(--surface, #E4DCC8));
+  --skeleton-sheen: rgb(237 230 214 / 0.6);
+}
+[data-theme="dark"] { --skeleton-sheen: rgb(236 228 212 / 0.06); }
+
+@keyframes lt-fade-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lt-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes lt-fade-up  { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes lt-sheen    { to { transform: translateX(100%); } }
+@keyframes lt-rec-pulse{ 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* --- Entries: apply on mount, runs once. Stagger siblings with --i. ------ */
+.lt-entry   { animation: lt-fade-up var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
+.lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
+.lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
+
+/* --- Fold / expand: folders, collapsible sections, sidebar rails. --------
+   Wrap the collapsible content in exactly ONE child; toggle [data-folded]
+   on the wrapper. .lt-fold folds vertically, .lt-fold-x horizontally. */
+.lt-fold   { display: grid; grid-template-rows: 1fr; transition: grid-template-rows var(--motion-base) var(--ease-out); }
+.lt-fold[data-folded] { grid-template-rows: 0fr; }
+.lt-fold > * { overflow: hidden; min-height: 0; }
+.lt-fold-x { display: grid; grid-template-columns: 1fr; transition: grid-template-columns var(--motion-base) var(--ease-out); }
+.lt-fold-x[data-folded] { grid-template-columns: 0fr; }
+.lt-fold-x > * { overflow: hidden; min-width: 0; }
+/* Rotating ▸ disclosure marker — put [data-open] on the marker or a parent. */
+.lt-disclose { display: inline-block; transition: transform var(--motion-base) var(--ease-out); }
+[data-open] .lt-disclose, .lt-disclose[data-open] { transform: rotate(90deg); }
+
+/* --- Dropdown / popover: hidden by default, toggle [data-open]. ---------- */
+.lt-menu { opacity: 0; transform: translateY(-6px); visibility: hidden; transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out), visibility 0s linear var(--motion-base); }
+.lt-menu[data-open] { opacity: 1; transform: none; visibility: visible; transition-delay: 0s; }
+
+/* --- Skeleton: sunken bed + slow paper sheen (functional loop). ---------- */
+.lt-skeleton { position: relative; overflow: hidden; background: var(--skeleton-bed); }
+.lt-skeleton::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(100deg, transparent 25%, var(--skeleton-sheen) 50%, transparent 75%); animation: lt-sheen 1.6s var(--ease-in-out) infinite; }
+
+/* --- Recording: pulsing status dot (functional loop). Pair with a mono
+   "REC 00:14" label. Opacity pulse only — no scale, no halo. -------------- */
+.lt-rec-dot { display: inline-block; width: 8px; height: 8px; border-radius: 9999px; background: var(--color-red, var(--red, #A33332)); animation: lt-rec-pulse 1.4s var(--ease-in-out) infinite; }
+
+/* --- Loaders: thinking dots, scan bar, spinner, stream caret (all
+   functional status loops). ---------------------------------------------- */
+@keyframes lt-dot-pulse { 0%, 80%, 100% { opacity: 0.2; } 40% { opacity: 1; } }
+@keyframes lt-scan { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
+@keyframes lt-spin { to { transform: rotate(360deg); } }
+@keyframes lt-blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.lt-dots { display: inline-flex; gap: 5px; }
+.lt-dots i { width: 6px; height: 6px; border-radius: 9999px; background: var(--color-ink, var(--ink, #1A1814)); animation: lt-dot-pulse 1.2s infinite; }
+.lt-dots i:nth-child(2) { animation-delay: 0.2s; }
+.lt-dots i:nth-child(3) { animation-delay: 0.4s; }
+.lt-scanbar { position: relative; height: 2px; background: var(--color-border, var(--border, #C8BFA8)); overflow: hidden; }
+.lt-scanbar::after { content: ""; position: absolute; top: 0; left: 0; height: 100%; width: 25%; background: var(--color-accent, var(--accent, #D4621A)); animation: lt-scan 1.3s var(--ease-in-out) infinite; }
+.lt-spin { animation: lt-spin 0.8s linear infinite; }
+.lt-caret { display: inline-block; width: 7px; height: 13px; background: var(--color-accent, var(--accent, #D4621A)); animation: lt-blink 1s steps(1) infinite; }
+
+/* --- Voice wave: listening-HUD level bars (functional loop). Bars are <i>
+   with inline heights; negative --i delays de-sync them. ------------------ */
+@keyframes lt-wave { from { transform: scaleY(0.25); } to { transform: scaleY(1); } }
+.lt-wave { display: inline-flex; align-items: center; gap: 2px; }
+.lt-wave i { width: 3px; background: var(--color-accent, var(--accent, #D4621A)); animation: lt-wave 0.9s var(--ease-in-out) calc(var(--i, 0) * -120ms) infinite alternate; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lt-entry, .lt-fade-in, .lt-fade-out, .lt-skeleton::after, .lt-rec-dot,
+  .lt-dots i, .lt-scanbar::after, .lt-spin, .lt-caret, .lt-wave i { animation: none; }
+  .lt-fold, .lt-fold-x, .lt-menu, .lt-disclose { transition: none; }
+  .lt-fade-out { opacity: 0; }
+}

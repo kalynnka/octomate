@@ -111,6 +111,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             # was before there were projects, down to not reading the thread.
             return configured
         thread = await self.octomate.thread_manager.get(thread_id)
+        if thread is None:
+            raise ValueError(f"unknown thread {thread_id}")
         attributed = await thread.project
         if attributed is None:
             return configured

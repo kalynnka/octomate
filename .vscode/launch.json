@@ -2,13 +2,6 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Python Debugger: Current File",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${file}",
-      "console": "integratedTerminal"
-    },
-    {
       "name": "Octomate",
       "type": "debugpy",
       "request": "launch",
@@ -20,7 +13,16 @@
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
-      "justMyCode": false
+      "justMyCode": false,
+      // Open the console only once the API actually serves — vite is up in a
+      // second, the API takes several; opening on vite's ready lands on a dead
+      // gateway. uriFormat demands exactly one %s, so capture the scheme and
+      // point the rest at vite.
+      "serverReadyAction": {
+        "action": "openExternally",
+        "pattern": "Uvicorn running on (https?)://",
+        "uriFormat": "%s://localhost:5173"
+      }
     },
     {
       "name": "Octomate (reload)",
@@ -38,6 +40,21 @@
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
       "justMyCode": false
+    },
+    {
+      "name": "Trunkline (reload)",
+      "type": "node",
+      "request": "launch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "cwd": "${workspaceFolder}/trunkline"
+    },
+  ],
+  "compounds": [
+    {
+      "name": "Octomate + Trunkline",
+      "configurations": ["Octomate", "Trunkline (reload)"],
+      "stopAll": true
     },
   ]
 }

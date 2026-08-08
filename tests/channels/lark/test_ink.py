@@ -6,9 +6,12 @@ import asyncio
 import json
 
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
+from lark_oapi.core.http import Transport
+from pydantic import SecretStr
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channels.lark import LarkTentacle
+from octomate.tentacles.channels.lark.ink import SDK_AEXECUTE, LarkInk, pools
 from octomate.tentacles.channels.lark.schema import LarkOutboundMessage
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 
@@ -166,3 +169,29 @@ async def test_lark_tentacle_message_callback_invokes_ingest() -> None:
     await asyncio.wait_for(done.wait(), timeout=1)
 
     assert calls == [raw]
+
+
+async def test_each_lark_ink_owns_a_pool_and_routing_survives_a_peer_exit() -> None:
+    """Two Lark channels: each entered ink pools its own client, requests route
+    by the calling `lark.Client`'s Config, and one channel's exit closes only
+    its own pool — the survivor keeps its client and the transport patch."""
+    first = LarkInk("app-one", SecretStr("secret-one"))
+    second = LarkInk("app-two", SecretStr("secret-two"))
+
+    async with first:
+        first_pool = first.http
+        assert first_pool is not None
+        async with second:
+            assert second.http is not None
+            assert second.http is not first_pool
+            assert pools[first.config] is first_pool
+            assert pools[second.config] is second.http
+        assert second.http is None
+        assert second.config not in pools
+        assert pools[first.config] is first_pool
+        assert not first_pool.is_closed
+        assert Transport.aexecute is not SDK_AEXECUTE
+
+    assert not pools
+    assert first_pool.is_closed
+    assert Transport.aexecute is SDK_AEXECUTE

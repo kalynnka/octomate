@@ -7,9 +7,10 @@ One stream, with these event families:
   events, every validated output type is emitted as Pydantic AI's own
   `FinalResult[OutputT]`, and outputs that validate to `list[MessageSegment]`
   additionally stream one `ResultSegmentEvent` per completed segment as partial
-  validation reveals it. Rendering (typing text, sending segments, or handling
-  any other structured value) is a *consumer* concern; the event just carries the
-  typed value.
+  validation reveals it — except a trailing text segment, whose growth streams
+  as `ResultTextDeltaEvent`s instead. Rendering (typing text, sending segments,
+  or handling any other structured value) is a *consumer* concern; the event
+  just carries the typed value.
 - **Display events** (`DisplayEvent`) — fire-and-forget, e.g. the granular todo
   events (`TodoCreatedEvent`/`TodoUpdatedEvent`/`TodoStatusChangedEvent`/
   `TodoCompletedEvent`/`TodoDeletedEvent`), each carrying the affected `Todo`.
@@ -21,19 +22,39 @@ Display and action events are emitted by capabilities (a capability bundles a to
 + instructions + `wrap_run_event_stream`); the output events are emitted by
 `Agent.stream_events` (see octomate/capabilities/harness/agent.py).
 
-Serialization (a wire format for dev_ui) is intentionally not modelled here yet:
-the output events are generic, so a single discriminated `TypeAdapter` no longer
-fits — that belongs with the consumer/transport layer when dev_ui adopts this.
+A second, consumer-emitted family lives here too: the wire forms
+(`SubagentStartedEvent`/`SubagentSettledEvent`, `RunResultEvent`,
+`RunErrorEvent`). They are not run-stream members — they carry the subagent
+timeline callbacks and the run result/failure in a serializable shape, for any
+channel that mirrors its timeline onto a wire instead of holding platform
+state.
+
+The run-stream union itself stays generic (`FinalResult[OutputT]`), so it has
+no single serialized form — but the wire family is concrete, so `WireEvent` and
+its `wire_event_adapter` live here too: the run stream as a wire consumer sees
+it, with the generic/unserializable members replaced by their wire forms.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_ai import AgentStreamEvent
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    ModelMessage,
+    ModelResponse,
+    PartStartEvent,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.result import FinalResult
+from pydantic_ai.usage import RunUsage
 from typing_extensions import TypeAliasType
 
 from octomate.schemas.conversation import ChannelAddress
@@ -56,6 +77,50 @@ class SubagentActivity:
     name: str
 
 
+class SubagentStartedEvent(BaseModel):
+    """The event form of `SubagentActivity`: a commissioned child run opened
+    its own timeline.
+
+    Not a run-stream member — subagent lifecycle reaches channels through the
+    timeline callbacks (`TimelineState.open_subagent`); a channel that mirrors
+    its timeline onto a wire emits these instead of holding platform state."""
+
+    event_kind: Literal["subagent_started"] = "subagent_started"
+    invocation_id: str
+    kind: SubagentActivityKind
+    name: str
+
+
+class SubagentSettledEvent(BaseModel):
+    """The child run finished; `response` is its accumulated reply text."""
+
+    event_kind: Literal["subagent_settled"] = "subagent_settled"
+    invocation_id: str
+    status: SubagentActivityStatus
+    detail: str | None = None
+    response: str = ""
+
+
+class RunResultEvent(BaseModel):
+    """The serializable projection of `AgentRunResultEvent`, whose payload
+    drags the run's private graph state and cannot go on a wire. Carries the
+    output value so a reply that never streamed (a plain non-streaming model,
+    a segment-less structured output) still reaches the consumer, and the
+    usage a session display renders."""
+
+    event_kind: Literal["run_result"] = "run_result"
+    output: str | list[MessageSegment] | None = None
+    usage: RunUsage
+
+
+class RunErrorEvent(BaseModel):
+    """A run that failed before producing a result, so a wire consumer can
+    render the failure instead of watching its stream drop."""
+
+    event_kind: Literal["run_error"] = "run_error"
+    message: str
+
+
 @dataclass
 class ResultSegmentEvent:
     """One completed message segment from a `list[MessageSegment]` output.
@@ -66,6 +131,22 @@ class ResultSegmentEvent:
 
     segment: MessageSegment
     event_kind: Literal["result_segment"] = "result_segment"
+
+
+@dataclass
+class ResultTextDeltaEvent:
+    """The trailing text segment of a `list[MessageSegment]` output, as it grows.
+
+    A tool-backed segment reply carries its visible text inside the output
+    tool's streamed arguments, where no native text events exist; partial
+    validation reveals the trailing segment's text as it grows, and each event
+    carries the newly revealed piece so the channel renders the reply while the
+    model is still writing it. A segment that streamed this way is settled by
+    its last delta and never re-emitted as a `ResultSegmentEvent`.
+    """
+
+    delta: str
+    event_kind: Literal["result_text_delta"] = "result_text_delta"
 
 
 class DisplayEvent(BaseModel):
@@ -188,6 +269,7 @@ StreamEvents = TypeAliasType(
     "StreamEvents",
     AgentStreamEvent
     | ResultSegmentEvent
+    | ResultTextDeltaEvent
     | FinalResult[OutputT]
     | TodoEvent
     | MessageSentEvent
@@ -195,3 +277,71 @@ StreamEvents = TypeAliasType(
     | ActionBatchEvent,
     type_params=(OutputT,),
 )
+
+# The run stream as a wire consumer sees it: `StreamEvents` with the generic /
+# unserializable members replaced by their wire forms (`FinalResult` dropped for
+# `RunResultEvent`, the subagent timeline callbacks as events), every member
+# discriminated by `event_kind`.
+WireEvent = TypeAliasType(
+    "WireEvent",
+    AgentStreamEvent
+    | ResultSegmentEvent
+    | ResultTextDeltaEvent
+    | TodoEvent
+    | MessageSentEvent
+    | OAuthDeviceAuthorizationEvent
+    | OAuthAuthorizationEvent
+    | ActionBatchEvent
+    | SubagentStartedEvent
+    | SubagentSettledEvent
+    | RunResultEvent
+    | RunErrorEvent,
+)
+
+# Serialization-only: wire consumers never validate events back in, so the
+# union needs no validation discriminator (the OAuth pair could not carry one
+# anyway — both declare the same two-valued `event_kind` literal). Binary
+# payloads (a `FilePart`, bytes in a tool return) travel base64 like
+# pydantic-ai's own `tool_return_ta` does. Dump with warnings=False: the
+# union's Any-typed provider fields (tool return content, provider_details, a
+# callable thinking-signature slot) trip the serializer warning on ordinary
+# events, which would log once per streamed delta.
+wire_event_adapter: TypeAdapter[WireEvent] = TypeAdapter(
+    WireEvent,
+    config=ConfigDict(ser_json_bytes="base64"),
+)
+
+
+def replay_wire_events(messages: Sequence[ModelMessage]) -> list[WireEvent]:
+    """Re-emit a persisted run's model ledger as the events its live stream
+    carried, so a consumer reloading history folds it through the same
+    processor as a running stream — not through a transcript rendering, which
+    is prepared for the agent history tool.
+
+    Response parts come back as `PartStartEvent`s (whole parts, no deltas);
+    tool calls and their returns as the function-tool event pair, mirroring
+    the live stream where a `ToolCallPart` is announced by its own event.
+    Prompt parts are skipped — the chat ledger owns the human side. The
+    closing `RunResultEvent` carries usage summed from the run's responses;
+    its output stays None because the text already replayed as parts.
+    """
+    events: list[WireEvent] = []
+    usage = RunUsage()
+    index = 0
+    for message in messages:
+        if isinstance(message, ModelResponse):
+            usage.requests += 1
+            usage.input_tokens += message.usage.input_tokens
+            usage.output_tokens += message.usage.output_tokens
+            for part in message.parts:
+                if isinstance(part, ToolCallPart):
+                    events.append(FunctionToolCallEvent(part=part))
+                else:
+                    events.append(PartStartEvent(index=index, part=part))
+                index += 1
+        else:
+            for part in message.parts:
+                if isinstance(part, (ToolReturnPart, RetryPromptPart)):
+                    events.append(FunctionToolResultEvent(part=part))
+    events.append(RunResultEvent(usage=usage))
+    return events

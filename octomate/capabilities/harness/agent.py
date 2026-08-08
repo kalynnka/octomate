@@ -62,9 +62,15 @@ from pydantic_graph import End
 
 from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
+    ResultTextDeltaEvent,
     StreamEvents,
 )
-from octomate.schemas.segments import MessageSegment, Segment
+from octomate.schemas.segments import (
+    MarkdownSegment,
+    MessageSegment,
+    Segment,
+    TextSegment,
+)
 
 
 class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
@@ -203,6 +209,33 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                         )
                         final_event: FinalResultEvent | None = None
                         emitted_segments = 0
+                        # The element whose text is streaming as deltas, and how much
+                        # of it has already been emitted.
+                        streamed_index: int | None = None
+                        streamed_chars = 0
+
+                        def settle_element(
+                            segment: object,
+                            index: int,
+                            streamed_index: int | None,
+                            streamed_chars: int,
+                        ) -> ResultSegmentEvent | ResultTextDeltaEvent | None:
+                            # A validated segment-list element is a union member; the
+                            # Annotated discriminated union can't be
+                            # isinstance-narrowed, so guard on the base then cast.
+                            if not isinstance(segment, Segment):
+                                return None
+                            if index == streamed_index:
+                                # Already rendered as deltas; only the text revealed
+                                # since the last one is still owed.
+                                remainder = str(segment)[streamed_chars:]
+                                if not remainder:
+                                    return None
+                                return ResultTextDeltaEvent(delta=remainder)
+                            return ResultSegmentEvent(
+                                segment=cast(MessageSegment, segment)
+                            )
+
                         # A capability injecting a non-AgentStreamEvent before the
                         # FinalResultEvent passes through here; injecting after it is
                         # not supported (todo events inject on the tools node).
@@ -228,21 +261,38 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                             # TODO: emit all the items from a iterable structured output
                             # as they validate, not only lists of segments.
                             if isinstance(partial, list):
-                                # The trailing element may still be growing under
-                                # partial validation — emit only the elements a later
-                                # one has sealed; the tail is emitted from the final
-                                # validated output below.
-                                for segment in partial[emitted_segments:-1]:
-                                    # A validated segment-list element is a union member;
-                                    # the Annotated discriminated union can't be
-                                    # isinstance-narrowed, so guard on the base then cast.
-                                    if isinstance(segment, Segment):
-                                        yield ResultSegmentEvent(
-                                            segment=cast(MessageSegment, segment)
-                                        )
+                                # Elements a later one has sealed are final — emit them
+                                # whole, except the one already streaming as deltas,
+                                # which settles with its remainder.
+                                for index in range(emitted_segments, len(partial) - 1):
+                                    settled = settle_element(
+                                        partial[index],
+                                        index,
+                                        streamed_index,
+                                        streamed_chars,
+                                    )
+                                    if settled is not None:
+                                        yield settled
                                 emitted_segments = max(
                                     emitted_segments, len(partial) - 1
                                 )
+                                # The trailing element may still be growing under
+                                # partial validation. A text-bearing tail streams its
+                                # growth immediately — the visible reply must not wait
+                                # for the model to finish; other shapes wait to be
+                                # sealed (or for the final validated output below).
+                                tail_index = len(partial) - 1
+                                if tail_index >= emitted_segments and isinstance(
+                                    partial[tail_index], TextSegment | MarkdownSegment
+                                ):
+                                    if streamed_index != tail_index:
+                                        streamed_index = tail_index
+                                        streamed_chars = 0
+                                    text = str(partial[tail_index])
+                                    if len(text) > streamed_chars:
+                                        delta = text[streamed_chars:]
+                                        streamed_chars = len(text)
+                                        yield ResultTextDeltaEvent(delta=delta)
                         if final_event is not None:
                             try:
                                 final = await stream.validate_response_output(
@@ -251,11 +301,15 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                             except (ValidationError, ModelRetry):
                                 final = None
                             if isinstance(final, list):
-                                for segment in final[emitted_segments:]:
-                                    if isinstance(segment, Segment):
-                                        yield ResultSegmentEvent(
-                                            segment=cast(MessageSegment, segment)
-                                        )
+                                for index in range(emitted_segments, len(final)):
+                                    settled = settle_element(
+                                        final[index],
+                                        index,
+                                        streamed_index,
+                                        streamed_chars,
+                                    )
+                                    if settled is not None:
+                                        yield settled
                             yield FinalResult(
                                 output=final,
                                 tool_name=final_event.tool_name,

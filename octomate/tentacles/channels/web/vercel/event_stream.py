@@ -50,6 +50,7 @@ from octomate.capabilities.harness.events import (
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
     ResultSegmentEvent,
+    ResultTextDeltaEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,
@@ -91,6 +92,11 @@ class VercelEventStream(VercelAIEventStream[None, InklingOutput]):
                 if self.reply_id is not None:
                     text = f"\n\n{text}"
                 async for chunk in self.reply_delta(text):
+                    yield chunk
+            case ResultTextDeltaEvent():
+                # The trailing text segment streaming as it grows: continuous
+                # text, no block separator.
+                async for chunk in self.reply_delta(event.delta):
                     yield chunk
             case FinalResult():
                 async for chunk in self.close_reply():

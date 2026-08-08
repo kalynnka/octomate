@@ -62,6 +62,20 @@ RawT = TypeVar("RawT")
 
 
 @dataclass(frozen=True)
+class StaticMount:
+    """One static-file surface a channel asks the host app to serve.
+
+    Declared as data rather than a Starlette app so the host controls mount
+    order: `Octomate.app` mounts these after every router, which is what lets
+    a catch-all `path="/"` coexist with the API routes."""
+
+    path: str
+    directory: Path
+    name: str
+    html: bool = True
+
+
+@dataclass(frozen=True)
 class ChannelSurfaces:
     """Which places this channel can open, as opposed to how it routes them.
 
@@ -113,7 +127,18 @@ class Chromo(
 
 
 class Ink(ABC, Generic[MessageT]):
-    """Base class for platform API clients (transport only)."""
+    """Base class for platform API clients (transport only).
+
+    An ink is an async context manager: the owning tentacle enters it as part
+    of its own lifecycle. The base implementation holds no resources; inks
+    whose platform calls can share a pooled connection override
+    `__aenter__`/`__aexit__` to open and close it.
+    """
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None: ...
 
     @abstractmethod
     async def inspect(self) -> UserProfile: ...
@@ -218,6 +243,13 @@ class ChannelTentacle(
             oauth=oauth_feeler,
         )
 
+    def static_mounts(self) -> tuple[StaticMount, ...]:
+        """Static-file surfaces the host app serves for this channel — empty by
+        default. A channel that ships a web UI overrides this; `Octomate.app`
+        mounts the declarations after every router, so they cannot shadow API
+        routes."""
+        return ()
+
     async def probe(self) -> None:
         """Resolve the channel's own identity from the platform. Awaited by the
         host before the channel is served, so `self.self_profile` is set before any
@@ -231,11 +263,16 @@ class ChannelTentacle(
         )
 
     async def __aenter__(self) -> Self:
-        # Resolve identity before any inbound event is ingested. Channels with a
+        # The ink first, so the probe already rides its pooled connection; then
+        # resolve identity before any inbound event is ingested. Channels with a
         # persistent connection override this to open it (and `__aexit__` to tear
         # it down); HTTP-driven channels (e.g. the dev UI) need only the probe.
+        await self.ink.__aenter__()
         await self.probe()
         return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.ink.__aexit__(*exc)
 
     @property
     def name(self) -> str:

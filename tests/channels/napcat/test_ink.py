@@ -187,6 +187,9 @@ async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
 async def test_napcat_context_manager_runs_serve_until_exit(monkeypatch) -> None:
     channel = object.__new__(NapcatTentacle)
     channel.id = "napcat"
+    # Entering the tentacle enters the ink's context; the base ink holds no
+    # resources, so a bare instance is enough.
+    channel.ink = object.__new__(NapcatInk)
     channel.ws_client = None
     channel.stop_event = None
     channel.serve_task = None

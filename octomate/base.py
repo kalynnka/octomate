@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import colorsys
 import logging
+import zlib
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import InitVar, dataclass, field
+from functools import lru_cache
 from typing import TypeVar
 
 from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
@@ -59,13 +62,15 @@ def log_style_for_index(index: int) -> Style:
 
 
 def short_log_name(name: str) -> str:
-    """Trim our package prefix to the subsystem so shared logger tags stay short —
-    `octomate.reflex.graph` -> `reflex`, `octomate.tentacles.channel.base` ->
-    `channel`. Library loggers are left as-is."""
+    """Chop a logger to its module so tags stay one word: our package prefix
+    trims to the subsystem (`octomate.reflex.graph` -> `reflex`,
+    `octomate.tentacles.channels.base` -> `channels`), and a library logger to
+    its top-level module (`mcp.client.streamable_http` -> `mcp`; this also
+    folds uvicorn's confusingly-named `uvicorn.error` into `uvicorn`)."""
     for prefix in ("octomate.tentacles.", "octomate."):
         if name.startswith(prefix):
             return name[len(prefix) :].split(".")[0]
-    return name
+    return name.split(".")[0]
 
 
 # Shared subsystems front no tentacle, so they have neither a brand to claim nor a
@@ -74,8 +79,20 @@ def short_log_name(name: str) -> str:
 # tentacles rather than as another hue competing with them.
 SHARED_LOG_STYLES: dict[str, Style] = {
     "main": Style(color="bright_white", bold=True),
-    "channel": Style(color="grey62", bold=True),
+    "channels": Style(color="grey62", bold=True),
 }
+
+
+@lru_cache(maxsize=256)
+def muted_log_style(tag: str) -> Style:
+    """A stable, muted hue per library tag — hashed rather than dispatched, so
+    `httpx` wears the same color every run without claiming a connection index.
+    The golden-ratio step spreads the hashes over the wheel (a plain modulo let
+    `httpx` and `uvicorn.access` land one degree apart). Low saturation, no
+    bold: libraries stay beneath the tentacles' saturated identity colors."""
+    hue = (zlib.crc32(tag.encode()) * GOLDEN_RATIO_CONJUGATE) % 1.0
+    red, green, blue = colorsys.hsv_to_rgb(hue, 0.35, 0.85)
+    return Style(color=Color.from_rgb(red * 255, green * 255, blue * 255))
 
 
 @dataclass
@@ -135,8 +152,9 @@ class Octomate:
 
     def log_tag(self, logger_name: str) -> tuple[str, Style | None]:
         """A short display tag for a logger plus its color: the owning tentacle's
-        id and dispatched color, or the logger name with our package prefix
-        trimmed (and no color) for shared/library loggers."""
+        id and dispatched color; a neutral style for the host's own subsystems;
+        a stable muted hue for everything else, so every module is tellable at
+        a glance."""
         for tentacle in (*self.agents.values(), *self.channels.values()):
             if any(
                 logger_name == prefix or logger_name.startswith(f"{prefix}.")
@@ -144,7 +162,7 @@ class Octomate:
             ):
                 return tentacle.id, tentacle.log_color
         tag = short_log_name(logger_name)
-        return tag, SHARED_LOG_STYLES.get(tag)
+        return tag, SHARED_LOG_STYLES.get(tag) or muted_log_style(tag)
 
     async def kick(
         self,
@@ -199,12 +217,15 @@ class Octomate:
                 await self.projects.reconcile()
                 # Each tentacle is an async context manager owning its own
                 # long-lived resources (agents: warm MCP sessions; channels:
-                # the inbound receive loop). Enter agents first so their tools
-                # are warm before channels start ingesting; the stack tears
-                # everything down in reverse on shutdown.
-                async with AsyncExitStack() as stack:
+                # the inbound receive loop). Channels live on the inner stack so
+                # shutdown closes them first — nothing ingests into agents whose
+                # sessions are already torn down.
+                async with (
+                    AsyncExitStack() as agent_stack,
+                    AsyncExitStack() as channel_stack,
+                ):
 
-                    async def start(tentacle: Tentacle) -> None:
+                    async def start(stack: AsyncExitStack, tentacle: Tentacle) -> None:
                         # Isolate + time-bound each start so one slow or hung
                         # tentacle can't stall the others' startup. A failed start
                         # is logged and skipped, not fatal — the rest still serve.
@@ -219,16 +240,37 @@ class Octomate:
                                 tentacle.id,
                             )
 
-                    # Agents first (concurrently), then channels (concurrently), so
-                    # tools are warm before channels ingest without any one tentacle
-                    # blocking the group.
-                    await asyncio.gather(
-                        *(start(agent) for agent in self.agents.values())
-                    )
-                    await asyncio.gather(
-                        *(start(channel) for channel in self.channels.values())
-                    )
-                    yield
+                    async def start_all() -> None:
+                        # Everything at once: channels must not queue behind agent
+                        # warmup, which is an optimization, not a precondition — a
+                        # message landing before its agent finished warming enters
+                        # the cold toolsets inside its own run (reference-counted)
+                        # and pays the listing latency once.
+                        await asyncio.gather(
+                            *(
+                                start(agent_stack, agent)
+                                for agent in self.agents.values()
+                            ),
+                            *(
+                                start(channel_stack, channel)
+                                for channel in self.channels.values()
+                            ),
+                        )
+
+                    # Serve immediately: MCP warms and channel sockets proceed in
+                    # the background so a console connects the moment uvicorn
+                    # binds. `start` already isolates and time-bounds each entry,
+                    # so this task settles on its own and never raises.
+                    starting = asyncio.create_task(start_all())
+                    try:
+                        yield
+                    finally:
+                        # Join before the enclosing stack exits — on every path.
+                        # An error thrown into the yield would otherwise unwind
+                        # the stack while `start_all` is still pushing entries
+                        # onto it. `start` bounds each entry, so this wait is
+                        # bounded too; on a normal shutdown it is a no-op.
+                        await starting
 
         app = FastAPI(title=title, docs_url="/docs", redoc_url=None, lifespan=lifespan)
         app.state.octomate = self
@@ -253,5 +295,16 @@ class Octomate:
 
         for router in self.routers:
             app.include_router(router)
+
+        # Channel-declared static surfaces mount after every router, so a
+        # catch-all root (a channel's web UI) always loses to /api, /hooks,
+        # /oauth, and /docs.
+        for channel in self.channels.values():
+            for static in channel.static_mounts():
+                app.mount(
+                    static.path,
+                    StaticFiles(directory=static.directory, html=static.html),
+                    name=static.name,
+                )
 
         return app
