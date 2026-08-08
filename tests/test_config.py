@@ -14,6 +14,7 @@ from octomate.config import (
     AgentModelConfig,
     ChannelsConfig,
     ClaudeCodeConfig,
+    ClaudeSSHConfig,
     CodexConfig,
     GitHubIntegrationConfig,
     LarkChannelConfig,
@@ -156,6 +157,13 @@ def test_claude_code_config_defaults_to_fixed_model_set() -> None:
 def test_claude_code_config_validates_model_names() -> None:
     with pytest.raises(ValidationError, match="Input should be"):
         ClaudeCodeConfig.model_validate({"models": {"missing"}})
+
+
+def test_claude_code_config_refuses_a_remote_host() -> None:
+    # Remote runs are off while a run's directory is its thread's project root: the
+    # root is a local path, and the host on the other end has nothing to match it.
+    with pytest.raises(ValidationError, match="remote runs are disabled"):
+        ClaudeCodeConfig(ssh=ClaudeSSHConfig(host="user@box"))
 
 
 def test_claude_code_config_accepts_documented_model_aliases() -> None:

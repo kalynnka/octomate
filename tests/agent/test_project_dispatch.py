@@ -16,7 +16,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config.agents import ClaudeCodeConfig, ClaudeSSHConfig, CodexConfig
+from octomate.config.agents import ClaudeCodeConfig, CodexConfig
 from octomate.managers.project import ProjectManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.project import Project
@@ -62,17 +62,12 @@ async def a_thread(octomate: Octomate, chat_id: str, project: str = "") -> Threa
     )
 
 
-async def claude_run(
-    octomate: Octomate,
-    thread: Thread,
-    *,
-    config: ClaudeCodeConfig | None = None,
-) -> ClaudeAgentOptions:
+async def claude_run(octomate: Octomate, thread: Thread) -> ClaudeAgentOptions:
     """Drive one Claude run and answer with the options it handed the SDK."""
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=config or ClaudeCodeConfig(cwd="/configured"),
+        config=ClaudeCodeConfig(cwd="/configured"),
         hook_secret=HOOK_SECRET,
     )
     async with tentacle.run_stream_events(
@@ -189,23 +184,5 @@ async def test_a_thread_naming_an_undeclared_project_falls_back(
     # The registry is what YAML currently declares; a name it no longer carries has
     # no root to run in.
     options = await claude_run(octomate, await a_thread(octomate, "chat", "retired"))
-
-    assert options.cwd == "/configured"
-
-
-async def test_an_ssh_run_is_not_project_bound(tmp_path: Path) -> None:
-    # A project root is a local path, and the remote host has nothing to match it.
-    inky = repo(tmp_path / "inky")
-    octomate = Octomate(
-        conversations=FakeConversationManager(),
-        projects=await registry([{"root": str(inky)}]),
-    )
-    thread = await a_thread(octomate, "chat", "inky")
-
-    options = await claude_run(
-        octomate,
-        thread,
-        config=ClaudeCodeConfig(cwd="/configured", ssh=ClaudeSSHConfig(host="box")),
-    )
 
     assert options.cwd == "/configured"

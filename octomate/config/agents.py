@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
 from openai_codex import CodexConfig as CodexSdkConfig
-from pydantic import AfterValidator, BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field, field_validator
 from pydantic_ai.models import KnownModelName
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai_harness.tool_output_limits import TruncationStrategy
@@ -210,7 +210,7 @@ class ClaudeSSHConfig(BaseModel):
 
     When `ClaudeCodeConfig.ssh` is set, the tentacle spawns `claude` on `host`
     (via the system `ssh` binary) instead of a local subprocess; leaving it null
-    keeps the run local.
+    keeps the run local. Setting it is currently refused — see `ClaudeCodeConfig.ssh`.
     """
 
     host: str
@@ -226,7 +226,8 @@ class ClaudeCodeConfig(BaseModel):
     block is supplied. `models` maps route model names to Claude CLI model
     strings (not `ModelConfig`s, since the SDK builds the model, not the
     provider registry). `ssh` selects where `claude` runs — null is a local
-    subprocess; a block runs it on that remote host over SSH.
+    subprocess; a block would run it on that remote host over SSH, and is
+    refused while remote runs are disabled.
     """
 
     cwd: str = "."
@@ -241,7 +242,16 @@ class ClaudeCodeConfig(BaseModel):
         "summoned (or commissioned).",
     )
     max_turns: int | None = None
-    ssh: ClaudeSSHConfig | None = None
+    ssh: ClaudeSSHConfig | None = Field(
+        default=None,
+        description=(
+            "Remote host to run `claude` on. Disabled: a run belongs to the project "
+            "its thread is in, and a project root is a local path the host on the "
+            "other end has nothing to match, so a remote run would silently land "
+            "somewhere else. `SSHTransport` is kept as it is; `refuse_remote_runs` "
+            "is what to drop when a remote run can say where it is."
+        ),
+    )
     transcript_root: ConfigPath | None = Field(
         default=None,
         description=(
@@ -261,6 +271,16 @@ class ClaudeCodeConfig(BaseModel):
             "indefinitely."
         ),
     )
+
+    @field_validator("ssh")
+    @classmethod
+    def refuse_remote_runs(cls, ssh: ClaudeSSHConfig | None) -> ClaudeSSHConfig | None:
+        if ssh is not None:
+            raise ValueError(
+                "remote runs are disabled: a run happens in its thread's project "
+                "root, which is a local path the remote host has nothing to match"
+            )
+        return ssh
 
 
 class CodexConfig(BaseModel):
