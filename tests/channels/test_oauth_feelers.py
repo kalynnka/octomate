@@ -62,13 +62,13 @@ def _text(value: JsonValue) -> str:
     return value
 
 
-def _address(channel: str, chat_type: ChatType = "private") -> ChannelAddress:
+def _address(channel: str, chat_type: ChatType = "dm") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id=channel,
         chat_type=chat_type,
         chat_id="C1",
         user_id="U1",
-        thread_id="",
+        channel_thread_id=None,
     )
 
 
@@ -165,7 +165,7 @@ async def test_a_group_request_delivers_the_code_to_the_user_dm() -> None:
     # not get to read it.
     assert ink.opened == ["U1"]
     [(chat_id, chat_type, _messages, reply_to, _in_thread)] = ink.sent
-    assert (chat_id, chat_type) == ("D1", "private")
+    assert (chat_id, chat_type) == ("D1", "dm")
     assert reply_to is None
 
 
@@ -185,10 +185,10 @@ async def test_every_channel_routes_a_group_request_the_same_way() -> None:
 
     assert slack.opened == ["U1"]
     [(chat_id, chat_type, _messages, _thread)] = slack.sent
-    assert (chat_id, chat_type) == ("D1", "private")
+    assert (chat_id, chat_type) == ("D1", "dm")
     assert plain_ink.opened == ["U1"]
     [(address, _text_)] = markdown.calls
-    assert (address.chat_id, address.chat_type) == ("D2", "private")
+    assert (address.chat_id, address.chat_type) == ("D2", "dm")
 
 
 async def test_a_platform_with_nowhere_private_refuses_to_use_the_group() -> None:

@@ -56,7 +56,7 @@ from tests.support.managers import (
 )
 
 KEY = ChannelAddress(
-    channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
+    channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
 )
 
 HOOK_SECRET = SecretStr("test-hook-secret")

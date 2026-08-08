@@ -28,7 +28,7 @@ from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 
 SESSION_ID = "sess-tail"
-SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "private", SESSION_ID, "")
+SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "thread", SESSION_ID)
 
 
 @pytest.fixture(autouse=True)

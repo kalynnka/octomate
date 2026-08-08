@@ -392,7 +392,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_name=context.run_name,
             source_address=context.conversation_address,
             target_address=context.conversation_address,
-            target_mode="sub" if context.conversation_address.thread_id else "main",
+            target_mode="sub"
+            if context.conversation_address.channel_thread_id
+            else "main",
             decision=None,
             requests=requests,
         )

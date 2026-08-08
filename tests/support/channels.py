@@ -179,7 +179,7 @@ class FakeChromo(Chromo[RawMessage, NativeMessage]):
 
     async def sip(self, raw: RawMessage) -> MessageEvent | None:
         self.sip_calls.append(raw)
-        chat_type = raw.get("chat_type", "private")
+        chat_type = raw.get("chat_type", "dm")
         return MessageEvent(
             message_id=raw.get("message_id", "m1"),
             user_id=raw.get("user_id", "u1"),
@@ -299,7 +299,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
             chat_type=address.chat_type,
             chat_id=address.chat_id,
             user_id=address.user_id,
-            thread_id="hint-thread",
+            channel_thread_id="hint-thread",
         )
 
 

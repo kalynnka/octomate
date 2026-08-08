@@ -23,6 +23,7 @@ from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import (
+    CLAUDE_NATIVE_ID,
     Thread,
     ThreadKey,
     ThreadMessage,
@@ -30,7 +31,7 @@ from octomate.schemas.thread import (
 )
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, NATIVE_USER
+from octomate.tentacles.agents.claude.ingest import NATIVE_USER
 from octomate.tentacles.agents.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptLine,
@@ -407,7 +408,7 @@ class ClaudeTranscriptTailer:
         """Map a native Claude session id to its Octomate home — the session's thread and
         the conversation hanging off it — creating either if this is its first sighting."""
         thread = await self.thread_manager.ensure(
-            ThreadKey(CLAUDE_NATIVE_ID, "private", session_id, "")
+            ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
         )
         return await self.conversation_manager.ensure(
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
@@ -856,7 +857,7 @@ class ClaudeTranscriptTailer:
         any the live pipe never wrote — a session Octomate watched only after the fact,
         via recovery — are created here from the transcript, so the ledger stands alone."""
         thread = await self.thread_manager.ensure(
-            ThreadKey(CLAUDE_NATIVE_ID, "private", session_id, "")
+            ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
         )
         prompt_request = next(
             (
@@ -877,7 +878,7 @@ class ClaudeTranscriptTailer:
                         tentacle_id=CLAUDE_NATIVE_ID,
                         message_id=run.id,
                         chat_id=session_id,
-                        chat_type="private",
+                        chat_type="thread",
                         user_id=NATIVE_USER.channel_user_id,
                         sender=NATIVE_USER,
                         segments=[TextSegment(data={"text": prompt_text})],

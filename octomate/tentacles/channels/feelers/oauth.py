@@ -57,7 +57,7 @@ class OAuthFeeler(ABC, Generic[MessageT]):
         messages instead. A platform with nowhere private to reach them gets an
         error rather than the group, which is the whole point of asking.
         """
-        if not address.is_group:
+        if address.chat_type == "dm":
             return address
         chat_id = await self.ink.open_dm(address.user_id)
         if chat_id is None:
@@ -65,7 +65,7 @@ class OAuthFeeler(ABC, Generic[MessageT]):
                 f"no direct message to reach {address.user_id} on "
                 f"{address.channel_tentacle_id}; a one-time code is not going to a group"
             )
-        return replace(address, chat_type="private", chat_id=chat_id, thread_id="")
+        return replace(address, chat_type="dm", chat_id=chat_id, channel_thread_id=None)
 
     @abstractmethod
     async def send(

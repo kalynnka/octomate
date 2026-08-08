@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import UserContent
 
 from octomate.schemas.segments import AtSegment, MessageSegment, TextSegment
 from octomate.schemas.user import UserProfile
+from octomate.types.conversations import ChatType
 
 
 class MessageEvent(BaseModel):
@@ -14,12 +13,12 @@ class MessageEvent(BaseModel):
 
     tentacle_id: str = ""
     message_id: str = ""
-    thread_id: str = ""
+    channel_thread_id: str | None = None
     reply_id: str = ""
     timestamp: float = 0.0
     user_id: str = ""
     chat_id: str = ""
-    chat_type: Literal["private", "group"] = "private"
+    chat_type: ChatType = "dm"
     self_id: str = ""
     sender: UserProfile = Field(default_factory=UserProfile)
     segments: list[MessageSegment] = Field(default_factory=list)

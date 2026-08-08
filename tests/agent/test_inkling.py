@@ -73,7 +73,7 @@ _THREAD = uuid7()
 def _test_conversation_address() -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="test",
-        chat_type="private",
+        chat_type="dm",
         chat_id="test",
         user_id="test",
     )

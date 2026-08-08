@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Annotated, Literal, NamedTuple
+from typing import Annotated, NamedTuple
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
@@ -14,9 +14,7 @@ from octomate.models.conversation import Conversation as ConversationModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
-from octomate.types.conversations import ConversationPermissionMode
-
-ChatType = Literal["private", "group"]
+from octomate.types.conversations import ChatType, ConversationPermissionMode
 
 
 @dataclass(frozen=True)
@@ -25,12 +23,10 @@ class ChannelAddress:
     chat_type: ChatType
     chat_id: str
     user_id: str
-    # Thread id as named by the channel platform/address, not `Thread.id`.
-    thread_id: str = ""
-
-    @cached_property
-    def is_group(self) -> bool:
-        return self.chat_type == "group"
+    # The platform's own thread id — a Slack `thread_ts`, a Lark sub-thread's root
+    # message. None on a surface that is not a thread. Never `Thread.id`, which is
+    # the row a ledger message points at.
+    channel_thread_id: str | None = None
 
     @cached_property
     def group_id(self) -> str:
@@ -38,7 +34,7 @@ class ChannelAddress:
 
     @cached_property
     def topic_memory_key(self) -> str:
-        return f"topic:{self.channel_tentacle_id}:{self.chat_type}:{self.chat_id}:{self.thread_id or '-'}"
+        return f"topic:{self.channel_tentacle_id}:{self.chat_type}:{self.chat_id}:{self.channel_thread_id or '-'}"
 
     @cached_property
     def user_memory_key(self) -> str:
@@ -47,15 +43,16 @@ class ChannelAddress:
     def __str__(self) -> str:
         return (
             f"{self.channel_tentacle_id}/{self.chat_type}/{self.chat_id}"
-            f"/{self.thread_id or '-'}/{self.user_id}"
+            f"/{self.channel_thread_id or '-'}/{self.user_id}"
         )
 
 
 class ConversationKey(NamedTuple):
     """Identity of an agent conversation: the owning thread, the agent, and —
     for a context spawned by one of that agent's runs — the subagent. The
-    empty subagent_id is the agent's own conversation (the Thread.thread_id
-    sentinel convention): a thread owns one bare conversation per agent, so
+    empty subagent_id is the agent's own conversation (the
+    `Thread.channel_thread_id` sentinel convention): a thread owns one bare
+    conversation per agent, so
     every sender in a group thread keys to that one, independent of who woke
     it; each subagent keys to its own."""
 

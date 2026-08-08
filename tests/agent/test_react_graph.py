@@ -72,7 +72,7 @@ class StubSuspender:
 def _key() -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="test",
-        chat_type="private",
+        chat_type="dm",
         chat_id="test",
         user_id="test",
     )
@@ -85,7 +85,7 @@ def _event(message_id: str, text: str, user_id: str = "test") -> MessageEvent:
     return MessageEvent(
         tentacle_id="test",
         message_id=message_id,
-        chat_type="private",
+        chat_type="dm",
         chat_id="test",
         user_id=user_id,
         segments=[TextSegment(data={"text": text})],

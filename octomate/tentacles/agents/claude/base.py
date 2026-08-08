@@ -290,7 +290,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             run_name=run_name,
             source_address=conversation_address,
             target_address=conversation_address,
-            target_mode="sub" if conversation_address.thread_id else "main",
+            target_mode="sub" if conversation_address.channel_thread_id else "main",
             decision=None,
             requests=requests,
         )

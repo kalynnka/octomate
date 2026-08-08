@@ -112,10 +112,10 @@ class DroppingChannel(FakeChannelTentacle):
 def _key(thread_id: str = "") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="im",
-        chat_type="private",
+        chat_type="dm",
         chat_id="alice",
         user_id="alice",
-        thread_id=thread_id,
+        channel_thread_id=thread_id,
     )
 
 
@@ -129,11 +129,13 @@ def _source_target(address: ChannelAddress) -> ResponseTarget:
 
 
 def _thread(address: ChannelAddress) -> Thread:
+    key = ThreadKey.from_address(address)
     return Thread(
-        channel_tentacle_id=address.channel_tentacle_id,
-        chat_type=address.chat_type,
-        chat_id=address.chat_id,
-        thread_id=address.thread_id,
+        channel_tentacle_id=key.channel_tentacle_id,
+        chat_type=key.chat_type,
+        chat_id=key.chat_id,
+        channel_thread_id=key.channel_thread_id,
+        kind=key.kind,
     )
 
 
@@ -493,7 +495,7 @@ async def test_reception_allow_here_false_on_group_main() -> None:
         chat_type="group",
         chat_id="team",
         user_id="alice",
-        thread_id="",
+        channel_thread_id=None,
     )
     agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
     conversations = FakeConversationManager()
@@ -594,17 +596,17 @@ def _group_key(thread_id: str = "") -> ChannelAddress:
         chat_type="group",
         chat_id="team",
         user_id="alice",
-        thread_id=thread_id,
+        channel_thread_id=thread_id,
     )
 
 
 def _private_key(thread_id: str = "") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="im",
-        chat_type="private",
+        chat_type="dm",
         chat_id="alice",
         user_id="alice",
-        thread_id=thread_id,
+        channel_thread_id=thread_id,
     )
 
 
@@ -658,7 +660,7 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
             brief="Finish the migration write-up.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",
-                chat_type="private",
+                chat_type="dm",
                 chat_id="",
                 user_id="alice",
             ),
@@ -672,7 +674,7 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     dm_thread = await threads.ensure(
         ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="private",
+            chat_type="dm",
             chat_id="alice",
             user_id="alice",
         )
@@ -697,7 +699,7 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     assert im.opened_dms == ["alice"]
     # The DM's own owner picked it up, with the brief as its prompt.
     assert second.turns[0].prompt == "Finish the migration write-up."
-    assert second.turns[0].address.chat_type == "private"
+    assert second.turns[0].address.chat_type == "dm"
     # And the group was told the work moved, so it is not left watching silence.
     assert im.recording_ink.sent[0][2][0]["text"] == "Continuing with you privately"
 
@@ -711,7 +713,7 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
             brief="Do it.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",
-                chat_type="private",
+                chat_type="dm",
                 chat_id="",
                 user_id="alice",
             ),
@@ -736,7 +738,7 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
     assert not isinstance(result, DeferredResult)
     # No owner to defer to, so the channel's first configured agent takes it.
     assert entry.turns[-1].prompt == "Do it."
-    assert entry.turns[-1].address.chat_type == "private"
+    assert entry.turns[-1].address.chat_type == "dm"
 
 
 async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
@@ -748,7 +750,7 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
             brief="Do it.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",
-                chat_type="private",
+                chat_type="dm",
                 chat_id="",
                 user_id="alice",
             ),
@@ -927,7 +929,7 @@ async def test_awake_short_circuits_on_empty_prompt() -> None:
     event = BlankEvent(
         tentacle_id="im",
         message_id="m1",
-        chat_type="private",
+        chat_type="dm",
         chat_id="alice",
         user_id="alice",
         segments=[],
@@ -952,7 +954,7 @@ async def test_awake_raises_for_unknown_channel_or_agent() -> None:
     event = MessageEvent(
         tentacle_id="ghost",
         message_id="m1",
-        chat_type="private",
+        chat_type="dm",
         chat_id="alice",
         user_id="alice",
         segments=[TextSegment(data={"text": "hi"})],
@@ -1171,7 +1173,7 @@ async def test_send_to_dm_delivers_privately_and_leaves_the_group_alone() -> Non
         _channel(stream=True),
         ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="private",
+            chat_type="dm",
             chat_id="",
             user_id="alice",
         ),
@@ -1187,7 +1189,7 @@ async def test_send_to_dm_delivers_privately_and_leaves_the_group_alone() -> Non
         ThreadKey.from_address(
             ChannelAddress(
                 channel_tentacle_id="im",
-                chat_type="private",
+                chat_type="dm",
                 chat_id="alice",
                 user_id="alice",
             )
@@ -1224,7 +1226,7 @@ async def test_send_falls_back_to_here_when_the_platform_will_not_open() -> None
         im,
         ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="private",
+            chat_type="dm",
             chat_id="",
             user_id="alice",
         ),

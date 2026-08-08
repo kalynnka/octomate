@@ -52,7 +52,7 @@ async def a_thread(chat_id: str = "chat") -> uuid.UUID:
     `chat_id`. A conversation's `thread_id` is a real foreign key, so a bare
     `uuid7()` names a parent that does not exist."""
     thread = await ThreadManager(users=UserManager()).ensure(
-        ThreadKey(channel_tentacle_id="test", chat_type="private", chat_id=chat_id)
+        ThreadKey(channel_tentacle_id="test", chat_type="dm", chat_id=chat_id)
     )
     return thread.id
 
@@ -212,7 +212,8 @@ class FakeThreadManager(ThreadManager):
                 channel_tentacle_id=key.channel_tentacle_id,
                 chat_type=key.chat_type,
                 chat_id=key.chat_id,
-                thread_id=key.thread_id,
+                channel_thread_id=key.channel_thread_id,
+                kind=key.kind,
                 # As the real manager does: a thread being created takes the
                 # project, one that already exists keeps what it started with.
                 project_id=project.id if project is not None else None,

@@ -274,10 +274,10 @@ def compose_slack_feelers(
 def slack_key() -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="slack",
-        chat_type="group",
+        chat_type="thread",
         chat_id="C1",
         user_id="U1",
-        thread_id="1710000000.000100",
+        channel_thread_id="1710000000.000100",
     )
 
 

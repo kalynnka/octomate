@@ -55,13 +55,16 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             )
             state.target = replace(
                 source_target,
-                mode="sub" if source_address.thread_id else "main",
+                mode="sub" if source_address.channel_thread_id else "main",
             )
             state.claim_handoff = False
             state.handoff_from_agent_tentacle_id = None
             return React()
 
-        if source_address.thread_id and source_target.thread_strategy == "flat_thread":
+        if (
+            source_address.channel_thread_id
+            and source_target.thread_strategy == "flat_thread"
+        ):
             reflex_logfire.info(
                 "route: flat-thread, skipping triage",
                 channel_id=source_address.channel_tentacle_id,
@@ -105,7 +108,7 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             summon="",
         )
         state.target = replace(
-            source_target, mode="sub" if source_address.thread_id else "main"
+            source_target, mode="sub" if source_address.channel_thread_id else "main"
         )
         state.claim_handoff = False
         state.handoff_from_agent_tentacle_id = None

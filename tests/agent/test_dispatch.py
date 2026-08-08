@@ -68,7 +68,7 @@ def _event(
     user_id: str = "alice",
     text: str = "hi",
     thread_id: str = "",
-    chat_type: ChatType = "private",
+    chat_type: ChatType = "dm",
 ) -> MessageEvent:
     return MessageEvent(
         tentacle_id=tentacle_id,
@@ -76,7 +76,7 @@ def _event(
         chat_type=chat_type,
         chat_id="team" if chat_type == "group" else "alice",
         user_id=user_id,
-        thread_id=thread_id,
+        channel_thread_id=thread_id,
         segments=[TextSegment(data={"text": text})],
     )
 
@@ -84,10 +84,10 @@ def _event(
 def _key(thread_id: str = "") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="im",
-        chat_type="private",
+        chat_type="dm",
         chat_id="alice",
         user_id="alice",
-        thread_id=thread_id,
+        channel_thread_id=thread_id,
     )
 
 

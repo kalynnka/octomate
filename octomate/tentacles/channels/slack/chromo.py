@@ -22,6 +22,7 @@ from octomate.tentacles.channels.slack.schema import (
     SlackOutboundMessage,
     SlackThreadContext,
 )
+from octomate.types.conversations import ChatType
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +33,13 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
     async def sip(self, raw: SlackMessageEvent) -> MessageEvent | None:
         try:
             channel_type = raw.get("channel_type", "")
-            chat_type = "private" if channel_type == "im" else "group"
-
             message_id = raw.get("ts", "")
             thread_ts = raw.get("thread_ts", "")
-            thread_id = thread_ts if thread_ts and thread_ts != message_id else ""
+            thread_id = thread_ts if thread_ts and thread_ts != message_id else None
+
+            chat_type: ChatType = "dm" if channel_type == "im" else "group"
+            if thread_id:
+                chat_type = "thread"
 
             text: str = raw.get("text", "")
             segments: list[MessageSegment] = []
@@ -75,7 +78,7 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
 
             return MessageEvent(
                 message_id=message_id,
-                thread_id=thread_id,
+                channel_thread_id=thread_id,
                 reply_id=reply_id,
                 timestamp=float(message_id) if message_id else time.time(),
                 user_id=raw.get("user", ""),
@@ -105,6 +108,6 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
 
     def thread_context(self, address: ChannelAddress) -> SlackThreadContext:
         return SlackThreadContext(
-            thread_ts=address.thread_id,
+            thread_ts=address.channel_thread_id or "",
             recipient_user_id=address.user_id or None,
         )

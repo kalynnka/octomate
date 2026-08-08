@@ -54,7 +54,7 @@ async def test_lark_consume_renders_timeline_per_event() -> None:
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )
@@ -109,7 +109,7 @@ async def test_lark_thinking_patches_coalesce_off_the_drive_loop() -> None:
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )
@@ -148,7 +148,7 @@ async def test_lark_consume_renders_image_and_card_segments(
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )
@@ -188,7 +188,7 @@ async def test_lark_card_segment_falls_back_to_raw_text_when_card_fails() -> Non
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )
@@ -215,7 +215,7 @@ async def test_lark_consume_renders_todo_checklist_card() -> None:
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )
@@ -245,7 +245,7 @@ async def test_lark_consume_renders_action_batch_cards() -> None:
     channel = lark_channel(ink, deferred_actions=deferred)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )
@@ -297,7 +297,7 @@ async def test_lark_timeline_opens_new_answer_card_after_mid_run_notice() -> Non
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )
@@ -327,7 +327,7 @@ async def test_lark_answer_stream_renders_markdown_tables_verbatim() -> None:
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )
@@ -374,7 +374,7 @@ async def test_lark_answer_updates_coalesce_off_the_drive_loop() -> None:
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )
@@ -406,7 +406,7 @@ async def test_lark_subagents_own_cards_separate_from_parent_and_siblings() -> N
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="u1",
         user_id="u1",
     )

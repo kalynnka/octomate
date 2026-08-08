@@ -16,6 +16,7 @@ from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
 from octomate.schemas.thread import (
+    ATTRIBUTABLE_KINDS,
     ChannelActorKind,
     Handoff,
     MessageBinding,
@@ -65,11 +66,19 @@ class ThreadManager:
         declaring a project later attributes new threads rather than rewriting old
         ones. It is not part of the key either — the key is what the thread's history
         is filed under, and attribution must never move it.
+
+        Only a thread and a native thread can take one; naming a project for a DM or a
+        group chat raises rather than dropping it silently.
         """
         if isinstance(address_or_key, ChannelAddress):
             key = ThreadKey.from_address(address_or_key)
         else:
             key = address_or_key
+        if project is not None and key.kind not in ATTRIBUTABLE_KINDS:
+            raise ValueError(
+                f"{key} is a {key.kind} and cannot be attributed to project "
+                f"{project.name!r}: only a thread or a native_thread is work."
+            )
         cached = self.threads.get(key)
         if cached is not None:
             self.threads.move_to_end(key)
@@ -82,7 +91,7 @@ class ThreadManager:
                     Thread["channel_tentacle_id"] == key.channel_tentacle_id,
                     Thread["chat_type"] == key.chat_type,
                     Thread["chat_id"] == key.chat_id,
-                    Thread["thread_id"] == key.thread_id,
+                    Thread["channel_thread_id"] == key.channel_thread_id,
                 ],
             )
             if thread is None:
@@ -90,7 +99,8 @@ class ThreadManager:
                     channel_tentacle_id=key.channel_tentacle_id,
                     chat_type=key.chat_type,
                     chat_id=key.chat_id,
-                    thread_id=key.thread_id,
+                    channel_thread_id=key.channel_thread_id,
+                    kind=key.kind,
                     project_id=project.id if project is not None else None,
                 )
                 session.add(thread)
@@ -177,7 +187,7 @@ class ThreadManager:
                 channel_tentacle_id=event.tentacle_id,
                 chat_type=event.chat_type,
                 chat_id=event.chat_id,
-                thread_id=event.thread_id,
+                channel_thread_id=event.channel_thread_id,
             )
         )
         if happened_at is None and event.timestamp > 0:

@@ -60,7 +60,7 @@ class SlackAskQuestionFeeler(QuestionFeeler):
                     blocks=ask_question_blocks(actions),
                 )
             ],
-            address.thread_id or None,
+            address.channel_thread_id or None,
         )
         return {action.id: message_id for action in actions}
 

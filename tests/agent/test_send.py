@@ -52,7 +52,7 @@ def _gate(
         channels={"im": FakeChannelTentacle() if direct_messages else _NoDmChannel()},
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="private" if already_private else "group",
+            chat_type="dm" if already_private else "group",
             chat_id="room",
             user_id="alice",
         ),
@@ -117,7 +117,7 @@ async def test_send_carries_the_named_destination() -> None:
             segments=segments,
             destination=ChannelAddress(
                 channel_tentacle_id="im",
-                chat_type="private",
+                chat_type="dm",
                 chat_id="",
                 user_id="alice",
             ),
@@ -220,7 +220,7 @@ async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None
         label="their direct messages on Lark",
         address=ChannelAddress(
             channel_tentacle_id="lark",
-            chat_type="private",
+            chat_type="dm",
             chat_id="",
             user_id="ou_alice",
         ),
@@ -252,7 +252,7 @@ async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
         label="their direct messages on Lark",
         address=ChannelAddress(
             channel_tentacle_id="lark",
-            chat_type="private",
+            chat_type="dm",
             chat_id="",
             user_id="ou_alice",
         ),

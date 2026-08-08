@@ -152,10 +152,10 @@ class VercelChromo(Chromo[RequestData, BaseChunk]):
         )
         return MessageEvent(
             message_id=message.id,
-            thread_id=raw.id,
+            channel_thread_id=raw.id,
             user_id=DEV_USER_ID,
             chat_id=DEV_USER_ID,
-            chat_type="private",
+            chat_type="thread" if raw.id else "dm",
             segments=[TextSegment(data={"text": text})],
             raw=text,
         )
@@ -381,7 +381,7 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
                 chat_type=event.chat_type,
                 chat_id=event.chat_id,
                 user_id=event.user_id,
-                thread_id=event.thread_id,
+                channel_thread_id=event.channel_thread_id,
             )
         )
         await self.claim_selected_route(thread, body.id, selected_model)

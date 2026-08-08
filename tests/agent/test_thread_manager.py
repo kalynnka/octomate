@@ -26,10 +26,10 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 def address(user_id: str = "alice") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="slack",
-        chat_type="group",
+        chat_type="thread",
         chat_id="C123",
         user_id=user_id,
-        thread_id="1710000000.000001",
+        channel_thread_id="1710000000.000001",
     )
 
 
@@ -37,11 +37,11 @@ def event(message_id: str, user_id: str, text: str) -> MessageEvent:
     return MessageEvent(
         tentacle_id="slack",
         message_id=message_id,
-        thread_id="1710000000.000001",
+        channel_thread_id="1710000000.000001",
         timestamp=1710000000.0,
         user_id=user_id,
         chat_id="C123",
-        chat_type="group",
+        chat_type="thread",
         sender=UserProfile(channel_user_id=user_id, name=user_id.title()),
         segments=[TextSegment(data={"text": text})],
         raw=text,
@@ -149,11 +149,11 @@ async def test_record_inbound_stamps_linked_identity_on_the_event() -> None:
     lark = MessageEvent(
         tentacle_id="lark",
         message_id="m2",
-        thread_id="t1",
+        channel_thread_id="t1",
         timestamp=1710000000.0,
         user_id="ou_1",
         chat_id="oc_1",
-        chat_type="group",
+        chat_type="thread",
         sender=UserProfile(channel_user_id="ou_1", name="陆晖"),
         segments=[TextSegment(data={"text": "hello from lark"})],
         raw="hello from lark",

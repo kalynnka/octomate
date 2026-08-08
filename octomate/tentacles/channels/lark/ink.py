@@ -288,7 +288,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
-        receive_id_type = "chat_id" if chat_type == "group" else "open_id"
+        receive_id_type = "open_id" if chat_type == "dm" else "chat_id"
         first_msg_id: IMMessageID | None = None
         for msg in messages:
             try:

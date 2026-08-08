@@ -76,11 +76,12 @@ async def test_lark_chromo_decodes_text_mentions_and_reply_metadata() -> None:
     event = await chromo.sip(raw)
 
     assert event is not None
-    assert event.chat_type == "group"
+    # A sub-thread in a group chat is its own surface; `chat_id` still names the group.
+    assert event.chat_type == "thread"
     assert event.chat_id == "oc_group"
     assert event.user_id == "ou_sender"
     assert event.message_id == "om_message"
-    assert event.thread_id == "omt_thread"
+    assert event.channel_thread_id == "omt_thread"
     assert event.reply_id == "om_parent"
     assert [type(seg) for seg in event.segments] == [
         ReplySegment,
@@ -110,7 +111,7 @@ async def test_lark_chromo_keys_threaded_reply_on_root_message() -> None:
     )
 
     assert event is not None
-    assert event.thread_id == "om_x100b6d35d7b134b0c29324d97adc020"
+    assert event.channel_thread_id == "om_x100b6d35d7b134b0c29324d97adc020"
     assert event.reply_id == "om_some_reply"
 
 
@@ -128,7 +129,7 @@ async def test_lark_chromo_ignores_thread_without_thread_id() -> None:
     )
 
     assert event is not None
-    assert event.thread_id == ""
+    assert event.channel_thread_id is None
 
 
 async def test_lark_chromo_decodes_private_images() -> None:
@@ -144,7 +145,7 @@ async def test_lark_chromo_decodes_private_images() -> None:
     )
 
     assert event is not None
-    assert event.chat_type == "private"
+    assert event.chat_type == "dm"
     assert event.chat_id == "ou_private"
     assert [type(seg) for seg in event.segments] == [ImageSegment]
     image_seg = event.segments[0]

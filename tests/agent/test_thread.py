@@ -37,10 +37,10 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 def _address(*, user_id: str) -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="slack",
-        chat_type="group",
+        chat_type="thread",
         chat_id="C123",
         user_id=user_id,
-        thread_id="1710000000.000001",
+        channel_thread_id="1710000000.000001",
     )
 
 
@@ -93,9 +93,10 @@ def test_thread_key_ignores_sender_user() -> None:
 async def test_thread_round_trips_with_messages_and_handoffs() -> None:
     thread = Thread(
         channel_tentacle_id="slack",
-        chat_type="group",
+        chat_type="thread",
         chat_id="C123",
-        thread_id="1710000000.000001",
+        channel_thread_id="1710000000.000001",
+        kind="thread",
     )
     thread_id = thread.id
     earlier_handoff_id = uuid.UUID("00000000-0000-7000-8000-000000000001")
@@ -148,9 +149,9 @@ async def test_thread_round_trips_with_messages_and_handoffs() -> None:
             Thread,
             expressions=[
                 Thread["channel_tentacle_id"] == "slack",
-                Thread["chat_type"] == "group",
+                Thread["chat_type"] == "thread",
                 Thread["chat_id"] == "C123",
-                Thread["thread_id"] == "1710000000.000001",
+                Thread["channel_thread_id"] == "1710000000.000001",
             ],
         )
         assert stored is not None
@@ -180,17 +181,19 @@ async def test_thread_unique_key_has_no_user_id() -> None:
         session.add(
             Thread(
                 channel_tentacle_id="slack",
-                chat_type="group",
+                chat_type="thread",
                 chat_id="C123",
-                thread_id="1710000000.000001",
+                channel_thread_id="1710000000.000001",
+                kind="thread",
             )
         )
         session.add(
             Thread(
                 channel_tentacle_id="slack",
-                chat_type="group",
+                chat_type="thread",
                 chat_id="C123",
-                thread_id="1710000000.000001",
+                channel_thread_id="1710000000.000001",
+                kind="thread",
             )
         )
         with pytest.raises(IntegrityError):
@@ -200,9 +203,10 @@ async def test_thread_unique_key_has_no_user_id() -> None:
 async def test_message_binding_round_trips_as_orm() -> None:
     thread = Thread(
         channel_tentacle_id="slack",
-        chat_type="group",
+        chat_type="thread",
         chat_id="C123",
-        thread_id="1710000000.000001",
+        channel_thread_id="1710000000.000001",
+        kind="thread",
     )
     sender = UserProfile(
         channel_tentacle_id="slack", channel_user_id="alice", name="Alice"

@@ -133,7 +133,7 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
     conversation = await octomate.conversations.ensure(
         (
             await octomate.thread_manager.ensure(
-                ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+                ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
             )
         ).id,
         agent_tentacle_id=CODEX_NATIVE_ID,
@@ -199,7 +199,7 @@ async def test_driven_session_hooks_are_ignored() -> None:
         )
 
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     assert thread.messages == []
     await tailer.shutdown()
@@ -326,7 +326,7 @@ async def pumped_runs(tmp_path: Path, records: list[dict[str, object]]):
     )
     await tailer.pump_session(SESSION_ID)
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CODEX_NATIVE_ID
@@ -411,7 +411,7 @@ async def test_a_backfilled_row_is_dated_by_the_rollout_not_the_replay(
     await tailer.pump_session(SESSION_ID)
 
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     dated = {message.direction: message.happened_at for message in thread.messages}
     assert dated  # the tailer did write the ledger
@@ -445,7 +445,7 @@ async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
 
     after = datetime.now(UTC)
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     stamps = [message.happened_at for message in thread.messages]
     assert len(stamps) == 2
@@ -499,7 +499,7 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
     await tailer.pump_session(SESSION_ID)
 
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     parent = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CODEX_NATIVE_ID
@@ -579,7 +579,7 @@ async def test_child_turn_links_activity_that_arrives_after_it_starts(
     await tailer.pump_session(SESSION_ID)
 
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     parent = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CODEX_NATIVE_ID
@@ -671,7 +671,7 @@ async def test_subagent_stop_waits_for_the_final_answer_line(
         )
     )
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "private", SESSION_ID, "")
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     parent = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CODEX_NATIVE_ID

@@ -29,7 +29,7 @@ class UserMessageSignal:
             chat_type=last_event.chat_type,
             chat_id=last_event.chat_id,
             user_id=last_event.user_id,
-            thread_id=last_event.thread_id,
+            channel_thread_id=last_event.channel_thread_id,
         )
 
 

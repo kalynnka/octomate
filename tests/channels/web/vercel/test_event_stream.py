@@ -217,10 +217,10 @@ async def test_subagents_render_as_independent_standard_tool_parts() -> None:
     )
     address = ChannelAddress(
         channel_tentacle_id="dev_ui",
-        chat_type="private",
+        chat_type="thread",
         chat_id="dev",
         user_id="dev",
-        thread_id="chat-1",
+        channel_thread_id="chat-1",
     )
     try:
         async with feeler.open(address) as timeline:

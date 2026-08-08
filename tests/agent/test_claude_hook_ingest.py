@@ -18,7 +18,7 @@ from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHook
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
 
 SESSION_ID = "sess-1"
-SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "private", SESSION_ID, "")
+SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "thread", SESSION_ID)
 
 
 @pytest.fixture(autouse=True)

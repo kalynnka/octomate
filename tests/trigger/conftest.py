@@ -58,7 +58,7 @@ def run_banner(note: str) -> str:
 
 
 class TriggerTarget(BaseModel):
-    chat_type: Literal["private", "group"] = "private"
+    chat_type: Literal["dm", "group"] = "dm"
     chat_id: str
     user_id: str
     thread_id: str = ""

@@ -33,7 +33,7 @@ from tests.support.agents import RecordingClaudeClient
 from tests.support.managers import FakeConversationManager
 
 KEY = ChannelAddress(
-    channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
+    channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
 )
 HOOK_SECRET = SecretStr("test-hook-secret")
 
@@ -187,7 +187,7 @@ async def a_run(
     thread is in; a thread in none runs at `configured`."""
     octomate = Octomate(conversations=FakeConversationManager(), projects=projects)
     thread = await octomate.thread_manager.ensure(
-        ThreadKey("im", "private", "c", ""),
+        ThreadKey("im", "thread", "c", "t1"),
         project=projects.get(declared) if declared else None,
     )
     tentacle = ClaudeCodeTentacle(

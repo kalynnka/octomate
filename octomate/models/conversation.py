@@ -43,7 +43,7 @@ class Conversation(Base, TransmuterProxiedMixin):
     )
     agent_tentacle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     # Empty, not NULL, when the conversation is the agent's own — the same
-    # sentinel Thread.thread_id uses, so the plain unique constraint enforces
+    # sentinel Thread.channel_thread_id uses, so the plain unique constraint enforces
     # both halves of the identity (NULLs are distinct in a unique constraint,
     # which would let a second bare (thread, agent) row through).
     subagent_id: Mapped[str] = mapped_column(

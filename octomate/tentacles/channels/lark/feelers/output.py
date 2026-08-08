@@ -109,7 +109,11 @@ class LarkMarkdownFeeler:
         if not markdown:
             return None
         chat_id = address.chat_id or address.user_id
-        reply_to = address.thread_id if address.thread_id.startswith("om_") else None
+        reply_to = (
+            address.channel_thread_id
+            if address.channel_thread_id and address.channel_thread_id.startswith("om_")
+            else None
+        )
         message_id = await self.ink.send_message(
             chat_id,
             address.chat_type,
@@ -506,7 +510,11 @@ class LarkTimelineFeeler(TimelineFeeler):
 
     @asynccontextmanager
     async def open(self, address: ChannelAddress) -> AsyncGenerator[LarkRunStateCards]:
-        reply_to = address.thread_id if address.thread_id.startswith("om_") else None
+        reply_to = (
+            address.channel_thread_id
+            if address.channel_thread_id and address.channel_thread_id.startswith("om_")
+            else None
+        )
         state = LarkRunStateCards(
             ink=self.ink,
             address=address,

@@ -44,10 +44,10 @@ JsonObjectAdapter = TypeAdapter(JsonObject)
 def _key(channel: str = "im") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id=channel,
-        chat_type="private",
+        chat_type="thread",
         chat_id="alice",
         user_id="alice",
-        thread_id="thread-1",
+        channel_thread_id="thread-1",
     )
 
 
@@ -126,7 +126,7 @@ async def test_lark_feelers_send_approval_and_question_cards() -> None:
         chat_type=address.chat_type,
         chat_id=address.chat_id,
         user_id=address.user_id,
-        thread_id="om_parent",
+        channel_thread_id="om_parent",
     )
     approval = _approval()
     questions = [_question(question="Environment?", choices=["prod", "stage"])]

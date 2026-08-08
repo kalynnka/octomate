@@ -35,7 +35,7 @@ from tests.support.managers import (
 def _key() -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="im",
-        chat_type="private",
+        chat_type="dm",
         chat_id="alice",
         user_id="alice",
     )

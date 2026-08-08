@@ -30,7 +30,7 @@ from tests.support.agents import RecordingClaudeClient
 from tests.support.managers import FakeConversationManager
 
 KEY = ChannelAddress(
-    channel_tentacle_id="im", chat_type="private", chat_id="alice", user_id="alice"
+    channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
 )
 HOOK_SECRET = SecretStr("test-hook-secret")
 
@@ -55,9 +55,10 @@ def repo(path: Path) -> Path:
 
 async def a_thread(octomate: Octomate, chat_id: str, project: str = "") -> Thread:
     """A persisted thread, optionally in a declared project — both its thread row and
-    the project it references have to exist, since each is a real foreign key."""
+    the project it references have to exist, since each is a real foreign key. A
+    platform thread, since only work carries a project."""
     return await octomate.thread_manager.ensure(
-        ThreadKey("im", "private", chat_id, ""),
+        ThreadKey("im", "thread", chat_id, "t1"),
         project=octomate.projects.get(project) if project else None,
     )
 

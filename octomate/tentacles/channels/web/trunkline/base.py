@@ -169,10 +169,10 @@ class TrunklineChromo(Chromo[TrunklineDirective, WireEvent]):
             return None
         return MessageEvent(
             message_id=raw.message_id or uuid7().hex,
-            thread_id=raw.thread_id,
+            channel_thread_id=raw.thread_id,
             user_id=CONSOLE_USER_ID,
             chat_id=CONSOLE_USER_ID,
-            chat_type="private",
+            chat_type="thread" if raw.thread_id else "dm",
             segments=[TextSegment(data={"text": raw.text})],
             raw=raw.text,
         )
@@ -547,7 +547,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
                 chat_type=event.chat_type,
                 chat_id=event.chat_id,
                 user_id=event.user_id,
-                thread_id=event.thread_id,
+                channel_thread_id=event.channel_thread_id,
             )
         )
         await self.claim_route(thread, directive.model)

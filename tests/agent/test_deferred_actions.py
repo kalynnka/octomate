@@ -27,7 +27,7 @@ from tests.support.managers import a_thread
 def _key() -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="slack",
-        chat_type="private",
+        chat_type="dm",
         chat_id="alice",
         user_id="alice",
     )

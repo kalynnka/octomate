@@ -64,7 +64,7 @@ async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -
         )
     )
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CLAUDE_NATIVE_ID, "private", session_id, "")
+        ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
     )
     project = await thread.project
     return project.name if project is not None else ""
@@ -86,7 +86,7 @@ async def codex_session(octomate: Octomate, session_id: str, cwd: Path | str) ->
         )
     )
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "private", session_id, "")
+        ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
     )
     project = await thread.project
     return project.name if project is not None else ""
@@ -142,7 +142,7 @@ async def test_declaring_a_project_later_leaves_old_threads_alone(
     # about where its work began, not a lookup redone on every hook.
     octomate.thread_manager.threads.clear()
     reloaded = await octomate.thread_manager.ensure(
-        ThreadKey(CLAUDE_NATIVE_ID, "private", "sess-before", "")
+        ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-before")
     )
     assert await reloaded.project is None
 
@@ -162,7 +162,8 @@ async def test_a_thread_cannot_be_re_attributed(tmp_path: Path) -> None:
     inky = repo(tmp_path / "inky")
     octomate = Octomate(projects=await registry([{"root": str(inky)}]))
     thread = await octomate.thread_manager.ensure(
-        ThreadKey("im", "private", "chat", ""), project=octomate.projects.get("inky")
+        ThreadKey("im", "thread", "chat", "t1"),
+        project=octomate.projects.get("inky"),
     )
 
     with pytest.raises(ValidationError):
@@ -179,7 +180,7 @@ async def test_a_thread_cannot_name_a_project_that_is_not_there(
 
     with pytest.raises(IntegrityError):
         await octomate.thread_manager.ensure(
-            ThreadKey("im", "private", "sess-ghost", ""), project=unregistered
+            ThreadKey("im", "thread", "chat", "t-ghost"), project=unregistered
         )
 
 
@@ -191,10 +192,10 @@ async def test_attribution_does_not_touch_thread_identity(tmp_path: Path) -> Non
 
     await claude_session(octomate, "sess-keyed", inky)
     thread = await octomate.thread_manager.ensure(
-        ThreadKey(CLAUDE_NATIVE_ID, "private", "sess-keyed", "")
+        ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-keyed")
     )
 
-    assert thread.key == ThreadKey(CLAUDE_NATIVE_ID, "private", "sess-keyed", "")
+    assert thread.key == ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-keyed")
     attributed = await thread.project
     assert attributed is not None
     assert attributed.name == "inky"

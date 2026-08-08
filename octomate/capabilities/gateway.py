@@ -270,7 +270,7 @@ class GatewayCapability(AbstractCapability[None]):
         address = self.conversation_address
         if address is None:
             return True
-        return not (address.is_group and not address.thread_id)
+        return address.chat_type != "group"
 
     @property
     def private_blocked_by(self) -> PrivateBlocker | None:
@@ -283,8 +283,7 @@ class GatewayCapability(AbstractCapability[None]):
         channel = self.channels.get(address.channel_tentacle_id)
         if channel is None or not channel.surfaces.direct_message:
             return "no_surface"
-        # A thread inside a private chat counts: either way we are already there.
-        if address.chat_type == "private":
+        if address.chat_type == "dm":
             return "already_private"
         if not address.user_id:
             return "no_user"
@@ -308,7 +307,10 @@ class GatewayCapability(AbstractCapability[None]):
                     handle="dm",
                     label="their direct messages here",
                     address=replace(
-                        address, chat_type="private", chat_id="", thread_id=""
+                        address,
+                        chat_type="dm",
+                        chat_id="",
+                        channel_thread_id=None,
                     ),
                 )
             )
@@ -360,7 +362,7 @@ class GatewayCapability(AbstractCapability[None]):
                     label=f"their direct messages on {channel.name}",
                     address=ChannelAddress(
                         channel_tentacle_id=other.channel_tentacle_id,
-                        chat_type="private",
+                        chat_type="dm",
                         chat_id="",
                         user_id=other.channel_user_id,
                     ),

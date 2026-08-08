@@ -377,10 +377,10 @@ async def test_slack_tentacle_ensures_assistant_thread() -> None:
     assert threads.calls == [
         ChannelAddress(
             channel_tentacle_id="slack",
-            chat_type="private",
+            chat_type="thread",
             chat_id="D1",
             user_id="U1",
-            thread_id="1710000000.000100",
+            channel_thread_id="1710000000.000100",
         )
     ]
 

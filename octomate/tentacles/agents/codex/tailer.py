@@ -29,10 +29,15 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import MarkdownSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadKey, ThreadMessageDirection
+from octomate.schemas.thread import (
+    CODEX_NATIVE_ID,
+    Thread,
+    ThreadKey,
+    ThreadMessageDirection,
+)
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agents.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
-from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, NATIVE_USER
+from octomate.tentacles.agents.codex.ingest import NATIVE_USER
 from octomate.tentacles.agents.codex.transcript import (
     RolloutLine,
     SessionMetadata,
@@ -262,7 +267,7 @@ class CodexTranscriptTailer:
 
     async def ensure_session(self, session_id: str) -> Conversation:
         thread = await self.thread_manager.ensure(
-            ThreadKey(CODEX_NATIVE_ID, "private", session_id, "")
+            ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
         )
         return await self.conversation_manager.ensure(
             thread.id, agent_tentacle_id=CODEX_NATIVE_ID
@@ -616,7 +621,7 @@ class CodexTranscriptTailer:
         self, session_id: str, run: ExternalAgentRun, prompt: str, answer: str
     ) -> None:
         thread = await self.thread_manager.ensure(
-            ThreadKey(CODEX_NATIVE_ID, "private", session_id, "")
+            ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
         )
         request = next(
             (message for message in run.messages if isinstance(message, ModelRequest)),
@@ -633,7 +638,7 @@ class CodexTranscriptTailer:
                         tentacle_id=CODEX_NATIVE_ID,
                         message_id=run.id,
                         chat_id=session_id,
-                        chat_type="private",
+                        chat_type="thread",
                         user_id=NATIVE_USER.channel_user_id,
                         sender=NATIVE_USER,
                         segments=[TextSegment(data={"text": prompt})],
