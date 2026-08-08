@@ -97,7 +97,7 @@ async def test_a_configured_root_widens_rather_than_replaces_the_default(
     default = tmp_path / "default" / "projects"
     (default / "slug").mkdir(parents=True)
     monkeypatch.setattr(
-        "octomate.tentacles.agent.claude.ingest.CLAUDE_PROJECTS_DIRS", (default,)
+        "octomate.tentacles.agents.claude.ingest.CLAUDE_PROJECTS_DIRS", (default,)
     )
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)

@@ -26,7 +26,7 @@ def projects_dirs(
     else:
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", value)
     module = importlib.reload(
-        importlib.import_module("octomate.tentacles.agent.claude.transcript")
+        importlib.import_module("octomate.tentacles.agents.claude.transcript")
     )
     return module.CLAUDE_PROJECTS_DIRS
 
@@ -75,7 +75,7 @@ def test_codex_home_relocates_the_sessions_tree(
 ) -> None:
     monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
     module = importlib.reload(
-        importlib.import_module("octomate.tentacles.agent.codex.transcript")
+        importlib.import_module("octomate.tentacles.agents.codex.transcript")
     )
     assert module.CODEX_SESSIONS_DIRS == (Path("/tmp/codex-home/sessions"),)
 
@@ -86,7 +86,7 @@ def restore_modules() -> Iterator[None]:
     mutated constant cannot leak into another test."""
     yield
     for name in (
-        "octomate.tentacles.agent.claude.transcript",
-        "octomate.tentacles.agent.codex.transcript",
+        "octomate.tentacles.agents.claude.transcript",
+        "octomate.tentacles.agents.codex.transcript",
     ):
         importlib.reload(importlib.import_module(name))

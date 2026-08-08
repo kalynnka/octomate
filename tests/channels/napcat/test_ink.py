@@ -173,7 +173,7 @@ async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
 
     channel.sense = sense
     monkeypatch.setattr(
-        "octomate.tentacles.channel.napcat.base.connect",
+        "octomate.tentacles.channels.napcat.base.connect",
         FakeConnect,
     )
 
