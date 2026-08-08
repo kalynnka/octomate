@@ -13,6 +13,7 @@ from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.schemas.project import Project
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
 from octomate.schemas.thread import (
     ChannelActorKind,
@@ -54,7 +55,17 @@ class ThreadManager:
     async def ensure(
         self,
         address_or_key: ChannelAddress | ThreadKey,
+        *,
+        project: Project | None = None,
     ) -> Thread:
+        """The thread this key names, created if it is new.
+
+        `project` attributes a thread being created and is ignored for one that
+        already exists: a thread's project is a fact about where its work started, so
+        declaring a project later attributes new threads rather than rewriting old
+        ones. It is not part of the key — re-attributing a thread must never strand
+        the history keyed under it.
+        """
         if isinstance(address_or_key, ChannelAddress):
             key = ThreadKey.from_address(address_or_key)
         else:
@@ -80,13 +91,32 @@ class ThreadManager:
                     chat_type=key.chat_type,
                     chat_id=key.chat_id,
                     thread_id=key.thread_id,
+                    project_id=project.id if project is not None else None,
                 )
                 session.add(thread)
             await session.flush()
             await thread.messages
             await thread.handoffs
+            await thread.project
             await session.commit()
 
+        self.cache_thread(thread)
+        return thread
+
+    async def get(self, thread_id: uuid.UUID) -> Thread:
+        """Resolve a thread by id — a cache hit or one fresh read; raises on an
+        unknown id. The by-id path for a caller holding a thread's id rather than the
+        channel coordinates that key it, which is every agent tentacle."""
+        for cached in self.threads.values():
+            if cached.id == thread_id:
+                return cached
+        async with async_session() as session:
+            thread = await session.get(Thread, thread_id)
+            if thread is None:
+                raise ValueError(f"unknown thread {thread_id}")
+            await thread.messages
+            await thread.handoffs
+            await thread.project
         self.cache_thread(thread)
         return thread
 
