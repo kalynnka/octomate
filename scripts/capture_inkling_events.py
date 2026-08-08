@@ -189,9 +189,9 @@ def parser() -> argparse.ArgumentParser:
         help="Conversation user id used for this capture run.",
     )
     parser.add_argument(
-        "--thread-id",
+        "--channel-thread-id",
         default="",
-        help="Optional conversation thread id used for this capture run.",
+        help="Optional platform thread id used for this capture run.",
     )
     return parser
 
@@ -203,7 +203,7 @@ async def capture(
     run_name: str,
     chat_id: str,
     user_id: str,
-    thread_id: str,
+    channel_thread_id: str,
     with_mcp: bool = False,
 ) -> dict[str, int]:
     config = OctomateConfig()
@@ -257,7 +257,7 @@ async def capture(
                     run_name=run_name,
                     chat_id=chat_id,
                     user_id=user_id,
-                    thread_id=thread_id,
+                    channel_thread_id=channel_thread_id,
                     accomplice=accomplice,
                     dm_channel=dm_channel,
                     subagent_model=model_config.name,
@@ -275,7 +275,7 @@ async def capture_case(
     run_name: str,
     chat_id: str,
     user_id: str,
-    thread_id: str,
+    channel_thread_id: str,
     accomplice: InklingTentacle | None,
     subagent_model: AgentRouteModelName,
     dm_channel: ChannelTentacle | None = None,
@@ -288,10 +288,10 @@ async def capture_case(
         raise RuntimeError("a private-routing capture needs a channel")
     address = ChannelAddress(
         channel_tentacle_id=dm_channel.id if dm_channel and case.private else "capture",
-        chat_type="group" if case.private else "private",
+        chat_type="group" if case.private else "dm",
         chat_id=effective_chat_id,
         user_id=user_id,
-        thread_id=thread_id,
+        channel_thread_id=channel_thread_id or None,
     )
 
     count = 0
@@ -480,7 +480,7 @@ def main() -> None:
             run_name=args.run_name,
             chat_id=args.chat_id,
             user_id=args.user_id,
-            thread_id=args.thread_id,
+            channel_thread_id=args.channel_thread_id,
             with_mcp=args.mcp,
         )
     )
