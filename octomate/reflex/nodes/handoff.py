@@ -48,7 +48,7 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 chat_type=source_address.chat_type,
                 chat_id=source_address.chat_id,
                 user_id=source_address.user_id,
-                thread_id="",
+                channel_thread_id=None,
             )
             target = replace(target, address=target_address)
 
@@ -59,7 +59,7 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         elif not channel.surfaces.sub_thread:
             # Nothing to open on this platform — the handoff lands in the main chat.
             target = replace(target, mode="main")
-        elif not target_address.thread_id:
+        elif not target_address.channel_thread_id:
             try:
                 target_address = await channel.start_sub_thread(
                     target_address,

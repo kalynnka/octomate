@@ -19,6 +19,7 @@ from pydantic_ai.messages import (
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import (
+    CLAUDE_NATIVE_ID,
     Thread,
     ThreadKey,
     ThreadMessage,
@@ -34,15 +35,10 @@ if TYPE_CHECKING:
     from octomate import Octomate
 
     # Runtime dependency runs the other way (the tailer imports this module's
-    # CLAUDE_NATIVE_ID); the injected instance only needs its type here.
+    # NATIVE_USER); the injected instance only needs its type here.
     from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
 
 logger = logging.getLogger(__name__)
-
-# Synthetic channel/agent id marking a thread as ingested from a native Claude client
-# rather than driven by a live tentacle. No channel is registered under it: an ingested
-# thread is recorded, never dispatched to.
-CLAUDE_NATIVE_ID = "claude-native"
 
 # A native session carries no platform identity for whoever is typing.
 NATIVE_USER = UserProfile(channel_user_id="native", name="native")
@@ -328,9 +324,9 @@ class ClaudeHookIngest:
         return await self.octomate.thread_manager.ensure(
             ThreadKey(
                 channel_tentacle_id=CLAUDE_NATIVE_ID,
-                chat_type="private",
+                chat_type="thread",
                 chat_id=event.session_id,
-                thread_id="",
+                channel_thread_id=None,
             ),
             project=project,
         )
@@ -346,7 +342,7 @@ class ClaudeHookIngest:
                 tentacle_id=CLAUDE_NATIVE_ID,
                 message_id=event.prompt_id or "",
                 chat_id=event.session_id,
-                chat_type="private",
+                chat_type="thread",
                 user_id=NATIVE_USER.channel_user_id,
                 sender=NATIVE_USER,
                 segments=[TextSegment(data={"text": prompt})],

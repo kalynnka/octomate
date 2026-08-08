@@ -375,10 +375,10 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
 
         address = ChannelAddress(
             channel_tentacle_id=self.id,
-            chat_type="private",
+            chat_type="thread",
             chat_id=channel_id,
             user_id=user_id,
-            thread_id=thread_ts,
+            channel_thread_id=thread_ts,
         )
         with sqlalchemy_materia():
             # Pre-create the thread that owns this assistant chat's conversations;
@@ -397,4 +397,6 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             [SlackOutboundMessage(text=hint_text, markdown_text=hint_text)],
             None,
         )
-        return replace(address, thread_id=message_id or address.thread_id)
+        if message_id is None:
+            return address
+        return replace(address, chat_type="thread", channel_thread_id=message_id)

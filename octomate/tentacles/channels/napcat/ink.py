@@ -106,8 +106,8 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
         first_msg_id: IMMessageID | None = None
-        endpoint = "/send_group_msg" if chat_type == "group" else "/send_private_msg"
-        id_field = "group_id" if chat_type == "group" else "user_id"
+        endpoint = "/send_private_msg" if chat_type == "dm" else "/send_group_msg"
+        id_field = "user_id" if chat_type == "dm" else "group_id"
         for message in messages:
             segments: list[JsonValue] = [*message.segments]
             payload: JsonObject = {

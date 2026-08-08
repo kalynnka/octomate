@@ -90,7 +90,8 @@ async def test_napcat_chromo_decodes_private_message() -> None:
     )
 
     assert event is not None
-    assert event.chat_type == "private"
+    # OneBot's wire `message_type` is "private"; the event it decodes into is a dm.
+    assert event.chat_type == "dm"
     assert event.chat_id == "3003"
     assert event.user_id == "3003"
     assert [type(seg) for seg in event.segments] == [TextSegment]

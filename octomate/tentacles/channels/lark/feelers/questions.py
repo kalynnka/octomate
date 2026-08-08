@@ -49,7 +49,11 @@ class LarkAskQuestionFeeler(QuestionFeeler):
     ) -> dict[UUID, IMMessageID | None]:
         if not actions:
             return {}
-        reply_to = address.thread_id if address.thread_id.startswith("om_") else None
+        reply_to = (
+            address.channel_thread_id
+            if address.channel_thread_id and address.channel_thread_id.startswith("om_")
+            else None
+        )
         message_id = await self.ink.send_message(
             address.chat_id or address.user_id,
             address.chat_type,

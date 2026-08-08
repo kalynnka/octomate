@@ -33,10 +33,10 @@ from tests.support.channels import FakeChromo, RecordingInk
 def _key() -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="im",
-        chat_type="private",
+        chat_type="thread",
         chat_id="alice",
         user_id="alice",
-        thread_id="thread-1",
+        channel_thread_id="thread-1",
     )
 
 

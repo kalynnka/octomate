@@ -67,7 +67,7 @@ def slack_run_thread(
         chat_type=target.chat_type,
         chat_id=target.chat_id,
         user_id=target.user_id,
-        thread_id=thread_ts,
+        channel_thread_id=thread_ts,
     )
     return channel, address
 

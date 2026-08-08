@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
@@ -10,30 +10,29 @@ from sqlalchemy import (
     JSON,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
-    UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
+from octomate.types.threads import (
+    ChannelActorKind,
+    MessageBindingKind,
+    ThreadKind,
+    ThreadMessageDirection,
+    ThreadStatus,
+)
 
 if TYPE_CHECKING:
     from octomate.models.conversation import Conversation
     from octomate.models.messages import ModelMessage
     from octomate.models.project import Project
     from octomate.models.user import UserProfile
-
-ThreadStatus = Literal["active", "closed"]
-ThreadMessageDirection = Literal["inbound", "outbound"]
-ChannelActorKind = Literal["human", "agent", "bot", "system"]
-MessageBindingKind = Literal[
-    "request_source",
-    "assistant_reply",
-    "assistant_send",
-]
 
 
 class MessageBinding(Base, TransmuterProxiedMixin):
@@ -91,23 +90,52 @@ class Thread(Base, TransmuterProxiedMixin):
     """One IM channel/chat/thread surface, independent of sender and agent."""
 
     __tablename__ = "threads"
+    # One row per thread, and one per chat that is not a thread. A single
+    # constraint over all four columns cannot say that: `channel_thread_id` is NULL
+    # off a thread, and NULL never equals NULL, so it would let duplicate DMs in.
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_threads_thread",
             "channel_tentacle_id",
             "chat_type",
             "chat_id",
-            "thread_id",
-            name="uq_threads_key",
+            "channel_thread_id",
+            unique=True,
+            sqlite_where=text("channel_thread_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_threads_chat",
+            "channel_tentacle_id",
+            "chat_type",
+            "chat_id",
+            unique=True,
+            sqlite_where=text("channel_thread_id IS NULL"),
         ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
 
-    channel_tentacle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    kind: Mapped[ThreadKind] = mapped_column(
+        String,
+        nullable=False,
+        index=True,
+        comment=(
+            "Which surface this thread is: dm, group, thread, or native_thread. "
+            "Written when the row is created and never changed. Only a thread and a "
+            "native_thread may carry a project_id."
+        ),
+    )
     chat_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
     chat_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    thread_id: Mapped[str] = mapped_column(
-        String, nullable=False, default="", index=True
+    channel_tentacle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    channel_thread_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        index=True,
+        comment=(
+            "The platform's own thread id — a Slack thread_ts, a Lark sub-thread's "
+            "root message. NULL unless kind is thread."
+        ),
     )
 
     project_id: Mapped[uuid.UUID | None] = mapped_column(

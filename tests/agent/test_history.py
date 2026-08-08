@@ -144,7 +144,7 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 def _key() -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="dev_ui",
-        chat_type="private",
+        chat_type="dm",
         chat_id="alice",
         user_id="dev",
     )
@@ -154,7 +154,7 @@ def _event(message_id: str, user_id: str, text: str) -> MessageEvent:
     return MessageEvent(
         tentacle_id="dev_ui",
         message_id=message_id,
-        chat_type="private",
+        chat_type="dm",
         chat_id="alice",
         user_id=user_id,
         segments=[TextSegment(data={"text": text})],

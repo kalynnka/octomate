@@ -3,33 +3,42 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Self
 
 from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import AfterValidator, ConfigDict, Field
+from pydantic import AfterValidator, ConfigDict, Field, model_validator
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ChannelAddress, ChatType
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import native_utc
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
+from octomate.types.conversations import ChatType
+from octomate.types.threads import (
+    ChannelActorKind,
+    MessageBindingKind,
+    ThreadKind,
+    ThreadMessageDirection,
+    ThreadStatus,
+)
 
 if TYPE_CHECKING:
     from octomate.schemas.messages import ModelRequest, ModelResponse
 
-ThreadStatus = Literal["active", "closed"]
-ThreadMessageDirection = Literal["inbound", "outbound"]
-ChannelActorKind = Literal["human", "agent", "bot", "system"]
-MessageBindingKind = Literal[
-    "request_source",
-    "assistant_reply",
-    "assistant_send",
-]
+# Synthetic ids a native client's thread is filed under; no channel is registered as
+# either. They live here because they are what tells a native thread from a channel DM.
+CLAUDE_NATIVE_ID = "claude-native"
+CODEX_NATIVE_ID = "codex-native"
+NATIVE_TENTACLE_IDS: frozenset[str] = frozenset({CLAUDE_NATIVE_ID, CODEX_NATIVE_ID})
+
+# The kinds that are a piece of work, and so can carry a project. A DM or a group chat
+# outlives every project in it, and the binding is frozen.
+ATTRIBUTABLE_KINDS: frozenset[ThreadKind] = frozenset({"thread", "native_thread"})
 
 
 @dataclass(frozen=True)
@@ -37,7 +46,7 @@ class ThreadKey:
     channel_tentacle_id: str
     chat_type: ChatType
     chat_id: str
-    thread_id: str = ""
+    channel_thread_id: str | None = None
 
     @classmethod
     def from_address(cls, address: ChannelAddress) -> ThreadKey:
@@ -45,13 +54,20 @@ class ThreadKey:
             channel_tentacle_id=address.channel_tentacle_id,
             chat_type=address.chat_type,
             chat_id=address.chat_id,
-            thread_id=address.thread_id,
+            channel_thread_id=address.channel_thread_id,
         )
+
+    @property
+    def kind(self) -> ThreadKind:
+        """What this key names — the chat type, unless a native client owns it."""
+        if self.channel_tentacle_id in NATIVE_TENTACLE_IDS:
+            return "native_thread"
+        return self.chat_type
 
     def __str__(self) -> str:
         return (
             f"{self.channel_tentacle_id}/{self.chat_type}/"
-            f"{self.chat_id}/{self.thread_id or '-'}"
+            f"{self.chat_id}/{self.channel_thread_id or '-'}"
         )
 
 
@@ -134,10 +150,21 @@ class Thread(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    channel_tentacle_id: str
+    kind: ThreadKind = Field(
+        frozen=True,
+        description=(
+            "Which surface this thread is. Set from `ThreadKey.kind` when the row is "
+            "created; only a `thread` and a `native_thread` may carry a project."
+        ),
+    )
+
     chat_type: ChatType
     chat_id: str
-    thread_id: str = ""
+    channel_tentacle_id: str
+    channel_thread_id: str | None = Field(
+        default=None,
+        description=("The platform's own thread id; None unless `kind` is `thread`."),
+    )
     project_id: uuid.UUID | None = Field(
         default=None,
         frozen=True,
@@ -164,13 +191,27 @@ class Thread(BaseTransmuter):
     messages: RelationCollection[ThreadMessage] = Relationships()
     handoffs: RelationCollection[Handoff] = Relationships()
 
+    @model_validator(mode="after")
+    def kind_agrees_with_the_key(self) -> Self:
+        """The channel's key is the fact; this row is our copy of it.
+
+        A copy that contradicts the fact is corrupt, and it would answer questions
+        — chiefly whether a project may be attached — with the wrong surface.
+        """
+        if self.kind != self.key.kind:
+            raise ValueError(
+                f"thread {self.key} is a {self.key.kind}, "
+                f"but the row calls itself a {self.kind}"
+            )
+        return self
+
     @property
     def key(self) -> ThreadKey:
         return ThreadKey(
             channel_tentacle_id=self.channel_tentacle_id,
             chat_type=self.chat_type,
             chat_id=self.chat_id,
-            thread_id=self.thread_id,
+            channel_thread_id=self.channel_thread_id,
         )
 
     @property

@@ -33,10 +33,10 @@ from tests.support.managers import FakeConversationManager
 THREAD = uuid.uuid4()
 ADDRESS = ChannelAddress(
     channel_tentacle_id="im",
-    chat_type="private",
+    chat_type="dm",
     chat_id="alice",
     user_id="alice",
-    thread_id="",
+    channel_thread_id=None,
 )
 CLAUDE_ROUTE = AgentRoute(
     agent_id="claude",

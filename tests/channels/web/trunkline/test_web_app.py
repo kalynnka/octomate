@@ -111,10 +111,10 @@ def _streamed_text(payload: str) -> str:
 def _console_address(thread_id: str = "thread-1") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="trunkline",
-        chat_type="private",
+        chat_type="thread" if thread_id else "dm",
         chat_id="dev",
         user_id="dev",
-        thread_id=thread_id,
+        channel_thread_id=thread_id,
     )
 
 
@@ -305,10 +305,10 @@ async def test_threads_and_detail_endpoints(
     await octomate.thread_manager.ensure(
         ChannelAddress(
             channel_tentacle_id="slack",
-            chat_type="group",
+            chat_type="thread",
             chat_id="C123",
             user_id="U1",
-            thread_id="171234.5678",
+            channel_thread_id="171234.5678",
         )
     )
 

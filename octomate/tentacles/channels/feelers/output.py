@@ -992,7 +992,7 @@ async def present_markdown(
 ) -> IMMessageID | None:
     chat_id = address.chat_id or address.user_id
     chat_type = address.chat_type
-    reply_to = reply_to or address.thread_id or None
+    reply_to = reply_to or address.channel_thread_id or None
     first_message_id: IMMessageID | None = None
     with channel_logfire.span(
         "default.markdown.present",
@@ -1072,7 +1072,7 @@ class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
                     chat_id,
                     address.chat_type,
                     [message],
-                    reply_to or address.thread_id or None,
+                    reply_to or address.channel_thread_id or None,
                 )
                 first_message_id = first_message_id or message_id
             span.set_attribute("message_id", str(first_message_id))

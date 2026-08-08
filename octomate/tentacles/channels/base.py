@@ -295,7 +295,7 @@ class ChannelTentacle(
                 chat_type=event.chat_type,
                 chat_id=event.chat_id,
                 user_id=event.user_id,
-                thread_id=event.thread_id,
+                channel_thread_id=event.channel_thread_id,
             )
             channel_logfire.info(
                 "ingest decoded message",
@@ -306,7 +306,7 @@ class ChannelTentacle(
             thread_message = await self.octomate.thread_manager.record_inbound(event)
             if (
                 self.config.mention_only
-                and address.is_group
+                and address.chat_type != "dm"
                 and not event.is_at(self.self_profile.channel_user_id)
             ):
                 logger.debug(
@@ -360,10 +360,10 @@ class ChannelTentacle(
             return None
         return ChannelAddress(
             channel_tentacle_id=self.id,
-            chat_type="private",
+            chat_type="dm",
             chat_id=chat_id,
             user_id=user_id,
-            thread_id="",
+            channel_thread_id=None,
         )
 
     async def start_sub_thread(
@@ -415,5 +415,5 @@ class ChannelTentacle(
             )
 
     def den(self, event: MessageEvent) -> Path:
-        subdir = event.chat_id if event.chat_type == "group" else event.user_id
+        subdir = event.user_id if event.chat_type == "dm" else event.chat_id
         return self.FILES_ROOT / self.id / subdir

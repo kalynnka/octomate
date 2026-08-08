@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -29,6 +29,7 @@ from octomate.schemas.thread import (
     ChannelActorKind,
     Thread,
     ThreadMessage,
+    ThreadMessageDirection,
     ThreadStatus,
 )
 from octomate.tentacles.channels.web.trunkline.base import (
@@ -77,7 +78,7 @@ class ThreadSummaryInfo(BaseModel):
 
 class LedgerEntry(BaseModel):
     id: uuid.UUID
-    direction: Literal["inbound", "outbound"]
+    direction: ThreadMessageDirection
     actor_kind: ChannelActorKind
     agent: str | None
     sender: str
@@ -159,7 +160,7 @@ def thread_summary(thread: Thread) -> ThreadSummaryInfo:
     return ThreadSummaryInfo(
         id=thread.id,
         channel=thread.channel_tentacle_id,
-        thread_key=thread.thread_id,
+        thread_key=thread.channel_thread_id or "",
         title=thread_title(thread),
         status=thread.status,
         agent=thread.active_agent_tentacle_id,

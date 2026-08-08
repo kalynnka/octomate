@@ -21,7 +21,7 @@ async def test_lark_ink_selects_group_and_private_targets() -> None:
     message = LarkOutboundMessage(msg_type="interactive", content="{}")
 
     group_id = await ink.send_message("oc_group", "group", [message])
-    private_id = await ink.send_message("ou_user", "private", [message])
+    private_id = await ink.send_message("ou_user", "dm", [message])
 
     assert group_id == "created-1"
     assert private_id == "created-2"
@@ -75,10 +75,10 @@ async def test_lark_tentacle_replies_to_key_thread_id_when_it_is_open_message_id
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="group",
+        chat_type="thread",
         chat_id="oc_group",
         user_id="ou_user",
-        thread_id="om_child_message",
+        channel_thread_id="om_child_message",
     )
 
     await channel.feelers.markdown.present(address, "thread reply")
@@ -97,10 +97,10 @@ async def test_lark_tentacle_private_thread_uses_reply_in_thread() -> None:
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="thread",
         chat_id="ou_user",
         user_id="ou_user",
-        thread_id="om_private_anchor",
+        channel_thread_id="om_private_anchor",
     )
 
     await channel.feelers.markdown.present(address, "private thread reply")
@@ -119,10 +119,10 @@ async def test_lark_tentacle_ignores_thread_id_as_reply_target() -> None:
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="group",
+        chat_type="thread",
         chat_id="oc_group",
         user_id="ou_user",
-        thread_id="omt_19766a1bf00edb8e",
+        channel_thread_id="omt_19766a1bf00edb8e",
     )
 
     await channel.feelers.markdown.present(address, "new message")
@@ -137,7 +137,7 @@ async def test_lark_markdown_present_falls_back_to_raw_text_when_card_fails() ->
     channel = lark_channel(ink)
     address = ChannelAddress(
         channel_tentacle_id="lark",
-        chat_type="private",
+        chat_type="dm",
         chat_id="ou_user",
         user_id="ou_user",
     )

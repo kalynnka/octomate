@@ -165,10 +165,10 @@ async def test_handle_request_records_chat_ledger(
 
     address = ChannelAddress(
         channel_tentacle_id="dev_ui",
-        chat_type="private",
+        chat_type="thread",
         chat_id="dev",
         user_id="dev",
-        thread_id="chat-1",
+        channel_thread_id="chat-1",
     )
     thread = await octomate.thread_manager.ensure(address)
     messages = list(thread.messages)
@@ -205,10 +205,10 @@ async def _register_routes(
 def _dev_thread_address(thread_id: str = "chat-1") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="dev_ui",
-        chat_type="private",
+        chat_type="thread" if thread_id else "dm",
         chat_id="dev",
         user_id="dev",
-        thread_id=thread_id,
+        channel_thread_id=thread_id,
     )
 
 

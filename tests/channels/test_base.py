@@ -77,17 +77,17 @@ def channel() -> FakeChannelTentacle:
 def _key(
     channel_id: str = "chan1",
     *,
-    chat_type: ChatType = "private",
+    chat_type: ChatType = "dm",
     chat_id: str = "alice",
     user_id: str = "alice",
-    thread_id: str = "",
+    thread_id: str | None = None,
 ) -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id=channel_id,
         chat_type=chat_type,
         chat_id=chat_id,
         user_id=user_id,
-        thread_id=thread_id,
+        channel_thread_id=thread_id,
     )
 
 
@@ -239,7 +239,7 @@ async def test_submerge_downloads_images_and_rewrites_file(
             "message_id": "m7",
             "user_id": "alice",
             "chat_id": "alice",
-            "chat_type": "private",
+            "chat_type": "dm",
             "segments": [ImageSegment(data=ImageData(file="remote-image-address"))],
         }
     )
@@ -264,7 +264,7 @@ async def test_markdown_feeler_encodes_final_agent_result_and_sends_native_messa
     assert len(channel.sent) == 1
     chat_id, chat_type, messages, reply_to, _ = channel.sent[0]
     assert chat_id == "alice"
-    assert chat_type == "private"
+    assert chat_type == "dm"
     assert messages[0]["text"] == "hi alice"
     assert reply_to is None
 

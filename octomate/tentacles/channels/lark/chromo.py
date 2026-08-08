@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Literal
 
 from lark_oapi.api.im.v1.model.mention_event import MentionEvent
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
@@ -21,6 +20,7 @@ from octomate.schemas.segments import (
 )
 from octomate.tentacles.channels.base import Chromo
 from octomate.tentacles.channels.lark.schema import LarkOutboundMessage
+from octomate.types.conversations import ChatType
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
@@ -53,27 +53,29 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
             # ("om_…", what start_sub_thread keyed the sub-thread on). Key on the
             # root so continuations map to the same conversation and the feeler
             # can reply back into the thread; a non-threaded message has none.
-            thread_id = ""
+            thread_id = None
             if message.thread_id:
                 thread_id = message.root_id or message.thread_id
 
             sender_id_obj = event.sender.sender_id
             sender_id = (sender_id_obj.open_id or "") if sender_id_obj else ""
 
-            lark_chat_type: Literal["private", "group"]
+            lark_chat_type: ChatType
             if chat_type == "group":
                 lark_chat_type = "group"
                 chat_id = message.chat_id or ""
             elif chat_type == "p2p":
-                lark_chat_type = "private"
+                lark_chat_type = "dm"
                 chat_id = sender_id
             else:
                 logger.warning("LarkChromo: unsupported chat_type %r", chat_type)
                 return None
+            if thread_id:
+                lark_chat_type = "thread"
 
             return MessageEvent(
                 message_id=message.message_id or "",
-                thread_id=thread_id,
+                channel_thread_id=thread_id,
                 reply_id=reply_id,
                 timestamp=time.time(),
                 user_id=sender_id,

@@ -65,7 +65,7 @@ def lark_run_thread(
         chat_type=target.chat_type,
         chat_id=target.chat_id,
         user_id=target.user_id,
-        thread_id=root_id,
+        channel_thread_id=root_id,
     )
     return channel, address
 

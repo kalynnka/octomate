@@ -2,9 +2,43 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
+from typing import Final
+
 from pydantic_settings import SettingsConfigDict
 
 from octomate.config import OctomateConfig
+
+# Read at import, before the isolating fixture repoints the class, so the live
+# suites can ask for the real deployment back by name.
+PRODUCTION_SOURCES: Final[SettingsConfigDict] = SettingsConfigDict(
+    yaml_file=OctomateConfig.model_config.get("yaml_file"),
+    env_file=OctomateConfig.model_config.get("env_file"),
+)
+
+ISOLATED_SOURCES: Final[SettingsConfigDict] = SettingsConfigDict(
+    yaml_file=("octomate.test.yaml",),
+    env_file=None,
+)
+
+
+@contextmanager
+def config_sources(sources: SettingsConfigDict) -> Generator[None]:
+    """Point `OctomateConfig` at a different set of files for the duration.
+
+    A test cannot opt into `IsolatedTestConfig` on behalf of the CLI, which builds
+    its own `OctomateConfig` several frames down, so the class itself moves.
+    """
+    previous = SettingsConfigDict(
+        yaml_file=OctomateConfig.model_config.get("yaml_file"),
+        env_file=OctomateConfig.model_config.get("env_file"),
+    )
+    OctomateConfig.model_config.update(sources)
+    try:
+        yield
+    finally:
+        OctomateConfig.model_config.update(previous)
 
 
 class IsolatedTestConfig(OctomateConfig):

@@ -92,10 +92,16 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "httpx>=0.28.1",
+    "pytest-env>=1.1",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# `database_settings` is built when octomate.config.database is imported, which is
+# before any fixture exists — so this is the only place the suite can keep it off
+# the real .octomate/octomate.db. A test that forgets `in_memory_engine` then hits
+# an in-memory database rather than writing to the developer's own.
+env = ["OCTOMATE_DB_URL=sqlite+aiosqlite:///:memory:"]
 filterwarnings = [
     # Channel profile schemas intentionally redeclare UserProfile fields (platform
     # aliases/defaults); the transmuter metaclass serves same-named class attributes,

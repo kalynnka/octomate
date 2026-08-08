@@ -86,3 +86,9 @@ class User(BaseTransmuter):
     )
 
     profiles: RelationCollection[UserProfile] = Relationships()
+
+
+# `UserProfile.user` names `User`, which is declared below it, so the profile is
+# incomplete until this runs. Subclasses inherit that, and a cold import of one —
+# napcat's sender — fails to validate rather than to build.
+UserProfile.model_rebuild()

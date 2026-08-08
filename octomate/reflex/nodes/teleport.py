@@ -44,7 +44,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         channel = ctx.deps.channel(origin)
         new_target = origin
-        if channel.surfaces.sub_thread and not origin_address.thread_id:
+        if channel.surfaces.sub_thread and not origin_address.channel_thread_id:
             try:
                 new_address = await channel.start_sub_thread(origin_address, hint)
                 new_target = replace(origin, address=new_address, mode="sub")

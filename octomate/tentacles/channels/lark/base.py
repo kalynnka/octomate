@@ -177,7 +177,9 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             self.chromo.outbound_markdown(hint_text),
             None,
         )
-        return replace(address, thread_id=message_id or address.thread_id)
+        if message_id is None:
+            return address
+        return replace(address, chat_type="thread", channel_thread_id=message_id)
 
     def sense(self, data: P2ImMessageReceiveV1) -> None:
         task = asyncio.create_task(self.ingest(data))

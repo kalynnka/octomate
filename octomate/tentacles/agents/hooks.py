@@ -20,7 +20,7 @@ def hook_guard(secret: SecretStr) -> Callable[[str | None], Awaitable[None]]:
     Takes the secret rather than reading an environment variable: the running app knows
     this as `OctomateConfig.hook_secret`, and where that came from — `octomate.yaml`, the
     environment, `.env` — is the config's business and not this module's. How a *client*
-    is told to carry it is the installer's business (`octomate.tentacles.agent.typer`).
+    is told to carry it is the installer's business (`octomate.tentacles.agents.typer`).
     """
     expected = f"Bearer {secret.get_secret_value()}"
 

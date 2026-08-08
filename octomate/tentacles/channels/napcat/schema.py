@@ -27,6 +27,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.user import UserProfile
+from octomate.types.conversations import ChatType
 from octomate.types.json import JsonObject
 
 
@@ -230,9 +231,8 @@ def to_message_event(event: NapcatMessageEvent) -> MessageEvent:
         ),
         "",
     )
-    chat_type: Literal["private", "group"] = (
-        "group" if event.message_type == "group" else "private"
-    )
+    # `message_type` is OneBot's own wire value and stays "private"; ours is "dm".
+    chat_type: ChatType = "group" if event.message_type == "group" else "dm"
     chat_id = event.group_id if chat_type == "group" else event.user_id
     return MessageEvent(
         message_id=event.message_id,

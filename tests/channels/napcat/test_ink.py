@@ -40,7 +40,7 @@ async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
     )
 
     group_id = await ink.send_message("2002", "group", [message], reply_to="1001")
-    private_id = await ink.send_message("3003", "private", [message])
+    private_id = await ink.send_message("3003", "dm", [message])
 
     assert group_id == "msg-1"
     assert private_id == "msg-1"
@@ -69,10 +69,10 @@ async def test_napcat_segments_feeler_delivers_native_media(tmp_path) -> None:
     image.write_bytes(b"image-bytes")
     address = ChannelAddress(
         channel_tentacle_id="napcat",
-        chat_type="group",
+        chat_type="thread",
         chat_id="2002",
         user_id="3003",
-        thread_id="1001",
+        channel_thread_id="1001",
     )
 
     message_id = await feeler.present(
@@ -107,7 +107,7 @@ async def test_napcat_segments_feeler_empty_sends_nothing() -> None:
     feeler = DefaultSegmentsFeeler(ink=ink, chromo=NapcatChromo())
     address = ChannelAddress(
         channel_tentacle_id="napcat",
-        chat_type="private",
+        chat_type="dm",
         chat_id="3003",
         user_id="3003",
     )
@@ -173,7 +173,7 @@ async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
 
     channel.sense = sense
     monkeypatch.setattr(
-        "octomate.tentacles.channel.napcat.base.connect",
+        "octomate.tentacles.channels.napcat.base.connect",
         FakeConnect,
     )
 
@@ -246,7 +246,7 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
     )
     address = ChannelAddress(
         channel_tentacle_id="napcat",
-        chat_type="private",
+        chat_type="dm",
         chat_id="3003",
         user_id="3003",
     )

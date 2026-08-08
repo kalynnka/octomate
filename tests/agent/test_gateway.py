@@ -74,10 +74,18 @@ def _capability(
         },
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="private" if private_blocked_by == "already_private" else "group",
-            chat_id="room",
             # A group's main channel is the one place `summon here` is refused.
-            thread_id="" if not allow_here else "t-1",
+            chat_type=(
+                "dm"
+                if private_blocked_by == "already_private"
+                else "thread"
+                if allow_here
+                else "group"
+            ),
+            chat_id="room",
+            channel_thread_id="t-1"
+            if allow_here and private_blocked_by is None
+            else "",
             user_id="" if private_blocked_by == "no_user" else "alice",
         ),
     )
@@ -403,7 +411,7 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
     assert capability.decision == SchemeDecision(
         destination=ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="private",
+            chat_type="dm",
             chat_id="",
             user_id="alice",
         ),
