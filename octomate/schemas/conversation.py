@@ -14,14 +14,9 @@ from octomate.models.conversation import Conversation as ConversationModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
+from octomate.types.conversations import ConversationPermissionMode
 
 ChatType = Literal["private", "group"]
-
-# The approval level a conversation grants an external coding agent (Claude):
-# prompt every gated tool ("default"), auto-accept edits, or skip all gating
-# ("bypass_permissions"). Our values are snake_case; the Claude tentacle maps
-# them to the SDK's camelCase `permission_mode` at the boundary.
-ConversationPermissionMode = Literal["default", "accept_edits", "bypass_permissions"]
 
 
 @dataclass(frozen=True)

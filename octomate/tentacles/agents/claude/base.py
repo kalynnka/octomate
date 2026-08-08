@@ -6,7 +6,8 @@ import uuid
 import weakref
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
-from functools import cached_property
+from functools import cached_property, partial
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     ClassVar,
@@ -63,7 +64,6 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
-    ConversationPermissionMode,
 )
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -71,6 +71,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.project import Project
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
@@ -80,6 +81,7 @@ from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.agents.claude.transport import SSHTransport
 from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
+from octomate.types.conversations import ConversationPermissionMode
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
@@ -92,6 +94,59 @@ SDK_PERMISSION_MODE: dict[ConversationPermissionMode, PermissionMode] = {
     "accept_edits": "acceptEdits",
     "bypass_permissions": "bypassPermissions",
 }
+
+# Claude's file-writing tools, and the input key each names its target with. A hook
+# matcher is a full match on the tool name, so the hook only ever sees these three
+# and the lookup cannot miss.
+#
+# Reads are absent deliberately: a write outside the project is what does damage,
+# where refusing a read only costs the model a sibling checkout or a system header.
+# So is Bash, which no path check can scope — a command reaches wherever the process
+# can until `sandbox.enabled` is set, so this is scoping, not sandboxing.
+WRITE_TOOL_PATHS: dict[str, str] = {
+    "Write": "file_path",
+    "Edit": "file_path",
+    "NotebookEdit": "notebook_path",
+}
+
+
+async def deny_outside_project(
+    project: Project,
+    hook_input: HookInput,
+    tool_use_id: str | None,
+    context: HookContext,
+) -> HookJSONOutput:
+    """Refuse a file write whose target resolves outside `project`'s roots.
+
+    A PreToolUse hook rather than `can_use_tool`, which the CLI does not call at all
+    under `bypassPermissions` — the mode an out-of-project write is likeliest to
+    reach. The hook fires in every mode, and fires before `can_use_tool`, so a
+    refused write raises no approval card either.
+
+    Bound to its project with `partial` and registered only for a run that resolved
+    to one, so a run under no declared root is never on this path. The reason names
+    the project, so the model reports a blocker rather than retrying the same path.
+    """
+    pre_tool_use = cast(PreToolUseHookInput, hook_input)
+    target = pre_tool_use["tool_input"].get(WRITE_TOOL_PATHS[pre_tool_use["tool_name"]])
+    # The SDK types a tool's input as free-form JSON. A call naming no path has
+    # nothing to judge, and the CLI refuses it on the tool's own schema anyway.
+    if not isinstance(target, str):
+        return {}
+    if project.contains(Path(target)):
+        return {}
+    roots = ", ".join(str(root) for root in project.roots)
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                f"{target} is outside project {project.name}. This run may only "
+                f"write under: {roots}. The same path will be refused again, so "
+                f"work inside the project or report what you could not change."
+            ),
+        }
+    }
 
 
 @dataclass
@@ -466,8 +521,39 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # other, never both.
         session_id = conversation.external_id or str(uuid7())
 
+        # The thread's project root, or the configured directory when it is in none.
+        # A project root is a local path, and an SSH run happens on another machine
+        # where it names nothing, so a remote run stays where it is configured.
+        run_cwd = (
+            self.config.cwd
+            if self.config.ssh
+            else await self.run_cwd(conversation.thread_id, self.config.cwd)
+        )
+        project_name = self.octomate.projects.resolve(Path(run_cwd))
+        project = self.octomate.projects.get(project_name) if project_name else None
+        # `setting_sources` is left unset on purpose: verified against the CLI, the
+        # unset default loads every source, so the bound directory arrives with its
+        # own CLAUDE.md and .claude/settings.json — the useful half of "work on this
+        # project". Setting it to ["project"] would be the same behavior spelled
+        # loudly; setting it to [] would silently drop a repo's instructions.
+        pre_tool_use_hooks = [
+            HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
+        ]
+        if project is not None:
+            # `cwd` is a default Claude can walk out of, not a boundary, so the
+            # project that owns this directory also bounds what may be written in it.
+            pre_tool_use_hooks.append(
+                HookMatcher(
+                    matcher="|".join(WRITE_TOOL_PATHS),
+                    hooks=[partial(deny_outside_project, project)],
+                )
+            )
+
         options = ClaudeAgentOptions(
-            cwd=self.config.cwd,
+            cwd=run_cwd,
+            # A project's other roots are directories this work legitimately spans —
+            # a settings tree, a sibling checkout — so Claude may reach them too.
+            add_dirs=[str(root) for root in project.extra_roots] if project else [],
             model=cli_model,
             # The SDK scale has no `minimal` (and a `max` tier Octomate does not
             # offer); minimal maps down to low, the rest pass through. None
@@ -478,11 +564,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             resume=conversation.external_id,
             session_id=None if conversation.external_id else session_id,
             can_use_tool=can_use_tool,
-            hooks={
-                "PreToolUse": [
-                    HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
-                ]
-            },
+            hooks={"PreToolUse": pre_tool_use_hooks},
             output_format=output_format,
             # Stream partial assistant messages so the accumulator can emit token
             # deltas (typewriter) instead of whole blocks; see ClaudeRunAccumulator.

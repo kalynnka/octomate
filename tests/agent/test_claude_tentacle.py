@@ -32,13 +32,12 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.config.agents import Claim, ClaudeCodeConfig, ClaudeSSHConfig
+from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.agents.claude.transport import SSHTransport
 from tests.support.managers import FakeConversation, FakeConversationManager
 
 SummonDecisionAdapter = TypeAdapter(SummonDecision)
@@ -397,22 +396,6 @@ async def test_run_tags_sdk_session_as_cli_entrypoint(
     assert getattr(FakeClaudeClient.last_options, "env", None) == {
         "CLAUDE_CODE_ENTRYPOINT": "cli"
     }
-
-
-async def test_ssh_transport_wired_when_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
-    tentacle = _tentacle(
-        FakeConversationManager(),
-        config=ClaudeCodeConfig(ssh=ClaudeSSHConfig(host="user@box")),
-    )
-
-    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
-
-    transport = FakeClaudeClient.last_transport
-    assert isinstance(transport, SSHTransport)
-    assert transport.ssh.host == "user@box"
 
 
 def test_configured_model_names_are_exposed() -> None:

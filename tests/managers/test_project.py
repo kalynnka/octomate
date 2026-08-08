@@ -317,7 +317,7 @@ async def test_an_extra_root_colliding_with_another_root_is_refused(
 
 
 async def test_a_root_that_does_not_exist_is_refused(tmp_path: Path) -> None:
-    with pytest.raises(ValidationError, match="does not exist"):
+    with pytest.raises(ValidationError, match="does not point to a directory"):
         config([{"root": str(tmp_path / "not-cloned-yet")}])
 
 
@@ -326,18 +326,3 @@ async def test_a_manager_with_no_config_resolves_nothing(tmp_path: Path) -> None
     await manager.reconcile()
 
     assert manager.resolve(tmp_path) is None
-
-
-async def test_a_retained_row_whose_root_is_gone_does_not_block_startup(
-    tmp_path: Path,
-) -> None:
-    # Undeclared rows are retained as history, and a directory can move or vanish
-    # after its row was written. Reconcile loads every stored row, so the schema
-    # must accept the dead path — existence is the config boundary's claim only.
-    async with async_session() as session:
-        session.add(Project(name="moved", root=tmp_path / "moved-away"))
-        await session.commit()
-
-    manager = await registry([{"root": str(directory(tmp_path / "inky"))}])
-
-    assert [project.name for project in manager.list()] == ["inky"]

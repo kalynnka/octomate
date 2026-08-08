@@ -152,7 +152,7 @@ class CodexHookIngest:
             return
         if not path.parent.is_dir():
             return
-        thread = await self.session_thread(event.session_id)
+        thread = await self.session_thread(event)
         await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=CODEX_NATIVE_ID
         )
@@ -174,13 +174,25 @@ class CodexHookIngest:
             return None
         return path
 
-    async def session_thread(self, session_id: str) -> Thread:
+    async def session_thread(self, event: CodexHookInput) -> Thread:
+        """This session's thread, attributed to the project it is running in.
+
+        As on the Claude side: the session's own directory says which project this
+        is, the project lands only when the thread is created, and a rollout root is
+        never a project root. Only a cwd the hook carried — `Path("")` is the
+        process's own directory, which would attribute every session to whatever
+        project Octomate itself was started in.
+        """
+        project = None
+        if event.cwd and (name := self.octomate.projects.resolve(Path(event.cwd))):
+            project = self.octomate.projects.get(name)
         return await self.octomate.thread_manager.ensure(
-            ThreadKey(CODEX_NATIVE_ID, "private", session_id, "")
+            ThreadKey(CODEX_NATIVE_ID, "private", event.session_id, ""),
+            project=project,
         )
 
     async def record_prompt(self, event: CodexHookInput, prompt: str) -> None:
-        thread = await self.session_thread(event.session_id)
+        thread = await self.session_thread(event)
         if event.turn_id and self.already_recorded(thread, event.turn_id, "inbound"):
             return
         await self.octomate.thread_manager.record_inbound(
@@ -196,7 +208,7 @@ class CodexHookIngest:
         )
 
     async def record_answer(self, event: CodexHookInput, answer: str) -> None:
-        thread = await self.session_thread(event.session_id)
+        thread = await self.session_thread(event)
         if event.turn_id and self.already_recorded(thread, event.turn_id, "outbound"):
             return
         await self.octomate.thread_manager.record_outbound(
@@ -210,7 +222,7 @@ class CodexHookIngest:
     async def sketch_run(self, event: CodexHookInput) -> None:
         if not event.turn_id:
             return
-        thread = await self.session_thread(event.session_id)
+        thread = await self.session_thread(event)
         prompt = next(
             (
                 message

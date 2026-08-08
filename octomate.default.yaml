@@ -34,8 +34,8 @@ octomate:
       # `tool_output.retention_hours` for how long a spill stays readable, or
       # `tool_output.enabled: false` to send every return whole.
     # Anthropic Claude Code agent (opt-in; omitted => absent). Runs the Claude
-    # Agent SDK locally, or on a remote host when `ssh` is set. List it in a
-    # channel's `agents:` to make it a summon candidate.
+    # Agent SDK locally. List it in a channel's `agents:` to make it a summon
+    # candidate.
     # claude:
     #   cwd: .
     #   models: [opus, sonnet, haiku]   # opus => Opus 4.8
@@ -54,9 +54,10 @@ octomate:
     #         repository chores.
     #   # max_turns: ~
     #   # approval_timeout: ~   # seconds to wait for a human approval; ~ = forever
-    #   # ssh:                  # run `claude` on a remote host instead of locally
-    #   #   host: my-host
-    #   #   identity_file: ~/.ssh/id_ed25519
+    #   # ssh: ~                # remote runs are disabled: a run happens in its
+    #   #                       # thread's project root, and that is a local path
+    #   #                       # the remote host has nothing to match. Setting a
+    #   #                       # block is refused rather than ignored.
     # OpenAI Codex agent (opt-in; omitted => absent). Runs Codex through the
     # openai-codex SDK. List it in a channel's `agents:` to make it a summon
     # candidate.
@@ -228,6 +229,10 @@ octomate:
   # detected from git, and a cwd under no declared root resolves to nothing, which is
   # a normal outcome rather than an error. Nested roots resolve to the deeper
   # project, so a monorepo and a package inside it can both be declared.
+  #
+  # A declared root also bounds Claude's writes: a Write/Edit/NotebookEdit resolving
+  # outside one is refused in every approval mode, naming the project it left.
+  # Scoping, not sandboxing — reads and Bash still reach wherever the process can.
   #
   # Unrelated to `~/.claude/projects/`, which is where Claude Code stores its
   # transcripts. Same word, different thing.

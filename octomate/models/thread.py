@@ -23,6 +23,7 @@ from octomate.models.base import Base
 if TYPE_CHECKING:
     from octomate.models.conversation import Conversation
     from octomate.models.messages import ModelMessage
+    from octomate.models.project import Project
     from octomate.models.user import UserProfile
 
 ThreadStatus = Literal["active", "closed"]
@@ -109,6 +110,20 @@ class Thread(Base, TransmuterProxiedMixin):
         String, nullable=False, default="", index=True
     )
 
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment=(
+            "The declared project this thread's work is in; NULL is unattributed. "
+            "Set when the row is created and never changed after: a thread's project "
+            "is where its work started, and its root is where the runs happen, so "
+            "moving it would move sessions whose history is full of absolute paths. "
+            "SET NULL rather than CASCADE: attribution describes a thread, and "
+            "losing the project it named must not take the thread's history with it."
+        ),
+    )
     status: Mapped[ThreadStatus] = mapped_column(
         String, nullable=False, default="active", index=True
     )
@@ -132,6 +147,11 @@ class Thread(Base, TransmuterProxiedMixin):
         onupdate=lambda: datetime.now(UTC),
         index=True,
     )
+
+    # No back reference: a project would collect every thread ever opened in it, and
+    # nothing asks that question. Eager, because every reader of a thread's project
+    # wants the row, not the id.
+    project: Mapped[Project | None] = relationship("Project", lazy="selectin")
 
     messages: Mapped[list[ThreadMessage]] = relationship(
         "ThreadMessage",

@@ -13,6 +13,7 @@ from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.schemas.project import Project
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
 from octomate.schemas.thread import (
     ChannelActorKind,
@@ -54,7 +55,17 @@ class ThreadManager:
     async def ensure(
         self,
         address_or_key: ChannelAddress | ThreadKey,
+        *,
+        project: Project | None = None,
     ) -> Thread:
+        """The thread this key names, created if it is new.
+
+        `project` attributes a thread being created and is ignored for one that
+        already exists: a thread's project is frozen once the row is written, so
+        declaring a project later attributes new threads rather than rewriting old
+        ones. It is not part of the key either — the key is what the thread's history
+        is filed under, and attribution must never move it.
+        """
         if isinstance(address_or_key, ChannelAddress):
             key = ThreadKey.from_address(address_or_key)
         else:
@@ -80,11 +91,13 @@ class ThreadManager:
                     chat_type=key.chat_type,
                     chat_id=key.chat_id,
                     thread_id=key.thread_id,
+                    project_id=project.id if project is not None else None,
                 )
                 session.add(thread)
             await session.flush()
             await thread.messages
             await thread.handoffs
+            await thread.project
             await session.commit()
 
         self.cache_thread(thread)

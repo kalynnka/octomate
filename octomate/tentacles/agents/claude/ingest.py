@@ -242,7 +242,7 @@ class ClaudeHookIngest:
         # Both guarded by the caller.
         assert event.agent_id
         assert event.prompt_id
-        thread = await self.session_thread(event.session_id)
+        thread = await self.session_thread(event)
         parent = await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
         )
@@ -299,25 +299,44 @@ class ClaudeHookIngest:
             return
         if not path.parent.is_dir():
             return
-        thread = await self.session_thread(event.session_id)
+        thread = await self.session_thread(event)
         await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
         )
         self.tailer.start(event.session_id, path)
         logger.info("session %s: tailing %s", event.session_id, path)
 
-    async def session_thread(self, session_id: str) -> Thread:
+    async def session_thread(self, event: ClaudeHookInput) -> Thread:
+        """This session's thread, attributed to the project it is running in.
+
+        The session's own directory is what says which project this is — not the
+        transcript path, which lives in Claude's tree whatever the code does. The
+        project lands only when the thread is created, so resolving it on every hook
+        costs a path comparison and rewrites nothing; a session in a directory no
+        project claims is unattributed, which is a normal outcome.
+
+        A project root is never a transcript root: this asks where the code is, and
+        `transcript_roots` bounds where a transcript may be read from. Widening one
+        with the other would let a project entry open what the tailer will follow.
+        """
+        # Only a cwd the hook actually carried: `Path("")` is the process's own
+        # directory, which would attribute every session to whatever project
+        # Octomate itself was started in.
+        project = None
+        if event.cwd and (name := self.octomate.projects.resolve(Path(event.cwd))):
+            project = self.octomate.projects.get(name)
         return await self.octomate.thread_manager.ensure(
             ThreadKey(
                 channel_tentacle_id=CLAUDE_NATIVE_ID,
                 chat_type="private",
-                chat_id=session_id,
+                chat_id=event.session_id,
                 thread_id="",
-            )
+            ),
+            project=project,
         )
 
     async def record_prompt(self, event: ClaudeHookInput, prompt: str) -> None:
-        thread = await self.session_thread(event.session_id)
+        thread = await self.session_thread(event)
         if event.prompt_id and self.already_recorded(
             thread, event.prompt_id, "inbound"
         ):
@@ -350,7 +369,7 @@ class ClaudeHookIngest:
         """
         if not event.prompt_id:
             return  # no per-turn key: nothing to write a run under
-        thread = await self.session_thread(event.session_id)
+        thread = await self.session_thread(event)
         prompt = self.recorded_prompt(thread, event.prompt_id)
         if prompt is None or prompt.message_text is None:
             # The prompt hook never landed (Octomate came up mid-turn). Leave the turn
@@ -396,7 +415,7 @@ class ClaudeHookIngest:
         )
 
     async def record_answer(self, event: ClaudeHookInput, answer: str) -> None:
-        thread = await self.session_thread(event.session_id)
+        thread = await self.session_thread(event)
         if event.prompt_id and self.already_recorded(
             thread, event.prompt_id, "outbound"
         ):

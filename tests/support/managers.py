@@ -28,9 +28,9 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
-    ConversationPermissionMode,
 )
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.schemas.project import Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import (
@@ -43,6 +43,7 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
+from octomate.types.conversations import ConversationPermissionMode
 from octomate.types.deferred import DeferredBatchStatus
 
 
@@ -196,6 +197,8 @@ class FakeThreadManager(ThreadManager):
     async def ensure(
         self,
         address_or_key: ChannelAddress | ThreadKey,
+        *,
+        project: Project | None = None,
     ) -> Thread:
         key = (
             ThreadKey.from_address(address_or_key)
@@ -210,6 +213,10 @@ class FakeThreadManager(ThreadManager):
                 chat_type=key.chat_type,
                 chat_id=key.chat_id,
                 thread_id=key.thread_id,
+                # As the real manager does: a thread being created takes the
+                # project, one that already exists keeps what it started with.
+                project_id=project.id if project is not None else None,
+                project=Relation(project),
             )
             self.threads_by_key[key] = thread
         return thread
