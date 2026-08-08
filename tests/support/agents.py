@@ -19,8 +19,10 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, field
-from typing import cast
+from typing import ClassVar, cast
 
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk.types import Message as ClaudeMessage
 from pydantic_ai import (
     AgentCapability,
     AgentRunResult,
@@ -434,3 +436,35 @@ def build_non_stream_agent() -> Agent[None, ScriptedOutput]:
         capabilities=[AskCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
+
+
+class RecordingClaudeClient:
+    """`ClaudeSDKClient` stand-in that records the options a Claude run was launched
+    with and drives no tools, so a test can read what the run asked the CLI for."""
+
+    last_options: ClassVar[ClaudeAgentOptions | None] = None
+
+    def __init__(
+        self, options: ClaudeAgentOptions | None = None, transport: object = None
+    ) -> None:
+        RecordingClaudeClient.last_options = options
+
+    async def __aenter__(self) -> RecordingClaudeClient:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def query(self, prompt: str) -> None:
+        return None
+
+    async def receive_response(self) -> AsyncIterator[ClaudeMessage]:
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+            result="done",
+        )

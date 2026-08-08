@@ -61,7 +61,6 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
-    ConversationPermissionMode,
 )
 from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
@@ -81,6 +80,7 @@ from octomate.tentacles.agents.codex.ingest import CodexHookIngest
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
+from octomate.types.conversations import ConversationPermissionMode
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
@@ -797,6 +797,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         else:
             summary = ReasoningSummary(ReasoningSummaryValue(self.config.summary))
 
+        # The thread's project root, or the configured directory when it is in none.
+        # `sandbox="workspace_write"` scopes writes to it, so for Codex the directory
+        # is the whole of running inside a project.
+        run_cwd = await self.run_cwd(conversation.thread_id, self.config.cwd)
+
         codex_thread_id: str | None = None
         with codex_logfire.span(
             "CodexTentacle {agent_id} {run_name} [{conversation_address}]",
@@ -814,7 +819,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                             thread_id=conversation.external_id,
                             approval_mode=approval_mode,
                             base_instructions=self.config.base_instructions,
-                            cwd=self.config.cwd,
+                            cwd=run_cwd,
                             developer_instructions=developer_instructions,
                             model=sdk_model,
                             model_provider=self.config.model_provider,
@@ -826,7 +831,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                             pooled.client,
                             approval_mode=approval_mode,
                             base_instructions=self.config.base_instructions,
-                            cwd=self.config.cwd,
+                            cwd=run_cwd,
                             developer_instructions=developer_instructions,
                             ephemeral=self.config.ephemeral,
                             model=sdk_model,
@@ -849,7 +854,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                         turn = await codex_thread.turn(
                             prompt_text,
                             approval_mode=approval_plan.sdk_mode,
-                            cwd=self.config.cwd,
+                            cwd=run_cwd,
                             effort=turn_effort,
                             model=sdk_model,
                             output_schema=output_schema,

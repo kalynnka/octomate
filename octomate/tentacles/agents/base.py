@@ -94,6 +94,31 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Build capabilities whose credentials belong to this run's user."""
         return []
 
+    async def run_cwd(self, thread_id: uuid.UUID, configured: str) -> str:
+        """The directory a run in this thread happens in: its project's root.
+
+        The thread is where a project is declared, and every conversation belongs to
+        one, so this is the whole of "which project is this work in" — asked of the
+        thread each run rather than copied onto the conversation.
+
+        `configured` is where a thread in no declared project runs — which is every
+        thread until a project claims one, and what keeps dispatch exactly where it
+        has always been. A thread naming a project whose declaration is gone runs
+        there too: the row is retained, but an undeclared project has no root.
+        """
+        if not self.octomate.projects.roots:
+            # Nothing declared: no thread can be in a project, so dispatch is what it
+            # was before there were projects, down to not reading the thread.
+            return configured
+        thread = await self.octomate.thread_manager.get(thread_id)
+        attributed = await thread.project
+        if attributed is None:
+            return configured
+        # Through the registry rather than off the row, which is retained when a
+        # declaration goes.
+        declared = self.octomate.projects.get(attributed.name)
+        return str(declared.root) if declared is not None else configured
+
     @overload
     async def run(
         self,
