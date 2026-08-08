@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -152,6 +153,20 @@ async def test_a_codex_session_is_attributed_the_same_way(tmp_path: Path) -> Non
 
     assert await codex_session(octomate, "codex-inky", inky / "app") == "inky"
     assert await codex_session(octomate, "codex-out", tmp_path / "elsewhere") == ""
+
+
+async def test_a_thread_cannot_be_re_attributed(tmp_path: Path) -> None:
+    # The root a thread names is where every conversation in it runs, and an
+    # external session's history is full of absolute paths: a thread that changed
+    # project would resume its sessions into a tree they were never written for.
+    inky = repo(tmp_path / "inky")
+    octomate = Octomate(projects=await registry([{"root": str(inky)}]))
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey("im", "private", "chat", ""), project=octomate.projects.get("inky")
+    )
+
+    with pytest.raises(ValidationError):
+        thread.project_id = None
 
 
 async def test_a_thread_cannot_name_a_project_that_is_not_there(

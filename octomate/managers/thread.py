@@ -61,10 +61,10 @@ class ThreadManager:
         """The thread this key names, created if it is new.
 
         `project` attributes a thread being created and is ignored for one that
-        already exists: a thread's project is a fact about where its work started, so
+        already exists: a thread's project is frozen once the row is written, so
         declaring a project later attributes new threads rather than rewriting old
-        ones. It is not part of the key — re-attributing a thread must never strand
-        the history keyed under it.
+        ones. It is not part of the key either — the key is what the thread's history
+        is filed under, and attribution must never move it.
         """
         if isinstance(address_or_key, ChannelAddress):
             key = ThreadKey.from_address(address_or_key)
