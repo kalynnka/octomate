@@ -337,6 +337,8 @@ export interface ApiThreadSummary {
   channel: string
   /** platform thread id; for trunkline threads, the directive key */
   thread_key: string
+  /** the chat as its channel names it; for a native session, its session id */
+  chat_id: string
   title: string
   status: 'active' | 'closed'
   agent: string | null

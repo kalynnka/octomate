@@ -262,6 +262,20 @@ export interface ProjectRef {
   also?: string
 }
 
+/**
+ * Where a thread's work lives on this machine, as VS Code deep links. Built
+ * from what the relay reports — never typed by a user — so the console only
+ * navigates to them.
+ */
+export interface VsCodeTarget {
+  /** the directory, for the button's tooltip and the strip */
+  dir: string
+  /** opens (or focuses) that directory as a folder */
+  folder: string
+  /** reopens the native session in its own extension, when the thread is one */
+  session?: string
+}
+
 export interface SurfaceInfo {
   id: ChannelId
   label: string
@@ -281,6 +295,7 @@ export interface ThreadDetail {
   sessions: SessionInfo[]
   ledger: LedgerItem[]
   project?: ProjectRef
+  vscode?: VsCodeTarget
   artifacts?: ArtifactRef[]
   docs?: Record<string, ReviewDoc>
   comments?: ReviewComment[]

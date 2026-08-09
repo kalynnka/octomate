@@ -13,7 +13,9 @@ export function ChatMain() {
   const runtime = useTrunklineRuntime()
   const mgmtSec = useConsole((s) => s.mgmtSec)
   const ntOn = useConsole((s) => s.ntOn)
-  const hasProject = useConsole((s) => !!s.detail?.project)
+  // A thread with a directory but no project still gets the strip — it is where
+  // the work is, and where the VS Code hand-off goes.
+  const hasWorkspace = useConsole((s) => !!s.detail?.project || !!s.detail?.vscode)
   const theme = useConsole((s) => s.theme)
   const sysDark = useConsole((s) => s.sysDark)
 
@@ -41,7 +43,7 @@ export function ChatMain() {
         ) : (
           <>
             <ChatHeader />
-            {!ntOn && hasProject && <ProjectStrip />}
+            {!ntOn && hasWorkspace && <ProjectStrip />}
             {ntOn && <NewThreadStrip />}
             <ChatLog />
             <Composer />

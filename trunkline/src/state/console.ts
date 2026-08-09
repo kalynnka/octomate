@@ -603,10 +603,28 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         }, 40)
       })
     },
+    /**
+     * Open this thread's directory in VS Code, then reopen the native session
+     * in its own extension.
+     *
+     * Two links, in that order and spaced apart: the extension one is handled by
+     * whichever window is frontmost, so the folder has to have arrived first.
+     * `location.href` rather than a click on an anchor — the browser hands a
+     * custom scheme to the OS either way, and this needs no element.
+     */
     vsOpen() {
-      if (get().vsLaunch) return
+      const target = get().detail?.vscode
+      if (!target || get().vsLaunch) return
       set({ vsLaunch: true })
-      at(1600, () => set({ vsLaunch: false }))
+      window.location.href = target.folder
+      if (target.session) {
+        const session = target.session
+        // Long enough for a window that has to be opened cold, not only focused.
+        at(1200, () => {
+          window.location.href = session
+        })
+      }
+      at(2200, () => set({ vsLaunch: false }))
     },
 
     /* ---------------------------------------------------- feelers -------- */

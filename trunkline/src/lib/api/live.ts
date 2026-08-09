@@ -51,6 +51,26 @@ function clock(iso: string): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+/**
+ * The extension deep link that reopens a native session, read out of each
+ * extension's own URI handler:
+ *
+ * - Claude routes `/open` to `claude-vscode.primaryEditor.open(session, prompt)`.
+ * - Codex routes any path into its webview, whose thread route is `/local/<id>`.
+ *
+ * Both are keyed by the session id the relay files the thread under, so a thread
+ * on any other channel has no link — nothing on this machine to reopen.
+ */
+function sessionLink(channel: string, chatId: string): string | undefined {
+  if (!chatId) return undefined
+  const id = encodeURIComponent(chatId)
+  if (channel === 'claude-native') {
+    return `vscode://anthropic.claude-code/open?session=${id}`
+  }
+  if (channel === 'codex-native') return `vscode://openai.chatgpt/local/${id}`
+  return undefined
+}
+
 export function liveThreadSummary(t: ApiThreadSummary): ThreadSummary {
   const channel = channelMeta(t.channel)
   return {
@@ -163,6 +183,11 @@ export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
   // Where the last run ran, kept only when it is not the project root itself —
   // and then as the part below the root, which is the whole of what drifted. A
   // cwd outside the root has nothing to trim and shows in full.
+  // The directory to open: the project's root when the thread is filed under one,
+  // else the directory the session opened in — its first run's, not its last,
+  // which may have drifted into a subdirectory nobody works from.
+  const openDir = detail.project?.root || detail.runs[0]?.cwd || ''
+
   const root = detail.project?.root
   const lastCwd = detail.runs.at(-1)?.cwd
   const drift =
@@ -184,6 +209,15 @@ export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
             path: detail.project.root,
             cwd: drift,
           },
+    vscode: openDir
+      ? {
+          dir: openDir,
+          // `vscode://file/<path>` opens a folder as readily as a file, and
+          // focuses the window already holding it rather than opening a second.
+          folder: `vscode://file${openDir}`,
+          session: sessionLink(detail.channel, detail.chat_id),
+        }
+      : undefined,
     // Directives only go to the console's own channel; anything else is a
     // read-only view of that channel's thread.
     sendKey: detail.channel === 'trunkline' ? detail.thread_key : undefined,

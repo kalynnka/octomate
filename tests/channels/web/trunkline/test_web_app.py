@@ -439,6 +439,8 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         [summary] = (await client.get("/api/trunkline/threads")).json()
         assert summary["channel"] == CLAUDE_NATIVE_ID
         assert summary["title"] == "read the migration"
+        # The runtime's own session id: what its editor extension reopens by.
+        assert summary["chat_id"] == "session-1"
 
         body = (await client.get(f"/api/trunkline/threads/{summary['id']}")).json()
         assert body["project"] == {"name": "inky", "root": "/srv/inky"}

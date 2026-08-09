@@ -79,6 +79,11 @@ class ThreadSummaryInfo(BaseModel):
         description="The platform thread id; for trunkline threads, the "
         "directive key. Empty for a channel's main-chat thread."
     )
+    chat_id: str = Field(
+        description="The chat this thread is in, as its channel names it. For a "
+        "native session that is the runtime's own session id — what its editor "
+        "extension reopens the conversation by."
+    )
     title: str
     status: ThreadStatus
     agent: str | None
@@ -183,6 +188,7 @@ def thread_summary(thread: Thread) -> ThreadSummaryInfo:
         id=thread.id,
         channel=thread.channel_tentacle_id,
         thread_key=thread.channel_thread_id or "",
+        chat_id=thread.chat_id,
         title=thread_title(thread),
         status=thread.status,
         agent=thread.active_agent_tentacle_id,
