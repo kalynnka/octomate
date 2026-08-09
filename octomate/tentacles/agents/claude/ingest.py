@@ -258,6 +258,7 @@ class ClaudeHookIngest:
                 )
             ],
             name=CLAUDE_NATIVE_ID,
+            cwd=event.cwd,
             external_session_id=event.agent_id,
             parent_run_id=event.prompt_id,
         )
@@ -306,10 +307,11 @@ class ClaudeHookIngest:
         """This session's thread, attributed to the project it is running in.
 
         The session's own directory is what says which project this is — not the
-        transcript path, which lives in Claude's tree whatever the code does. The
-        project lands only when the thread is created, so resolving it on every hook
-        costs a path comparison and rewrites nothing; a session in a directory no
-        project claims is unattributed, which is a normal outcome.
+        transcript path, which lives in Claude's tree whatever the code does. A
+        directory no project holds yet becomes one: Claude keeps its own workspace per
+        directory, and a session running there is proof that directory is worked in.
+        The project lands only when the thread is created, so resolving it on every
+        later hook costs a path comparison and rewrites nothing.
 
         A project root is never a transcript root: this asks where the code is, and
         `transcript_roots` bounds where a transcript may be read from. Widening one
@@ -319,8 +321,10 @@ class ClaudeHookIngest:
         # directory, which would attribute every session to whatever project
         # Octomate itself was started in.
         project = None
-        if event.cwd and (name := self.octomate.projects.resolve(Path(event.cwd))):
-            project = self.octomate.projects.get(name)
+        if event.cwd:
+            project = await self.octomate.projects.ensure(
+                Path(event.cwd), origin="claude"
+            )
         return await self.octomate.thread_manager.ensure(
             ThreadKey(
                 channel_tentacle_id=CLAUDE_NATIVE_ID,
@@ -394,6 +398,7 @@ class ClaudeHookIngest:
             run_id=event.prompt_id,
             messages=messages,
             name=CLAUDE_NATIVE_ID,
+            cwd=event.cwd,
             external_session_id=event.session_id,
         )
 

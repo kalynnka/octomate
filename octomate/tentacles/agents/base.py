@@ -5,6 +5,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from functools import cached_property
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, TypeAlias, TypeVar, overload
 
@@ -94,32 +95,40 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Build capabilities whose credentials belong to this run's user."""
         return []
 
-    async def run_cwd(self, thread_id: uuid.UUID, configured: str) -> str:
-        """The directory a run in this thread happens in: its project's root.
+    async def run_cwd(self, thread_id: uuid.UUID, agent_cwd: str) -> str:
+        """The directory a run in this thread happens in: its project's root, or
+        `agent_cwd` when the thread is in no project.
 
-        The thread is where a project is declared, and every conversation belongs to
+        The thread is where a project is bound, and every conversation belongs to
         one, so this is the whole of "which project is this work in" — asked of the
         thread each run rather than copied onto the conversation.
 
-        `configured` is where a thread in no declared project runs — which is every
-        thread until a project claims one, and what keeps dispatch exactly where it
-        has always been. A thread naming a project whose declaration is gone runs
-        there too: the row is retained, but an undeclared project has no root.
+        `agent_cwd` is the agent's own configured directory, and is where a thread in
+        no project runs — which is every thread until a project claims one, and what
+        keeps dispatch exactly where it has always been. A thread naming a project the
+        registry no longer carries runs there too: the row is retained, but a project
+        that is not registered has no root to offer.
+
+        Always absolute, because the run records this: an agent's `cwd` defaults to
+        `"."`, which hangs off wherever Octomate was started and names nothing once the
+        process is gone. Symlinks are left alone, exactly as a project root leaves
+        them — the registry resolves both sides when it compares.
         """
+        outside_any_project = str(Path(agent_cwd).absolute())
         if not self.octomate.projects.roots:
-            # Nothing declared: no thread can be in a project, so dispatch is what it
+            # Nothing registered: no thread can be in a project, so dispatch is what it
             # was before there were projects, down to not reading the thread.
-            return configured
+            return outside_any_project
         thread = await self.octomate.thread_manager.get(thread_id)
         if thread is None:
             raise ValueError(f"unknown thread {thread_id}")
         attributed = await thread.project
         if attributed is None:
-            return configured
-        # Through the registry rather than off the row, which is retained when a
-        # declaration goes.
-        declared = self.octomate.projects.get(attributed.name)
-        return str(declared.root) if declared is not None else configured
+            return outside_any_project
+        # Through the registry rather than off the row, which is retained when the
+        # project stops being registered.
+        registered = self.octomate.projects.get(attributed.name)
+        return str(registered.root) if registered is not None else outside_any_project
 
     @overload
     async def run(

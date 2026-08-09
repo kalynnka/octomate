@@ -295,6 +295,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.session_tailer = CodexTranscriptTailer(
             self.octomate.conversations,
             self.octomate.thread_manager,
+            self.octomate.projects,
             self.session_locks,
         )
         self.session_ingest = CodexHookIngest(
@@ -887,6 +888,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_id=run_id,
             messages=accumulator.messages,
             name=run_name,
+            cwd=run_cwd,
             external_id=accumulator.thread_id or codex_thread_id,
         )
         if source_thread_message_ids:

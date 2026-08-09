@@ -23,6 +23,7 @@ from uuid_utils import UUID
 from watchfiles import awatch
 
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import Conversation
@@ -39,6 +40,7 @@ from octomate.telemetry import codex_logfire
 from octomate.tentacles.agents.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
 from octomate.tentacles.agents.codex.ingest import NATIVE_USER
 from octomate.tentacles.agents.codex.transcript import (
+    CODEX_HOME_DIRS,
     RolloutLine,
     SessionMetadata,
     payload_type,
@@ -92,6 +94,7 @@ class SubagentCall:
 class SubagentTail:
     thread_id: str
     path: Path
+    cwd: str = ""  # from the child rollout's own session metadata
     offset: int = 0
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)
@@ -110,6 +113,7 @@ class TailState:
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)
     thread_id: str | None = None
+    cwd: str = ""  # from the rollout's session metadata
     source: str | None = None
     open_turn: OpenTurn | None = None
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
@@ -132,10 +136,14 @@ class CodexTranscriptTailer:
         self,
         conversation_manager: ConversationManager,
         thread_manager: ThreadManager,
+        projects: ProjectManager | None = None,
         locks: SessionLocks | None = None,
     ) -> None:
         self.conversation_manager = conversation_manager
         self.thread_manager = thread_manager
+        # A rollout names every directory of its workspace, not just the one the
+        # session opened in; each of those is a project this machine works in.
+        self.projects = projects if projects is not None else ProjectManager()
         self.locks = locks if locks is not None else SessionLocks()
         self.sessions: dict[str, TailState] = {}
 
@@ -315,9 +323,13 @@ class CodexTranscriptTailer:
                 logger.debug("skipping malformed Codex session metadata")
                 return
             state.thread_id = metadata.id or state.thread_id or state.session_id
+            state.cwd = metadata.cwd
             state.source = metadata.originator or (
                 metadata.source if isinstance(metadata.source, str) else None
             )
+            return
+        if line.type == "turn_context":
+            await self.register_workspace(state, line.payload)
             return
         if line.type == "event_msg" and kind == "task_started":
             turn_id = line.payload.get("turn_id")
@@ -380,6 +392,40 @@ class CodexTranscriptTailer:
         if line.type == "response_item":
             self.consume_response_item(turn, line)
 
+    async def register_workspace(self, state: TailState, payload: JsonObject) -> None:
+        """Register a project for every directory this turn's workspace names.
+
+        A Codex workspace is often several directories at once — measured here, a
+        session opened in `inky` carries `[inky, kraken, nautilus, octoview, octotype]`,
+        and one opened in `vita/api` carries `[vita/api, vita/web, arcanus]`. Those are
+        sibling projects, not extra roots of the one the session sits in: folding them
+        into `extra_roots` would make a cwd in `kraken` resolve to `inky` and let a run
+        bound to `inky` write into all four.
+
+        So each is ensured on its own, and `ensure` does the rest — a root already
+        inside a registered project resolves to it instead of registering again.
+
+        Codex's own tree is skipped. It puts a per-session visualization cache under
+        `~/.codex` into the workspace, and a runtime's storage is never a project — the
+        same line the ingest draws between a project root and a transcript root.
+        """
+        roots = payload.get("workspace_roots")
+        if not isinstance(roots, list):
+            return
+        for entry in roots:
+            if not isinstance(entry, str) or not entry:
+                continue
+            root = Path(entry)
+            if any(root.is_relative_to(home) for home in CODEX_HOME_DIRS):
+                continue
+            project = await self.projects.ensure(root, origin="codex")
+            logger.debug(
+                "session %s: workspace root %s is project %s",
+                state.session_id,
+                root,
+                project.name,
+            )
+
     async def pump_subagents(self, state: TailState) -> bool:
         consumed = False
         for path in sorted(state.transcript_path.parent.glob("*.jsonl")):
@@ -419,6 +465,7 @@ class CodexTranscriptTailer:
         tail = SubagentTail(
             thread_id=metadata.id,
             path=path,
+            cwd=metadata.cwd,
         )
         state.subagents[tail.thread_id] = tail
         return tail
@@ -549,6 +596,7 @@ class CodexTranscriptTailer:
                     run_id=turn.turn_id,
                     messages=turn.messages,
                     name=CODEX_NATIVE_ID,
+                    cwd=tail.cwd,
                     external_session_id=tail.thread_id,
                     source=turn.source,
                     start_offset=turn.start_offset,
@@ -598,6 +646,7 @@ class CodexTranscriptTailer:
                     run_id=turn.turn_id,
                     messages=turn.messages,
                     name=CODEX_NATIVE_ID,
+                    cwd=state.cwd,
                     external_session_id=state.session_id,
                     source=turn.source,
                     start_offset=turn.start_offset,

@@ -9,7 +9,6 @@ from arcanus.base import Identity
 from pydantic import (
     BeforeValidator,
     ConfigDict,
-    DirectoryPath,
     Field,
     model_validator,
 )
@@ -18,6 +17,7 @@ from uuid_utils.compat import uuid7
 from octomate.models.project import Project as ProjectModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.conversations import ConversationPermissionMode
+from octomate.types.projects import ProjectOrigin
 
 
 def local_path(value: str | Path) -> Path:
@@ -33,14 +33,12 @@ def local_path(value: str | Path) -> Path:
     because `PurePath` collapses `://` to `:/`, and the scheme stops being visible.
 
     Having a name is the one thing a root needs that a directory does not, so that
-    everything downstream gets a directory it can call the project by. `DirectoryPath`
-    owns the rest: declaring a project is a claim about this machine, so a root that
-    is missing or is a file fails at config load, where an operator is looking, rather
-    than at the first cwd that should have matched it.
+    everything downstream gets a directory it can call the project by.
 
-    The same claim is made of a stored row, since this type is what rehydrates one: a
-    project whose directory has moved must be re-declared at its new root or dropped
-    from the registry, because reconcile reads every row and this refuses a dead path.
+    The directory is deliberately not required to exist. A project is discovered from
+    the sessions that ran in it, so a row outlives the directory it was discovered at,
+    and this type is what rehydrates every row: refusing a dead path here would make
+    one deleted checkout enough to stop the registry loading at all.
     """
     if "://" in str(value):
         raise ValueError(f"{value!r} is a url; a root is a plain local path")
@@ -50,15 +48,18 @@ def local_path(value: str | Path) -> Path:
     return path
 
 
-# Normalised first, then checked: the validator runs outside `DirectoryPath`, which
-# would otherwise reject a `~/...` root as a directory that is not there.
 # Symlinks are left alone — the manager resolves both sides when it compares.
-LocalPath = Annotated[DirectoryPath, BeforeValidator(local_path)]
+LocalPath = Annotated[Path, BeforeValidator(local_path)]
 
 
 @sqlalchemy_materia.bless(ProjectModel)
 class Project(BaseTransmuter):
-    """A YAML-declared project: the roots that are it, and how it is driven."""
+    """A project: the roots that are it, and how it is driven.
+
+    A project exists because work happened in it — a native session running in a
+    directory no project claims registers one. Nothing declares a project ahead of the
+    first session that runs in one.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -67,10 +68,18 @@ class Project(BaseTransmuter):
         default="",
         description=(
             "Stable name for this project. Defaults to the root's directory name — "
-            "`~/Projects/octoverse/inky` is `inky` — so an entry only names itself "
-            "when the directory is not what it should be called."
+            "`~/Projects/octoverse/inky` is `inky` — and steps aside to `<name>-2` "
+            "when another root already answers to it."
         ),
     )
+    origin: ProjectOrigin = Field(
+        default="declared",
+        description=(
+            "What registered this project: `declared` for one registered directly, "
+            "or the native runtime whose session was found running in it."
+        ),
+    )
+
     root: LocalPath = Field(
         description="The directory this project is, as an absolute local path."
     )
@@ -85,7 +94,7 @@ class Project(BaseTransmuter):
         default=None,
         description=(
             "What this project is, for a human reading the registry and for a model "
-            "choosing between declared projects. Not agent instructions: those live "
+            "choosing between registered projects. Not agent instructions: those live "
             "in the project's own `AGENTS.md`/`CLAUDE.md`."
         ),
     )
@@ -102,9 +111,8 @@ class Project(BaseTransmuter):
         """A project with no name of its own is called after its root's directory.
 
         `local_path` has already refused a root with no name, so there is always one
-        to take. This runs here rather than on `Create`, which is what the config
-        validates: arcanus generates that model and it inherits no validators, so a
-        name derived there would have to be derived twice.
+        to take. A name the registry is already using is stepped around by
+        `ProjectManager.available_name`, which is where the names in use are known.
         """
         self.name = self.name or self.root.name
         return self

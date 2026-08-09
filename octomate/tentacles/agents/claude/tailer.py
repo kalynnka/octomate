@@ -105,6 +105,12 @@ class OpenTurn:
     prompt_id: str
     prompt_text: str  # the human's clean prompt, for creating the inbound ledger row
     source: str | None  # the transcript `entrypoint` (claude-vscode / cli / …)
+    # Where the turn's opening prompt line says it ran — the opening line specifically,
+    # because a transcript carries a `cwd` on every line and a turn's tools wander into
+    # scratchpads and site-packages, so the last line folded in is not where the run
+    # happened. Per turn rather than per session, because a session resumed from another
+    # directory carries on in that one.
+    cwd: str
     start_offset: int  # byte offset of this turn's opening prompt line
     end_offset: int  # byte offset past the last line folded in
     accumulator: ClaudeRunAccumulator
@@ -526,6 +532,7 @@ class ClaudeTranscriptTailer:
             prompt_id=line.prompt_id,
             prompt_text=text,
             source=line.entrypoint,
+            cwd=line.cwd,
             start_offset=start,
             end_offset=end,
             accumulator=accumulator,
@@ -567,6 +574,7 @@ class ClaudeTranscriptTailer:
                     run_id=turn.prompt_id,
                     messages=turn.accumulator.messages,
                     name=CLAUDE_NATIVE_ID,
+                    cwd=turn.cwd,
                     external_session_id=state.session_id,
                     source=turn.source,
                     start_offset=turn.start_offset,
@@ -766,6 +774,7 @@ class ClaudeTranscriptTailer:
             prompt_id=line.prompt_id,
             prompt_text=text,
             source=line.entrypoint,
+            cwd=line.cwd,
             start_offset=start,
             end_offset=end,
             accumulator=accumulator,
@@ -821,6 +830,7 @@ class ClaudeTranscriptTailer:
                     run_id=run_id,
                     messages=turn.accumulator.messages,
                     name=CLAUDE_NATIVE_ID,
+                    cwd=turn.cwd,
                     external_session_id=tail.agent_id,
                     source=turn.source,
                     start_offset=turn.start_offset,

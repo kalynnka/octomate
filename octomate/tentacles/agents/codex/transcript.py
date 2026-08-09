@@ -13,8 +13,11 @@ from octomate.types.json import JsonObject
 # the tree and names a single directory, unlike Claude's comma-separated
 # `CLAUDE_CONFIG_DIR` — but the tuple shape matches, so both ingests gate the same way.
 # The default, not the law: override with `agents.codex.transcript_root`.
-CODEX_SESSIONS_DIRS: tuple[Path, ...] = (
-    Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions",
+CODEX_HOME_DIRS: tuple[Path, ...] = (
+    Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
+)
+CODEX_SESSIONS_DIRS: tuple[Path, ...] = tuple(
+    home / "sessions" for home in CODEX_HOME_DIRS
 )
 
 
@@ -62,6 +65,10 @@ class SessionMetadata(BaseModel):
 
     session_id: str
     id: str | None = None
+    # The directory the session opened in. Codex repeats it per turn in a
+    # `turn_context` line, which across every rollout on hand never disagrees with
+    # this one, so the session's own report is the whole of where its turns ran.
+    cwd: str = ""
     originator: str | None = None
     source: str | SessionSource | None = None
     thread_source: str | None = None

@@ -13,7 +13,6 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.managers import ThreadManager, UserManager
-from octomate.managers.project import ProjectManager
 from octomate.schemas.project import Project
 from octomate.schemas.thread import (
     CLAUDE_NATIVE_ID,
@@ -21,6 +20,7 @@ from octomate.schemas.thread import (
     Thread,
     ThreadKey,
 )
+from tests.support.managers import a_registry
 
 SLACK_DM = ThreadKey("slack", "dm", "D1")
 SLACK_CHANNEL = ThreadKey("slack", "group", "C1")
@@ -36,12 +36,11 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 
 
 async def inky(tmp_path: Path) -> Project:
-    """The one declared project a test attributes to. Its root has to exist, and its
-    row has to be persisted: `threads.project_id` is a real foreign key."""
+    """The one project a test attributes to. Its row has to be persisted:
+    `threads.project_id` is a real foreign key."""
     root = tmp_path / "inky"
     root.mkdir(parents=True, exist_ok=True)
-    manager = ProjectManager([Project.shell(Project.Create(root=root))])
-    await manager.reconcile()
+    manager = await a_registry(Project(root=root))
     project = manager.get("inky")
     assert project is not None
     return project

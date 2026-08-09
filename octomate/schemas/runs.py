@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field
 
 from octomate.models.runs import AgentRun as AgentRunModel
 from octomate.models.runs import ExternalAgentRun as ExternalAgentRunModel
@@ -32,6 +32,13 @@ class AgentRun(BaseTransmuter):
     kind: Literal["octomate"] = "octomate"
     conversation_id: uuid.UUID
     name: str | None = None
+    cwd: str = Field(
+        default="",
+        description=(
+            "The directory this run happened in, as its source reported it; empty "
+            "when the source reported none, which is never a guess."
+        ),
+    )
     # The parent link of a subagent's turn, on the base so both variants carry it:
     # the run whose tool call spawned this one, and which ToolCallPart it answers.
     parent_run_id: str | None = None
