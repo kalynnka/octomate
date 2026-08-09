@@ -9,7 +9,6 @@ import { create } from 'zustand'
 import type {
   DocLine,
   LedgerItem,
-  ProjectInfo,
   QueueChip,
   ReviewComment,
   ReviewDoc,
@@ -24,14 +23,6 @@ import { TurnFold } from '@/lib/api/fold'
 export type ControlSection = '' | 'agents' | 'mcp' | 'users' | 'dash' | 'settings'
 export type ThemeMode = 'light' | 'dark' | 'auto'
 export type RailKey = 'sb' | 'mgmt' | 'trace' | 'pv'
-
-export interface NewThreadProject {
-  name: string
-  path: string
-  git: boolean
-  note?: string
-  branches: { n: string; stat: string; dirty: boolean }[]
-}
 
 interface ChannelPrefs {
   fold: Record<string, boolean>
@@ -164,11 +155,6 @@ export interface ConsoleActions {
   ): void
   setNtMenu(menu: ConsoleState['ntMenu'], pos?: { top: number; right: number }): void
   closeNtMenu(): void
-  pickNtProject(p: NewThreadProject | null): void
-  togglePure(): void
-  registerProject(path: string): void
-  pickBranch(n: string): void
-  forkBranch(n: string): void
   sendNewThread(text: string): void
 }
 
@@ -233,11 +219,9 @@ interface ConsoleState {
   ntEffort: string
   /** exact route id ("agent:model") for the wire; null = relay default */
   ntRouteId: string | null
-  ntMenu: 'proj' | 'br' | 'sel' | null
+  /** the composer's route picker — the only new-thread menu the relay honors */
+  ntMenu: 'sel' | null
   ntMenuPos: { top: number; right: number }
-  ntProjSel: NewThreadProject | null
-  ntBranch: string | null
-  ntPure: boolean
 
   actions: ConsoleActions
 }
@@ -1015,9 +999,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         ntOn: true,
         ntStarted: false,
         ntTitle: '',
-        ntProjSel: null,
-        ntBranch: null,
-        ntPure: false,
         ntMenu: null,
         live: [],
         running: false,
@@ -1045,48 +1026,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       set((s) => ({ ntMenu: s.ntMenu === menu ? null : menu, ...(pos ? { ntMenuPos: pos } : {}) }))
     },
     closeNtMenu: () => set({ ntMenu: null }),
-    pickNtProject(p: NewThreadProject | null) {
-      set({
-        ntProjSel: p ? structuredClone(p) : null,
-        ntBranch: p && p.git && p.branches.length ? (p.branches[0]?.n ?? null) : null,
-        ntMenu: null,
-        ntPure: p === null,
-      })
-    },
-    togglePure() {
-      set((s) => ({ ntPure: !s.ntPure, ntProjSel: null, ntBranch: null, ntMenu: null }))
-    },
-    registerProject(path: string) {
-      const clean = path.trim()
-      if (!clean) return
-      const name = clean.replace(/\/+$/, '').split('/').pop() || 'untitled'
-      set({
-        ntProjSel: {
-          name,
-          path: clean,
-          git: true,
-          note: 'new tree — git init runs when the session boots',
-          branches: [{ n: 'main', stat: 'init · no commits', dirty: false }],
-        },
-        ntBranch: 'main',
-        ntMenu: null,
-      })
-    },
-    pickBranch: (n: string) => set({ ntBranch: n, ntMenu: null }),
-    forkBranch(n: string) {
-      const name = n.trim()
-      if (!name) return
-      set((s) => {
-        if (!s.ntProjSel) return {}
-        if (s.ntProjSel.branches.some((b) => b.n === name)) return { ntBranch: name, ntMenu: null }
-        const br = { n: name, stat: `new · forks ${s.ntBranch ?? 'main'}`, dirty: false }
-        return {
-          ntProjSel: { ...s.ntProjSel, branches: [br, ...s.ntProjSel.branches] },
-          ntBranch: name,
-          ntMenu: null,
-        }
-      })
-    },
     sendNewThread(text: string) {
       const s = get()
       const body = text.trim()
@@ -1166,11 +1105,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     ntEffort: 'high',
     ntMenu: null,
     ntMenuPos: { top: 0, right: 0 },
-    ntProjSel: null,
-    ntBranch: null,
-    ntPure: false,
     actions,
   }
 })
-
-export type { ProjectInfo }

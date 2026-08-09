@@ -4,7 +4,11 @@ The console is an entry and a reader: `GET /threads` lists every channel's
 threads and `GET /threads/{id}` reads any of them, while directives create or
 continue threads on the trunkline channel itself. The two POST endpoints
 stream: a directive streams its run, and a batch response streams the resumed
-run, both as SSE of the native wire events (see `wire`)."""
+run, both as SSE of the native wire events (see `wire`).
+
+Where the work happened — a thread's project and a run's directory — is read
+here and nowhere written: a thread's project is frozen when its row is written,
+and both are learned from the session that ran, so no endpoint takes either."""
 
 from __future__ import annotations
 
@@ -59,6 +63,13 @@ class ChannelInfo(BaseModel):
     kind: str = Field(description="The tentacle class name — SlackTentacle, …")
 
 
+class ProjectInfo(BaseModel):
+    """The project a thread's work is in, as the console reads it."""
+
+    name: str = Field(description="The name the registry knows this project by.")
+    root: str = Field(description="Its directory, as an absolute local path.")
+
+
 class ThreadSummaryInfo(BaseModel):
     id: uuid.UUID = Field(
         description="The thread row id — the read key for GET /threads/{id}."
@@ -105,6 +116,12 @@ class RunReplayInfo(BaseModel):
     id: str
     agent: str
     started_at: UtcDateTime | None
+    cwd: str = Field(
+        description="The directory this run ran in, as its source reported it; "
+        "empty when the source reported none. Inside the thread's project when "
+        "there is one, though not always its root — a run wanders into a "
+        "subdirectory."
+    )
     events: list[WireEvent]
 
     @field_serializer("events")
@@ -120,6 +137,11 @@ class RunReplayInfo(BaseModel):
 
 class ThreadDetailInfo(ThreadSummaryInfo):
     entries: list[LedgerEntry]
+    project: ProjectInfo | None = Field(
+        description="The project this thread's work is in; null for a thread no "
+        "project claims. Frozen: it is set when the thread is created, from the "
+        "directory the session ran in, and no endpoint changes it."
+    )
     sessions: list[SessionEntry]
     runs: list[RunReplayInfo] = Field(
         description="The thread's recorded agent runs (main line only, oldest "
@@ -254,14 +276,21 @@ def build_trunkline_router(
             ),
         )
         summary = thread_summary(thread)
+        project = await thread.project
         return ThreadDetailInfo(
             **dict(summary),
             entries=[ledger_entry(message) for message in thread.messages],
+            project=(
+                None
+                if project is None
+                else ProjectInfo(name=project.name, root=str(project.root))
+            ),
             runs=[
                 RunReplayInfo(
                     id=run.id,
                     agent=agent,
                     started_at=run.started_at,
+                    cwd=run.cwd,
                     events=replay_wire_events(list(run.messages)),
                 )
                 for agent, run in runs

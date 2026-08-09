@@ -41,7 +41,7 @@ async def find_project(name: str) -> Project | None:
         )
 
 
-async def registered(root: Path, origin: ProjectOrigin = "claude") -> ProjectManager:
+async def registered(root: Path, origin: ProjectOrigin = "codex") -> ProjectManager:
     """A registry holding one project at `root`, as a session there would leave it."""
     manager = ProjectManager()
     await manager.load()
@@ -213,11 +213,11 @@ async def test_a_project_is_named_after_its_root_directory(tmp_path: Path) -> No
 async def test_ensure_registers_a_directory_no_project_holds(tmp_path: Path) -> None:
     manager = await a_registry()
 
-    project = await manager.ensure(directory(tmp_path / "inky"), origin="claude")
+    project = await manager.ensure(directory(tmp_path / "inky"), origin="codex")
 
     assert project.name == "inky"
     assert project.root == tmp_path / "inky"
-    assert project.origin == "claude"
+    assert project.origin == "codex"
     assert await find_project("inky") is not None
     assert manager.resolve(tmp_path / "inky" / "octomate") == "inky"
 
@@ -240,8 +240,8 @@ async def test_ensure_is_idempotent(tmp_path: Path) -> None:
     manager = await a_registry()
     root = directory(tmp_path / "inky")
 
-    first = await manager.ensure(root, origin="claude")
-    second = await manager.ensure(root / "octomate", origin="claude")
+    first = await manager.ensure(root, origin="codex")
+    second = await manager.ensure(root / "octomate", origin="codex")
 
     assert first.id == second.id
     assert set(manager.projects) == {"inky"}
@@ -265,7 +265,7 @@ async def test_ensure_above_a_registered_project_keeps_the_deeper_one(
     inner = directory(tmp_path / "octoverse" / "inky")
     manager = await a_registry(Project(root=inner))
 
-    outer = await manager.ensure(directory(tmp_path / "octoverse"), origin="claude")
+    outer = await manager.ensure(directory(tmp_path / "octoverse"), origin="codex")
 
     assert outer.name == "octoverse"
     assert manager.resolve(inner / "octomate") == "inky"

@@ -56,8 +56,8 @@ LocalPath = Annotated[Path, BeforeValidator(local_path)]
 class Project(BaseTransmuter):
     """A project: the roots that are it, and how it is driven.
 
-    A project exists because work happened in it — a native session running in a
-    directory no project claims registers one. Nothing declares a project ahead of the
+    A project exists because work happened in it — a Codex session whose workspace names
+    a directory no project claims registers one. Nothing declares a project ahead of the
     first session that runs in one.
     """
 

@@ -71,9 +71,11 @@ class ProjectManager:
     async def ensure(self, cwd: Path, *, origin: ProjectOrigin) -> Project:
         """The project `cwd` is in, registering one rooted there if none claims it yet.
 
-        This is how a project comes to exist: a native session runs somewhere, and that
-        directory becomes a project because work happened in it. Nothing has to have
-        been declared first.
+        This is how a project comes to exist: a Codex session names a directory as its
+        workspace, and that directory becomes a project because work happened in it.
+        Nothing has to have been declared first. Callers that only want to file work
+        under a project already holding a directory use `resolve` — see `ProjectOrigin`
+        for why a Claude session is one of them.
 
         A cwd *inside* a project that is already registered returns that project rather
         than registering a second one under it — the run is simply somewhere below its

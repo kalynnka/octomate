@@ -169,6 +169,12 @@ class ClaudeHookIngest:
     )
     async def on_session_end(self, event: ClaudeHookInput) -> None:
         logger.info("session %s: ended", event.session_id)
+        # The thread before the tail, because `finalize` falls through to `recover` for
+        # a session nothing was following — Octomate came up mid-session, so this is the
+        # first hook it saw — and `recover` would then create the thread itself, from a
+        # path that knows no cwd. A thread's project is frozen at creation, so one born
+        # there would stay unfiled. Already-created sessions get a cache hit.
+        await self.session_thread(event)
         # Finalize outside any lock: it awaits the follow loop's own last commit, which
         # takes the session lock — holding it here would deadlock.
         await self.tailer.finalize(event.session_id, event.transcript_path)
@@ -199,6 +205,9 @@ class ClaudeHookIngest:
     async def on_subagent_stop(self, event: ClaudeHookInput) -> None:
         if not event.agent_id:
             return
+        # As at `SessionEnd`, and for the same reason: the `recover` branch below
+        # creates the session's thread when nothing is following it.
+        await self.session_thread(event)
         if self.tailer.is_following(event.session_id):
             # The subagent has written its last line by the time this synchronous
             # hook fires — the same trust `SessionEnd` extends to the parent's
@@ -304,27 +313,24 @@ class ClaudeHookIngest:
         logger.info("session %s: tailing %s", event.session_id, path)
 
     async def session_thread(self, event: ClaudeHookInput) -> Thread:
-        """This session's thread, attributed to the project it is running in.
+        """This session's thread, filed under the project already holding the directory
+        it is running in — and under none when no project holds it.
 
-        The session's own directory is what says which project this is — not the
-        transcript path, which lives in Claude's tree whatever the code does. A
-        directory no project holds yet becomes one: Claude keeps its own workspace per
-        directory, and a session running there is proof that directory is worked in.
+        The session's own directory is what says which project this is, not the
+        transcript path, which lives in Claude's tree whatever the code does. Nothing is
+        registered from here: Claude's own `projects` are a context store keyed by
+        directory, not a claim that a tree is worked in, so a Claude session is not
+        evidence of a project the way a Codex workspace is. The directory is recorded on
+        the run regardless, which is what a later promotion would read.
+
         The project lands only when the thread is created, so resolving it on every
         later hook costs a path comparison and rewrites nothing.
-
-        A project root is never a transcript root: this asks where the code is, and
-        `transcript_roots` bounds where a transcript may be read from. Widening one
-        with the other would let a project entry open what the tailer will follow.
         """
         # Only a cwd the hook actually carried: `Path("")` is the process's own
         # directory, which would attribute every session to whatever project
         # Octomate itself was started in.
-        project = None
-        if event.cwd:
-            project = await self.octomate.projects.ensure(
-                Path(event.cwd), origin="claude"
-            )
+        holder = self.octomate.projects.resolve(Path(event.cwd)) if event.cwd else None
+        project = self.octomate.projects.get(holder) if holder is not None else None
         return await self.octomate.thread_manager.ensure(
             ThreadKey(
                 channel_tentacle_id=CLAUDE_NATIVE_ID,

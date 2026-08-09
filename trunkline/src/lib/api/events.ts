@@ -372,11 +372,20 @@ export interface ApiRunReplay {
   id: string
   agent: string
   started_at: string | null
+  /** the directory this run ran in; "" when its source reported none */
+  cwd: string
   events: WireEvent[]
+}
+
+/** The project a thread's work is in. Read-only — the relay takes no writes. */
+export interface ApiProject {
+  name: string
+  root: string
 }
 
 export interface ApiThreadDetail extends ApiThreadSummary {
   entries: ApiLedgerEntry[]
+  project: ApiProject | null
   sessions: ApiSessionEntry[]
   runs: ApiRunReplay[]
   pending: ActionBatchEvent[]

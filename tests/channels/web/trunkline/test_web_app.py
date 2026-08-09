@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
-from pydantic_ai.messages import ModelMessage, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -18,7 +19,12 @@ from octomate import Octomate
 from octomate.capabilities.harness.agent import Agent
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.segments import MessageSegment
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.messages import ModelRequest
+from octomate.schemas.project import Project
+from octomate.schemas.segments import MessageSegment, TextSegment
+from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.inkling import InklingTentacle
 from octomate.tentacles.agents.inkling.base import InklingOutput
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
@@ -33,6 +39,7 @@ from octomate.tentacles.channels.web.trunkline.base import (
     TrunklineDirective,
 )
 from tests.support.agents import build_non_stream_agent, build_scripted_agent
+from tests.support.managers import a_registry
 
 # The console drives one configured reception agent through octomate.kick.
 RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
@@ -379,6 +386,84 @@ async def test_threads_and_detail_endpoints(
                 "model": RECEPTION_MODEL,
             }
         ]
+
+
+async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """A session Octomate did not drive is a thread like any other here: the
+    console lists it, reads its ledger, and sees where the work happened — the
+    project the thread is filed under and the directory each run ran in."""
+    octomate = Octomate()
+    octomate.connect(
+        TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
+    )
+    project = Project(root=Path("/srv/inky"), origin="codex")
+    octomate.projects = await a_registry(project)
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CLAUDE_NATIVE_ID, "thread", "session-1"), project=project
+    )
+    await octomate.thread_manager.record_inbound(
+        MessageEvent(
+            tentacle_id=CLAUDE_NATIVE_ID,
+            message_id="turn-1",
+            chat_id="session-1",
+            chat_type="thread",
+            user_id="native",
+            sender=UserProfile(channel_user_id="native", name="native"),
+            segments=[TextSegment(data={"text": "read the migration"})],
+        )
+    )
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    await octomate.conversations.record_external_run(
+        conversation,
+        run_id="turn-1",
+        messages=[
+            ModelRequest(
+                parts=[UserPromptPart(content="read the migration")],
+                timestamp=datetime(2026, 8, 9, 12, tzinfo=UTC),
+            )
+        ],
+        name=CLAUDE_NATIVE_ID,
+        # A run drifts into a subdirectory of the project it belongs to.
+        cwd="/srv/inky/migrations",
+        external_session_id="session-1",
+    )
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        [summary] = (await client.get("/api/trunkline/threads")).json()
+        assert summary["channel"] == CLAUDE_NATIVE_ID
+        assert summary["title"] == "read the migration"
+
+        body = (await client.get(f"/api/trunkline/threads/{summary['id']}")).json()
+        assert body["project"] == {"name": "inky", "root": "/srv/inky"}
+        [run] = body["runs"]
+        assert run["cwd"] == "/srv/inky/migrations"
+
+
+async def test_a_thread_no_project_claims_reads_back_without_one(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """A directive on the console's own channel is not work in a project — and
+    a run that reported no directory says so rather than guessing one."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+    await _post(channel, "what changed?", thread_id="thread-8")
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        [summary] = (await client.get("/api/trunkline/threads")).json()
+        body = (await client.get(f"/api/trunkline/threads/{summary['id']}")).json()
+        assert body["project"] is None
+        assert [run["cwd"] for run in body["runs"]] == [""]
 
 
 async def test_batch_resolve_resolves_and_streams(

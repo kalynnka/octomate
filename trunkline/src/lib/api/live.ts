@@ -24,8 +24,10 @@ const CHANNEL_DISPLAY: Record<string, Omit<ChannelMeta, 'id'>> = {
   slack: { label: 'Slack', sub: 'socket', brand: '#746576' },
   lark: { label: 'Lark', sub: 'webhook', brand: '#666D82' },
   napcat: { label: 'Napcat', sub: 'ws', brand: '#6A828B' },
-  claude: { label: 'Claude', sub: 'hook · tail', native: true, brand: '#98796A' },
-  codex: { label: 'Codex', sub: 'hook · tail', native: true, brand: '#677D73' },
+  // Keyed by the channel id the relay files a native session's thread under
+  // (CLAUDE_NATIVE_ID / CODEX_NATIVE_ID) — not the agent tentacle's own name.
+  'claude-native': { label: 'Claude', sub: 'hook · tail', native: true, brand: '#98796A' },
+  'codex-native': { label: 'Codex', sub: 'hook · tail', native: true, brand: '#677D73' },
 }
 
 export function channelMeta(id: string): ChannelMeta {
@@ -50,12 +52,18 @@ function clock(iso: string): string {
 }
 
 export function liveThreadSummary(t: ApiThreadSummary): ThreadSummary {
+  const channel = channelMeta(t.channel)
   return {
     id: t.id,
     channelId: t.channel,
     title: t.title,
-    tone: t.status === 'active' ? 'active' : 'idle',
-    agentLabel: routeLabel(t.agent, t.model),
+    tone: channel.native ? 'native' : t.status === 'active' ? 'active' : 'idle',
+    // Nothing routed a native session — the runtime it ran in is its agent, and
+    // "unrouted" would read as a routing decision that never happened.
+    agentLabel:
+      t.agent === null && channel.native
+        ? `${channel.label.toLowerCase()} · native`
+        : routeLabel(t.agent, t.model),
     tag: t.thread_key || `#${t.id.slice(0, 6)}`,
   }
 }
@@ -152,10 +160,30 @@ export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
     }
   }
 
+  // Where the last run ran, kept only when it is not the project root itself —
+  // and then as the part below the root, which is the whole of what drifted. A
+  // cwd outside the root has nothing to trim and shows in full.
+  const root = detail.project?.root
+  const lastCwd = detail.runs.at(-1)?.cwd
+  const drift =
+    root === undefined || !lastCwd || lastCwd === root
+      ? undefined
+      : lastCwd.startsWith(`${root}/`)
+        ? lastCwd.slice(root.length + 1)
+        : lastCwd
+
   return {
     key: detail.thread_key || `#${detail.id.slice(0, 6)}`,
     live: true,
     channel: detail.channel,
+    project:
+      detail.project === null
+        ? undefined
+        : {
+            name: detail.project.name,
+            path: detail.project.root,
+            cwd: drift,
+          },
     // Directives only go to the console's own channel; anything else is a
     // read-only view of that channel's thread.
     sendKey: detail.channel === 'trunkline' ? detail.thread_key : undefined,

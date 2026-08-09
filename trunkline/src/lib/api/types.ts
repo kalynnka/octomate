@@ -243,33 +243,23 @@ export interface ArtifactRef {
 }
 
 /* ---------------------------------------------------------------------------
- * Projects — registered working trees threads can be filed to.
+ * Projects — the working tree a thread's session ran in. Read-only: the relay
+ * learns a project from where a native session runs and freezes it on the
+ * thread, so nothing here is ever sent back.
  * ------------------------------------------------------------------------- */
-
-export interface BranchInfo {
-  n: string
-  stat: string
-  dirty: boolean
-}
 
 export interface ProjectRef {
   name: string
   path: string
-  git: boolean
+  /** the latest run's directory, when it sits below the root rather than on it */
+  cwd?: string
+  /** git state has no relay endpoint yet; unset means unknown, not "no git" */
+  git?: boolean
   branch?: string
   stat?: string
   dirty?: boolean
   /** "also filed here: THR-0142 · slack …" */
   also?: string
-}
-
-export interface ProjectInfo {
-  name: string
-  path: string
-  git: boolean
-  sub: string
-  note: string
-  branches: BranchInfo[]
 }
 
 export interface SurfaceInfo {

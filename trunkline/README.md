@@ -15,7 +15,7 @@ pnpm lint       # oxlint
 
 The console is live-only for thread data: when the Octomate server is down
 the status bar shows `relay offline` and the ledger surfaces stay empty
-(only the shell's channel/project/control/status panels keep their mock
+(only the shell's channel/control/status panels keep their mock
 stand-ins). With the backend running it is an entry and a reader: every channel's threads and ledgers are read live from
 `/api/trunkline`, directives create or continue threads on the trunkline
 channel itself, and other channels' threads are read-only views. In production there is a single entry — `uvicorn
@@ -89,7 +89,7 @@ Architecture rules of thumb:
 | `GET  /health` | status-bar relay chip (offline/degraded/nominal), 15s poll |
 | `GET  /routes` | new-thread agent·model picker; the pick rides only a thread's first directive (routes are fixed after that — re-routing awaits a manual handoff verb) |
 | `GET  /threads` | every channel's threads (sidebar), newest first |
-| `GET  /threads/{id}` | any thread's ledger + sessions (handoffs) + recorded runs replayed as wire events + pending feeler batches, by thread row id |
+| `GET  /threads/{id}` | any thread's ledger + sessions (handoffs) + recorded runs replayed as wire events + pending feeler batches, by thread row id; also where the work happened — the thread's project and each run's directory, read-only |
 | `POST /threads/{id}/messages` | send a directive; SSE of the native run events — a fresh id creates the thread, an existing id continues it |
 | `POST /batches/{id}/resolve` | answer a feeler; SSE of the resumed run |
 
@@ -120,13 +120,17 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
    stream outside the request/response run call, so native-agent ingests,
    IM-relayed turns, and other-session runs land in an open console. Today
    the only stream is per-directive.
-4. **Thread create with project/branch** — the new-thread strip's project,
-   branch, and effort pickers are display-only; a directive registers the
-   thread but carries no workspace binding.
-5. **`GET /api/projects` / `POST /api/projects`** — registry list + register
-   a new root (`ProjectManager.list`, YAML-declared today, so registration
-   implies config write); plus **git state per project** (branch, dirty,
-   ahead/behind) which no backend component provides yet.
+4. **Thread create with a project** — a directive registers the thread but
+   carries no workspace binding, so a console thread is never in a project.
+   The new-thread strip says so rather than offering a picker: a thread's
+   project is written with the thread, from the directory its session ran in,
+   and is frozen after (`GET /threads/{id}.project` reads it).
+5. **`GET /api/projects`** — the registry itself (`ProjectManager.projects`),
+   for a reader that wants every known root rather than one thread's. No
+   registration endpoint is wanted: a project is discovered from the native
+   session found running in it. Plus **git state per project** (branch, dirty,
+   ahead/behind), which no backend component provides — the project strip
+   leaves the chip out until one does.
 6. **`GET /api/agents`** — agent tentacles with models, effort ranges, state,
    pool/hook info (`octomate/config/agents.py`, `config/models.py`; Agents
    page — `/api/trunkline/routes` covers only route ids).
