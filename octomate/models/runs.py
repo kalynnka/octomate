@@ -91,7 +91,7 @@ class AgentRun(Base, TransmuterProxiedMixin):
     )
 
     conversation: Mapped[Conversation] = relationship(
-        "Conversation", back_populates="runs"
+        "Conversation", back_populates="runs", lazy="raise_on_sql"
     )
     messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",

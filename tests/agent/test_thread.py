@@ -16,6 +16,7 @@ from octomate.managers import ConversationManager
 from octomate.models import Base
 from octomate.models.messages import ModelMessage as ModelMessageModel
 from octomate.models.thread import MessageBinding as MessageBindingModel
+from octomate.models.thread import Thread as ThreadModel
 from octomate.models.thread import ThreadMessage as ThreadMessageModel
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import TextSegment
@@ -59,6 +60,28 @@ def test_message_relationships_use_message_binding() -> None:
     assert channel_relationship.secondary is MessageBindingModel.__table__
     assert model_relationship.secondary is MessageBindingModel.__table__
     assert model_relationship.lazy == "raise_on_sql"
+
+
+def test_a_thread_does_not_carry_its_conversations() -> None:
+    """Nothing reads conversations off a thread — `Thread` has no such field, and
+    a reader asks ConversationManager. Eager here would put each conversation,
+    its runs, and their model messages behind every single thread read."""
+    assert inspect(ThreadModel).relationships["conversations"].lazy == "noload"
+
+
+def test_no_relationship_loads_on_attribute_access() -> None:
+    """`select`, SQLAlchemy's default, turns an attribute read into a query: IO
+    with no `await` marking it, which outside a greenlet fails and inside one is
+    a query nobody wrote. Every relationship states something else instead —
+    `selectin` to come with the row, `raise_on_sql` to make a reader ask, or
+    `noload` for one that exists for a cascade. A caller overrides per query."""
+    implicit = sorted(
+        f"{mapper.class_.__name__}.{name}"
+        for mapper in Base.registry.mappers
+        for name, relationship in mapper.relationships.items()
+        if relationship.lazy == "select"
+    )
+    assert implicit == []
 
 
 def test_channel_handoff_sorts_by_uuid7_id() -> None:

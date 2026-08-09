@@ -67,4 +67,6 @@ class Todo(Base, TransmuterProxiedMixin):
         index=True,
     )
 
-    conversation: Mapped[Conversation] = relationship("Conversation")
+    conversation: Mapped[Conversation] = relationship(
+        "Conversation", lazy="raise_on_sql"
+    )

@@ -69,7 +69,9 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     )
     message_text: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
-    run: Mapped[AgentRun] = relationship("AgentRun", back_populates="messages")
+    run: Mapped[AgentRun] = relationship(
+        "AgentRun", back_populates="messages", lazy="raise_on_sql"
+    )
     thread_messages: Mapped[list[ThreadMessage]] = relationship(
         "ThreadMessage",
         secondary="message_binding",
