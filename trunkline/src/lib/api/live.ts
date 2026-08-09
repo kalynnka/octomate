@@ -3,8 +3,16 @@
  * the console renders (types.ts). One direction only — the console never posts
  * these shapes back.
  */
-import type { ApiSessionEntry, ApiThreadDetail, ApiThreadSummary } from './events'
-import { batchFeelers, foldRunReplay } from './fold'
+import type {
+  ApiAgentRun,
+  ApiConversation,
+  ApiDeferredBatch,
+  ApiHandoff,
+  ApiProject,
+  ApiThread,
+  ApiThreadMessage,
+} from './events'
+import { batchFeelers } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -71,39 +79,66 @@ function sessionLink(channel: string, chatId: string): string | undefined {
   return undefined
 }
 
-export function liveThreadSummary(t: ApiThreadSummary): ThreadSummary {
-  const channel = channelMeta(t.channel)
+/**
+ * The route that owns the thread: the last handoff's, since handoffs arrive
+ * oldest first. A thread nothing has routed yet has none.
+ */
+function activeRoute(handoffs: ApiHandoff[]): {
+  agent: string | null
+  model: string | null
+} {
+  const last = handoffs.at(-1)
+  return {
+    agent: last?.to_agent_tentacle_id ?? null,
+    model: last?.to_model ?? null,
+  }
+}
+
+/**
+ * What a thread goes by in the sidebar. The relay serves threads without their
+ * messages — the ledger is its own request — so there is no first line to name
+ * a thread after until it is opened, and the surface it lives on is the honest
+ * stand-in: the platform thread key, or the chat when the surface is not a
+ * thread (a DM, a native session's own id).
+ */
+function threadLabel(t: ApiThread): string {
+  return t.channel_thread_id || t.chat_id || `#${t.id.slice(0, 6)}`
+}
+
+export function liveThreadSummary(t: ApiThread): ThreadSummary {
+  const channel = channelMeta(t.channel_tentacle_id)
+  const { agent, model } = activeRoute(t.handoffs)
   return {
     id: t.id,
-    channelId: t.channel,
-    title: t.title,
+    channelId: t.channel_tentacle_id,
+    title: threadLabel(t),
     tone: channel.native ? 'native' : t.status === 'active' ? 'active' : 'idle',
     // Nothing routed a native session — the runtime it ran in is its agent, and
     // "unrouted" would read as a routing decision that never happened.
     agentLabel:
-      t.agent === null && channel.native
+      agent === null && channel.native
         ? `${channel.label.toLowerCase()} · native`
-        : routeLabel(t.agent, t.model),
-    tag: t.thread_key || `#${t.id.slice(0, 6)}`,
+        : routeLabel(agent, model),
+    tag: `#${t.id.slice(0, 6)}`,
   }
 }
 
 /** The live all-channel listing, grouped the way the sidebar consumes it. */
 export function groupLiveThreads(
-  threads: ApiThreadSummary[],
+  threads: ApiThread[],
 ): Record<string, ThreadSummary[]> {
   const grouped: Record<string, ThreadSummary[]> = {}
   for (const t of threads) {
-    ;(grouped[t.channel] ??= []).push(liveThreadSummary(t))
+    ;(grouped[t.channel_tentacle_id] ??= []).push(liveThreadSummary(t))
   }
   return grouped
 }
 
-function liveSession(s: ApiSessionEntry, index: number): SessionInfo {
+function liveSession(s: ApiHandoff, index: number): SessionInfo {
   return {
     n: `S${index + 1}`,
     id: `SES-${s.id.replaceAll('-', '').slice(-4).toUpperCase()}`,
-    route: routeLabel(s.to_agent, s.model),
+    route: routeLabel(s.to_agent_tentacle_id, s.to_model),
     kind: index === 0 ? 'entry' : 'summon',
     t: clock(s.created_at),
     reason: s.reason || 'route claimed',
@@ -112,84 +147,98 @@ function liveSession(s: ApiSessionEntry, index: number): SessionInfo {
   }
 }
 
-export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
+/** One thread as the console reads it: the row, then the sub-resources that
+ *  hang off it, each its own request. */
+export interface ThreadReads {
+  thread: ApiThread
+  messages: ApiThreadMessage[]
+  conversations: ApiConversation[]
+  project: ApiProject | null
+  batches: ApiDeferredBatch[]
+}
+
+export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
+  const { thread, messages, conversations, project, batches } = reads
   let uid = 0
   const next = () => `h${++uid}`
 
   type Dated = { at: number; item: LedgerItemDraft }
   const dated: Dated[] = []
 
-  detail.sessions.forEach((session, index) => {
+  thread.handoffs.forEach((handoff, index) => {
     dated.push({
-      at: Date.parse(session.created_at),
+      at: Date.parse(handoff.created_at),
       item: {
         kind: 'session-open',
-        sessionId: `SES-${session.id.replaceAll('-', '').slice(-4).toUpperCase()}`,
-        text: routeLabel(session.to_agent, session.model),
+        sessionId: `SES-${handoff.id.replaceAll('-', '').slice(-4).toUpperCase()}`,
+        text: routeLabel(handoff.to_agent_tentacle_id, handoff.to_model),
         tone: index === 0 ? 'plain' : 'summon',
       },
     })
   })
 
-  // With recorded runs, agent turns replay from the model ledger below — the
-  // chat ledger's outbound text rows would render each reply twice.
-  const hasRuns = detail.runs.length > 0
-
-  for (const entry of detail.entries) {
-    const at = Date.parse(entry.happened_at)
-    if (entry.direction === 'inbound' && entry.actor_kind === 'human') {
+  // History is the chat ledger, and only the chat ledger: thinking and tool
+  // cards belong to the run that is streaming, and the transcript they would
+  // otherwise be rebuilt from is the agent's, not a reader's.
+  for (const message of messages) {
+    const at = Date.parse(message.happened_at)
+    const text = message.message_text ?? ''
+    if (message.direction === 'inbound' && message.actor_kind === 'human') {
       dated.push({
         at,
         item: {
           kind: 'user',
-          t: clock(entry.happened_at),
-          who: entry.sender || 'operator',
-          text: entry.text,
+          t: clock(message.happened_at),
+          who: message.sender?.name || 'operator',
+          text,
         },
       })
-    } else if (entry.actor_kind === 'system') {
-      dated.push({ at, item: { kind: 'system', text: entry.text } })
-    } else if (!hasRuns) {
+    } else if (message.actor_kind === 'system') {
+      dated.push({ at, item: { kind: 'system', text } })
+    } else {
       dated.push({
         at,
         item: {
           kind: 'agent',
-          label: entry.agent ?? 'agent',
-          blocks: [{ type: 'p', text: entry.text }],
+          label: message.agent_tentacle_id ?? 'agent',
+          blocks: [{ type: 'p', text }],
         },
       })
     }
   }
 
-  for (const run of detail.runs) {
-    const at = run.started_at ? Date.parse(run.started_at) : 0
-    for (const item of foldRunReplay(run.events)) {
-      dated.push({ at, item })
-    }
-  }
-
-  // Stable sort: a run's items share its start time, and a user directive at
-  // the same millisecond was pushed first — insertion order settles both.
+  // Stable sort: a handoff and the directive that caused it can share a
+  // millisecond, and insertion order settles the tie.
   dated.sort((a, b) => a.at - b.at)
   const ledger: LedgerItem[] = dated.map(
     ({ item }) => ({ ...item, uid: next() }) as LedgerItem,
   )
-  for (const batch of detail.pending) {
-    for (const item of batchFeelers(batch)) {
+  for (const batch of batches) {
+    for (const item of batchFeelers(batch.id, batch.questions, batch.approvals)) {
       ledger.push({ ...item, uid: next() } as LedgerItem)
     }
   }
 
-  // Where the last run ran, kept only when it is not the project root itself —
-  // and then as the part below the root, which is the whole of what drifted. A
-  // cwd outside the root has nothing to trim and shows in full.
+  // The agent's own line, oldest first; a subagent's runs surface through the
+  // parent's tool call, not as the thread's own history. Each conversation
+  // arrives sorted; merging two of them is what needs the sort — and a run
+  // whose source reported no start sorts first, never against a timestamp.
+  const startedAt = (run: ApiAgentRun) => (run.started_at ? Date.parse(run.started_at) : 0)
+  const runs = conversations
+    .filter((conversation) => !conversation.subagent_id)
+    .flatMap((conversation) => conversation.runs)
+    .sort((a, b) => startedAt(a) - startedAt(b))
+
   // The directory to open: the project's root when the thread is filed under one,
   // else the directory the session opened in — its first run's, not its last,
   // which may have drifted into a subdirectory nobody works from.
-  const openDir = detail.project?.root || detail.runs[0]?.cwd || ''
+  const openDir = project?.root || runs[0]?.cwd || ''
 
-  const root = detail.project?.root
-  const lastCwd = detail.runs.at(-1)?.cwd
+  // Where the last run ran, kept only when it is not the project root itself —
+  // and then as the part below the root, which is the whole of what drifted. A
+  // cwd outside the root has nothing to trim and shows in full.
+  const root = project?.root
+  const lastCwd = runs.at(-1)?.cwd
   const drift =
     root === undefined || !lastCwd || lastCwd === root
       ? undefined
@@ -197,37 +246,37 @@ export function liveThreadDetail(detail: ApiThreadDetail): ThreadDetail {
         ? lastCwd.slice(root.length + 1)
         : lastCwd
 
+  const { agent, model } = activeRoute(thread.handoffs)
   return {
-    key: detail.thread_key || `#${detail.id.slice(0, 6)}`,
+    key: thread.channel_thread_id || `#${thread.id.slice(0, 6)}`,
     live: true,
-    channel: detail.channel,
+    channel: thread.channel_tentacle_id,
     project:
-      detail.project === null
+      project === null
         ? undefined
-        : {
-            name: detail.project.name,
-            path: detail.project.root,
-            cwd: drift,
-          },
+        : { name: project.name, path: project.root, cwd: drift },
     vscode: openDir
       ? {
           dir: openDir,
           // `vscode://file/<path>` opens a folder as readily as a file, and
           // focuses the window already holding it rather than opening a second.
           folder: `vscode://file${openDir}`,
-          session: sessionLink(detail.channel, detail.chat_id),
+          session: sessionLink(thread.channel_tentacle_id, thread.chat_id),
         }
       : undefined,
     // Directives only go to the console's own channel; anything else is a
     // read-only view of that channel's thread.
-    sendKey: detail.channel === 'trunkline' ? detail.thread_key : undefined,
-    msgCount: detail.message_count,
-    sessions: detail.sessions.map(liveSession),
+    sendKey:
+      thread.channel_tentacle_id === 'trunkline'
+        ? (thread.channel_thread_id ?? undefined)
+        : undefined,
+    msgCount: messages.length,
+    sessions: thread.handoffs.map(liveSession),
     ledger,
     ctxK: 8,
     usage: {
-      chip: routeLabel(detail.agent, detail.model),
-      tok: `${detail.message_count} msg`,
+      chip: routeLabel(agent, model),
+      tok: `${messages.length} msg`,
     },
   }
 }

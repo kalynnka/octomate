@@ -78,19 +78,28 @@ Architecture rules of thumb:
   not a bubble list.
 - **Live turns** stream over `POST /api/trunkline/threads/{key}/messages` as
   the backend's native event union (`lib/api/events.ts`), folded into ledger
-  cards by `lib/api/fold.ts` — and a reload folds each recorded run's replay
-  (`GET /threads/{id}.runs`) through the same fold, so history and live render
-  identically. Other channels' threads are read-only views of the same ledger.
+  cards by `lib/api/fold.ts`. Thinking and tool cards live for the length of
+  that stream: history reloads as the chat ledger alone, because the transcript
+  they would be rebuilt from is the agent's own and never leaves the relay.
+  Other channels' threads are read-only views of the same ledger.
 
 ## Backend endpoints used today (`/api/trunkline`)
+
+The reads answer with the backend's own rows (`octomate/schemas/`), not a
+console-shaped copy, and they nest the way the domain does — thread ›
+conversation › run. `lib/api/events.ts` mirrors them field for field.
 
 | Endpoint | Use |
 | --- | --- |
 | `GET  /health` | status-bar relay chip (offline/degraded/nominal), 15s poll |
 | `GET  /routes` | new-thread agent·model picker; the pick rides only a thread's first directive (routes are fixed after that — re-routing awaits a manual handoff verb) |
-| `GET  /threads` | every channel's threads (sidebar), newest first |
-| `GET  /threads/{id}` | any thread's ledger + sessions (handoffs) + recorded runs replayed as wire events + pending feeler batches, by thread row id; also where the work happened — the thread's project and each run's directory, read-only |
-| `POST /threads/{id}/messages` | send a directive; SSE of the native run events — a fresh id creates the thread, an existing id continues it |
+| `GET  /threads` | every channel's threads (sidebar), newest first, each with its handoffs — without its messages |
+| `GET  /threads/{id}` | one thread and its handoffs, by row id — any channel's |
+| `GET  /threads/{id}/messages` | the chat ledger, oldest first; fetched when a thread is opened, never with the listing |
+| `GET  /threads/{id}/conversations` | the thread's conversations, each carrying its runs — where each run ran (`cwd`), and which are a subagent's |
+| `GET  /threads/{id}/project` | the project the work is in, or null; read-only and frozen on the thread |
+| `GET  /threads/{id}/batches` | feelers still waiting, so a reload re-renders the cards a run is blocked on |
+| `POST /threads/{id}/messages` | send a directive; SSE of the native run events — a fresh id creates the thread, an existing id continues it. `{id}` here is the platform thread key, not the row id the GETs take |
 | `POST /batches/{id}/resolve` | answer a feeler; SSE of the resumed run |
 
 The SSE payloads are pydantic-ai's own `AgentStreamEvent` union plus
@@ -111,11 +120,10 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
 1. **`GET /api/channels`** — channel tentacles with label/kind/health
    (`Octomate.channels`; sidebar channel rail and status-bar chips still use
    the static mock channel list).
-2. **Server-paged ledger history** — `GET /threads/{id}` now replays every
-   recorded run as typed wire events (thinking, tool calls + results), so
-   rich cards survive reload; but the payload is the whole thread, and the
-   console pages it client-side (latest page first, earlier on scroll-up). A
-   `?before=` cursor is still wanted once threads outgrow one response.
+2. **Server-paged ledger history** — `GET /threads/{id}/messages` answers with
+   the whole ledger, and the console pages it client-side (latest page first,
+   earlier on scroll-up). A `?before=` cursor is wanted once one thread's
+   ledger outgrows one response.
 3. **`GET /api/trunkline/events` (standing SSE/WebSocket)** — a live ledger
    stream outside the request/response run call, so native-agent ingests,
    IM-relayed turns, and other-session runs land in an open console. Today
@@ -124,7 +132,7 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
    carries no workspace binding, so a console thread is never in a project.
    The new-thread strip says so rather than offering a picker: a thread's
    project is written with the thread, from the directory its session ran in,
-   and is frozen after (`GET /threads/{id}.project` reads it).
+   and is frozen after (`GET /threads/{id}/project` reads it).
 5. **`GET /api/projects`** — the registry itself (`ProjectManager.projects`),
    for a reader that wants every known root rather than one thread's. No
    registration endpoint is wanted: a project is discovered from the native
@@ -153,3 +161,7 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
     another channel (reflex verbs exist in-process; not exposed over HTTP).
 14. **Auth + CORS** — everything above needs a session story; today the web
     surface is a fixed `dev` user bound to 127.0.0.1 with no CORS headers.
+15. **A title on the thread row** — the sidebar names each thread by its
+    surface (the platform thread key), because a listing carries no messages
+    and reading one line per thread would be a request per row. The fix is a
+    column on the thread, written from its first human message.

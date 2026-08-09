@@ -6,9 +6,10 @@
  * family onto the card language the comp defined.
  */
 import type {
-  ActionBatchEvent,
   ModelResponsePart,
   ToolCallPart,
+  WireDeferredApproval,
+  WireDeferredQuestion,
   WireEvent,
   WireSegment,
   WireTodo,
@@ -16,12 +17,18 @@ import type {
 import type { LedgerItem, LedgerItemDraft } from '@/lib/api/types'
 
 /**
- * A pending batch as feeler cards, shared by hydration (detail.pending) and
- * the live stream's `action_batch` events. `uid` is filled by the caller.
+ * A batch's unanswered actions as feeler cards. Both sources reach this: the
+ * live stream's `action_batch` event and GET /threads/{id}/batches, which
+ * carry the same action shapes under different batch-id spellings. `uid` is
+ * filled by the caller.
  */
-export function batchFeelers(batch: ActionBatchEvent): LedgerItemDraft[] {
+export function batchFeelers(
+  batchId: string,
+  questions: WireDeferredQuestion[],
+  approvals: WireDeferredApproval[],
+): LedgerItemDraft[] {
   const items: LedgerItemDraft[] = []
-  for (const q of batch.questions) {
+  for (const q of questions) {
     items.push({
       kind: 'ask',
       title: 'Question',
@@ -33,18 +40,18 @@ export function batchFeelers(batch: ActionBatchEvent): LedgerItemDraft[] {
       })),
       meta: `${q.tool_name} · answer resumes the run`,
       state: 'waiting',
-      batchId: batch.batch_id,
+      batchId,
       actionId: q.id,
     })
   }
-  for (const a of batch.approvals) {
+  for (const a of approvals) {
     items.push({
       kind: 'approval',
       title: a.args.title || 'Permission required',
       desc: a.args.description || JSON.stringify(a.args.args ?? {}),
       meta: `${a.args.tool_name} · approval resumes the run`,
       state: 'waiting',
-      batchId: batch.batch_id,
+      batchId,
       actionId: a.id,
     })
   }
@@ -309,7 +316,13 @@ export class TurnFold {
       case 'action_batch':
         this.closeStream()
         this.closeThink()
-        for (const item of batchFeelers(event)) this.sink.push(item)
+        for (const item of batchFeelers(
+          event.batch_id,
+          event.questions,
+          event.approvals,
+        )) {
+          this.sink.push(item)
+        }
         break
       case 'subagent_started':
         this.subUids.set(
@@ -380,28 +393,3 @@ export class TurnFold {
   }
 }
 
-/**
- * Fold one replayed run (GET /threads/{id}.runs) into settled ledger items —
- * the same TurnFold the live stream feeds, minus a live sink. The caller
- * re-uids the items into its own ledger.
- */
-export function foldRunReplay(events: WireEvent[]): LedgerItem[] {
-  const items: LedgerItem[] = []
-  const at = new Map<string, number>()
-  let n = 0
-  const fold = new TurnFold({
-    push(item) {
-      const uid = `rp${++n}`
-      at.set(uid, items.length)
-      items.push({ ...item, uid } as LedgerItem)
-      return uid
-    },
-    patch(uid, patch) {
-      const index = at.get(uid)
-      if (index !== undefined) items[index] = { ...items[index], ...patch } as LedgerItem
-    },
-    done() {},
-  })
-  for (const event of events) fold.feed(event)
-  return items
-}

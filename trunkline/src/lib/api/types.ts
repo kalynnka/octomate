@@ -26,11 +26,13 @@ export type ThreadTone = 'active' | 'idle' | 'native'
 export interface ThreadSummary {
   id: string
   channelId: ChannelId
+  /** the surface the thread is, which is all a listing knows to call it by —
+   *  the relay serves threads without their messages */
   title: string
   tone: ThreadTone
   /** owning route, e.g. "inkling → claude" or "codex · gpt-5.3" */
   agentLabel: string
-  /** short display chip (live threads: the platform thread key) */
+  /** short display chip — the thread row id, which every read is keyed by */
   tag?: string
 }
 

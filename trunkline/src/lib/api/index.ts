@@ -8,9 +8,13 @@
 import {
   fetchChannels,
   fetchHealth,
-  fetchLiveThreadDetail,
-  fetchLiveThreads,
   fetchRoutes,
+  fetchThread,
+  fetchThreadBatches,
+  fetchThreadConversations,
+  fetchThreadMessages,
+  fetchThreadProject,
+  fetchThreads,
 } from './client'
 import type { HealthState } from './client'
 import type { ApiRoute } from './events'
@@ -46,13 +50,31 @@ export const api = {
   },
 
   async listThreads(): Promise<Record<string, ThreadSummary[]>> {
-    return groupLiveThreads(await fetchLiveThreads())
+    return groupLiveThreads(await fetchThreads())
   },
 
+  /**
+   * One thread, read as the relay shapes it: the row, its ledger, its
+   * conversations, its project and its waiting feelers. Five requests in
+   * parallel rather than one fat payload — the ledger is the only large one,
+   * and keeping it separate is what lets a listing stay small.
+   */
   async getThreadDetail(id: string): Promise<ThreadDetail> {
-    const live = await fetchLiveThreadDetail(id)
-    if (live === null) throw new Error(`thread ${id} not found on the relay`)
-    return liveThreadDetail(live)
+    const [thread, messages, conversations, project, batches] = await Promise.all([
+      fetchThread(id),
+      fetchThreadMessages(id),
+      fetchThreadConversations(id),
+      fetchThreadProject(id),
+      fetchThreadBatches(id),
+    ])
+    if (thread === null) throw new Error(`thread ${id} not found on the relay`)
+    return liveThreadDetail({
+      thread,
+      messages: messages ?? [],
+      conversations: conversations ?? [],
+      project: project ?? null,
+      batches: batches ?? [],
+    })
   },
 }
 
