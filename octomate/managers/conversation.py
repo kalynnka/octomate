@@ -6,7 +6,7 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Literal, TypeVar
 
-from arcanus.materia.sqlalchemy import selectinload
+from arcanus.materia.sqlalchemy import noload, selectinload
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 from sqlalchemy import insert, select
@@ -165,14 +165,23 @@ class ConversationManager:
         return list(rows)
 
     async def for_thread(self, thread_id: uuid.UUID) -> list[Conversation]:
-        """The thread's agent conversations, subagents included. `runs` and each
-        run's `messages` are lazy="selectin", so the one list query loads the whole
-        model ledger in batched passes — a reader replaying history needs no
-        per-row loading."""
+        """The thread's agent conversations, subagents included, each with its
+        runs — and none of the model ledger.
+
+        Both message relations here are lazy="selectin", so the plain query
+        would read every transcript the thread ever produced. That is the
+        agent's own history, reached through the run it belongs to; a reader
+        listing conversations wants the runs, which is what the two `noload`s
+        leave.
+        """
         async with async_session() as session:
             rows = await session.list(
                 Conversation,
                 limit=None,
+                options=[
+                    noload(Conversation["messages"]),
+                    selectinload(Conversation["runs"]).noload(AgentRun["messages"]),
+                ],
                 expressions=[Conversation["thread_id"] == thread_id],
             )
         return list(rows)

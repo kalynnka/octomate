@@ -4,7 +4,7 @@ import uuid
 from collections import OrderedDict
 from datetime import UTC, datetime
 
-from arcanus.materia.sqlalchemy import selectinload
+from arcanus.materia.sqlalchemy import noload, selectinload
 from sqlalchemy import and_, or_
 
 from octomate.config.agents import AgentRouteModelName
@@ -113,15 +113,35 @@ class ThreadManager:
         self.cache_thread(thread)
         return thread
 
-    async def get(self, thread_id: uuid.UUID) -> Thread | None:
+    async def get(
+        self, thread_id: uuid.UUID, *, with_messages: bool = True
+    ) -> Thread | None:
         """The thread by primary key, or None. messages/handoffs are
-        lazy="selectin", so the get loads them with the row."""
+        lazy="selectin", so the get loads them with the row.
+
+        `with_messages=False` is for a reader that wants the row and not its
+        ledger, and suppresses the load rather than dropping it afterwards —
+        `noload` is the difference between not fetching a thread's messages and
+        fetching them to throw away. It skips the cache with them, because a
+        cached thread whose `messages` is empty is indistinguishable from one
+        nobody has ever spoken in, and `ensure` hands that copy to channels.
+
+        Either way the model ledger stays behind: it hangs off a message, and
+        `related_model_messages` is how a caller asks for it — dragging it here
+        would put a query per message behind every thread read.
+        """
+        options = (
+            [selectinload(Thread["messages"]).noload(ThreadMessage["model_messages"])]
+            if with_messages
+            else [noload(Thread["messages"])]
+        )
         async with async_session() as session:
-            thread = await session.get(Thread, thread_id)
+            thread = await session.get(Thread, thread_id, options=options)
             if thread is None:
                 return None
 
-        self.cache_thread(thread)
+        if with_messages:
+            self.cache_thread(thread)
         return thread
 
     async def list_threads(
@@ -131,8 +151,13 @@ class ThreadManager:
         limit: int = 100,
     ) -> list[Thread]:
         """Threads most recently touched first — one channel's, or every
-        channel's when `channel_tentacle_id` is None. messages/handoffs are
-        lazy="selectin", so the list query loads them in one batched pass."""
+        channel's when `channel_tentacle_id` is None.
+
+        Handoffs come with the rows (lazy="selectin", one batched pass); the
+        ledgers do not. A listing that loaded them would read every message of
+        every thread it names, and no caller has ever wanted that — the one
+        reader of a thread's messages asks for that thread.
+        """
         expressions = (
             []
             if channel_tentacle_id is None
@@ -143,6 +168,7 @@ class ThreadManager:
                 Thread,
                 limit=limit,
                 order_bys=[Thread["updated_at"].desc(), Thread["id"].desc()],
+                options=[noload(Thread["messages"])],
                 expressions=expressions,
             )
         return list(rows)
