@@ -944,6 +944,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           push({
             kind: 'think',
             dur: '1.3s',
+            thinking: false,
             text: 'Notes anchor on the cutover window. Strike the loose lines, fold a hard stop and a longer shim hold into §03, stamp the notes outdated at their anchors, cut REV_03.',
           } as LedgerItem)
         })

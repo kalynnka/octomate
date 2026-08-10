@@ -12,7 +12,7 @@ import type {
   ApiThread,
   ApiThreadMessage,
 } from './events'
-import { batchFeelers } from './fold'
+import { batchFeelers, replayRun } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -57,6 +57,23 @@ export function routeLabel(agent: string | null, model: string | null): string {
 function clock(iso: string): string {
   const d = new Date(iso)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * Agents with a VS Code extension to hand a thread over to. Inkling has none —
+ * it runs inside the relay, so there is no session on this machine to reopen and
+ * no directory it was ever working in.
+ */
+const VSCODE_AGENTS = new Set(['claude', 'codex'])
+
+/**
+ * Whether VS Code can pick this thread up. A native session always can: its own
+ * extension is what recorded the thread, and `sessionLink` reopens it. A console
+ * thread can only when the agent driving it is one of those runtimes — which is
+ * a handoff away, since nothing files a native thread under one.
+ */
+function vscodeCanOpen(channel: string, agent: string | null): boolean {
+  return channelMeta(channel).native === true || VSCODE_AGENTS.has(agent ?? '')
 }
 
 /**
@@ -177,9 +194,9 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     })
   })
 
-  // History is the chat ledger, and only the chat ledger: thinking and tool
-  // cards belong to the run that is streaming, and the transcript they would
-  // otherwise be rebuilt from is the agent's, not a reader's.
+  // The chat ledger is what was said — the prompt and the answer. The work
+  // between them comes from the runs below, so nothing here pushes a card the
+  // replay will push again.
   for (const message of messages) {
     const at = Date.parse(message.happened_at)
     const text = message.message_text ?? ''
@@ -204,6 +221,19 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
           blocks: [{ type: 'p', text }],
         },
       })
+    }
+  }
+
+  // The work between a prompt and its answer, rebuilt from what each run
+  // recorded. Dated at the run's start so it lands after the directive that
+  // caused it; the stable sort below keeps each run's cards in their own order.
+  for (const conversation of conversations) {
+    if (conversation.subagent_id) continue
+    for (const run of conversation.runs) {
+      const at = run.started_at ? Date.parse(run.started_at) : 0
+      for (const item of replayRun(run.messages ?? [])) {
+        dated.push({ at, item })
+      }
     }
   }
 
@@ -255,7 +285,8 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
       project === null
         ? undefined
         : { name: project.name, path: project.root, cwd: drift },
-    vscode: openDir
+    vscode:
+      openDir && vscodeCanOpen(thread.channel_tentacle_id, agent)
       ? {
           dir: openDir,
           // `vscode://file/<path>` opens a folder as readily as a file, and
