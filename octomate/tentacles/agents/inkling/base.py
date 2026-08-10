@@ -30,6 +30,7 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.settings import ModelSettings, ThinkingEffort, merge_model_settings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai_harness.repo_context import RepoContext
 
 from octomate.capabilities import UserScopedCapability
 from octomate.capabilities.harness.agent import Agent
@@ -588,8 +589,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # A non-interactive run declines every deferred action at once: no
         # human exists, so asks and approvals resolve to declines in-process
         # and the react loop continues to a final answer. That is all
-        # `interactive` means — `capabilities` arrives here final; which set to
-        # mount is the entrypoints' decision.
+        # `interactive` means — which caller-chosen set to mount is the entrypoints'
+        # decision, and `capabilities` arrives here holding it. The run's project is
+        # the one thing added below: it comes off the thread rather than the caller,
+        # so every entrypoint would otherwise have to resolve it identically.
         resolver = self.deferred_resolver if interactive else DeclineResolver()
         resolved_run_name = run_name or "react"
         # Effort IS pydantic-ai's `thinking` scale; pass it through, layered over
@@ -610,6 +613,34 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             if output_type is None
             else output_type
         )
+
+        capabilities = list(capabilities or [])
+        # The react graph carries only the thread/agent identity; each node fetches
+        # the live conversation (and its history) from the ConversationManager, the
+        # single source of truth — no message-history copy is threaded here. A
+        # conversation is owned by a thread, so the run needs one.
+        if thread_id is None:
+            raise ValueError("agent run requires a thread_id to own its conversation")
+        project = await self.run_project(thread_id)
+        if project is not None:
+            # A project's own instructions, mounted per run: inkling has no directory
+            # of its own, so which repo it is answering about is the thread's project
+            # and nothing else. `home_dir=None` leaves the walk-up off, so only the
+            # project's root is read — never an ancestor, and never the operator's
+            # private `~/.claude/CLAUDE.md`. `extra_roots` are not scanned either: a
+            # sibling settings tree is not where a repo keeps its `AGENTS.md`.
+            capabilities.append(
+                RepoContext[None](
+                    workspace_dir=project.root,
+                    # Off: the inventory tool answers with the paths of a repo's
+                    # `.claude`/`.codex` assets for the model to go read, and inkling
+                    # has no tool that reads the project's tree — while turning it on
+                    # spends a tool slot and a prompt hint on every run in a project.
+                    # Claude and Codex are the ones those assets are for, and they
+                    # find them natively when inkling dispatches into the same root.
+                    expose_inventory_tool=False,
+                )
+            )
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
@@ -619,6 +650,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             suspender=deferred_suspender,
             output_type=react_output_type,
             run_name=resolved_run_name,
+            # Where this run happened, for the run to record: its project's root, or
+            # nothing, since inkling has no configured directory to fall back to.
+            cwd=project.root if project is not None else None,
             model=model,
             instructions=instructions,
             model_settings=model_settings,
@@ -632,12 +666,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             capabilities=capabilities,
             spec=spec,
         )
-        # The react graph carries only the thread/agent identity; each node fetches
-        # the live conversation (and its history) from the ConversationManager, the
-        # single source of truth — no message-history copy is threaded here. A
-        # conversation is owned by a thread, so the run needs one.
-        if thread_id is None:
-            raise ValueError("agent run requires a thread_id to own its conversation")
         state = ReactState(
             conversation_address=conversation_address,
             agent_tentacle_id=self.id,
