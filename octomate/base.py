@@ -214,7 +214,7 @@ class Octomate:
                 # Likewise the project registry: reconciling here is what builds
                 # the resolution index, so a declared project resolves before
                 # anything is running that could ask.
-                await self.projects.load()
+                await self.projects.reconcile()
                 # Each tentacle is an async context manager owning its own
                 # long-lived resources (agents: warm MCP sessions; channels:
                 # the inbound receive loop). Channels live on the inner stack so

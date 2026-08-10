@@ -4,7 +4,7 @@ import uuid
 from pathlib import Path
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import JSON, String, UniqueConstraint, Uuid
+from sqlalchemy import JSON, Boolean, String, UniqueConstraint, Uuid, true
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
 
@@ -67,4 +67,15 @@ class Project(Base, TransmuterProxiedMixin):
         nullable=False,
         default="default",
         comment="Approval mode a conversation in this project starts under.",
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=true(),
+        comment=(
+            "Whether this project is part of the working set. Reconciliation clears it "
+            "for a root that is no longer on disk, so the row survives for the runs "
+            "and threads that name it while nothing new resolves to it."
+        ),
     )

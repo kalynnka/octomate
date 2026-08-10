@@ -57,6 +57,7 @@ from octomate.config.models import (
 )
 from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig, LogLevel
+from octomate.config.projects import ConfigProject
 from octomate.config.providers import (
     AnthropicProviderConfig,
     BedrockProviderConfig,
@@ -124,6 +125,15 @@ class OctomateConfig(BaseSettings):
         description=(
             "Registered cross-channel users keyed by stable username; profiles are "
             "reconciled into the registry at startup."
+        ),
+    )
+    projects: dict[str, ConfigProject] = Field(
+        default_factory=dict,
+        description=(
+            "Declared code locations keyed by project name, reconciled into the "
+            "registry at startup. Declaring one is the operator vouching for its "
+            "contents, which reach an agent as instructions. Unrelated to "
+            "`~/.claude/projects/`, which is transcript storage."
         ),
     )
 
@@ -343,6 +353,8 @@ __all__ = [  # noqa: RUF022
     "LinearMcpConfig",
     # users
     "UserConfig",
+    # projects
+    "ConfigProject",
     # channels
     "AgentModelConfig",
     "ChannelConfig",

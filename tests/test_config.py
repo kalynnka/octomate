@@ -27,6 +27,7 @@ from octomate.config import (
 )
 from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
+from octomate.schemas.project import Project
 from octomate.schemas.triage import Claim
 from tests.support.config import IsolatedTestConfig
 
@@ -852,6 +853,41 @@ def test_user_profile_config_rejects_scalar_id_shorthand() -> None:
     [error] = exc_info.value.errors()
     assert error["loc"] == ("profiles", "slack")
     assert error["type"] == "model_attributes_type"
+
+
+def test_projects_validate_as_projects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A declared project is a `Project` — no config model restating it — so `~` expands
+    # and the block's key is the name, whatever the row would otherwise be called.
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    config = IsolatedTestConfig.model_validate(
+        {
+            "projects": {
+                "octomate": {
+                    "root": "~/Projects/inky",
+                    "extra_roots": ["~/Library/Code"],
+                    "description": "Octomate itself.",
+                }
+            }
+        }
+    )
+
+    [declared] = config.projects.values()
+    assert isinstance(declared, Project)
+    assert declared.root == tmp_path / "Projects" / "inky"
+    assert declared.extra_roots == [tmp_path / "Library" / "Code"]
+    assert declared.origin == "declared"
+
+
+def test_a_project_without_a_root_is_refused() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate({"projects": {"inky": {"description": "?"}}})
+
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("projects", "inky", "root")
+    assert error["type"] == "missing"
 
 
 def test_user_links_accept_configured_channels() -> None:
