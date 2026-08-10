@@ -1,5 +1,5 @@
 import { Fragment } from 'react'
-import { goLedgerTarget, useConsole } from '@/state/console'
+import { goLedgerTarget, syncRails, useConsole } from '@/state/console'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { chipLabel, ellipsis, label, microSection, mono, serif } from '@/components/text'
 import { Disclose, Fold } from '@/components/Fold'
@@ -12,6 +12,8 @@ interface TlEvent {
   title: string
   sub: string
   t: string
+  /** the ledger card this row indexes — what the two rails sync on */
+  uid: string
   /** ledger DOM id the row jumps to */
   tgt: string
   /** file name when the event opens the review panel */
@@ -77,8 +79,9 @@ function toolSub(detail: ToolDetail): string {
   }
 }
 
-/** Map one ledger/live item to a timeline event; null = not indexed. */
-function eventOf(item: LedgerItem, agent?: string): TlEvent | null {
+/** Map one ledger/live item to a timeline event; null = not indexed. The uid is
+ *  the item's own, and the caller stamps it. */
+function eventOf(item: LedgerItem, agent?: string): Omit<TlEvent, 'uid'> | null {
   const tgt = `pm-${item.uid}`
   switch (item.kind) {
     case 'user':
@@ -176,6 +179,7 @@ export function TimelinePanel() {
   const detail = useConsole((s) => s.detail)
   const live = useConsole((s) => s.live)
   const tlFold = useConsole((s) => s.tlFold)
+  const ledgerN = useConsole((s) => s.ledgerN)
   const ntOn = useConsole((s) => s.ntOn)
   const ntStarted = useConsole((s) => s.ntStarted)
   const traceOn = useConsole((s) => s.traceOn)
@@ -209,38 +213,54 @@ export function TimelinePanel() {
     : (detail?.sessions ?? [])
 
   const buckets: TlEvent[][] = sessions.map(() => [])
+  let indexed = 0
   if (detail && buckets.length) {
+    // The index follows the chat's window. The chat renders the ledger's last
+    // `ledgerN` cards and pages back from there, so a row outside that window
+    // points at a card that is not in the document — nothing to jump to, and
+    // nothing for the rails to line up on. A thread of a thousand turns then
+    // costs a page of rows rather than a thousand of them.
+    const page = Math.max(0, detail.ledger.length - ledgerN)
     let si = 0
-    for (const item of detail.ledger) {
+    detail.ledger.forEach((item, index) => {
       const isOpen = item.kind === 'session-open'
       // A session starts at its own first card, whatever kind that is: the claim
-      // that opened it, or — for a session nothing claimed — its first turn.
-      if (sessions[si + 1]?.anchor === item.uid) {
-        si++
-        if (isOpen && item.tone === 'summon') {
-          const from = sessions[si - 1].route.split(' ')[0]
-          buckets[si].push({
-            k: 'turn',
-            title: `brief · from ${from}`,
-            sub: 'findings so far + plan · thread ledger shared',
-            t: sessions[si].t,
-            tgt: `pm-${item.uid}`,
-          })
-        }
+      // that opened it, or — for a session nothing claimed — its first turn. The
+      // walk covers the whole ledger, so a window opening mid-thread still knows
+      // which session it opened in.
+      const opening = sessions[si + 1]?.anchor === item.uid
+      if (opening) si++
+      const e = isOpen ? null : eventOf(item, sessions[si]?.route.split(' ')[0])
+      if (e) indexed++
+      if (index < page) return
+      if (opening && isOpen && item.tone === 'summon') {
+        const from = sessions[si - 1].route.split(' ')[0]
+        buckets[si].push({
+          k: 'turn',
+          title: `brief · from ${from}`,
+          sub: 'findings so far + plan · thread ledger shared',
+          t: sessions[si].t,
+          uid: item.uid,
+          tgt: `pm-${item.uid}`,
+        })
       }
-      if (isOpen) continue
-      const e = eventOf(item, sessions[si]?.route.split(' ')[0])
-      if (e) buckets[si].push(e)
-    }
+      if (e) buckets[si].push({ ...e, uid: item.uid })
+    })
   }
   if (buckets.length) {
     const agent = sessions[sessions.length - 1]?.route.split(' ')[0]
     for (const item of live) {
       const e = eventOf(item, agent)
-      if (e) buckets[buckets.length - 1].push(e)
+      if (e) {
+        buckets[buckets.length - 1].push({ ...e, uid: item.uid })
+        indexed++
+      }
     }
   }
   const eventCount = buckets.reduce((n, b) => n + b.length, 0)
+  // What the window holds, over what the thread has, when they differ — an index
+  // that silently showed 40 of a thousand would read as a short thread.
+  const eventTally = eventCount === indexed ? `${eventCount}` : `${eventCount}/${indexed}`
 
   return (
     <aside
@@ -294,10 +314,14 @@ export function TimelinePanel() {
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
-          {sessions.length} ses · {eventCount} events
+          {sessions.length} ses · {eventTally} events
         </span>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '0 0 12px' }}>
+      <div
+        id="trk-timeline"
+        onScroll={() => syncRails('timeline')}
+        style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '0 0 12px' }}
+      >
         {sessions.map((ses, si) => {
           const kColor = KIND_COLOR[ses.kind]
           const events = buckets[si]
@@ -442,6 +466,7 @@ export function TimelinePanel() {
                       return (
                         <div
                           key={`${ev.tgt}-${ei}`}
+                          data-uid={ev.uid}
                           onClick={() => goLedgerTarget(ev.tgt)}
                           title="Jump to this moment in the ledger"
                           className="hov-wash"
@@ -698,7 +723,7 @@ export function TimelinePanel() {
         }}
       >
         <span style={{ ...mono(8, 700), letterSpacing: '.1em', color: 'var(--fg-1)', whiteSpace: 'nowrap' }}>
-          {eventCount} events indexed
+          {eventTally} events indexed
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ ...mono(7.5), color: 'var(--fg-3)', ...ellipsis, minWidth: 0 }}>// end of timeline</span>
