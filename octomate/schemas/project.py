@@ -74,9 +74,12 @@ class Project(BaseTransmuter):
     )
     origin: ProjectOrigin = Field(
         default="declared",
+        frozen=True,
         description=(
             "What registered this project: `declared` for one registered directly, "
-            "or the native runtime whose session was found running in it."
+            "or the native runtime whose session was found running in it. Write-once, "
+            "because it is a fact about how the row came to exist: reconciling a "
+            "declaration over a row a session left does not rewrite that history."
         ),
     )
 
@@ -103,6 +106,14 @@ class Project(BaseTransmuter):
         description=(
             "Approval mode a conversation in this project starts under; the "
             "conversation owns it afterwards."
+        ),
+    )
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether this project is part of the working set. Reconciliation clears "
+            "it for a root that is no longer on disk, so the row survives for the "
+            "runs and threads that name it while nothing new resolves to it."
         ),
     )
 

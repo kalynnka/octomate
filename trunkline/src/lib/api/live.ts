@@ -12,7 +12,7 @@ import type {
   ApiThread,
   ApiThreadMessage,
 } from './events'
-import { batchFeelers } from './fold'
+import { batchFeelers, replayRun } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -57,6 +57,23 @@ export function routeLabel(agent: string | null, model: string | null): string {
 function clock(iso: string): string {
   const d = new Date(iso)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * Agents with a VS Code extension to hand a thread over to. Inkling has none —
+ * it runs inside the relay, so there is no session on this machine to reopen and
+ * no directory it was ever working in.
+ */
+const VSCODE_AGENTS = new Set(['claude', 'codex'])
+
+/**
+ * Whether VS Code can pick this thread up. A native session always can: its own
+ * extension is what recorded the thread, and `sessionLink` reopens it. A console
+ * thread can only when the agent driving it is one of those runtimes — which is
+ * a handoff away, since nothing files a native thread under one.
+ */
+function vscodeCanOpen(channel: string, agent: string | null): boolean {
+  return channelMeta(channel).native === true || VSCODE_AGENTS.has(agent ?? '')
 }
 
 /**
@@ -134,17 +151,67 @@ export function groupLiveThreads(
   return grouped
 }
 
-function liveSession(s: ApiHandoff, index: number): SessionInfo {
-  return {
-    n: `S${index + 1}`,
-    id: `SES-${s.id.replaceAll('-', '').slice(-4).toUpperCase()}`,
-    route: routeLabel(s.to_agent_tentacle_id, s.to_model),
-    kind: index === 0 ? 'entry' : 'summon',
-    t: clock(s.created_at),
-    reason: s.reason || 'route claimed',
-    status: '',
-    tone: index === 0 ? 'accent' : 'gold',
+/** The 4-hex chip a session goes by, off the tail of the conversation it is. */
+function sessionTag(conversationId: string): string {
+  return `SES-${conversationId.replaceAll('-', '').slice(-4).toUpperCase()}`
+}
+
+/**
+ * The sessions a thread had — one per conversation, which is the stretch of the
+ * thread one agent owned. The thread is ours: a channel thread crosses agents as
+ * summons move it, and each agent's own line through it is its conversation.
+ *
+ * A handoff opens a session and says why. A handoff back to an agent that already
+ * has a conversation here re-claims that session rather than starting another,
+ * because the agent resumes the context it left. A thread nothing routed is a
+ * native runtime's session tailed in through the hooks: one conversation, whose
+ * `external_session_id` is the runtime's own session id, and no handoff at all.
+ */
+function liveSessions(
+  handoffs: ApiHandoff[],
+  conversations: ApiConversation[],
+  anchors: Map<string, string>,
+): SessionInfo[] {
+  const openedBy = new Map<string, ApiHandoff>()
+  for (const handoff of handoffs) {
+    const target = handoff.target_conversation_id
+    if (target !== null && !openedBy.has(target)) openedBy.set(target, handoff)
   }
+  return conversations
+    .map((conversation) => {
+      const handoff = openedBy.get(conversation.id)
+      return {
+        conversation,
+        handoff,
+        // When the session opened: the claim that opened it, or — for one nothing
+        // claimed — the first turn its runtime wrote.
+        when: handoff?.created_at ?? conversation.runs[0]?.started_at ?? null,
+      }
+    })
+    .sort((a, b) => (a.when ? Date.parse(a.when) : 0) - (b.when ? Date.parse(b.when) : 0))
+    .map(({ conversation, handoff, when }, index) => {
+      const turns = conversation.runs.length
+      // An ingest is a session nothing claimed whose turns were rebuilt from a
+      // runtime's own transcript. Unclaimed alone is not enough: a channel that
+      // dispatches by config records no handoff either, and that session was
+      // still ours to run.
+      const ingested = handoff === undefined && conversation.runs[0]?.kind === 'external'
+      return {
+        n: `S${index + 1}`,
+        id: sessionTag(conversation.id),
+        route: handoff
+          ? routeLabel(handoff.to_agent_tentacle_id, handoff.to_model)
+          : conversation.agent_tentacle_id,
+        kind: ingested ? 'ingest' : index === 0 ? 'entry' : 'summon',
+        t: when ? clock(when) : '',
+        reason: ingested
+          ? `${turns} turn${turns === 1 ? '' : 's'} tailed from the session's own transcript`
+          : handoff?.reason || 'route claimed',
+        status: ingested ? 'ingested' : '',
+        tone: ingested ? 'teal' : index === 0 ? 'accent' : 'gold',
+        anchor: anchors.get(conversation.id),
+      }
+    })
 }
 
 /** One thread as the console reads it: the row, then the sub-resources that
@@ -162,24 +229,30 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   let uid = 0
   const next = () => `h${++uid}`
 
-  type Dated = { at: number; item: LedgerItemDraft }
+  // `session` is the conversation the card belongs to, which is what the
+  // timeline buckets on: each session's first card is where it starts.
+  type Dated = { at: number; item: LedgerItemDraft; session?: string }
   const dated: Dated[] = []
 
   thread.handoffs.forEach((handoff, index) => {
+    const opened = handoff.target_conversation_id
     dated.push({
       at: Date.parse(handoff.created_at),
+      session: opened ?? undefined,
       item: {
         kind: 'session-open',
-        sessionId: `SES-${handoff.id.replaceAll('-', '').slice(-4).toUpperCase()}`,
+        // The session the claim opened, not the claim — a re-summon reopens a
+        // session that already has this tag, and says so by carrying it.
+        sessionId: sessionTag(opened ?? handoff.id),
         text: routeLabel(handoff.to_agent_tentacle_id, handoff.to_model),
         tone: index === 0 ? 'plain' : 'summon',
       },
     })
   })
 
-  // History is the chat ledger, and only the chat ledger: thinking and tool
-  // cards belong to the run that is streaming, and the transcript they would
-  // otherwise be rebuilt from is the agent's, not a reader's.
+  // The chat ledger is what was said — the prompt and the answer. The work
+  // between them comes from the runs below, so nothing here pushes a card the
+  // replay will push again.
   for (const message of messages) {
     const at = Date.parse(message.happened_at)
     const text = message.message_text ?? ''
@@ -207,25 +280,47 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     }
   }
 
+  // The agent's own conversations: a subagent's runs surface through the
+  // parent's tool call, not as the thread's own history.
+  const own = conversations.filter((conversation) => !conversation.subagent_id)
+
+  // The work between a prompt and its answer, rebuilt from what each run
+  // recorded. Dated at the run's start so it lands after the directive that
+  // caused it; the stable sort below keeps each run's cards in their own order.
+  for (const conversation of own) {
+    for (const run of conversation.runs) {
+      const at = run.started_at ? Date.parse(run.started_at) : 0
+      for (const item of replayRun(run.messages ?? [])) {
+        dated.push({ at, item, session: conversation.id })
+      }
+    }
+  }
+
   // Stable sort: a handoff and the directive that caused it can share a
   // millisecond, and insertion order settles the tie.
   dated.sort((a, b) => a.at - b.at)
   const ledger: LedgerItem[] = dated.map(
     ({ item }) => ({ ...item, uid: next() }) as LedgerItem,
   )
+  // Where each session starts in the ledger — its first card, which the timeline
+  // jumps to and splits its buckets on.
+  const anchors = new Map<string, string>()
+  dated.forEach(({ session }, index) => {
+    if (session !== undefined && !anchors.has(session)) {
+      anchors.set(session, ledger[index].uid)
+    }
+  })
   for (const batch of batches) {
     for (const item of batchFeelers(batch.id, batch.questions, batch.approvals)) {
       ledger.push({ ...item, uid: next() } as LedgerItem)
     }
   }
 
-  // The agent's own line, oldest first; a subagent's runs surface through the
-  // parent's tool call, not as the thread's own history. Each conversation
-  // arrives sorted; merging two of them is what needs the sort — and a run
-  // whose source reported no start sorts first, never against a timestamp.
+  // The agent's own line, oldest first. Each conversation arrives sorted;
+  // merging two of them is what needs the sort — and a run whose source
+  // reported no start sorts first, never against a timestamp.
   const startedAt = (run: ApiAgentRun) => (run.started_at ? Date.parse(run.started_at) : 0)
-  const runs = conversations
-    .filter((conversation) => !conversation.subagent_id)
+  const runs = own
     .flatMap((conversation) => conversation.runs)
     .sort((a, b) => startedAt(a) - startedAt(b))
 
@@ -255,7 +350,8 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
       project === null
         ? undefined
         : { name: project.name, path: project.root, cwd: drift },
-    vscode: openDir
+    vscode:
+      openDir && vscodeCanOpen(thread.channel_tentacle_id, agent)
       ? {
           dir: openDir,
           // `vscode://file/<path>` opens a folder as readily as a file, and
@@ -271,7 +367,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? (thread.channel_thread_id ?? undefined)
         : undefined,
     msgCount: messages.length,
-    sessions: thread.handoffs.map(liveSession),
+    sessions: liveSessions(thread.handoffs, own, anchors),
     ledger,
     ctxK: 8,
     usage: {

@@ -13,6 +13,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import cast
 
 from arcanus import Relation
@@ -158,7 +159,7 @@ class FakeConversationManager(ConversationManager):
         messages: Sequence[ModelMessage],
         *,
         name: str | None = None,
-        cwd: str = "",
+        cwd: Path | None = None,
         external_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,

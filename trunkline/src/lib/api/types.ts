@@ -122,7 +122,9 @@ export type LedgerItem =
   | { kind: 'user'; uid: string; t: string; who: string; text: string; chips?: QueueChip[] }
   | { kind: 'agent'; uid: string; label: string; blocks: AgentBlock[] }
   | { kind: 'code'; uid: string; lang: string; lines: string[] }
-  | { kind: 'think'; uid: string; dur: string; text: string }
+  /** `thinking` is false once the part closed — the card folds itself then,
+   *  the way `stream.streaming` marks a reply as settled */
+  | { kind: 'think'; uid: string; dur: string; text: string; thinking: boolean }
   | {
       kind: 'plan'
       uid: string

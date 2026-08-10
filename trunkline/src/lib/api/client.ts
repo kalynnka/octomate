@@ -50,6 +50,11 @@ export function fetchRoutes(): Promise<ApiRoute[]> {
   return getJson<ApiRoute[]>('/api/trunkline/routes')
 }
 
+/** The projects a new thread can be filed under — enabled ones only. */
+export function fetchProjects(): Promise<ApiProject[]> {
+  return getJson<ApiProject[]>('/api/trunkline/projects')
+}
+
 export function fetchThreads(): Promise<ApiThread[]> {
   return getJson<ApiThread[]>('/api/trunkline/threads')
 }

@@ -148,7 +148,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     reception_teleport_destination: str = "thread"
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
     allow_reception_run: bool = False
-    models: dict[str, Model | str] = field(
+    models: dict[AgentRouteModelName, Model | str] = field(
         default_factory=lambda: {
             "test": "fake-model",
             "deepseek:deepseek-v4-flash": "fake-model",

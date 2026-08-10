@@ -81,6 +81,21 @@ export interface RetryPromptPart {
   timestamp?: string
 }
 
+/** The request-side parts the console rebuilds cards from. Everything else a
+ *  request carries — the user prompt, the system prompt — is already in the chat
+ *  ledger or belongs to nobody, and arrives as a `part_kind` this ignores. */
+export type ModelRequestPart =
+  | ToolReturnPart
+  | RetryPromptPart
+  | { part_kind: 'user-prompt' | 'system-prompt' }
+
+/** One persisted model message. This is the agent's own turn history, recorded
+ *  under the run: the only place a finished thread's thinking and tool calls
+ *  survive, since the chat ledger holds what was said and nothing else. */
+export type ApiModelMessage =
+  | { kind: 'request'; parts: ModelRequestPart[]; timestamp: string | null }
+  | { kind: 'response'; parts: ModelResponsePart[]; timestamp: string }
+
 export interface TextPartDelta {
   part_delta_kind: 'text'
   content_delta: string
@@ -332,9 +347,10 @@ export interface ApiRoute {
 
 /*
  * The REST reads are the backend transmuters themselves (octomate/schemas/),
- * not a console-shaped copy — so these mirror the rows field for field. Two
- * relations never arrive: a thread's `messages` are their own request, and a
- * run's model transcript is the agent's own history and never leaves.
+ * not a console-shaped copy — so these mirror the rows field for field. One
+ * relation never arrives: a thread's `messages` are their own request. A run's
+ * model messages do arrive, under the run and only there — they are where a
+ * finished thread's thinking and tool calls are.
  */
 
 /** One handoff: the point an agent-model route took the thread over. */
@@ -347,6 +363,10 @@ export interface ApiHandoff {
   reason: string
   hint: string
   brief: string
+  /** the conversation this handed the thread to — the session it opened, or
+   *  re-claimed when that agent already had one in the thread */
+  target_conversation_id: string | null
+  source_conversation_id: string | null
   created_at: string
 }
 
@@ -399,12 +419,14 @@ export interface ApiAgentRun {
   kind: 'octomate' | 'external'
   conversation_id: string
   name: string | null
-  /** the directory this run ran in; "" when its source reported none */
-  cwd: string
+  /** the directory this run ran in; null when its source reported none */
+  cwd: string | null
   parent_run_id: string | null
   parent_tool_call_id: string | null
   started_at: string | null
   external_session_id?: string | null
+  /** oldest first — what the run actually sent and received */
+  messages: ApiModelMessage[]
 }
 
 export interface ApiConversation {
@@ -423,7 +445,8 @@ export interface ApiConversation {
   runs: ApiAgentRun[]
 }
 
-/** The project a thread's work is in. Read-only — the relay takes no writes. */
+/** The project a thread's work is in, or one a new thread can be filed under.
+ *  Read-only — the relay takes a project's *name* on a directive, never a row. */
 export interface ApiProject {
   id: string
   name: string
@@ -431,6 +454,8 @@ export interface ApiProject {
   root: string
   extra_roots: string[]
   description: string | null
+  /** false once its root is no longer on disk; /projects offers only enabled ones */
+  enabled: boolean
 }
 
 /** An unanswered batch, in the same action shapes the stream's `action_batch`
@@ -449,6 +474,9 @@ export interface DirectiveBody {
   text: string
   message_id?: string
   model?: string
+  /** a project name from /projects; honored on a thread's first directive only,
+   *  and omitted for a thread that is in no project at all */
+  project?: string
 }
 
 export interface BatchResponseBody {

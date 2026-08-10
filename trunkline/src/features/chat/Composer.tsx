@@ -41,7 +41,10 @@ function RouteSelector() {
     return [...byAgent.entries()].map(([name, models]) => ({
       name,
       code: name.slice(0, 2).toUpperCase(),
-      desc: 'configured route',
+      // Every agent the instance runs is offered here, not only this channel's
+      // configured entry routing — so "configured route" would be a claim about
+      // half of them.
+      desc: 'registered agent',
       models,
     }))
   }, [routesData])

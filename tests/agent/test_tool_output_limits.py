@@ -76,7 +76,7 @@ def _tentacle() -> tuple[InklingTentacle, FakeConversationManager]:
         "inkling",
         Octomate(conversations=conversations),
         models={
-            "scripted": FunctionModel(
+            "test": FunctionModel(
                 stream_function=_call_then_answer, model_name="scripted"
             )
         },

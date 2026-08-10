@@ -13,12 +13,13 @@ from octomate.types.projects import ProjectOrigin
 class ProjectManager:
     """The project registry: every code location Octomate knows by name.
 
-    A project exists because work happened in it. A native session running in a
-    directory nothing claims registers one (`ensure`), so the registry describes where
-    this machine is actually worked in rather than what an operator remembered to write
-    down. Nothing declares a project ahead of the first session that runs in one.
+    A project gets here two ways. The operator declares one in the ``projects:`` block,
+    which `reconcile` upserts at startup; or work happens in a directory nothing claims
+    and a native session registers it (`ensure`). The first is a trust act — a declared
+    project's `AGENTS.md` reaches an agent as instructions — and the second is a record
+    of where this machine is actually worked in.
 
-    Every registered project resolves, however it got there. Projects are expected to
+    Every enabled project resolves, however it got there. Projects are expected to
     remain a small registry and are all cached.
 
     Note the name collision: ``projects:`` here is the operator's registry of code
@@ -26,7 +27,8 @@ class ProjectManager:
     in ``tentacles/agents/claude/transcript.py``), which is transcript storage.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, config: dict[str, Project.Create] | None = None) -> None:
+        self.config = config or {}
         self.projects: dict[str, Project] = {}
         # (resolved root, project name), deepest first, so the first hit is the
         # longest prefix and a monorepo plus a sub-package can both be projects.
@@ -36,7 +38,8 @@ class ProjectManager:
         self.ensure_lock = asyncio.Lock()
 
     def get(self, name: str) -> Project | None:
-        """The project called ``name``, or None if none is registered as it.
+        """The project called ``name``, or None if none is registered as it. Disabled
+        ones answer too — a thread filed under one still has to say where it was.
 
         Reads the cache the registry keeps, so it does no IO and is safe from a sync
         caller.
@@ -67,6 +70,69 @@ class ProjectManager:
         """
         async with async_session() as session:
             self.index(await session.list(Project, limit=None))
+
+    async def reconcile(self) -> None:
+        """Upsert the declared block into the registry, then index what disk still has.
+
+        A declaration is matched to its row by `root`, not by name: the root is the
+        unique column and the identity, so declaring a directory a native session
+        already registered adopts that row — under the declared name — rather than
+        colliding with it on the way to a second row for one directory.
+
+        A row the block no longer declares is left exactly as it is. Declaring is not
+        the only way a project gets here, so absence from YAML says nothing about a
+        project a Codex session registered.
+
+        What does get cleared is `enabled`, for every row whose root is no longer a
+        directory on disk — a deleted checkout, an unmounted drive. The row stays, so
+        the threads and runs that name it still read back, and it re-enables by itself
+        the moment the directory is there again.
+
+        Both conflict checks run over the reconciled registry rather than over the
+        declared block, because a declaration collides with a project a session
+        registered as readily as with another declaration, and the operator reading the
+        error needs to be told which two.
+        """
+        async with async_session() as session:
+            stored = list(await session.list(Project, limit=None))
+            by_root = {project.root.resolve(): project for project in stored}
+            for name, config in self.config.items():
+                # Shelled here and not at config time: a transmuter validated outside
+                # the materia carries no row, and this is the first place inside one.
+                declared = Project.shell(config)
+                declared.name = name
+                project = by_root.get(declared.root.resolve())
+                if project is None:
+                    session.add(declared)
+                    stored.append(declared)
+                    continue
+                project.name = name
+                project.extra_roots = declared.extra_roots
+                project.description = declared.description
+                project.permission_mode = declared.permission_mode
+            named: dict[str, Path] = {}
+            rooted: dict[Path, str] = {}
+            for project in stored:
+                # Ahead of the unique constraint, which would refuse the same rename
+                # without saying which two directories wanted the name.
+                if (other := named.get(project.name)) is not None:
+                    raise ValueError(
+                        f"{other} and {project.root} are both named {project.name!r}"
+                    )
+                named[project.name] = project.root
+                # Every root a project answers to, so an `extra_roots` entry pointing at
+                # another project is refused too — nothing constrains those, and a
+                # directory two projects claim resolves to whichever sorted first.
+                for root in project.roots:
+                    if (claimed_by := rooted.get(root.resolve())) is not None:
+                        raise ValueError(
+                            f"{root} is claimed by both {claimed_by!r} and "
+                            f"{project.name!r}"
+                        )
+                    rooted[root.resolve()] = project.name
+                project.enabled = project.root.is_dir()
+            await session.commit()
+            self.index(stored)
 
     async def ensure(self, cwd: Path, *, origin: ProjectOrigin) -> Project:
         """The project `cwd` is in, registering one rooted there if none claims it yet.
@@ -122,6 +188,10 @@ class ProjectManager:
     def index(self, projects: Iterable[Project]) -> None:
         """Rebuild the by-name map and the resolution index from `projects`.
 
+        Every project is kept by name, disabled ones included, so a thread filed under
+        one still reads back and its name stays taken. Only enabled projects get roots:
+        a directory that is gone resolves nothing, and a run must not be sent there.
+
         Roots are sorted deepest first, so the first hit is the longest prefix and a
         monorepo plus a package inside it can both be projects.
         """
@@ -130,6 +200,7 @@ class ProjectManager:
             (
                 (root.resolve(), project.name)
                 for project in self.projects.values()
+                if project.enabled
                 for root in (project.root, *project.extra_roots)
             ),
             key=lambda pair: len(pair[0].parts),

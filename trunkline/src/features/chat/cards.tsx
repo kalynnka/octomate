@@ -253,7 +253,10 @@ function CodeRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'code' }
 }
 
 function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'think' }>; cardMax: string; i?: number }) {
-  const open = useConsole((s) => s.open[item.uid] ?? true)
+  // Open while the model is still thinking, folded the moment it stops: the
+  // reasoning is worth watching live and worth getting out of the way after.
+  // An explicit toggle is remembered by uid and outlives the transition.
+  const open = useConsole((s) => s.open[item.uid] ?? item.thinking)
   const { toggleCardOpen } = useConsole((s) => s.actions)
   return (
     <div
@@ -261,7 +264,7 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
       className="lt-entry"
       style={{ '--i': i ?? 0, maxWidth: cardMax, border: '1px solid var(--line-divider)', background: 'var(--card-bg)' } as CSSProperties}
     >
-      <div onClick={() => toggleCardOpen(item.uid, true)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 13px', cursor: 'pointer' }}>
+      <div onClick={() => toggleCardOpen(item.uid, item.thinking)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 13px', cursor: 'pointer' }}>
         <Disclose open={open} style={{ ...mono(11), ...ghost3, width: 12 }} />
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />
         <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Thinking</span>

@@ -6,6 +6,7 @@
  * family onto the card language the comp defined.
  */
 import type {
+  ApiModelMessage,
   ModelResponsePart,
   ToolCallPart,
   WireDeferredApproval,
@@ -99,6 +100,94 @@ function toolIcon(name: string): 'search' | 'file-diff' | 'send' | 'file' {
   return 'file'
 }
 
+/**
+ * A finished run's thinking and tool cards, rebuilt from the model messages the
+ * run recorded. This is the reload path: the chat ledger keeps what was said, so
+ * a reader coming back to a thread would otherwise see a prompt, an answer, and
+ * no sign of the work between them.
+ *
+ * Only the middle is rebuilt. Reply text is deliberately left out — the thread
+ * ledger already carries it, and pushing it again would double every answer.
+ * Returns are indexed first so each tool card is born settled; one with no return
+ * stays `run`, which is what a run that died mid-call actually left behind.
+ */
+export function replayRun(messages: ApiModelMessage[]): LedgerItemDraft[] {
+  const returns = new Map<string, { result: string; failed: boolean }>()
+  for (const message of messages) {
+    for (const part of message.parts) {
+      // A function tool answers in the next request; a native one answers in the
+      // same response it was called from.
+      if (part.part_kind === 'tool-return' || part.part_kind === 'builtin-tool-return') {
+        returns.set(part.tool_call_id, {
+          result: contentText(part.content),
+          failed: part.outcome !== undefined && part.outcome !== 'success',
+        })
+      } else if (part.part_kind === 'retry-prompt') {
+        returns.set(part.tool_call_id, {
+          result: contentText(part.content),
+          failed: true,
+        })
+      }
+    }
+  }
+
+  const toolCard = (
+    callId: string,
+    name: string,
+    args: string | Record<string, unknown> | null,
+  ): LedgerItemDraft => {
+    const settled = returns.get(callId)
+    const clipped = clip(argsText(args))
+    if (settled === undefined) {
+      return {
+        kind: 'tool',
+        name,
+        icon: toolIcon(name),
+        status: 'run',
+        detail: { type: 'plain', args: clipped, res: '' },
+      }
+    }
+    return {
+      kind: 'tool',
+      name,
+      icon: toolIcon(name),
+      status: 'done',
+      badge: settled.failed ? { label: 'failed', tone: 'terra' } : undefined,
+      detail: {
+        type: 'plain',
+        args: clipped,
+        res: clip(settled.result) || '(no output)',
+      },
+    }
+  }
+
+  const items: LedgerItemDraft[] = []
+  for (const message of messages) {
+    if (message.kind !== 'response') continue
+    for (const part of message.parts) {
+      switch (part.part_kind) {
+        case 'thinking':
+          // No duration survives the row, and a made-up one would be a claim.
+          items.push({ kind: 'think', dur: '', text: part.content, thinking: false })
+          break
+        case 'tool-call':
+        case 'builtin-tool-call':
+          items.push(toolCard(part.tool_call_id, part.tool_name, part.args))
+          break
+        case 'builtin-tool-return':
+          break
+        case 'compaction':
+          items.push({ kind: 'divider', label: 'context compacted' })
+          break
+        case 'text':
+        case 'file':
+          break
+      }
+    }
+  }
+  return items
+}
+
 export class TurnFold {
   private sink: FoldSink
   private streamUid: string | null = null
@@ -127,7 +216,7 @@ export class TurnFold {
   private closeThink() {
     if (this.thinkUid !== null) {
       const secs = Math.max(1, Math.round((Date.now() - this.thinkStarted) / 1000))
-      this.sink.patch(this.thinkUid, { dur: `${secs}s` })
+      this.sink.patch(this.thinkUid, { dur: `${secs}s`, thinking: false })
       this.thinkUid = null
     }
   }
@@ -163,6 +252,7 @@ export class TurnFold {
           kind: 'think',
           dur: '…',
           text: part.content,
+          thinking: true,
         })
         break
       case 'builtin-tool-call':

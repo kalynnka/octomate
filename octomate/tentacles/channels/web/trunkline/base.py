@@ -53,6 +53,7 @@ from octomate.schemas.awakes import AwakeSignal, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.project import Project
 from octomate.schemas.segments import ImageSegment, MessageSegment, TextSegment
 from octomate.schemas.thread import Thread
 from octomate.schemas.user import UserProfile
@@ -117,6 +118,7 @@ class TrunklineDirective(BaseModel):
     text: str
     message_id: str | None = None
     model: str | None = None
+    project: str | None = None
 
 
 class RouteLockedError(Exception):
@@ -436,13 +438,42 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         )
 
     def routable_agents(self) -> list[AgentModelConfig]:
-        """The agent-model routes the console offers and can summon — the
-        configured agents whose agent tentacle is registered."""
-        return [
+        """Every agent-model route the console can open a thread on.
+
+        Wider than this channel's `agents:` list, which is the entry routing a
+        chat platform needs: nobody walks into the console, so the operator picking
+        an agent should see every model every registered tentacle runs. The
+        channel's own entries come first all the same, so the picker's default is
+        still this channel's entry agent.
+        """
+        declared = [
             agent_config
             for agent_config in self.config.agents
             if agent_config.agent in self.octomate.agents
         ]
+        seen = {(agent_config.agent, agent_config.model) for agent_config in declared}
+        return declared + [
+            AgentModelConfig(agent=agent_id, model=model)
+            for agent_id, agent in self.octomate.agents.items()
+            for model in agent.models
+            if (agent_id, model) not in seen
+        ]
+
+    def chosen_project(self, name: str | None) -> Project | None:
+        """The registered project a directive named, or None when it named none.
+
+        The console is where a project is chosen, since a console thread has no
+        directory of its own to be filed from — and no project is a real answer: the
+        thread is then a chat, and its agent works nowhere in particular. An
+        unregistered name is refused rather than dropped, because a typo would
+        otherwise read as that answer.
+        """
+        if name is None:
+            return None
+        project = self.octomate.projects.get(name)
+        if project is None or not project.enabled:
+            raise ValueError(f"no enabled project is registered as {name!r}")
+        return project
 
     async def claim_route(self, thread: Thread, selected_model: str | None) -> None:
         """The route is chosen at thread creation only: the first directive's
@@ -548,7 +579,8 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
                 chat_id=event.chat_id,
                 user_id=event.user_id,
                 channel_thread_id=event.channel_thread_id,
-            )
+            ),
+            project=self.chosen_project(directive.project),
         )
         await self.claim_route(thread, directive.model)
         thread_message = await self.octomate.thread_manager.record_inbound(event)

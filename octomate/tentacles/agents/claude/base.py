@@ -635,7 +635,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 run_id=run_id,
                 messages=accumulator.messages,
                 name=run_name,
-                cwd=run_cwd,
+                cwd=Path(run_cwd),
                 external_id=accumulator.session_id,
             )
             if source_thread_message_ids:

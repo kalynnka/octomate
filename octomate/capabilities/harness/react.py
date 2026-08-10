@@ -10,6 +10,7 @@ from typing import Any, Generic, TypeVar
 import anyio
 import logfire
 from anyio.abc import ObjectSendStream
+from pydantic import DirectoryPath
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -91,6 +92,9 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     suspender: DeferredSuspender | None = None
     output_type: OutputSpec[ReactOutputT] | None = None
     run_name: str = "react"
+    # The directory this run happens in, recorded on every run it persists. None when
+    # the run is in no project, since a react run has no directory of its own.
+    cwd: DirectoryPath | None = None
     model: Model | KnownModelName | str | None = None
     instructions: AgentInstructions[ReactDepsT] = None
     model_settings: AgentModelSettings[ReactDepsT] | None = None
@@ -296,6 +300,7 @@ class RunAgent(
                 run_id=result.run_id,
                 messages=new_messages,
                 name=ctx.deps.run_name,
+                cwd=ctx.deps.cwd,
             )
         # Only the turn that folds the pending messages into a user prompt binds
         # them. A deferred resume or in-process resolver loop-back re-enters

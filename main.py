@@ -111,7 +111,7 @@ def create_app() -> FastAPI:
 
     octomate = Octomate(
         users=UserManager(config.users),
-        projects=ProjectManager(),
+        projects=ProjectManager(config.projects),
         oauth_encryption_key=config.oauth.encryption_key,
     )
 

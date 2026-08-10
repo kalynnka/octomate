@@ -30,6 +30,10 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.settings import ModelSettings, ThinkingEffort, merge_model_settings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai_harness.code_mode import CodeMode
+from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.repo_context import RepoContext
+from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 
 from octomate.capabilities import UserScopedCapability
 from octomate.capabilities.harness.agent import Agent
@@ -47,8 +51,10 @@ from octomate.capabilities.harness.react import (
     StartTurn,
     iter_react_graph_events,
 )
+from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
@@ -103,7 +109,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         octomate: Octomate,
         *,
         agent: Agent[None, InklingOutput] | None = None,
-        models: Mapping[str, Model | str] | None = None,
+        models: Mapping[AgentRouteModelName, Model | str] | None = None,
         name: str = "octomate-inkling",
         toolsets: Sequence[AbstractToolset[None]] | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
@@ -168,6 +174,31 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             )
         )
         return [capability for capability in bound if capability is not None]
+
+    def project_capabilities(self, project: Project) -> list[AgentCapability[None]]:
+        """What a run gets for working in `project`: its instructions, and the tools
+        to act in it. A run in no project gets none of these and is a conversation.
+
+        Every one is rooted at `project.root`, and nothing widens that. `extra_roots`
+        are left out — a settings tree is not where a repo keeps its `AGENTS.md`, and
+        a second root is a second place to write. `RepoContext`'s walk-up stays off
+        (`home_dir=None`), so an ancestor's instructions never load; the operator's own
+        `~/.claude/CLAUDE.md` is what that protects.
+        """
+        return [
+            RepoContext[None](workspace_dir=project.root),
+            FileSystem[None](root_dir=project.root),
+            Shell[None](
+                cwd=project.root,
+                # A repo's own `AGENTS.md` reaches this agent as instructions, and now
+                # those instructions have a shell. The provider keys this process runs
+                # on are not the project's to spend.
+                denied_env_patterns=LLM_API_KEY_ENV_PATTERNS,
+            ),
+            # Last, so it wraps the tools above: the model orchestrates reads, edits
+            # and commands as Python in one call instead of a turn apiece.
+            CodeMode[None](),
+        ]
 
     async def __aenter__(self) -> Self:
         # A capability holding warm resources of its own (the per-user GitHub MCP
@@ -588,8 +619,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # A non-interactive run declines every deferred action at once: no
         # human exists, so asks and approvals resolve to declines in-process
         # and the react loop continues to a final answer. That is all
-        # `interactive` means — `capabilities` arrives here final; which set to
-        # mount is the entrypoints' decision.
+        # `interactive` means — which caller-chosen set to mount is the entrypoints'
+        # decision, and `capabilities` arrives here holding it. The run's project is
+        # the one thing added below: it comes off the thread rather than the caller,
+        # so every entrypoint would otherwise have to resolve it identically.
         resolver = self.deferred_resolver if interactive else DeclineResolver()
         resolved_run_name = run_name or "react"
         # Effort IS pydantic-ai's `thinking` scale; pass it through, layered over
@@ -610,6 +643,17 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             if output_type is None
             else output_type
         )
+
+        capabilities = list(capabilities or [])
+        # The react graph carries only the thread/agent identity; each node fetches
+        # the live conversation (and its history) from the ConversationManager, the
+        # single source of truth — no message-history copy is threaded here. A
+        # conversation is owned by a thread, so the run needs one.
+        if thread_id is None:
+            raise ValueError("agent run requires a thread_id to own its conversation")
+        project = await self.run_project(thread_id)
+        if project is not None:
+            capabilities.extend(self.project_capabilities(project))
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
@@ -619,6 +663,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             suspender=deferred_suspender,
             output_type=react_output_type,
             run_name=resolved_run_name,
+            # Where this run happened, for the run to record: its project's root, or
+            # nothing, since inkling has no configured directory to fall back to.
+            cwd=project.root if project is not None else None,
             model=model,
             instructions=instructions,
             model_settings=model_settings,
@@ -632,12 +679,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             capabilities=capabilities,
             spec=spec,
         )
-        # The react graph carries only the thread/agent identity; each node fetches
-        # the live conversation (and its history) from the ConversationManager, the
-        # single source of truth — no message-history copy is threaded here. A
-        # conversation is owned by a thread, so the run needs one.
-        if thread_id is None:
-            raise ValueError("agent run requires a thread_id to own its conversation")
         state = ReactState(
             conversation_address=conversation_address,
             agent_tentacle_id=self.id,

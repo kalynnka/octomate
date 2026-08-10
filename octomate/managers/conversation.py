@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Literal, TypeVar
 
 from arcanus.materia.sqlalchemy import noload, selectinload
@@ -164,23 +165,26 @@ class ConversationManager:
             )
         return list(rows)
 
-    async def for_thread(self, thread_id: uuid.UUID) -> list[Conversation]:
-        """The thread's agent conversations, subagents included, each with its
-        runs — and none of the model ledger.
+    async def for_thread(
+        self, thread_id: uuid.UUID, *, with_run_messages: bool = False
+    ) -> list[Conversation]:
+        """The thread's agent conversations, subagents included, each with its runs.
 
-        Both message relations here are lazy="selectin", so the plain query
-        would read every transcript the thread ever produced. That is the
-        agent's own history, reached through the run it belongs to; a reader
-        listing conversations wants the runs, which is what the two `noload`s
-        leave.
+        Both message relations here are lazy="selectin", so the plain query would read
+        every model message the thread ever produced twice over — once under the
+        conversation and once under the run that owns it. The conversation's copy is
+        always dropped; the run's is what `with_run_messages` asks for, and it is the
+        only place the thinking and the tool calls are, so a reader rebuilding a
+        thread's middle needs it and a reader listing conversations does not.
         """
+        runs = selectinload(Conversation["runs"])
         async with async_session() as session:
             rows = await session.list(
                 Conversation,
                 limit=None,
                 options=[
                     noload(Conversation["messages"]),
-                    selectinload(Conversation["runs"]).noload(AgentRun["messages"]),
+                    runs if with_run_messages else runs.noload(AgentRun["messages"]),
                 ],
                 expressions=[Conversation["thread_id"] == thread_id],
             )
@@ -203,13 +207,13 @@ class ConversationManager:
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
-        cwd: str = "",
+        cwd: Path | None = None,
         external_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
         """Persist a fresh agent run and keep the cached conversation in sync.
-        `cwd` is the directory the run happened in, empty when its caller has none.
+        `cwd` is the directory the run happened in, None when its caller has none.
         `external_id`, when given, updates the conversation's resumable agent
         session handle in the same commit (external-runtime agents own their own
         session). The parent pair marks a subagent's turn: the run whose tool
@@ -240,7 +244,7 @@ class ConversationManager:
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
-        cwd: str = "",
+        cwd: Path | None = None,
         external_session_id: str,
         source: str | None = None,
         start_offset: int | None = None,

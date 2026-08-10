@@ -8,6 +8,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast, overload
 
 from fastapi import APIRouter, Depends
@@ -888,7 +889,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_id=run_id,
             messages=accumulator.messages,
             name=run_name,
-            cwd=run_cwd,
+            cwd=Path(run_cwd),
             external_id=accumulator.thread_id or codex_thread_id,
         )
         if source_thread_message_ids:

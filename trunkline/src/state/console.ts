@@ -69,6 +69,62 @@ const nearChatBottom = () => {
   return el === null || el.scrollHeight - el.scrollTop - el.clientHeight < 120
 }
 
+/** Where a synced row lands under its pane's header — the offset ledger jumps
+ *  already use, so scrolling to a row and syncing to it agree. */
+const RAIL_LEAD = 46
+
+const atTail = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 8
+
+// The pane whose scrolling is currently driving the other. Its own scroll
+// events are what moving the other pane provokes, and following those back
+// would be the two rails chasing each other.
+let railDriver: 'chat' | 'timeline' | null = null
+let railDriverTimer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * Hold the ledger and the timeline on the same moment. Both index the same
+ * cards — a timeline row carries the uid of the chat card it points at — so
+ * whichever one the reader scrolls, the other lands on the row it is showing,
+ * and a pane at the tail puts the other at the tail: the latest turn is what
+ * both open on.
+ */
+export const syncRails = (source: 'chat' | 'timeline') => {
+  if (railDriver !== null && railDriver !== source) return
+  const log = document.getElementById('trk-chatlog')
+  const rail = document.getElementById('trk-timeline')
+  if (log === null || rail === null) return
+  const [from, to] = source === 'chat' ? [log, rail] : [rail, log]
+
+  const drive = (top: number) => {
+    if (Math.abs(to.scrollTop - top) < 2) return
+    railDriver = source
+    clearTimeout(railDriverTimer)
+    railDriverTimer = setTimeout(() => (railDriver = null), 160)
+    to.scrollTop = top
+  }
+
+  if (atTail(from)) {
+    drive(to.scrollHeight - to.clientHeight)
+    return
+  }
+  // The last row that has scrolled past the lead line is the one being read;
+  // rows and cards share the ledger's order, so the first row still below it
+  // ends the search. A row whose card has paged out of the ledger is skipped.
+  const fold = from.getBoundingClientRect().top + RAIL_LEAD
+  let lead: [HTMLElement, HTMLElement] | null = null
+  for (const row of rail.querySelectorAll<HTMLElement>('[data-uid]')) {
+    const card = document.getElementById(`pm-${row.dataset.uid}`)
+    if (card === null) continue
+    const pair: [HTMLElement, HTMLElement] = source === 'chat' ? [card, row] : [row, card]
+    if (pair[0].getBoundingClientRect().top > fold) break
+    lead = pair
+  }
+  if (lead === null) return
+  drive(
+    to.scrollTop + lead[1].getBoundingClientRect().top - to.getBoundingClientRect().top - RAIL_LEAD,
+  )
+}
+
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 export const goLedgerTarget = (tgt?: string) => {
   const log = document.getElementById('trk-chatlog')
@@ -154,6 +210,8 @@ export interface ConsoleActions {
     patch: Partial<Pick<ConsoleState, 'ntAgent' | 'ntModel' | 'ntEffort' | 'ntRouteId'>>,
   ): void
   setNtMenu(menu: ConsoleState['ntMenu'], pos?: { top: number; right: number }): void
+  /** file the thread being created under a project, or under none */
+  setNtProject(name: string | null): void
   closeNtMenu(): void
   sendNewThread(text: string): void
 }
@@ -219,8 +277,12 @@ interface ConsoleState {
   ntEffort: string
   /** exact route id ("agent:model") for the wire; null = relay default */
   ntRouteId: string | null
-  /** the composer's route picker — the only new-thread menu the relay honors */
-  ntMenu: 'sel' | null
+  /** the project a new thread will be filed under; null is a real answer —
+   *  the thread is then a chat, in no project at all */
+  ntProject: string | null
+  /** the new-thread menus the relay honors: the composer's route picker, and
+   *  the strip's project picker */
+  ntMenu: 'sel' | 'proj' | null
   ntMenuPos: { top: number; right: number }
 
   actions: ConsoleActions
@@ -461,19 +523,26 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     loadOlder() {
       const s = get()
       if (!s.detail || s.ledgerN >= s.detail.ledger.length) return
-      // Reveal the next page above, keeping the viewport anchored on the
-      // rows the reader was looking at.
-      const el = document.getElementById('trk-chatlog')
-      const ph = el?.scrollHeight ?? 0
-      const pt = el?.scrollTop ?? 0
+      // Reveal the next page above, keeping both rails anchored on the rows the
+      // reader was looking at — the timeline indexes the same window, so a page
+      // grows it from the top too and it drifts by the same amount.
+      const held = ['trk-chatlog', 'trk-timeline'].map((id) => {
+        const el = document.getElementById(id)
+        return { id, height: el?.scrollHeight ?? 0, top: el?.scrollTop ?? 0 }
+      })
       set((x) => ({ ledgerN: x.ledgerN + LEDGER_PAGE }))
       requestAnimationFrame(() => {
-        const e2 = document.getElementById('trk-chatlog')
-        if (e2) e2.scrollTop = e2.scrollHeight - ph + pt
+        for (const { id, height, top } of held) {
+          const el = document.getElementById(id)
+          if (el) el.scrollTop = el.scrollHeight - height + top
+        }
       })
     },
 
     onChatScroll(scrollTop: number) {
+      // Every scroll of the ledger, the reader's and ours alike — which is what
+      // puts the timeline at the tail when a thread opens there.
+      syncRails('chat')
       const s = get()
       if (s.ntOn) return
       if (scrollTop < 40) actions.loadOlder()
@@ -938,6 +1007,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           push({
             kind: 'think',
             dur: '1.3s',
+            thinking: false,
             text: 'Notes anchor on the cutover window. Strike the loose lines, fold a hard stop and a longer shim hold into §03, stamp the notes outdated at their anchors, cut REV_03.',
           } as LedgerItem)
         })
@@ -1017,6 +1087,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         ntOn: true,
         ntStarted: false,
         ntTitle: '',
+        ntProject: null,
         ntMenu: null,
         live: [],
         running: false,
@@ -1044,6 +1115,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       set((s) => ({ ntMenu: s.ntMenu === menu ? null : menu, ...(pos ? { ntMenuPos: pos } : {}) }))
     },
     closeNtMenu: () => set({ ntMenu: null }),
+    setNtProject: (name: string | null) => set({ ntProject: name }),
     sendNewThread(text: string) {
       const s = get()
       const body = text.trim()
@@ -1069,8 +1141,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // The pick is honored only on the first directive; after that the
       // thread's route is fixed.
       const routeId = started ? undefined : (s.ntRouteId ?? undefined)
+      // Same rule for the project: a thread's is frozen when the row is written,
+      // so only the directive that creates it carries one.
+      const project = started ? undefined : (s.ntProject ?? undefined)
       void runLive(threadId, (onEvent) =>
-        streamDirective(threadId, { text: body, model: routeId }, onEvent),
+        streamDirective(threadId, { text: body, model: routeId, project }, onEvent),
       )
 
     },
@@ -1117,6 +1192,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     ntOn: false,
     ntStarted: false,
     ntTitle: '',
+    ntProject: null,
     ntAgent: 'claude',
     ntModel: 'opus-4.1',
     ntRouteId: null,

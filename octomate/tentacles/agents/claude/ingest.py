@@ -267,7 +267,7 @@ class ClaudeHookIngest:
                 )
             ],
             name=CLAUDE_NATIVE_ID,
-            cwd=event.cwd,
+            cwd=Path(event.cwd) if event.cwd else None,
             external_session_id=event.agent_id,
             parent_run_id=event.prompt_id,
         )
@@ -404,7 +404,7 @@ class ClaudeHookIngest:
             run_id=event.prompt_id,
             messages=messages,
             name=CLAUDE_NATIVE_ID,
-            cwd=event.cwd,
+            cwd=Path(event.cwd) if event.cwd else None,
             external_session_id=event.session_id,
         )
 
