@@ -76,6 +76,13 @@ class DirectiveBody(BaseModel):
         "on a thread's first directive; a differing pick on an owned thread is "
         "refused with 409 (re-routing needs a manual handoff).",
     )
+    project: str | None = Field(
+        default=None,
+        description="A project name from GET /projects, filing the thread under "
+        "it. Honored only on a thread's first directive, since a thread's project "
+        "is frozen when the row is written; null is a real answer, and leaves the "
+        "thread a chat that is in no project at all.",
+    )
 
 
 class BatchResponseBody(BaseModel):
@@ -114,6 +121,12 @@ def build_trunkline_router(
             )
             for agent_config in channel.routable_agents()
         ]
+
+    @router.get("/projects")
+    async def list_projects() -> list[Project]:
+        """The projects a new thread can be filed under — the enabled ones, since
+        a project whose root disk has lost is nowhere to work."""
+        return [project for project in octomate.projects.list() if project.enabled]
 
     @router.get("/channels")
     async def list_channels() -> list[ChannelInfo]:
@@ -155,16 +168,22 @@ def build_trunkline_router(
     @router.get(
         "/threads/{thread_id}/conversations",
         summary="The thread's agent conversations, each with its runs",
-        response_model_exclude={
-            "__all__": {"messages": True, "runs": {"__all__": {"messages"}}}
-        },
+        response_model_exclude={"__all__": {"messages"}},
     )
     async def thread_conversations(thread_id: uuid.UUID) -> list[Conversation]:
         """Subagent conversations included — they name their parent, so a reader
-        can fold them under the run whose tool call spawned them."""
+        can fold them under the run whose tool call spawned them.
+
+        Each run carries its model messages, which is where the thinking and the
+        tool calls are: the chat ledger holds what was said, and a reader reloading
+        a thread would otherwise watch a run's whole middle disappear. The
+        conversation's own `messages` stay excluded — that relation is the same rows
+        under a different parent, and one copy is enough."""
         if await octomate.thread_manager.get(thread_id, with_messages=False) is None:
             raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
-        return await octomate.conversations.for_thread(thread_id)
+        return await octomate.conversations.for_thread(
+            thread_id, with_run_messages=True
+        )
 
     @router.get("/threads/{thread_id}/project")
     async def thread_project(thread_id: uuid.UUID) -> Project | None:
@@ -202,6 +221,7 @@ def build_trunkline_router(
             text=body.text,
             message_id=body.message_id,
             model=body.model,
+            project=body.project,
         )
         try:
             return await channel.handle_directive(directive)

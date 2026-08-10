@@ -85,9 +85,12 @@ async def _post(
     *,
     thread_id: str = "thread-1",
     model: str | None = None,
+    project: str | None = None,
 ) -> str:
     response = await channel.handle_directive(
-        TrunklineDirective(thread_id=thread_id, text=prompt, model=model)
+        TrunklineDirective(
+            thread_id=thread_id, text=prompt, model=model, project=project
+        )
     )
     return await _drain(response)
 
@@ -306,6 +309,133 @@ async def test_route_change_after_first_directive_is_refused(
     assert [handoff.to_agent_tentacle_id for handoff in thread.handoffs] == ["claude"]
 
 
+async def test_routes_offer_every_agent_the_instance_runs(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    # Nobody walks into the console, so the operator picking an agent sees all of
+    # them — not just the entry routing this channel declares. The declared one
+    # still comes first, which is what the picker defaults to.
+    octomate = Octomate()
+    channel = await _register_routes(
+        octomate,
+        {"inkling": build_non_stream_agent(), "claude": build_non_stream_agent()},
+    )
+    channel.config.agents = [AgentModelConfig(agent="claude", model=RECEPTION_MODEL)]
+
+    offered = [
+        (agent_config.agent, agent_config.model)
+        for agent_config in channel.routable_agents()
+    ]
+
+    assert offered[0] == ("claude", RECEPTION_MODEL)
+    assert set(offered) == {("claude", RECEPTION_MODEL), ("inkling", RECEPTION_MODEL)}
+
+
+async def test_a_first_directive_files_the_thread_under_a_project(
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+) -> None:
+    # A console thread has no directory of its own to be filed from, so the
+    # operator's pick is the whole of how it gets one.
+    inky = tmp_path / "inky"
+    inky.mkdir()
+    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+
+    await _post(channel, "what is this repo?", project="inky")
+
+    thread = await octomate.thread_manager.ensure(_console_address())
+    project = await thread.project
+    assert project is not None
+    assert project.root == inky
+
+
+async def test_a_directive_naming_no_project_leaves_the_thread_a_chat(
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+) -> None:
+    # None is a real answer, not a missing one: the thread is a chat, and its
+    # agent works nowhere in particular.
+    inky = tmp_path / "inky"
+    inky.mkdir()
+    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+
+    await _post(channel, "just talk to me")
+
+    thread = await octomate.thread_manager.ensure(_console_address())
+    assert await thread.project is None
+
+
+async def test_a_directive_naming_an_unregistered_project_is_refused(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    # A typo would otherwise read as "no project", which is a real answer here.
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+
+    with pytest.raises(ValueError, match="no enabled project is registered"):
+        await _post(channel, "hello", project="ghost")
+
+
+async def test_a_new_thread_posted_by_the_console_carries_its_project(
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+) -> None:
+    """The whole path the console drives: pick a project, post the first directive
+    to a fresh thread key, and read the thread back filed under it."""
+    inky = tmp_path / "inky"
+    inky.mkdir()
+    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        offered = (await client.get("/api/trunkline/projects")).json()
+        await client.post(
+            "/api/trunkline/threads/trunkline-abc123/messages",
+            json={"text": "what is this repo?", "project": offered[0]["name"]},
+        )
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        filed = (
+            await client.get(f"/api/trunkline/threads/{listed['id']}/project")
+        ).json()
+
+    assert filed["name"] == "inky"
+    assert filed["root"] == str(inky)
+
+
+async def test_the_projects_endpoint_offers_only_enabled_ones(
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+) -> None:
+    inky = tmp_path / "inky"
+    inky.mkdir()
+    octomate = Octomate(
+        projects=await a_registry(
+            Project(root=inky),
+            Project(root=tmp_path / "deleted", enabled=False),
+        )
+    )
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        offered = (await client.get("/api/trunkline/projects")).json()
+
+    assert [project["name"] for project in offered] == ["inky"]
+    assert offered[0]["root"] == str(inky)
+
+
 async def test_threads_and_detail_endpoints(
     in_memory_engine: AsyncEngine,
 ) -> None:
@@ -368,7 +498,13 @@ async def test_threads_and_detail_endpoints(
         [run] = conversation["runs"]
         assert run["kind"] == "octomate"
         assert run["started_at"].endswith("Z") or "+" in run["started_at"]
-        assert "messages" not in run
+        # A run carries its model messages: the thinking and the tool calls are in
+        # there, and a reader reloading the thread rebuilds its middle from them.
+        assert [message["kind"] for message in run["messages"]] == [
+            "request",
+            "response",
+        ]
+        assert run["messages"][1]["parts"][0]["part_kind"] == "text"
 
         batches = await client.get(f"/api/trunkline/threads/{console['id']}/batches")
         assert batches.json() == []
@@ -406,10 +542,15 @@ async def test_threads_and_detail_endpoints(
 async def test_console_reads_never_load_the_model_ledger(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    """Keeping the transcript out of the payload is not keeping it out of the
-    query. Every message relation on this path is lazy="selectin", so without
-    the loader options each read would fetch every model message the thread ever
-    produced and then drop it on the floor."""
+    """Keeping the model ledger out of the payload is not keeping it out of the
+    query. Every message relation on this path is lazy="selectin", so without the
+    loader options each read would fetch every model message the thread ever
+    produced and then drop it on the floor.
+
+    `/conversations` is the one read that wants them — the thinking and the tool
+    calls are in there, and a reader rebuilding a thread's middle has nowhere else
+    to get them. It reads them once, under the run that owns them, never also under
+    the conversation."""
     octomate = Octomate()
     agent, _ = build_scripted_agent(["all done!"])
     channel = await _register(octomate, agent)
@@ -439,13 +580,18 @@ async def test_console_reads_never_load_the_model_ledger(
             "/api/trunkline/threads",
             base,
             f"{base}/messages",
-            f"{base}/conversations",
             f"{base}/project",
             f"{base}/batches",
         ):
             selects.clear()
             assert (await client.get(url)).status_code == 200
             assert not any("model_messages" in select for select in selects), url
+
+        selects.clear()
+        assert (await client.get(f"{base}/conversations")).status_code == 200
+        ledger_reads = [select for select in selects if "model_messages" in select]
+        assert len(ledger_reads) == 1
+        assert "agent_runs" in ledger_reads[0] or "run_id" in ledger_reads[0]
 
         # The listing names threads and opens none of them.
         selects.clear()

@@ -165,23 +165,26 @@ class ConversationManager:
             )
         return list(rows)
 
-    async def for_thread(self, thread_id: uuid.UUID) -> list[Conversation]:
-        """The thread's agent conversations, subagents included, each with its
-        runs — and none of the model ledger.
+    async def for_thread(
+        self, thread_id: uuid.UUID, *, with_run_messages: bool = False
+    ) -> list[Conversation]:
+        """The thread's agent conversations, subagents included, each with its runs.
 
-        Both message relations here are lazy="selectin", so the plain query
-        would read every transcript the thread ever produced. That is the
-        agent's own history, reached through the run it belongs to; a reader
-        listing conversations wants the runs, which is what the two `noload`s
-        leave.
+        Both message relations here are lazy="selectin", so the plain query would read
+        every model message the thread ever produced twice over — once under the
+        conversation and once under the run that owns it. The conversation's copy is
+        always dropped; the run's is what `with_run_messages` asks for, and it is the
+        only place the thinking and the tool calls are, so a reader rebuilding a
+        thread's middle needs it and a reader listing conversations does not.
         """
+        runs = selectinload(Conversation["runs"])
         async with async_session() as session:
             rows = await session.list(
                 Conversation,
                 limit=None,
                 options=[
                     noload(Conversation["messages"]),
-                    selectinload(Conversation["runs"]).noload(AgentRun["messages"]),
+                    runs if with_run_messages else runs.noload(AgentRun["messages"]),
                 ],
                 expressions=[Conversation["thread_id"] == thread_id],
             )
