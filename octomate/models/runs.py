@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from octomate.models.base import Base, MapperArgs
+from octomate.models.base import Base, MapperArgs, PathString
 
 if TYPE_CHECKING:
     from octomate.models.conversation import Conversation
@@ -53,10 +54,10 @@ class AgentRun(Base, TransmuterProxiedMixin):
         default=None,
         index=True,
     )
-    cwd: Mapped[str] = mapped_column(
-        String,
+    cwd: Mapped[Path | None] = mapped_column(
+        PathString,
         nullable=False,
-        default="",
+        default=None,
         server_default="",
         comment=(
             "The directory this run happened in, as its source reported it; empty "

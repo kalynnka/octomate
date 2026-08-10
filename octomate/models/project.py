@@ -4,30 +4,12 @@ import uuid
 from pathlib import Path
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import JSON, Dialect, String, UniqueConstraint, Uuid
+from sqlalchemy import JSON, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.types import TypeDecorator
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base
+from octomate.models.base import Base, PathString
 from octomate.types.projects import ProjectOrigin
-
-
-class PathString(TypeDecorator[Path]):
-    """A filesystem path, stored as text.
-
-    A root is a `Path` everywhere above this line. The driver binds only str, bytes,
-    int, float and None, so the conversion belongs here rather than at every caller.
-    """
-
-    impl = String
-    cache_ok = True
-
-    def process_bind_param(self, value: Path | None, dialect: Dialect) -> str | None:
-        return None if value is None else str(value)
-
-    def process_result_value(self, value: str | None, dialect: Dialect) -> Path | None:
-        return None if value is None else Path(value)
 
 
 class Project(Base, TransmuterProxiedMixin):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Annotated, Literal
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
@@ -31,10 +32,11 @@ class AgentRun(BaseTransmuter):
     kind: Literal["octomate"] = "octomate"
     conversation_id: uuid.UUID
     name: str | None = None
-    cwd: str = Field(
-        default="",
+    cwd: Path | None = Field(
+        default=None,
         description=(
-            "The directory this run happened in, as its source reported it; empty "
+            "The directory this run happened in, as its source reported it — spelled "
+            "by `Path`, so a trailing slash or a `.` segment is normalized away. None "
             "when the source reported none, which is never a guess."
         ),
     )

@@ -258,7 +258,7 @@ class CodexHookIngest:
             run_id=event.turn_id,
             messages=messages,
             name=CODEX_NATIVE_ID,
-            cwd=event.cwd,
+            cwd=Path(event.cwd) if event.cwd else None,
             external_session_id=event.session_id,
         )
 

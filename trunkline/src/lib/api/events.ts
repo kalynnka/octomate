@@ -399,8 +399,8 @@ export interface ApiAgentRun {
   kind: 'octomate' | 'external'
   conversation_id: string
   name: string | null
-  /** the directory this run ran in; "" when its source reported none */
-  cwd: string
+  /** the directory this run ran in; null when its source reported none */
+  cwd: string | null
   parent_run_id: string | null
   parent_tool_call_id: string | null
   started_at: string | null

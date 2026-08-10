@@ -5,7 +5,7 @@ turn rebuilt from the transcript, and Octomate-driven dispatch. The data was alr
 arriving on every hook event and every transcript line and was being dropped.
 
 The column is on the polymorphic base, so a native turn and a driven run answer "where
-did this run" the same way. A source that reported no directory stores empty — never a
+did this run" the same way. A source that reported no directory records None — never a
 guess, and never Claude's transcript directory slug, whose `-` is ambiguous between a
 separator and a literal dash.
 """
@@ -152,18 +152,18 @@ async def test_a_claude_hook_sketch_records_the_directory_the_hook_reported() ->
     await claude_hook(octomate, REPO)
 
     [sketch] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
-    assert sketch.cwd == REPO
+    assert sketch.cwd == Path(REPO)
 
 
-async def test_a_claude_hook_with_no_cwd_stores_empty() -> None:
-    # `Path("")` is the process's own directory, so anything but empty here would be a
+async def test_a_claude_hook_with_no_cwd_records_none() -> None:
+    # `Path("")` is the process's own directory, so anything but None here would be a
     # guess dressed as a fact.
     octomate = Octomate()
 
     await claude_hook(octomate, "")
 
     [sketch] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
-    assert sketch.cwd == ""
+    assert sketch.cwd is None
 
 
 async def test_each_claude_turn_records_its_own_prompt_directory(
@@ -188,7 +188,10 @@ async def test_each_claude_turn_records_its_own_prompt_directory(
     await tailer.finalize(CLAUDE_SESSION)
 
     runs = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
-    assert {run.id: run.cwd for run in runs} == {"p1": REPO, "p2": ELSEWHERE}
+    assert {run.id: run.cwd for run in runs} == {
+        "p1": Path(REPO),
+        "p2": Path(ELSEWHERE),
+    }
 
 
 async def test_a_claude_turn_keeps_the_directory_it_was_asked_in(
@@ -211,7 +214,7 @@ async def test_a_claude_turn_keeps_the_directory_it_was_asked_in(
     await tailer.finalize(CLAUDE_SESSION)
 
     [run] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
-    assert run.cwd == REPO
+    assert run.cwd == Path(REPO)
 
 
 async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
@@ -243,7 +246,7 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
         )
     )
     [sketch] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
-    assert sketch.cwd == ""
+    assert sketch.cwd is None
 
     write_transcript(
         transcript,
@@ -252,7 +255,7 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
     await tailer.finalize(CLAUDE_SESSION)
 
     [run] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
-    assert run.cwd == REPO
+    assert run.cwd == Path(REPO)
 
 
 # --- native Codex -----------------------------------------------------------------
@@ -318,7 +321,7 @@ async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> 
     )
 
     [sketch] = await runs_of(octomate, CODEX_NATIVE_ID, CODEX_SESSION)
-    assert sketch.cwd == REPO
+    assert sketch.cwd == Path(REPO)
 
 
 async def codex_rollout_run(octomate: Octomate, rollout: Path) -> AgentRun:
@@ -353,17 +356,17 @@ async def test_a_codex_turn_from_the_rollout_records_the_session_directory(
     write_transcript(rollout, codex_rollout(REPO))
     octomate = Octomate()
 
-    assert (await codex_rollout_run(octomate, rollout)).cwd == REPO
+    assert (await codex_rollout_run(octomate, rollout)).cwd == Path(REPO)
 
 
-async def test_a_codex_rollout_naming_no_directory_stores_empty(
+async def test_a_codex_rollout_naming_no_directory_records_none(
     tmp_path: Path,
 ) -> None:
     rollout = tmp_path / "rollout.jsonl"
     write_transcript(rollout, codex_rollout(""))
     octomate = Octomate()
 
-    assert (await codex_rollout_run(octomate, rollout)).cwd == ""
+    assert (await codex_rollout_run(octomate, rollout)).cwd is None
 
 
 # --- Octomate-driven dispatch -----------------------------------------------------
@@ -412,7 +415,7 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
     [run] = await driven_runs(octomate, thread, "claude")
     # The same directory the run was launched in, so a driven run answers "where did
     # this run" exactly as a native one does.
-    assert run.cwd == str(inky)
+    assert run.cwd == inky
 
 
 @pytest.mark.usefixtures("_fake_runtimes")
@@ -436,4 +439,4 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
     # No project declared, so dispatch stays where it is configured — and that is
     # what the run records.
     [run] = await driven_runs(octomate, thread, "codex")
-    assert run.cwd == "/configured"
+    assert run.cwd == Path("/configured")

@@ -494,7 +494,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         ],
         name=CLAUDE_NATIVE_ID,
         # A run drifts into a subdirectory of the project it belongs to.
-        cwd="/srv/inky/migrations",
+        cwd=Path("/srv/inky/migrations"),
         external_session_id="session-1",
     )
 
@@ -537,7 +537,7 @@ async def test_a_thread_no_project_claims_reads_back_without_one(
         thread_url = f"/api/trunkline/threads/{listed['id']}"
         assert (await client.get(f"{thread_url}/project")).json() is None
         [conversation] = (await client.get(f"{thread_url}/conversations")).json()
-        assert [run["cwd"] for run in conversation["runs"]] == [""]
+        assert [run["cwd"] for run in conversation["runs"]] == [None]
 
 
 async def test_batch_resolve_resolves_and_streams(

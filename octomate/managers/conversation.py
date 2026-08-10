@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Literal, TypeVar
 
 from arcanus.materia.sqlalchemy import noload, selectinload
@@ -203,13 +204,13 @@ class ConversationManager:
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
-        cwd: str = "",
+        cwd: Path | None = None,
         external_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
         """Persist a fresh agent run and keep the cached conversation in sync.
-        `cwd` is the directory the run happened in, empty when its caller has none.
+        `cwd` is the directory the run happened in, None when its caller has none.
         `external_id`, when given, updates the conversation's resumable agent
         session handle in the same commit (external-runtime agents own their own
         session). The parent pair marks a subagent's turn: the run whose tool
@@ -240,7 +241,7 @@ class ConversationManager:
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
-        cwd: str = "",
+        cwd: Path | None = None,
         external_session_id: str,
         source: str | None = None,
         start_offset: int | None = None,
