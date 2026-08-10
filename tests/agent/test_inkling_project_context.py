@@ -1,10 +1,10 @@
-"""OCTO-37 — inkling answers inside its thread's project.
+"""OCTO-37 — inkling works inside its thread's project.
 
 Claude and Codex each discover `AGENTS.md`/`CLAUDE.md` natively, from the directory
 they dispatch into. Inkling has no directory at all, so which repo it is answering
 about is its thread's project and nothing else: the run mounts that project's own
-instructions, and records the root it ran in. With no project, the run is what it was
-before there were any — no instructions loaded, and no directory claimed.
+instructions, the tools to act in it, and records the root it ran in. With no project,
+the run is a conversation — no instructions, no tools, and no directory claimed.
 """
 
 from __future__ import annotations
@@ -17,6 +17,9 @@ import pytest
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.repo_context import RepoContext
+from pydantic_ai_harness.shell import Shell
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -110,16 +113,50 @@ async def test_a_run_in_a_project_carries_that_project_s_instructions(
     assert "Never commit without asking." in scripted.instructions[-1]
 
 
-async def test_the_asset_inventory_tool_stays_off(tmp_path: Path) -> None:
-    # It answers with the paths of a repo's `.claude`/`.codex` assets, for a model that
-    # can go read them. Inkling cannot, so the tool would only spend a slot.
+async def test_a_run_in_a_project_can_act_in_it(tmp_path: Path) -> None:
+    # Code mode is the whole tool surface: reading, editing, searching, running a
+    # command and the asset inventory are callables inside its sandbox rather than a
+    # tool slot each, so the model orchestrates them in one call instead of a turn.
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
     octomate = Octomate(projects=await a_registry(Project(root=inky)))
     scripted = Scripted()
 
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
 
+    assert scripted.tools[-1] == ["run_code"]
+
+
+async def test_outside_every_project_there_is_nothing_to_act_with(
+    tmp_path: Path,
+) -> None:
+    # No project is a conversation: nothing to read, nothing to run, nowhere to do it.
+    a_repo(tmp_path / "inky", "Never commit without asking.")
+    octomate = Octomate()
+    scripted = Scripted()
+
+    await inkling_run(octomate, await a_thread(octomate, "chat"), scripted)
+
     assert scripted.tools[-1] == []
+
+
+def test_every_project_capability_is_rooted_at_the_project(tmp_path: Path) -> None:
+    # One root and no other: a capability pointed anywhere else is a way out of the
+    # project, and `extra_roots` would be a second place to write.
+    project = Project(root=tmp_path / "inky")
+    tentacle = InklingTentacle("inkling", Octomate(), agent=Scripted().agent())
+
+    repo_context, files, shell, _code_mode = tentacle.project_capabilities(project)
+
+    assert isinstance(repo_context, RepoContext)
+    assert isinstance(files, FileSystem)
+    assert isinstance(shell, Shell)
+    assert repo_context.workspace_dir == project.root
+    assert repo_context.home_dir is None
+    assert files.root_dir == project.root
+    assert shell.cwd == project.root
+    # The repo's own instructions reach the model, and the model has a shell — the
+    # provider keys this process runs on are not the project's to spend.
+    assert "ANTHROPIC_*" in shell.denied_env_patterns
 
 
 async def test_outside_every_project_nothing_is_loaded(tmp_path: Path) -> None:

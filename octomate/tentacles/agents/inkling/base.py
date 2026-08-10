@@ -30,7 +30,10 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.settings import ModelSettings, ThinkingEffort, merge_model_settings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai_harness.code_mode import CodeMode
+from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
+from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 
 from octomate.capabilities import UserScopedCapability
 from octomate.capabilities.harness.agent import Agent
@@ -51,6 +54,7 @@ from octomate.capabilities.harness.react import (
 from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
@@ -170,6 +174,31 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             )
         )
         return [capability for capability in bound if capability is not None]
+
+    def project_capabilities(self, project: Project) -> list[AgentCapability[None]]:
+        """What a run gets for working in `project`: its instructions, and the tools
+        to act in it. A run in no project gets none of these and is a conversation.
+
+        Every one is rooted at `project.root`, and nothing widens that. `extra_roots`
+        are left out — a settings tree is not where a repo keeps its `AGENTS.md`, and
+        a second root is a second place to write. `RepoContext`'s walk-up stays off
+        (`home_dir=None`), so an ancestor's instructions never load; the operator's own
+        `~/.claude/CLAUDE.md` is what that protects.
+        """
+        return [
+            RepoContext[None](workspace_dir=project.root),
+            FileSystem[None](root_dir=project.root),
+            Shell[None](
+                cwd=project.root,
+                # A repo's own `AGENTS.md` reaches this agent as instructions, and now
+                # those instructions have a shell. The provider keys this process runs
+                # on are not the project's to spend.
+                denied_env_patterns=LLM_API_KEY_ENV_PATTERNS,
+            ),
+            # Last, so it wraps the tools above: the model orchestrates reads, edits
+            # and commands as Python in one call instead of a turn apiece.
+            CodeMode[None](),
+        ]
 
     async def __aenter__(self) -> Self:
         # A capability holding warm resources of its own (the per-user GitHub MCP
@@ -624,24 +653,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             raise ValueError("agent run requires a thread_id to own its conversation")
         project = await self.run_project(thread_id)
         if project is not None:
-            # A project's own instructions, mounted per run: inkling has no directory
-            # of its own, so which repo it is answering about is the thread's project
-            # and nothing else. `home_dir=None` leaves the walk-up off, so only the
-            # project's root is read — never an ancestor, and never the operator's
-            # private `~/.claude/CLAUDE.md`. `extra_roots` are not scanned either: a
-            # sibling settings tree is not where a repo keeps its `AGENTS.md`.
-            capabilities.append(
-                RepoContext[None](
-                    workspace_dir=project.root,
-                    # Off: the inventory tool answers with the paths of a repo's
-                    # `.claude`/`.codex` assets for the model to go read, and inkling
-                    # has no tool that reads the project's tree — while turning it on
-                    # spends a tool slot and a prompt hint on every run in a project.
-                    # Claude and Codex are the ones those assets are for, and they
-                    # find them natively when inkling dispatches into the same root.
-                    expose_inventory_tool=False,
-                )
-            )
+            capabilities.extend(self.project_capabilities(project))
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
