@@ -87,7 +87,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     in_process: ClassVar[bool] = False
     pending: dict[uuid.UUID, asyncio.Future[DeferredActionBatchResponse]]
 
-    models: dict[str, Model | str]
+    models: dict[AgentRouteModelName, Model | str]
 
     async def user_capabilities(
         self,

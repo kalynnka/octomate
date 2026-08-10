@@ -48,6 +48,7 @@ from octomate.capabilities.harness.react import (
     StartTurn,
     iter_react_graph_events,
 )
+from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
@@ -104,7 +105,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         octomate: Octomate,
         *,
         agent: Agent[None, InklingOutput] | None = None,
-        models: Mapping[str, Model | str] | None = None,
+        models: Mapping[AgentRouteModelName, Model | str] | None = None,
         name: str = "octomate-inkling",
         toolsets: Sequence[AbstractToolset[None]] | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
