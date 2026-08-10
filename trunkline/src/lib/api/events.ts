@@ -423,7 +423,8 @@ export interface ApiConversation {
   runs: ApiAgentRun[]
 }
 
-/** The project a thread's work is in. Read-only — the relay takes no writes. */
+/** The project a thread's work is in, or one a new thread can be filed under.
+ *  Read-only — the relay takes a project's *name* on a directive, never a row. */
 export interface ApiProject {
   id: string
   name: string
@@ -431,6 +432,8 @@ export interface ApiProject {
   root: string
   extra_roots: string[]
   description: string | null
+  /** false once its root is no longer on disk; /projects offers only enabled ones */
+  enabled: boolean
 }
 
 /** An unanswered batch, in the same action shapes the stream's `action_batch`
@@ -449,6 +452,9 @@ export interface DirectiveBody {
   text: string
   message_id?: string
   model?: string
+  /** a project name from /projects; honored on a thread's first directive only,
+   *  and omitted for a thread that is in no project at all */
+  project?: string
 }
 
 export interface BatchResponseBody {

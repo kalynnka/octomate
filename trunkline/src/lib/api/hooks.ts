@@ -17,3 +17,6 @@ export const useHealth = () =>
 
 export const useRoutes = () =>
   useQuery({ queryKey: ['routes'], queryFn: api.routes, staleTime: 60_000 })
+
+export const useProjects = () =>
+  useQuery({ queryKey: ['projects'], queryFn: api.projects, staleTime: 60_000 })

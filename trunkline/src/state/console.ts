@@ -154,6 +154,8 @@ export interface ConsoleActions {
     patch: Partial<Pick<ConsoleState, 'ntAgent' | 'ntModel' | 'ntEffort' | 'ntRouteId'>>,
   ): void
   setNtMenu(menu: ConsoleState['ntMenu'], pos?: { top: number; right: number }): void
+  /** file the thread being created under a project, or under none */
+  setNtProject(name: string | null): void
   closeNtMenu(): void
   sendNewThread(text: string): void
 }
@@ -219,8 +221,12 @@ interface ConsoleState {
   ntEffort: string
   /** exact route id ("agent:model") for the wire; null = relay default */
   ntRouteId: string | null
-  /** the composer's route picker — the only new-thread menu the relay honors */
-  ntMenu: 'sel' | null
+  /** the project a new thread will be filed under; null is a real answer —
+   *  the thread is then a chat, in no project at all */
+  ntProject: string | null
+  /** the new-thread menus the relay honors: the composer's route picker, and
+   *  the strip's project picker */
+  ntMenu: 'sel' | 'proj' | null
   ntMenuPos: { top: number; right: number }
 
   actions: ConsoleActions
@@ -1017,6 +1023,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         ntOn: true,
         ntStarted: false,
         ntTitle: '',
+        ntProject: null,
         ntMenu: null,
         live: [],
         running: false,
@@ -1044,6 +1051,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       set((s) => ({ ntMenu: s.ntMenu === menu ? null : menu, ...(pos ? { ntMenuPos: pos } : {}) }))
     },
     closeNtMenu: () => set({ ntMenu: null }),
+    setNtProject: (name: string | null) => set({ ntProject: name }),
     sendNewThread(text: string) {
       const s = get()
       const body = text.trim()
@@ -1069,8 +1077,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // The pick is honored only on the first directive; after that the
       // thread's route is fixed.
       const routeId = started ? undefined : (s.ntRouteId ?? undefined)
+      // Same rule for the project: a thread's is frozen when the row is written,
+      // so only the directive that creates it carries one.
+      const project = started ? undefined : (s.ntProject ?? undefined)
       void runLive(threadId, (onEvent) =>
-        streamDirective(threadId, { text: body, model: routeId }, onEvent),
+        streamDirective(threadId, { text: body, model: routeId, project }, onEvent),
       )
 
     },
@@ -1117,6 +1128,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     ntOn: false,
     ntStarted: false,
     ntTitle: '',
+    ntProject: null,
     ntAgent: 'claude',
     ntModel: 'opus-4.1',
     ntRouteId: null,

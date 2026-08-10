@@ -8,6 +8,7 @@
 import {
   fetchChannels,
   fetchHealth,
+  fetchProjects,
   fetchRoutes,
   fetchThread,
   fetchThreadBatches,
@@ -17,7 +18,7 @@ import {
   fetchThreads,
 } from './client'
 import type { HealthState } from './client'
-import type { ApiRoute } from './events'
+import type { ApiProject, ApiRoute } from './events'
 import { channelMeta, groupLiveThreads, liveThreadDetail } from './live'
 import type { ChannelMeta, ThreadDetail, ThreadSummary } from './types'
 
@@ -47,6 +48,11 @@ export const api = {
   /** The agent-model routes the composer picker offers. */
   async routes(): Promise<RoutesResult> {
     return { routes: await fetchRoutes() }
+  },
+
+  /** The projects a new thread can be filed under; empty is a normal answer. */
+  projects(): Promise<ApiProject[]> {
+    return fetchProjects()
   },
 
   async listThreads(): Promise<Record<string, ThreadSummary[]>> {
