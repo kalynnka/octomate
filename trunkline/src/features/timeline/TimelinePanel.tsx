@@ -211,12 +211,11 @@ export function TimelinePanel() {
   const buckets: TlEvent[][] = sessions.map(() => [])
   if (detail && buckets.length) {
     let si = 0
-    let opens = 0
     for (const item of detail.ledger) {
       const isOpen = item.kind === 'session-open'
-      if (isOpen) opens++
-      const next = sessions[si + 1]
-      if (next && (next.anchor === item.uid || (isOpen && opens > 1))) {
+      // A session starts at its own first card, whatever kind that is: the claim
+      // that opened it, or — for a session nothing claimed — its first turn.
+      if (sessions[si + 1]?.anchor === item.uid) {
         si++
         if (isOpen && item.tone === 'summon') {
           const from = sessions[si - 1].route.split(' ')[0]

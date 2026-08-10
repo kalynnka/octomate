@@ -363,6 +363,10 @@ export interface ApiHandoff {
   reason: string
   hint: string
   brief: string
+  /** the conversation this handed the thread to — the session it opened, or
+   *  re-claimed when that agent already had one in the thread */
+  target_conversation_id: string | null
+  source_conversation_id: string | null
   created_at: string
 }
 
