@@ -104,8 +104,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         one, so this is the whole of "which project is this work in" — asked of the
         thread each run rather than copied onto the conversation.
 
-        A thread naming a project the registry no longer carries is in none: the row is
-        retained, but a project that is not registered has no root to offer.
+        A thread naming a project the registry no longer carries is in none, and so is
+        one whose project is disabled: the row is retained either way, but a project
+        that is not registered — or whose root disk has lost — has no root to offer.
         """
         if not self.octomate.projects.roots:
             # Nothing registered: no thread can be in a project, so a run is what it
@@ -119,7 +120,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             return None
         # Through the registry rather than off the row, which is retained when the
         # project stops being registered.
-        return self.octomate.projects.get(attributed.name)
+        project = self.octomate.projects.get(attributed.name)
+        return project if project is not None and project.enabled else None
 
     async def run_cwd(self, thread_id: uuid.UUID, agent_cwd: str) -> str:
         """The directory a run in this thread happens in: its project's root, or

@@ -168,6 +168,27 @@ async def test_nothing_above_the_project_root_is_loaded(tmp_path: Path) -> None:
     assert "the operator's private rules" not in scripted.instructions[-1]
 
 
+async def test_a_disabled_project_reaches_no_run(tmp_path: Path) -> None:
+    # A root disk has lost is nowhere to work. The thread keeps the project it was
+    # filed under, and the run is one in no project — instructions and all. Another
+    # project stays enabled so the registry is not simply empty.
+    inky = a_repo(tmp_path / "inky", "Never commit without asking.")
+    octomate = Octomate(
+        projects=await a_registry(
+            Project(root=inky, enabled=False),
+            Project(root=a_repo(tmp_path / "kraken", "kraken's rules")),
+        )
+    )
+    scripted = Scripted()
+    thread = await a_thread(octomate, "chat", "inky")
+
+    await inkling_run(octomate, thread, scripted)
+
+    assert scripted.instructions[-1] == ""
+    [run] = await runs_of(octomate, thread)
+    assert run.cwd is None
+
+
 async def test_a_run_in_a_project_records_its_root(tmp_path: Path) -> None:
     inky = a_repo(tmp_path / "inky", "inky's own rules")
     octomate = Octomate(projects=await a_registry(Project(root=inky)))
