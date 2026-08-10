@@ -8,6 +8,8 @@ from pydantic import (
     IPvAnyAddress,
     SecretStr,
     ValidationError,
+    ValidatorFunctionWrapHandler,
+    field_validator,
     model_validator,
 )
 from pydantic_core import InitErrorDetails, PydanticCustomError
@@ -57,7 +59,6 @@ from octomate.config.models import (
 )
 from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig, LogLevel
-from octomate.config.projects import ConfigProject
 from octomate.config.providers import (
     AnthropicProviderConfig,
     BedrockProviderConfig,
@@ -68,6 +69,7 @@ from octomate.config.providers import (
     VertexProviderConfig,
 )
 from octomate.config.users import UserConfig
+from octomate.schemas.project import Project
 
 
 class OctomateConfig(BaseSettings):
@@ -127,7 +129,7 @@ class OctomateConfig(BaseSettings):
             "reconciled into the registry at startup."
         ),
     )
-    projects: dict[str, ConfigProject] = Field(
+    projects: dict[str, Project.Create] = Field(
         default_factory=dict,
         description=(
             "Declared code locations keyed by project name, reconciled into the "
@@ -136,6 +138,29 @@ class OctomateConfig(BaseSettings):
             "`~/.claude/projects/`, which is transcript storage."
         ),
     )
+
+    @field_validator("projects", mode="wrap")
+    @classmethod
+    def report_what_the_projects_block_said(
+        cls, value: object, handler: ValidatorFunctionWrapHandler
+    ) -> dict[str, Project.Create]:
+        """Put the block back into its own error, which `hide_input_in_errors` takes out.
+
+        That setting is here because most of this config is credentials. `projects:` is
+        roots and descriptions, so it is the one block that can safely print itself —
+        and it is the one that needs to, since the mistake it invites is a list where a
+        mapping keyed by name belongs, and that fails as a bare `dict_type` with nothing
+        to say what was written.
+        """
+        try:
+            return handler(value)
+        except ValidationError as error:
+            faults = "; ".join(
+                f"{'.'.join(str(part) for part in fault['loc']) or 'the block'}: "
+                f"{fault['msg']}"
+                for fault in error.errors()
+            )
+            raise ValueError(f"{faults} — got {value!r}") from error
 
     @model_validator(mode="after")
     def validate_oauth_configuration(self) -> Self:
@@ -353,8 +378,6 @@ __all__ = [  # noqa: RUF022
     "LinearMcpConfig",
     # users
     "UserConfig",
-    # projects
-    "ConfigProject",
     # channels
     "AgentModelConfig",
     "ChannelConfig",

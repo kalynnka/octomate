@@ -875,10 +875,10 @@ def test_projects_validate_as_projects(
     )
 
     [declared] = config.projects.values()
-    assert isinstance(declared, Project)
-    assert declared.root == tmp_path / "Projects" / "inky"
-    assert declared.extra_roots == [tmp_path / "Library" / "Code"]
-    assert declared.origin == "declared"
+    project = Project.shell(declared)
+    assert project.root == tmp_path / "Projects" / "inky"
+    assert project.extra_roots == [tmp_path / "Library" / "Code"]
+    assert project.origin == "declared"
 
 
 def test_a_project_without_a_root_is_refused() -> None:
@@ -886,8 +886,19 @@ def test_a_project_without_a_root_is_refused() -> None:
         IsolatedTestConfig.model_validate({"projects": {"inky": {"description": "?"}}})
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("projects", "inky", "root")
-    assert error["type"] == "missing"
+    assert "inky.root: Field required" in error["msg"]
+
+
+def test_a_projects_block_error_says_what_the_block_held() -> None:
+    # The rest of the config hides its inputs because they are credentials; a list
+    # where the mapping belongs would otherwise fail as a bare `dict_type`, and the
+    # one block with nothing to hide is the one that most needs to show itself.
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate({"projects": [{"root": "~/Projects/inky"}]})
+
+    [error] = exc_info.value.errors()
+    assert "the block: Input should be a valid dictionary" in error["msg"]
+    assert "[{'root': '~/Projects/inky'}]" in error["msg"]
 
 
 def test_user_links_accept_configured_channels() -> None:

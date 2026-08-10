@@ -27,7 +27,7 @@ class ProjectManager:
     in ``tentacles/agents/claude/transcript.py``), which is transcript storage.
     """
 
-    def __init__(self, config: dict[str, Project] | None = None) -> None:
+    def __init__(self, config: dict[str, Project.Create] | None = None) -> None:
         self.config = config or {}
         self.projects: dict[str, Project] = {}
         # (resolved root, project name), deepest first, so the first hit is the
@@ -96,12 +96,13 @@ class ProjectManager:
         async with async_session() as session:
             stored = list(await session.list(Project, limit=None))
             by_root = {project.root.resolve(): project for project in stored}
-            for name, declared in self.config.items():
+            for name, config in self.config.items():
+                # Shelled here and not at config time: a transmuter validated outside
+                # the materia carries no row, and this is the first place inside one.
+                declared = Project.shell(config)
                 declared.name = name
                 project = by_root.get(declared.root.resolve())
                 if project is None:
-                    # The declaration is the row: it validated as a `Project` and is
-                    # already exactly one, so there is nothing to copy it into.
                     session.add(declared)
                     stored.append(declared)
                     continue

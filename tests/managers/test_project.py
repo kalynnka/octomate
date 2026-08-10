@@ -21,6 +21,10 @@ from octomate.schemas.project import Project
 from octomate.types.projects import ProjectOrigin
 from tests.support.managers import a_registry
 
+# Built at import, so nothing has entered `sqlalchemy_materia` yet — the state a
+# config-declared project is really in by the time startup reconciles it.
+UNBOUND = Project.Create(root=Path("/tmp"))
+
 
 @pytest.fixture(autouse=True)
 async def _db(in_memory_engine: AsyncEngine) -> None:
@@ -283,17 +287,30 @@ async def test_an_empty_registry_resolves_nothing(tmp_path: Path) -> None:
 # --- reconcile ---------------------------------------------------------------------
 
 
-async def reconciled(**declared: Project) -> ProjectManager:
+async def reconciled(**declared: Project.Create) -> ProjectManager:
     """A registry over the declared block, reconciled the way startup does it."""
     manager = ProjectManager(declared)
     await manager.reconcile()
     return manager
 
 
+async def test_a_declaration_built_before_the_materia_still_persists() -> None:
+    # Production validates its config in `main.py`, before `Octomate.app()` enters
+    # `sqlalchemy_materia`, so a declared `Project` has no row behind it to add to a
+    # session. UNBOUND is built the same way — at import, before the engine fixture —
+    # which the in-test declarations above cannot reproduce.
+    manager = ProjectManager({"scratch": UNBOUND})
+
+    await manager.reconcile()
+
+    assert manager.resolve(Path("/tmp/whatever")) == "scratch"
+    assert await find_project("scratch") is not None
+
+
 async def test_a_declared_project_is_registered_and_resolves(tmp_path: Path) -> None:
     root = directory(tmp_path / "inky")
 
-    manager = await reconciled(inky=Project(root=root))
+    manager = await reconciled(inky=Project.Create(root=root))
 
     assert manager.resolve(root / "octomate") == "inky"
     assert (await find_project("inky")) is not None
@@ -302,10 +319,10 @@ async def test_a_declared_project_is_registered_and_resolves(tmp_path: Path) -> 
 async def test_reconcile_updates_a_declaration_in_place(tmp_path: Path) -> None:
     root = directory(tmp_path / "inky")
     settings = directory(tmp_path / "vscode")
-    await reconciled(inky=Project(root=root))
+    await reconciled(inky=Project.Create(root=root))
 
     manager = await reconciled(
-        inky=Project(root=root, extra_roots=[settings], description="Octomate.")
+        inky=Project.Create(root=root, extra_roots=[settings], description="Octomate.")
     )
 
     project = manager.get("inky")
@@ -323,7 +340,7 @@ async def test_declaring_a_registered_directory_adopts_its_row(
     discovered = await registered(root)
     [existing] = discovered.list()
 
-    manager = await reconciled(octomate=Project(root=root))
+    manager = await reconciled(octomate=Project.Create(root=root))
 
     assert [project.id for project in manager.list()] == [existing.id]
     assert manager.resolve(root / "octomate") == "octomate"
@@ -335,7 +352,7 @@ async def test_a_declaration_does_not_rewrite_how_a_project_got_here(
     root = directory(tmp_path / "inky")
     await registered(root)
 
-    manager = await reconciled(inky=Project(root=root))
+    manager = await reconciled(inky=Project.Create(root=root))
 
     project = manager.get("inky")
     assert project is not None
@@ -350,17 +367,17 @@ async def test_an_undeclared_project_is_left_alone(tmp_path: Path) -> None:
     root = directory(tmp_path / "kraken")
     await registered(root)
 
-    manager = await reconciled(inky=Project(root=directory(tmp_path / "inky")))
+    manager = await reconciled(inky=Project.Create(root=directory(tmp_path / "inky")))
 
     assert manager.resolve(root / "src") == "kraken"
 
 
 async def test_a_root_disk_has_lost_is_disabled(tmp_path: Path) -> None:
     root = directory(tmp_path / "inky")
-    await reconciled(inky=Project(root=root))
+    await reconciled(inky=Project.Create(root=root))
     root.rmdir()
 
-    manager = await reconciled(inky=Project(root=root))
+    manager = await reconciled(inky=Project.Create(root=root))
 
     assert manager.resolve(root / "octomate") is None
     project = manager.get("inky")
@@ -373,10 +390,10 @@ async def test_a_project_re_enables_when_its_directory_is_back(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "inky"
-    await reconciled(inky=Project(root=root))
+    await reconciled(inky=Project.Create(root=root))
     directory(root)
 
-    manager = await reconciled(inky=Project(root=root))
+    manager = await reconciled(inky=Project.Create(root=root))
 
     assert manager.resolve(root / "octomate") == "inky"
 
@@ -399,7 +416,9 @@ async def test_two_declarations_at_one_root_are_refused(tmp_path: Path) -> None:
     root = directory(tmp_path / "inky")
 
     with pytest.raises(ValueError, match="claimed by both"):
-        await reconciled(inky=Project(root=root), octomate=Project(root=root))
+        await reconciled(
+            inky=Project.Create(root=root), octomate=Project.Create(root=root)
+        )
 
 
 async def test_an_extra_root_another_project_already_holds_is_refused(
@@ -412,7 +431,7 @@ async def test_an_extra_root_another_project_already_holds_is_refused(
 
     with pytest.raises(ValueError, match="claimed by both 'kraken' and 'inky'"):
         await reconciled(
-            inky=Project(root=directory(tmp_path / "inky"), extra_roots=[kraken])
+            inky=Project.Create(root=directory(tmp_path / "inky"), extra_roots=[kraken])
         )
 
 
@@ -424,4 +443,4 @@ async def test_a_declared_name_a_registered_project_already_holds_is_refused(
     await registered(directory(tmp_path / "vita" / "api"))
 
     with pytest.raises(ValueError, match="both named 'api'"):
-        await reconciled(api=Project(root=directory(tmp_path / "api")))
+        await reconciled(api=Project.Create(root=directory(tmp_path / "api")))
