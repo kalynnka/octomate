@@ -1,37 +1,49 @@
 """The Trunkline console HTTP surface, mounted under `/api/trunkline`.
 
-The console is an entry and a reader: `GET /threads` lists every channel's
-threads and `GET /threads/{id}` reads any of them, while directives create or
-continue threads on the trunkline channel itself. The two POST endpoints
-stream: a directive streams its run, and a batch response streams the resumed
-run, both as SSE of the native wire events (see `wire`)."""
+The console is an entry and a reader, and it reads the domain in the shape the
+domain has: a thread, the conversations under it, the runs under those, and the
+thread's chat messages. Every read answers with the transmuter itself rather
+than a console-shaped copy of it, so the payload is the row.
+
+What a read leaves out it leaves out deliberately. A thread's messages are
+their own request, because a listing that carried every thread's ledger would
+be the ledger; and a run's transcript never leaves at all — the model messages
+are the agent's own history, which the history tool owns, not a reader's.
+
+Both halves of leaving something out are load-bearing. `response_model_exclude`
+keeps a relation out of the payload; it does nothing about the query, and every
+relation named here is lazy="selectin". The managers suppress the load itself
+(`ThreadManager.get(with_messages=...)`, `ConversationManager.for_thread`), so
+these reads do not fetch a ledger to drop it.
+
+Every read under a thread reads the thread first, and 404s on an id the relay
+does not know — a sub-resource of a thread that does not exist must say so
+rather than answer the empty list its query would return. Only the ledger read
+asks for the messages; the rest want the row.
+
+Directives create or continue threads on the trunkline channel itself. The two
+POST endpoints stream: a directive streams its run, and a batch response
+streams the resumed run, both as SSE of the native wire events (see `wire`).
+
+Where the work happened — a thread's project and a run's directory — is read
+here and nowhere written: a thread's project is frozen when its row is written,
+and both are learned from the session that ran, so no endpoint takes either."""
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import AfterValidator, BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field
 
-from octomate.capabilities.harness.events import (
-    ActionBatchEvent,
-    WireEvent,
-    replay_wire_events,
-    wire_event_adapter,
-)
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.messages import native_utc
-from octomate.schemas.thread import (
-    ChannelActorKind,
-    Thread,
-    ThreadMessage,
-    ThreadMessageDirection,
-    ThreadStatus,
-)
+from octomate.schemas.conversation import Conversation
+from octomate.schemas.deferred import DeferredActionBatch
+from octomate.schemas.project import Project
+from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.tentacles.channels.web.trunkline.base import (
     CONSOLE_USER_ID,
     ROUTE_SEP,
@@ -43,10 +55,6 @@ from octomate.tentacles.channels.web.trunkline.base import (
 if TYPE_CHECKING:
     from octomate import Octomate
 
-# SQLite strips tzinfo; re-attach UTC so the browser doesn't parse these as
-# local time (the message ledger already does this at the schema).
-UtcDateTime = Annotated[datetime, AfterValidator(native_utc)]
-
 
 class RouteInfo(BaseModel):
     id: str = Field(description="The route id a directive's `model` field names.")
@@ -57,79 +65,6 @@ class RouteInfo(BaseModel):
 class ChannelInfo(BaseModel):
     id: str = Field(description="The connected channel tentacle's id.")
     kind: str = Field(description="The tentacle class name — SlackTentacle, …")
-
-
-class ThreadSummaryInfo(BaseModel):
-    id: uuid.UUID = Field(
-        description="The thread row id — the read key for GET /threads/{id}."
-    )
-    channel: str = Field(description="Owning channel tentacle id.")
-    thread_key: str = Field(
-        description="The platform thread id; for trunkline threads, the "
-        "directive key. Empty for a channel's main-chat thread."
-    )
-    title: str
-    status: ThreadStatus
-    agent: str | None
-    model: AgentRouteModelName | None
-    updated_at: UtcDateTime
-    message_count: int
-
-
-class LedgerEntry(BaseModel):
-    id: uuid.UUID
-    direction: ThreadMessageDirection
-    actor_kind: ChannelActorKind
-    agent: str | None
-    sender: str
-    happened_at: UtcDateTime
-    text: str
-
-
-class SessionEntry(BaseModel):
-    """One handoff: the point an agent-model route took the thread over."""
-
-    id: uuid.UUID
-    from_agent: str | None
-    to_agent: str
-    model: AgentRouteModelName | None
-    reason: str
-    created_at: UtcDateTime
-
-
-class RunReplayInfo(BaseModel):
-    """One recorded agent run, replayed as the wire events its live stream
-    carried, so a reader folds history through the same processor as a running
-    stream — never through the transcript, which the agent history tool owns."""
-
-    id: str
-    agent: str
-    started_at: UtcDateTime | None
-    events: list[WireEvent]
-
-    @field_serializer("events")
-    def events_on_the_wire(self, events: list[WireEvent]) -> list[dict[str, object]]:
-        # The adapter dump, not the default: base64 for binary payloads, and
-        # warnings off for the union's Any-typed provider fields — the same
-        # policy the SSE stream applies to these events.
-        return [
-            wire_event_adapter.dump_python(event, mode="json", warnings=False)
-            for event in events
-        ]
-
-
-class ThreadDetailInfo(ThreadSummaryInfo):
-    entries: list[LedgerEntry]
-    sessions: list[SessionEntry]
-    runs: list[RunReplayInfo] = Field(
-        description="The thread's recorded agent runs (main line only, oldest "
-        "first), each replayed as wire events."
-    )
-    pending: list[ActionBatchEvent] = Field(
-        description="Unanswered action batches, in the same shape the stream's "
-        "`action_batch` events use, so the console re-renders waiting feelers "
-        "on reload."
-    )
 
 
 class DirectiveBody(BaseModel):
@@ -147,42 +82,6 @@ class BatchResponseBody(BaseModel):
     answers: dict[uuid.UUID, str] = Field(default_factory=dict)
     approvals: dict[uuid.UUID, bool] = Field(default_factory=dict)
     allow_session: bool = False
-
-
-def thread_title(thread: Thread) -> str:
-    for message in thread.messages:
-        if message.actor_kind == "human" and message.message_text:
-            return message.message_text.splitlines()[0][:80]
-    return "(untitled)"
-
-
-def thread_summary(thread: Thread) -> ThreadSummaryInfo:
-    return ThreadSummaryInfo(
-        id=thread.id,
-        channel=thread.channel_tentacle_id,
-        thread_key=thread.channel_thread_id or "",
-        title=thread_title(thread),
-        status=thread.status,
-        agent=thread.active_agent_tentacle_id,
-        model=thread.active_model,
-        updated_at=thread.updated_at,
-        message_count=len(thread.messages),
-    )
-
-
-def ledger_entry(message: ThreadMessage) -> LedgerEntry:
-    # peek(): the sender profile selectin-loads with the thread's messages, and
-    # a serializer must not fire provider IO.
-    sender = message.sender.peek()
-    return LedgerEntry(
-        id=message.id,
-        direction=message.direction,
-        actor_kind=message.actor_kind,
-        agent=message.agent_tentacle_id,
-        sender=sender.name if sender is not None else "",
-        happened_at=message.happened_at,
-        text=message.message_text or "",
-    )
 
 
 def build_trunkline_router(
@@ -225,67 +124,70 @@ def build_trunkline_router(
             for channel_id, tentacle in octomate.channels.items()
         ]
 
-    @router.get("/threads")
-    async def list_threads() -> list[ThreadSummaryInfo]:
-        threads = await octomate.thread_manager.list_threads()
-        return [thread_summary(thread) for thread in threads]
+    @router.get(
+        "/threads",
+        summary="Every channel's threads, most recently touched first",
+        response_model_exclude={"__all__": {"messages"}},
+    )
+    async def list_threads() -> list[Thread]:
+        return await octomate.thread_manager.list_threads()
 
-    @router.get("/threads/{thread_id}")
-    async def thread_detail(thread_id: uuid.UUID) -> ThreadDetailInfo:
+    @router.get("/threads/{thread_id}", response_model_exclude={"messages"})
+    async def read_thread(thread_id: uuid.UUID) -> Thread:
+        """One thread and its handoffs, by row id — any channel's, not only the
+        console's own."""
+        thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+        if thread is None:
+            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
+        return thread
+
+    @router.get(
+        "/threads/{thread_id}/messages",
+        summary="The thread's chat ledger, oldest first",
+        response_model_exclude={"__all__": {"model_messages"}},
+    )
+    async def thread_messages(thread_id: uuid.UUID) -> list[ThreadMessage]:
         thread = await octomate.thread_manager.get(thread_id)
         if thread is None:
             raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
-        pending = await octomate.deferred_actions.pending_for_thread(thread.id)
-        conversations = await octomate.conversations.for_thread(thread.id)
-        runs = sorted(
-            (
-                (conversation.agent_tentacle_id, run)
-                for conversation in conversations
-                # The agent's own line; subagent runs surface through the
-                # parent's tool call, not as top-level history.
-                if not conversation.subagent_id
-                for run in conversation.runs
-            ),
-            # The bool first: a None started_at must sort without ever being
-            # compared against a real timestamp (naive/aware would clash).
-            key=lambda pair: (
-                pair[1].started_at is not None,
-                pair[1].started_at or datetime.min,
-            ),
-        )
-        summary = thread_summary(thread)
-        return ThreadDetailInfo(
-            **dict(summary),
-            entries=[ledger_entry(message) for message in thread.messages],
-            runs=[
-                RunReplayInfo(
-                    id=run.id,
-                    agent=agent,
-                    started_at=run.started_at,
-                    events=replay_wire_events(list(run.messages)),
-                )
-                for agent, run in runs
-            ],
-            sessions=[
-                SessionEntry(
-                    id=handoff.id,
-                    from_agent=handoff.from_agent_tentacle_id,
-                    to_agent=handoff.to_agent_tentacle_id,
-                    model=handoff.to_model,
-                    reason=handoff.reason,
-                    created_at=handoff.created_at,
-                )
-                for handoff in thread.handoffs
-            ],
-            pending=[
-                ActionBatchEvent(
-                    batch_id=str(batch.id),
-                    questions=list(batch.questions),
-                    approvals=list(batch.approvals),
-                )
-                for batch in pending
-            ],
-        )
+        return list(thread.messages)
+
+    @router.get(
+        "/threads/{thread_id}/conversations",
+        summary="The thread's agent conversations, each with its runs",
+        response_model_exclude={
+            "__all__": {"messages": True, "runs": {"__all__": {"messages"}}}
+        },
+    )
+    async def thread_conversations(thread_id: uuid.UUID) -> list[Conversation]:
+        """Subagent conversations included — they name their parent, so a reader
+        can fold them under the run whose tool call spawned them."""
+        if await octomate.thread_manager.get(thread_id, with_messages=False) is None:
+            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
+        return await octomate.conversations.for_thread(thread_id)
+
+    @router.get("/threads/{thread_id}/project")
+    async def thread_project(thread_id: uuid.UUID) -> Project | None:
+        """The project this thread's work is in; null for a thread no project
+        claims. Frozen: it is set when the thread is created, from the directory
+        the session ran in, and no endpoint changes it."""
+        thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+        if thread is None:
+            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
+        return await thread.project
+
+    @router.get(
+        "/threads/{thread_id}/batches",
+        summary="Unanswered action batches, oldest first",
+        response_model_exclude={"__all__": {"requests"}},
+    )
+    async def thread_batches(thread_id: uuid.UUID) -> list[DeferredActionBatch]:
+        """The waiting questions and approvals, so a reload re-renders the
+        feelers a run is blocked on. `requests` stays behind: it is the agent's
+        own tool-call payload, and the actions carry what a reader asks."""
+        if await octomate.thread_manager.get(thread_id, with_messages=False) is None:
+            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
+        return await octomate.deferred_actions.pending_for_thread(thread_id)
 
     @router.post(
         "/threads/{thread_key}/messages",

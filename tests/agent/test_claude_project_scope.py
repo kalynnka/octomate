@@ -9,7 +9,6 @@ so an unscoped run is untouched.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from typing import cast
@@ -30,7 +29,7 @@ from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
 from octomate.tentacles.agents.claude.base import WRITE_TOOL_PATHS, deny_outside_project
 from tests.support.agents import RecordingClaudeClient
-from tests.support.managers import FakeConversationManager
+from tests.support.managers import FakeConversationManager, a_registry
 
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
@@ -41,14 +40,6 @@ HOOK_SECRET = SecretStr("test-hook-secret")
 @pytest.fixture(autouse=True)
 async def _db(in_memory_engine: AsyncEngine) -> None:
     return
-
-
-async def registry(spec: Sequence[Mapping[str, object]]) -> ProjectManager:
-    manager = ProjectManager(
-        [Project.shell(Project.Create.model_validate(entry)) for entry in spec]
-    )
-    await manager.reconcile()
-    return manager
 
 
 @pytest.fixture(autouse=True)
@@ -219,9 +210,7 @@ async def a_run(
 async def test_a_run_in_a_project_registers_the_scope_hook(tmp_path: Path) -> None:
     inky = a_project(tmp_path / "inky").root
 
-    matchers, scope = await a_run(
-        await registry([{"root": str(inky)}]), declared="inky"
-    )
+    matchers, scope = await a_run(await a_registry(Project(root=inky)), declared="inky")
 
     assert matchers == ["AskUserQuestion", "Write|Edit|NotebookEdit"]
     assert scope is not None
@@ -235,7 +224,7 @@ async def test_the_boundary_follows_the_thread_not_the_configured_directory(
     # landed, so where it runs and what bounds it can never disagree.
     inky = a_project(tmp_path / "inky").root
     kraken = a_project(tmp_path / "kraken").root
-    projects = await registry([{"root": str(inky)}, {"root": str(kraken)}])
+    projects = await a_registry(Project(root=inky), Project(root=kraken))
 
     _matchers, scope = await a_run(projects, declared="kraken", configured=str(inky))
 
@@ -253,7 +242,7 @@ async def test_a_run_in_no_project_is_unaffected(tmp_path: Path) -> None:
 
     # Belonging to no project, and configured to a directory no project claims.
     matchers, scope = await a_run(
-        await registry([{"root": str(inky)}]), configured=str(elsewhere)
+        await a_registry(Project(root=inky)), configured=str(elsewhere)
     )
 
     # No declared root covers the run's directory, so nothing scopes it.
@@ -262,4 +251,4 @@ async def test_a_run_in_no_project_is_unaffected(tmp_path: Path) -> None:
 
 
 async def test_with_nothing_declared_no_run_is_scoped() -> None:
-    assert await a_run(await registry([])) == (["AskUserQuestion"], None)
+    assert await a_run(await a_registry()) == (["AskUserQuestion"], None)

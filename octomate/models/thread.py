@@ -78,11 +78,13 @@ class MessageBinding(Base, TransmuterProxiedMixin):
     thread_message: Mapped[ThreadMessage] = relationship(
         "ThreadMessage",
         overlaps="thread_messages,model_messages",
+        lazy="raise_on_sql",
     )
 
     model_message: Mapped[ModelMessage] = relationship(
         "ModelMessage",
         overlaps="thread_messages,model_messages",
+        lazy="raise_on_sql",
     )
 
 
@@ -208,7 +210,7 @@ class Thread(Base, TransmuterProxiedMixin):
         back_populates="thread",
         cascade="all, delete-orphan",
         order_by="Conversation.id",
-        lazy="selectin",
+        lazy="noload",
     )
 
 
@@ -276,6 +278,7 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         "Thread",
         back_populates="messages",
         foreign_keys=[thread_id],
+        lazy="raise_on_sql",
     )
 
     model_messages: Mapped[list[ModelMessage]] = relationship(
@@ -350,6 +353,7 @@ class Handoff(Base, TransmuterProxiedMixin):
     thread: Mapped[Thread] = relationship(
         "Thread",
         back_populates="handoffs",
+        lazy="raise_on_sql",
     )
 
     def __lt__(self, other: Handoff) -> bool:

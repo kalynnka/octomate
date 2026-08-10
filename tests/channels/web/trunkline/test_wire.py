@@ -6,9 +6,6 @@ import uuid
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
     PartDeltaEvent,
     PartStartEvent,
     TextPart,
@@ -16,9 +13,7 @@ from pydantic_ai.messages import (
     ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
-    UserPromptPart,
 )
-from pydantic_ai.usage import RequestUsage
 
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
@@ -30,7 +25,6 @@ from octomate.capabilities.harness.events import (
     SubagentStartedEvent,
     TodoCreatedEvent,
     WireEvent,
-    replay_wire_events,
     wire_event_adapter,
 )
 from octomate.schemas.deferred import (
@@ -163,57 +157,3 @@ def test_transport_events() -> None:
 
     error = decode(RunErrorEvent(message="boom"))
     assert error["event_kind"] == "run_error"
-
-
-def test_replay_reemits_a_run_as_its_stream_events() -> None:
-    # A persisted turn: prompt → thinking + tool call → tool return → reply.
-    # Replay must yield the same event family a live stream carried, with the
-    # prompt parts skipped (the chat ledger owns the human side) and usage
-    # summed from the responses.
-    messages: list[ModelMessage] = [
-        ModelRequest(parts=[UserPromptPart(content="triage the checks")]),
-        ModelResponse(
-            parts=[
-                ThinkingPart(content="reading CI"),
-                ToolCallPart(tool_name="gh.list", args="{}", tool_call_id="c1"),
-            ],
-            usage=RequestUsage(input_tokens=100, output_tokens=10),
-        ),
-        ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="gh.list", content="2 failing", tool_call_id="c1"
-                )
-            ]
-        ),
-        ModelResponse(
-            parts=[TextPart(content="all done!")],
-            usage=RequestUsage(input_tokens=120, output_tokens=5),
-        ),
-    ]
-
-    events = replay_wire_events(messages)
-
-    kinds = [decode(event)["event_kind"] for event in events]
-    assert kinds == [
-        "part_start",
-        "function_tool_call",
-        "function_tool_result",
-        "part_start",
-        "run_result",
-    ]
-
-    def part_of(index: int) -> dict[str, object]:
-        part = decode(events[index])["part"]
-        assert isinstance(part, dict)
-        return part
-
-    assert part_of(0)["part_kind"] == "thinking"
-    assert part_of(1)["tool_call_id"] == "c1"
-    assert part_of(2)["content"] == "2 failing"
-    assert part_of(3)["content"] == "all done!"
-    usage = decode(events[4])["usage"]
-    assert isinstance(usage, dict)
-    assert usage["requests"] == 2
-    assert usage["input_tokens"] == 220
-    assert usage["output_tokens"] == 15

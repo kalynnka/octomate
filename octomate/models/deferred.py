@@ -64,7 +64,9 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
         index=True,
     )
 
-    conversation: Mapped[Conversation] = relationship("Conversation")
+    conversation: Mapped[Conversation] = relationship(
+        "Conversation", lazy="raise_on_sql"
+    )
     questions: Mapped[list[DeferredQuestionAction]] = relationship(
         "DeferredQuestionAction",
         primaryjoin=lambda: and_(
@@ -150,6 +152,7 @@ class DeferredAction(Base, TransmuterProxiedMixin):
     batch: Mapped[DeferredActionBatch] = relationship(
         "DeferredActionBatch",
         overlaps="approvals,questions",
+        lazy="raise_on_sql",
     )
 
 

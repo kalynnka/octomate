@@ -4,12 +4,13 @@ import uuid
 from pathlib import Path
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import JSON, Dialect, String, Uuid
+from sqlalchemy import JSON, Dialect, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TypeDecorator
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
+from octomate.types.projects import ProjectOrigin
 
 
 class PathString(TypeDecorator[Path]):
@@ -30,11 +31,14 @@ class PathString(TypeDecorator[Path]):
 
 
 class Project(Base, TransmuterProxiedMixin):
-    """A declared project. Note that `projects` here is the operator's registry of
-    code locations, and has nothing to do with `~/.claude/projects/`, which is where
-    Claude Code stores transcripts (`CLAUDE_PROJECTS_DIRS`)."""
+    """A project: a code location Octomate knows by name, registered when a native
+    session is found running in it. Note that `projects` here has nothing to do with
+    `~/.claude/projects/`, which is where Claude Code stores transcripts
+    (`CLAUDE_PROJECTS_DIRS`)."""
 
     __tablename__ = "projects"
+    # Named, so the constraint alembic generates carries the name it can drop again.
+    __table_args__ = (UniqueConstraint("root", name="uq_projects_root"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
     name: Mapped[str] = mapped_column(
@@ -43,10 +47,25 @@ class Project(Base, TransmuterProxiedMixin):
         unique=True,
         comment="Stable name for this project; defaults to its root's directory name.",
     )
+    origin: Mapped[ProjectOrigin] = mapped_column(
+        String,
+        nullable=False,
+        default="declared",
+        server_default="declared",
+        comment=(
+            "What registered this project: `declared` for one registered directly, or "
+            "the native runtime whose session was found running in it."
+        ),
+    )
+
     root: Mapped[Path] = mapped_column(
         PathString,
         nullable=False,
-        comment="The directory this project is, as an absolute local path.",
+        comment=(
+            "The directory this project is, as an absolute local path. The identity: "
+            "one project per root, and a root that has since been deleted keeps its "
+            "row, because the runs recorded under it still name it."
+        ),
     )
     # No `PathString` here: pydantic serializes a `Path` to its string natively, so the
     # engine's JSON serializer stores text, and the transmuter validates it back.

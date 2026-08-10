@@ -96,6 +96,7 @@ class Conversation(Base, TransmuterProxiedMixin):
     thread: Mapped[Thread | None] = relationship(
         "Thread",
         back_populates="conversations",
+        lazy="raise_on_sql",
     )
     # Read-only flat view of every message in the conversation, joined through
     # agent_runs. Writes go through `runs` and each run's `messages`.

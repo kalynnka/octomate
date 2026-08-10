@@ -26,11 +26,13 @@ export type ThreadTone = 'active' | 'idle' | 'native'
 export interface ThreadSummary {
   id: string
   channelId: ChannelId
+  /** the surface the thread is, which is all a listing knows to call it by —
+   *  the relay serves threads without their messages */
   title: string
   tone: ThreadTone
   /** owning route, e.g. "inkling → claude" or "codex · gpt-5.3" */
   agentLabel: string
-  /** short display chip (live threads: the platform thread key) */
+  /** short display chip — the thread row id, which every read is keyed by */
   tag?: string
 }
 
@@ -243,19 +245,18 @@ export interface ArtifactRef {
 }
 
 /* ---------------------------------------------------------------------------
- * Projects — registered working trees threads can be filed to.
+ * Projects — the working tree a thread's session ran in. Read-only: the relay
+ * learns a project from where a native session runs and freezes it on the
+ * thread, so nothing here is ever sent back.
  * ------------------------------------------------------------------------- */
-
-export interface BranchInfo {
-  n: string
-  stat: string
-  dirty: boolean
-}
 
 export interface ProjectRef {
   name: string
   path: string
-  git: boolean
+  /** the latest run's directory, when it sits below the root rather than on it */
+  cwd?: string
+  /** git state has no relay endpoint yet; unset means unknown, not "no git" */
+  git?: boolean
   branch?: string
   stat?: string
   dirty?: boolean
@@ -263,13 +264,18 @@ export interface ProjectRef {
   also?: string
 }
 
-export interface ProjectInfo {
-  name: string
-  path: string
-  git: boolean
-  sub: string
-  note: string
-  branches: BranchInfo[]
+/**
+ * Where a thread's work lives on this machine, as VS Code deep links. Built
+ * from what the relay reports — never typed by a user — so the console only
+ * navigates to them.
+ */
+export interface VsCodeTarget {
+  /** the directory, for the button's tooltip and the strip */
+  dir: string
+  /** opens (or focuses) that directory as a folder */
+  folder: string
+  /** reopens the native session in its own extension, when the thread is one */
+  session?: string
 }
 
 export interface SurfaceInfo {
@@ -291,6 +297,7 @@ export interface ThreadDetail {
   sessions: SessionInfo[]
   ledger: LedgerItem[]
   project?: ProjectRef
+  vscode?: VsCodeTarget
   artifacts?: ArtifactRef[]
   docs?: Record<string, ReviewDoc>
   comments?: ReviewComment[]

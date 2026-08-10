@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from arcanus import RelationCollection
+from arcanus.materia.sqlalchemy import noload
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.database import async_session
@@ -77,6 +78,13 @@ class DeferredActionManager:
         async with async_session() as session:
             conversations = await session.list(
                 Conversation,
+                # Only the ids are wanted. Both of these are lazy="selectin", so
+                # without the suppression this walks every run and every model
+                # message in the thread to collect a handful of uuids.
+                options=[
+                    noload(Conversation["messages"]),
+                    noload(Conversation["runs"]),
+                ],
                 expressions=[Conversation["thread_id"] == thread_id],
             )
             conversation_ids = [conversation.id for conversation in conversations]

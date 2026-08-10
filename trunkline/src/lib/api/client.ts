@@ -6,9 +6,12 @@
  */
 import type {
   ApiChannelInfo,
+  ApiConversation,
+  ApiDeferredBatch,
+  ApiProject,
   ApiRoute,
-  ApiThreadDetail,
-  ApiThreadSummary,
+  ApiThread,
+  ApiThreadMessage,
   BatchResponseBody,
   DirectiveBody,
   WireEvent,
@@ -47,19 +50,41 @@ export function fetchRoutes(): Promise<ApiRoute[]> {
   return getJson<ApiRoute[]>('/api/trunkline/routes')
 }
 
-export function fetchLiveThreads(): Promise<ApiThreadSummary[]> {
-  return getJson<ApiThreadSummary[]>('/api/trunkline/threads')
+export function fetchThreads(): Promise<ApiThread[]> {
+  return getJson<ApiThread[]>('/api/trunkline/threads')
 }
 
-/** The live thread, or null when the backend does not know the id. */
-export async function fetchLiveThreadDetail(
-  id: string,
-): Promise<ApiThreadDetail | null> {
-  const res = await fetch(`/api/trunkline/threads/${encodeURIComponent(id)}`)
+/**
+ * One read under a thread. Every /threads/{id} sub-resource 404s together —
+ * an id the relay does not know is not an empty ledger — so a missing thread
+ * comes back as null once, here, rather than four times at the call sites.
+ */
+async function threadRead<T>(id: string, suffix: string): Promise<T | null> {
+  const path = `/api/trunkline/threads/${encodeURIComponent(id)}${suffix}`
+  const res = await fetch(path)
   if (res.status === 404) return null
-  if (!res.ok) throw new Error(`GET /api/trunkline/threads/${id} → ${res.status}`)
-  return (await res.json()) as ApiThreadDetail
+  if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
+  return (await res.json()) as T
 }
+
+export const fetchThread = (id: string) => threadRead<ApiThread>(id, '')
+
+/** The thread's chat ledger, oldest first — its own request, never inlined. */
+export const fetchThreadMessages = (id: string) =>
+  threadRead<ApiThreadMessage[]>(id, '/messages')
+
+/** The thread's conversations, each carrying its runs. */
+export const fetchThreadConversations = (id: string) =>
+  threadRead<ApiConversation[]>(id, '/conversations')
+
+/** Null both when the thread is unknown and when no project claims it — the
+ *  console renders the same "unattributed" strip either way. */
+export const fetchThreadProject = (id: string) =>
+  threadRead<ApiProject | null>(id, '/project')
+
+/** Feelers the thread is still blocked on. */
+export const fetchThreadBatches = (id: string) =>
+  threadRead<ApiDeferredBatch[]>(id, '/batches')
 
 /**
  * Read one SSE response frame-by-frame, invoking onEvent per `data:` payload.

@@ -3,22 +3,29 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
-from pydantic_ai.messages import ModelMessage, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import DeferredToolRequests
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.harness.agent import Agent
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.segments import MessageSegment
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.messages import ModelRequest
+from octomate.schemas.project import Project
+from octomate.schemas.segments import MessageSegment, TextSegment
+from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.inkling import InklingTentacle
 from octomate.tentacles.agents.inkling.base import InklingOutput
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
@@ -33,6 +40,7 @@ from octomate.tentacles.channels.web.trunkline.base import (
     TrunklineDirective,
 )
 from tests.support.agents import build_non_stream_agent, build_scripted_agent
+from tests.support.managers import a_registry
 
 # The console drives one configured reception agent through octomate.kick.
 RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
@@ -135,6 +143,10 @@ def test_trunkline_router_requires_registered_channel() -> None:
     assert "/api/trunkline/routes" in paths
     assert "/api/trunkline/threads" in paths
     assert "/api/trunkline/threads/{thread_id}" in paths
+    assert "/api/trunkline/threads/{thread_id}/messages" in paths
+    assert "/api/trunkline/threads/{thread_id}/conversations" in paths
+    assert "/api/trunkline/threads/{thread_id}/project" in paths
+    assert "/api/trunkline/threads/{thread_id}/batches" in paths
     assert "/api/trunkline/threads/{thread_key}/messages" in paths
     assert "/api/trunkline/batches/{batch_id}/resolve" in paths
 
@@ -318,54 +330,64 @@ async def test_threads_and_detail_endpoints(
     ) as client:
         listing = await client.get("/api/trunkline/threads")
         assert listing.status_code == 200
-        summaries = listing.json()
-        by_channel = {summary["channel"]: summary for summary in summaries}
+        threads = listing.json()
+        by_channel = {thread["channel_tentacle_id"]: thread for thread in threads}
         assert set(by_channel) == {"trunkline", "slack"}
         console = by_channel["trunkline"]
-        assert console["thread_key"] == "thread-9"
-        assert console["title"] == "triage the failing checks"
-        assert console["agent"] == "inkling"
-        assert console["message_count"] == 2
+        assert console["channel_thread_id"] == "thread-9"
+        # The ledger is its own request: a listing that carried every thread's
+        # messages would be the ledger.
+        assert "messages" not in console
+        assert [h["to_agent_tentacle_id"] for h in console["handoffs"]] == ["inkling"]
         assert console["updated_at"].endswith("Z") or "+" in console["updated_at"]
-        assert by_channel["slack"]["thread_key"] == "171234.5678"
+        assert by_channel["slack"]["channel_thread_id"] == "171234.5678"
 
         detail = await client.get(f"/api/trunkline/threads/{console['id']}")
         assert detail.status_code == 200
-        body = detail.json()
-        assert [entry["text"] for entry in body["entries"]] == [
+        assert "messages" not in detail.json()
+
+        messages = await client.get(f"/api/trunkline/threads/{console['id']}/messages")
+        assert messages.status_code == 200
+        ledger = messages.json()
+        assert [entry["message_text"] for entry in ledger] == [
             "triage the failing checks",
             "all done!",
         ]
-        assert [entry["direction"] for entry in body["entries"]] == [
-            "inbound",
-            "outbound",
-        ]
-        assert [session["to_agent"] for session in body["sessions"]] == ["inkling"]
-        assert body["pending"] == []
-        # The recorded run replays as the wire events its live stream carried,
-        # so a reload folds through the same processor as live streaming.
-        [run] = body["runs"]
-        assert run["agent"] == "inkling"
-        kinds = [event["event_kind"] for event in run["events"]]
-        assert kinds[-1] == "run_result"
-        replayed = [
-            event["part"]["content"]
-            for event in run["events"]
-            if event["event_kind"] == "part_start"
-            and event["part"]["part_kind"] == "text"
-        ]
-        assert replayed == ["all done!"]
+        assert [entry["direction"] for entry in ledger] == ["inbound", "outbound"]
+        assert [entry["sender"]["name"] for entry in ledger] == ["Console", "Octomate"]
+        # The model ledger is the agent's own history, never a reader's.
+        assert all("model_messages" not in entry for entry in ledger)
 
-        # Any channel's thread is readable through the same endpoint.
-        foreign = await client.get(
-            f"/api/trunkline/threads/{by_channel['slack']['id']}"
+        conversations = await client.get(
+            f"/api/trunkline/threads/{console['id']}/conversations"
         )
-        assert foreign.status_code == 200
-        assert foreign.json()["channel"] == "slack"
-        assert foreign.json()["runs"] == []
+        assert conversations.status_code == 200
+        [conversation] = conversations.json()
+        assert conversation["agent_tentacle_id"] == "inkling"
+        assert "messages" not in conversation
+        [run] = conversation["runs"]
+        assert run["kind"] == "octomate"
+        assert run["started_at"].endswith("Z") or "+" in run["started_at"]
+        assert "messages" not in run
 
-        missing = await client.get(f"/api/trunkline/threads/{uuid.UUID(int=7)}")
-        assert missing.status_code == 404
+        batches = await client.get(f"/api/trunkline/threads/{console['id']}/batches")
+        assert batches.json() == []
+
+        # Any channel's thread is readable through the same endpoints.
+        foreign_id = by_channel["slack"]["id"]
+        foreign = await client.get(f"/api/trunkline/threads/{foreign_id}")
+        assert foreign.status_code == 200
+        assert foreign.json()["channel_tentacle_id"] == "slack"
+        assert (
+            await client.get(f"/api/trunkline/threads/{foreign_id}/conversations")
+        ).json() == []
+
+        # Every read hangs off a thread, so a stray id is a 404 on all of them
+        # rather than an empty list that reads as "nothing here yet".
+        stray = uuid.UUID(int=7)
+        for suffix in ("", "/messages", "/conversations", "/project", "/batches"):
+            missing = await client.get(f"/api/trunkline/threads/{stray}{suffix}")
+            assert missing.status_code == 404, suffix
 
         connected = await client.get("/api/trunkline/channels")
         assert connected.status_code == 200
@@ -379,6 +401,143 @@ async def test_threads_and_detail_endpoints(
                 "model": RECEPTION_MODEL,
             }
         ]
+
+
+async def test_console_reads_never_load_the_model_ledger(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """Keeping the transcript out of the payload is not keeping it out of the
+    query. Every message relation on this path is lazy="selectin", so without
+    the loader options each read would fetch every model message the thread ever
+    produced and then drop it on the floor."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["all done!"])
+    channel = await _register(octomate, agent)
+    await _post(channel, "triage the failing checks", thread_id="thread-9")
+    thread = await octomate.thread_manager.ensure(_console_address("thread-9"))
+
+    selects: list[str] = []
+
+    @sqlalchemy_event.listens_for(in_memory_engine.sync_engine, "before_cursor_execute")
+    def record(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        base = f"/api/trunkline/threads/{thread.id}"
+        for url in (
+            "/api/trunkline/threads",
+            base,
+            f"{base}/messages",
+            f"{base}/conversations",
+            f"{base}/project",
+            f"{base}/batches",
+        ):
+            selects.clear()
+            assert (await client.get(url)).status_code == 200
+            assert not any("model_messages" in select for select in selects), url
+
+        # The listing names threads and opens none of them.
+        selects.clear()
+        await client.get("/api/trunkline/threads")
+        assert not any("thread_messages" in select for select in selects)
+        assert not any("FROM conversations" in select for select in selects)
+
+
+async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """A session Octomate did not drive is a thread like any other here: the
+    console lists it, reads its ledger, and sees where the work happened — the
+    project the thread is filed under and the directory each run ran in."""
+    octomate = Octomate()
+    octomate.connect(
+        TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
+    )
+    project = Project(root=Path("/srv/inky"), origin="codex")
+    octomate.projects = await a_registry(project)
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CLAUDE_NATIVE_ID, "thread", "session-1"), project=project
+    )
+    await octomate.thread_manager.record_inbound(
+        MessageEvent(
+            tentacle_id=CLAUDE_NATIVE_ID,
+            message_id="turn-1",
+            chat_id="session-1",
+            chat_type="thread",
+            user_id="native",
+            sender=UserProfile(channel_user_id="native", name="native"),
+            segments=[TextSegment(data={"text": "read the migration"})],
+        )
+    )
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    await octomate.conversations.record_external_run(
+        conversation,
+        run_id="turn-1",
+        messages=[
+            ModelRequest(
+                parts=[UserPromptPart(content="read the migration")],
+                timestamp=datetime(2026, 8, 9, 12, tzinfo=UTC),
+            )
+        ],
+        name=CLAUDE_NATIVE_ID,
+        # A run drifts into a subdirectory of the project it belongs to.
+        cwd="/srv/inky/migrations",
+        external_session_id="session-1",
+    )
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        assert listed["channel_tentacle_id"] == CLAUDE_NATIVE_ID
+        assert listed["kind"] == "native_thread"
+        # The runtime's own session id: what its editor extension reopens by.
+        assert listed["chat_id"] == "session-1"
+
+        thread_url = f"/api/trunkline/threads/{listed['id']}"
+        registered = (await client.get(f"{thread_url}/project")).json()
+        assert (registered["name"], registered["root"]) == ("inky", "/srv/inky")
+        [conversation] = (await client.get(f"{thread_url}/conversations")).json()
+        [run] = conversation["runs"]
+        assert run["kind"] == "external"
+        assert run["cwd"] == "/srv/inky/migrations"
+        assert run["external_session_id"] == "session-1"
+
+
+async def test_a_thread_no_project_claims_reads_back_without_one(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """A directive on the console's own channel is not work in a project — and
+    a run that reported no directory says so rather than guessing one."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+    await _post(channel, "what changed?", thread_id="thread-8")
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        assert listed["project_id"] is None
+        thread_url = f"/api/trunkline/threads/{listed['id']}"
+        assert (await client.get(f"{thread_url}/project")).json() is None
+        [conversation] = (await client.get(f"{thread_url}/conversations")).json()
+        assert [run["cwd"] for run in conversation["runs"]] == [""]
 
 
 async def test_batch_resolve_resolves_and_streams(
@@ -420,6 +579,18 @@ async def test_batch_resolve_resolves_and_streams(
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
+        # A reload finds the waiting feeler on the thread it blocks.
+        waiting = await client.get(f"/api/trunkline/threads/{thread.id}/batches")
+        [pending] = waiting.json()
+        assert pending["id"] == str(batch.id)
+        assert pending["status"] == "pending"
+        # The tool-call payload is the agent's; the action carries what a reader
+        # needs to render the card.
+        assert "requests" not in pending
+        [approval] = pending["approvals"]
+        assert approval["id"] == str(approval_id)
+        assert approval["args"]["tool_name"] == "dangerous_tool"
+
         missing = await client.post(
             "/api/trunkline/batches/00000000-0000-0000-0000-000000000000/resolve",
             json={"approvals": {}},

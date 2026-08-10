@@ -95,7 +95,7 @@ def wired(
     `agents.codex.transcript_root`, and additive there for the same reason."""
     locks = SessionLocks()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, locks
+        octomate.conversations, octomate.thread_manager, octomate.projects, locks
     )
     return CodexHookIngest(
         octomate, tailer, locks, extra_transcript_roots=roots

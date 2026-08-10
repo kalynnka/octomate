@@ -59,6 +59,12 @@ def native_utc(value: datetime | None) -> datetime | None:
     return value
 
 
+# Every timestamp in the tree is written as UTC, and SQLite hands it back with the
+# tzinfo stripped. Reads that leave the process — the console's JSON — would then be
+# parsed as local time, so the annotation restores what the column already means.
+UtcDateTime = Annotated[datetime, AfterValidator(native_utc)]
+
+
 def _user_prompt_text(content: str | Sequence[UserContent]) -> str:
     """Plain text of a `UserPromptPart`: the str directly, or the text items of a
     content sequence (skipping multimodal parts and cache points)."""

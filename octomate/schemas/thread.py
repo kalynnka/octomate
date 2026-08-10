@@ -14,7 +14,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.messages import native_utc
+from octomate.schemas.messages import UtcDateTime, native_utc
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
@@ -102,7 +102,7 @@ class ThreadMessage(BaseTransmuter):
     segments: list[MessageSegment] = Field(default_factory=list)
     message_text: str | None = None
     raw: str = ""
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
 
     model_messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
@@ -136,7 +136,7 @@ class Handoff(BaseTransmuter):
     target_conversation_id: uuid.UUID | None = None
     source_run_id: str | None = None
     source_model_message_id: uuid.UUID | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
 
     def __lt__(self, other: Handoff) -> bool:
         return self.id < other.id
@@ -179,8 +179,8 @@ class Thread(BaseTransmuter):
     )
     source_cursor_message_id: uuid.UUID | None = None
     status: ThreadStatus = "active"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
 
     project: Relation[Project | None] = Field(
         default_factory=Relation,

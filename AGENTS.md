@@ -63,6 +63,9 @@
 1. Always leverage Arcanus for database persistence. Application code should use Pydantic schema/transmuter types and Arcanus session APIs; do not import, query, update, or delete ORM models directly unless you are defining the schema/model mapping itself.
 2. Prefer ORM-style persistence through loaded transmuter objects. When an object is already in the session, mutate its typed attributes and commit instead of issuing manual SQL `update()` calls or copying the transmuter to mirror the change.
 3. Foreign keys are enforced (`PRAGMA foreign_keys=ON`, set per connection in `octomate/database.py`), and tests run under the same constraint via `database.create_engine`. A row therefore needs its parents to exist: build them, or use `tests.support.managers.a_thread`, rather than minting a bare `uuid7()` for a parent id.
+4. Every migration is produced by `uv run alembic revision --autogenerate -m "..."`, always, and then adjusted. Never hand-write one. Point `OCTOMATE_DB_URL` at a copy of the database for the run, as with any other migration work. The generated file is what keeps a column's type, constraints and `comment=` identical to the ORM definition that produced them — restating any of that by hand creates a second source of truth that drifts silently, and the drift only shows up as a column whose comment describes something it no longer is.
+5. Adjust the generated file afterwards: write the docstring that says why, add a data backfill, drop an operation autogenerate inferred but the change does not want. What must not be typed by hand is the schema operations themselves. If autogenerate produces nothing, the ORM change is missing — fix the model rather than writing the operation.
+6. Attribute documentation lives on the ORM column as `comment=`, and reaches the migration by being generated from it. A migration that carries a comment string the model does not have is the drift this rule exists to prevent.
 
 ## Observability
 

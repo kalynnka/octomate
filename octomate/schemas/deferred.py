@@ -33,6 +33,7 @@ from uuid_utils.compat import uuid7
 from octomate.models import deferred as deferred_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.messages import UtcDateTime
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.types.deferred import (
     DeferredActionStatus,
@@ -122,9 +123,9 @@ class DeferredAction(BaseTransmuter):
     result: DeferredQuestionResult | DeferredApprovalResult = None
     platform_message_id: str | None = None
     responder_id: str | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    resolved_at: datetime | None = None
+    created_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
+    resolved_at: UtcDateTime | None = None
 
     batch: Relation[DeferredActionBatch] = Relationship()
 
@@ -228,9 +229,9 @@ class DeferredActionBatch(BaseTransmuter):
     target_mode: ResponseTargetMode = "main"
     decision: SummonDecision | None = None
     requests: DeferredToolRequests
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    completed_at: datetime | None = None
+    created_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: UtcDateTime | None = None
 
     questions: RelationCollection[DeferredQuestion] = Relationships()
     approvals: RelationCollection[DeferredApproval] = Relationships()

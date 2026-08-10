@@ -330,56 +330,119 @@ export interface ApiRoute {
   model: string
 }
 
-export interface ApiThreadSummary {
-  /** thread row id (uuid) — the read key for GET /threads/{id} */
-  id: string
-  /** owning channel tentacle id */
-  channel: string
-  /** platform thread id; for trunkline threads, the directive key */
-  thread_key: string
-  title: string
-  status: 'active' | 'closed'
-  agent: string | null
-  model: string | null
-  updated_at: string
-  message_count: number
-}
+/*
+ * The REST reads are the backend transmuters themselves (octomate/schemas/),
+ * not a console-shaped copy — so these mirror the rows field for field. Two
+ * relations never arrive: a thread's `messages` are their own request, and a
+ * run's model transcript is the agent's own history and never leaves.
+ */
 
-export interface ApiLedgerEntry {
+/** One handoff: the point an agent-model route took the thread over. */
+export interface ApiHandoff {
   id: string
-  direction: 'inbound' | 'outbound'
-  actor_kind: 'human' | 'agent' | 'bot' | 'system'
-  agent: string | null
-  sender: string
-  happened_at: string
-  text: string
-}
-
-export interface ApiSessionEntry {
-  id: string
-  from_agent: string | null
-  to_agent: string
-  model: string | null
+  thread_id: string
+  from_agent_tentacle_id: string | null
+  to_agent_tentacle_id: string
+  to_model: string | null
   reason: string
+  hint: string
+  brief: string
   created_at: string
 }
 
-/**
- * One recorded agent run, replayed by the relay as the wire events its live
- * stream carried — reload folds through the same TurnFold as live streaming.
- */
-export interface ApiRunReplay {
+export interface ApiThread {
+  /** thread row id (uuid) — the read key for every /threads/{id} read */
   id: string
-  agent: string
-  started_at: string | null
-  events: WireEvent[]
+  kind: 'dm' | 'group' | 'thread' | 'native_thread'
+  chat_type: string
+  /** the chat as its channel names it; for a native session, its session id */
+  chat_id: string
+  channel_tentacle_id: string
+  /** the platform's own thread id; for trunkline threads, the directive key */
+  channel_thread_id: string | null
+  /** the project this thread's work is in; read it with /threads/{id}/project */
+  project_id: string | null
+  status: 'active' | 'closed'
+  created_at: string
+  updated_at: string
+  /** oldest first — the last one owns the thread */
+  handoffs: ApiHandoff[]
 }
 
-export interface ApiThreadDetail extends ApiThreadSummary {
-  entries: ApiLedgerEntry[]
-  sessions: ApiSessionEntry[]
-  runs: ApiRunReplay[]
-  pending: ActionBatchEvent[]
+export interface ApiUserProfile {
+  id: string
+  channel_tentacle_id: string
+  channel_user_id: string
+  name: string
+  nickname: string | null
+}
+
+export interface ApiThreadMessage {
+  id: string
+  thread_id: string
+  platform_message_id: string | null
+  /** when it happened, and what the ledger orders on */
+  happened_at: string
+  direction: 'inbound' | 'outbound'
+  actor_kind: 'human' | 'agent' | 'bot' | 'system'
+  agent_tentacle_id: string | null
+  sender: ApiUserProfile | null
+  segments: WireSegment[]
+  message_text: string | null
+  created_at: string
+}
+
+/** One recorded run. `kind` tells an Octomate-driven run from one rebuilt out
+ *  of an external runtime's transcript. */
+export interface ApiAgentRun {
+  id: string
+  kind: 'octomate' | 'external'
+  conversation_id: string
+  name: string | null
+  /** the directory this run ran in; "" when its source reported none */
+  cwd: string
+  parent_run_id: string | null
+  parent_tool_call_id: string | null
+  started_at: string | null
+  external_session_id?: string | null
+}
+
+export interface ApiConversation {
+  id: string
+  external_id: string | null
+  thread_id: string
+  agent_tentacle_id: string
+  /** "" for the agent's own conversation; a subagent's identity otherwise */
+  subagent_id: string
+  parent_conversation_id: string | null
+  name: string | null
+  status: string
+  permission_mode: string
+  allowed_tools: string[]
+  /** oldest first, by start time */
+  runs: ApiAgentRun[]
+}
+
+/** The project a thread's work is in. Read-only — the relay takes no writes. */
+export interface ApiProject {
+  id: string
+  name: string
+  origin: string
+  root: string
+  extra_roots: string[]
+  description: string | null
+}
+
+/** An unanswered batch, in the same action shapes the stream's `action_batch`
+ *  event carries — so a reload renders the waiting feelers identically. */
+export interface ApiDeferredBatch {
+  id: string
+  conversation_id: string
+  agent_tentacle_id: string
+  status: string
+  questions: WireDeferredQuestion[]
+  approvals: WireDeferredApproval[]
+  created_at: string
 }
 
 export interface DirectiveBody {

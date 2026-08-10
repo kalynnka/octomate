@@ -53,6 +53,18 @@ class AgentRun(Base, TransmuterProxiedMixin):
         default=None,
         index=True,
     )
+    cwd: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="",
+        server_default="",
+        comment=(
+            "The directory this run happened in, as its source reported it; empty "
+            "when the source reported none. On the base because an Octomate-driven "
+            "run knows its directory too — where a run ran is not a per-variant "
+            "question."
+        ),
+    )
     parent_run_id: Mapped[str | None] = mapped_column(
         String,
         nullable=True,
@@ -79,7 +91,7 @@ class AgentRun(Base, TransmuterProxiedMixin):
     )
 
     conversation: Mapped[Conversation] = relationship(
-        "Conversation", back_populates="runs"
+        "Conversation", back_populates="runs", lazy="raise_on_sql"
     )
     messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",

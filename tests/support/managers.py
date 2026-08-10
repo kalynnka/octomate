@@ -21,7 +21,9 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
+from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -45,6 +47,20 @@ from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
 from octomate.types.conversations import ConversationPermissionMode
 from octomate.types.deferred import DeferredBatchStatus
+
+
+async def a_registry(*projects: Project) -> ProjectManager:
+    """A loaded registry holding `projects` — the rows a native session or a direct
+    registration would have left. Nothing declares a project any more, so a test that
+    wants one persists it and loads the registry over it."""
+    if projects:
+        async with async_session() as session:
+            for project in projects:
+                session.add(project)
+            await session.commit()
+    manager = ProjectManager()
+    await manager.load()
+    return manager
 
 
 async def a_thread(chat_id: str = "chat") -> uuid.UUID:
@@ -142,6 +158,7 @@ class FakeConversationManager(ConversationManager):
         messages: Sequence[ModelMessage],
         *,
         name: str | None = None,
+        cwd: str = "",
         external_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,

@@ -6,7 +6,7 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Literal, TypeVar
 
-from arcanus.materia.sqlalchemy import selectinload
+from arcanus.materia.sqlalchemy import noload, selectinload
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 from sqlalchemy import insert, select
@@ -165,14 +165,23 @@ class ConversationManager:
         return list(rows)
 
     async def for_thread(self, thread_id: uuid.UUID) -> list[Conversation]:
-        """The thread's agent conversations, subagents included. `runs` and each
-        run's `messages` are lazy="selectin", so the one list query loads the whole
-        model ledger in batched passes — a reader replaying history needs no
-        per-row loading."""
+        """The thread's agent conversations, subagents included, each with its
+        runs — and none of the model ledger.
+
+        Both message relations here are lazy="selectin", so the plain query
+        would read every transcript the thread ever produced. That is the
+        agent's own history, reached through the run it belongs to; a reader
+        listing conversations wants the runs, which is what the two `noload`s
+        leave.
+        """
         async with async_session() as session:
             rows = await session.list(
                 Conversation,
                 limit=None,
+                options=[
+                    noload(Conversation["messages"]),
+                    selectinload(Conversation["runs"]).noload(AgentRun["messages"]),
+                ],
                 expressions=[Conversation["thread_id"] == thread_id],
             )
         return list(rows)
@@ -194,11 +203,13 @@ class ConversationManager:
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
+        cwd: str = "",
         external_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
         """Persist a fresh agent run and keep the cached conversation in sync.
+        `cwd` is the directory the run happened in, empty when its caller has none.
         `external_id`, when given, updates the conversation's resumable agent
         session handle in the same commit (external-runtime agents own their own
         session). The parent pair marks a subagent's turn: the run whose tool
@@ -209,6 +220,7 @@ class ConversationManager:
             id=run_id,
             conversation_id=conversation.id,
             name=name,
+            cwd=cwd,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
             started_at=messages[0].timestamp,
@@ -228,6 +240,7 @@ class ConversationManager:
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
+        cwd: str = "",
         external_session_id: str,
         source: str | None = None,
         start_offset: int | None = None,
@@ -237,8 +250,9 @@ class ConversationManager:
         parent_tool_call_id: str | None = None,
     ) -> ExternalAgentRun | None:
         """Persist a turn of an external runtime's session (native Claude) as the
-        `external` variant. `external_session_id` doubles as the conversation's
-        resumable handle (`external_id`).
+        `external` variant. `cwd` is the directory the turn ran in, as the hook or
+        the transcript reported it. `external_session_id` doubles as the
+        conversation's resumable handle (`external_id`).
 
         The byte range is what marks a turn finished. A run carrying `end_offset` was
         assembled from the transcript and is final, so recording it again — a recovery
@@ -276,6 +290,7 @@ class ConversationManager:
             id=run_id,
             conversation_id=conversation.id,
             name=name,
+            cwd=cwd,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
             started_at=messages[0].timestamp,

@@ -182,14 +182,16 @@ class CodexHookIngest:
         """This session's thread, attributed to the project it is running in.
 
         As on the Claude side: the session's own directory says which project this
-        is, the project lands only when the thread is created, and a rollout root is
-        never a project root. Only a cwd the hook carried — `Path("")` is the
-        process's own directory, which would attribute every session to whatever
-        project Octomate itself was started in.
+        is, a directory no project holds yet becomes one, the project lands only when
+        the thread is created, and a rollout root is never a project root. Only a cwd
+        the hook carried — `Path("")` is the process's own directory, which would
+        attribute every session to whatever project Octomate itself was started in.
         """
         project = None
-        if event.cwd and (name := self.octomate.projects.resolve(Path(event.cwd))):
-            project = self.octomate.projects.get(name)
+        if event.cwd:
+            project = await self.octomate.projects.ensure(
+                Path(event.cwd), origin="codex"
+            )
         return await self.octomate.thread_manager.ensure(
             ThreadKey(CODEX_NATIVE_ID, "thread", event.session_id),
             project=project,
@@ -256,6 +258,7 @@ class CodexHookIngest:
             run_id=event.turn_id,
             messages=messages,
             name=CODEX_NATIVE_ID,
+            cwd=event.cwd,
             external_session_id=event.session_id,
         )
 
