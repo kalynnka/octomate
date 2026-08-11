@@ -62,12 +62,6 @@ class Project(Base, TransmuterProxiedMixin):
         nullable=True,
         comment="What this project is.",
     )
-    permission_mode: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-        default="default",
-        comment="Approval mode a conversation in this project starts under.",
-    )
     enabled: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

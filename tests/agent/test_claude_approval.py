@@ -314,7 +314,7 @@ async def test_persisted_allowed_tool_skips_the_card(
 ) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
-    seeded = FakeConversation(permission_mode="default", allowed_tools=["Bash"])
+    seeded = FakeConversation(allowed_tools=["Bash"])
     tentacle, _dam, feelers = _build(FakePresentedBatch(), conversation=seeded)
 
     await _drain(tentacle)
@@ -329,7 +329,7 @@ async def test_permission_mode_drives_the_sdk(
 ) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")  # no can_use_tool
-    seeded = FakeConversation(permission_mode="accept_edits")
+    seeded = FakeConversation(permission_mode="plan")
     question = DeferredQuestion(
         tool_name="AskUserQuestion",
         tool_call_id="q1",
@@ -349,7 +349,52 @@ async def test_permission_mode_drives_the_sdk(
 
     options = ScriptedClaudeClient.last_options
     assert options is not None
-    assert options.permission_mode == "acceptEdits"
+    # Stored in the SDK's own vocabulary, so it arrives untranslated —
+    # `plan` included, which the retired unified scale could not say.
+    assert options.permission_mode == "plan"
+
+
+@pytest.mark.parametrize(
+    ("stored", "configured", "expected"),
+    [
+        # Stored in the SDK's own vocabulary, so every mode arrives untranslated —
+        # including the three the retired unified scale could not say.
+        ("dontAsk", "default", "dontAsk"),
+        ("auto", "default", "auto"),
+        ("bypassPermissions", "default", "bypassPermissions"),
+        # Nothing declared: the agent's configured posture decides.
+        (None, "acceptEdits", "acceptEdits"),
+        # A Codex posture is not Claude's to read. `Conversation` already refuses the
+        # pairing; the tentacle falls back rather than handing the SDK a word it has
+        # no meaning for.
+        ("auto_review", "plan", "plan"),
+    ],
+)
+async def test_the_conversations_posture_reaches_the_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    stored: str | None,
+    configured: str,
+    expected: str,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
+    tentacle, _dam, feelers = _build(
+        FakePresentedBatch(),
+        config=ClaudeCodeConfig(permission_mode=configured),  # pyright: ignore[reportArgumentType]
+        # Pre-granted so the scripted gated call needs no card; the posture is what
+        # this asserts, not the gating.
+        conversation=FakeConversation(
+            permission_mode=stored,  # pyright: ignore[reportArgumentType]
+            allowed_tools=["Bash"],
+        ),
+    )
+
+    await _drain(tentacle)
+
+    assert feelers.requests == []
+    options = ScriptedClaudeClient.last_options
+    assert options is not None
+    assert options.permission_mode == expected
 
 
 async def test_approval_timeout_denies_and_expires(

@@ -8,6 +8,7 @@ import { Icon } from '@/components/Icon'
 import { TriStripe } from '@/components/TriStripe'
 import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
+import type { ThreadSummary } from '@/lib/api/types'
 import { channelMeta } from '@/lib/api/live'
 import type { ThreadTone } from '@/lib/api/types'
 import { useRailDrag } from '@/lib/useRailDrag'
@@ -297,8 +298,18 @@ export function ThreadsSidebar() {
             const folded = !!chFold[c.id]
             const pinned = chPins.includes(c.id)
             const ths = threadsByCh[c.id] ?? []
+            // `selThreadId` is a row id when a thread was picked from this list, and a
+            // platform key for the whole of the new-thread flow — the directive
+            // addressed the thread by key, and the row id it was given is the relay's
+            // answer, which the console never asks for. Both are matched, so a thread
+            // is selected under either name; a key is never empty when it is one.
+            const selected = (t: ThreadSummary) =>
+              t.id === selThreadId || (t.key !== '' && t.key === selThreadId)
             const rows: ThreadRow[] = [
-              ...(c.id === 'trunkline' && ntOn && !ths.some((t) => t.id === selThreadId)
+              // The placeholder stands in only until the thread it became reaches the
+              // listing. On the row id it never matched, so it outlived the real row
+              // and the thread showed twice.
+              ...(c.id === 'trunkline' && ntOn && !ths.some(selected)
                 ? [
                     {
                       id: ntStarted ? selThreadId : 'THR-NEW',
@@ -314,7 +325,7 @@ export function ThreadsSidebar() {
                 title: t.title,
                 stColor: toneColor[t.tone],
                 agent: t.agentLabel,
-                on: t.id === selThreadId,
+                on: selected(t),
                 pick: () => selectThread(c.id, t.id),
               })),
             ]

@@ -19,7 +19,18 @@ from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
 from octomate.types.conversations import ChatType
+
+# The two native ids are re-exported under their old home: they moved to
+# `types.threads` so `types.permissions` could name them without importing a schema
+# that imports it back, and every reader already reaches for them through here.
 from octomate.types.threads import (
+    CLAUDE_NATIVE_ID as CLAUDE_NATIVE_ID,
+)
+from octomate.types.threads import (
+    CODEX_NATIVE_ID as CODEX_NATIVE_ID,
+)
+from octomate.types.threads import (
+    NATIVE_TENTACLE_IDS,
     ChannelActorKind,
     MessageBindingKind,
     ThreadKind,
@@ -29,12 +40,6 @@ from octomate.types.threads import (
 
 if TYPE_CHECKING:
     from octomate.schemas.messages import ModelRequest, ModelResponse
-
-# Synthetic ids a native client's thread is filed under; no channel is registered as
-# either. They live here because they are what tells a native thread from a channel DM.
-CLAUDE_NATIVE_ID = "claude-native"
-CODEX_NATIVE_ID = "codex-native"
-NATIVE_TENTACLE_IDS: frozenset[str] = frozenset({CLAUDE_NATIVE_ID, CODEX_NATIVE_ID})
 
 # The kinds that are a piece of work, and so can carry a project. A DM or a group chat
 # outlives every project in it, and the binding is frozen.

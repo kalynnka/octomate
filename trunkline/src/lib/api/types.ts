@@ -26,6 +26,10 @@ export type ThreadTone = 'active' | 'idle' | 'native'
 export interface ThreadSummary {
   id: string
   channelId: ChannelId
+  /** the platform's own thread id — what a directive is addressed to, and the only
+   *  handle the new-thread flow has for a thread before it knows the row. Empty for
+   *  a surface that is not a thread */
+  key: string
   /** the surface the thread is, which is all a listing knows to call it by —
    *  the relay serves threads without their messages */
   title: string
@@ -42,7 +46,14 @@ export type SessionTone = 'accent' | 'gold' | 'sage' | 'teal' | 'ghost'
 export interface SessionInfo {
   n: string
   id: string
+  /** the conversation row this session is — what a posture switch is written to */
+  conversationId: string
   route: string
+  /** the agent that owns it, which says which approval vocabulary applies */
+  agent: string
+  /** its approval posture; null = nothing declared, so the agent's own default
+   *  decides, and an agent with no vocabulary is always null */
+  mode: string | null
   kind: SessionKind
   t: string
   reason: string

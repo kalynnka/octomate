@@ -109,7 +109,6 @@ class ProjectManager:
                 project.name = name
                 project.extra_roots = declared.extra_roots
                 project.description = declared.description
-                project.permission_mode = declared.permission_mode
             named: dict[str, Path] = {}
             rooted: dict[Path, str] = {}
             for project in stored:

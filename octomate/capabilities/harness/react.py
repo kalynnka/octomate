@@ -39,7 +39,7 @@ from pydantic_graph import (
 from typing_extensions import TypeAliasType
 
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import DeferredResolver, DeferredSuspender
+from octomate.capabilities.harness.deferred import DeferredSuspender, ResolverChoice
 from octomate.capabilities.harness.events import StreamEvents
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
@@ -88,7 +88,9 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     agent_deps: ReactDepsT
     thread_manager: ThreadManager | None = None
     event_send_stream: ObjectSendStream[ReactStreamEvent[ReactOutputT]] | None = None
-    resolver: DeferredResolver | None = None
+    # Asked at each deferral, not held as one resolver for the run — see
+    # `ResolverChoice`. The suspender is the other half: what an empty choice means.
+    choose_resolvers: ResolverChoice | None = None
     suspender: DeferredSuspender | None = None
     output_type: OutputSpec[ReactOutputT] | None = None
     run_name: str = "react"
@@ -340,7 +342,7 @@ class RunAgent(
             )
 
         if isinstance(result.output, DeferredToolRequests) and (
-            ctx.deps.resolver is not None or ctx.deps.suspender is not None
+            ctx.deps.choose_resolvers is not None or ctx.deps.suspender is not None
         ):
             react_logfire.info("react run deferred", run_id=result.run_id)
             return ResolveDeferred(requests=result.output, result=result)
@@ -362,20 +364,49 @@ class ResolveDeferred(
     async def run(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
     ) -> RunAgent[ReactOutputT, ReactDepsT] | End[AgentRunResult[ReactOutputT]]:
-        if ctx.deps.resolver is not None:
-            react_logfire.info("deferred resolved in-process, looping back to RunAgent")
-            return RunAgent(
-                deferred_results=await ctx.deps.resolver.resolve(self.requests)
+        if ctx.deps.choose_resolvers is None and ctx.deps.suspender is None:
+            raise RuntimeError(
+                "ResolveDeferred requires a react graph resolver or suspender"
             )
+        if ctx.deps.choose_resolvers is not None:
+            # Asked here, at the deferral, rather than carried from the start of the
+            # run: the conversation decides who answers this, and it can have been
+            # told something new since the last time round.
+            resolvers = ctx.deps.choose_resolvers(await resolve_conversation(ctx))
+            results = DeferredToolResults()
+            for resolver in resolvers:
+                answered = await resolver.resolve(self.requests)
+                # Earlier resolvers win — each answers what it speaks for and a later
+                # one only fills what is still open, which is what puts a catch-all
+                # last. Each sees the batch entire rather than the remainder, so one
+                # that classifies by `metadata` keeps what it classifies by.
+                for tool_call_id, value in answered.calls.items():
+                    results.calls.setdefault(tool_call_id, value)
+                for tool_call_id, verdict in answered.approvals.items():
+                    results.approvals.setdefault(tool_call_id, verdict)
+            # All of the batch or none of it: the runner refuses results covering only
+            # some of what it deferred, so a batch nobody wholly answered is the
+            # human's — along with the parts of it that were answerable.
+            covered = all(
+                call.tool_call_id in results.calls for call in self.requests.calls
+            ) and all(
+                approval.tool_call_id in results.approvals
+                for approval in self.requests.approvals
+            )
+            if resolvers and covered:
+                react_logfire.info(
+                    "deferred resolved in-process, looping back to RunAgent"
+                )
+                return RunAgent(deferred_results=results)
         if ctx.deps.suspender is not None:
             react_logfire.info("deferred suspended, ending run")
             event = await ctx.deps.suspender.suspend(self.requests)
             if event is not None and ctx.deps.event_send_stream is not None:
                 await ctx.deps.event_send_stream.send(event)
             return End(self.result)
-        raise RuntimeError(
-            "ResolveDeferred requires a react graph resolver or suspender"
-        )
+        # Nothing in-process took it and there is no human to ask, so the requests go
+        # back to the caller — the same end a graph carrying neither hook reaches.
+        return End(self.result)
 
 
 ReactGraphInput = TypeAliasType(

@@ -76,7 +76,7 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(approval_mode="deny_all", cwd="/configured"),
+        config=CodexConfig(permission_mode="deny_all", cwd="/configured"),
         hook_secret=HOOK_SECRET,
     )
     async with tentacle:

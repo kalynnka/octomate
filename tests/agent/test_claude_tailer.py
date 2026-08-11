@@ -179,6 +179,43 @@ async def test_records_runs_with_byte_ranges(tmp_path: Path) -> None:
     assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
 
 
+async def test_the_posture_a_session_runs_under_is_read_off_its_transcript(
+    tmp_path: Path,
+) -> None:
+    """Every prompt line names the mode that turn ran under, so a ⇧⇥ in the client
+    reaches Octomate on the operator's next message. Observed, never set — nothing here
+    can change a running session, and the console shows it read-only.
+
+    A mode this build does not model is left alone rather than stored: the column is
+    validated on read, so an unknown one would take the conversation out of circulation.
+    """
+    switched = prompt_record("p2", "now commit", 6) | {"permissionMode": "acceptEdits"}
+    unmodelled = prompt_record("p3", "and push", 8) | {"permissionMode": "hyperdrive"}
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(
+        transcript,
+        [prompt_record("p1", "list the files", 1) | {"permissionMode": "plan"}],
+    )
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    async def posture() -> str | None:
+        thread = await octomate.thread_manager.ensure(SESSION_KEY)
+        conversation = await octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+        )
+        return conversation.permission_mode
+
+    tailer.start(SESSION_ID, transcript)
+    await tailer.finalize(SESSION_ID)
+    assert await posture() == "plan"
+
+    write_records(transcript, [switched, unmodelled])
+    tailer.start(SESSION_ID, transcript)
+    await tailer.finalize(SESSION_ID)
+    assert await posture() == "acceptEdits"
+
+
 async def test_streams_live_events_to_a_consumer(tmp_path: Path) -> None:
     transcript = tmp_path / f"{SESSION_ID}.jsonl"
     write_records(transcript, TURN_ONE)

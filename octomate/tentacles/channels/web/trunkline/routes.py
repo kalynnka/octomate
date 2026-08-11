@@ -27,7 +27,12 @@ streams the resumed run, both as SSE of the native wire events (see `wire`).
 
 Where the work happened — a thread's project and a run's directory — is read
 here and nowhere written: a thread's project is frozen when its row is written,
-and both are learned from the session that ran, so no endpoint takes either."""
+and both are learned from the session that ran, so no endpoint takes either.
+
+A conversation's approval posture is the exception, and the only write under a
+thread: it is the console's to change, mid-thread, and the conversation is what
+remembers it. It is switched through PATCH, or — while the thread is still being
+composed and has no row to switch — carried on the directive that creates it."""
 
 from __future__ import annotations
 
@@ -51,6 +56,7 @@ from octomate.tentacles.channels.web.trunkline.base import (
     TrunklineDirective,
     TrunklineTentacle,
 )
+from octomate.types.permissions import PERMISSION_MODES, AgentPermissionMode
 
 if TYPE_CHECKING:
     from octomate import Octomate
@@ -82,6 +88,35 @@ class DirectiveBody(BaseModel):
         "it. Honored only on a thread's first directive, since a thread's project "
         "is frozen when the row is written; null is a real answer, and leaves the "
         "thread a chat that is in no project at all.",
+    )
+    permission_mode: AgentPermissionMode | None = Field(
+        default=None,
+        description="A posture from GET /permission-modes, in the vocabulary of the "
+        "agent this thread is routed to, stored on that agent's conversation before "
+        "the run. This is how a thread that does not exist yet gets one; an owned "
+        "thread's is switched through PATCH /conversations/{id}/permission-mode. "
+        "Null asks for no change, and never clears a posture already stored.",
+    )
+
+
+class AgentPostures(BaseModel):
+    modes: list[AgentPermissionMode] = Field(
+        description="This agent's whole vocabulary, in the order a picker steps "
+        "through it."
+    )
+    default: AgentPermissionMode = Field(
+        description="What a conversation of this agent's runs under when it declares "
+        "nothing of its own — the configured default, which is what a NULL "
+        "`permission_mode` means rather than 'no posture'."
+    )
+
+
+class PermissionModeBody(BaseModel):
+    permission_mode: AgentPermissionMode | None = Field(
+        default=None,
+        description="A posture from GET /permission-modes, in this conversation's "
+        "own agent's vocabulary. Null clears it: nothing is declared and the agent's "
+        "configured default decides again.",
     )
 
 
@@ -127,6 +162,31 @@ def build_trunkline_router(
         """The projects a new thread can be filed under — the enabled ones, since
         a project whose root disk has lost is nowhere to work."""
         return [project for project in octomate.projects.list() if project.enabled]
+
+    @router.get("/permission-modes")
+    async def permission_modes() -> dict[str, AgentPostures]:
+        """Each registered agent's approval vocabulary, in the order a picker steps
+        through it — a provider's own scale, never a shared one, so the list a
+        conversation may be given is keyed by the agent that reads it.
+
+        Only the agents this instance runs: a posture is stored on a conversation,
+        and an agent nobody can be routed to has no conversation to store one on. The
+        tailed runtimes are absent for the same reason, which is what keeps the console
+        reporting their posture rather than offering to switch it."""
+        postures: dict[str, AgentPostures] = {}
+        for agent_id, agent in octomate.agents.items():
+            configured = agent.default_permission_mode
+            if agent_id not in PERMISSION_MODES or configured is None:
+                continue
+            if configured not in PERMISSION_MODES[agent_id]:
+                raise ValueError(
+                    f"agent {agent_id!r} is configured with {configured!r}, which is "
+                    f"not one of its own postures"
+                )
+            postures[agent_id] = AgentPostures(
+                modes=list(PERMISSION_MODES[agent_id]), default=configured
+            )
+        return postures
 
     @router.get("/channels")
     async def list_channels() -> list[ChannelInfo]:
@@ -222,11 +282,34 @@ def build_trunkline_router(
             message_id=body.message_id,
             model=body.model,
             project=body.project,
+            permission_mode=body.permission_mode,
         )
         try:
             return await channel.handle_directive(directive)
         except RouteLockedError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @router.patch(
+        "/conversations/{conversation_id}/permission-mode",
+        summary="Switch the approval posture this conversation's agent works under",
+        response_model_exclude={"messages", "runs"},
+    )
+    async def set_permission_mode(
+        conversation_id: uuid.UUID, body: PermissionModeBody
+    ) -> Conversation:
+        """The one place a live thread's posture changes. A run reads it as it
+        starts, so the switch lands on the next turn and leaves anything in flight
+        alone — including a batch already waiting on a human."""
+        try:
+            conversation = await octomate.conversations.get(conversation_id)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        try:
+            return await octomate.conversations.set_permission_mode(
+                conversation, body.permission_mode
+            )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 

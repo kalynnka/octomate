@@ -3,7 +3,13 @@ import { goLedgerTarget, syncRails, useConsole } from '@/state/console'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { chipLabel, ellipsis, label, microSection, mono, serif } from '@/components/text'
 import { Disclose, Fold } from '@/components/Fold'
-import type { LedgerItem, SessionKind, SessionTone, ToolDetail } from '@/lib/api/types'
+import type {
+  LedgerItem,
+  SessionInfo,
+  SessionKind,
+  SessionTone,
+  ToolDetail,
+} from '@/lib/api/types'
 
 type TlKind = 'turn' | 'msg' | 'think' | 'plan' | 'tool' | 'write' | 'ask' | 'sub' | 'card' | 'end'
 
@@ -194,19 +200,25 @@ export function TimelinePanel() {
   const ntAgent = useConsole((s) => s.ntAgent)
   const ntModel = useConsole((s) => s.ntModel)
   const ntEffort = useConsole((s) => s.ntEffort)
+  const ntPermissionMode = useConsole((s) => s.ntPermissionMode)
   // A booted new thread indexes its live session; before boot the skeleton shows.
-  const sessions = ntOn
+  // Its conversation row is the relay's and unknown here until the thread is
+  // reopened, so the id stays empty and the posture is the one the console holds.
+  const sessions: SessionInfo[] = ntOn
     ? ntStarted
       ? [
           {
             n: '01',
             id: 'SES-0533',
+            conversationId: '',
             route: `${ntAgent} · ${ntModel}`,
-            kind: 'entry' as const,
+            agent: ntAgent,
+            mode: ntPermissionMode,
+            kind: 'entry',
             t: '',
             reason: `entry route — trunkline console · effort ${ntEffort}`,
             status: 'active',
-            tone: 'accent' as const,
+            tone: 'accent',
           },
         ]
       : []

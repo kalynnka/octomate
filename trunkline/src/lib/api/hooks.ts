@@ -20,3 +20,10 @@ export const useRoutes = () =>
 
 export const useProjects = () =>
   useQuery({ queryKey: ['projects'], queryFn: api.projects, staleTime: 60_000 })
+
+export const usePermissionModes = () =>
+  useQuery({
+    queryKey: ['permission-modes'],
+    queryFn: api.permissionModes,
+    staleTime: 60_000,
+  })

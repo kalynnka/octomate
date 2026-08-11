@@ -212,6 +212,8 @@ export interface ConsoleActions {
   setNtMenu(menu: ConsoleState['ntMenu'], pos?: { top: number; right: number }): void
   /** file the thread being created under a project, or under none */
   setNtProject(name: string | null): void
+  /** step the working agent's approval posture one along its own vocabulary */
+  cyclePermissionMode(): Promise<void>
   closeNtMenu(): void
   sendNewThread(text: string): void
 }
@@ -280,6 +282,10 @@ interface ConsoleState {
   /** the project a new thread will be filed under; null is a real answer —
    *  the thread is then a chat, in no project at all */
   ntProject: string | null
+  /** the approval posture a new thread's first directive carries; null declares
+   *  nothing and leaves the agent's configured default deciding. Held here only
+   *  while the thread has no conversation row to hold it */
+  ntPermissionMode: string | null
   /** the new-thread menus the relay honors: the composer's route picker, and
    *  the strip's project picker */
   ntMenu: 'sel' | 'proj' | null
@@ -1088,6 +1094,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         ntStarted: false,
         ntTitle: '',
         ntProject: null,
+        ntPermissionMode: null,
         ntMenu: null,
         live: [],
         running: false,
@@ -1109,13 +1116,69 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     setNtRoute(
       patch: Partial<Pick<ConsoleState, 'ntAgent' | 'ntModel' | 'ntEffort' | 'ntRouteId'>>,
     ) {
-      set(patch)
+      // A posture is one provider's word, so switching agents drops it rather
+      // than sending Claude's vocabulary to Codex on the first directive.
+      const dropped = patch.ntAgent !== undefined && patch.ntAgent !== get().ntAgent
+      set(dropped ? { ...patch, ntPermissionMode: null } : patch)
     },
     setNtMenu(menu: ConsoleState['ntMenu'], pos?: { top: number; right: number }) {
       set((s) => ({ ntMenu: s.ntMenu === menu ? null : menu, ...(pos ? { ntMenuPos: pos } : {}) }))
     },
     closeNtMenu: () => set({ ntMenu: null }),
     setNtProject: (name: string | null) => set({ ntProject: name }),
+
+    /**
+     * Step the working agent's approval posture one along its own vocabulary —
+     * the ⇧⇥ switch, and the chip's click.
+     *
+     * Two places hold a posture, because a thread being composed has no row to
+     * hold one: before the first directive the pick lives here and rides that
+     * directive, and afterwards it lives on the conversation and is written
+     * there. Nothing declared steps to the vocabulary's first posture, and the
+     * cycle never returns to it — undeclaring is not a step, it is a reset.
+     *
+     * An agent with no vocabulary (a native session's runtime, which is observed
+     * rather than driven) cycles to nothing at all.
+     */
+    async cyclePermissionMode() {
+      const s = get()
+      const session = s.detail?.sessions.at(-1)
+      const agent = s.ntOn ? s.ntAgent : session?.agent
+      if (!agent) return
+      const vocabularies = await queryClient.fetchQuery({
+        queryKey: ['permission-modes'],
+        queryFn: api.permissionModes,
+        staleTime: 60_000,
+      })
+      const vocabulary = vocabularies[agent]?.modes ?? []
+      if (!vocabulary.length) return
+      const current = s.ntOn ? s.ntPermissionMode : (session?.mode ?? null)
+      const next = vocabulary[(vocabulary.indexOf(current ?? '') + 1) % vocabulary.length]
+      if (s.ntOn) {
+        set({ ntPermissionMode: next })
+        return
+      }
+      if (!session) return
+      await api.setPermissionMode(session.conversationId, next)
+      // The write is the relay's; this only keeps the chip in step with it. A
+      // reader who has moved on since is left alone — their detail is another
+      // thread's, and the posture they are looking at is not the one that moved.
+      if (get().selThreadId !== s.selThreadId) return
+      set((x) =>
+        x.detail === null
+          ? {}
+          : {
+              detail: {
+                ...x.detail,
+                sessions: x.detail.sessions.map((each) =>
+                  each.conversationId === session.conversationId
+                    ? { ...each, mode: next }
+                    : each,
+                ),
+              },
+            },
+      )
+    },
     sendNewThread(text: string) {
       const s = get()
       const body = text.trim()
@@ -1144,8 +1207,16 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // Same rule for the project: a thread's is frozen when the row is written,
       // so only the directive that creates it carries one.
       const project = started ? undefined : (s.ntProject ?? undefined)
+      // The posture is not frozen — it rides every directive of this flow, since
+      // the console holds it until the thread is reopened and its conversation
+      // starts answering for it.
+      const posture = s.ntPermissionMode ?? undefined
       void runLive(threadId, (onEvent) =>
-        streamDirective(threadId, { text: body, model: routeId, project }, onEvent),
+        streamDirective(
+          threadId,
+          { text: body, model: routeId, project, permission_mode: posture },
+          onEvent,
+        ),
       )
 
     },
@@ -1193,6 +1264,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     ntStarted: false,
     ntTitle: '',
     ntProject: null,
+    ntPermissionMode: null,
     ntAgent: 'claude',
     ntModel: 'opus-4.1',
     ntRouteId: null,

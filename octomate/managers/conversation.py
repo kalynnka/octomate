@@ -21,6 +21,7 @@ from octomate.schemas.conversation import (
 from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import ThreadMessage
+from octomate.types.permissions import AgentPermissionMode, check_mode
 
 RunT = TypeVar("RunT", bound=AgentRun)
 
@@ -410,6 +411,33 @@ class ConversationManager:
         if refreshed is not None:
             self.cache_conversation(refreshed)
         return forked_run
+
+    async def set_permission_mode(
+        self,
+        conversation: Conversation,
+        mode: AgentPermissionMode | None,
+    ) -> Conversation:
+        """Store the approval posture this conversation's agent works under.
+
+        Checked against that agent's own vocabulary first, so a posture meant for
+        another provider is refused here rather than ignored at the run. None clears
+        it: the conversation declares nothing again and the agent's configured
+        default decides.
+
+        Each run reads the posture as it starts, so a switch lands on the next turn
+        and nothing already in flight is rewritten.
+        """
+        if mode is not None:
+            check_mode(conversation.agent_tentacle_id, mode)
+        async with async_session() as session:
+            stored = await session.get(Conversation, conversation.id)
+            if stored is None:
+                raise ValueError(f"unknown conversation {conversation.id}")
+            stored.permission_mode = mode
+            await session.commit()
+        conversation.permission_mode = mode
+        self.cache_conversation(conversation)
+        return conversation
 
     async def grant_session_tool(
         self,

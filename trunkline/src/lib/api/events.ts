@@ -439,7 +439,9 @@ export interface ApiConversation {
   parent_conversation_id: string | null
   name: string | null
   status: string
-  permission_mode: string
+  /** the agent's own approval vocabulary — `agent_tentacle_id` says which;
+   *  null is nothing declared, and the agent's configured default decides */
+  permission_mode: string | null
   allowed_tools: string[]
   /** oldest first, by start time */
   runs: ApiAgentRun[]
@@ -470,6 +472,22 @@ export interface ApiDeferredBatch {
   created_at: string
 }
 
+/**
+ * GET /permission-modes — each registered agent's approval vocabulary, in the
+ * order a picker steps through it, keyed by agent tentacle id. The vocabularies
+ * do not overlap: a posture only means something under the agent that reads it,
+ * and an agent absent here is one the console cannot switch — either it answers
+ * to no posture, or it is a runtime Octomate tails rather than drives.
+ */
+export interface ApiAgentPostures {
+  modes: string[]
+  /** what a conversation declaring nothing of its own runs under, which is what
+   *  a null `permission_mode` means rather than "no posture" */
+  default: string
+}
+
+export type ApiPermissionModes = Record<string, ApiAgentPostures>
+
 export interface DirectiveBody {
   text: string
   message_id?: string
@@ -477,6 +495,9 @@ export interface DirectiveBody {
   /** a project name from /projects; honored on a thread's first directive only,
    *  and omitted for a thread that is in no project at all */
   project?: string
+  /** a posture from /permission-modes, in the picked agent's own vocabulary —
+   *  how a thread with no row yet gets one; an owned thread's is PATCHed */
+  permission_mode?: string
 }
 
 export interface BatchResponseBody {

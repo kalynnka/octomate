@@ -11,6 +11,9 @@ octomate.yaml
 # Octomate runtime data
 .octomate/
 
+# Agent tooling: local settings, and skills symlinked into a machine's own install
+.claude/
+
 # Tarot card images (download manually, see octotools/tarot/resources/README.md)
 octotools/tarot/resources/*/
 

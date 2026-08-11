@@ -12,6 +12,7 @@ from typing import (
     TYPE_CHECKING,
     ClassVar,
     cast,
+    get_args,
     overload,
 )
 
@@ -22,7 +23,6 @@ from claude_agent_sdk import (
     HookInput,
     HookJSONOutput,
     HookMatcher,
-    PermissionMode,
     PermissionResultAllow,
     PermissionResultDeny,
     PreToolUseHookInput,
@@ -81,19 +81,12 @@ from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.agents.claude.transport import SSHTransport
 from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
-from octomate.types.conversations import ConversationPermissionMode
 from octomate.types.json import JsonObject
+from octomate.types.permissions import ClaudePermissionMode, is_claude_mode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
 
-
-# Our snake_case approval levels → the Claude SDK's camelCase `permission_mode`.
-SDK_PERMISSION_MODE: dict[ConversationPermissionMode, PermissionMode] = {
-    "default": "default",
-    "accept_edits": "acceptEdits",
-    "bypass_permissions": "bypassPermissions",
-}
 
 # Claude's file-writing tools, and the input key each names its target with. A hook
 # matcher is a full match on the tool name, so the hook only ever sees these three
@@ -171,6 +164,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
     in_process: ClassVar[bool] = True
+
+    permission_modes: ClassVar[tuple[str, ...]] = get_args(ClaudePermissionMode)
+
+    @property
+    def default_permission_mode(self) -> str | None:
+        return self.config.permission_mode
 
     # Claude's own orange, so its lines carry its identity in a console shared with
     # every other tentacle, instead of whatever hue the connection order landed on.
@@ -559,7 +558,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # offer); minimal maps down to low, the rest pass through. None
             # leaves the CLI default.
             effort="low" if effort == "minimal" else effort,
-            permission_mode=SDK_PERMISSION_MODE[conversation.permission_mode],
+            # Stored in the SDK's own vocabulary, so it goes over untranslated.
+            permission_mode=(
+                conversation.permission_mode
+                if is_claude_mode(conversation.permission_mode)
+                else self.config.permission_mode
+            ),
             max_turns=self.config.max_turns,
             resume=conversation.external_id,
             session_id=None if conversation.external_id else session_id,

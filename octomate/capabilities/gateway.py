@@ -85,7 +85,7 @@ PRIVATE_REFUSALS: dict[PrivateBlocker, str] = {
 # The `teleport` deferral's declared metadata kind. The suspender and dispatch graph
 # classify the deferral by this kind rather than the tool name, so `gate` (which emits
 # it) and `reflex` (which resolves it) agree on one value without matching on the name.
-TELEPORT_KIND = "teleport"
+TELEPORT_DEFER_KIND = "teleport"
 GATE_TOOLSET_ID = "gate"
 
 GATE_INSTRUCTION = """\
@@ -552,7 +552,7 @@ class GatewayCapability(AbstractCapability[None]):
         """Continue this conversation yourself in a new sub-thread of the current
         chat; everything said so far comes with you. `hint` is the short
         user-facing thread-starter message."""
-        raise CallDeferred(metadata={"kind": TELEPORT_KIND, "hint": hint})
+        raise CallDeferred(metadata={"kind": TELEPORT_DEFER_KIND, "hint": hint})
 
     async def scheme(
         self,

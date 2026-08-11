@@ -8,6 +8,7 @@
 import {
   fetchChannels,
   fetchHealth,
+  fetchPermissionModes,
   fetchProjects,
   fetchRoutes,
   fetchThread,
@@ -16,9 +17,15 @@ import {
   fetchThreadMessages,
   fetchThreadProject,
   fetchThreads,
+  patchPermissionMode,
 } from './client'
 import type { HealthState } from './client'
-import type { ApiProject, ApiRoute } from './events'
+import type {
+  ApiConversation,
+  ApiPermissionModes,
+  ApiProject,
+  ApiRoute,
+} from './events'
 import { channelMeta, groupLiveThreads, liveThreadDetail } from './live'
 import type { ChannelMeta, ThreadDetail, ThreadSummary } from './types'
 
@@ -53,6 +60,16 @@ export const api = {
   /** The projects a new thread can be filed under; empty is a normal answer. */
   projects(): Promise<ApiProject[]> {
     return fetchProjects()
+  },
+
+  /** Each agent's approval postures, in the order the switcher steps through. */
+  permissionModes(): Promise<ApiPermissionModes> {
+    return fetchPermissionModes()
+  },
+
+  /** Switch one conversation's posture; the answer is the row as it now stands. */
+  setPermissionMode(conversationId: string, mode: string | null): Promise<ApiConversation> {
+    return patchPermissionMode(conversationId, mode)
   },
 
   async listThreads(): Promise<Record<string, ThreadSummary[]>> {

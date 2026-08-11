@@ -41,6 +41,7 @@ from octomate.tentacles.agents.claude.transcript import (
     transcript_line_adapter,
 )
 from octomate.tentacles.agents.locks import SessionLocks
+from octomate.types.permissions import is_claude_mode
 
 logger = logging.getLogger(__name__)
 
@@ -476,6 +477,7 @@ class ClaudeTranscriptTailer:
             self.harvest_subagent_call(state, line)
             if line.prompt_source is not None:
                 await self.close_turn(state)
+                await self.record_permission_mode(state, line.permission_mode)
                 state.open_turn = self.begin_turn(line, start, end)
             elif state.open_turn is not None:
                 self.fold(state, line, end)
@@ -522,6 +524,37 @@ class ClaudeTranscriptTailer:
         stamp(turn.accumulator.messages[written:], line.timestamp)
         turn.end_offset = end
         turn.last_line_uuid = line.uuid
+
+    async def record_permission_mode(
+        self, state: TailState, permission_mode: str | None
+    ) -> None:
+        """Keep the conversation's posture at what the session's own transcript says.
+
+        Every prompt line carries the mode that turn ran under, so a ⇧⇥ in the client
+        reaches Octomate on the operator's next message. Observed, never set: nothing
+        here can change a running client's mode, and the console shows it read-only.
+
+        A mode Claude has that this build's vocabulary does not is skipped rather than
+        stored — the column is validated on read, so an unknown one would take the
+        conversation out of circulation instead of merely being unrecognized.
+        """
+        conversation = state.conversation
+        if conversation is None or permission_mode is None:
+            return
+        if permission_mode == conversation.permission_mode:
+            return
+        if not is_claude_mode(permission_mode):
+            logger.debug(
+                "session %s reports permission mode %r, which this build does not "
+                "model; leaving the conversation at %r",
+                state.session_id,
+                permission_mode,
+                conversation.permission_mode,
+            )
+            return
+        await self.conversation_manager.set_permission_mode(
+            conversation, permission_mode
+        )
 
     def begin_turn(self, line: TranscriptUserLine, start: int, end: int) -> OpenTurn:
         text = prompt_text(line.message)

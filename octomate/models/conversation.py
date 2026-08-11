@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base
+from octomate.types.permissions import AgentPermissionMode
 
 if TYPE_CHECKING:
     from octomate.models.messages import ModelMessage
@@ -75,8 +76,15 @@ class Conversation(Base, TransmuterProxiedMixin):
 
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
-    permission_mode: Mapped[str] = mapped_column(
-        String, nullable=False, default="default"
+    permission_mode: Mapped[AgentPermissionMode | None] = mapped_column(
+        String,
+        nullable=True,
+        comment=(
+            "Approval posture this conversation's agent works under, in that agent's "
+            "own vocabulary — `agent_tentacle_id` says which. NULL is nothing "
+            "declared, and the agent's configured default decides. Seeded from the "
+            "project when the row is created, and owned by the conversation after."
+        ),
     )
     # Native string array on Postgres; SQLite (tests/dev) has no array type, so
     # store the list as JSON there. The Python value is `list[str]` either way.

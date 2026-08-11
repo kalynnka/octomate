@@ -215,7 +215,7 @@ def test_codex_config_defaults_to_current_model_set() -> None:
         "gpt-5.3-codex",
         "gpt-5.1-codex-mini",
     }
-    assert config.approval_mode == "user"
+    assert config.permission_mode == "user_review"
 
 
 def test_codex_config_rejects_stale_model_aliases() -> None:
@@ -265,7 +265,7 @@ def test_codex_config_parses_sdk_runtime_config() -> None:
 def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     config = CodexConfig.model_validate(
         {
-            "approval_mode": "auto_review",
+            "permission_mode": "auto_review",
             "sandbox": "read_only",
             "base_instructions": "stay concise",
             "developer_instructions": "work carefully",
@@ -277,7 +277,7 @@ def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
         }
     )
 
-    assert config.approval_mode == "auto_review"
+    assert config.permission_mode == "auto_review"
     assert config.sandbox == "read_only"
     assert config.base_instructions == "stay concise"
     assert config.developer_instructions == "work carefully"
@@ -287,15 +287,17 @@ def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     assert config.effort == "xhigh"
     assert config.summary == "detailed"
 
-    user_config = CodexConfig.model_validate({"approval_mode": "user"})
-    assert user_config.approval_mode == "user"
+    denied = CodexConfig.model_validate({"permission_mode": "deny_all"})
+    assert denied.permission_mode == "deny_all"
+    # The sandbox keeps its own default; no posture moves it.
+    assert denied.sandbox == "workspace_write"
 
 
 def test_codex_config_validates_sdk_setting_names() -> None:
     with pytest.raises(ValidationError, match="Input should be"):
         CodexConfig.model_validate(
             {
-                "approval_mode": "never",
+                "permission_mode": "never",
                 "sandbox": "workspace-write",
                 "effort": "extreme",
                 "summary": "verbose",
