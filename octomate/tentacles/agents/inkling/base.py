@@ -95,9 +95,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
 
-    permission_modes: ClassVar[frozenset[str]] = frozenset(
-        get_args(InklingPermissionMode)
-    )
+    permission_modes: ClassVar[tuple[str, ...]] = get_args(InklingPermissionMode)
 
     description: str = (
         "General assistant for conversation, questions, writing, analysis, and "

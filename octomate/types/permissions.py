@@ -44,11 +44,12 @@ AgentPermissionMode = ClaudePermissionMode | CodexPermissionMode
 
 # Which statuses each agent answers to, so a Codex posture on a Claude conversation is
 # refused where it is written rather than where it is read. Derived from the literals
-# above so there is one place to add a status.
-PERMISSION_MODES: dict[str, frozenset[str]] = {
-    "inkling": frozenset(get_args(InklingPermissionMode)),
-    "claude": frozenset(get_args(ClaudePermissionMode)),
-    "codex": frozenset(get_args(CodexPermissionMode)),
+# above so there is one place to add a status, and ordered rather than a set because a
+# picker steps through the vocabulary and each provider's declaration order is the step.
+PERMISSION_MODES: dict[str, tuple[AgentPermissionMode, ...]] = {
+    "inkling": get_args(InklingPermissionMode),
+    "claude": get_args(ClaudePermissionMode),
+    "codex": get_args(CodexPermissionMode),
 }
 
 

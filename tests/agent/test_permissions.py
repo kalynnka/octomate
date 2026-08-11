@@ -1,9 +1,11 @@
 """The approval vocabulary is declared twice, and these keep the two together.
 
 Each tentacle class owns what it accepts (`permission_modes`), because that is a fact
-about the provider rather than about a row. The schema layer needs the same sets to
-refuse a posture on write, and cannot import a tentacle — so `PERMISSION_MODES` carries
-them there, keyed by the id `main.py` registers each tentacle under.
+about the provider rather than about a row. The schema layer needs the same vocabulary
+to refuse a posture on write, and cannot import a tentacle — so `PERMISSION_MODES`
+carries it there, keyed by the id `main.py` registers each tentacle under. Order counts
+in both: a picker steps through the vocabulary, so the two must agree on the sequence
+and not merely on the members.
 
 Two declarations of one fact drift silently. These fail instead.
 """
@@ -48,7 +50,7 @@ def test_check_mode_accepts_exactly_the_tentacles_own(
     for other, others_modes in PERMISSION_MODES.items():
         if other == agent_tentacle_id:
             continue
-        for mode in others_modes - tentacle.permission_modes:
+        for mode in set(others_modes) - set(tentacle.permission_modes):
             with pytest.raises(ValueError, match="is not one of"):
                 check_mode(agent_tentacle_id, mode)  # pyright: ignore[reportArgumentType]
 

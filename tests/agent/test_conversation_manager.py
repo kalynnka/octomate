@@ -669,6 +669,38 @@ async def test_a_posture_written_on_a_conversation_survives_every_later_ensure()
     assert reloaded.permission_mode == "bypassPermissions"
 
 
+async def test_setting_a_posture_persists_it_and_clearing_it_hands_the_default_back() -> (
+    None
+):
+    service = ConversationManager()
+    thread = await _thread()
+    convo = await service.ensure(thread, agent_tentacle_id="claude")
+
+    await service.set_permission_mode(convo, "bypassPermissions")
+    assert convo.permission_mode == "bypassPermissions"
+    reloaded = await ConversationManager().ensure(thread, agent_tentacle_id="claude")
+    assert reloaded.permission_mode == "bypassPermissions"
+
+    # None is a real answer: the conversation declares nothing again, and the
+    # agent's configured default decides as it did before anyone switched.
+    await service.set_permission_mode(convo, None)
+    cleared = await ConversationManager().ensure(thread, agent_tentacle_id="claude")
+    assert cleared.permission_mode is None
+
+
+async def test_setting_another_providers_posture_is_refused_before_the_write() -> None:
+    service = ConversationManager()
+    thread = await _thread()
+    convo = await service.ensure(thread, agent_tentacle_id="claude")
+
+    with pytest.raises(ValueError, match="not one of claude's modes"):
+        await service.set_permission_mode(convo, "auto_review")
+
+    assert convo.permission_mode is None
+    reloaded = await ConversationManager().ensure(thread, agent_tentacle_id="claude")
+    assert reloaded.permission_mode is None
+
+
 @pytest.mark.parametrize(
     ("agent_tentacle_id", "permission_mode", "message"),
     [

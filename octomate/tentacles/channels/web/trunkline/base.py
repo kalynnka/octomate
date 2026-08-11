@@ -72,6 +72,7 @@ from octomate.tentacles.channels.feelers.output import (
     SubagentTimelineState,
     TimelineState,
 )
+from octomate.types.permissions import AgentPermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -119,6 +120,7 @@ class TrunklineDirective(BaseModel):
     message_id: str | None = None
     model: str | None = None
     project: str | None = None
+    permission_mode: AgentPermissionMode | None = None
 
 
 class RouteLockedError(Exception):
@@ -517,6 +519,29 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             target_conversation_id=conversation.id,
         )
 
+    async def claim_posture(self, thread: Thread, mode: AgentPermissionMode) -> None:
+        """Store the posture a directive picked on the conversation about to run it.
+
+        This is the console picking one before there is anything to pick it on: a
+        thread being composed has no row yet, and by the time it does the run that
+        would have honored the pick is already going. An owned thread's posture is
+        switched directly on its conversation instead.
+
+        Which agent it belongs to is the thread's own, claimed just above. A posture
+        with no agent to read it is refused rather than stored against a guess — the
+        vocabularies do not overlap, so guessing would be picking a provider.
+        """
+        agent_tentacle_id = thread.active_agent_tentacle_id
+        if agent_tentacle_id is None:
+            raise ValueError(
+                "a permission mode is one agent's vocabulary and this thread is "
+                "routed to none; pick a route on the directive that creates it"
+            )
+        conversation = await self.octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=agent_tentacle_id
+        )
+        await self.octomate.conversations.set_permission_mode(conversation, mode)
+
     def stream_kick(self, signal: AwakeSignal) -> StreamingResponse:
         """Run the kick in a free task with this request's sink active and
         encode the run stream it forwards as an SSE response.
@@ -583,6 +608,8 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             project=self.chosen_project(directive.project),
         )
         await self.claim_route(thread, directive.model)
+        if directive.permission_mode is not None:
+            await self.claim_posture(thread, directive.permission_mode)
         thread_message = await self.octomate.thread_manager.record_inbound(event)
         return self.stream_kick(
             UserMessageSignal([event], trigger_thread_message_id=thread_message.id)

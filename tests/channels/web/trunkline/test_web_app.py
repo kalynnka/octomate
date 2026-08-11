@@ -144,6 +144,8 @@ def test_trunkline_router_requires_registered_channel() -> None:
     app = octomate.app()
     paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
     assert "/api/trunkline/routes" in paths
+    assert "/api/trunkline/permission-modes" in paths
+    assert "/api/trunkline/conversations/{conversation_id}/permission-mode" in paths
     assert "/api/trunkline/threads" in paths
     assert "/api/trunkline/threads/{thread_id}" in paths
     assert "/api/trunkline/threads/{thread_id}/messages" in paths
@@ -409,6 +411,120 @@ async def test_a_new_thread_posted_by_the_console_carries_its_project(
 
     assert filed["name"] == "inky"
     assert filed["root"] == str(inky)
+
+
+async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """The switcher steps through this list, so the order is part of the answer —
+    and only registered agents appear: a posture is stored on a conversation, and
+    an agent nobody routes to has none to store it on."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        offered = (await client.get("/api/trunkline/permission-modes")).json()
+
+    assert offered == {"inkling": ["default", "dontAsk", "bypassPermissions"]}
+
+
+async def test_a_posture_rides_the_first_directive_then_switches_on_the_row(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """The whole path the console drives: a thread with no row yet carries its
+    posture on the directive that creates it, and every switch after that is a
+    PATCH of the conversation that now remembers it."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done", "done again"])
+    await _register(octomate, agent)
+    route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        await client.post(
+            "/api/trunkline/threads/trunkline-abc123/messages",
+            json={
+                "text": "get on with it",
+                "model": route,
+                "permission_mode": "dontAsk",
+            },
+        )
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        [opened] = (
+            await client.get(f"/api/trunkline/threads/{listed['id']}/conversations")
+        ).json()
+        assert opened["permission_mode"] == "dontAsk"
+
+        switched = await client.patch(
+            f"/api/trunkline/conversations/{opened['id']}/permission-mode",
+            json={"permission_mode": "bypassPermissions"},
+        )
+        [reread] = (
+            await client.get(f"/api/trunkline/threads/{listed['id']}/conversations")
+        ).json()
+
+    assert switched.status_code == 200
+    assert switched.json()["permission_mode"] == "bypassPermissions"
+    assert reread["permission_mode"] == "bypassPermissions"
+
+
+async def test_a_posture_from_another_providers_vocabulary_is_refused(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """`user_review` is a real posture — Codex's. On an inkling conversation it is
+    refused where it is written, rather than ignored at the run."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        await client.post(
+            "/api/trunkline/threads/trunkline-abc123/messages",
+            json={"text": "hello", "model": route},
+        )
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        [opened] = (
+            await client.get(f"/api/trunkline/threads/{listed['id']}/conversations")
+        ).json()
+        refused = await client.patch(
+            f"/api/trunkline/conversations/{opened['id']}/permission-mode",
+            json={"permission_mode": "user_review"},
+        )
+        unknown = await client.patch(
+            f"/api/trunkline/conversations/{uuid.uuid4()}/permission-mode",
+            json={"permission_mode": "default"},
+        )
+
+    assert refused.status_code == 422
+    assert "not one of inkling's modes" in refused.json()["detail"]
+    assert unknown.status_code == 404
+
+
+async def test_a_posture_with_no_agent_to_read_it_is_refused(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    # The vocabularies do not overlap, so storing one against a thread nothing has
+    # routed would be picking a provider on the operator's behalf.
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+
+    with pytest.raises(ValueError, match="routed to none"):
+        await channel.handle_directive(
+            TrunklineDirective(
+                thread_id="thread-1", text="hello", permission_mode="dontAsk"
+            )
+        )
 
 
 async def test_the_projects_endpoint_offers_only_enabled_ones(

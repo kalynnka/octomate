@@ -268,9 +268,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     # the turn stays live. `pending` parks the card response futures.
     in_process: ClassVar[bool] = True
 
-    permission_modes: ClassVar[frozenset[str]] = frozenset(
-        get_args(CodexPermissionMode)
-    )
+    permission_modes: ClassVar[tuple[str, ...]] = get_args(CodexPermissionMode)
 
     # OpenAI's own green, so Codex's lines read as Codex's in a console it shares
     # with every other tentacle.
