@@ -167,6 +167,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
     permission_modes: ClassVar[tuple[str, ...]] = get_args(ClaudePermissionMode)
 
+    @property
+    def default_permission_mode(self) -> str | None:
+        return self.config.permission_mode
+
     # Claude's own orange, so its lines carry its identity in a console shared with
     # every other tentacle, instead of whatever hue the connection order landed on.
     brand_color: ClassVar[Style | None] = Style(color="#D97757", bold=True)

@@ -16,6 +16,10 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 from octomate.schemas.deferred import QuestionRequest
 
 ASK_QUESTIONS_TOOL_NAME = "ask_questions"
+# Declared on the deferral so a reader can tell a question from the other things a
+# run defers — a `teleport` is one too, and only a human answers this one. Classified
+# by kind rather than by tool name, as `TELEPORT_KIND` is.
+ASK_DEFERR_KIND = "questions"
 
 
 @dataclass
@@ -35,7 +39,7 @@ class AskCapability(AbstractCapability[None]):
             """Ask the user several questions and wait for all answers as one batch."""
             if not questions:
                 raise ValueError("ask_questions requires at least one question")
-            raise CallDeferred(metadata={"kind": "questions"})
+            raise CallDeferred(metadata={"kind": ASK_DEFERR_KIND})
 
         self.toolset = toolset
 

@@ -38,10 +38,10 @@ from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 from octomate.capabilities import UserScopedCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import (
-    ApproveResolver,
     DeclineResolver,
     DeferredResolver,
     DeferredSuspender,
+    PostureResolver,
 )
 from octomate.capabilities.harness.react import (
     ReactDeps,
@@ -54,7 +54,7 @@ from octomate.capabilities.harness.react import (
 )
 from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import Claim
@@ -80,6 +80,66 @@ MCP_WARM_TIMEOUT = 20.0
 InklingOutput: TypeAlias = str | list[MessageSegment] | DeferredToolRequests
 
 
+@dataclass(frozen=True)
+class InklingDeferrals:
+    """Which deferrals Inkling answers itself, decided again at each one.
+
+    The react loop asks this per deferral rather than once per run, so a posture
+    switched while the run is going is what the next round runs under — the round
+    after the switch, not the run after it. Only the two things fixed for the whole
+    run are held here; the posture is read off the conversation each time.
+
+    The chain reads in the order it answers. The posture speaks first and only for
+    approvals and questions; a run with no human closes with a catch-all, because it
+    has no suspender either and a batch left part-answered would end the run holding
+    requests nobody is coming for. An empty chain sends the batch to a human, which
+    is what `default` means.
+    """
+
+    # Whether anyone is there to ask. A commissioned accomplice has nobody, which is
+    # what puts the catch-all on the end rather than what silences the posture.
+    interactive: bool
+    # The agent's configured default, which decides for a conversation that declares
+    # nothing — a NULL column says "nothing was said here", not "no posture".
+    configured: InklingPermissionMode
+    # What `default` falls back on — the tentacle's injected resolver, normally None,
+    # which is the deferral reaching a human through the suspender.
+    fallback: DeferredResolver | None
+
+    def __call__(self, conversation: Conversation) -> list[DeferredResolver]:
+        chain: list[DeferredResolver] = []
+        match conversation.permission_mode or self.configured:
+            case "dontAsk":
+                # Claude's own reading of the word, which this vocabulary is: deny
+                # what would have needed asking, and leave the agent to decide.
+                chain.append(
+                    PostureResolver(
+                        approve=False,
+                        message="Not asked, and not approved: the user has said they "
+                        "do not want questions or approval prompts in this "
+                        "conversation. Nothing was put to them and nothing will be — "
+                        "decide this yourself, and say in your report what you "
+                        "assumed and why.",
+                    )
+                )
+            case "bypassPermissions":
+                chain.append(
+                    PostureResolver(
+                        approve=True,
+                        message="Not asked: the user has said they do not want "
+                        "questions in this conversation, and approvals go through "
+                        "without one. Nothing was put to them and nothing will be — "
+                        "decide this yourself, and say in your report what you "
+                        "assumed and why.",
+                    )
+                )
+            case _ if self.fallback is not None:
+                chain.append(self.fallback)
+        if not self.interactive:
+            chain.append(DeclineResolver())
+        return chain
+
+
 @dataclass
 class InklingTentacle(AgentTentacle[InklingOutput, None]):
     """Inkling agent wrapper with pydantic-ai-style run entrypoints."""
@@ -94,8 +154,15 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     user_scoped_capabilities: list[UserScopedCapability[None]] = field(init=False)
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
+    # The posture a conversation that declares none of its own runs under. Unlike
+    # claude and codex, inkling takes no config object, so its default arrives here.
+    permission_mode: InklingPermissionMode = "default"
 
     permission_modes: ClassVar[tuple[str, ...]] = get_args(InklingPermissionMode)
+
+    @property
+    def default_permission_mode(self) -> str | None:
+        return self.permission_mode
 
     description: str = (
         "General assistant for conversation, questions, writing, analysis, and "
@@ -122,8 +189,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_resolver: DeferredResolver | None = None,
         description: str | None = None,
         claims: Mapping[KnownModelName, Claim] | None = None,
+        permission_mode: InklingPermissionMode = "default",
     ) -> None:
         super().__init__(id=id, octomate=octomate)
+        self.permission_mode = permission_mode
         self.models = dict(models or {})
         self.capabilities = [
             capability
@@ -648,38 +717,12 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
 
-        # A non-interactive run declines every deferred action at once: no human
-        # exists, so asks and approvals resolve to declines in-process and the react
-        # loop continues to a final answer. That is all `interactive` means — which
-        # caller-chosen set to mount is the entrypoints' decision, and `capabilities`
-        # arrives here holding it. The run's project is the one thing added below: it
-        # comes off the thread rather than the caller, so every entrypoint would
-        # otherwise have to resolve it identically.
-        #
-        # With a human, the conversation's posture decides which deferrals still reach
-        # them: `dontAsk` answers questions in-process so the agent decides for itself,
-        # and `bypassPermissions` grants approvals without a card.
-        conversation = (
-            await self.conversation_manager.get(conversation_id)
-            if conversation_id is not None
-            else await self.conversation_manager.ensure(
-                thread_id, agent_tentacle_id=self.id
-            )
-        )
-        if not interactive:
-            resolver: DeferredResolver | None = DeclineResolver()
-        elif conversation.permission_mode == "dontAsk":
-            # The same in-process decline a human-less run gets, under its own reason:
-            # there is someone to ask, and this conversation said not to.
-            resolver = DeclineResolver(
-                "Not asked: this conversation answers its own questions. Decide on "
-                "your best judgment and state the assumption in your report."
-            )
-        elif conversation.permission_mode == "bypassPermissions":
-            resolver = ApproveResolver()
-        else:
-            resolver = self.deferred_resolver
-
+        # Which deferrals this run answers itself is `InklingDeferrals`' decision, made
+        # again at each one; all the run contributes is whether a human exists at all.
+        # Which capability set to mount is likewise the entrypoints' decision, so
+        # `capabilities` arrives here holding it. The run's project is the one thing
+        # added below: it comes off the thread rather than the caller, so every
+        # entrypoint would otherwise have to resolve it identically.
         project = await self.run_project(thread_id)
         if project is not None:
             capabilities.extend(self.project_capabilities(project))
@@ -688,7 +731,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             conversation_manager=self.conversation_manager,
             thread_manager=self.octomate.thread_manager,
             agent_deps=deps,
-            resolver=resolver,
+            choose_resolvers=InklingDeferrals(
+                interactive=interactive,
+                configured=self.permission_mode,
+                fallback=self.deferred_resolver,
+            ),
             suspender=deferred_suspender,
             output_type=react_output_type,
             run_name=resolved_run_name,

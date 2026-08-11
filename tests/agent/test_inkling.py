@@ -3,37 +3,52 @@ scripted FunctionModels (no real LLM call)."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TypeAlias, cast
 
 import pytest
-from pydantic_ai import AgentRunResultEvent, ToolDenied
+from pydantic_ai import AgentRunResult, AgentRunResultEvent, ToolDenied
 from pydantic_ai.messages import ModelMessage, ToolCallPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import (
+    AgentInfo,
+    DeltaToolCall,
+    DeltaToolCalls,
+    FunctionModel,
+)
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_graph import GraphRunContext
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.ask import AskCapability
-from octomate.capabilities.gateway import GatewayCapability
+from octomate.capabilities.ask import ASK_DEFERR_KIND, AskCapability
+from octomate.capabilities.gateway import TELEPORT_DEFER_KIND, GatewayCapability
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import ApproveResolver, DeclineResolver
+from octomate.capabilities.harness.deferred import DeclineResolver, PostureResolver
 from octomate.capabilities.harness.events import ActionBatchEvent
-from octomate.capabilities.harness.react import ReactStreamEvent
+from octomate.capabilities.harness.react import (
+    ReactDeps,
+    ReactState,
+    ReactStreamEvent,
+    ResolveDeferred,
+    RunAgent,
+)
 from octomate.capabilities.todos import TodoCapability
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.tentacles.agents.inkling import (
     InklingTentacle,
 )
-from octomate.tentacles.agents.inkling.base import InklingOutput
+from octomate.tentacles.agents.inkling.base import InklingDeferrals, InklingOutput
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.types.permissions import AgentPermissionMode
 from tests.support.agents import (
     ScriptedOutput,
     ScriptedTurn,
     build_scripted_agent,
+    emit_scripted_turn,
 )
 from tests.support.managers import FakeConversation, FakeConversationManager
 
@@ -175,26 +190,55 @@ async def test_decline_resolver_denies_approvals_and_answers_calls() -> None:
     assert "no user" in cast(str, results.calls["c1"])
 
 
-async def test_approve_resolver_grants_approvals_and_still_declines_asks() -> None:
-    """`bypassPermissions` speaks about approvals. An ask is a question only a human
-    answers, and forgoing gating says nothing about knowing the answer."""
-    requests = DeferredToolRequests(
+@pytest.mark.parametrize("approve", [True, False])
+async def test_a_posture_resolver_answers_approvals_and_questions_only(
+    approve: bool,
+) -> None:
+    """The two things a posture speaks about, and nothing else."""
+    resolver = PostureResolver(approve=approve, message="you decide")
+    questions = DeferredToolRequests(
         calls=[ToolCallPart(tool_name="ask_questions", args={}, tool_call_id="c1")],
         approvals=[ToolCallPart(tool_name="dangerous", args={}, tool_call_id="a1")],
+        metadata={"c1": {"kind": ASK_DEFERR_KIND}},
     )
 
-    results = await ApproveResolver().resolve(requests)
+    results = await resolver.resolve(questions)
 
-    assert results.approvals["a1"] is True
-    assert "cannot ask you" in cast(str, results.calls["c1"])
+    assert results.calls["c1"] == "you decide"
+    if approve:
+        assert results.approvals["a1"] is True
+    else:
+        denied = results.approvals["a1"]
+        assert isinstance(denied, ToolDenied)
+        assert denied.message == "you decide"
+
+    # A teleport, and a deferral arriving with no declared kind at all, are neither an
+    # approval nor a question. The resolver walks past both, which leaves the batch
+    # short of an answer — and a short batch is the suspender's, not the loop's.
+    for unowned, metadata in (
+        ("teleport", {"kind": TELEPORT_DEFER_KIND, "hint": "over here"}),
+        ("mystery", {}),
+    ):
+        mixed = DeferredToolRequests(
+            calls=[
+                ToolCallPart(tool_name="ask_questions", args={}, tool_call_id="c1"),
+                ToolCallPart(tool_name=unowned, args={}, tool_call_id="c2"),
+            ],
+            metadata={"c1": {"kind": ASK_DEFERR_KIND}, "c2": metadata},
+        )
+
+        partial = await resolver.resolve(mixed)
+
+        assert set(partial.calls) == {"c1"}
 
 
 async def test_a_bypassing_conversation_resolves_in_process_with_a_human_present() -> (
     None
 ):
     """An interactive run normally parks its deferrals for a card. Under
-    `bypassPermissions` the conversation has said it wants no gate, so the run resolves
-    in-process and continues to a final answer instead."""
+    `bypassPermissions` the conversation has said it wants no gate, so the question is
+    answered in-process — the agent is told to decide — and the run continues to a
+    final answer instead."""
     agent, script = build_scripted_agent(
         [
             ScriptedTurn(
@@ -223,7 +267,7 @@ async def test_a_bypassing_conversation_resolves_in_process_with_a_human_present
     assert result.output == "proceeding without answers"
     assert script.cursor == 2
     recorded = str(conversations.store[(_THREAD, "inkling", "")].messages)
-    assert "cannot ask you" in recorded
+    assert "approvals go through without one" in recorded
 
 
 async def test_a_dont_ask_conversation_answers_its_own_questions() -> None:
@@ -257,7 +301,246 @@ async def test_a_dont_ask_conversation_answers_its_own_questions() -> None:
     assert script.cursor == 2
     # The reason names the posture rather than a missing human, since there is one.
     recorded = str(conversations.store[(_THREAD, "inkling", "")].messages)
-    assert "answers its own questions" in recorded
+    assert "do not want questions or approval prompts" in recorded
+
+
+async def test_a_teleport_reaches_the_suspender_under_a_bypassing_posture() -> None:
+    """A posture speaks about approvals and questions. A `teleport` is deferred the
+    same way but is neither — only the suspender performs one — so no posture may
+    answer it out from under the human. It defers again and lands there."""
+    agent, _ = build_scripted_agent(
+        [
+            ScriptedTurn(
+                tool_name="teleport",
+                args={"hint": "carrying on over here"},
+                tool_call_id="call_tp_1",
+            ),
+        ]
+    )
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "inkling", "")] = FakeConversation(
+        thread_id=_THREAD,
+        agent_tentacle_id="inkling",
+        permission_mode="bypassPermissions",
+    )
+    suspender = StubSuspender()
+
+    await _tentacle(agent, conversations).run(
+        "take this elsewhere",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+        deferred_suspender=suspender,
+        capabilities=[GatewayCapability(routes=[], current_agent_id="inkling")],
+    )
+
+    [suspended] = suspender.suspended
+    assert [call.tool_name for call in suspended.calls] == ["teleport"]
+
+
+async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
+    """A batch is answered together or not at all — the runner refuses results that
+    cover only some of its deferred calls. So a posture that has no opinion about the
+    teleport has none about the question beside it either, and the human gets both.
+    The teleport surviving is what matters; taking the question along is the price of
+    a batch being indivisible, and it is what `default` does with the pair anyway."""
+
+    async def both(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str | DeltaToolCalls]:
+        yield {
+            0: DeltaToolCall(
+                name="ask_questions",
+                json_args=json.dumps({"questions": [{"question": "which one?"}]}),
+                tool_call_id="call_ask_1",
+            ),
+            1: DeltaToolCall(
+                name="teleport",
+                json_args=json.dumps({"hint": "carrying on over here"}),
+                tool_call_id="call_tp_1",
+            ),
+        }
+
+    agent: Agent[None, ScriptedOutput] = Agent(
+        FunctionModel(stream_function=both, model_name="scripted"),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        capabilities=[
+            AskCapability(),
+            GatewayCapability(routes=[], current_agent_id="inkling"),
+        ],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    conversations = FakeConversationManager()
+    conversation = FakeConversation(
+        thread_id=_THREAD,
+        agent_tentacle_id="inkling",
+        permission_mode="bypassPermissions",
+    )
+    conversations.store[(_THREAD, "inkling", "")] = conversation
+    suspender = StubSuspender()
+
+    await _tentacle(agent, conversations).run(
+        "ask me and then move us",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+        deferred_suspender=suspender,
+    )
+
+    assert "approvals go through without one" not in str(conversation.messages)
+    [suspended] = suspender.suspended
+    assert [call.tool_name for call in suspended.calls] == [
+        "ask_questions",
+        "teleport",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("interactive", "permission_mode", "expected"),
+    [
+        # A human is there, so only what the posture speaks about is answered and
+        # the rest of the batch is theirs.
+        (True, "dontAsk", [PostureResolver]),
+        (True, "bypassPermissions", [PostureResolver]),
+        # `default` and an undeclared posture both fall to the human whole.
+        (True, "default", []),
+        (True, None, []),
+        # Nobody to ask and no suspender, so a catch-all closes the chain and every
+        # batch comes out covered. The posture still speaks first when there is one.
+        (False, None, [DeclineResolver]),
+        (False, "bypassPermissions", [PostureResolver, DeclineResolver]),
+    ],
+)
+def test_which_deferrals_inkling_answers_itself(
+    interactive: bool,
+    permission_mode: str | None,
+    expected: list[type[object]],
+) -> None:
+    conversation = FakeConversation(
+        thread_id=_THREAD,
+        agent_tentacle_id="inkling",
+        permission_mode=cast("AgentPermissionMode | None", permission_mode),
+    )
+    deferrals = InklingDeferrals(
+        interactive=interactive, configured="default", fallback=None
+    )
+
+    chain = deferrals(cast("Conversation", conversation))
+
+    assert [type(resolver) for resolver in chain] == expected
+
+
+async def test_the_posture_speaks_first_and_the_catch_all_takes_what_is_left() -> None:
+    """The chain's whole point, on the one batch that needs both: a bypassing
+    accomplice grants its approval through the posture, and the teleport nobody has
+    an opinion about is closed out by the catch-all rather than parked for a human
+    who is not there."""
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "inkling", "")] = FakeConversation(
+        thread_id=_THREAD,
+        agent_tentacle_id="inkling",
+        permission_mode="bypassPermissions",
+    )
+    requests = DeferredToolRequests(
+        calls=[
+            ToolCallPart(tool_name="ask_questions", args={}, tool_call_id="c1"),
+            ToolCallPart(tool_name="teleport", args={}, tool_call_id="c2"),
+        ],
+        approvals=[ToolCallPart(tool_name="dangerous", args={}, tool_call_id="a1")],
+        metadata={"c1": {"kind": ASK_DEFERR_KIND}, "c2": {"kind": TELEPORT_DEFER_KIND}},
+    )
+    node: ResolveDeferred[ScriptedOutput, None] = ResolveDeferred(
+        requests=requests, result=AgentRunResult(requests)
+    )
+    ctx: GraphRunContext[ReactState, ReactDeps[ScriptedOutput, None]] = GraphRunContext(
+        state=ReactState(
+            conversation_address=_test_conversation_address(),
+            agent_tentacle_id="inkling",
+            thread_id=_THREAD,
+        ),
+        deps=ReactDeps(
+            agent=cast("Agent[None, ScriptedOutput]", object()),
+            conversation_manager=conversations,
+            agent_deps=None,
+            choose_resolvers=InklingDeferrals(
+                interactive=False, configured="default", fallback=None
+            ),
+        ),
+    )
+
+    nxt = await node.run(ctx)
+
+    # Covered between them, so the loop carries on rather than parking anything.
+    assert isinstance(nxt, RunAgent)
+    results = nxt.deferred_results
+    assert results is not None
+    # The posture answered first and its answers stand — the catch-all only filled
+    # the gap it left.
+    assert results.approvals["a1"] is True
+    assert "approvals go through without one" in cast(str, results.calls["c1"])
+    assert "no user to ask" in cast(str, results.calls["c2"])
+
+
+async def test_a_posture_switched_mid_run_lands_on_the_next_round() -> None:
+    """The whole point of reading the posture at each deferral: a switch made while
+    the run is going binds the round after it, not the run after it.
+
+    Both postures decline the ask, so what tells them apart is the reason the agent
+    is given — and both reasons are in one run's history here."""
+    turns: list[ScriptedTurn | str] = [
+        ScriptedTurn(
+            tool_name="ask_questions",
+            args={"questions": [{"question": "first?"}]},
+            tool_call_id="call_ask_1",
+        ),
+        ScriptedTurn(
+            tool_name="ask_questions",
+            args={"questions": [{"question": "second?"}]},
+            tool_call_id="call_ask_2",
+        ),
+        "proceeding without answers",
+    ]
+    conversations = FakeConversationManager()
+    conversation = FakeConversation(
+        thread_id=_THREAD,
+        agent_tentacle_id="inkling",
+        permission_mode="bypassPermissions",
+    )
+    conversations.store[(_THREAD, "inkling", "")] = conversation
+
+    turn = 0
+
+    def switching(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str | DeltaToolCalls]:
+        nonlocal turn
+        # The console's ⇧⇥ landing between the first deferral and the second.
+        if turn == 1:
+            conversation.permission_mode = "dontAsk"
+        current = turns[turn]
+        turn += 1
+        return emit_scripted_turn(current)
+
+    agent: Agent[None, ScriptedOutput] = Agent(
+        FunctionModel(stream_function=switching, model_name="scripted"),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        capabilities=[AskCapability()],
+        system_prompt=SYSTEM_PROMPT,
+    )
+
+    result = await _tentacle(agent, conversations).run(
+        "hi octomate",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+    )
+
+    assert result.output == "proceeding without answers"
+    recorded = str(conversation.messages)
+    assert "approvals go through without one" in recorded
+    assert "do not want questions or approval prompts" in recorded
 
 
 async def test_non_interactive_run_declines_deferrals_and_continues() -> None:

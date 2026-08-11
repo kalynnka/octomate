@@ -52,7 +52,7 @@ from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.gateway import (
     SCHEME_TOOL_NAME,
     SUMMON_TOOL_NAME,
-    TELEPORT_KIND,
+    TELEPORT_DEFER_KIND,
     TELEPORT_TOOL_NAME,
     GatewayCapability,
 )
@@ -86,7 +86,7 @@ def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRe
         ],
         metadata={
             "call_teleport": {
-                "kind": TELEPORT_KIND,
+                "kind": TELEPORT_DEFER_KIND,
                 "hint": hint,
                 "destination": destination,
             }

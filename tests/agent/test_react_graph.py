@@ -19,6 +19,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.deferred import DeferredResolver
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import (
     ReactDeps,
@@ -113,11 +114,15 @@ def _deps(
     suspender: StubSuspender | None = None,
     run_name: str = "react",
 ) -> ReactDeps[ScriptedOutput, None]:
+    # The graph asks per deferral; a fixed stub is the same chain every time. No
+    # stub leaves the hook itself absent, which is a different thing from a chain
+    # that answers nothing.
+    chain: list[DeferredResolver] = [] if resolver is None else [resolver]
     return ReactDeps(
         agent=agent or cast("Agent[None, ScriptedOutput]", object()),
         conversation_manager=conversations or FakeConversationManager(),
         agent_deps=None,
-        resolver=resolver,
+        choose_resolvers=None if resolver is None else (lambda _conversation: chain),
         suspender=suspender,
         run_name=run_name,
     )
@@ -207,8 +212,75 @@ async def test_resolve_deferred_resolves_in_process_when_resolver_set() -> None:
     nxt = await node.run(_ctx(_deps(resolver=resolver)))
 
     assert isinstance(nxt, RunAgent)
-    assert nxt.deferred_results is results
+    # Merged into fresh results rather than passed through: a chain of one is still
+    # a chain, and what reaches the runner is what the chain agreed on.
+    assert nxt.deferred_results is not None
+    assert nxt.deferred_results.calls == {"call_ask_1": ["Ada"]}
     assert resolver.calls == 1
+
+
+async def test_resolve_deferred_asks_the_chooser_with_the_conversation_as_it_stands() -> (
+    None
+):
+    """The posture that decides a deferral is read at the deferral, so one switched
+    between rounds of a run lands on the next round rather than the next run."""
+    conversations = FakeConversationManager()
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id="inkling")
+    conversation.permission_mode = "bypassPermissions"
+    seen: list[str | None] = []
+
+    def choose(each: Conversation) -> list[DeferredResolver]:
+        seen.append(each.permission_mode)
+        return []
+
+    node: ResolveDeferred[ScriptedOutput, None] = ResolveDeferred(
+        requests=_deferred_requests(), result=AgentRunResult(_deferred_requests())
+    )
+    deps = _deps(conversations=conversations)
+    deps.choose_resolvers = choose
+    deps.suspender = StubSuspender()
+
+    await node.run(_ctx(deps))
+    conversation.permission_mode = "dontAsk"
+    await node.run(_ctx(deps))
+
+    assert seen == ["bypassPermissions", "dontAsk"]
+
+
+async def test_resolve_deferred_suspends_when_the_chooser_declines_it() -> None:
+    """A chooser answering None is the `default` posture: nothing in-process takes
+    the deferral, so it goes to the human the same way an absent chooser's would."""
+    suspender = StubSuspender()
+    deps = _deps(suspender=suspender)
+    deps.choose_resolvers = lambda _conversation: []
+    requests = _deferred_requests()
+    run_result: AgentRunResult[ScriptedOutput] = AgentRunResult(requests)
+
+    node: ResolveDeferred[ScriptedOutput, None] = ResolveDeferred(
+        requests=requests, result=run_result
+    )
+    nxt = await node.run(_ctx(deps))
+
+    assert isinstance(nxt, End)
+    assert nxt.data is run_result
+    assert suspender.suspended == [requests]
+
+
+async def test_resolve_deferred_returns_the_requests_when_nothing_can_answer() -> None:
+    """A chooser that declines and no suspender: the requests go back to the caller,
+    which is where a graph carrying neither hook would have left them."""
+    deps = _deps()
+    deps.choose_resolvers = lambda _conversation: []
+    requests = _deferred_requests()
+    run_result: AgentRunResult[ScriptedOutput] = AgentRunResult(requests)
+
+    node: ResolveDeferred[ScriptedOutput, None] = ResolveDeferred(
+        requests=requests, result=run_result
+    )
+    nxt = await node.run(_ctx(deps))
+
+    assert isinstance(nxt, End)
+    assert nxt.data is run_result
 
 
 async def test_resolve_deferred_suspends_when_only_suspender_set() -> None:
@@ -443,7 +515,7 @@ async def test_deferred_resume_loop_skips_source_binding(
                 conversation_manager=conversations,
                 agent_deps=None,
                 thread_manager=thread_manager,
-                resolver=resolver,
+                choose_resolvers=lambda _conversation: [resolver],
             ),
         )
     ]

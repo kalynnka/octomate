@@ -92,6 +92,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # on which conversation is asking, or on the id this tentacle was registered under.
     permission_modes: ClassVar[tuple[str, ...]] = ()
 
+    @property
+    def default_permission_mode(self) -> str | None:
+        """The posture this agent's conversations run under when they declare none —
+        its configured default, in its own vocabulary.
+
+        A row's NULL is not "no posture", it is "nothing said here"; this is what
+        decides instead, and it is what the console reports for such a row rather than
+        showing a blank. None only for an agent that answers to no posture at all."""
+        return None
+
     models: dict[AgentRouteModelName, Model | str]
 
     async def user_capabilities(

@@ -270,6 +270,10 @@ class CodexTentacle(AgentTentacle[str, None]):
 
     permission_modes: ClassVar[tuple[str, ...]] = get_args(CodexPermissionMode)
 
+    @property
+    def default_permission_mode(self) -> str | None:
+        return self.config.permission_mode
+
     # OpenAI's own green, so Codex's lines read as Codex's in a console it shares
     # with every other tentacle.
     brand_color: ClassVar[Style | None] = Style(color="#10A37F", bold=True)

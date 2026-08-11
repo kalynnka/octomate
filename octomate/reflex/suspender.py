@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.gateway import TELEPORT_KIND
+from octomate.capabilities.gateway import TELEPORT_DEFER_KIND
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
@@ -54,7 +54,7 @@ class HumanReviewSuspender:
         # a tool name), stash it typed, and let run1 end so it bubbles to the dispatch.
         for call in requests.calls:
             meta = requests.metadata.get(call.tool_call_id, {})
-            if meta.get("kind") == TELEPORT_KIND:
+            if meta.get("kind") == TELEPORT_DEFER_KIND:
                 self.teleport = TeleportRequest(
                     tool_call_id=call.tool_call_id,
                     hint=str(meta.get("hint") or ""),
