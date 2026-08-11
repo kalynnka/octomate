@@ -87,6 +87,15 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     in_process: ClassVar[bool] = False
     pending: dict[uuid.UUID, asyncio.Future[DeferredActionBatchResponse]]
 
+    # The approval postures this agent answers to, in its own provider's vocabulary.
+    # A fact about the class rather than the row: what Claude accepts does not depend
+    # on which conversation is asking, or on the id this tentacle was registered under.
+    #
+    # `PERMISSION_MODES` carries the same sets for the schema layer, which cannot
+    # import a tentacle; `tests/agent/test_permissions.py` pins the two together, so
+    # adding a posture to one and not the other fails rather than drifts.
+    permission_modes: ClassVar[frozenset[str]] = frozenset()
+
     models: dict[AgentRouteModelName, Model | str]
 
     async def user_capabilities(

@@ -12,6 +12,11 @@ from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai_harness.tool_output_limits import TruncationStrategy
 
 from octomate.config.models import ModelConfig
+from octomate.types.permissions import (
+    ClaudePermissionMode,
+    CodexPermissionMode,
+    InklingPermissionMode,
+)
 
 # A filesystem path from config, with `~` meaning what the person writing it meant:
 # pydantic keeps `~/...` literal, and `Path("~/x").resolve()` yields `<cwd>/~/x` rather
@@ -41,8 +46,8 @@ CodexModelName: TypeAlias = Literal[
     "gpt-5.3-codex",
     "gpt-5.1-codex-mini",
 ]
-CodexApprovalMode: TypeAlias = Literal["auto_review", "user", "deny_all"]
 CodexPersonality: TypeAlias = Literal["none", "friendly", "pragmatic"]
+CodexSandbox: TypeAlias = Literal["read_only", "workspace_write", "full_access"]
 CodexReasoningEffort: TypeAlias = Literal[
     "none",
     "minimal",
@@ -57,7 +62,6 @@ CodexReasoningSummary: TypeAlias = Literal[
     "detailed",
     "none",
 ]
-CodexSandbox: TypeAlias = Literal["read_only", "workspace_write", "full_access"]
 AgentRouteModelName: TypeAlias = KnownModelName | ClaudeCodeModelName | CodexModelName
 
 
@@ -199,6 +203,14 @@ class InklingConfig(BaseModel):
         description="How oversized tool returns are cut down before they reach — and "
         "stay in — the model's context.",
     )
+    permission_mode: InklingPermissionMode = Field(
+        default="default",
+        description=(
+            "Approval posture for an Inkling conversation whose thread is in no "
+            "project, or whose project declares none. Claude's scale, narrowed to "
+            "what deferred approvals can resolve."
+        ),
+    )
 
     @property
     def default_model(self) -> ModelConfig:
@@ -240,6 +252,13 @@ class ClaudeCodeConfig(BaseModel):
         description="Per-model claims (ability/efforts). A model with no claim "
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned).",
+    )
+    permission_mode: ClaudePermissionMode = Field(
+        default="default",
+        description=(
+            "Approval posture for a Claude conversation whose thread is in no "
+            "project, or whose project declares none. Handed to the SDK verbatim."
+        ),
     )
     max_turns: int | None = None
     ssh: ClaudeSSHConfig | None = Field(
@@ -340,17 +359,23 @@ class CodexConfig(BaseModel):
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned).",
     )
-    approval_mode: CodexApprovalMode = Field(
-        default="user",
+    permission_mode: CodexPermissionMode = Field(
+        default="user_review",
         description=(
-            "Default approval behavior for Codex threads and turns: auto_review "
-            "uses the SDK auto reviewer, user bridges requests to Octomate "
-            "approval/question cards, and deny_all never asks."
+            "Approval posture a Codex conversation falls back to when it carries none "
+            "of its own: who answers when the agent asks to step past the sandbox — "
+            "the user, the SDK's reviewer, or nobody. `CODEX_PERMISSION_PLANS` maps "
+            "each onto the SDK's approval policy and reviewer."
         ),
     )
     sandbox: CodexSandbox = Field(
         default="workspace_write",
-        description="Default SDK filesystem sandbox preset for Codex threads and turns.",
+        description=(
+            "SDK filesystem sandbox preset for Codex threads and turns: what a command "
+            "may touch when nobody is asked. The operator's, and fixed for a run — "
+            "deliberately not folded into `permission_mode`, so a conversation's "
+            "approval posture never rewrites what the whole thread reaches."
+        ),
     )
     base_instructions: str | None = Field(
         default=None,

@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, cast, overload
+from typing import TYPE_CHECKING, ClassVar, cast, get_args, overload
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -57,7 +57,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import CodexApprovalMode, CodexConfig
+from octomate.config.agents import CodexConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
@@ -81,8 +81,8 @@ from octomate.tentacles.agents.codex.ingest import CodexHookIngest
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
-from octomate.types.conversations import ConversationPermissionMode
 from octomate.types.json import JsonObject
+from octomate.types.permissions import CodexPermissionMode, is_codex_mode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -97,8 +97,13 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class CodexApprovalPlan:
-    """The one mapping from Octomate's approval mode onto the SDK's approval knobs."""
+class CodexPermissionPlan:
+    """One Codex posture, unpacked into the SDK's approval knobs.
+
+    Approvals only. The sandbox is the other axis — what a command may touch when
+    nobody is asked — and it is the run's, from `CodexConfig.sandbox`, so a posture
+    cannot quietly widen or narrow what the thread reaches.
+    """
 
     # Public thread/turn `approval_mode`, or None when only the reviewer path fits.
     sdk_mode: ApprovalMode | None
@@ -107,24 +112,28 @@ class CodexApprovalPlan:
     reviewer: ApprovalsReviewer | None
 
 
-def codex_approval_plan(approval_mode: CodexApprovalMode) -> CodexApprovalPlan:
-    if approval_mode == "auto_review":
-        return CodexApprovalPlan(
-            sdk_mode=ApprovalMode.auto_review,
-            policy=AskForApproval(root=AskForApprovalValue.on_request),
-            reviewer=ApprovalsReviewer.auto_review,
-        )
-    if approval_mode == "deny_all":
-        return CodexApprovalPlan(
-            sdk_mode=ApprovalMode.deny_all,
-            policy=AskForApproval(root=AskForApprovalValue.never),
-            reviewer=None,
-        )
-    return CodexApprovalPlan(
+# The one mapping from a Codex posture onto the SDK's own enums: who answers when the
+# agent asks to step past the sandbox.
+#
+# Only `user_review` needs the private reviewer path — the SDK has no public knob for
+# `approvals_reviewer=user` — so the pin to openai-codex 0.1.0b3 narrows to that row.
+CODEX_PERMISSION_PLANS: dict[CodexPermissionMode, CodexPermissionPlan] = {
+    "user_review": CodexPermissionPlan(
         sdk_mode=None,
         policy=AskForApproval(root=AskForApprovalValue.on_request),
         reviewer=ApprovalsReviewer.user,
-    )
+    ),
+    "auto_review": CodexPermissionPlan(
+        sdk_mode=ApprovalMode.auto_review,
+        policy=AskForApproval(root=AskForApprovalValue.on_request),
+        reviewer=ApprovalsReviewer.auto_review,
+    ),
+    "deny_all": CodexPermissionPlan(
+        sdk_mode=ApprovalMode.deny_all,
+        policy=AskForApproval(root=AskForApprovalValue.never),
+        reviewer=None,
+    ),
+}
 
 
 @dataclass
@@ -229,7 +238,6 @@ class CodexBridgeContext:
     conversation_address: ChannelAddress
     run_name: str | None
     session_allowed: set[str]
-    permission_mode: ConversationPermissionMode
 
 
 @dataclass
@@ -259,6 +267,10 @@ class CodexTentacle(AgentTentacle[str, None]):
     # Codex approvals/questions are answered in-process through SDK callbacks while
     # the turn stays live. `pending` parks the card response futures.
     in_process: ClassVar[bool] = True
+
+    permission_modes: ClassVar[frozenset[str]] = frozenset(
+        get_args(CodexPermissionMode)
+    )
 
     # OpenAI's own green, so Codex's lines read as Codex's in a console it shares
     # with every other tentacle.
@@ -335,19 +347,22 @@ class CodexTentacle(AgentTentacle[str, None]):
                 env={**(self.config.runtime.env or {}), DRIVEN_ENV: "1"},
             )
             client = AsyncCodex(config=runtime)
-            if self.config.approval_mode == "user":
-                # One client per conversation, so bind the approval handler to this
-                # conversation id — no guessing which live context an SDK request
-                # belongs to. The public constructor has no handler hook, so swap in a
-                # sync client that has one (SDK-private) before the transport lazily
-                # starts.
-                def handler(method: str, params: JsonObject | None) -> JsonObject:
-                    return self.handle_sdk_request(conversation_id, method, params)
 
-                client._client._sync = CodexClient(
-                    config=runtime,
-                    approval_handler=handler,
-                )
+            # One client per conversation, so bind the approval handler to this
+            # conversation id — no guessing which live context an SDK request belongs
+            # to. The public constructor has no handler hook, so swap in a sync client
+            # that has one (SDK-private) before the transport lazily starts.
+            #
+            # Always bound, because the posture is now the conversation's rather than
+            # the tentacle's: the client is built before the run resolves one, and a
+            # handler no request reaches is inert — only `user_review` sends any.
+            def handler(method: str, params: JsonObject | None) -> JsonObject:
+                return self.handle_sdk_request(conversation_id, method, params)
+
+            client._client._sync = CodexClient(
+                config=runtime,
+                approval_handler=handler,
+            )
             return client
 
         self.pool = CodexClientPool(
@@ -561,13 +576,9 @@ class CodexTentacle(AgentTentacle[str, None]):
 
     @staticmethod
     def approval_is_allowed(context: CodexBridgeContext, tool_name: str) -> bool:
-        if context.permission_mode == "bypass_permissions":
-            return True
-        if (
-            context.permission_mode == "accept_edits"
-            and tool_name == "codex_file_change"
-        ):
-            return True
+        # Only "allow for session" grants are left to check here. A posture that
+        # forgoes review says so to the SDK — `auto_review` reviews there, and the
+        # sandbox bounds the rest — so no request reaches this bridge to short-circuit.
         return tool_name in context.session_allowed
 
     @staticmethod
@@ -599,7 +610,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self,
         client: AsyncCodex,
         *,
-        approval_mode: CodexApprovalMode,
+        plan: CodexPermissionPlan,
         base_instructions: str | None,
         cwd: str | None,
         developer_instructions: str | None,
@@ -609,7 +620,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         personality: Personality | None,
         sandbox: Sandbox,
     ) -> AsyncThread:
-        plan = codex_approval_plan(approval_mode)
         if plan.sdk_mode is not None:
             return await client.thread_start(
                 approval_mode=plan.sdk_mode,
@@ -645,7 +655,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         client: AsyncCodex,
         *,
         thread_id: str,
-        approval_mode: CodexApprovalMode,
+        plan: CodexPermissionPlan,
         base_instructions: str | None,
         cwd: str | None,
         developer_instructions: str | None,
@@ -654,7 +664,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         personality: Personality | None,
         sandbox: Sandbox,
     ) -> AsyncThread:
-        plan = codex_approval_plan(approval_mode)
         if plan.sdk_mode is not None:
             return await client.thread_resume(
                 thread_id,
@@ -777,10 +786,19 @@ class CodexTentacle(AgentTentacle[str, None]):
             or None
         )
 
-        # A non-interactive run (a commissioned accomplice) never asks a human:
-        # the SDK's own deny_all mode declines every approval at the source.
-        approval_mode = self.config.approval_mode if interactive else "deny_all"
-        approval_plan = codex_approval_plan(approval_mode)
+        permission_mode = (
+            conversation.permission_mode
+            if is_codex_mode(conversation.permission_mode)
+            else self.config.permission_mode
+        )
+        # A commissioned accomplice has no human, so the one posture that needs one
+        # falls back to declining at the source; every other already says who reviews.
+        if not interactive and permission_mode == "user_review":
+            permission_mode = "deny_all"
+        plan = CODEX_PERMISSION_PLANS[permission_mode]
+        # The other axis, and the operator's rather than the conversation's: what a
+        # command may touch when nobody is asked. Fixed for the run, so a posture
+        # never rewrites what the whole thread reaches.
         sandbox = Sandbox[self.config.sandbox]
         personality = (
             Personality(self.config.personality)
@@ -821,7 +839,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                         codex_thread = await self.resume_codex_thread(
                             pooled.client,
                             thread_id=conversation.external_id,
-                            approval_mode=approval_mode,
+                            plan=plan,
                             base_instructions=self.config.base_instructions,
                             cwd=run_cwd,
                             developer_instructions=developer_instructions,
@@ -833,7 +851,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     else:
                         codex_thread = await self.start_codex_thread(
                             pooled.client,
-                            approval_mode=approval_mode,
+                            plan=plan,
                             base_instructions=self.config.base_instructions,
                             cwd=run_cwd,
                             developer_instructions=developer_instructions,
@@ -851,13 +869,12 @@ class CodexTentacle(AgentTentacle[str, None]):
                     conversation_address=conversation_address,
                     run_name=run_name,
                     session_allowed=set(conversation.allowed_tools),
-                    permission_mode=conversation.permission_mode,
                 )
                 try:
                     with self.session_ingest.driving(codex_thread.id):
                         turn = await codex_thread.turn(
                             prompt_text,
-                            approval_mode=approval_plan.sdk_mode,
+                            approval_mode=plan.sdk_mode,
                             cwd=run_cwd,
                             effort=turn_effort,
                             model=sdk_model,

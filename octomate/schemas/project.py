@@ -16,7 +16,6 @@ from uuid_utils.compat import uuid7
 
 from octomate.models.project import Project as ProjectModel
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.types.conversations import ConversationPermissionMode
 from octomate.types.projects import ProjectOrigin
 
 
@@ -99,13 +98,6 @@ class Project(BaseTransmuter):
             "What this project is, for a human reading the registry and for a model "
             "choosing between registered projects. Not agent instructions: those live "
             "in the project's own `AGENTS.md`/`CLAUDE.md`."
-        ),
-    )
-    permission_mode: ConversationPermissionMode = Field(
-        default="default",
-        description=(
-            "Approval mode a conversation in this project starts under; the "
-            "conversation owns it afterwards."
         ),
     )
     enabled: bool = Field(

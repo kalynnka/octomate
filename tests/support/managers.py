@@ -46,8 +46,8 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
-from octomate.types.conversations import ConversationPermissionMode
 from octomate.types.deferred import DeferredBatchStatus
+from octomate.types.permissions import AgentPermissionMode
 
 
 async def a_registry(*projects: Project) -> ProjectManager:
@@ -87,7 +87,7 @@ class FakeConversation:
     parent_conversation_id: uuid.UUID | None = None
     agent_tentacle_id: str = ""
     runs: list[str] = field(default_factory=list)
-    permission_mode: ConversationPermissionMode = "default"
+    permission_mode: AgentPermissionMode | None = None
     allowed_tools: list[str] = field(default_factory=list)
 
 

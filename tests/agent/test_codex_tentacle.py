@@ -13,6 +13,7 @@ from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.client import ApprovalHandler
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
+    ApprovalsReviewer,
     ItemCompletedNotification,
     MessagePhase,
     Personality,
@@ -47,6 +48,7 @@ from octomate.tentacles.agents.codex import CodexTentacle
 from octomate.tentacles.agents.codex import base as codex_base
 from octomate.tentacles.channels.base import ChannelTentacle
 from octomate.types.json import JsonObject
+from octomate.types.permissions import CodexPermissionMode
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -59,8 +61,6 @@ KEY = ChannelAddress(
 
 HOOK_SECRET = SecretStr("test-hook-secret")
 _THREAD = uuid7()
-_ACCEPT_EDITS_THREAD = uuid7()
-_BYPASS_THREAD = uuid7()
 
 
 @dataclass
@@ -217,6 +217,9 @@ class FakeCodex:
     def __init__(self, config: CodexSdkConfig | None = None) -> None:
         FakeCodex.last_config = config
         FakeCodex.builds += 1
+        # Mirror AsyncCodex's `_client._sync` slot: the tentacle swaps a
+        # handler-bearing sync client into it for every client it builds.
+        self._client = SimpleNamespace(_sync=None)
 
     async def __aenter__(self) -> FakeCodex:
         return self
@@ -328,14 +331,6 @@ class ApprovalFakeThread(FakeThread):
         return turn
 
 
-class ApprovalFakeCodex(FakeCodex):
-    def __init__(self, config: CodexSdkConfig | None = None) -> None:
-        super().__init__(config=config)
-        # Mirror AsyncCodex's `_client._sync` slot so the tentacle can swap in a
-        # handler-bearing sync client (patched below to capture the handler).
-        self._client = SimpleNamespace(_sync=None)
-
-
 @dataclass
 class FakeFeelers:
     batch: FakePresentedBatch
@@ -394,7 +389,7 @@ def _tentacle(
     return CodexTentacle(
         "codex",
         Octomate(conversations=conversations),
-        config=config or CodexConfig(approval_mode="deny_all"),
+        config=config or CodexConfig(permission_mode="deny_all"),
         hook_secret=HOOK_SECRET,
     )
 
@@ -408,7 +403,6 @@ def codex_bridge_context(
         conversation_address=KEY,
         run_name="react",
         session_allowed=set(conversation.allowed_tools),
-        permission_mode=conversation.permission_mode,
     )
 
 
@@ -467,7 +461,7 @@ async def test_instructions_join_the_developer_instructions(
     tentacle = _tentacle(
         conversations,
         config=CodexConfig(
-            approval_mode="deny_all", developer_instructions="House style."
+            permission_mode="deny_all", developer_instructions="House style."
         ),
     )
 
@@ -503,8 +497,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
         config=CodexConfig(
             cwd="/repo",
             runtime=runtime,
-            approval_mode="auto_review",
-            sandbox="read_only",
+            permission_mode="auto_review",
             base_instructions="base",
             developer_instructions="dev",
             ephemeral=True,
@@ -541,7 +534,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert thread_call.model == "gpt-5.5"
     assert thread_call.model_provider == "openai"
     assert thread_call.personality == Personality.pragmatic
-    assert thread_call.sandbox == Sandbox.read_only
+    assert thread_call.sandbox == Sandbox.workspace_write
 
     [turn_call] = FakeCodex.turn_calls
     assert turn_call.cwd == "/repo"
@@ -609,7 +602,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         self: CodexTentacle,
         client: codex_base.AsyncCodex,
         *,
-        approval_mode: codex_base.CodexApprovalMode,
+        plan: codex_base.CodexPermissionPlan,
         base_instructions: str | None,
         cwd: str | None,
         developer_instructions: str | None,
@@ -619,11 +612,14 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         personality: Personality | None,
         sandbox: Sandbox,
     ) -> ApprovalFakeThread:
-        assert approval_mode == "user"
-        assert isinstance(client, ApprovalFakeCodex)
+        # `user_review` is the one posture with no public SDK knob, so it is the
+        # reviewer path the bridge exists for.
+        assert plan.sdk_mode is None
+        assert plan.reviewer is codex_base.ApprovalsReviewer.user
+        assert isinstance(client, FakeCodex)
         return ApprovalFakeThread("thread-new")
 
-    monkeypatch.setattr(codex_base, "AsyncCodex", ApprovalFakeCodex)
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     monkeypatch.setattr(codex_base, "CodexClient", capture_handler)
     monkeypatch.setattr(CodexTentacle, "start_codex_thread", start_fake_thread)
     approval = DeferredApproval(
@@ -641,7 +637,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(approval_mode="user"),
+        config=CodexConfig(permission_mode="user_review"),
         hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
@@ -686,7 +682,7 @@ async def test_question_requests_bridge_to_cards() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(approval_mode="user"),
+        config=CodexConfig(permission_mode="user_review"),
         hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
@@ -740,7 +736,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(approval_mode="user"),
+        config=CodexConfig(permission_mode="user_review"),
         hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
@@ -769,7 +765,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
     timeout_tentacle = CodexTentacle(
         "codex-timeout",
         octomate,
-        config=CodexConfig(approval_mode="user", approval_timeout=0.01),
+        config=CodexConfig(permission_mode="user_review", approval_timeout=0.01),
         hook_secret=HOOK_SECRET,
     )
     octomate.connect(timeout_tentacle)
@@ -789,7 +785,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
     assert deferred_actions.marked
 
 
-async def test_codex_allow_session_and_permission_mode_auto_approval() -> None:
+async def test_codex_allow_session_auto_approves_the_next_request() -> None:
     approval = DeferredApproval(
         tool_name="codex_command_execution",
         tool_call_id="cmd-1",
@@ -807,7 +803,7 @@ async def test_codex_allow_session_and_permission_mode_auto_approval() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(approval_mode="user"),
+        config=CodexConfig(permission_mode="user_review"),
         hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
@@ -837,37 +833,11 @@ async def test_codex_allow_session_and_permission_mode_auto_approval() -> None:
         {"threadId": "thread-1", "itemId": "cmd-2", "command": "pytest"},
     )
 
+    # The grant is the only thing the bridge short-circuits on now: a posture that
+    # forgoes review says so to the SDK, which then sends no request at all.
     assert response == {"decision": "accept"}
     assert second_response == {"decision": "accept"}
     assert conversation.allowed_tools == ["codex_command_execution"]
-    assert len(feelers.requests) == 1
-
-    accept_edits = FakeConversation(
-        thread_id=_ACCEPT_EDITS_THREAD,
-        permission_mode="accept_edits",
-    )
-    bypass = FakeConversation(
-        thread_id=_BYPASS_THREAD,
-        permission_mode="bypass_permissions",
-    )
-    tentacle.bridge_contexts[_ACCEPT_EDITS_THREAD] = codex_bridge_context(accept_edits)
-    tentacle.bridge_contexts[_BYPASS_THREAD] = codex_bridge_context(bypass)
-
-    file_response = await asyncio.to_thread(
-        tentacle.handle_sdk_request,
-        _ACCEPT_EDITS_THREAD,
-        "item/fileChange/requestApproval",
-        {"threadId": "accept-edits", "itemId": "file-1"},
-    )
-    unknown_response = await asyncio.to_thread(
-        tentacle.handle_sdk_request,
-        _BYPASS_THREAD,
-        "item/network/requestApproval",
-        {"threadId": "bypass", "itemId": "net-1"},
-    )
-
-    assert file_response == {"decision": "accept"}
-    assert unknown_response == {"decision": "accept"}
     assert len(feelers.requests) == 1
 
 
@@ -911,3 +881,119 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
     # Exiting the tentacle drains the pool, closing every warm client.
     assert FakeCodex.closed == 2
     assert tentacle.pool is None
+
+
+@pytest.mark.parametrize(
+    ("permission_mode", "sdk_mode", "reviewer"),
+    [
+        ("user_review", None, ApprovalsReviewer.user),
+        ("auto_review", ApprovalMode.auto_review, ApprovalsReviewer.auto_review),
+        ("deny_all", ApprovalMode.deny_all, None),
+    ],
+)
+def test_every_posture_names_its_row_of_the_sdk_approval_knobs(
+    permission_mode: CodexPermissionMode,
+    sdk_mode: ApprovalMode | None,
+    reviewer: ApprovalsReviewer | None,
+) -> None:
+    plan = codex_base.CODEX_PERMISSION_PLANS[permission_mode]
+    assert (plan.sdk_mode, plan.reviewer) == (sdk_mode, reviewer)
+
+
+async def test_the_conversations_posture_overrides_the_configured_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "codex", "")] = FakeConversation(
+        thread_id=_THREAD, permission_mode="auto_review"
+    )
+    tentacle = _tentacle(conversations, config=CodexConfig(permission_mode="deny_all"))
+
+    async with tentacle:
+        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.approval_mode == ApprovalMode.auto_review
+
+
+async def test_the_sandbox_is_the_operators_and_no_posture_moves_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sandbox is what a command may touch when nobody is asked, so it is fixed
+    for the run: a conversation's approval posture never rewrites it."""
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "codex", "")] = FakeConversation(
+        thread_id=_THREAD, permission_mode="deny_all"
+    )
+    tentacle = _tentacle(
+        conversations,
+        config=CodexConfig(permission_mode="auto_review", sandbox="read_only"),
+    )
+
+    async with tentacle:
+        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.approval_mode == ApprovalMode.deny_all
+    assert thread_call.sandbox == Sandbox.read_only
+
+
+async def test_a_claude_posture_on_a_codex_conversation_falls_back_to_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The column holds every provider's scale, so the tentacle establishes the arm is
+    its own. `Conversation` already refuses this pairing; this is the second edge."""
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "codex", "")] = FakeConversation(
+        thread_id=_THREAD, permission_mode="bypassPermissions"
+    )
+    tentacle = _tentacle(conversations, config=CodexConfig(permission_mode="deny_all"))
+
+    async with tentacle:
+        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.approval_mode == ApprovalMode.deny_all
+
+
+@pytest.mark.parametrize(
+    "permission_mode",
+    # Only the posture that needs a human falls back when there is none; one that
+    # already says who reviews is left alone.
+    ["user_review", "auto_review", "deny_all"],
+)
+async def test_a_subagent_run_declines_only_where_a_human_was_needed(
+    monkeypatch: pytest.MonkeyPatch,
+    permission_mode: CodexPermissionMode,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    conversation = FakeConversation(
+        thread_id=_THREAD, agent_tentacle_id="codex", permission_mode=permission_mode
+    )
+    conversations.store[(_THREAD, "codex", "")] = conversation
+    tentacle = _tentacle(conversations)
+
+    async with tentacle:
+        await tentacle.subagent_run(
+            "audit it",
+            conversation_address=KEY,
+            thread_id=_THREAD,
+            conversation_id=conversation.id,
+            run_name="audit",
+        )
+
+    [thread_call] = FakeCodex.thread_calls
+    expected = (
+        ApprovalMode.deny_all
+        if permission_mode == "user_review"
+        else codex_base.CODEX_PERMISSION_PLANS[permission_mode].sdk_mode
+    )
+    assert thread_call.approval_mode == expected

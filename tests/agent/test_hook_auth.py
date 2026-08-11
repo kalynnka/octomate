@@ -37,7 +37,7 @@ def client_for(path: str) -> TestClient:
         else CodexTentacle(
             "codex",
             octomate,
-            config=CodexConfig(approval_mode="deny_all"),
+            config=CodexConfig(permission_mode="deny_all"),
             hook_secret=SECRET,
         )
     )

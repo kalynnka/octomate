@@ -439,7 +439,9 @@ export interface ApiConversation {
   parent_conversation_id: string | null
   name: string | null
   status: string
-  permission_mode: string
+  /** the agent's own approval vocabulary — `agent_tentacle_id` says which;
+   *  null is nothing declared, and the agent's configured default decides */
+  permission_mode: string | null
   allowed_tools: string[]
   /** oldest first, by start time */
   runs: ApiAgentRun[]

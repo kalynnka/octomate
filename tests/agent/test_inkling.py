@@ -19,7 +19,7 @@ from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import DeclineResolver
+from octomate.capabilities.harness.deferred import ApproveResolver, DeclineResolver
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.capabilities.todos import TodoCapability
@@ -35,7 +35,7 @@ from tests.support.agents import (
     ScriptedTurn,
     build_scripted_agent,
 )
-from tests.support.managers import FakeConversationManager
+from tests.support.managers import FakeConversation, FakeConversationManager
 
 InklingTestEvent: TypeAlias = ReactStreamEvent[ScriptedOutput]
 
@@ -173,6 +173,91 @@ async def test_decline_resolver_denies_approvals_and_answers_calls() -> None:
     assert isinstance(denied, ToolDenied)
     assert "no user" in denied.message
     assert "no user" in cast(str, results.calls["c1"])
+
+
+async def test_approve_resolver_grants_approvals_and_still_declines_asks() -> None:
+    """`bypassPermissions` speaks about approvals. An ask is a question only a human
+    answers, and forgoing gating says nothing about knowing the answer."""
+    requests = DeferredToolRequests(
+        calls=[ToolCallPart(tool_name="ask_questions", args={}, tool_call_id="c1")],
+        approvals=[ToolCallPart(tool_name="dangerous", args={}, tool_call_id="a1")],
+    )
+
+    results = await ApproveResolver().resolve(requests)
+
+    assert results.approvals["a1"] is True
+    assert "cannot ask you" in cast(str, results.calls["c1"])
+
+
+async def test_a_bypassing_conversation_resolves_in_process_with_a_human_present() -> (
+    None
+):
+    """An interactive run normally parks its deferrals for a card. Under
+    `bypassPermissions` the conversation has said it wants no gate, so the run resolves
+    in-process and continues to a final answer instead."""
+    agent, script = build_scripted_agent(
+        [
+            ScriptedTurn(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "what's your name?"}]},
+                tool_call_id="call_ask_1",
+            ),
+            "proceeding without answers",
+        ]
+    )
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "inkling", "")] = FakeConversation(
+        thread_id=_THREAD,
+        agent_tentacle_id="inkling",
+        permission_mode="bypassPermissions",
+    )
+    tentacle = _tentacle(agent, conversations)
+
+    result = await tentacle.run(
+        "hi octomate",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+    )
+
+    assert result.output == "proceeding without answers"
+    assert script.cursor == 2
+    recorded = str(conversations.store[(_THREAD, "inkling", "")].messages)
+    assert "cannot ask you" in recorded
+
+
+async def test_a_dont_ask_conversation_answers_its_own_questions() -> None:
+    """`dontAsk` is about the question, not the gate: a human is there, and this
+    conversation said not to interrupt them, so the ask resolves in-process and the
+    agent proceeds on its own judgment."""
+    agent, script = build_scripted_agent(
+        [
+            ScriptedTurn(
+                tool_name="ask_questions",
+                args={"questions": [{"question": "what's your name?"}]},
+                tool_call_id="call_ask_1",
+            ),
+            "proceeding without answers",
+        ]
+    )
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "inkling", "")] = FakeConversation(
+        thread_id=_THREAD, agent_tentacle_id="inkling", permission_mode="dontAsk"
+    )
+    tentacle = _tentacle(agent, conversations)
+
+    result = await tentacle.run(
+        "hi octomate",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+    )
+
+    assert result.output == "proceeding without answers"
+    assert script.cursor == 2
+    # The reason names the posture rather than a missing human, since there is one.
+    recorded = str(conversations.store[(_THREAD, "inkling", "")].messages)
+    assert "answers its own questions" in recorded
 
 
 async def test_non_interactive_run_declines_deferrals_and_continues() -> None:

@@ -50,6 +50,30 @@ class DeclineResolver:
         return results
 
 
+@dataclass
+class ApproveResolver:
+    """Resolves every deferred approval by granting it, and asks by declining — the
+    resolver for a `bypassPermissions` conversation.
+
+    Approvals are what the posture speaks about, so they are granted without a card. An
+    ask is a question only a human can answer, and bypassing gating says nothing about
+    knowing the answer, so those still decline and the run reports the assumption.
+    """
+
+    message: str = (
+        "Declined: this conversation bypasses approvals but still cannot ask you. "
+        "Proceed on your best judgment and state the assumption in your report."
+    )
+
+    async def resolve(self, requests: DeferredToolRequests) -> DeferredToolResults:
+        results = DeferredToolResults()
+        for approval in requests.approvals:
+            results.approvals[approval.tool_call_id] = True
+        for call in requests.calls:
+            results.calls[call.tool_call_id] = self.message
+        return results
+
+
 class DeferredSuspender(Protocol):
     """Human-in-the-loop hook for deferred tool calls the agent cannot resolve
     in process. Unlike `DeferredResolver`, which returns results and lets the

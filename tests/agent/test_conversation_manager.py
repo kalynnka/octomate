@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy.exc
+from pydantic import ValidationError
 from pydantic_ai.messages import (
     ModelRequest as RawModelRequest,
 )
@@ -73,7 +74,8 @@ async def test_subagents_lists_only_the_parents_own_hands() -> None:
 async def test_permission_defaults_and_grant_round_trip() -> None:
     service = ConversationManager()
     convo = await service.ensure(await _thread(), agent_tentacle_id="claude")
-    assert convo.permission_mode == "default"
+    # No project, so nothing is declared and the agent's configured default decides.
+    assert convo.permission_mode is None
     assert convo.allowed_tools == []
 
     await service.grant_session_tool(convo, "Bash")
@@ -646,3 +648,44 @@ async def test_a_run_remembers_which_call_spawned_it() -> None:
         "audit the repo",
         "commissioning codex",
     ]
+
+
+async def test_a_posture_written_on_a_conversation_survives_every_later_ensure() -> (
+    None
+):
+    """The conversation is the executor and remembers what its permission is now, so
+    nothing re-derives it: a cold manager reads the row back rather than resetting it."""
+    thread = await _thread()
+    seeded = await ConversationManager().ensure(thread, agent_tentacle_id="claude")
+    assert seeded.permission_mode is None
+
+    async with async_session() as session:
+        stored = await session.get(Conversation, seeded.id)
+        assert stored is not None
+        stored.permission_mode = "bypassPermissions"
+        await session.commit()
+
+    reloaded = await ConversationManager().ensure(thread, agent_tentacle_id="claude")
+    assert reloaded.permission_mode == "bypassPermissions"
+
+
+@pytest.mark.parametrize(
+    ("agent_tentacle_id", "permission_mode", "message"),
+    [
+        # Each provider keeps its own vocabulary, and the row's frozen agent is what
+        # says which one it is entitled to.
+        ("claude", "auto_review", "not one of claude's modes"),
+        ("codex", "bypassPermissions", "not one of codex's modes"),
+        ("inkling", "plan", "not one of inkling's modes"),
+        ("claude-native", "default", "has no permission modes"),
+    ],
+)
+def test_a_posture_must_be_its_own_agents(
+    agent_tentacle_id: str, permission_mode: str, message: str
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Conversation(
+            thread_id=uuid7(),
+            agent_tentacle_id=agent_tentacle_id,
+            permission_mode=permission_mode,  # pyright: ignore[reportArgumentType]
+        )

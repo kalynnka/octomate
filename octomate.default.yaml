@@ -33,6 +33,12 @@ octomate:
       # either cannot run. Override `tool_output.bands` to change the thresholds,
       # `tool_output.retention_hours` for how long a spill stays readable, or
       # `tool_output.enabled: false` to send every return whole.
+      # permission_mode: default
+      #   # default | dontAsk | bypassPermissions
+      #   # what a conversation falls back to when it carries no posture of its own:
+      #   # park every deferral for a human, answer questions in-process so the agent
+      #   # decides for itself, or grant approvals without a card. Claude's scale,
+      #   # narrowed to what deferred resolution can honor.
     # Anthropic Claude Code agent (opt-in; omitted => absent). Runs the Claude
     # Agent SDK locally. List it in a channel's `agents:` to make it a summon
     # candidate.
@@ -52,6 +58,10 @@ octomate:
     #     haiku:
     #       ability: Fast coding agent for small, well-scoped fixes and
     #         repository chores.
+    #   # permission_mode: default
+    #   #   # default | acceptEdits | plan | bypassPermissions | dontAsk | auto
+    #   #   # what a conversation falls back to when it carries no posture of its
+    #   #   # own. The SDK's own scale, handed over verbatim.
     #   # max_turns: ~
     #   # approval_timeout: ~   # seconds to wait for a human approval; ~ = forever
     #   # ssh: ~                # remote runs are disabled: a run happens in its
@@ -83,9 +93,12 @@ octomate:
     #     gpt-5.1-codex-mini:
     #       ability: Fast Codex agent for small, well-scoped code edits and
     #         quick fixes.
-    #   approval_mode: user        # user | auto_review | deny_all
+    #   permission_mode: user_review
+    #     # user_review | auto_review | deny_all
+    #     # who answers when the agent asks to step past the sandbox
     #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
     #   sandbox: workspace_write   # read_only | workspace_write | full_access
+    #     # what a command may touch when nobody is asked; fixed for a run
     #   effort: ~                  # none | minimal | low | medium | high | xhigh
     #   summary: ~                 # auto | concise | detailed | none
     #   personality: ~             # none | friendly | pragmatic

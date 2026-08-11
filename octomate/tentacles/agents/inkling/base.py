@@ -6,7 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Self, TypeAlias, overload
+from typing import TYPE_CHECKING, ClassVar, Self, TypeAlias, get_args, overload
 
 from pydantic_ai import (
     AgentCapability,
@@ -38,6 +38,7 @@ from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 from octomate.capabilities import UserScopedCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import (
+    ApproveResolver,
     DeclineResolver,
     DeferredResolver,
     DeferredSuspender,
@@ -64,6 +65,7 @@ from octomate.tentacles.agents.base import (
     AgentTentacle,
 )
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.types.permissions import InklingPermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -92,6 +94,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     user_scoped_capabilities: list[UserScopedCapability[None]] = field(init=False)
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
+
+    permission_modes: ClassVar[frozenset[str]] = frozenset(
+        get_args(InklingPermissionMode)
+    )
 
     description: str = (
         "General assistant for conversation, questions, writing, analysis, and "
@@ -616,14 +622,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         ReactStreamEvent[InklingOutput | RunOutputDataT],
         None,
     ]:
-        # A non-interactive run declines every deferred action at once: no
-        # human exists, so asks and approvals resolve to declines in-process
-        # and the react loop continues to a final answer. That is all
-        # `interactive` means — which caller-chosen set to mount is the entrypoints'
-        # decision, and `capabilities` arrives here holding it. The run's project is
-        # the one thing added below: it comes off the thread rather than the caller,
-        # so every entrypoint would otherwise have to resolve it identically.
-        resolver = self.deferred_resolver if interactive else DeclineResolver()
         resolved_run_name = run_name or "react"
         # Effort IS pydantic-ai's `thinking` scale; pass it through, layered over
         # any run settings the caller passed. Nothing downgrades a grade the
@@ -651,6 +649,39 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # conversation is owned by a thread, so the run needs one.
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
+
+        # A non-interactive run declines every deferred action at once: no human
+        # exists, so asks and approvals resolve to declines in-process and the react
+        # loop continues to a final answer. That is all `interactive` means — which
+        # caller-chosen set to mount is the entrypoints' decision, and `capabilities`
+        # arrives here holding it. The run's project is the one thing added below: it
+        # comes off the thread rather than the caller, so every entrypoint would
+        # otherwise have to resolve it identically.
+        #
+        # With a human, the conversation's posture decides which deferrals still reach
+        # them: `dontAsk` answers questions in-process so the agent decides for itself,
+        # and `bypassPermissions` grants approvals without a card.
+        conversation = (
+            await self.conversation_manager.get(conversation_id)
+            if conversation_id is not None
+            else await self.conversation_manager.ensure(
+                thread_id, agent_tentacle_id=self.id
+            )
+        )
+        if not interactive:
+            resolver: DeferredResolver | None = DeclineResolver()
+        elif conversation.permission_mode == "dontAsk":
+            # The same in-process decline a human-less run gets, under its own reason:
+            # there is someone to ask, and this conversation said not to.
+            resolver = DeclineResolver(
+                "Not asked: this conversation answers its own questions. Decide on "
+                "your best judgment and state the assumption in your report."
+            )
+        elif conversation.permission_mode == "bypassPermissions":
+            resolver = ApproveResolver()
+        else:
+            resolver = self.deferred_resolver
+
         project = await self.run_project(thread_id)
         if project is not None:
             capabilities.extend(self.project_capabilities(project))
