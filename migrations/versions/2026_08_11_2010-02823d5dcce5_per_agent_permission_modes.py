@@ -6,11 +6,17 @@ vocabulary of the conversation's own agent, and goes nullable because the Codex 
 has no `default` member and no single server default fits every agent. NULL means
 nothing declared, and the agent's configured default decides.
 
-Nothing is carried. The column was never written by any code path — every row holds the
-old unified `default`, which NULL says just as well. `projects.permission_mode` goes
-without a replacement: the vocabulary belongs to the agent classes, which are fixed, and
-the conversation is the executor that remembers what its permission is now, so a project
-has nothing to say about it.
+Nothing is carried — the column was never written by any code path, so every row holds
+the old unified `default` and there is no operator intent in any of them. Each is
+rewritten in its own agent's vocabulary instead, at the posture that agent's config
+already defaults to, so a conversation reads as what it was running under all along.
+
+An agent with no vocabulary keeps NULL: a native runtime's session is observed rather
+than driven, and a posture it does not answer to is refused when the row is read.
+
+`projects.permission_mode` goes without a replacement: the vocabulary belongs to the
+agent classes, which are fixed, and the conversation is the executor that remembers what
+its permission is now, so a project has nothing to say about it.
 
 Revision ID: 02823d5dcce5
 Revises: 1bad2a5f6be5
@@ -29,6 +35,27 @@ down_revision: str | Sequence[str] | None = "1bad2a5f6be5"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# What each agent's conversations start under — the value its config block already
+# defaults to, spelled out here rather than imported, so this migration keeps saying
+# what it did on the day it ran even after a default moves.
+#
+# Only agents that answer to a posture at all. One absent from this map is refused a
+# posture on read (`octomate.types.permissions.check_mode`), so writing one would make
+# its rows fail to load.
+#
+# The two native ids are the runtimes Octomate tails rather than drives, and they take
+# their client's own default: a session Octomate only ever read was running under
+# whatever the operator had it in, and the client's default is the honest guess when the
+# transcript is already past. What the tailer reads off a live transcript overwrites
+# this the next time that session says anything.
+STARTING_POSTURES = {
+    "inkling": "default",
+    "claude": "default",
+    "claude-native": "default",
+    "codex": "user_review",
+    "codex-native": "user_review",
+}
+
 
 def upgrade() -> None:
     """Upgrade schema."""
@@ -44,6 +71,13 @@ def upgrade() -> None:
     # ### end Alembic commands ###
 
     op.execute("UPDATE conversations SET permission_mode = NULL")
+    for agent_tentacle_id, posture in STARTING_POSTURES.items():
+        op.execute(
+            sa.text(
+                "UPDATE conversations SET permission_mode = :posture "
+                "WHERE agent_tentacle_id = :agent_tentacle_id"
+            ).bindparams(posture=posture, agent_tentacle_id=agent_tentacle_id)
+        )
 
 
 def downgrade() -> None:

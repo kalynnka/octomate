@@ -709,7 +709,11 @@ async def test_setting_another_providers_posture_is_refused_before_the_write() -
         ("claude", "auto_review", "not one of claude's modes"),
         ("codex", "bypassPermissions", "not one of codex's modes"),
         ("inkling", "plan", "not one of inkling's modes"),
-        ("claude-native", "default", "has no permission modes"),
+        # A tailed runtime keeps its provider's vocabulary — it is observed in one of
+        # those postures — but not another provider's.
+        ("claude-native", "auto_review", "not one of claude-native's modes"),
+        # A channel runs nothing, so it answers to no posture at all.
+        ("slack", "default", "has no permission modes"),
     ],
 )
 def test_a_posture_must_be_its_own_agents(

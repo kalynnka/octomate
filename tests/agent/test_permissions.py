@@ -7,6 +7,11 @@ carries it there, keyed by the id `main.py` registers each tentacle under. Order
 in both: a picker steps through the vocabulary, so the two must agree on the sequence
 and not merely on the members.
 
+`PERMISSION_MODES` is keyed slightly wider than the registry: the two native ids are in
+it as well, carrying their provider's vocabulary, because a session Octomate only tails
+is still in one of those postures and its transcript says which. No tentacle class backs
+either, which is exactly why the console cannot switch one.
+
 Two declarations of one fact drift silently. These fail instead.
 """
 
@@ -19,6 +24,11 @@ from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.codex import CodexTentacle
 from octomate.tentacles.agents.inkling import InklingTentacle
 from octomate.types.permissions import PERMISSION_MODES, check_mode
+from octomate.types.threads import (
+    CLAUDE_NATIVE_ID,
+    CODEX_NATIVE_ID,
+    NATIVE_TENTACLE_IDS,
+)
 
 # The ids `main.py` connects each tentacle under, which are what a conversation row
 # stores and what `PERMISSION_MODES` is keyed by.
@@ -37,7 +47,22 @@ def test_the_schema_map_says_what_the_tentacle_accepts(
 
 
 def test_every_registered_agent_is_in_the_schema_map() -> None:
-    assert set(PERMISSION_MODES) == set(REGISTERED)
+    assert set(REGISTERED) <= set(PERMISSION_MODES)
+
+
+def test_a_tailed_runtime_keeps_its_providers_vocabulary() -> None:
+    """Observed rather than driven, but observed *in* a posture — so the id carries the
+    same scale the tentacle it mirrors does, and a transcript's mode stores as-is."""
+    assert PERMISSION_MODES[CLAUDE_NATIVE_ID] == ClaudeCodeTentacle.permission_modes
+    assert PERMISSION_MODES[CODEX_NATIVE_ID] == CodexTentacle.permission_modes
+    check_mode(CLAUDE_NATIVE_ID, "bypassPermissions")
+    check_mode(CODEX_NATIVE_ID, "auto_review")
+
+
+def test_the_map_holds_nothing_but_agents_and_the_runtimes_they_mirror() -> None:
+    # Every other id — a channel's, a typo — is refused a posture rather than given one
+    # nothing reads.
+    assert set(PERMISSION_MODES) == set(REGISTERED) | NATIVE_TENTACLE_IDS
 
 
 @pytest.mark.parametrize(("agent_tentacle_id", "tentacle"), REGISTERED.items())
@@ -56,6 +81,6 @@ def test_check_mode_accepts_exactly_the_tentacles_own(
 
 
 def test_an_agent_with_no_vocabulary_is_refused_a_posture() -> None:
-    # A native session is observed rather than driven, so nothing would read one.
+    # A channel is not an agent and never runs anything, so nothing would read one.
     with pytest.raises(ValueError, match="has no permission modes"):
-        check_mode("claude-native", "default")
+        check_mode("slack", "default")

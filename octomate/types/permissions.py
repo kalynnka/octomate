@@ -4,6 +4,8 @@ from typing import Literal, TypeIs, get_args
 
 from claude_agent_sdk import PermissionMode as ClaudePermissionMode
 
+from octomate.types.threads import CLAUDE_NATIVE_ID, CODEX_NATIVE_ID
+
 # The approval posture an agent works under. Each provider keeps its own vocabulary
 # rather than sharing one: Claude has a single mode, Codex has three orthogonal SDK
 # enums, and a scale borrowed from either says the wrong thing about the other.
@@ -50,6 +52,16 @@ PERMISSION_MODES: dict[str, tuple[AgentPermissionMode, ...]] = {
     "inkling": get_args(InklingPermissionMode),
     "claude": get_args(ClaudePermissionMode),
     "codex": get_args(CodexPermissionMode),
+    # The runtimes Octomate tails rather than drives. They keep their provider's
+    # vocabulary because a native session really is in one of these postures and its
+    # transcript says which — the column records what was observed, which is the same
+    # question a driven conversation answers by being told.
+    #
+    # Nothing here is settable: neither id is a registered agent, so
+    # `GET /permission-modes` never offers one and the console reports rather than
+    # switches. A session's posture is the client's to change, in the client.
+    CLAUDE_NATIVE_ID: get_args(ClaudePermissionMode),
+    CODEX_NATIVE_ID: get_args(CodexPermissionMode),
 }
 
 
@@ -81,9 +93,13 @@ def check_mode(agent_tentacle_id: str, mode: AgentPermissionMode) -> None:
 # establish the arm is its own. `check_mode` already refuses a status its agent does
 # not answer to, which makes these total in practice — they are how that invariant
 # reaches the type checker, and what a tentacle falls back on if it ever does not hold.
-def is_claude_mode(mode: AgentPermissionMode | None) -> TypeIs[ClaudePermissionMode]:
+#
+# They take a bare `str` because that is also the shape a posture arrives in from
+# outside: a native session's transcript names the mode it ran under, and a build that
+# does not model it must be able to ask rather than assume.
+def is_claude_mode(mode: str | None) -> TypeIs[ClaudePermissionMode]:
     return mode in PERMISSION_MODES["claude"]
 
 
-def is_codex_mode(mode: AgentPermissionMode | None) -> TypeIs[CodexPermissionMode]:
+def is_codex_mode(mode: str | None) -> TypeIs[CodexPermissionMode]:
     return mode in PERMISSION_MODES["codex"]

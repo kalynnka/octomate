@@ -11,6 +11,14 @@ ThreadStatus = Literal["active", "closed"]
 # ingested rather than driven by a channel.
 ThreadKind = Literal["dm", "group", "thread", "native_thread"]
 
+# Synthetic ids a native client's thread and conversation are filed under; no channel
+# and no agent is registered as either. Here rather than in `schemas.thread` — which
+# still re-exports them — so `types.permissions` can name them without importing a
+# schema that imports it back.
+CLAUDE_NATIVE_ID = "claude-native"
+CODEX_NATIVE_ID = "codex-native"
+NATIVE_TENTACLE_IDS: frozenset[str] = frozenset({CLAUDE_NATIVE_ID, CODEX_NATIVE_ID})
+
 ThreadMessageDirection = Literal["inbound", "outbound"]
 ChannelActorKind = Literal["human", "agent", "bot", "system"]
 MessageBindingKind = Literal[
