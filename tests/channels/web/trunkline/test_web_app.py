@@ -39,6 +39,7 @@ from octomate.tentacles.channels.web.trunkline.base import (
     RouteLockedError,
     TrunklineDirective,
 )
+from octomate.types.permissions import InklingPermissionMode
 from tests.support.agents import build_non_stream_agent, build_scripted_agent
 from tests.support.managers import a_registry
 
@@ -47,7 +48,10 @@ RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
 
 
 async def _register(
-    octomate: Octomate, agent: Agent[None, InklingOutput]
+    octomate: Octomate,
+    agent: Agent[None, InklingOutput],
+    *,
+    permission_mode: InklingPermissionMode = "default",
 ) -> TrunklineTentacle:
     assert agent.model is not None
     octomate.connect(
@@ -56,6 +60,7 @@ async def _register(
             octomate,
             agent=agent,
             models={RECEPTION_MODEL: agent.model},
+            permission_mode=permission_mode,
         )
     )
     channel = octomate.connect(
@@ -416,9 +421,13 @@ async def test_a_new_thread_posted_by_the_console_carries_its_project(
 async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    """The switcher steps through this list, so the order is part of the answer —
-    and only registered agents appear: a posture is stored on a conversation, and
-    an agent nobody routes to has none to store it on."""
+    """The switcher steps through this list, so the order is part of the answer — and
+    the default rides along, because a conversation declaring nothing is running under
+    something and the console has no other way to know what.
+
+    Only registered agents appear: a posture is stored on a conversation, and an agent
+    nobody routes to has none to store it on. The tailed runtimes are absent for the
+    same reason, which is what keeps their posture read-only in the console."""
     octomate = Octomate()
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
@@ -429,7 +438,30 @@ async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
     ) as client:
         offered = (await client.get("/api/trunkline/permission-modes")).json()
 
-    assert offered == {"inkling": ["default", "dontAsk", "bypassPermissions"]}
+    assert offered == {
+        "inkling": {
+            "modes": ["default", "dontAsk", "bypassPermissions"],
+            "default": "default",
+        }
+    }
+
+
+async def test_the_configured_default_is_what_the_endpoint_reports(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """Inkling takes no config object, so its default reaches the tentacle directly —
+    and this is the path that proves the knob is wired rather than merely declared."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent, permission_mode="dontAsk")
+
+    transport = httpx.ASGITransport(app=octomate.app())
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        offered = (await client.get("/api/trunkline/permission-modes")).json()
+
+    assert offered["inkling"]["default"] == "dontAsk"
 
 
 async def test_a_posture_rides_the_first_directive_then_switches_on_the_row(

@@ -128,6 +128,7 @@ export function liveThreadSummary(t: ApiThread): ThreadSummary {
   return {
     id: t.id,
     channelId: t.channel_tentacle_id,
+    key: t.channel_thread_id ?? '',
     title: threadLabel(t),
     tone: channel.native ? 'native' : t.status === 'active' ? 'active' : 'idle',
     // Nothing routed a native session — the runtime it ran in is its agent, and
@@ -199,9 +200,12 @@ function liveSessions(
       return {
         n: `S${index + 1}`,
         id: sessionTag(conversation.id),
+        conversationId: conversation.id,
         route: handoff
           ? routeLabel(handoff.to_agent_tentacle_id, handoff.to_model)
           : conversation.agent_tentacle_id,
+        agent: conversation.agent_tentacle_id,
+        mode: conversation.permission_mode,
         kind: ingested ? 'ingest' : index === 0 ? 'entry' : 'summon',
         t: when ? clock(when) : '',
         reason: ingested

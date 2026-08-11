@@ -99,6 +99,18 @@ class DirectiveBody(BaseModel):
     )
 
 
+class AgentPostures(BaseModel):
+    modes: list[AgentPermissionMode] = Field(
+        description="This agent's whole vocabulary, in the order a picker steps "
+        "through it."
+    )
+    default: AgentPermissionMode = Field(
+        description="What a conversation of this agent's runs under when it declares "
+        "nothing of its own — the configured default, which is what a NULL "
+        "`permission_mode` means rather than 'no posture'."
+    )
+
+
 class PermissionModeBody(BaseModel):
     permission_mode: AgentPermissionMode | None = Field(
         default=None,
@@ -152,18 +164,29 @@ def build_trunkline_router(
         return [project for project in octomate.projects.list() if project.enabled]
 
     @router.get("/permission-modes")
-    async def permission_modes() -> dict[str, list[AgentPermissionMode]]:
+    async def permission_modes() -> dict[str, AgentPostures]:
         """Each registered agent's approval vocabulary, in the order a picker steps
         through it — a provider's own scale, never a shared one, so the list a
         conversation may be given is keyed by the agent that reads it.
 
         Only the agents this instance runs: a posture is stored on a conversation,
-        and an agent nobody can be routed to has no conversation to store one on."""
-        return {
-            agent_id: list(PERMISSION_MODES[agent_id])
-            for agent_id in octomate.agents
-            if agent_id in PERMISSION_MODES
-        }
+        and an agent nobody can be routed to has no conversation to store one on. The
+        tailed runtimes are absent for the same reason, which is what keeps the console
+        reporting their posture rather than offering to switch it."""
+        postures: dict[str, AgentPostures] = {}
+        for agent_id, agent in octomate.agents.items():
+            configured = agent.default_permission_mode
+            if agent_id not in PERMISSION_MODES or configured is None:
+                continue
+            if configured not in PERMISSION_MODES[agent_id]:
+                raise ValueError(
+                    f"agent {agent_id!r} is configured with {configured!r}, which is "
+                    f"not one of its own postures"
+                )
+            postures[agent_id] = AgentPostures(
+                modes=list(PERMISSION_MODES[agent_id]), default=configured
+            )
+        return postures
 
     @router.get("/channels")
     async def list_channels() -> list[ChannelInfo]:

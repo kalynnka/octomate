@@ -8,13 +8,28 @@ import { TimelinePanel } from '@/features/timeline/TimelinePanel'
 import { StatusBar } from './StatusBar'
 
 export function ConsoleShell() {
-  const { applyViewport } = useConsole((s) => s.actions)
+  const { applyViewport, cyclePermissionMode } = useConsole((s) => s.actions)
   useEffect(() => {
     const measure = () => applyViewport(window.innerWidth)
     measure()
     window.addEventListener('resize', measure)
     return () => window.removeEventListener('resize', measure)
   }, [applyViewport])
+  // ⇧⇥ steps the approval posture, as it does in the agents' own terminals, and
+  // from anywhere: the composer is where it is reached for, and a shortcut that
+  // only worked while the caret sat there would be the one that failed at the
+  // moment a card is on screen. It costs the console reverse tab-navigation,
+  // which is the trade the shortcut is worth.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || !event.shiftKey) return
+      if (event.ctrlKey || event.metaKey || event.altKey) return
+      event.preventDefault()
+      void cyclePermissionMode()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [cyclePermissionMode])
   return (
     <div
       className="paper-texture"

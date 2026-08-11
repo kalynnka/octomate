@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { SyntheticEvent } from 'react'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useConsole } from '@/state/console'
-import { useChannels, useRoutes } from '@/lib/api/hooks'
+import { useChannels, usePermissionModes, useRoutes } from '@/lib/api/hooks'
 import { shortModel } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, microSection, mono } from '@/components/text'
@@ -221,6 +221,71 @@ function RouteSelector() {
   )
 }
 
+/**
+ * The approval posture the working agent runs under, and the ⇧⇥ switch's own
+ * readout — one click steps it the same way the shortcut does.
+ *
+ * Always on show, so the posture has one fixed place to be read and its absence is
+ * something the reader sees rather than something they have to notice. It goes
+ * inert, not away, when there is nothing to step: a native session's runtime is
+ * observed rather than driven, so it answers to no posture at all, and a thread
+ * nothing has routed yet has no agent to have one. Then it says so, and drops the
+ * ⇧⇥ hint rather than advertising a shortcut that would do nothing.
+ */
+function PermissionChip() {
+  const ntOn = useConsole((s) => s.ntOn)
+  const ntAgent = useConsole((s) => s.ntAgent)
+  const ntPermissionMode = useConsole((s) => s.ntPermissionMode)
+  const detail = useConsole((s) => s.detail)
+  const { cyclePermissionMode } = useConsole((s) => s.actions)
+  const { data: vocabularies } = usePermissionModes()
+
+  const session = detail?.sessions.at(-1)
+  const agent = ntOn ? ntAgent : session?.agent
+  const postures = agent ? vocabularies?.[agent] : undefined
+  const vocabulary = postures?.modes ?? []
+  const switchable = vocabulary.length > 0
+  // What this conversation declared, or — declaring nothing being a real state, not a
+  // blank — the default that decides for it. Dimmed either way it is not the row's own.
+  const declared = ntOn ? ntPermissionMode : (session?.mode ?? null)
+  const mode = declared ?? postures?.default ?? null
+  const title = !agent
+    ? 'approval posture — no agent is running this thread yet'
+    : switchable
+      ? `approval posture of ${agent} — ⇧⇥ to switch\n${vocabulary.join(' › ')}` +
+        (declared === null ? `\nnot declared here: ${agent}’s configured default` : '')
+      : `${agent} answers to no approval posture — its runtime is observed, not driven`
+  return (
+    <span
+      onClick={switchable ? () => void cyclePermissionMode() : undefined}
+      title={title}
+      className={switchable ? 'hov-border' : undefined}
+      style={{
+        ...label(8, '.06em'),
+        background: 'var(--surface-raised)',
+        border: '1px solid var(--line-divider)',
+        borderRadius: 2,
+        height: 20,
+        boxSizing: 'border-box',
+        padding: '0 7px',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        cursor: switchable ? 'pointer' : 'default',
+        opacity: switchable ? 1 : 0.55,
+        whiteSpace: 'nowrap',
+        marginRight: 2,
+        flexShrink: 0,
+      }}
+    >
+      {switchable && <span style={{ color: 'var(--fg-3)' }}>⇧⇥</span>}
+      <span style={{ color: declared === null ? 'var(--fg-3)' : 'var(--color-gold)' }}>
+        {mode ?? '—'}
+      </span>
+    </span>
+  )
+}
+
 export function Composer() {
   const aui = useAui()
   const canSend = useAuiState((s) => s.composer.canSend)
@@ -385,7 +450,7 @@ export function Composer() {
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 24px 5px' }}>
           <span style={{ ...mono(8), color: 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}>
-            ↵ send · ⇧↵ newline · **b** _i_ `code` ``` fence
+            ↵ send · ⇧↵ newline · ⇧⇥ posture · **b** _i_ `code` ``` fence
           </span>
         </div>
         <div
@@ -408,6 +473,7 @@ export function Composer() {
             </span>
           )}
           <span style={{ flex: 1 }} />
+          <PermissionChip />
           {ntOn ? (
             <RouteSelector />
           ) : (

@@ -93,13 +93,15 @@ conversation › run. `lib/api/events.ts` mirrors them field for field.
 | --- | --- |
 | `GET  /health` | status-bar relay chip (offline/degraded/nominal), 15s poll |
 | `GET  /routes` | new-thread agent·model picker; the pick rides only a thread's first directive (routes are fixed after that — re-routing awaits a manual handoff verb) |
+| `GET  /permission-modes` | each registered agent's approval vocabulary, in the order ⇧⇥ steps through it — a provider's own scale, never a shared one — plus the configured default a conversation declaring nothing runs under. Absent agents cannot be switched: a tailed runtime's posture is read, not set |
 | `GET  /threads` | every channel's threads (sidebar), newest first, each with its handoffs — without its messages |
 | `GET  /threads/{id}` | one thread and its handoffs, by row id — any channel's |
 | `GET  /threads/{id}/messages` | the chat ledger, oldest first; fetched when a thread is opened, never with the listing |
 | `GET  /threads/{id}/conversations` | the thread's conversations, each carrying its runs — where each run ran (`cwd`), and which are a subagent's |
 | `GET  /threads/{id}/project` | the project the work is in, or null; read-only and frozen on the thread |
 | `GET  /threads/{id}/batches` | feelers still waiting, so a reload re-renders the cards a run is blocked on |
-| `POST /threads/{id}/messages` | send a directive; SSE of the native run events — a fresh id creates the thread, an existing id continues it. `{id}` here is the platform thread key, not the row id the GETs take |
+| `POST /threads/{id}/messages` | send a directive; SSE of the native run events — a fresh id creates the thread, an existing id continues it. `{id}` here is the platform thread key, not the row id the GETs take. Carries the posture picked for a thread that has no row yet |
+| `PATCH /conversations/{id}/permission-mode` | switch a live conversation's approval posture; a run reads it as it starts, so the switch lands on the next turn |
 | `POST /batches/{id}/resolve` | answer a feeler; SSE of the resumed run |
 
 The SSE payloads are pydantic-ai's own `AgentStreamEvent` union plus

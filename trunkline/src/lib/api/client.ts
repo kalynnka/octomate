@@ -8,6 +8,7 @@ import type {
   ApiChannelInfo,
   ApiConversation,
   ApiDeferredBatch,
+  ApiPermissionModes,
   ApiProject,
   ApiRoute,
   ApiThread,
@@ -53,6 +54,30 @@ export function fetchRoutes(): Promise<ApiRoute[]> {
 /** The projects a new thread can be filed under — enabled ones only. */
 export function fetchProjects(): Promise<ApiProject[]> {
   return getJson<ApiProject[]>('/api/trunkline/projects')
+}
+
+/** Each registered agent's approval vocabulary, in cycling order. */
+export function fetchPermissionModes(): Promise<ApiPermissionModes> {
+  return getJson<ApiPermissionModes>('/api/trunkline/permission-modes')
+}
+
+/**
+ * Switch one conversation's approval posture, answering with the row as it now
+ * stands. The relay refuses a posture from another provider's vocabulary (422),
+ * so a wrong-agent mode fails here rather than at the next run.
+ */
+export async function patchPermissionMode(
+  conversationId: string,
+  mode: string | null,
+): Promise<ApiConversation> {
+  const path = `/api/trunkline/conversations/${encodeURIComponent(conversationId)}/permission-mode`
+  const res = await fetch(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ permission_mode: mode }),
+  })
+  if (!res.ok) throw new Error(`PATCH ${path} → ${res.status}`)
+  return (await res.json()) as ApiConversation
 }
 
 export function fetchThreads(): Promise<ApiThread[]> {
