@@ -39,6 +39,7 @@ octomate:
       #   # park every deferral for a human, answer questions in-process so the agent
       #   # decides for itself, or grant approvals without a card. Claude's scale,
       #   # narrowed to what deferred resolution can honor.
+      # request_limit: 256   # maximum model requests in one Inkling run
     # Anthropic Claude Code agent (opt-in; omitted => absent). Runs the Claude
     # Agent SDK locally. List it in a channel's `agents:` to make it a summon
     # candidate.

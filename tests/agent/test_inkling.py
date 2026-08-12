@@ -9,8 +9,15 @@ from dataclasses import dataclass, field
 from typing import TypeAlias, cast
 
 import pytest
-from pydantic_ai import AgentRunResult, AgentRunResultEvent, ToolDenied
+from pydantic_ai import (
+    AgentRunResult,
+    AgentRunResultEvent,
+    RunContext,
+    ToolDenied,
+)
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, ToolCallPart
+from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.function import (
     AgentInfo,
     DeltaToolCall,
@@ -80,6 +87,21 @@ class StubSuspender:
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         self.suspended.append(requests)
         return None
+
+
+@dataclass
+class UsageLimitProbe(AbstractCapability[None]):
+    request_limit: int | None = None
+
+    async def before_model_request(
+        self,
+        ctx: RunContext[None],
+        request_context: ModelRequestContext,
+    ) -> ModelRequestContext:
+        if ctx.usage_limits is None:
+            raise RuntimeError("agent run has no usage limits")
+        self.request_limit = ctx.usage_limits.request_limit
+        return request_context
 
 
 _THREAD = uuid7()
@@ -793,6 +815,30 @@ async def test_inkling_default_output_is_segments() -> None:
     assert [str(segment) for segment in result.output] == ["hello from the reef"]
 
 
+async def test_inkling_applies_its_configured_request_limit() -> None:
+    agent = _inkling_agent()
+    conversations = FakeConversationManager()
+    probe = UsageLimitProbe()
+    tentacle = InklingTentacle(
+        "inkling",
+        Octomate(conversations=conversations),
+        agent=agent,
+        conversation_manager=conversations,
+        capabilities=[probe],
+        request_limit=17,
+    )
+
+    await tentacle.run(
+        "hi octomate",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+        model=TestModel(call_tools=[]),
+    )
+
+    assert probe.request_limit == 17
+
+
 async def test_inkling_loop_propagates_graph_error_streaming() -> None:
     """A model/graph error during a streamed run must surface to the caller
     rather than be swallowed by the background graph task (which would otherwise
@@ -812,6 +858,9 @@ async def test_inkling_loop_propagates_graph_error_streaming() -> None:
             async for _ in stream:
                 pass
 
+    assert len(conversations.runs) == 1
+    assert "hi octomate" in str(conversations.runs[0][2])
+
 
 async def test_inkling_loop_propagates_graph_error_collected_run() -> None:
     """`run` collects graph events internally; a graph error must still surface
@@ -827,3 +876,6 @@ async def test_inkling_loop_propagates_graph_error_collected_run() -> None:
             thread_id=_THREAD,
             output_type=STR_OUTPUT,
         )
+
+    assert len(conversations.runs) == 1
+    assert "hi octomate" in str(conversations.runs[0][2])

@@ -14,12 +14,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from pydantic_ai.capabilities import Toolset
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import (
+    AgentInfo,
+    DeltaToolCall,
+    DeltaToolCalls,
+    FunctionModel,
+)
 from pydantic_ai.tools import DeferredToolRequests
-from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai.toolsets import ApprovalRequiredToolset
+from pydantic_ai_harness.filesystem import FileSystemToolset
 from pydantic_ai_harness.repo_context import RepoContext
-from pydantic_ai_harness.shell import Shell
+from pydantic_ai_harness.shell import ShellToolset
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -114,16 +121,64 @@ async def test_a_run_in_a_project_carries_that_project_s_instructions(
 
 
 async def test_a_run_in_a_project_can_act_in_it(tmp_path: Path) -> None:
-    # Code mode is the whole tool surface: reading, editing, searching, running a
-    # command and the asset inventory are callables inside its sandbox rather than a
-    # tool slot each, so the model orchestrates them in one call instead of a turn.
+    # The filesystem and shell stay native: a nested approval inside run_code cannot
+    # suspend into Inkling's human-review loop, while a native call can.
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
     octomate = Octomate(projects=await a_registry(Project(root=inky)))
     scripted = Scripted()
 
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
 
-    assert scripted.tools[-1] == ["run_code"]
+    assert scripted.tools[-1] == [
+        "inventory_agent_context",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_directory",
+        "search_files",
+        "find_files",
+        "create_directory",
+        "file_info",
+        "run_command",
+        "start_command",
+        "check_command",
+        "stop_command",
+    ]
+
+
+async def test_project_file_calls_defer_for_user_approval(tmp_path: Path) -> None:
+    inky = a_repo(tmp_path / "inky", "Never commit without asking.")
+    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    thread = await a_thread(octomate, "chat", "inky")
+
+    async def request_file(
+        _messages: list[ModelMessage], _info: AgentInfo
+    ) -> AsyncIterator[DeltaToolCalls]:
+        yield {
+            0: DeltaToolCall(
+                name="read_file",
+                json_args='{"path":"AGENTS.md"}',
+                tool_call_id="read-1",
+            )
+        }
+
+    agent: Agent[None, InklingOutput] = Agent(
+        FunctionModel(stream_function=request_file, model_name="scripted"),
+        deps_type=type(None),
+        output_type=STR_OUTPUT,
+        system_prompt=SYSTEM_PROMPT,
+    )
+    tentacle = InklingTentacle("inkling", octomate, agent=agent)
+
+    result = await tentacle.run(
+        "read the instructions",
+        conversation_address=ADDRESS,
+        thread_id=thread.id,
+        output_type=STR_OUTPUT,
+    )
+
+    assert isinstance(result.output, DeferredToolRequests)
+    assert [approval.tool_name for approval in result.output.approvals] == ["read_file"]
 
 
 async def test_outside_every_project_there_is_nothing_to_act_with(
@@ -145,18 +200,22 @@ def test_every_project_capability_is_rooted_at_the_project(tmp_path: Path) -> No
     project = Project(root=tmp_path / "inky")
     tentacle = InklingTentacle("inkling", Octomate(), agent=Scripted().agent())
 
-    repo_context, files, shell, _code_mode = tentacle.project_capabilities(project)
+    repo_context, files, shell = tentacle.project_capabilities(project)
 
     assert isinstance(repo_context, RepoContext)
-    assert isinstance(files, FileSystem)
-    assert isinstance(shell, Shell)
+    assert isinstance(files, Toolset)
+    assert isinstance(files.toolset, ApprovalRequiredToolset)
+    assert isinstance(files.toolset.wrapped, FileSystemToolset)
+    assert isinstance(shell, Toolset)
+    assert isinstance(shell.toolset, ApprovalRequiredToolset)
+    assert isinstance(shell.toolset.wrapped, ShellToolset)
     assert repo_context.workspace_dir == project.root
     assert repo_context.home_dir is None
-    assert files.root_dir == project.root
-    assert shell.cwd == project.root
+    assert vars(files.toolset.wrapped)["_root"] == project.root
+    assert vars(shell.toolset.wrapped)["_initial_cwd"] == project.root
     # The repo's own instructions reach the model, and the model has a shell — the
     # provider keys this process runs on are not the project's to spend.
-    assert "ANTHROPIC_*" in shell.denied_env_patterns
+    assert "ANTHROPIC_*" in vars(shell.toolset.wrapped)["_denied_env_patterns"]
 
 
 async def test_outside_every_project_nothing_is_loaded(tmp_path: Path) -> None:

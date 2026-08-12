@@ -23,14 +23,14 @@ from pydantic_ai.agent.abstract import (
     AgentMetadata,
     RunOutputDataT,
 )
+from pydantic_ai.capabilities import Toolset
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.settings import ModelSettings, ThinkingEffort, merge_model_settings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
-from pydantic_ai.toolsets import AbstractToolset
-from pydantic_ai_harness.code_mode import CodeMode
+from pydantic_ai.toolsets import AbstractToolset, ApprovalRequiredToolset
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
@@ -157,6 +157,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     # The posture a conversation that declares none of its own runs under. Unlike
     # claude and codex, inkling takes no config object, so its default arrives here.
     permission_mode: InklingPermissionMode = "default"
+    request_limit: int = 256
 
     permission_modes: ClassVar[tuple[str, ...]] = get_args(InklingPermissionMode)
 
@@ -190,9 +191,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         description: str | None = None,
         claims: Mapping[KnownModelName, Claim] | None = None,
         permission_mode: InklingPermissionMode = "default",
+        request_limit: int = 256,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.permission_mode = permission_mode
+        self.request_limit = request_limit
         self.models = dict(models or {})
         self.capabilities = [
             capability
@@ -260,17 +263,22 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         """
         return [
             RepoContext[None](workspace_dir=project.root),
-            FileSystem[None](root_dir=project.root),
-            Shell[None](
-                cwd=project.root,
-                # A repo's own `AGENTS.md` reaches this agent as instructions, and now
-                # those instructions have a shell. The provider keys this process runs
-                # on are not the project's to spend.
-                denied_env_patterns=LLM_API_KEY_ENV_PATTERNS,
+            Toolset(
+                ApprovalRequiredToolset(
+                    wrapped=FileSystem[None](root_dir=project.root).get_toolset()
+                )
             ),
-            # Last, so it wraps the tools above: the model orchestrates reads, edits
-            # and commands as Python in one call instead of a turn apiece.
-            CodeMode[None](),
+            Toolset(
+                ApprovalRequiredToolset(
+                    wrapped=Shell[None](
+                        cwd=project.root,
+                        # A repo's own `AGENTS.md` reaches this agent as instructions,
+                        # and now those instructions have a shell. The provider keys
+                        # this process runs on are not the project's to spend.
+                        denied_env_patterns=LLM_API_KEY_ENV_PATTERNS,
+                    ).get_toolset()
+                )
+            ),
         ]
 
     async def __aenter__(self) -> Self:
@@ -745,7 +753,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             model=model,
             instructions=instructions,
             model_settings=model_settings,
-            usage_limits=usage_limits,
+            usage_limits=usage_limits or UsageLimits(request_limit=self.request_limit),
             usage=usage,
             metadata=metadata,
             output_retries=output_retries,

@@ -17,6 +17,7 @@ from octomate.config import (
     ClaudeSSHConfig,
     CodexConfig,
     GitHubIntegrationConfig,
+    InklingConfig,
     LarkChannelConfig,
     LinearIntegrationConfig,
     McpServerConfig,
@@ -121,6 +122,20 @@ def test_channel_config_parses_supported_channels() -> None:
     assert config.channels.lark.stream.flush_interval == 0.2
     assert config.channels.lark.stream.min_chars == 20
     assert config.channels.napcat.stream.enabled is False
+
+
+def test_inkling_request_limit_defaults_to_256() -> None:
+    assert OctomateConfig().agents.inkling.request_limit == 256
+
+
+def test_inkling_request_limit_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        InklingConfig.model_validate(
+            {
+                "models": [{"name": "deepseek:deepseek-v4-pro"}],
+                "request_limit": 0,
+            }
+        )
 
 
 def test_channel_config_parses_agent_model_routes() -> None:
