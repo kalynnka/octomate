@@ -149,7 +149,7 @@ class ToolOutputConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=False,
+        default=True,
         description="Whether oversized tool returns are reduced at all. Turning this "
         "off sends every return to the model whole, which is a debugging posture "
         "rather than a deployment one.",
