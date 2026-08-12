@@ -162,6 +162,24 @@ def test_install_adds_the_stream_launcher_on_prompt_submit_only(
     assert "ws://127.0.0.1:9999/hooks/claude/stream" in launcher["command"]
 
 
+def test_no_launcher_skips_the_stream_and_retires_a_previous_one(
+    tmp_path: Path,
+) -> None:
+    """The server's own machine skips the launcher — local sessions are tailed from
+    disk, and a spawned tail would only be refused — and re-running with the flag
+    also retires a launcher a previous install left."""
+    path = tmp_path / "settings.json"
+    runner.invoke(
+        claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)]
+    )
+    runner.invoke(
+        claude_typer,
+        ["hooks", "install", "--url", URL, "--settings", str(path), "--no-launcher"],
+    )
+
+    assert hook_types(read(path)["hooks"]["UserPromptSubmit"]) == ["http"]
+
+
 def test_uninstall_removes_the_launcher_too(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     runner.invoke(

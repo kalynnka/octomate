@@ -189,11 +189,22 @@ def install(
     ] = None,
     scope: ScopeOption = Scope.user,
     settings: SettingsOption = None,
+    launcher: Annotated[
+        bool,
+        typer.Option(
+            "--launcher/--no-launcher",
+            help="Also install the transcript-stream launcher (a command hook on "
+            "UserPromptSubmit). Skip it on the machine Octomate itself runs on: "
+            "local sessions are tailed from disk, and a spawned tail would only "
+            "be refused.",
+        ),
+    ] = True,
 ) -> None:
     """Point native Claude Code sessions at Octomate's hook router.
 
     Merges into the settings file: other hooks are preserved, and re-running replaces a
-    stale Octomate handler in place rather than stacking another.
+    stale Octomate handler in place rather than stacking another — so re-running with
+    `--no-launcher` also retires a launcher a previous install left.
     """
     hook_url = url or configured_hook_url()
     path = settings_file(scope, settings)
@@ -206,15 +217,15 @@ def install(
     # The transcript-stream launcher rides the same event the ledger's first write
     # does: by the time it fires, the http hook has already created the session
     # server-side, and the tail it spawns is deduplicated per session.
-    launcher: JsonValue = {"hooks": [claude_launch_handler(hook_url)]}
+    launcher_group: JsonValue = {"hooks": [claude_launch_handler(hook_url)]}
     # Every event present, not just the handled ones: an event Octomate once registered
     # and no longer does (`SessionStart`) would otherwise keep a stale handler forever.
     for event in {*hooks, *HANDLED_HOOK_EVENTS}:
         kept = without_octomate_hooks(hooks.get(event))
         if event in HANDLED_HOOK_EVENTS:
             kept.append(group)
-        if event == "UserPromptSubmit":
-            kept.append(launcher)
+        if event == "UserPromptSubmit" and launcher:
+            kept.append(launcher_group)
         if kept:
             hooks[event] = kept
         else:
@@ -223,7 +234,8 @@ def install(
 
     typer.echo(f"Installed Octomate hooks → {hook_url}")
     typer.echo(f"  events:   {', '.join(HANDLED_HOOK_EVENTS)}")
-    typer.echo(f"  stream:   {stream_url_for(hook_url)} (via {LAUNCH_SCRIPT.name})")
+    if launcher:
+        typer.echo(f"  stream:   {stream_url_for(hook_url)} (via {LAUNCH_SCRIPT.name})")
     typer.echo(f"  settings: {path}")
     typer.echo(f"  auth:     Authorization: Bearer ${{{HOOK_SECRET_ENV}}}")
     announce_hook_secret()
