@@ -6,6 +6,8 @@ Owned by the Claude tentacle so its operator surface lives beside its runtime.
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -14,11 +16,16 @@ import typer
 
 from octomate.tentacles.agents.claude.hooks import (
     CLAUDE_HOOK_PATH,
+    CLAUDE_STREAM_PATH,
     HANDLED_HOOK_EVENTS,
     HOOK_TIMEOUT,
 )
 from octomate.tentacles.agents.typer import HOOK_SECRET_ENV, announce_hook_secret
 from octomate.types.json import JsonObject, JsonValue
+
+# The launcher command hook's script, run by absolute path so it never imports the
+# package (see its module docstring); the same pattern as codex's EMIT_SCRIPT.
+LAUNCH_SCRIPT = Path(__file__).with_name("launch.py")
 
 claude_typer = typer.Typer(
     help="Operate the native Claude Code integration.", no_args_is_help=True
@@ -96,14 +103,45 @@ def claude_hook_handler(url: str) -> JsonObject:
     }
 
 
-def is_octomate_hook(hook: JsonValue) -> bool:
-    """An `http` handler pointing at Octomate's hook path — matched by path, not the exact
-    URL, so a re-install with a changed host/port replaces the stale one."""
-    return (
-        isinstance(hook, dict)
-        and hook.get("type") == "http"
-        and str(hook.get("url", "")).endswith(CLAUDE_HOOK_PATH)
+def stream_url_for(hook_url: str) -> str:
+    """The stream endpoint the hook URL implies: same host, ws(s) for http(s)."""
+    base = hook_url.removesuffix(CLAUDE_HOOK_PATH)
+    scheme, _, rest = base.partition("://")
+    return f"{'wss' if scheme == 'https' else 'ws'}://{rest}{CLAUDE_STREAM_PATH}"
+
+
+def claude_launch_handler(hook_url: str) -> JsonObject:
+    """The launcher `command` hook: spawns `octomate claude tail` for the session,
+    detached (`launch.py`). A command hook because only a local process can start
+    one — the `http` handlers reach Octomate but can start nothing on this machine.
+    The command pins this installer's own interpreter and octomate script by absolute
+    path, so it works from whatever shell Claude runs hooks in; the tail reads the
+    credential from the environment, so none is written here."""
+    command = shlex.join(
+        [
+            sys.executable,
+            str(LAUNCH_SCRIPT),
+            "--url",
+            stream_url_for(hook_url),
+            "--octomate",
+            str(Path(sys.argv[0]).resolve()),
+        ]
     )
+    return {"type": "command", "command": command, "timeout": HOOK_TIMEOUT}
+
+
+def is_octomate_hook(hook: JsonValue) -> bool:
+    """A handler this installer wrote: the `http` handler pointing at Octomate's hook
+    path, or the launcher `command` naming its launch script. Matched loosely (path
+    suffix, script name) so a re-install with a changed host/port replaces the stale
+    one."""
+    if not isinstance(hook, dict):
+        return False
+    if hook.get("type") == "http":
+        return str(hook.get("url", "")).endswith(CLAUDE_HOOK_PATH)
+    if hook.get("type") == "command":
+        return str(LAUNCH_SCRIPT) in str(hook.get("command", ""))
+    return False
 
 
 def without_octomate_hooks(groups: JsonValue) -> list[JsonValue]:
@@ -163,12 +201,18 @@ def install(
         raise typer.BadParameter(f"{path} has a non-object 'hooks' section")
 
     group: JsonValue = {"hooks": [claude_hook_handler(hook_url)]}
+    # The transcript-stream launcher rides the same event the ledger's first write
+    # does: by the time it fires, the http hook has already created the session
+    # server-side, and the tail it spawns is deduplicated per session.
+    launcher: JsonValue = {"hooks": [claude_launch_handler(hook_url)]}
     # Every event present, not just the handled ones: an event Octomate once registered
     # and no longer does (`SessionStart`) would otherwise keep a stale handler forever.
     for event in {*hooks, *HANDLED_HOOK_EVENTS}:
         kept = without_octomate_hooks(hooks.get(event))
         if event in HANDLED_HOOK_EVENTS:
             kept.append(group)
+        if event == "UserPromptSubmit":
+            kept.append(launcher)
         if kept:
             hooks[event] = kept
         else:
@@ -177,6 +221,7 @@ def install(
 
     typer.echo(f"Installed Octomate hooks → {hook_url}")
     typer.echo(f"  events:   {', '.join(HANDLED_HOOK_EVENTS)}")
+    typer.echo(f"  stream:   {stream_url_for(hook_url)} (via {LAUNCH_SCRIPT.name})")
     typer.echo(f"  settings: {path}")
     typer.echo(f"  auth:     Authorization: Bearer ${{{HOOK_SECRET_ENV}}}")
     announce_hook_secret()
@@ -228,4 +273,35 @@ def show(scope: ScopeOption = Scope.user, settings: SettingsOption = None) -> No
 
     typer.echo(f"Octomate hooks in {path}:")
     for event, hook in found:
-        typer.echo(f"  {event}: {hook.get('url')} (timeout {hook.get('timeout')}s)")
+        target = hook.get("url") or hook.get("command")
+        typer.echo(f"  {event}: {target} (timeout {hook.get('timeout')}s)")
+
+
+@claude_typer.command("tail")
+def tail(
+    session: Annotated[str, typer.Option(help="Native session id to stream.")],
+    path: Annotated[
+        Path, typer.Option(help="The session's transcript path on this machine.")
+    ],
+    url: Annotated[
+        str,
+        typer.Option(
+            help="Octomate stream URL (ws://<host>:<port>/hooks/claude/stream)."
+        ),
+    ],
+    cwd: Annotated[
+        str,
+        typer.Option(
+            help="Directory the session runs in; files its thread under a project."
+        ),
+    ] = "",
+) -> None:
+    """Stream a native session's transcript to Octomate, raw lines over one socket.
+
+    Spawned per session by the launcher hook; safe to run by hand for a backfill —
+    the server states where each file resumes, so re-running never duplicates. Reads
+    the hook credential from the environment, like every hook client does.
+    """
+    from octomate.tentacles.agents.claude.tail import main  # heavy; only when tailing
+
+    main(session_id=session, transcript_path=path, url=url, cwd=cwd)

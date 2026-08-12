@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import uuid
 import weakref
 from collections.abc import AsyncGenerator, Sequence
@@ -29,9 +30,9 @@ from claude_agent_sdk import (
     ToolPermissionContext,
 )
 from claude_agent_sdk.types import SystemPromptPreset
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from pydantic import SecretStr, TypeAdapter
+from pydantic import SecretStr, TypeAdapter, ValidationError
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_ai import (
     AgentCapability,
@@ -61,6 +62,7 @@ from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -72,20 +74,35 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.project import Project
+from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.agents.claude.hooks import CLAUDE_HOOK_PATH, ClaudeHookInput
+from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import ClaudeHookIngest
-from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
+from octomate.tentacles.agents.claude.tailer import (
+    ClaudeTranscriptTailer,
+    RemoteTailRefused,
+)
 from octomate.tentacles.agents.claude.transport import SSHTransport
 from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
+from octomate.tentacles.agents.stream import (
+    SESSION_FILE,
+    STREAM_PROTOCOL,
+    StreamEof,
+    StreamFinalize,
+    StreamHello,
+    StreamWelcome,
+    client_message_adapter,
+)
 from octomate.types.json import JsonObject
 from octomate.types.permissions import ClaudePermissionMode, is_claude_mode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+
+logger = logging.getLogger(__name__)
 
 
 # Claude's file-writing tools, and the input key each names its target with. A hook
@@ -235,21 +252,25 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
     def routers(self) -> tuple[APIRouter]:
         """The tentacle's HTTP surface, mounted by `Octomate.connect`: the hook router
-        native Claude clients (app / CLI / VSCode) POST their session events into.
+        native Claude clients (app / CLI / VSCode) POST their session events into, and
+        the stream endpoint a client-side tail feeds raw transcript lines through when
+        the session runs on another machine (`octomate claude tail`).
         `octomate claude hooks install` writes the client-side settings that point a
-        session at it.
+        session at both.
         """
         return (self.hook_router,)
 
     @cached_property
     def hook_router(self) -> APIRouter:
-        """The route behind `routers()`; cached so it is built once."""
+        """The routes behind `routers()`; cached so they are built once. The guard
+        covers the websocket too: FastAPI runs router dependencies at the handshake,
+        so a bad bearer is denied with the same 401 before any socket opens."""
         router = APIRouter(
             tags=["claude"], dependencies=[Depends(hook_guard(self.hook_secret))]
         )
 
         @router.post(
-            CLAUDE_HOOK_PATH,
+            "/hooks/claude",
             summary="Claude Code hook pipe — streams a native session's human ledger in",
         )
         async def receive_hook(event: ClaudeHookInput) -> JSONResponse:
@@ -258,7 +279,148 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
 
+        @router.websocket("/hooks/claude/stream")
+        async def stream(websocket: WebSocket) -> None:
+            await self.stream_session(websocket)
+
         return router
+
+    async def stream_session(self, websocket: WebSocket) -> None:
+        """One remote tail's connection, up to its attach: take the hello and refuse
+        what cannot stream — a stale protocol loudly (the session still degrades to
+        hooks-only ingest), and a session this tentacle is driving itself, whose
+        transcript ingested here would write the conversation a second time
+        (`ClaudeHookIngest.driving`). Authentication already happened: the router's
+        `hook_guard` dependency denied a bad bearer at the handshake."""
+        await websocket.accept()
+        try:
+            hello = client_message_adapter.validate_json(await websocket.receive_text())
+        except ValidationError:
+            await websocket.close(code=1008, reason="expected a hello message")
+            return
+        except WebSocketDisconnect:
+            return
+        if not isinstance(hello, StreamHello):
+            await websocket.close(code=1008, reason="expected a hello message")
+            return
+        if hello.protocol != STREAM_PROTOCOL:
+            await websocket.close(
+                code=1008,
+                reason=f"protocol {hello.protocol} unsupported; server speaks "
+                f"{STREAM_PROTOCOL}",
+            )
+            return
+        if hello.session_id in self.session_ingest.driven:
+            # A live claim only — the counter is in-memory, so a session resumed
+            # natively after a restart is not caught; its ingest then lands in its
+            # own native thread rather than colliding with the driven runs. The
+            # durable guard is OCTO-40.
+            await websocket.close(code=1008, reason="octomate drives this session")
+            return
+        # Its own materia context: a stream outlives any request, like a follow loop.
+        with sqlalchemy_materia():
+            await self.stream_attached(websocket, hello)
+
+    async def stream_attached(self, websocket: WebSocket, hello: StreamHello) -> None:
+        """The attached half of a stream connection: register the session, answer
+        resume offsets, then feed each framed line through the tailer's assembly until
+        `eof` (commit the trailing turns) or a drop (leave them for the next connect).
+        A `SessionEnd` on the hook pipe reaches here as the state's `stop_event`; the
+        relay sends `finalize` and the client answers with its drain and `eof`."""
+        # The thread before the tail, filed under the project its cwd names —
+        # `ClaudeHookIngest.start_session`'s ordering, because `attach_remote` falls
+        # back to a project-less create and a thread's project is frozen at creation.
+        # Only a session on this same machine gets one: a project names server-local
+        # directories, and a remote cwd naming one of them would be a false match.
+        # TODO: assign remote sessions their project once projects can span machines.
+        client = websocket.client
+        if client is not None and client.host in {"127.0.0.1", "::1"}:
+            holder = (
+                self.octomate.projects.resolve(Path(hello.cwd)) if hello.cwd else None
+            )
+            project = self.octomate.projects.get(holder) if holder is not None else None
+        else:
+            project = None
+        await self.octomate.thread_manager.ensure(
+            ThreadKey(CLAUDE_NATIVE_ID, "thread", hello.session_id),
+            project=project,
+        )
+        try:
+            state, offsets = await self.session_tailer.attach_remote(
+                hello.session_id, Path(hello.transcript_path)
+            )
+        except RemoteTailRefused as refusal:
+            await websocket.close(code=1008, reason=str(refusal))
+            return
+        logger.info(
+            "session %s: remote tail connected (octomate %s)",
+            hello.session_id,
+            hello.client_version or "unversioned",
+        )
+        await websocket.send_text(StreamWelcome(offsets=offsets).model_dump_json())
+
+        async def relay_finalize() -> None:
+            await state.stop_event.wait()
+            try:
+                await websocket.send_text(StreamFinalize().model_dump_json())
+            except Exception:
+                # The socket died first; the drain this asked for cannot happen, and
+                # `finalize`'s bounded wait covers the silence.
+                logger.debug(
+                    "session %s: finalize relay lost its socket", hello.session_id
+                )
+
+        relay = asyncio.create_task(relay_finalize())
+        # Per-file contiguity: each line must start where the last one ended, so a
+        # dropped frame surfaces as a close (4000 — the client reconnects and re-asks)
+        # instead of a silently mis-assembled turn. The welcome's map, already sent,
+        # doubles as the tracker.
+        expected_offsets = offsets
+        clean = False
+        try:
+            while True:
+                message = client_message_adapter.validate_json(
+                    await websocket.receive_text()
+                )
+                if isinstance(message, StreamEof):
+                    clean = True
+                    return
+                if isinstance(message, StreamHello):
+                    await websocket.close(code=1008, reason="hello already received")
+                    return
+                key = message.agent_id or SESSION_FILE
+                want = expected_offsets.get(key, 0)
+                if message.start != want:
+                    await websocket.close(
+                        code=4000,
+                        reason=f"offset gap for {key or 'session'}: expected {want}, "
+                        f"got {message.start}",
+                    )
+                    return
+                expected_offsets[key] = message.end
+                await self.session_tailer.feed_remote(
+                    state, message.agent_id, message.line, message.start, message.end
+                )
+        except WebSocketDisconnect:
+            pass
+        except ValidationError:
+            await websocket.close(code=1008, reason="unparseable stream message")
+        except Exception:
+            logger.exception(
+                "session %s: remote tail errored; its remaining turns are left for "
+                "the next connect to recover",
+                hello.session_id,
+            )
+        finally:
+            relay.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await relay
+            if clean:
+                await self.session_tailer.finish_remote(state)
+                with contextlib.suppress(Exception):
+                    await websocket.close()
+            else:
+                self.session_tailer.detach_remote(state)
 
     async def _await_human(
         self,

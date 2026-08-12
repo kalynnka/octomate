@@ -35,9 +35,14 @@ HANDLED_HOOK_EVENTS: tuple[HandledHookEvent, ...] = (
 # this the CLI abandons the hook and carries on.
 HOOK_TIMEOUT = 10
 
-# Where the tentacle mounts its hook router; a client's settings point at
-# `http://<host>:<port>{CLAUDE_HOOK_PATH}`.
+# The hook route's path as clients address it: settings point at
+# `http://<host>:<port>{CLAUDE_HOOK_PATH}`. The route inlines the literal; the tests
+# that speak to it are what keep the two matching.
 CLAUDE_HOOK_PATH = "/hooks/claude"
+
+# The transcript stream's path, likewise client-side: a tail connects to
+# `ws://<host>:<port>{CLAUDE_STREAM_PATH}` bearing the same hook credential.
+CLAUDE_STREAM_PATH = "/hooks/claude/stream"
 
 
 class ClaudeHookInput(BaseModel):

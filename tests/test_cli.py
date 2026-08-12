@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from octomate.cli.base import app
-from octomate.tentacles.agents.claude.typer import claude_typer
+from octomate.tentacles.agents.claude.typer import LAUNCH_SCRIPT, claude_typer
 from octomate.tentacles.agents.codex.typer import EMIT_SCRIPT, codex_typer
 
 runner = CliRunner()
@@ -130,6 +130,46 @@ def test_install_replaces_a_stale_octomate_url(tmp_path: Path) -> None:
     stop = read(path)["hooks"]["Stop"]
     urls = {hook["url"] for group in stop for hook in group["hooks"]}
     assert urls == {"http://127.0.0.1:2222/hooks/claude"}  # only the fresh url remains
+
+
+def test_install_adds_the_stream_launcher_on_prompt_submit_only(
+    tmp_path: Path,
+) -> None:
+    """The transcript stream needs a local process, which only a `command` hook can
+    start; it rides `UserPromptSubmit` — the event whose http hook has already created
+    the session server-side by the time the tail connects — and no other event, since
+    the tail deduplicates itself per session."""
+    path = tmp_path / "settings.json"
+    for _ in range(2):  # running twice must not duplicate the launcher either
+        runner.invoke(
+            claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)]
+        )
+
+    hooks = read(path)["hooks"]
+    assert hook_types(hooks["UserPromptSubmit"]) == ["http", "command"]
+    for event in ("Stop", "SessionEnd", "SubagentStart", "SubagentStop"):
+        assert hook_types(hooks[event]) == ["http"]
+
+    [launcher] = [
+        hook
+        for group in hooks["UserPromptSubmit"]
+        for hook in group["hooks"]
+        if hook["type"] == "command"
+    ]
+    # The command names this install's own interpreter and launch script by absolute
+    # path, and points at the stream endpoint the hook URL implies.
+    assert str(LAUNCH_SCRIPT) in launcher["command"]
+    assert "ws://127.0.0.1:9999/hooks/claude/stream" in launcher["command"]
+
+
+def test_uninstall_removes_the_launcher_too(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    runner.invoke(
+        claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)]
+    )
+    runner.invoke(claude_typer, ["hooks", "uninstall", "--settings", str(path)])
+
+    assert "hooks" not in read(path)
 
 
 def test_hints_but_does_not_block_when_claude_is_unconfigured(

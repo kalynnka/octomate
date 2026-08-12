@@ -41,6 +41,7 @@ from octomate.tentacles.agents.claude.transcript import (
     transcript_line_adapter,
 )
 from octomate.tentacles.agents.locks import SessionLocks
+from octomate.tentacles.agents.stream import SESSION_FILE
 from octomate.types.permissions import is_claude_mode
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,17 @@ IDLE_POLL_MS = 60_000
 # it, bounded by this window, then closes with what there is.
 SUBAGENT_SETTLE_TIMEOUT = 2.0
 SUBAGENT_SETTLE_POLL = 0.2
+
+# Bound `finalize`'s wait for a remote session's drain: the stream route relays the
+# finalize to the client, which answers with its EOF — but a client that is gone
+# cannot, and the SessionEnd hook this wait sits under must not hang on it. Under the
+# hook's own 10s budget; an undrained session's turns wait for the next connect.
+REMOTE_DRAIN_TIMEOUT = 5.0
+
+
+class RemoteTailRefused(Exception):
+    """A remote attach the tailer will not take; the reason is the message, and the
+    stream route hands it to the client as the close reason."""
 
 
 def assembled(conversation: Conversation) -> set[str]:
@@ -157,6 +169,14 @@ class TailState:
     # `parent_tool_call_id`.
     subagent_calls: dict[str, str] = field(default_factory=dict)
     task: asyncio.Task[None] | None = None
+    # A remote session: its transcript lives on the client machine that streams it, so
+    # there is no follow task or watch — the stream route feeds `feed_remote`, which
+    # drives the same per-line assembly the pumps do. `transcript_path` is then the
+    # client's claim in the client's own namespace, a label never opened here.
+    remote: bool = False
+    # Set once a remote session's trailing turns are committed (`finish_remote`), so
+    # `finalize` can bound its wait for the client's drain.
+    drained: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
     def subagents_dir(self) -> Path:
@@ -187,6 +207,15 @@ class ClaudeTranscriptTailer:
     Re-reading is what heals a session the tail was absent for, and it costs ~15ms per MB
     (~160ms for a 3987-line, 56-turn session), paid once per start — cheaper than the
     checkpoint's one real risk, resuming past bytes no run ever covered.
+
+    A *remote* session — its transcript on another machine, streamed in raw framed
+    lines by `octomate claude tail` — shares everything but the file mechanics:
+    `attach_remote` registers it (so `is_following` and `finalize` route the same),
+    `feed_remote` runs the same per-line assembly the pumps do, and the committed
+    runs' offsets are what a reconnecting client is told to resume from, exactly as
+    `recover` computes them. Its turns commit on the same boundaries; a connection
+    that drops mid-stream leaves the open turn uncommitted for the next connect to
+    re-stream, as a crashed follow loop leaves its turns for recovery.
     """
 
     def __init__(
@@ -280,9 +309,30 @@ class ClaudeTranscriptTailer:
         and lost the registry, or came up after the session did — so this is the last
         moment its tail can be rescued: `recover` rebuilds from the transcript instead.
         Without that, `SessionEnd` would silently drop every turn since the loop died.
+
+        A remote session has no loop and no local file: the finalize is relayed — the
+        stream route watches `stop_event` and sends the client `finalize`; the client
+        drains, answers `eof`, and `finish_remote` commits the trailing turns and sets
+        `drained`. The wait is bounded: a client that is gone leaves its turns for the
+        next connect, and the SessionEnd hook must not hang on it.
         """
         state = self.sessions.get(session_id)
-        if state is None or state.task is None:
+        if state is None:
+            await self.recover(session_id, transcript_path)
+            return
+        if state.remote:
+            state.stop_event.set()
+            try:
+                await asyncio.wait_for(state.drained.wait(), REMOTE_DRAIN_TIMEOUT)
+            except TimeoutError:
+                logger.warning(
+                    "session %s: remote tail did not drain within %ss; its trailing "
+                    "turns are left for the next connect to recover",
+                    session_id,
+                    REMOTE_DRAIN_TIMEOUT,
+                )
+            return
+        if state.task is None:
             await self.recover(session_id, transcript_path)
             return
         state.stop_event.set()
@@ -359,6 +409,105 @@ class ClaudeTranscriptTailer:
                     len(recovered),
                 )
                 return [run.id for run in recovered]
+
+    async def attach_remote(
+        self, session_id: str, transcript_path: Path
+    ) -> tuple[TailState, dict[str, int]]:
+        """Register a remote session and answer where each of its files resumes.
+
+        The offsets are recomputed from the committed runs — `recover`'s computation,
+        per file: the session transcript under `SESSION_FILE`, each known subagent
+        under its agent id — so the client holds no durable cursor and a reconnect is
+        just re-asking. Refuses a session a live local follow already covers: the file
+        is here, and a second assembler would only race the first. A lingering remote
+        registration (its client died without a close) is replaced; the dead route
+        feeds the state object it attached, and its commits are idempotent.
+        """
+        existing = self.sessions.get(session_id)
+        if (
+            existing is not None
+            and existing.task is not None
+            and not existing.task.done()
+        ):
+            raise RemoteTailRefused(
+                f"session {session_id} is already tailed from a local transcript"
+            )
+        state = self.new_state(session_id, transcript_path)
+        state.remote = True
+        await self.prepare(state)
+        conversation = state.conversation
+        assert conversation is not None  # prepare() resolved it
+        state.offset = max(
+            (
+                run.end_offset or 0
+                for run in conversation.runs
+                if isinstance(run, ExternalAgentRun)
+            ),
+            default=0,
+        )
+        offsets: dict[str, int] = {SESSION_FILE: state.offset}
+        for child in await self.conversation_manager.subagents(conversation.id):
+            if not child.subagent_id:
+                continue
+            tail = self.subagent_tail(state, child.subagent_id)
+            tail.conversation = child
+            tail.recorded = assembled(child)
+            tail.offset = max(
+                (
+                    run.end_offset or 0
+                    for run in child.runs
+                    if isinstance(run, ExternalAgentRun)
+                ),
+                default=0,
+            )
+            offsets[child.subagent_id] = tail.offset
+        self.sessions[session_id] = state
+        logger.info(
+            "session %s: remote tail attached, resuming at %s", session_id, offsets
+        )
+        return state, offsets
+
+    async def feed_remote(
+        self, state: TailState, agent_id: str | None, raw: str, start: int, end: int
+    ) -> None:
+        """Advance a remote session by one framed line — the pumps' per-line body,
+        against offsets the client measured in its own file. Takes the state rather
+        than a session id so a superseded connection keeps feeding the state it
+        attached, never whoever registered after it."""
+        state.last_active = monotonic()
+        if agent_id is None:
+            state.offset = end
+            line = self.parse_line(raw, state.session_id)
+            if line is not None:
+                await self.process_line(state, line, start, end)
+            return
+        tail = self.subagent_tail(state, agent_id)
+        if tail.conversation is None:
+            await self.prepare_subagent(state, tail)
+        tail.offset = end
+        line = self.parse_line(raw, state.session_id)
+        if line is not None:
+            await self.process_subagent_line(state, tail, line, start, end)
+
+    async def finish_remote(self, state: TailState) -> None:
+        """A remote session's clean end — the client drained to EOF and said `eof`.
+        Commit the trailing turns (the local finalize's drain, minus the file),
+        release any finalize waiter, and reclaim the registry slot."""
+        try:
+            await self.close_turn(state)
+            await self.close_subagent_turns(state)
+        finally:
+            state.drained.set()
+            self.detach_remote(state)
+
+    def detach_remote(self, state: TailState) -> None:
+        """Drop a remote session's registration without committing anything: the
+        connection died mid-stream, so its open turns' bytes were never provably
+        complete. The next connect resumes from the committed offsets and re-streams
+        them — exactly as a crashed follow loop leaves its turns for recovery."""
+        state.send_stream.close()
+        if self.sessions.get(state.session_id) is state:
+            del self.sessions[state.session_id]
 
     async def follow(self, state: TailState) -> None:
         """The per-session loop: catch up on what is already on disk, then pump on every
@@ -451,17 +600,25 @@ class ClaudeTranscriptTailer:
         for raw in chunk.split(b"\n")[:-1]:  # last element is the trailing fragment
             start = state.offset
             state.offset += len(raw) + 1  # + the '\n' the line was framed on
-            if not raw.strip():
-                continue
-            try:
-                line = transcript_line_adapter.validate_json(raw)
-            except ValidationError:
-                logger.debug(
-                    "skipping unmodeled/malformed transcript line in session %s",
-                    state.session_id,
-                )
-                continue
-            await self.process_line(state, line, start, state.offset)
+            line = self.parse_line(raw, state.session_id)
+            if line is not None:
+                await self.process_line(state, line, start, state.offset)
+
+    @staticmethod
+    def parse_line(raw: str | bytes, session_id: str) -> TranscriptLine | None:
+        """One typed line, or None for a blank / malformed / unmodeled one — skipped
+        but never allowed to wedge ingest; the caller advances its cursor either way."""
+        stripped = raw.strip()
+        if not stripped:
+            return None
+        try:
+            return transcript_line_adapter.validate_json(stripped)
+        except ValidationError:
+            logger.debug(
+                "skipping unmodeled/malformed transcript line in session %s",
+                session_id,
+            )
+            return None
 
     async def process_line(
         self, state: TailState, line: TranscriptLine, start: int, end: int
@@ -662,7 +819,8 @@ class ClaudeTranscriptTailer:
         wake, instead of waiting for the parent's next event or the poll tick. A
         session nothing follows is left alone; `recover` rebuilds it later."""
         state = self.sessions.get(session_id)
-        if state is None:
+        if state is None or state.remote:
+            # Remote: there is no file here to pump; its lines push themselves.
             return
         if state.conversation is None:
             # The hook can outrun the follow task's first scheduling slice; prepare
@@ -679,14 +837,19 @@ class ClaudeTranscriptTailer:
         final answer line races it (measured: usually loses by ~1-2KB). When the
         event names the answer, keep draining until the file yields it — the flush
         barrier the hook itself provides — bounded so a mismatch can never hang the
-        pipe; without one, allow the writer a single settle beat."""
+        pipe; without one, allow the writer a single settle beat.
+
+        A remote session settles on the same loop without the pumps: its lines arrive
+        through `feed_remote` on their own, and `tail.offset` still says whether the
+        writer has gone quiet."""
         state = self.sessions.get(session_id)
         if state is None:
             return
         if state.conversation is None:
             await self.prepare(state)
         tail = self.subagent_tail(state, agent_id)
-        await self.pump_subagent(state, tail)
+        if not state.remote:
+            await self.pump_subagent(state, tail)
         # The turn this stop is for. If a resume arrives inside the settle window,
         # the pump itself closes this turn on the promptId change and opens the
         # next — which must NOT be committed by this stop, mid-flight.
@@ -707,7 +870,8 @@ class ClaudeTranscriptTailer:
                 break
             before = tail.offset
             await asyncio.sleep(SUBAGENT_SETTLE_POLL)
-            await self.pump_subagent(state, tail)
+            if not state.remote:
+                await self.pump_subagent(state, tail)
             quiet = quiet + 1 if tail.offset == before else 0
         if target is None or tail.open_turn is target:
             await self.close_subagent_turn(state, tail)
@@ -726,19 +890,24 @@ class ClaudeTranscriptTailer:
             return False
         return turn.accumulator.result_text.strip() == final_answer.strip()
 
+    async def prepare_subagent(self, state: TailState, tail: SubagentTail) -> None:
+        """Resolve the child's conversation under the session's thread and seed its
+        committed-turn guard — the first time this child is seen, by pump or feed."""
+        parent = state.conversation
+        assert parent is not None  # prepare()/recover() resolve it before any pump
+        tail.conversation = await self.conversation_manager.ensure(
+            parent.thread_id,
+            agent_tentacle_id=CLAUDE_NATIVE_ID,
+            subagent_id=tail.agent_id,
+            parent_conversation_id=parent.id,
+        )
+        tail.recorded = assembled(tail.conversation)
+
     async def pump_subagent(self, state: TailState, tail: SubagentTail) -> bool:
         """Read one subagent's file forward from its cursor — the same framing and
         cursor discipline as `pump_transcript`, against the child's own byte space."""
         if tail.conversation is None:
-            parent = state.conversation
-            assert parent is not None  # prepare()/recover() resolve it before any pump
-            tail.conversation = await self.conversation_manager.ensure(
-                parent.thread_id,
-                agent_tentacle_id=CLAUDE_NATIVE_ID,
-                subagent_id=tail.agent_id,
-                parent_conversation_id=parent.id,
-            )
-            tail.recorded = assembled(tail.conversation)
+            await self.prepare_subagent(state, tail)
         try:
             size = tail.path.stat().st_size
         except FileNotFoundError:
@@ -753,18 +922,9 @@ class ClaudeTranscriptTailer:
         for raw in chunk.split(b"\n")[:-1]:
             start = tail.offset
             tail.offset += len(raw) + 1
-            if not raw.strip():
-                continue
-            try:
-                line = transcript_line_adapter.validate_json(raw)
-            except ValidationError:
-                logger.debug(
-                    "skipping unmodeled/malformed subagent line in session %s/%s",
-                    state.session_id,
-                    tail.agent_id,
-                )
-                continue
-            await self.process_subagent_line(state, tail, line, start, tail.offset)
+            line = self.parse_line(raw, state.session_id)
+            if line is not None:
+                await self.process_subagent_line(state, tail, line, start, tail.offset)
         return True
 
     async def process_subagent_line(
