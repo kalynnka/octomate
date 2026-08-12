@@ -10,8 +10,8 @@ pydantic-ai and costs ~1.9s to import — per hook, on a handler Codex blocks on
 turn. By path with stdlib only it is ~50ms, because Python never imports the package.
 
 Anything added here must keep that property: stdlib imports only. The two environment
-variable names below are duplicated from `octomate/tentacles/agent/typer.py` and
-`octomate/tentacles/agent/codex/hooks.py` for the same reason — this module cannot
+variable names below are duplicated from `octomate/cli/hooks.py` and
+`octomate/tentacles/agents/codex/hooks.py` for the same reason — this module cannot
 import them without paying for the whole package. Change them together.
 """
 

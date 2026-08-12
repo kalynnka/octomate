@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import typer
 
+from octomate.cli.claude import claude_typer
+from octomate.cli.codex import codex_typer
+from octomate.cli.hooks import hooks_typer
 from octomate.cli.serve import serve
-from octomate.tentacles.agents.claude.typer import claude_typer
-from octomate.tentacles.agents.codex.typer import codex_typer
-from octomate.tentacles.agents.typer import hooks_typer
 
 app = typer.Typer(help="Octomate operator CLI.", no_args_is_help=True)
 app.command("serve")(serve)

@@ -9,12 +9,12 @@ from typing import Annotated
 
 import typer
 
+from octomate.cli.hooks import announce_hook_secret
 from octomate.tentacles.agents.codex.hooks import (
     CODEX_HOOK_PATH,
     HANDLED_HOOK_EVENTS,
     HOOK_TIMEOUT,
 )
-from octomate.tentacles.agents.typer import announce_hook_secret
 from octomate.types.json import JsonObject
 
 # The command a Codex hook runs: a standalone stdlib-only script, run by path rather

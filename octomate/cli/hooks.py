@@ -18,7 +18,7 @@ console = Console(stderr=True)
 
 # How a *client* carries the credential. A client-side contract, so it lives with the
 # installer that writes it; the app itself reads `OctomateConfig.hook_secret` and does
-# not care which source filled it. `codex/emit.py` repeats the name as a literal because
+# not care which source filled it. `cli/emit.py` repeats the name as a literal because
 # it cannot import the package — change both together.
 HOOK_SECRET_ENV = "OCTOMATE__HOOK_SECRET"
 

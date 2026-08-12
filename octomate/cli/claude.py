@@ -1,6 +1,8 @@
 """`octomate claude ...` — operator commands for the native Claude Code integration.
 
-Owned by the Claude tentacle so its operator surface lives beside its runtime.
+Everything CLI-shaped lives under `octomate/cli`, the tentacle keeps only runtime;
+the hook-path scripts beside this module (`launch.py`, `emit.py`) additionally stay
+stdlib-only and are run by path, because a hook pays their startup on every fire.
 """
 
 from __future__ import annotations
@@ -14,13 +16,13 @@ from typing import Annotated
 
 import typer
 
+from octomate.cli.hooks import HOOK_SECRET_ENV, announce_hook_secret
 from octomate.tentacles.agents.claude.hooks import (
     CLAUDE_HOOK_PATH,
     CLAUDE_STREAM_PATH,
     HANDLED_HOOK_EVENTS,
     HOOK_TIMEOUT,
 )
-from octomate.tentacles.agents.typer import HOOK_SECRET_ENV, announce_hook_secret
 from octomate.types.json import JsonObject, JsonValue
 
 # The launcher command hook's script, run by absolute path so it never imports the
@@ -302,6 +304,6 @@ def tail(
     the server states where each file resumes, so re-running never duplicates. Reads
     the hook credential from the environment, like every hook client does.
     """
-    from octomate.tentacles.agents.claude.tail import main  # heavy; only when tailing
+    from octomate.cli.tail import main  # heavy; only when tailing
 
     main(session_id=session, transcript_path=path, url=url, cwd=cwd)

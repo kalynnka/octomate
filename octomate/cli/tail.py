@@ -32,6 +32,7 @@ from watchfiles import awatch
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
+from octomate.cli.hooks import HOOK_SECRET_ENV
 from octomate.tentacles.agents.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
@@ -42,7 +43,6 @@ from octomate.tentacles.agents.stream import (
     StreamWelcome,
     server_message_adapter,
 )
-from octomate.tentacles.agents.typer import HOOK_SECRET_ENV
 
 # Mirror the server tailer's cadence: the watch wakes at least this often, and a
 # session quiet this long is drained and closed out.

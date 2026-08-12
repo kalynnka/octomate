@@ -13,8 +13,8 @@ from pydantic import SecretStr
 from typer.testing import CliRunner
 
 from octomate.cli.base import app
-from octomate.tentacles.agents.claude.typer import LAUNCH_SCRIPT, claude_typer
-from octomate.tentacles.agents.codex.typer import EMIT_SCRIPT, codex_typer
+from octomate.cli.claude import LAUNCH_SCRIPT, claude_typer
+from octomate.cli.codex import EMIT_SCRIPT, codex_typer
 
 runner = CliRunner()
 URL = "http://127.0.0.1:9999/hooks/claude"
