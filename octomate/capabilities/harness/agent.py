@@ -171,7 +171,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
             model=model,
             instructions=instructions,
             model_settings=model_settings,
-            usage_limits=usage_limits,
+            usage_limits=usage_limits or UsageLimits(request_limit=None),
             usage=usage,
             metadata=metadata,
             retries=retries,

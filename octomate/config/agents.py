@@ -149,7 +149,7 @@ class ToolOutputConfig(BaseModel):
     """
 
     enabled: bool = Field(
-        default=True,
+        default=False,
         description="Whether oversized tool returns are reduced at all. Turning this "
         "off sends every return to the model whole, which is a debugging posture "
         "rather than a deployment one.",
@@ -191,6 +191,12 @@ class ToolOutputConfig(BaseModel):
 
 class InklingConfig(BaseModel):
     models: list[ModelConfig] = Field(min_length=1)
+
+    request_limit: int = Field(
+        default=256,
+        gt=0,
+        description="Maximum model requests in one Inkling run.",
+    )
 
     claims: dict[KnownModelName, Claim] = Field(
         default_factory=dict,

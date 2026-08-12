@@ -28,8 +28,8 @@ class ToolFailureCapability(AbstractCapability[None]):
     model did not cause is not a call to make again, and a retry spends a budget
     that ends the run when it runs out — which is the same lost turn, one attempt
     later. A failure it can read leaves it free to try another way or explain.
-    Runs stay bounded by `UsageLimits.request_limit` (50 by default), not by how
-    many times one tool may break.
+    Runs stay bounded by Inkling's configured `UsageLimits.request_limit`, not by
+    how many times one tool may break.
     """
 
     async def on_tool_execute_error(

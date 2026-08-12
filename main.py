@@ -218,6 +218,7 @@ def create_app() -> FastAPI:
             },
             claims=config.agents.inkling.claims,
             permission_mode=config.agents.inkling.permission_mode,
+            request_limit=config.agents.inkling.request_limit,
             toolsets=build_mcp_toolsets(config.mcp),
             capabilities=inkling_capabilities,
             system_prompt=SYSTEM_PROMPT,
