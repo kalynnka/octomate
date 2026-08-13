@@ -322,8 +322,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         """The attached half of a stream connection: register the session, answer
         resume offsets, then feed each framed line through the tailer's assembly until
         `eof` (commit the trailing turns) or a drop (leave them for the next connect).
-        A `SessionEnd` on the hook pipe reaches here as the state's `stop_event`; the
-        relay sends `finalize` and the client answers with its drain and `eof`."""
+        `Stop` and `SessionEnd` on the hook pipe reach here as the state's
+        `stop_event`; the relay sends `finalize` and the client answers with its drain
+        and `eof` — per turn for a `Stop`, for good at `SessionEnd`."""
         # The thread before the tail, filed under the project its cwd names —
         # `ClaudeHookIngest.start_session`'s ordering, because `attach_remote` falls
         # back to a project-less create and a thread's project is frozen at creation.

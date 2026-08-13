@@ -12,11 +12,12 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from octomate_cli.claude import CLAUDE_STREAM_PATH
+from octomate_cli.claude import CLAUDE_HOOK_PATH, CLAUDE_STREAM_PATH
 from octomate_cli.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
+    StreamFinalize,
     StreamHello,
     StreamLine,
     StreamWelcome,
@@ -160,6 +161,46 @@ async def test_finalize_relays_through_stop_event_and_waits_for_the_drain() -> N
     assert [run.id for run in await runs_of(octomate)] == ["p1"]
 
 
+async def test_a_stop_drains_the_remote_tail_and_commits_the_stopped_turn() -> None:
+    """`Stop` reaches a remote session as a per-turn drain: `stop_turn` sets the
+    `stop_event` the route's relay watches, and the `eof` answering the relayed
+    `finalize` commits the stopped turn — the next prompt no longer gates it."""
+    octomate, tailer = remote_tailer()
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    await feed(tailer, state, frames(TURN_ONE))  # open turn: no closing prompt yet
+
+    await tailer.stop_turn(SESSION_ID, "p1")
+    assert state.stop_event.is_set()  # what the route's finalize relay watches
+    await tailer.finish_remote(state)  # the client's drain answered eof
+
+    (p1,) = await runs_of(octomate)
+    assert p1.id == "p1"
+    assert p1.end_offset is not None
+    assert not tailer.is_following(SESSION_ID)  # the tail is done; slot reclaimed
+
+
+async def test_a_prompt_queued_into_the_drain_stays_open_for_the_next_connect() -> None:
+    """A queued message can land between `Stop` and the drain's `eof`, so its prompt
+    line ships with the drain and opens the next turn mid-drain. Only the stopped
+    turn may commit: a partial next turn committed here would hold its id against the
+    complete version forever."""
+    octomate, tailer = remote_tailer()
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    await feed(tailer, state, frames(TURN_ONE))
+    await tailer.stop_turn(SESSION_ID, "p1")
+
+    total = sum(len(line_bytes(record)) for record in TURN_ONE)
+    await feed(tailer, state, frames(TURN_TWO[:1], start=total))  # p2's prompt line
+    await tailer.finish_remote(state)
+
+    (p1,) = await runs_of(octomate)  # p1 closed on its own boundary; p2 not committed
+    assert p1.id == "p1"
+
+    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    assert offsets[SESSION_FILE] == p1.end_offset  # p2's line re-streams whole
+    tailer.detach_remote(state)
+
+
 async def test_subagent_lines_stream_into_child_runs() -> None:
     octomate, tailer = remote_tailer()
     state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
@@ -252,6 +293,47 @@ def test_lines_over_the_socket_commit_and_the_next_welcome_resumes() -> None:
             websocket.send_text(StreamEof().model_dump_json())
             # The server closes once the trailing turns are committed; waiting for
             # it is what makes the second connect's welcome a commit assertion.
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets[SESSION_FILE] == total
+
+
+def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
+    """End to end: the `Stop` hook's POST reaches the open socket as `finalize`, the
+    client's `eof` commits the stopped turn, and the server closes the connection —
+    the tail process's exit. The next welcome resuming past the turn is the
+    protocol-visible proof of commit."""
+    client, _ = stream_client()
+    total = sum(len(line_bytes(record)) for record in TURN_ONE)
+
+    with client:
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            websocket.receive_text()  # welcome
+            for agent_id, start, end, line in frames(TURN_ONE):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            posted = client.post(
+                CLAUDE_HOOK_PATH,
+                json={
+                    "hook_event_name": "Stop",
+                    "session_id": SESSION_ID,
+                    "prompt_id": "p1",
+                },
+                headers=AUTH,
+            )
+            assert posted.status_code == 200
+            relayed = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(relayed, StreamFinalize)
+            websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
 

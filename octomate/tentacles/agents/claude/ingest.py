@@ -163,6 +163,10 @@ class ClaudeHookIngest:
                 logger.info(
                     "session %s: turn %s answered", event.session_id, event.prompt_id
                 )
+        # The turn is over and its transcript flushed: let the tail commit it now
+        # rather than at the next prompt — a remote one drains out and exits. Outside
+        # the lock, because a local close takes the same session lock to commit.
+        await self.tailer.stop_turn(event.session_id, event.prompt_id)
 
     @claude_logfire.instrument(
         "claude.hook SessionEnd [{event.session_id}]", extract_args=["event"]

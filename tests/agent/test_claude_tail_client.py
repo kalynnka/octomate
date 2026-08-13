@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import fcntl
 import tempfile
+import threading
 from pathlib import Path
 from uuid import uuid4
 
@@ -113,6 +114,7 @@ def test_a_second_tail_for_the_same_session_is_a_no_op(
     """The launcher fires on every prompt; the flock is what makes each spawn after
     the first exit quietly, with no stale-pidfile state to manage."""
     monkeypatch.setenv(HOOK_SECRET_ENV, "s")
+    monkeypatch.setattr(tail_mod, "LOCK_GRACE", 0.0)  # a held lock cedes instantly
     streamed: list[str] = []
 
     async def record_only(
@@ -148,6 +150,49 @@ def test_a_second_tail_for_the_same_session_is_a_no_op(
     assert streamed == [session_id]  # lock released with the holder: a fresh tail runs
 
 
+def test_a_spawn_during_the_drain_waits_out_the_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The server relays `finalize` at `Stop`, so a queued prompt's launcher can fire
+    while the previous turn's tail is still draining out. The grace window bridges
+    that overlap: the spawn waits for the lock instead of ceding the round."""
+    monkeypatch.setenv(HOOK_SECRET_ENV, "s")
+    monkeypatch.setattr(tail_mod, "LOCK_GRACE", 5.0)
+    monkeypatch.setattr(tail_mod, "LOCK_POLL", 0.05)
+    streamed: list[str] = []
+
+    async def record_only(
+        url: str,
+        session_id: str,
+        transcript_path: Path,
+        cwd: str,
+        secret: str,
+        spool: Path | None = None,
+    ) -> None:
+        streamed.append(session_id)
+
+    monkeypatch.setattr(tail_mod, "run_tail", record_only)
+    session_id = f"grace-{uuid4()}"
+    lock_path = Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.lock"
+
+    held = lock_path.open("w")
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    release = threading.Timer(0.3, held.close)  # closing the handle drops the flock
+    release.start()
+    try:
+        main(
+            session_id=session_id,
+            transcript_path=tmp_path / "t.jsonl",
+            url="ws://127.0.0.1:1/hooks/claude/stream",
+            cwd="",
+        )
+    finally:
+        release.cancel()
+        if not held.closed:
+            held.close()
+    assert streamed == [session_id]
+
+
 def test_a_spool_handoff_reaches_a_running_tail_and_defers(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -155,6 +200,7 @@ def test_a_spool_handoff_reaches_a_running_tail_and_defers(
     invocation's whole job is appending the child's path — the holder re-reads the
     spool on every pump — and then getting out of the way at the lock."""
     monkeypatch.setenv(HOOK_SECRET_ENV, "s")
+    monkeypatch.setattr(tail_mod, "LOCK_GRACE", 0.0)
     monkeypatch.setattr(
         tail_mod, "run_tail", None
     )  # any call would TypeError: nothing may stream here

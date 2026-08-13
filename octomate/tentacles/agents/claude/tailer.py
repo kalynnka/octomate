@@ -108,8 +108,8 @@ def stamp(messages: list[PydanticModelMessage], timestamp: datetime | None) -> N
 class OpenTurn:
     """The turn currently being assembled off the live tail — its accumulator fed line
     by line, its byte range advancing to cover the last transcript line folded in. It
-    commits as an `ExternalAgentRun` when the next prompt line closes it, or at
-    `finalize`."""
+    commits as an `ExternalAgentRun` when the next prompt line closes it, when its own
+    `Stop` hook reaches `stop_turn`, or at `finalize`."""
 
     prompt_id: str
     prompt_text: str  # the human's clean prompt, for creating the inbound ledger row
@@ -170,6 +170,10 @@ class TailState:
     # drives the same per-line assembly the pumps do. `transcript_path` is then the
     # client's claim in the client's own namespace, a label never opened here.
     remote: bool = False
+    # The prompt id of a turn whose `Stop` hook fired (`stop_turn`): commit it without
+    # waiting for the next prompt line — but commit nothing newer, so a prompt queued
+    # into a remote drain window is left open for the next connect to re-stream.
+    drain_turn: str | None = None
     # Set once a remote session's trailing turns are committed (`finish_remote`), so
     # `finalize` can bound its wait for the client's drain.
     drained: asyncio.Event = field(default_factory=asyncio.Event)
@@ -195,8 +199,10 @@ class ClaudeTranscriptTailer:
     - **live** — a bounded, drop-on-full `StreamEvents` stream for a future UI, which
       never blocks the tailer and which durability never depends on.
 
-    A turn commits on the *file* boundary — the next prompt line, or EOF at `finalize` —
-    never on a hook, so its bytes are provably flushed once the line after it exists.
+    A turn commits on a proven boundary: the next prompt line, EOF at `finalize`, or
+    its own `Stop` hook (`stop_turn`) — the transcript is flushed before Claude fires
+    that hook, so a local close waits for the cursor to reach EOF and a remote one for
+    the client's drained `eof`. Nothing newer than a stopped turn commits early.
 
     Only `recover` resumes from a turn's `end_offset`; a follow loop re-reads its
     transcript whole and lets the committed-turn guard drop what it has already seen.
@@ -209,8 +215,10 @@ class ClaudeTranscriptTailer:
     `attach_remote` registers it (so `is_following` and `finalize` route the same),
     `feed_remote` runs the same per-line assembly the pumps do, and the committed
     runs' offsets are what a reconnecting client is told to resume from, exactly as
-    `recover` computes them. Its turns commit on the same boundaries; a connection
-    that drops mid-stream leaves the open turn uncommitted for the next connect to
+    `recover` computes them. Its turns commit on the same boundaries, and a relayed
+    `Stop` drains it per turn — the tail process exits once the stopped turn is
+    durable, and the next prompt's launcher spawns a fresh one. A connection that
+    drops mid-stream leaves the open turn uncommitted for the next connect to
     re-stream, as a crashed follow loop leaves its turns for recovery.
     """
 
@@ -293,6 +301,37 @@ class ClaudeTranscriptTailer:
         """The live event stream for a session, for a consumer that wants to watch it."""
         state = self.sessions.get(session_id)
         return state.receive_stream if state is not None else None
+
+    async def stop_turn(self, session_id: str, prompt_id: str | None) -> None:
+        """The turn just stopped — its `Stop` hook fired: commit it now instead of
+        waiting for the next prompt line to close it.
+
+        A remote session drains: the stream route relays `finalize` on `stop_event`,
+        the client ships its final lines and answers `eof`, and `finish_remote`
+        commits the stopped turn — the tail process exits, and the next prompt's
+        launcher spawns a fresh one. A local follow keeps its loop: the turn is
+        closed here when the cursor already sits at EOF — the transcript was flushed
+        before the hook fired — and otherwise on the loop's next wake. Scoped by
+        `prompt_id` so nothing newer than the stopped turn ever commits early;
+        without one there is nothing to scope, and the turn keeps its old boundary.
+        """
+        if prompt_id is None:
+            return
+        state = self.sessions.get(session_id)
+        if state is None:
+            return
+        state.drain_turn = prompt_id
+        if state.remote:
+            state.stop_event.set()
+            return
+        turn = state.open_turn
+        try:
+            size = state.transcript_path.stat().st_size
+        except FileNotFoundError:
+            return
+        if turn is not None and turn.prompt_id == prompt_id and state.offset >= size:
+            state.drain_turn = None
+            await self.close_turn(state)
 
     async def finalize(
         self, session_id: str, transcript_path: Path | None = None
@@ -490,11 +529,22 @@ class ClaudeTranscriptTailer:
 
     async def finish_remote(self, state: TailState) -> None:
         """A remote session's clean end — the client drained to EOF and said `eof`.
-        Commit the trailing turns (the local finalize's drain, minus the file),
-        release any finalize waiter, and reclaim the registry slot."""
+
+        After the session's own end (`finalize` relayed at `SessionEnd`, or the idle
+        drain), commit everything still open. After a relayed `Stop` (`drain_turn`
+        set), commit only the stopped turn: a prompt queued into the drain window is
+        left open to re-stream whole on the next connect, and subagent turns keep
+        their own boundary — `SubagentStop` commits them, and force-closing here
+        would truncate a background child still running across turns. Either way,
+        release any finalize waiter and reclaim the registry slot."""
         try:
-            await self.close_turn(state)
-            await self.close_subagent_turns(state)
+            if state.drain_turn is None:
+                await self.close_turn(state)
+                await self.close_subagent_turns(state)
+            else:
+                turn = state.open_turn
+                if turn is not None and turn.prompt_id == state.drain_turn:
+                    await self.close_turn(state)
         finally:
             state.drained.set()
             self.detach_remote(state)
@@ -530,6 +580,15 @@ class ClaudeTranscriptTailer:
                         yield_on_timeout=True,
                     ):
                         await self.pump(state)
+                        if state.drain_turn is not None:
+                            # A relayed `Stop` that `stop_turn` could not close on the
+                            # spot (the pump had bytes still to read): the pump is at
+                            # EOF now, so commit the stopped turn — or drop the flag,
+                            # a newer prompt line having closed it on its own boundary.
+                            turn = state.open_turn
+                            if turn is not None and turn.prompt_id == state.drain_turn:
+                                await self.close_turn(state)
+                            state.drain_turn = None
                         if monotonic() - state.last_active > IDLE_TIMEOUT:
                             logger.info(
                                 "session %s: silent for %ss, stopped tailing",

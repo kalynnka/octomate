@@ -17,9 +17,10 @@ Spawned per session by the launcher hook (`launch.py`), detached so the turn nev
 waits on it; one instance per session, enforced with a file lock the OS releases with
 the process. The server owns every cursor: each connect re-asks where to resume, so
 this process holds no durable state and a crash anywhere costs a re-stream, never a
-loss. It ends when the server says `finalize` (the session ended), when the session
-goes quiet past the idle window (drain and `eof` — the same bet the server tailer's
-idle reclaim makes), or when the server refuses it outright (close code 1008).
+loss. It ends when the server says `finalize` (the turn stopped or the session ended;
+the next prompt's launcher spawns a fresh tail), when the session goes quiet past the
+idle window (drain and `eof` — the same bet the server tailer's idle reclaim makes),
+or when the server refuses it outright (close code 1008).
 """
 
 from __future__ import annotations
@@ -64,6 +65,13 @@ BACKOFF_CAP = 60.0
 # already tails locally) does not heal by retrying; 4000 is the server's resync close
 # (an offset gap), which a fresh connect heals.
 REFUSED = 1008
+
+# A spawn can land while the previous turn's tail is still draining out — the server
+# relays `finalize` at `Stop`, and a queued prompt fires the launcher before the old
+# process has exited. Wait this long for the session lock before ceding the round; a
+# holder that keeps it past the window is a genuinely running tail.
+LOCK_GRACE = 15.0
+LOCK_POLL = 0.2
 
 try:
     CLIENT_VERSION = version("octomate-cli")
@@ -346,8 +354,13 @@ def main(
     # stale-pidfile state to manage.
     lock_path = Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.lock"
     with lock_path.open("w") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return
+        deadline = monotonic() + LOCK_GRACE
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if monotonic() >= deadline:
+                    return
+                time.sleep(LOCK_POLL)
         asyncio.run(run_tail(url, session_id, transcript_path, cwd, secret, spool))

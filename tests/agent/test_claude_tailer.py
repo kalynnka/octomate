@@ -8,6 +8,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 
 import anyio
 import pytest
@@ -177,6 +178,31 @@ async def test_records_runs_with_byte_ranges(tmp_path: Path) -> None:
 
     kinds = [type(message).__name__ for message in p1.messages]
     assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
+
+
+async def test_a_stop_closes_the_local_turn_without_the_next_prompt(
+    tmp_path: Path,
+) -> None:
+    """A local follow keeps its loop across turns, but a turn's `Stop` commits it as
+    soon as the cursor sits at EOF — the transcript was flushed before the hook
+    fired — instead of waiting for the next prompt line to close it."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    state = tailer.start(SESSION_ID, transcript)
+    deadline = monotonic() + 5
+    while state.offset < transcript.stat().st_size:  # the catch-up pump's progress
+        assert monotonic() < deadline, "follow loop never caught up"
+        await asyncio.sleep(0.01)
+    await tailer.stop_turn(SESSION_ID, "p1")
+
+    (p1,) = await runs_of(octomate)
+    assert p1.id == "p1"
+    assert p1.end_offset == transcript.stat().st_size
+    assert tailer.is_following(SESSION_ID)  # the loop lives on for the next turn
+    await tailer.finalize(SESSION_ID)
 
 
 async def test_the_posture_a_session_runs_under_is_read_off_its_transcript(
