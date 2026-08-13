@@ -13,6 +13,7 @@ octomate.yaml
 
 # Agent tooling: local settings, and skills symlinked into a machine's own install
 .claude/
+.codex/
 
 # Tarot card images (download manually, see octotools/tarot/resources/README.md)
 octotools/tarot/resources/*/
