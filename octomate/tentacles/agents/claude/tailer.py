@@ -1146,20 +1146,27 @@ class ClaudeTranscriptTailer:
                     ),
                     happened_at=prompt_request.timestamp,
                 )
+            elif prompt_request.timestamp is not None:
+                # A row the hooks wrote live is on the receipt clock, a beat behind
+                # the transcript line the run is dated by — left alone, the console
+                # sorts the run's work above the prompt that caused it.
+                await self.thread_manager.redate_message(
+                    inbound, prompt_request.timestamp
+                )
             await self.thread_manager.bind_messages(
                 [inbound.id], prompt_request.id, kind="request_source", run_id=run.id
             )
         if answer:
+            answered = next(
+                (
+                    message
+                    for message in reversed(run.messages)
+                    if isinstance(message, ModelResponse)
+                ),
+                None,
+            )
             outbound = self.existing_message(thread, run.id, "outbound")
             if outbound is None:
-                answered = next(
-                    (
-                        message
-                        for message in reversed(run.messages)
-                        if isinstance(message, ModelResponse)
-                    ),
-                    None,
-                )
                 outbound = await self.thread_manager.record_outbound(
                     thread,
                     agent_tentacle_id=CLAUDE_NATIVE_ID,
@@ -1168,6 +1175,8 @@ class ClaudeTranscriptTailer:
                     platform_message_id=run.id,
                     happened_at=answered.timestamp if answered is not None else None,
                 )
+            elif answered is not None and answered.timestamp is not None:
+                await self.thread_manager.redate_message(outbound, answered.timestamp)
             await self.thread_manager.bind_assistant_replies(
                 [outbound.id], run_id=run.id
             )

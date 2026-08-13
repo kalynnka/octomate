@@ -807,6 +807,36 @@ async def test_a_backfilled_row_is_dated_by_the_transcript_not_the_replay(
     assert dated["outbound"] == datetime(2026, 7, 9, 10, 0, 4, tzinfo=UTC)
 
 
+async def test_commit_redates_the_hooks_ledger_to_the_transcript_clock(
+    tmp_path: Path,
+) -> None:
+    """A row the hooks wrote live is stamped at receipt — a beat after Claude wrote
+    the line it describes. The commit re-dates the reused rows to the transcript's
+    clock, the same one the run is dated by, so the run's cards can never sort above
+    the prompt that caused them."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE)
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    await ingest.handle(
+        hook_event("UserPromptSubmit", "p1", transcript, prompt="list the files")
+    )
+    state = tailer.sessions[SESSION_ID]
+    with anyio.fail_after(5):
+        while state.offset < transcript.stat().st_size:  # noqa: ASYNC110
+            await anyio.sleep(0.05)
+    await ingest.handle(hook_event("Stop", "p1", last_assistant_message="Done."))
+
+    (p1,) = await runs_of(octomate)
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    dated = {message.direction: message.happened_at for message in thread.messages}
+    assert dated["inbound"] == datetime(2026, 7, 9, 10, 0, 1, tzinfo=UTC)
+    assert dated["inbound"] == p1.started_at  # one clock: prompt row == run start
+    assert dated["outbound"] == datetime(2026, 7, 9, 10, 0, 4, tzinfo=UTC)
+    await tailer.finalize(SESSION_ID)
+
+
 AGENT_ID = "abc123def"
 
 
