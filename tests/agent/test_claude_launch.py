@@ -12,7 +12,9 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-from octomate_cli.claude import LAUNCH_SCRIPT
+from octomate_cli.claude import CLAUDE_HOOK_PATH, LAUNCH_SCRIPT
+from octomate_cli.hooks import OCTOMATE_URL_ENV
+from octomate_cli.launch import OCTOMATE_URL_ENV as LAUNCH_URL_ENV
 
 STREAM_URL = "ws://127.0.0.1:9999/hooks/claude/stream"
 EVENT = {
@@ -33,20 +35,16 @@ def recorder(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def launch(
-    binary: Path, payload: Mapping[str, object]
+    args: list[str], payload: Mapping[str, object], env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [
-            sys.executable,
-            str(LAUNCH_SCRIPT),
-            "--url",
-            STREAM_URL,
-            "--octomate",
-            str(binary),
-        ],
+        [sys.executable, str(LAUNCH_SCRIPT), *args],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
+        # Controlled: the suite may run in a shell that exports OCTOMATE_URL itself,
+        # and these tests are about what the script resolves, not what leaks in.
+        env={"PATH": "/usr/bin:/bin", **(env or {})},
     )
 
 
@@ -60,7 +58,7 @@ def wait_for(path: Path, timeout: float = 5.0) -> None:
 
 def test_launch_spawns_a_detached_tail_and_stays_silent(tmp_path: Path) -> None:
     binary, args_file = recorder(tmp_path)
-    result = launch(binary, EVENT)
+    result = launch(["--url", STREAM_URL, "--octomate", str(binary)], EVENT)
 
     assert result.returncode == 0
     # Anything printed here would be injected into the turn's context.
@@ -83,12 +81,54 @@ def test_launch_spawns_a_detached_tail_and_stays_silent(tmp_path: Path) -> None:
 
 def test_an_event_naming_no_transcript_spawns_nothing(tmp_path: Path) -> None:
     binary, args_file = recorder(tmp_path)
-    result = launch(binary, {"hook_event_name": "UserPromptSubmit", "session_id": "s1"})
+    result = launch(
+        ["--url", STREAM_URL, "--octomate", str(binary)],
+        {"hook_event_name": "UserPromptSubmit", "session_id": "s1"},
+    )
 
     assert result.returncode == 0
     assert result.stdout == ""
     time.sleep(0.2)  # absence cannot be awaited; give a wrong spawn time to land
     assert not args_file.exists()
+
+
+def test_the_stream_url_derives_from_the_environment(tmp_path: Path) -> None:
+    """The installed command carries only `--path`; the stream address comes from
+    OCTOMATE_URL when the hook fires — `https` base, `wss` stream — so the launcher
+    follows the same environment switch the forwarding hooks do."""
+    binary, args_file = recorder(tmp_path)
+    result = launch(
+        ["--path", CLAUDE_HOOK_PATH, "--octomate", str(binary)],
+        EVENT,
+        env={OCTOMATE_URL_ENV: "https://minidock.example:8443"},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    wait_for(args_file)
+    arguments = args_file.read_text().split()
+    assert (
+        arguments[arguments.index("--url") + 1]
+        == "wss://minidock.example:8443/hooks/claude/stream"
+    )
+
+
+def test_without_a_target_nothing_spawns_and_nothing_is_said(tmp_path: Path) -> None:
+    """No pin and no OCTOMATE_URL: the emit hook on the same event already complained
+    on stderr, and a tail with no server to call would only retry into the void."""
+    binary, args_file = recorder(tmp_path)
+    result = launch(["--path", CLAUDE_HOOK_PATH, "--octomate", str(binary)], EVENT)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    time.sleep(0.2)  # absence cannot be awaited; give a wrong spawn time to land
+    assert not args_file.exists()
+
+
+def test_its_duplicated_name_still_matches_the_canonical_one() -> None:
+    """launch.py repeats the variable name as a literal because it must not import the
+    package; this is what stops the copy drifting."""
+    assert LAUNCH_URL_ENV == OCTOMATE_URL_ENV
 
 
 def test_bad_usage_fails_loudly() -> None:

@@ -1,18 +1,23 @@
-"""Forward a Codex hook payload from stdin to Octomate's hook router.
+"""Forward a native session's hook payload from stdin to Octomate's hook router.
 
-Codex has no `http` hook handler — its handlers are `command`, `prompt` or `agent` — so
-a native session reaches Octomate through a command, and this is that command. The
-transport is still HTTP: this only carries stdin to the router.
+Both agents' installers write `command` hooks that run this script — Codex because it
+has no `http` handler at all, Claude so the settings file stays free of hosts and
+credentials: with no `--url` pinned, the router's address is resolved from
+`OCTOMATE_URL` when the hook fires, and switching servers is an environment switch,
+not a re-install. The transport is HTTP either way: this only carries stdin to the
+router at `<base>{--path}`.
 
 Run by absolute path, never as `python -m octomate...`, and imports nothing from
 octomate. Both matter: `octomate/__init__.py` builds `Octomate`, which pulls in
-pydantic-ai and costs ~1.9s to import — per hook, on a handler Codex blocks on, twice a
-turn. By path with stdlib only it is ~50ms, because Python never imports the package.
+pydantic-ai and costs ~1.9s to import — per hook, on a handler the session blocks on,
+several times a turn. By path with stdlib only it is ~25ms, because Python never
+imports the package.
 
-Anything added here must keep that property: stdlib imports only. The two environment
-variable names below are duplicated from `octomate_cli/hooks.py` and octomate's
-`tentacles/agents/codex/hooks.py` for the same reason — this module cannot import
-them without paying for a package. Change them together.
+Anything added here must keep that property: stdlib imports only. The environment
+variable names and the hook path below are duplicated from `octomate_cli/hooks.py`,
+`octomate_cli/codex.py` and octomate's `tentacles/agents/codex/hooks.py` for the same
+reason — this module cannot import them without paying for a package. Change them
+together.
 """
 
 from __future__ import annotations
@@ -24,8 +29,12 @@ import urllib.error
 import urllib.request
 
 HOOK_SECRET_ENV = "OCTOMATE__HOOK_SECRET"
+OCTOMATE_URL_ENV = "OCTOMATE_URL"
 DRIVEN_ENV = "OCTOMATE_CODEX_DRIVEN"
+CODEX_HOOK_PATH = "/hooks/codex"
 HOOK_TIMEOUT = 10
+
+USAGE = "usage: emit.py --path <hook-path> [--url <hook-url>]"
 
 
 def main(url: str) -> int:
@@ -64,11 +73,39 @@ def main(url: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[1] != "--url":
-        print("usage: emit.py --url <hook-url>", file=sys.stderr)
+    args = sys.argv[1:]
+    path: str | None = None
+    url: str | None = None
+    while args:
+        flag = args.pop(0)
+        if flag == "--path" and args:
+            path = args.pop(0)
+        elif flag == "--url" and args:
+            url = args.pop(0)
+        else:
+            print(USAGE, file=sys.stderr)
+            raise SystemExit(2)
+    # `--url` alone is the previous generation's installed form; honoring it keeps
+    # hooks written before `--path` existed delivering until their next re-install.
+    if path is None and url is None:
+        print(USAGE, file=sys.stderr)
         raise SystemExit(2)
-    status = main(sys.argv[2])
-    # Codex reads stdout as the hook's decision; an empty object decides nothing, which
-    # is what an observer should do.
-    print("{}")
+    if url is None:
+        base = os.environ.get(OCTOMATE_URL_ENV, "").rstrip("/")
+        url = base + str(path) if base else None
+    if url is None:
+        print(
+            f"octomate: {OCTOMATE_URL_ENV} is unset and no --url was pinned — this "
+            "session is not being ingested.",
+            file=sys.stderr,
+        )
+        status = 1
+    else:
+        status = main(url)
+    if path is None or path == CODEX_HOOK_PATH:
+        # Codex reads stdout as the hook's decision; an empty object decides nothing,
+        # which is what an observer should do. A Claude hook's stdout is injected into
+        # the turn's context instead, so on Claude's path silence is the only correct
+        # answer.
+        print("{}")
     raise SystemExit(status)

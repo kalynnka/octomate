@@ -12,7 +12,7 @@ from typing import Annotated
 
 import typer
 
-from octomate_cli.hooks import announce_hook_secret
+from octomate_cli.hooks import EMIT_SCRIPT, OCTOMATE_URL_ENV, announce_hook_secret
 from octomate_cli.jsontypes import JsonObject
 
 # Bound so a wedged or slow Octomate can never freeze someone's Codex session.
@@ -31,10 +31,6 @@ HANDLED_HOOK_EVENTS = (
     "SubagentStart",
     "SubagentStop",
 )
-
-# The command a Codex hook runs: a standalone stdlib-only script, run by path rather
-# than imported so a hook never imports the packages. See its docstring.
-EMIT_SCRIPT = Path(__file__).with_name("emit.py")
 
 codex_typer = typer.Typer(
     help="Operate the native Codex integration.", no_args_is_help=True
@@ -55,20 +51,6 @@ def hooks_file(scope: Scope, path: Path | None) -> Path:
         return path
     root = Path.home() if scope is Scope.user else Path.cwd()
     return root / ".codex" / "hooks.json"
-
-
-def configured_hook_url() -> str:
-    try:
-        from octomate.config import OctomateConfig
-    except ImportError:
-        raise typer.BadParameter(
-            "no server config on this machine — pass --url with Octomate's address"
-        ) from None
-    config = OctomateConfig()
-    host = str(config.host)
-    if host in {"0.0.0.0", "::"}:
-        host = "127.0.0.1"
-    return f"http://{host}:{config.port}{CODEX_HOOK_PATH}"
 
 
 def load(path: Path) -> JsonObject:
@@ -98,7 +80,13 @@ def is_octomate_handler(value: object) -> bool:
 
 @hooks_typer.command("install")
 def install(
-    url: Annotated[str | None, typer.Option()] = None,
+    url: Annotated[
+        str | None,
+        typer.Option(
+            help="Full hook URL to pin. Without it, hooks resolve "
+            f"${OCTOMATE_URL_ENV} from each session's environment at fire time."
+        ),
+    ] = None,
     scope: Annotated[Scope, typer.Option()] = Scope.user,
     path: Annotated[Path | None, typer.Option("--hooks-file")] = None,
 ) -> None:
@@ -108,11 +96,13 @@ def install(
     hooks = document.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise typer.BadParameter(f"{target} has a non-object 'hooks' section")
-    hook_url = url or configured_hook_url()
     # By absolute path, not `-m octomate...`: importing the package costs ~1.9s, which
     # Codex would pay on every blocking hook. Through `sys.executable` so the hook runs
     # on this interpreter, not whichever `python` the session's PATH resolves.
-    command = shlex.join([sys.executable, str(EMIT_SCRIPT), "--url", hook_url])
+    parts = [sys.executable, str(EMIT_SCRIPT), "--path", CODEX_HOOK_PATH]
+    if url is not None:
+        parts += ["--url", url]
+    command = shlex.join(parts)
     group: JsonObject = {
         "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}]
     }
@@ -135,7 +125,8 @@ def install(
                     kept.append({**existing, "hooks": remaining})
         hooks[event] = [*kept, group]
     write(target, document)
-    typer.echo(f"Installed Octomate Codex hooks in {target}")
+    hook_target = url if url is not None else f"${OCTOMATE_URL_ENV} at fire time"
+    typer.echo(f"Installed Octomate Codex hooks in {target} → {hook_target}")
     typer.echo(f"  events: {', '.join(HANDLED_HOOK_EVENTS)}")
     typer.echo(f"  emit:   {EMIT_SCRIPT}")
     typer.echo("Open /hooks in Codex and trust the new command hooks.")

@@ -54,10 +54,14 @@ def test_install_preserves_existing_hooks_and_is_idempotent(tmp_path: Path) -> N
     document = read(path)
     assert document["model"] == "opus"  # unrelated settings untouched
     hooks = document["hooks"]
-    # The pre-existing command hook survives beside one Octomate http handler.
-    assert hook_types(hooks["Stop"]) == ["command", "http"]
-    # No SessionStart: Claude Code delivers it to command/mcp_tool hooks only, so an
-    # http handler for it could never fire.
+    # The pre-existing command hook survives beside one Octomate emit handler.
+    assert hook_types(hooks["Stop"]) == ["command", "command"]
+    [emit] = [
+        h for g in hooks["Stop"] for h in g["hooks"] if str(EMIT_SCRIPT) in h["command"]
+    ]
+    assert "--path /hooks/claude" in emit["command"]
+    # No SessionStart: the server acts on nothing in it — the first prompt starts the
+    # session — so registering it would spawn a process per session for nothing.
     assert set(hooks) == {
         "UserPromptSubmit",
         "Stop",
@@ -67,22 +71,23 @@ def test_install_preserves_existing_hooks_and_is_idempotent(tmp_path: Path) -> N
     }
 
 
-def test_the_installed_handler_references_the_secret_rather_than_carrying_it(
+def test_the_installed_handler_carries_neither_credential_nor_host(
     tmp_path: Path,
 ) -> None:
-    """A settings file is a document people commit and share; the credential is not.
-    Claude Code resolves `${VAR}` from the environment at fire time, and only for names
-    listed in `allowedEnvVars`."""
+    """A settings file is a document people commit and share; the credential and,
+    without a pinned `--url`, the server's address are both environment — the emit
+    script resolves them when each hook fires, so the same install serves whichever
+    server `OCTOMATE_URL` names."""
     path = tmp_path / "settings.json"
-    runner.invoke(
-        claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)]
-    )
+    runner.invoke(claude_typer, ["hooks", "install", "--settings", str(path)])
 
     [handler] = [
         hook for group in read(path)["hooks"]["Stop"] for hook in group["hooks"]
     ]
-    assert handler["headers"] == {"Authorization": "Bearer ${OCTOMATE__HOOK_SECRET}"}
-    assert handler["allowedEnvVars"] == ["OCTOMATE__HOOK_SECRET"]
+    assert handler["type"] == "command"
+    assert "--path /hooks/claude" in handler["command"]
+    assert "--url" not in handler["command"]
+    assert "OCTOMATE__HOOK_SECRET" not in json.dumps(read(path))
 
 
 def test_install_retires_an_event_octomate_no_longer_registers(tmp_path: Path) -> None:
@@ -107,9 +112,11 @@ def test_install_retires_an_event_octomate_no_longer_registers(tmp_path: Path) -
     hooks = read(path)["hooks"]
     assert "SessionStart" not in hooks
     # The operator's own hook on Stop survives beside exactly one fresh Octomate handler.
-    assert hook_types(hooks["Stop"]) == ["command", "http"]
-    [fresh] = [h for g in hooks["Stop"] for h in g["hooks"] if h["type"] == "http"]
-    assert "headers" in fresh
+    assert hook_types(hooks["Stop"]) == ["command", "command"]
+    [fresh] = [
+        h for g in hooks["Stop"] for h in g["hooks"] if str(EMIT_SCRIPT) in h["command"]
+    ]
+    assert "--path /hooks/claude" in fresh["command"]
 
 
 def test_install_replaces_a_stale_octomate_url(tmp_path: Path) -> None:
@@ -127,8 +134,10 @@ def test_install_replaces_a_stale_octomate_url(tmp_path: Path) -> None:
             ],
         )
     stop = read(path)["hooks"]["Stop"]
-    urls = {hook["url"] for group in stop for hook in group["hooks"]}
-    assert urls == {"http://127.0.0.1:2222/hooks/claude"}  # only the fresh url remains
+    commands = [hook["command"] for group in stop for hook in group["hooks"]]
+    assert len(commands) == 1  # only the fresh pin remains, not one handler per port
+    assert "http://127.0.0.1:2222/hooks/claude" in commands[0]
+    assert "1111" not in commands[0]
 
 
 def test_install_adds_the_stream_launcher_on_prompt_submit_only(
@@ -145,19 +154,18 @@ def test_install_adds_the_stream_launcher_on_prompt_submit_only(
         )
 
     hooks = read(path)["hooks"]
-    assert hook_types(hooks["UserPromptSubmit"]) == ["http", "command"]
+    assert hook_types(hooks["UserPromptSubmit"]) == ["command", "command"]
     for event in ("Stop", "SessionEnd", "SubagentStart", "SubagentStop"):
-        assert hook_types(hooks[event]) == ["http"]
+        assert hook_types(hooks[event]) == ["command"]
 
     [launcher] = [
         hook
         for group in hooks["UserPromptSubmit"]
         for hook in group["hooks"]
-        if hook["type"] == "command"
+        if str(LAUNCH_SCRIPT) in hook["command"]
     ]
     # The command names this install's own interpreter and launch script by absolute
-    # path, and points at the stream endpoint the hook URL implies.
-    assert str(LAUNCH_SCRIPT) in launcher["command"]
+    # path, and — the install pinned --url — the stream endpoint the hook URL implies.
     assert "ws://127.0.0.1:9999/hooks/claude/stream" in launcher["command"]
 
 
@@ -202,7 +210,12 @@ def test_no_launcher_skips_the_stream_and_retires_a_previous_one(
         ["hooks", "install", "--url", URL, "--settings", str(path), "--no-launcher"],
     )
 
-    assert hook_types(read(path)["hooks"]["UserPromptSubmit"]) == ["http"]
+    [remaining] = [
+        hook
+        for group in read(path)["hooks"]["UserPromptSubmit"]
+        for hook in group["hooks"]
+    ]
+    assert str(LAUNCH_SCRIPT) not in remaining["command"]  # only the emit hook is left
 
 
 def test_uninstall_removes_the_launcher_too(tmp_path: Path) -> None:
@@ -284,6 +297,28 @@ def test_codex_install_replaces_a_handler_left_by_an_older_version(
     assert stale["command"] not in commands  # the stale handler is gone, not duplicated
     assert "echo done" in commands  # an unrelated hook of the operator's survives
     assert sum(str(EMIT_SCRIPT) in command for command in commands) == 1
+
+
+def test_codex_install_without_url_leaves_the_target_to_the_environment(
+    tmp_path: Path,
+) -> None:
+    """No pinned host: the emit command carries only the hook path, and the script
+    resolves $OCTOMATE_URL when each hook fires — switching servers is an environment
+    switch, not a re-install."""
+    path = tmp_path / "hooks.json"
+    result = runner.invoke(codex_typer, ["hooks", "install", "--hooks-file", str(path)])
+    assert result.exit_code == 0
+
+    handlers = [
+        hook
+        for groups in read(path)["hooks"].values()
+        for group in groups
+        for hook in group["hooks"]
+    ]
+    assert handlers
+    for handler in handlers:
+        assert "--path /hooks/codex" in handler["command"]
+        assert "--url" not in handler["command"]
 
 
 def configured(monkeypatch: pytest.MonkeyPatch, hook_secret: SecretStr | None) -> None:

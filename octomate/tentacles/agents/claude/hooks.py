@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ClaudeHookInput(BaseModel):
-    """A hook event Claude Code POSTs, as FastAPI validates the request body.
+    """A hook event from a native Claude session — POSTed by the emit command hook —
+    as FastAPI validates the request body.
 
     The common envelope plus the two event-specific fields the live tier consumes;
     every other event-specific field is ignored (`extra="ignore"`), so one model

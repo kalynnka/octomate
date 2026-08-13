@@ -15,14 +15,18 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 import pytest
+from octomate_cli.codex import CODEX_HOOK_PATH as CANONICAL_CODEX_HOOK_PATH
 from octomate_cli.codex import EMIT_SCRIPT
 from octomate_cli.codex import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
 from octomate_cli.emit import (
+    CODEX_HOOK_PATH,
     DRIVEN_ENV,
     HOOK_SECRET_ENV,
     HOOK_TIMEOUT,
+    OCTOMATE_URL_ENV,
 )
 from octomate_cli.hooks import HOOK_SECRET_ENV as CANONICAL_HOOK_SECRET_ENV
+from octomate_cli.hooks import OCTOMATE_URL_ENV as CANONICAL_OCTOMATE_URL_ENV
 
 from octomate.tentacles.agents.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
 
@@ -61,10 +65,10 @@ def router() -> Iterator[tuple[str, Received]]:
 
 
 def emit(
-    url: str, env: dict[str, str], payload: dict[str, object] | None = None
+    args: list[str], env: dict[str, str], payload: dict[str, object] | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(EMIT_SCRIPT), "--url", url],
+        [sys.executable, str(EMIT_SCRIPT), *args],
         input=json.dumps(payload if payload is not None else PAYLOAD),
         capture_output=True,
         text=True,
@@ -72,11 +76,16 @@ def emit(
     )
 
 
+def base_of(url: str) -> str:
+    """The server base a session's OCTOMATE_URL would carry, from the fixture's URL."""
+    return url.removesuffix(CODEX_HOOK_PATH)
+
+
 def test_the_payload_is_delivered_bearing_the_hook_credential(
     router: tuple[str, Received],
 ) -> None:
     url, received = router
-    result = emit(url, {HOOK_SECRET_ENV: SECRET})
+    result = emit(["--path", CODEX_HOOK_PATH, "--url", url], {HOOK_SECRET_ENV: SECRET})
 
     assert result.returncode == 0
     assert received.body == PAYLOAD
@@ -89,7 +98,10 @@ def test_a_driven_session_is_marked_so_the_router_can_drop_it(
     router: tuple[str, Received],
 ) -> None:
     url, received = router
-    emit(url, {HOOK_SECRET_ENV: SECRET, DRIVEN_ENV: "1"})
+    emit(
+        ["--path", CODEX_HOOK_PATH, "--url", url],
+        {HOOK_SECRET_ENV: SECRET, DRIVEN_ENV: "1"},
+    )
 
     assert received.body is not None
     assert received.body["octomate_driven"] is True
@@ -97,7 +109,7 @@ def test_a_driven_session_is_marked_so_the_router_can_drop_it(
 
 def test_an_undriven_session_is_not_marked(router: tuple[str, Received]) -> None:
     url, received = router
-    emit(url, {HOOK_SECRET_ENV: SECRET})
+    emit(["--path", CODEX_HOOK_PATH, "--url", url], {HOOK_SECRET_ENV: SECRET})
 
     assert received.body is not None
     assert "octomate_driven" not in received.body
@@ -107,7 +119,7 @@ def test_without_a_secret_nothing_is_posted(router: tuple[str, Received]) -> Non
     """Silently posting unauthenticated would just 401; saying so is what tells an
     operator their sessions are not being ingested."""
     url, received = router
-    result = emit(url, {})
+    result = emit(["--path", CODEX_HOOK_PATH, "--url", url], {})
 
     assert result.returncode == 1
     assert received.body is None
@@ -116,11 +128,80 @@ def test_without_a_secret_nothing_is_posted(router: tuple[str, Received]) -> Non
 
 def test_an_unreachable_octomate_does_not_take_the_turn_down() -> None:
     """A session is the person's own work; ingest only observes it."""
-    result = emit("http://127.0.0.1:1/hooks/codex", {HOOK_SECRET_ENV: SECRET})
+    result = emit(
+        ["--path", CODEX_HOOK_PATH, "--url", "http://127.0.0.1:1/hooks/codex"],
+        {HOOK_SECRET_ENV: SECRET},
+    )
 
     assert result.returncode == 1
     assert "failed" in result.stderr
     assert result.stdout.strip() == "{}"  # still no decision, rather than no answer
+
+
+def test_the_target_resolves_from_the_environment_at_fire_time(
+    router: tuple[str, Received],
+) -> None:
+    """The installed command carries only `--path`; the server's address comes from
+    OCTOMATE_URL when the hook fires, so switching servers is an environment switch."""
+    url, received = router
+    result = emit(
+        ["--path", CODEX_HOOK_PATH],
+        {HOOK_SECRET_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
+    )
+
+    assert result.returncode == 0
+    assert received.body == PAYLOAD
+
+
+def test_a_pinned_url_wins_over_the_environment(router: tuple[str, Received]) -> None:
+    """`--url` is the per-directory pin (a debug server's install); the environment
+    must not silently redirect it."""
+    url, received = router
+    result = emit(
+        ["--path", CODEX_HOOK_PATH, "--url", url],
+        {HOOK_SECRET_ENV: SECRET, OCTOMATE_URL_ENV: "http://127.0.0.1:1"},
+    )
+
+    assert result.returncode == 0
+    assert received.body == PAYLOAD
+
+
+def test_without_a_target_nothing_is_posted_and_the_turn_survives() -> None:
+    """No pin and no OCTOMATE_URL: say so on stderr and stay out of the way — a fresh
+    machine without the environment set must not lose its session to ingest."""
+    result = emit(["--path", CODEX_HOOK_PATH], {HOOK_SECRET_ENV: SECRET})
+
+    assert result.returncode == 1
+    assert OCTOMATE_URL_ENV in result.stderr
+    assert result.stdout.strip() == "{}"  # the decision protocol still gets an answer
+
+
+def test_the_claude_path_stays_silent_on_stdout(router: tuple[str, Received]) -> None:
+    """A Claude `UserPromptSubmit` hook's stdout is injected into the turn's context,
+    so on Claude's path the script must print nothing — the `{}` decision is Codex's
+    protocol alone."""
+    url, received = router
+    result = emit(
+        ["--path", "/hooks/claude"],
+        {HOOK_SECRET_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
+    )
+
+    assert result.returncode == 0
+    assert received.body == PAYLOAD
+    assert result.stdout == ""
+
+
+def test_the_previous_generations_url_only_form_still_delivers(
+    router: tuple[str, Received],
+) -> None:
+    """Hooks written before `--path` existed invoke `emit.py --url <url>`; they keep
+    delivering until their next re-install, rather than breaking on upgrade."""
+    url, received = router
+    result = emit(["--url", url], {HOOK_SECRET_ENV: SECRET})
+
+    assert result.returncode == 0
+    assert received.body == PAYLOAD
+    assert result.stdout.strip() == "{}"
 
 
 def test_its_duplicated_names_still_match_the_canonical_ones() -> None:
@@ -131,6 +212,8 @@ def test_its_duplicated_names_still_match_the_canonical_ones() -> None:
     assert HOOK_SECRET_ENV == CANONICAL_HOOK_SECRET_ENV
     assert DRIVEN_ENV == CANONICAL_DRIVEN_ENV
     assert HOOK_TIMEOUT == CANONICAL_HOOK_TIMEOUT
+    assert OCTOMATE_URL_ENV == CANONICAL_OCTOMATE_URL_ENV
+    assert CODEX_HOOK_PATH == CANONICAL_CODEX_HOOK_PATH
 
 
 def test_the_script_never_imports_the_octomate_package() -> None:

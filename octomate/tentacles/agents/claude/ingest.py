@@ -141,8 +141,8 @@ class ClaudeHookIngest:
         "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
     )
     async def on_user_prompt_submit(self, event: ClaudeHookInput) -> None:
-        # SessionStart is not delivered to http hooks, so the first prompt starts the
-        # tailer if it is not already following (self-heal).
+        # SessionStart is not registered (the server acts on nothing in it), so the
+        # first prompt starts the tailer if it is not already following (self-heal).
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
             if event.prompt:

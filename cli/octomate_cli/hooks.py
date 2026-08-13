@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import secrets
 import shlex
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -18,9 +19,21 @@ console = Console(stderr=True)
 
 # How a *client* carries the credential. A client-side contract, so it lives with the
 # installer that writes it; the app itself reads `OctomateConfig.hook_secret` and does
-# not care which source filled it. `cli/emit.py` repeats the name as a literal because
+# not care which source filled it. `emit.py` repeats the name as a literal because
 # it cannot import the package — change both together.
 HOOK_SECRET_ENV = "OCTOMATE__HOOK_SECRET"
+
+# Where Octomate is, as a base URL (`http://host:port`) the hook scripts resolve when
+# a hook fires — so switching servers is an environment switch, not a re-install. An
+# explicit `--url` pinned at install time wins over it. `emit.py` and `launch.py`
+# repeat the name as a literal because they cannot import the package — change all
+# three together.
+OCTOMATE_URL_ENV = "OCTOMATE_URL"
+
+# The forwarding command hook's script — it carries the event body from stdin to the
+# hook router over HTTP. Both agents' installers write commands that run it by
+# absolute path, so a hook never imports the packages (see its module docstring).
+EMIT_SCRIPT = Path(__file__).with_name("emit.py")
 
 hooks_typer = typer.Typer(
     help="Manage the credential native-session hooks authenticate with.",
