@@ -5,9 +5,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    # Carries `octomate_stream`, the wire protocol — the only module the server
-    # imports from it. The distribution edge also hands a server install the
-    # `octomate` console script; the CLI's own code stays unimported here.
+    # The server imports one module from it — `octomate_cli.stream`, the wire
+    # protocol — and nothing else. The distribution edge also hands a server
+    # install the `octomate` console script.
     "octomate-cli",
     "anyio>=4",
     "httpx>=0.28.1",
@@ -48,7 +48,7 @@ build-backend = "hatchling.build"
 packages = ["octomate"]
 
 [tool.uv.workspace]
-members = ["packages/cli"]
+members = ["cli"]
 
 [tool.uv.sources]
 octomate-cli = { workspace = true }

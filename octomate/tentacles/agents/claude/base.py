@@ -32,7 +32,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import SystemPromptPreset
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from octomate_stream import (
+from octomate_cli.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,

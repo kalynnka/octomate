@@ -9,7 +9,7 @@ from time import monotonic
 
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from octomate_stream import SESSION_FILE
+from octomate_cli.stream import SESSION_FILE
 from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from watchfiles import awatch

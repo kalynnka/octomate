@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from octomate_cli.claude import CLAUDE_STREAM_PATH
-from octomate_stream import (
+from octomate_cli.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,

@@ -20,8 +20,5 @@ octomate = "octomate_cli.cli:app"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Two top-level names in one distribution: the CLI package, and `octomate_stream` —
-# the wire protocol, a lone module rather than part of `octomate_cli` because the
-# server imports it too (and nothing else from this distribution).
 [tool.hatch.build.targets.wheel]
-only-include = ["octomate_cli", "octomate_stream.py"]
+packages = ["octomate_cli"]

@@ -28,7 +28,12 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import monotonic
 
-from octomate_stream import (
+from watchfiles import awatch
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
+
+from octomate_cli.hooks import HOOK_SECRET_ENV
+from octomate_cli.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
@@ -38,11 +43,6 @@ from octomate_stream import (
     StreamWelcome,
     server_message_adapter,
 )
-from watchfiles import awatch
-from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
-
-from octomate_cli.hooks import HOOK_SECRET_ENV
 
 # Mirror the server tailer's cadence: the watch wakes at least this often, and a
 # session quiet this long is drained and closed out.

@@ -1648,7 +1648,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "lark-oapi", specifier = ">=1.4.8" },
     { name = "logfire", extras = ["httpx", "sqlalchemy"], specifier = ">=4.29.0" },
-    { name = "octomate-cli", editable = "packages/cli" },
+    { name = "octomate-cli", editable = "cli" },
     { name = "openai-codex", specifier = ">=0.1.0b3" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-ai", extras = ["bedrock"], specifier = ">=2.20.0" },
@@ -1678,7 +1678,7 @@ dev = [
 [[package]]
 name = "octomate-cli"
 version = "0.0.1"
-source = { editable = "packages/cli" }
+source = { editable = "cli" }
 dependencies = [
     { name = "pydantic" },
     { name = "rich" },
