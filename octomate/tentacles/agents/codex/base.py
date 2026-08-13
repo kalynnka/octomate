@@ -73,7 +73,6 @@ from octomate.tentacles.agents.codex.adapter import (
     json_object_adapter,
 )
 from octomate.tentacles.agents.codex.hooks import (
-    CODEX_HOOK_PATH,
     DRIVEN_ENV,
     CodexHookInput,
 )
@@ -332,7 +331,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             tags=["codex"], dependencies=[Depends(hook_guard(self.hook_secret))]
         )
 
-        @router.post(CODEX_HOOK_PATH, summary="Codex native-session hook pipe")
+        @router.post("/hooks/codex", summary="Codex native-session hook pipe")
         async def receive_hook(event: CodexHookInput) -> JSONResponse:
             await self.session_ingest.handle(event)
             return JSONResponse({})

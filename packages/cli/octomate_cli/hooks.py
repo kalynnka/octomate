@@ -31,8 +31,17 @@ hooks_typer = typer.Typer(
 def announce_hook_secret() -> None:
     """Warn when hooks were just installed against a secret that does not exist: the
     install reports success, and every turn after it 401s."""
-    from octomate.config import OctomateConfig  # heavy; only when the CLI installs
-
+    try:
+        from octomate.config import OctomateConfig  # heavy; only when the CLI installs
+    except ImportError:
+        # A client machine cannot check the server's config; remind instead of verify.
+        typer.secho(
+            f"\nEnsure {HOOK_SECRET_ENV} is exported here and matches the server's "
+            "hook_secret, or every hook will be refused.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        return
     if OctomateConfig().hook_secret is None:
         typer.secho(
             "\nNo hook secret configured — these hooks will be refused. "
@@ -54,9 +63,14 @@ def secret() -> None:
     when hooks already work. A generated one exists nowhere Octomate can see, and stderr
     says so. Only the export line goes to stdout, so it stays eval'able.
     """
-    from octomate.config import OctomateConfig  # heavy; only when the CLI asks
-
-    configured = OctomateConfig().hook_secret
+    try:
+        from octomate.config import OctomateConfig  # heavy; only when the CLI asks
+    except ImportError:
+        # A client machine: nothing configured here to print, so generate — the panel
+        # below already says Octomate cannot see it until the operator places it.
+        configured = None
+    else:
+        configured = OctomateConfig().hook_secret
     token = (
         configured.get_secret_value()
         if configured is not None

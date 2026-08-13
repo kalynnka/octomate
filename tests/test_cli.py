@@ -9,12 +9,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from octomate_cli.claude import LAUNCH_SCRIPT, claude_typer
+from octomate_cli.cli import app
+from octomate_cli.codex import EMIT_SCRIPT, codex_typer
 from pydantic import SecretStr
 from typer.testing import CliRunner
-
-from octomate.cli.base import app
-from octomate.cli.claude import LAUNCH_SCRIPT, claude_typer
-from octomate.cli.codex import EMIT_SCRIPT, codex_typer
 
 runner = CliRunner()
 URL = "http://127.0.0.1:9999/hooks/claude"

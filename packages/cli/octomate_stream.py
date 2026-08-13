@@ -42,7 +42,7 @@ class StreamHello(BaseModel):
     session_id: str
     transcript_path: str
     cwd: str = ""
-    # The shipping client's own version (the octomate package), logged at attach for
+    # The shipping client's own version (the octomate-cli package), logged at attach for
     # skew diagnosis. The Claude Code version is not carried here: it rides every
     # transcript line, which the server parses anyway.
     client_version: str = ""

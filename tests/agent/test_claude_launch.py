@@ -12,7 +12,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
-from octomate.cli.claude import LAUNCH_SCRIPT
+from octomate_cli.claude import LAUNCH_SCRIPT
 
 STREAM_URL = "ws://127.0.0.1:9999/hooks/claude/stream"
 EVENT = {

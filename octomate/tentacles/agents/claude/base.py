@@ -32,6 +32,15 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import SystemPromptPreset
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from octomate_stream import (
+    SESSION_FILE,
+    STREAM_PROTOCOL,
+    StreamEof,
+    StreamFinalize,
+    StreamHello,
+    StreamWelcome,
+    client_message_adapter,
+)
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_ai import (
@@ -87,15 +96,6 @@ from octomate.tentacles.agents.claude.tailer import (
 from octomate.tentacles.agents.claude.transport import SSHTransport
 from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
-from octomate.tentacles.agents.stream import (
-    SESSION_FILE,
-    STREAM_PROTOCOL,
-    StreamEof,
-    StreamFinalize,
-    StreamHello,
-    StreamWelcome,
-    client_message_adapter,
-)
 from octomate.types.json import JsonObject
 from octomate.types.permissions import ClaudePermissionMode, is_claude_mode
 

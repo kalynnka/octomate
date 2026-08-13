@@ -28,12 +28,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import monotonic
 
-from watchfiles import awatch
-from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
-
-from octomate.cli.hooks import HOOK_SECRET_ENV
-from octomate.tentacles.agents.stream import (
+from octomate_stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
@@ -43,6 +38,11 @@ from octomate.tentacles.agents.stream import (
     StreamWelcome,
     server_message_adapter,
 )
+from watchfiles import awatch
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
+
+from octomate_cli.hooks import HOOK_SECRET_ENV
 
 # Mirror the server tailer's cadence: the watch wakes at least this often, and a
 # session quiet this long is drained and closed out.
@@ -59,7 +59,7 @@ BACKOFF_CAP = 60.0
 REFUSED = 1008
 
 try:
-    CLIENT_VERSION = version("octomate")
+    CLIENT_VERSION = version("octomate-cli")
 except PackageNotFoundError:
     # Running from an uninstalled source tree; version-less beats not streaming.
     CLIENT_VERSION = "unknown"

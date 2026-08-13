@@ -9,6 +9,7 @@ from time import monotonic
 
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from octomate_stream import SESSION_FILE
 from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from watchfiles import awatch
@@ -41,7 +42,6 @@ from octomate.tentacles.agents.claude.transcript import (
     transcript_line_adapter,
 )
 from octomate.tentacles.agents.locks import SessionLocks
-from octomate.tentacles.agents.stream import SESSION_FILE
 from octomate.types.permissions import is_claude_mode
 
 logger = logging.getLogger(__name__)
@@ -432,9 +432,12 @@ class ClaudeTranscriptTailer:
             raise RemoteTailRefused(
                 f"session {session_id} is already tailed from a local transcript"
             )
+
         state = self.new_state(session_id, transcript_path)
         state.remote = True
+
         await self.prepare(state)
+
         conversation = state.conversation
         assert conversation is not None  # prepare() resolved it
         state.offset = max(

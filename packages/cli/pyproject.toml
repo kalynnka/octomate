@@ -1,0 +1,27 @@
+[project]
+name = "octomate-cli"
+version = "0.0.1"
+description = "Octomate's client half: the operator CLI, native-session hook clients, and the transcript tail."
+requires-python = ">=3.11"
+# Deliberately light — a client machine installs octomate-cli alone, and nothing here
+# may import the octomate server package.
+dependencies = [
+    "pydantic>=2.12.5",
+    "rich>=13",
+    "typer>=0.25.1",
+    "watchfiles>=1.1.1",
+    "websockets>=15",
+]
+
+[project.scripts]
+octomate = "octomate_cli.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Two top-level names in one distribution: the CLI package, and `octomate_stream` —
+# the wire protocol, a lone module rather than part of `octomate_cli` because the
+# server imports it too (and nothing else from this distribution).
+[tool.hatch.build.targets.wheel]
+only-include = ["octomate_cli", "octomate_stream.py"]

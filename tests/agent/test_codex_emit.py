@@ -15,16 +15,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 import pytest
-
-from octomate.cli.codex import EMIT_SCRIPT
-from octomate.cli.emit import (
+from octomate_cli.codex import EMIT_SCRIPT
+from octomate_cli.codex import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
+from octomate_cli.emit import (
     DRIVEN_ENV,
     HOOK_SECRET_ENV,
     HOOK_TIMEOUT,
 )
-from octomate.cli.hooks import HOOK_SECRET_ENV as CANONICAL_HOOK_SECRET_ENV
+from octomate_cli.hooks import HOOK_SECRET_ENV as CANONICAL_HOOK_SECRET_ENV
+
 from octomate.tentacles.agents.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
-from octomate.tentacles.agents.codex.hooks import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
 
 SECRET = "the-hook-secret"
 PAYLOAD = {"hook_event_name": "Stop", "session_id": "s1", "turn_id": "t1"}

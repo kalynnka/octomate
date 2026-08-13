@@ -8,11 +8,10 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+import octomate_cli.tail as tail_mod
 import pytest
-
-import octomate.cli.tail as tail_mod
-from octomate.cli.hooks import HOOK_SECRET_ENV
-from octomate.cli.tail import FileCursor, SessionTail, main
+from octomate_cli.hooks import HOOK_SECRET_ENV
+from octomate_cli.tail import FileCursor, SessionTail, main
 
 
 def test_read_lines_frames_complete_lines_and_holds_the_fragment(

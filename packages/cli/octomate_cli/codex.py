@@ -1,3 +1,6 @@
+"""`octomate codex ...` — the client-side contract with a native Codex session and
+the commands that install it."""
+
 from __future__ import annotations
 
 import json
@@ -9,16 +12,28 @@ from typing import Annotated
 
 import typer
 
-from octomate.cli.hooks import announce_hook_secret
-from octomate.tentacles.agents.codex.hooks import (
-    CODEX_HOOK_PATH,
-    HANDLED_HOOK_EVENTS,
-    HOOK_TIMEOUT,
+from octomate_cli.hooks import announce_hook_secret
+from octomate_cli.jsontypes import JsonObject
+
+# Bound so a wedged or slow Octomate can never freeze someone's Codex session.
+HOOK_TIMEOUT = 10
+
+# The hook route's path as clients address it; the server inlines the literal in its
+# route, and the tests that speak to it keep the two matching.
+CODEX_HOOK_PATH = "/hooks/codex"
+
+# The events the emit command forwards; unlike Claude's http handlers, Codex delivers
+# SessionStart to command hooks, so it is registered too.
+HANDLED_HOOK_EVENTS = (
+    "SessionStart",
+    "UserPromptSubmit",
+    "Stop",
+    "SubagentStart",
+    "SubagentStop",
 )
-from octomate.types.json import JsonObject
 
 # The command a Codex hook runs: a standalone stdlib-only script, run by path rather
-# than imported so a hook never imports the octomate package. See its docstring.
+# than imported so a hook never imports the packages. See its docstring.
 EMIT_SCRIPT = Path(__file__).with_name("emit.py")
 
 codex_typer = typer.Typer(
@@ -43,8 +58,12 @@ def hooks_file(scope: Scope, path: Path | None) -> Path:
 
 
 def configured_hook_url() -> str:
-    from octomate.config import OctomateConfig
-
+    try:
+        from octomate.config import OctomateConfig
+    except ImportError:
+        raise typer.BadParameter(
+            "no server config on this machine — pass --url with Octomate's address"
+        ) from None
     config = OctomateConfig()
     host = str(config.host)
     if host in {"0.0.0.0", "::"}:

@@ -12,6 +12,16 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from octomate_cli.claude import CLAUDE_STREAM_PATH
+from octomate_stream import (
+    SESSION_FILE,
+    STREAM_PROTOCOL,
+    StreamEof,
+    StreamHello,
+    StreamLine,
+    StreamWelcome,
+    server_message_adapter,
+)
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.testclient import WebSocketDenialResponse
@@ -20,20 +30,10 @@ from starlette.websockets import WebSocketDisconnect
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.claude.hooks import CLAUDE_STREAM_PATH
 from octomate.tentacles.agents.claude.tailer import (
     ClaudeTranscriptTailer,
     RemoteTailRefused,
     TailState,
-)
-from octomate.tentacles.agents.stream import (
-    SESSION_FILE,
-    STREAM_PROTOCOL,
-    StreamEof,
-    StreamHello,
-    StreamLine,
-    StreamWelcome,
-    server_message_adapter,
 )
 from octomate.types.json import JsonObject
 from tests.agent.test_claude_tailer import (

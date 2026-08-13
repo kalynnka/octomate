@@ -1,48 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-# The events this pipe registers and acts on. `UserPromptSubmit` and `Stop` carry the
-# turn's prompt and answer — the whole human ledger — while `SessionEnd` closes the
-# session so the transcript tailer can finalize. `SubagentStart`/`SubagentStop` bound a
-# subagent's life the same way one level down: start pokes its transcript tail awake,
-# stop drains and commits it. Tool-lifecycle and message-display events are
-# model-timeline detail the tailer reads off the transcript, not ingested from the
-# events.
-#
-# `SessionStart` is absent on purpose: Claude Code delivers it to `command` and
-# `mcp_tool` hooks only, so registering it as `http` would install a handler that can
-# never fire. The first prompt starts the tailer instead (see `ClaudeHookIngest`).
-HandledHookEvent = Literal[
-    "UserPromptSubmit",
-    "Stop",
-    "SessionEnd",
-    "SubagentStart",
-    "SubagentStop",
-]
-HANDLED_HOOK_EVENTS: tuple[HandledHookEvent, ...] = (
-    "UserPromptSubmit",
-    "Stop",
-    "SessionEnd",
-    "SubagentStart",
-    "SubagentStop",
-)
-
-# Bound so a wedged or slow Octomate can never freeze someone's Claude session: past
-# this the CLI abandons the hook and carries on.
-HOOK_TIMEOUT = 10
-
-# The hook route's path as clients address it: settings point at
-# `http://<host>:<port>{CLAUDE_HOOK_PATH}`. The route inlines the literal; the tests
-# that speak to it are what keep the two matching.
-CLAUDE_HOOK_PATH = "/hooks/claude"
-
-# The transcript stream's path, likewise client-side: a tail connects to
-# `ws://<host>:<port>{CLAUDE_STREAM_PATH}` bearing the same hook credential.
-CLAUDE_STREAM_PATH = "/hooks/claude/stream"
+# Which events the pipe registers, the route paths, and the hook timeout are the
+# client-side contract, and live with the installer that writes them: `octomate_cli.claude`.
 
 
 class ClaudeHookInput(BaseModel):

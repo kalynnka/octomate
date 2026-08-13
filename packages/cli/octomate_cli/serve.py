@@ -91,9 +91,18 @@ def serve(
         subprocess.run(["tmux", attach, "-t", session], check=True)
         return
 
-    import uvicorn
+    try:
+        import uvicorn
 
-    from octomate.config import OctomateConfig  # heavy; only when the CLI serves
+        from octomate.config import OctomateConfig  # heavy; only when the CLI serves
+    except ImportError as error:
+        typer.secho(
+            f"`octomate serve` needs the octomate server package ({error.name} is "
+            "missing) — octomate-cli alone is the client half.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1) from None
 
     config = OctomateConfig()
     uvicorn.run(

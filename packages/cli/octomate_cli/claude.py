@@ -1,8 +1,8 @@
-"""`octomate claude ...` — operator commands for the native Claude Code integration.
+"""`octomate claude ...` — the client-side contract with a native Claude Code session
+and the commands that install it.
 
-Everything CLI-shaped lives under `octomate/cli`, the tentacle keeps only runtime;
-the hook-path scripts beside this module (`launch.py`, `emit.py`) additionally stay
-stdlib-only and are run by path, because a hook pays their startup on every fire.
+The hook-path scripts beside this module (`launch.py`, `emit.py`) stay stdlib-only
+and are run by path, because a hook pays their startup on every fire.
 """
 
 from __future__ import annotations
@@ -12,21 +12,51 @@ import shlex
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
-from octomate.cli.hooks import HOOK_SECRET_ENV, announce_hook_secret
-from octomate.tentacles.agents.claude.hooks import (
-    CLAUDE_HOOK_PATH,
-    CLAUDE_STREAM_PATH,
-    HANDLED_HOOK_EVENTS,
-    HOOK_TIMEOUT,
+from octomate_cli.hooks import HOOK_SECRET_ENV, announce_hook_secret
+from octomate_cli.jsontypes import JsonObject, JsonValue
+
+# The events the hook pipe registers and the server acts on. `UserPromptSubmit` and
+# `Stop` carry the turn's prompt and answer — the whole human ledger — while
+# `SessionEnd` closes the session so the transcript tailer can finalize.
+# `SubagentStart`/`SubagentStop` bound a subagent's life the same way one level down.
+#
+# `SessionStart` is absent on purpose: Claude Code delivers it to `command` and
+# `mcp_tool` hooks only, so registering it as `http` would install a handler that can
+# never fire. The first prompt starts the tailer instead.
+HandledHookEvent = Literal[
+    "UserPromptSubmit",
+    "Stop",
+    "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
+]
+HANDLED_HOOK_EVENTS: tuple[HandledHookEvent, ...] = (
+    "UserPromptSubmit",
+    "Stop",
+    "SessionEnd",
+    "SubagentStart",
+    "SubagentStop",
 )
-from octomate.types.json import JsonObject, JsonValue
+
+# Bound so a wedged or slow Octomate can never freeze someone's Claude session: past
+# this the CLI abandons the hook and carries on.
+HOOK_TIMEOUT = 10
+
+# The hook route's path as clients address it: settings point at
+# `http://<host>:<port>{CLAUDE_HOOK_PATH}`. The server inlines the literal in its
+# route; the tests that speak to it are what keep the two matching.
+CLAUDE_HOOK_PATH = "/hooks/claude"
+
+# The transcript stream's path, likewise: a tail connects to
+# `ws://<host>:<port>{CLAUDE_STREAM_PATH}` bearing the same hook credential.
+CLAUDE_STREAM_PATH = "/hooks/claude/stream"
 
 # The launcher command hook's script, run by absolute path so it never imports the
-# package (see its module docstring); the same pattern as codex's EMIT_SCRIPT.
+# packages (see its module docstring); the same pattern as codex's EMIT_SCRIPT.
 LAUNCH_SCRIPT = Path(__file__).with_name("launch.py")
 
 claude_typer = typer.Typer(
@@ -42,8 +72,10 @@ claude_typer.add_typer(hooks_typer, name="hooks")
 def claude_group() -> None:
     # Hint without blocking: the commands still run, since a machine may be set up ahead
     # of the config.
-    from octomate.config import OctomateConfig
-
+    try:
+        from octomate.config import OctomateConfig
+    except ImportError:
+        return  # a client machine: no server half here, so nothing to hint about
     if OctomateConfig().agents.claude is None:
         typer.secho(
             "Note: config.agents.claude is unset, so no hook router is served.",
@@ -79,8 +111,12 @@ def settings_file(scope: Scope, settings: Path | None) -> Path:
 def configured_hook_url() -> str:
     """The hook URL from the running config's host/port. A wildcard bind address is not
     reachable as a URL, so it collapses to loopback — the Claude client is local."""
-    from octomate.config import OctomateConfig  # heavy + optional; only when needed
-
+    try:
+        from octomate.config import OctomateConfig  # heavy + optional; only when needed
+    except ImportError:
+        raise typer.BadParameter(
+            "no server config on this machine — pass --url with Octomate's address"
+        ) from None
     config = OctomateConfig()
     host = str(config.host)
     if host in {"0.0.0.0", "::"}:
@@ -316,6 +352,6 @@ def tail(
     the server states where each file resumes, so re-running never duplicates. Reads
     the hook credential from the environment, like every hook client does.
     """
-    from octomate.cli.tail import main  # heavy; only when tailing
+    from octomate_cli.tail import main  # watchfiles/websockets; only when tailing
 
     main(session_id=session, transcript_path=path, url=url, cwd=cwd)
