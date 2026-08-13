@@ -4,16 +4,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-HOOK_TIMEOUT = 10
-CODEX_HOOK_PATH = "/hooks/codex"
+# The route path, registered events, and hook timeout are the client-side contract,
+# and live with the installer that writes them: `octomate_cli.codex`.
 DRIVEN_ENV = "OCTOMATE_CODEX_DRIVEN"
-HANDLED_HOOK_EVENTS = (
-    "SessionStart",
-    "UserPromptSubmit",
-    "Stop",
-    "SubagentStart",
-    "SubagentStop",
-)
 
 
 class CodexHookInput(BaseModel):

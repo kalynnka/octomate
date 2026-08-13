@@ -141,8 +141,8 @@ class ClaudeHookIngest:
         "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
     )
     async def on_user_prompt_submit(self, event: ClaudeHookInput) -> None:
-        # SessionStart is not delivered to http hooks, so the first prompt starts the
-        # tailer if it is not already following (self-heal).
+        # SessionStart is not registered (the server acts on nothing in it), so the
+        # first prompt starts the tailer if it is not already following (self-heal).
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
             if event.prompt:
@@ -163,6 +163,10 @@ class ClaudeHookIngest:
                 logger.info(
                     "session %s: turn %s answered", event.session_id, event.prompt_id
                 )
+        # The turn is over and its transcript flushed: let the tail commit it now
+        # rather than at the next prompt — a remote one drains out and exits. Outside
+        # the lock, because a local close takes the same session lock to commit.
+        await self.tailer.stop_turn(event.session_id, event.prompt_id)
 
     @claude_logfire.instrument(
         "claude.hook SessionEnd [{event.session_id}]", extract_args=["event"]

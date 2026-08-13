@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
+from octomate_cli.stream import SESSION_FILE
 from pydantic import ValidationError
 from pydantic_ai.messages import (
     ModelMessage,
@@ -47,6 +48,7 @@ from octomate.tentacles.agents.codex.transcript import (
     rollout_line_adapter,
     session_metadata_adapter,
 )
+from octomate.tentacles.agents.hooks import RemoteTailRefused
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 
@@ -121,6 +123,12 @@ class TailState:
     classified_rollouts: set[Path] = field(default_factory=set)
     task: asyncio.Task[None] | None = None
     pump_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # A remote session: its rollout lives on the client machine that streams it, so
+    # there is no follow task or watch — the stream route feeds `feed_remote`, which
+    # drives the same per-line assembly the pumps do. `transcript_path` is then the
+    # client's claim in the client's own namespace, a label never opened here, and the
+    # subagent tails' paths are likewise the client's labels for its sibling files.
+    remote: bool = False
 
 
 class CodexTranscriptTailer:
@@ -149,10 +157,11 @@ class CodexTranscriptTailer:
 
     def start(self, session_id: str, transcript_path: Path) -> TailState:
         existing = self.sessions.get(session_id)
-        if (
-            existing is not None
-            and existing.task is not None
-            and not existing.task.done()
+        # A remote registration holds too: the stream is already the assembler, and a
+        # local follow beside it would race it — the mirror of `attach_remote`'s
+        # refusal when a local follow is live.
+        if existing is not None and (
+            existing.remote or (existing.task is not None and not existing.task.done())
         ):
             return existing
         state = TailState(session_id, transcript_path, asyncio.Event())
@@ -162,7 +171,9 @@ class CodexTranscriptTailer:
 
     async def pump_session(self, session_id: str) -> None:
         state = self.sessions.get(session_id)
-        if state is not None:
+        # No disk to pump for a remote session: the stream is already delivering the
+        # bytes the hook's nudge would have read.
+        if state is not None and not state.remote:
             # A Stop hook can arrive immediately after start, before the follow task's
             # first scheduling slice prepares its durable state. Prepare synchronously
             # here too; manager.ensure is cached, so racing the follow task is harmless.
@@ -173,7 +184,7 @@ class CodexTranscriptTailer:
 
     async def poke_subagents(self, session_id: str) -> None:
         state = self.sessions.get(session_id)
-        if state is None:
+        if state is None or state.remote:
             return
         if state.conversation is None:
             state.conversation = await self.ensure_session(session_id)
@@ -190,6 +201,11 @@ class CodexTranscriptTailer:
     ) -> None:
         state = self.sessions.get(session_id)
         if state is None:
+            return
+        if state.remote:
+            # The settle-drain below reads disk this machine does not have. The child's
+            # own `task_complete` line closes its turn as it streams in, so the stop
+            # hook has nothing to add here.
             return
         if state.conversation is None:
             state.conversation = await self.ensure_session(session_id)
@@ -243,6 +259,115 @@ class CodexTranscriptTailer:
             except asyncio.CancelledError:
                 pass
         self.sessions.clear()
+
+    async def attach_remote(
+        self, session_id: str, transcript_path: Path
+    ) -> tuple[TailState, dict[str, int]]:
+        """Register a remote session — its rollout lives on the client machine that
+        streams it (`octomate codex tail`) — and answer where its files resume.
+
+        The answer is always byte 0: a rollout's head is load-bearing (`session_meta`
+        carries the thread id every child classification checks against, and the
+        parent's `sub_agent_activity` lines are what link child runs to their spawning
+        calls), so a reconnect re-streams whole files and the committed-turn guard
+        skips what is already durable — the same re-read-and-skip a local `start`
+        does. Child files are not named here either: the client keys each by its own
+        label, and `remote_subagent` classifies it from its opening `session_meta`.
+
+        Refuses a session a live local follow already covers: the file is here, and a
+        second assembler would only race the first. A lingering remote registration
+        (its client died without a close) is replaced; the dead route feeds the state
+        object it attached, and its commits are idempotent.
+        """
+        existing = self.sessions.get(session_id)
+        if (
+            existing is not None
+            and existing.task is not None
+            and not existing.task.done()
+        ):
+            raise RemoteTailRefused(
+                f"session {session_id} is already tailed from a local rollout"
+            )
+        state = TailState(session_id, transcript_path, asyncio.Event())
+        state.remote = True
+        state.conversation = await self.ensure_session(session_id)
+        state.recorded = assembled(state.conversation)
+        self.sessions[session_id] = state
+        logger.info("session %s: remote tail attached", session_id)
+        return state, {SESSION_FILE: 0}
+
+    async def feed_remote(
+        self, state: TailState, key: str | None, raw: str, start: int, end: int
+    ) -> None:
+        """Advance a remote session by one framed line — the pumps' per-line body,
+        against offsets the client measured in its own file. Takes the state rather
+        than a session id so a superseded connection keeps feeding the state it
+        attached, never whoever registered after it. `key` is None for the session's
+        own rollout, else the client's label for a sibling file."""
+        state.last_active = monotonic()
+        if key is None:
+            state.offset = end
+            try:
+                line = rollout_line_adapter.validate_json(raw)
+            except ValidationError:
+                logger.debug("skipping unmodeled Codex rollout line")
+                return
+            await self.process_line(state, line, start, end)
+            return
+        tail = await self.remote_subagent(state, key, raw)
+        if tail is None:
+            return
+        tail.offset = end
+        try:
+            line = rollout_line_adapter.validate_json(raw)
+        except ValidationError:
+            logger.debug(
+                "skipping unmodeled Codex subagent line in session %s/%s",
+                state.session_id,
+                tail.thread_id,
+            )
+            return
+        await self.process_subagent_line(state, tail, line, start, end)
+
+    async def remote_subagent(
+        self, state: TailState, key: str, raw: str
+    ) -> SubagentTail | None:
+        """The child tail a client label maps to, classified on first sight from the
+        line in hand — `discover_subagent`'s test without the disk read it cannot do
+        here. The first line is the file's `session_meta`, because every remote file
+        streams from byte 0; a label that names no child of this session is
+        remembered and its lines dropped."""
+        path = Path(key)
+        for tail in state.subagents.values():
+            if tail.path == path:
+                return tail
+        if path in state.classified_rollouts:
+            return None
+        if state.thread_id is None:
+            return None
+        try:
+            line = rollout_line_adapter.validate_json(raw)
+            if line.type != "session_meta":
+                return None
+            metadata = session_metadata_adapter.validate_python(line.payload)
+        except ValidationError:
+            logger.debug("skipping remote rollout with malformed metadata: %s", key)
+            return None
+        state.classified_rollouts.add(path)
+        tail = self.subagent_from_metadata(state, metadata, path)
+        if tail is None:
+            return None
+        await self.prepare_subagent(state, tail)
+        return tail
+
+    def detach_remote(self, state: TailState) -> None:
+        """Drop a remote session's registration. Nothing commits on the way out, eof
+        or not — a Codex turn closes on its own `task_complete`/`turn_aborted` line,
+        so a turn still open here is mid-flight, and committing it would plant its id
+        in the committed-turn guard where the completed version could never replace
+        it. The next connect re-streams from byte 0 and the closed turn lands whole."""
+        if self.sessions.get(state.session_id) is state:
+            del self.sessions[state.session_id]
 
     async def follow(self, state: TailState) -> None:
         with codex_logfire.span(
@@ -329,7 +454,11 @@ class CodexTranscriptTailer:
             )
             return
         if line.type == "turn_context":
-            await self.register_workspace(state, line.payload)
+            # Not for a remote session: its workspace roots name directories on the
+            # client machine, and a project names server-local ones.
+            # TODO: register remote workspaces once projects can span machines.
+            if not state.remote:
+                await self.register_workspace(state, line.payload)
             return
         if line.type == "event_msg" and kind == "task_started":
             turn_id = line.payload.get("turn_id")
@@ -446,6 +575,14 @@ class CodexTranscriptTailer:
         if metadata is None:
             return None
         state.classified_rollouts.add(path)
+        return self.subagent_from_metadata(state, metadata, path)
+
+    def subagent_from_metadata(
+        self, state: TailState, metadata: SessionMetadata, path: Path
+    ) -> SubagentTail | None:
+        """A new child tail when the metadata names a thread-spawned child of this
+        session — the classification both discovery paths share: `discover_subagent`
+        reads it off disk, `remote_subagent` off the streamed opening line."""
         source = metadata.source
         spawn = (
             source.subagent.thread_spawn
@@ -470,17 +607,22 @@ class CodexTranscriptTailer:
         state.subagents[tail.thread_id] = tail
         return tail
 
+    async def prepare_subagent(self, state: TailState, tail: SubagentTail) -> None:
+        """The child's durable state: its conversation under the parent's, and the
+        committed-turn guard seeded from what is already assembled."""
+        parent = state.conversation
+        assert parent is not None
+        tail.conversation = await self.conversation_manager.ensure(
+            parent.thread_id,
+            agent_tentacle_id=CODEX_NATIVE_ID,
+            subagent_id=tail.thread_id,
+            parent_conversation_id=parent.id,
+        )
+        tail.recorded = assembled(tail.conversation)
+
     async def pump_subagent(self, state: TailState, tail: SubagentTail) -> bool:
         if tail.conversation is None:
-            parent = state.conversation
-            assert parent is not None
-            tail.conversation = await self.conversation_manager.ensure(
-                parent.thread_id,
-                agent_tentacle_id=CODEX_NATIVE_ID,
-                subagent_id=tail.thread_id,
-                parent_conversation_id=parent.id,
-            )
-            tail.recorded = assembled(tail.conversation)
+            await self.prepare_subagent(state, tail)
         try:
             size = tail.path.stat().st_size
         except FileNotFoundError:
@@ -694,20 +836,25 @@ class CodexTranscriptTailer:
                     ),
                     happened_at=request.timestamp,
                 )
+            elif request.timestamp is not None:
+                # A row the hooks wrote live is on the receipt clock, a beat behind
+                # the rollout line the run is dated by — left alone, the console
+                # sorts the run's work above the prompt that caused it.
+                await self.thread_manager.redate_message(inbound, request.timestamp)
             await self.thread_manager.bind_messages(
                 [inbound.id], request.id, kind="request_source", run_id=run.id
             )
         if answer:
+            answered = next(
+                (
+                    message
+                    for message in reversed(run.messages)
+                    if isinstance(message, ModelResponse)
+                ),
+                None,
+            )
             outbound = self.existing_message(thread, run.id, "outbound")
             if outbound is None:
-                answered = next(
-                    (
-                        message
-                        for message in reversed(run.messages)
-                        if isinstance(message, ModelResponse)
-                    ),
-                    None,
-                )
                 outbound = await self.thread_manager.record_outbound(
                     thread,
                     agent_tentacle_id=CODEX_NATIVE_ID,
@@ -716,6 +863,8 @@ class CodexTranscriptTailer:
                     platform_message_id=run.id,
                     happened_at=answered.timestamp if answered is not None else None,
                 )
+            elif answered is not None and answered.timestamp is not None:
+                await self.thread_manager.redate_message(outbound, answered.timestamp)
             await self.thread_manager.bind_assistant_replies(
                 [outbound.id], run_id=run.id
             )

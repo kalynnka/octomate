@@ -7,12 +7,15 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
+from time import monotonic
 
 import anyio
 import pytest
 from pydantic import JsonValue
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.harness.events import StreamEvents
@@ -177,6 +180,66 @@ async def test_records_runs_with_byte_ranges(tmp_path: Path) -> None:
 
     kinds = [type(message).__name__ for message in p1.messages]
     assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
+
+
+async def test_a_burst_assembled_turn_reads_back_in_transcript_order(
+    tmp_path: Path,
+) -> None:
+    """The persisted message order is the run relationship's `ModelMessage.id` — ids
+    are uuid7, minted in fold order, so id order must equal transcript order even
+    when a backfill assembles a whole turn's messages inside one millisecond. This
+    is the ingest stream's ordering guarantee: every reader, including the future
+    live UI stream, consumes it as-is rather than re-sorting by clock."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE + TURN_TWO)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer.start(SESSION_ID, transcript)  # the whole file on disk: one catch-up burst
+    await tailer.finalize(SESSION_ID)
+
+    runs = await runs_of(octomate)
+    assert len(runs) == 2
+    for run in runs:
+        ids = [message.id for message in run.messages]
+        assert ids == sorted(ids)
+        assert len(set(ids)) == len(ids)  # sorted and distinct: strictly increasing
+        stamps = [m.timestamp for m in run.messages if m.timestamp is not None]
+        assert stamps == sorted(stamps)  # the clocks tell the same story
+
+
+def test_uuid7_stays_monotonic_inside_a_burst() -> None:
+    """`AgentRun.messages` orders by `ModelMessage.id`, and that only equals
+    creation order because `uuid_utils`' uuid7 stays monotonic within one
+    millisecond (a shared-counter property of the generator). Pinned so a library
+    bump that loses it fails loudly instead of silently shuffling burst-assembled
+    turns."""
+    ids = [uuid7() for _ in range(50_000)]
+    assert all(a < b for a, b in pairwise(ids))
+
+
+async def test_a_stop_closes_the_local_turn_without_the_next_prompt(
+    tmp_path: Path,
+) -> None:
+    """A local follow keeps its loop across turns, but a turn's `Stop` commits it as
+    soon as the cursor sits at EOF — the transcript was flushed before the hook
+    fired — instead of waiting for the next prompt line to close it."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE)
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+
+    state = tailer.start(SESSION_ID, transcript)
+    deadline = monotonic() + 5
+    while state.offset < transcript.stat().st_size:  # the catch-up pump's progress
+        assert monotonic() < deadline, "follow loop never caught up"
+        await asyncio.sleep(0.01)
+    await tailer.stop_turn(SESSION_ID, "p1")
+
+    (p1,) = await runs_of(octomate)
+    assert p1.id == "p1"
+    assert p1.end_offset == transcript.stat().st_size
+    assert tailer.is_following(SESSION_ID)  # the loop lives on for the next turn
+    await tailer.finalize(SESSION_ID)
 
 
 async def test_the_posture_a_session_runs_under_is_read_off_its_transcript(
@@ -779,6 +842,36 @@ async def test_a_backfilled_row_is_dated_by_the_transcript_not_the_replay(
     # The prompt line says 10:00:01, the final assistant line 10:00:04.
     assert dated["inbound"] == datetime(2026, 7, 9, 10, 0, 1, tzinfo=UTC)
     assert dated["outbound"] == datetime(2026, 7, 9, 10, 0, 4, tzinfo=UTC)
+
+
+async def test_commit_redates_the_hooks_ledger_to_the_transcript_clock(
+    tmp_path: Path,
+) -> None:
+    """A row the hooks wrote live is stamped at receipt — a beat after Claude wrote
+    the line it describes. The commit re-dates the reused rows to the transcript's
+    clock, the same one the run is dated by, so the run's cards can never sort above
+    the prompt that caused them."""
+    transcript = tmp_path / f"{SESSION_ID}.jsonl"
+    write_records(transcript, TURN_ONE)
+    octomate = Octomate()
+    ingest, tailer = wired(octomate, (tmp_path,))
+
+    await ingest.handle(
+        hook_event("UserPromptSubmit", "p1", transcript, prompt="list the files")
+    )
+    state = tailer.sessions[SESSION_ID]
+    with anyio.fail_after(5):
+        while state.offset < transcript.stat().st_size:  # noqa: ASYNC110
+            await anyio.sleep(0.05)
+    await ingest.handle(hook_event("Stop", "p1", last_assistant_message="Done."))
+
+    (p1,) = await runs_of(octomate)
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    dated = {message.direction: message.happened_at for message in thread.messages}
+    assert dated["inbound"] == datetime(2026, 7, 9, 10, 0, 1, tzinfo=UTC)
+    assert dated["inbound"] == p1.started_at  # one clock: prompt row == run start
+    assert dated["outbound"] == datetime(2026, 7, 9, 10, 0, 4, tzinfo=UTC)
+    await tailer.finalize(SESSION_ID)
 
 
 AGENT_ID = "abc123def"

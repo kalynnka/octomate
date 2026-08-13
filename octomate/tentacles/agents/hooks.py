@@ -8,6 +8,11 @@ from fastapi import Header, HTTPException, status
 from pydantic import SecretStr
 
 
+class RemoteTailRefused(Exception):
+    """A remote attach a transcript tailer will not take; the reason is the message,
+    and the stream route hands it to the client as the close reason."""
+
+
 def hook_guard(secret: SecretStr) -> Callable[[str | None], Awaitable[None]]:
     """A bearer check for a hook router, as a FastAPI dependency.
 
@@ -20,7 +25,7 @@ def hook_guard(secret: SecretStr) -> Callable[[str | None], Awaitable[None]]:
     Takes the secret rather than reading an environment variable: the running app knows
     this as `OctomateConfig.hook_secret`, and where that came from — `octomate.yaml`, the
     environment, `.env` — is the config's business and not this module's. How a *client*
-    is told to carry it is the installer's business (`octomate.tentacles.agents.typer`).
+    is told to carry it is the installer's business (`octomate_cli.hooks`).
     """
     expected = f"Bearer {secret.get_secret_value()}"
 

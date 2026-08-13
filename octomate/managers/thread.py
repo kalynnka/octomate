@@ -297,6 +297,24 @@ class ThreadManager:
             await session.commit()
         return message
 
+    async def redate_message(
+        self, message: ThreadMessage, happened_at: datetime
+    ) -> ThreadMessage:
+        """Overrule a ledger row's clock after the fact: a transcript replay knows
+        when a message really happened, while a row the live hooks wrote was stamped
+        at receipt — a beat later than the transcript line, which is enough to sort a
+        run's work above the prompt that caused it."""
+        if message.happened_at == happened_at:
+            return message
+        message.happened_at = happened_at
+        async with async_session() as session:
+            stored = await session.get(ThreadMessage, message.id)
+            if stored is None:
+                raise ValueError(f"thread message {message.id} does not exist")
+            stored.happened_at = happened_at
+            await session.commit()
+        return message
+
     async def pending_prompt_messages(
         self,
         thread: Thread,
