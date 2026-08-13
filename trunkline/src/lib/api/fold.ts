@@ -100,18 +100,37 @@ function toolIcon(name: string): 'search' | 'file-diff' | 'send' | 'file' {
   return 'file'
 }
 
+/** A child run reachable from a parent's spawn call, keyed by that call's id —
+ * how the replay knows a tool card is really a subagent card. */
+export interface ReplayChild {
+  agentId: string
+}
+
+/** One replayed card with the clock of the message that produced it, so the
+ * caller can date each card at its own moment — the order a live stream would
+ * have delivered — instead of piling a whole run onto its start time. */
+export interface ReplayCard {
+  at: string | null
+  item: LedgerItemDraft
+}
+
 /**
- * A finished run's thinking and tool cards, rebuilt from the model messages the
- * run recorded. This is the reload path: the chat ledger keeps what was said, so
- * a reader coming back to a thread would otherwise see a prompt, an answer, and
- * no sign of the work between them.
+ * A finished run's thinking, text, and tool cards, rebuilt from the model
+ * messages the run recorded. This is the reload path: the chat ledger keeps what
+ * was said, so a reader coming back to a thread would otherwise see a prompt, an
+ * answer, and no sign of the work between them.
  *
- * Only the middle is rebuilt. Reply text is deliberately left out — the thread
- * ledger already carries it, and pushing it again would double every answer.
- * Returns are indexed first so each tool card is born settled; one with no return
- * stays `run`, which is what a run that died mid-call actually left behind.
+ * The middle is rebuilt whole — including the narration between tool calls —
+ * but the trailing answer text is left out: the thread ledger already carries
+ * it, and pushing it again would double every answer. Returns are indexed first
+ * so each tool card is born settled; one with no return stays `run`, which is
+ * what a run that died mid-call actually left behind. A call a `children` entry
+ * names is a subagent spawn and renders as a subagent card instead of a tool.
  */
-export function replayRun(messages: ApiModelMessage[]): LedgerItemDraft[] {
+export function replayRun(
+  messages: ApiModelMessage[],
+  children?: Map<string, ReplayChild>,
+): ReplayCard[] {
   const returns = new Map<string, { result: string; failed: boolean }>()
   for (const message of messages) {
     for (const part of message.parts) {
@@ -161,31 +180,80 @@ export function replayRun(messages: ApiModelMessage[]): LedgerItemDraft[] {
     }
   }
 
-  const items: LedgerItemDraft[] = []
+  const subCard = (
+    callId: string,
+    name: string,
+    args: string | Record<string, unknown> | null,
+    child: ReplayChild,
+  ): LedgerItemDraft => {
+    const settled = returns.get(callId)
+    const route =
+      typeof args === 'object' && args !== null && typeof args.subagent_type === 'string'
+        ? args.subagent_type
+        : name
+    return {
+      kind: 'sub',
+      id: child.agentId.slice(-6).toUpperCase(),
+      route,
+      note:
+        settled === undefined
+          ? 'running'
+          : clip(settled.result) || '(no output)',
+    }
+  }
+
+  // Everything after the last real work is the answer the ledger already shows;
+  // text before that mark is the run's own narration and must render, or every
+  // block between two tool calls silently vanishes on reload.
+  let lastWork = -1
+  let index = 0
   for (const message of messages) {
     if (message.kind !== 'response') continue
+    for (const part of message.parts) {
+      if (part.part_kind !== 'text' && part.part_kind !== 'file') lastWork = index
+      index += 1
+    }
+  }
+
+  const cards: ReplayCard[] = []
+  index = 0
+  for (const message of messages) {
+    if (message.kind !== 'response') continue
+    const at = message.timestamp
+    const push = (item: LedgerItemDraft) => cards.push({ at, item })
     for (const part of message.parts) {
       switch (part.part_kind) {
         case 'thinking':
           // No duration survives the row, and a made-up one would be a claim.
-          items.push({ kind: 'think', dur: '', text: part.content, thinking: false })
+          push({ kind: 'think', dur: '', text: part.content, thinking: false })
           break
         case 'tool-call':
-        case 'builtin-tool-call':
-          items.push(toolCard(part.tool_call_id, part.tool_name, part.args))
+        case 'builtin-tool-call': {
+          const child = children?.get(part.tool_call_id)
+          push(
+            child === undefined
+              ? toolCard(part.tool_call_id, part.tool_name, part.args)
+              : subCard(part.tool_call_id, part.tool_name, part.args, child),
+          )
           break
+        }
         case 'builtin-tool-return':
           break
         case 'compaction':
-          items.push({ kind: 'divider', label: 'context compacted' })
+          push({ kind: 'divider', label: 'context compacted' })
           break
         case 'text':
+          if (index < lastWork && part.content) {
+            push({ kind: 'stream', text: part.content, streaming: false })
+          }
+          break
         case 'file':
           break
       }
+      index += 1
     }
   }
-  return items
+  return cards
 }
 
 export class TurnFold {

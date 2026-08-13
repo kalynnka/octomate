@@ -12,7 +12,7 @@ import type {
   ApiThread,
   ApiThreadMessage,
 } from './events'
-import { batchFeelers, replayRun } from './fold'
+import { batchFeelers, replayRun, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -285,17 +285,32 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   }
 
   // The agent's own conversations: a subagent's runs surface through the
-  // parent's tool call, not as the thread's own history.
+  // parent's tool call, not as the thread's own history — the spawn call each
+  // child run names is what the replay renders as its subagent card.
   const own = conversations.filter((conversation) => !conversation.subagent_id)
+  const children = new Map<string, ReplayChild>()
+  for (const conversation of conversations) {
+    if (!conversation.subagent_id) continue
+    for (const run of conversation.runs) {
+      if (run.parent_tool_call_id) {
+        children.set(run.parent_tool_call_id, { agentId: conversation.subagent_id })
+      }
+    }
+  }
 
   // The work between a prompt and its answer, rebuilt from what each run
-  // recorded. Dated at the run's start so it lands after the directive that
-  // caused it; the stable sort below keeps each run's cards in their own order.
+  // recorded. Each card is dated at its own message's clock — the order a live
+  // stream would have delivered it — so a card can never sort above the prompt
+  // that caused it, whatever clock stamped that prompt's ledger row.
   for (const conversation of own) {
     for (const run of conversation.runs) {
-      const at = run.started_at ? Date.parse(run.started_at) : 0
-      for (const item of replayRun(run.messages ?? [])) {
-        dated.push({ at, item, session: conversation.id })
+      const started = run.started_at ? Date.parse(run.started_at) : 0
+      for (const card of replayRun(run.messages ?? [], children)) {
+        dated.push({
+          at: card.at !== null ? Date.parse(card.at) : started,
+          item: card.item,
+          session: conversation.id,
+        })
       }
     }
   }
