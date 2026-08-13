@@ -21,7 +21,7 @@ from octomate_cli.config import (
     OCTOMATE_URL_ENV,
     resolved_url,
 )
-from octomate_cli.hooks import EMIT_SCRIPT, announce_hook_secret
+from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_hook_secret
 from octomate_cli.jsontypes import JsonObject, JsonValue
 
 # The events the hook pipe registers and the server acts on. `UserPromptSubmit` and
@@ -59,10 +59,6 @@ CLAUDE_HOOK_PATH = "/hooks/claude"
 # The transcript stream's path, likewise: a tail connects to
 # `ws://<host>:<port>{CLAUDE_STREAM_PATH}` bearing the same hook credential.
 CLAUDE_STREAM_PATH = "/hooks/claude/stream"
-
-# The launcher command hook's script, run by absolute path so it never imports the
-# packages (see its module docstring); the same pattern as codex's EMIT_SCRIPT.
-LAUNCH_SCRIPT = Path(__file__).with_name("launch.py")
 
 claude_typer = typer.Typer(
     help="Operate the native Claude Code integration.", no_args_is_help=True

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 import uuid
 from collections import OrderedDict
@@ -11,8 +12,16 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, overload
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from octomate_cli.stream import (
+    SESSION_FILE,
+    STREAM_PROTOCOL,
+    StreamEof,
+    StreamHello,
+    StreamWelcome,
+    client_message_adapter,
+)
 from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
 from openai_codex._sandbox import _sandbox_mode
 from openai_codex.api import ApprovalMode, Sandbox
@@ -29,7 +38,7 @@ from openai_codex.generated.v2_all import (
     ThreadStartParams,
     TurnStatus,
 )
-from pydantic import SecretStr, TypeAdapter
+from pydantic import SecretStr, TypeAdapter, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -59,12 +68,14 @@ from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import CodexConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
 )
 from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agents.codex.adapter import (
@@ -78,13 +89,15 @@ from octomate.tentacles.agents.codex.hooks import (
 )
 from octomate.tentacles.agents.codex.ingest import CodexHookIngest
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
-from octomate.tentacles.agents.hooks import hook_guard
+from octomate.tentacles.agents.hooks import RemoteTailRefused, hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode, is_codex_mode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+
+logger = logging.getLogger(__name__)
 
 
 # The public openai_codex API can't express two things the `user` approval bridge
@@ -327,6 +340,11 @@ class CodexTentacle(AgentTentacle[str, None]):
 
     @cached_property
     def hook_router(self) -> APIRouter:
+        """The hook pipe native Codex sessions POST their events into, and the stream
+        endpoint a client-side tail feeds raw rollout lines through when the session
+        runs on another machine (`octomate codex tail`). The guard covers the
+        websocket too: FastAPI runs router dependencies at the handshake, so a bad
+        bearer is denied with the same 401 before any socket opens."""
         router = APIRouter(
             tags=["codex"], dependencies=[Depends(hook_guard(self.hook_secret))]
         )
@@ -336,7 +354,125 @@ class CodexTentacle(AgentTentacle[str, None]):
             await self.session_ingest.handle(event)
             return JSONResponse({})
 
+        @router.websocket("/hooks/codex/stream")
+        async def stream(websocket: WebSocket) -> None:
+            await self.stream_session(websocket)
+
         return router
+
+    async def stream_session(self, websocket: WebSocket) -> None:
+        """One remote tail's connection, up to its attach: take the hello and refuse
+        what cannot stream — a stale protocol loudly (the session still degrades to
+        hooks-only ingest), and a session this tentacle is driving itself, whose
+        rollout ingested here would write the conversation a second time
+        (`CodexHookIngest.driving`). Authentication already happened: the router's
+        `hook_guard` dependency denied a bad bearer at the handshake."""
+        await websocket.accept()
+        try:
+            hello = client_message_adapter.validate_json(await websocket.receive_text())
+        except ValidationError:
+            await websocket.close(code=1008, reason="expected a hello message")
+            return
+        except WebSocketDisconnect:
+            return
+        if not isinstance(hello, StreamHello):
+            await websocket.close(code=1008, reason="expected a hello message")
+            return
+        if hello.protocol != STREAM_PROTOCOL:
+            await websocket.close(
+                code=1008,
+                reason=f"protocol {hello.protocol} unsupported; server speaks "
+                f"{STREAM_PROTOCOL}",
+            )
+            return
+        if hello.session_id in self.session_ingest.driven:
+            await websocket.close(code=1008, reason="octomate drives this session")
+            return
+        # Its own materia context: a stream outlives any request, like a follow loop.
+        with sqlalchemy_materia():
+            await self.stream_attached(websocket, hello)
+
+    async def stream_attached(self, websocket: WebSocket, hello: StreamHello) -> None:
+        """The attached half of a stream connection: register the session, answer
+        resume offsets, then feed each framed line through the tailer's assembly.
+        Codex turns close on their own `task_complete`/`turn_aborted` lines, so
+        nothing commits at the boundary either way — `eof` and a drop alike just
+        return the registry slot, and the next connect re-streams from byte 0. There
+        is no `finalize` relay: Codex fires no session-end hook, so a session ends by
+        the client's own idle drain."""
+        # The thread before the attach, filed under the project its cwd names —
+        # `CodexHookIngest.session_thread`'s ordering, because `attach_remote` falls
+        # back to a project-less create and a thread's project is frozen at creation.
+        # Only a session on this same machine gets one: a project names server-local
+        # directories, and a remote cwd naming one of them would be a false match.
+        # TODO: assign remote sessions their project once projects can span machines.
+        client = websocket.client
+        project = None
+        if client is not None and client.host in {"127.0.0.1", "::1"} and hello.cwd:
+            project = await self.octomate.projects.ensure(
+                Path(hello.cwd), origin="codex"
+            )
+        await self.octomate.thread_manager.ensure(
+            ThreadKey(CODEX_NATIVE_ID, "thread", hello.session_id),
+            project=project,
+        )
+        try:
+            state, offsets = await self.session_tailer.attach_remote(
+                hello.session_id, Path(hello.transcript_path)
+            )
+        except RemoteTailRefused as refusal:
+            await websocket.close(code=1008, reason=str(refusal))
+            return
+        logger.info(
+            "session %s: remote tail connected (octomate %s)",
+            hello.session_id,
+            hello.client_version or "unversioned",
+        )
+        await websocket.send_text(StreamWelcome(offsets=offsets).model_dump_json())
+        # Per-file contiguity: each line must start where the last one ended, so a
+        # dropped frame surfaces as a close (4000 — the client reconnects and re-asks)
+        # instead of a silently mis-assembled turn.
+        expected_offsets = dict(offsets)
+        clean = False
+        try:
+            while True:
+                message = client_message_adapter.validate_json(
+                    await websocket.receive_text()
+                )
+                if isinstance(message, StreamEof):
+                    clean = True
+                    return
+                if isinstance(message, StreamHello):
+                    await websocket.close(code=1008, reason="hello already received")
+                    return
+                key = message.agent_id or SESSION_FILE
+                want = expected_offsets.get(key, 0)
+                if message.start != want:
+                    await websocket.close(
+                        code=4000,
+                        reason=f"offset gap for {key or 'session'}: expected {want}, "
+                        f"got {message.start}",
+                    )
+                    return
+                expected_offsets[key] = message.end
+                await self.session_tailer.feed_remote(
+                    state, message.agent_id, message.line, message.start, message.end
+                )
+        except WebSocketDisconnect:
+            pass
+        except ValidationError:
+            await websocket.close(code=1008, reason="unparseable stream message")
+        except Exception:
+            logger.exception(
+                "session %s: remote tail errored; its open turns are left for the "
+                "next connect to re-stream",
+                hello.session_id,
+            )
+        finally:
+            self.session_tailer.detach_remote(state)
+            if clean:
+                with contextlib.suppress(Exception):
+                    await websocket.close()
 
     async def __aenter__(self) -> CodexTentacle:
         # Only the pool is tentacle-wide shared state; each conversation's Codex

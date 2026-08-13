@@ -4,8 +4,8 @@ server's stream endpoint when a native session's transcript lives on another mac
 The payload is raw transcript lines plus the byte offsets they occupy in the client's
 own file. The client never parses what it ships — every translation stays server-side,
 so a transcript format change is a server-only fix — which also keeps this protocol
-agent-neutral: the same frames carry a Claude session file or, later, a Codex rollout,
-and which tree a stream feeds is the mounting endpoint's business.
+agent-neutral: the same frames carry a Claude session file or a Codex rollout, and
+which tree a stream feeds is the mounting endpoint's business.
 
 The server is the only cursor authority. A connect opens with `hello`/`welcome`: the
 client claims a session, the server answers where each of its files resumes (recomputed
@@ -59,7 +59,8 @@ class StreamLine(BaseModel):
     """
 
     type: Literal["line"] = "line"
-    # None: the session transcript; else the subagent whose file this line is from.
+    # None: the session transcript; else the client's key for the subagent file this
+    # line is from — an agent id for Claude, a sibling rollout's basename for Codex.
     agent_id: str | None = None
     start: int
     end: int

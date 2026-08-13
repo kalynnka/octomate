@@ -41,6 +41,7 @@ from octomate.tentacles.agents.claude.transcript import (
     prompt_text,
     transcript_line_adapter,
 )
+from octomate.tentacles.agents.hooks import RemoteTailRefused
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.permissions import is_claude_mode
 
@@ -76,11 +77,6 @@ SUBAGENT_SETTLE_POLL = 0.2
 # cannot, and the SessionEnd hook this wait sits under must not hang on it. Under the
 # hook's own 10s budget; an undrained session's turns wait for the next connect.
 REMOTE_DRAIN_TIMEOUT = 5.0
-
-
-class RemoteTailRefused(Exception):
-    """A remote attach the tailer will not take; the reason is the message, and the
-    stream route hands it to the client as the close reason."""
 
 
 def assembled(conversation: Conversation) -> set[str]:

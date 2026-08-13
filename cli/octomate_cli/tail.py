@@ -1,9 +1,17 @@
-"""`octomate claude tail` — the client half of the transcript stream.
+"""`octomate claude tail` / `octomate codex tail` — the client half of the transcript
+stream.
 
 Runs on the machine a native session lives on: watches its transcript (and the
 subagent files beside it), frames complete lines, and ships them raw to Octomate's
 stream endpoint. No parsing happens here — the server's tailer assembles the turns —
 so a transcript format change never needs this client updated.
+
+The agents differ only in where a subagent's file lives. Claude keeps them under
+`<session-id>/subagents/`, discoverable by glob and keyed by agent id. Codex writes a
+child rollout as a sibling file only its content identifies, so the launcher hook
+spools the exact path each `SubagentStop` names into a per-session file here, and the
+tail ships every spooled file keyed by its basename — the server classifies each from
+its own opening `session_meta` line, keeping even that parsing server-side.
 
 Spawned per session by the launcher hook (`launch.py`), detached so the turn never
 waits on it; one instance per session, enforced with a file lock the OS releases with
@@ -95,27 +103,49 @@ class FileCursor:
         return lines
 
 
+def spool_path(session_id: str) -> Path:
+    """The per-session file the Codex launcher spools child rollout paths into — one
+    absolute path per line, appended as each `SubagentStop` hook names one."""
+    return Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.paths"
+
+
 @dataclass
 class SessionTail:
-    """One session's cursors: the transcript's own, and one per subagent file as they
-    appear under `<session-id>/subagents/`, each seeded from the offset the server's
-    welcome named for it."""
+    """One session's cursors: the transcript's own, and one per subagent file, each
+    seeded from the offset the server's welcome named for it.
+
+    Subagent files come from the agent's own layout. With no `spool` (Claude), they
+    appear under `<session-id>/subagents/` and key by agent id. With one (Codex),
+    they are the sibling rollouts the spool names, keyed by basename — a label in
+    this machine's namespace the server classifies by content."""
 
     session_id: str
     transcript_path: Path
     offsets: dict[str, int] = field(default_factory=dict)
     files: dict[str, FileCursor] = field(default_factory=dict)
     last_active: float = field(default_factory=monotonic)
+    spool: Path | None = None
+    spooled: dict[str, Path] = field(default_factory=dict)
 
     @property
     def subagents_dir(self) -> Path:
         return self.transcript_path.with_suffix("") / "subagents"
 
     def discover(self) -> list[str]:
-        """The file keys present on disk right now: the session itself, plus every
-        subagent file — new children join the pump the moment they exist."""
+        """The file keys present right now: the session itself, plus every subagent
+        file — new children join the pump the moment they exist (or are spooled)."""
         keys = [SESSION_FILE]
-        if self.subagents_dir.is_dir():
+        if self.spool is not None:
+            try:
+                lines = self.spool.read_text().splitlines()
+            except OSError:
+                lines = []
+            for entry in lines:
+                if entry:
+                    path = Path(entry)
+                    self.spooled[path.name] = path
+            keys += sorted(self.spooled)
+        elif self.subagents_dir.is_dir():
             keys += sorted(
                 path.stem.removeprefix("agent-")
                 for path in self.subagents_dir.glob("agent-*.jsonl")
@@ -125,11 +155,12 @@ class SessionTail:
     def cursor(self, key: str) -> FileCursor:
         cursor = self.files.get(key)
         if cursor is None:
-            path = (
-                self.transcript_path
-                if key == SESSION_FILE
-                else self.subagents_dir / f"agent-{key}.jsonl"
-            )
+            if key == SESSION_FILE:
+                path = self.transcript_path
+            elif self.spool is not None:
+                path = self.spooled[key]
+            else:
+                path = self.subagents_dir / f"agent-{key}.jsonl"
             cursor = FileCursor(path, self.offsets.get(key, 0))
             self.files[key] = cursor
         return cursor
@@ -158,7 +189,12 @@ class SessionTail:
 
 
 async def stream_session(
-    url: str, session_id: str, transcript_path: Path, cwd: str, secret: str
+    url: str,
+    session_id: str,
+    transcript_path: Path,
+    cwd: str,
+    secret: str,
+    spool: Path | None = None,
 ) -> bool:
     """One connection's life. True when the session is done (the server said finalize,
     or it went idle and drained out); False to reconnect and resume."""
@@ -177,7 +213,9 @@ async def stream_session(
         welcome = server_message_adapter.validate_json(await websocket.recv())
         if not isinstance(welcome, StreamWelcome):
             raise RuntimeError(f"expected a welcome message, got {welcome.type!r}")
-        tail = SessionTail(session_id, transcript_path, offsets=dict(welcome.offsets))
+        tail = SessionTail(
+            session_id, transcript_path, offsets=dict(welcome.offsets), spool=spool
+        )
 
         stop = asyncio.Event()
         finalizing = False
@@ -232,7 +270,12 @@ async def stream_session(
 
 
 async def run_tail(
-    url: str, session_id: str, transcript_path: Path, cwd: str, secret: str
+    url: str,
+    session_id: str,
+    transcript_path: Path,
+    cwd: str,
+    secret: str,
+    spool: Path | None = None,
 ) -> None:
     """The reconnect loop around `stream_session`: resume after drops, back off while
     the server is unreachable, and stop retrying once the session itself has gone
@@ -240,7 +283,9 @@ async def run_tail(
     attempt = 0
     while True:
         try:
-            if await stream_session(url, session_id, transcript_path, cwd, secret):
+            if await stream_session(
+                url, session_id, transcript_path, cwd, secret, spool
+            ):
                 return
             attempt = 0  # the connection worked; the drop was the network's
         except ConnectionClosed as closed:
@@ -272,7 +317,21 @@ async def run_tail(
         await asyncio.sleep(min(BACKOFF_CAP, float(2**attempt)))
 
 
-def main(*, session_id: str, transcript_path: Path, url: str, cwd: str) -> None:
+def main(
+    *,
+    session_id: str,
+    transcript_path: Path,
+    url: str,
+    cwd: str,
+    spool: Path | None = None,
+    agent_path: Path | None = None,
+) -> None:
+    # Spool before the lock: when a tail already holds the session, this invocation's
+    # whole job is handing it the child's path — the holder re-reads the spool on
+    # every pump. O_APPEND keeps concurrent hook fires from clobbering each other.
+    if spool is not None and agent_path is not None:
+        with spool.open("a") as handle:
+            handle.write(f"{agent_path}\n")
     secret = resolved_secret()
     if not secret:
         print(
@@ -291,4 +350,4 @@ def main(*, session_id: str, transcript_path: Path, url: str, cwd: str) -> None:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return
-        asyncio.run(run_tail(url, session_id, transcript_path, cwd, secret))
+        asyncio.run(run_tail(url, session_id, transcript_path, cwd, secret, spool))

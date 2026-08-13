@@ -14,8 +14,9 @@ from pathlib import Path
 
 import pytest
 from octomate_cli import launch as launch_module
-from octomate_cli.claude import CLAUDE_HOOK_PATH, LAUNCH_SCRIPT
+from octomate_cli.claude import CLAUDE_HOOK_PATH
 from octomate_cli.config import OCTOMATE_URL_ENV, project_config_path, user_config_path
+from octomate_cli.hooks import LAUNCH_SCRIPT
 from octomate_cli.launch import OCTOMATE_URL_ENV as LAUNCH_URL_ENV
 
 STREAM_URL = "ws://127.0.0.1:9999/hooks/claude/stream"
@@ -81,6 +82,47 @@ def test_launch_spawns_a_detached_tail_and_stays_silent(tmp_path: Path) -> None:
         STREAM_URL,
         "--cwd",
         "/repo",
+    ]
+
+
+def test_a_codex_subagent_stop_hands_the_child_path_to_the_codex_tail(
+    tmp_path: Path,
+) -> None:
+    """`--agent codex` routes the spawn to `octomate codex tail`, and a SubagentStop
+    event's `agent_transcript_path` rides along as `--agent-path`: the running tail
+    cannot tell which sibling rollout is a child of its session, so the hook that
+    knows hands it the path."""
+    binary, args_file = recorder(tmp_path)
+    codex_stream = "ws://127.0.0.1:9999/hooks/codex/stream"
+    result = launch(
+        ["--url", codex_stream, "--agent", "codex", "--octomate", str(binary)],
+        {
+            "hook_event_name": "SubagentStop",
+            "session_id": "s1",
+            "transcript_path": "/laptop/.codex/sessions/2026/08/13/rollout-parent.jsonl",
+            "cwd": "/repo",
+            "agent_transcript_path": (
+                "/laptop/.codex/sessions/2026/08/13/rollout-child.jsonl"
+            ),
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    wait_for(args_file)
+    assert args_file.read_text().split() == [
+        "codex",
+        "tail",
+        "--session",
+        "s1",
+        "--path",
+        "/laptop/.codex/sessions/2026/08/13/rollout-parent.jsonl",
+        "--url",
+        codex_stream,
+        "--cwd",
+        "/repo",
+        "--agent-path",
+        "/laptop/.codex/sessions/2026/08/13/rollout-child.jsonl",
     ]
 
 

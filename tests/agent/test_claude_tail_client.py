@@ -70,6 +70,23 @@ def test_session_tail_discovers_subagent_files_and_seeds_server_offsets(
     assert tail.cursor("").offset == 0
 
 
+def test_a_spooled_codex_child_ships_keyed_by_its_basename(tmp_path: Path) -> None:
+    """Codex writes a child rollout as a sibling file only its content identifies, so
+    the launcher spools the exact paths the SubagentStop hooks name; the tail ships
+    each under its basename and leaves classification to the server."""
+    transcript = tmp_path / "rollout-parent.jsonl"
+    child = tmp_path / "rollout-child.jsonl"
+    spool = tmp_path / "session.paths"
+    spool.write_text(f"{child}\n")
+
+    tail = SessionTail("sess-1", transcript, spool=spool)
+    assert tail.discover() == ["", "rollout-child.jsonl"]
+    assert tail.cursor("rollout-child.jsonl").path == child
+
+    tail = SessionTail("sess-1", transcript, spool=tmp_path / "absent.paths")
+    assert tail.discover() == [""]  # no spool yet: just the session's own file
+
+
 async def test_main_refuses_to_run_without_the_hook_credential(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
@@ -99,7 +116,12 @@ def test_a_second_tail_for_the_same_session_is_a_no_op(
     streamed: list[str] = []
 
     async def record_only(
-        url: str, session_id: str, transcript_path: Path, cwd: str, secret: str
+        url: str,
+        session_id: str,
+        transcript_path: Path,
+        cwd: str,
+        secret: str,
+        spool: Path | None = None,
     ) -> None:
         streamed.append(session_id)
 
@@ -124,3 +146,31 @@ def test_a_second_tail_for_the_same_session_is_a_no_op(
         cwd="",
     )
     assert streamed == [session_id]  # lock released with the holder: a fresh tail runs
+
+
+def test_a_spool_handoff_reaches_a_running_tail_and_defers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A Codex SubagentStop fires while a tail already holds the session: that
+    invocation's whole job is appending the child's path — the holder re-reads the
+    spool on every pump — and then getting out of the way at the lock."""
+    monkeypatch.setenv(HOOK_SECRET_ENV, "s")
+    monkeypatch.setattr(
+        tail_mod, "run_tail", None
+    )  # any call would TypeError: nothing may stream here
+    session_id = f"spool-{uuid4()}"
+    spool = tmp_path / "session.paths"
+    child = tmp_path / "rollout-child.jsonl"
+    lock_path = Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.lock"
+
+    with lock_path.open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        main(
+            session_id=session_id,
+            transcript_path=tmp_path / "rollout-parent.jsonl",
+            url="ws://127.0.0.1:1/hooks/codex/stream",
+            cwd="",
+            spool=spool,
+            agent_path=child,
+        )
+    assert spool.read_text() == f"{child}\n"

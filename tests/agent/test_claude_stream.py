@@ -30,11 +30,8 @@ from starlette.websockets import WebSocketDisconnect
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.claude.tailer import (
-    ClaudeTranscriptTailer,
-    RemoteTailRefused,
-    TailState,
-)
+from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer, TailState
+from octomate.tentacles.agents.hooks import RemoteTailRefused
 from octomate.types.json import JsonObject
 from tests.agent.test_claude_tailer import (
     AGENT_ID,

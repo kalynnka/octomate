@@ -89,12 +89,9 @@ from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import ClaudeHookIngest
-from octomate.tentacles.agents.claude.tailer import (
-    ClaudeTranscriptTailer,
-    RemoteTailRefused,
-)
+from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.agents.claude.transport import SSHTransport
-from octomate.tentacles.agents.hooks import hook_guard
+from octomate.tentacles.agents.hooks import RemoteTailRefused, hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 from octomate.types.permissions import ClaudePermissionMode, is_claude_mode

@@ -24,6 +24,10 @@ console = Console(stderr=True)
 # absolute path, so a hook never imports the packages (see its module docstring).
 EMIT_SCRIPT = Path(__file__).with_name("emit.py")
 
+# The launcher command hook's script — it spawns the session's transcript tail
+# detached. Run by absolute path for the same reason.
+LAUNCH_SCRIPT = Path(__file__).with_name("launch.py")
+
 hooks_typer = typer.Typer(
     help="Manage the credential native-session hooks authenticate with.",
     no_args_is_help=True,
