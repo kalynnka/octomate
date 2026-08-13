@@ -12,8 +12,10 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
+from octomate_cli import launch as launch_module
 from octomate_cli.claude import CLAUDE_HOOK_PATH, LAUNCH_SCRIPT
-from octomate_cli.hooks import OCTOMATE_URL_ENV
+from octomate_cli.config import OCTOMATE_URL_ENV, project_config_path, user_config_path
 from octomate_cli.launch import OCTOMATE_URL_ENV as LAUNCH_URL_ENV
 
 STREAM_URL = "ws://127.0.0.1:9999/hooks/claude/stream"
@@ -43,8 +45,11 @@ def launch(
         capture_output=True,
         text=True,
         # Controlled: the suite may run in a shell that exports OCTOMATE_URL itself,
-        # and these tests are about what the script resolves, not what leaks in.
-        env={"PATH": "/usr/bin:/bin", **(env or {})},
+        # and these tests are about what the script resolves, not what leaks in. HOME
+        # and cwd pinned to nowhere so the developer's real cli.toml never steers a
+        # test in either scope.
+        env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", **(env or {})},
+        cwd="/",
     )
 
 
@@ -125,10 +130,40 @@ def test_without_a_target_nothing_spawns_and_nothing_is_said(tmp_path: Path) -> 
     assert not args_file.exists()
 
 
-def test_its_duplicated_name_still_matches_the_canonical_one() -> None:
-    """launch.py repeats the variable name as a literal because it must not import the
-    package; this is what stops the copy drifting."""
+def test_the_stream_url_derives_from_the_config_file(tmp_path: Path) -> None:
+    """The file backstop, for launch paths that never sourced a shell profile — the
+    same floor the emit hook stands on."""
+    binary, args_file = recorder(tmp_path)
+    home = tmp_path / "home"
+    (home / ".config" / "octomate").mkdir(parents=True)
+    (home / ".config" / "octomate" / "cli.toml").write_text(
+        'url = "http://minidock.local:8000"\n'
+    )
+    result = launch(
+        ["--path", CLAUDE_HOOK_PATH, "--octomate", str(binary)],
+        EVENT,
+        env={"HOME": str(home)},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    wait_for(args_file)
+    arguments = args_file.read_text().split()
+    assert (
+        arguments[arguments.index("--url") + 1]
+        == "ws://minidock.local:8000/hooks/claude/stream"
+    )
+
+
+def test_its_duplicated_names_still_match_the_canonical_ones(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """launch.py repeats the variable name and the config path as literals because it
+    must not import the package; this is what stops the copies drifting."""
     assert LAUNCH_URL_ENV == OCTOMATE_URL_ENV
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    assert launch_module.config_files() == (project_config_path(), user_config_path())
 
 
 def test_bad_usage_fails_loudly() -> None:

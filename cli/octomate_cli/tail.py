@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
-import os
 import sys
 import tempfile
 import time
@@ -32,7 +31,7 @@ from watchfiles import awatch
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
-from octomate_cli.hooks import HOOK_SECRET_ENV
+from octomate_cli.config import HOOK_SECRET_ENV, resolved_secret
 from octomate_cli.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
@@ -274,11 +273,12 @@ async def run_tail(
 
 
 def main(*, session_id: str, transcript_path: Path, url: str, cwd: str) -> None:
-    secret = os.environ.get(HOOK_SECRET_ENV)
+    secret = resolved_secret()
     if not secret:
         print(
-            f"octomate: {HOOK_SECRET_ENV} is unset — this session is not being "
-            "streamed. Export it to match Octomate's hook_secret.",
+            f"octomate: no hook credential — {HOOK_SECRET_ENV} is unset and the "
+            "client config holds none, so this session is not being streamed. "
+            "Run `octomate configure`.",
             file=sys.stderr,
         )
         raise SystemExit(1)

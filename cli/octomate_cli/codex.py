@@ -12,7 +12,8 @@ from typing import Annotated
 
 import typer
 
-from octomate_cli.hooks import EMIT_SCRIPT, OCTOMATE_URL_ENV, announce_hook_secret
+from octomate_cli.config import OCTOMATE_URL_ENV
+from octomate_cli.hooks import EMIT_SCRIPT, announce_hook_secret
 from octomate_cli.jsontypes import JsonObject
 
 # Bound so a wedged or slow Octomate can never freeze someone's Codex session.

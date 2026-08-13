@@ -7,16 +7,16 @@ tail` detached, and returns at once so the turn never waits — the tail itself 
 to run twice per session, so the repeated fire is the liveness check, not a leak.
 
 The stream address is pinned only when the install pinned `--url`; otherwise it is
-derived from `OCTOMATE_URL` when the hook fires, the same environment switch the
-forwarding hooks follow. With neither, nothing spawns and nothing is said: the emit
-hook on the same event already complained on stderr.
+derived when the hook fires, from `OCTOMATE_URL` or the client config file — the same
+resolution the forwarding hooks follow. With none of them, nothing spawns and nothing
+is said: the emit hook on the same event already complained on stderr.
 
 Run by absolute path, never as `python -m octomate...`, and imports nothing from
 octomate: `octomate/__init__.py` builds `Octomate`, which costs ~1.9s to import, and
 this command is on the blocking path of every prompt. The spawned tail pays that cost
 detached, off it. Anything added here must keep the stdlib-only property; the
-environment variable name is duplicated from `octomate_cli/hooks.py` for the same
-reason — change both together.
+environment variable name and the client-config resolution are duplicated from
+`octomate_cli/config.py` for the same reason — change them together.
 
 Prints nothing on success: a `UserPromptSubmit` hook's stdout is injected into the
 turn's context, so silence is the only correct answer.
@@ -28,22 +28,50 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
+from pathlib import Path
 
 OCTOMATE_URL_ENV = "OCTOMATE_URL"
 
 USAGE = "usage: launch.py [--url <stream-url>] [--path <hook-path>] --octomate <bin>"
 
 
+def config_files() -> tuple[Path, Path]:
+    """Project scope first, then user scope — mirroring `emit.py`'s resolution."""
+    return (
+        Path.cwd() / ".octomate" / "cli.toml",
+        Path.home() / ".config" / "octomate" / "cli.toml",
+    )
+
+
+def configured_base() -> str | None:
+    """The server base from the environment, then the config files in scope order. A
+    file that does not parse counts as absent — the emit hook on the same event
+    reports it."""
+    value = os.environ.get(OCTOMATE_URL_ENV)
+    if value:
+        return value
+    for path in config_files():
+        try:
+            table = tomllib.loads(path.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        url = table.get("url")
+        if isinstance(url, str) and url:
+            return url
+    return None
+
+
 def stream_url(url: str | None, path: str | None) -> str | None:
-    """The pinned stream URL, or one derived from the environment's base — the same
+    """The pinned stream URL, or one derived from the resolved base — the same
     `http(s) → ws(s)` + `/stream` derivation the installer's `stream_url_for` does,
     duplicated here because this script cannot import the package."""
     if url is not None:
         return url
-    base = os.environ.get(OCTOMATE_URL_ENV, "").rstrip("/")
-    if not base or path is None:
+    base = configured_base()
+    if base is None or path is None:
         return None
-    scheme, _, rest = base.partition("://")
+    scheme, _, rest = base.rstrip("/").partition("://")
     return f"{'wss' if scheme == 'https' else 'ws'}://{rest}{path}/stream"
 
 

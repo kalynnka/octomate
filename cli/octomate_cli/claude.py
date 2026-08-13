@@ -8,7 +8,6 @@ and are run by path, because a hook pays their startup on every fire.
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import sys
 from enum import Enum
@@ -17,12 +16,12 @@ from typing import Annotated, Literal
 
 import typer
 
-from octomate_cli.hooks import (
-    EMIT_SCRIPT,
+from octomate_cli.config import (
     HOOK_SECRET_ENV,
     OCTOMATE_URL_ENV,
-    announce_hook_secret,
+    resolved_url,
 )
+from octomate_cli.hooks import EMIT_SCRIPT, announce_hook_secret
 from octomate_cli.jsontypes import JsonObject, JsonValue
 
 # The events the hook pipe registers and the server acts on. `UserPromptSubmit` and
@@ -72,22 +71,6 @@ hooks_typer = typer.Typer(
     help="Manage the Claude Code hook pipe into Octomate.", no_args_is_help=True
 )
 claude_typer.add_typer(hooks_typer, name="hooks")
-
-
-@claude_typer.callback()
-def claude_group() -> None:
-    # Hint without blocking: the commands still run, since a machine may be set up ahead
-    # of the config.
-    try:
-        from octomate.config import OctomateConfig
-    except ImportError:
-        return  # a client machine: no server half here, so nothing to hint about
-    if OctomateConfig().agents.claude is None:
-        typer.secho(
-            "Note: config.agents.claude is unset, so no hook router is served.",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
 
 
 class Scope(str, Enum):
@@ -356,13 +339,13 @@ def tail(
     environment, like every hook client does.
     """
     if url is None:
-        base = os.environ.get(OCTOMATE_URL_ENV, "").rstrip("/")
-        if not base:
+        base = resolved_url()
+        if base is None:
             raise typer.BadParameter(
-                f"no --url given and {OCTOMATE_URL_ENV} is unset — one of them must "
-                "name the Octomate server"
+                f"no --url given, {OCTOMATE_URL_ENV} is unset, and no cli.toml "
+                "names a url — one of them must say where Octomate is"
             )
-        url = stream_url_for(base + CLAUDE_HOOK_PATH)
+        url = stream_url_for(base.rstrip("/") + CLAUDE_HOOK_PATH)
     from octomate_cli.tail import main  # watchfiles/websockets; only when tailing
 
     main(session_id=session, transcript_path=path, url=url, cwd=cwd)

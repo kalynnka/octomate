@@ -12,12 +12,17 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from threading import Thread
 
 import pytest
+from octomate_cli import emit as emit_module
 from octomate_cli.codex import CODEX_HOOK_PATH as CANONICAL_CODEX_HOOK_PATH
 from octomate_cli.codex import EMIT_SCRIPT
 from octomate_cli.codex import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
+from octomate_cli.config import HOOK_SECRET_ENV as CANONICAL_HOOK_SECRET_ENV
+from octomate_cli.config import OCTOMATE_URL_ENV as CANONICAL_OCTOMATE_URL_ENV
+from octomate_cli.config import project_config_path, user_config_path
 from octomate_cli.emit import (
     CODEX_HOOK_PATH,
     DRIVEN_ENV,
@@ -25,8 +30,6 @@ from octomate_cli.emit import (
     HOOK_TIMEOUT,
     OCTOMATE_URL_ENV,
 )
-from octomate_cli.hooks import HOOK_SECRET_ENV as CANONICAL_HOOK_SECRET_ENV
-from octomate_cli.hooks import OCTOMATE_URL_ENV as CANONICAL_OCTOMATE_URL_ENV
 
 from octomate.tentacles.agents.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
 
@@ -72,7 +75,11 @@ def emit(
         input=json.dumps(payload if payload is not None else PAYLOAD),
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", **env},
+        # HOME and cwd pinned to nowhere so the developer's real cli.toml never
+        # steers a test in either scope (HOME unset, Python falls back to the passwd
+        # database); the file-backstop tests pass their own.
+        env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", **env},
+        cwd="/",
     )
 
 
@@ -189,6 +196,61 @@ def test_the_claude_path_stays_silent_on_stdout(router: tuple[str, Received]) ->
     assert result.returncode == 0
     assert received.body == PAYLOAD
     assert result.stdout == ""
+
+
+def test_the_config_file_backstops_a_bare_environment(
+    router: tuple[str, Received], tmp_path: Path
+) -> None:
+    """A GUI-launched session never sourced a shell profile; the client config file is
+    what keeps its hooks delivering with no environment at all."""
+    url, received = router
+    (tmp_path / ".config" / "octomate").mkdir(parents=True)
+    (tmp_path / ".config" / "octomate" / "cli.toml").write_text(
+        f'url = "{base_of(url)}"\nhook_secret = "{SECRET}"\n'
+    )
+    result = emit(["--path", CODEX_HOOK_PATH], {"HOME": str(tmp_path)})
+
+    assert result.returncode == 0
+    assert received.body == PAYLOAD
+    assert received.authorization == f"Bearer {SECRET}"
+
+
+def test_the_project_config_backstops_too_and_wins_over_the_user_scope(
+    router: tuple[str, Received], tmp_path: Path
+) -> None:
+    """Hooks run with cwd at the session's directory; its `./.octomate/cli.toml` is
+    that project's own override, resolved before the user file."""
+    url, received = router
+    (tmp_path / ".config" / "octomate").mkdir(parents=True)
+    (tmp_path / ".config" / "octomate" / "cli.toml").write_text(
+        'url = "http://127.0.0.1:1"\n'  # user scope points into the void
+    )
+    project = tmp_path / "project" / ".octomate"
+    project.mkdir(parents=True)
+    (project / "cli.toml").write_text(
+        f'url = "{base_of(url)}"\nhook_secret = "{SECRET}"\n'
+    )
+    result = subprocess.run(
+        [sys.executable, str(EMIT_SCRIPT), "--path", CODEX_HOOK_PATH],
+        input=json.dumps(PAYLOAD),
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+        cwd=str(tmp_path / "project"),
+    )
+
+    assert result.returncode == 0
+    assert received.body == PAYLOAD
+
+
+def test_the_duplicated_config_resolution_matches_the_canonical_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """emit.py mirrors the client config path with literals; behaviorally identical is
+    what the mirror must stay."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    assert emit_module.config_files() == (project_config_path(), user_config_path())
 
 
 def test_the_previous_generations_url_only_form_still_delivers(

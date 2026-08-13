@@ -10,7 +10,7 @@ from uuid import uuid4
 
 import octomate_cli.tail as tail_mod
 import pytest
-from octomate_cli.hooks import HOOK_SECRET_ENV
+from octomate_cli.config import HOOK_SECRET_ENV
 from octomate_cli.tail import FileCursor, SessionTail, main
 
 
@@ -76,6 +76,10 @@ async def test_main_refuses_to_run_without_the_hook_credential(
     tmp_path: Path,
 ) -> None:
     monkeypatch.delenv(HOOK_SECRET_ENV, raising=False)
+    # And no config file in either scope: the developer's real cli.toml must not
+    # fill it in.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit):
         main(
             session_id="s1",
