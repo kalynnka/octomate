@@ -170,15 +170,16 @@ def claude_launch_handler(hook_url: str) -> JsonObject:
 
 def is_octomate_hook(hook: JsonValue) -> bool:
     """A handler this installer wrote: the `http` handler pointing at Octomate's hook
-    path, or the launcher `command` naming its launch script. Matched loosely (path
-    suffix, script name) so a re-install with a changed host/port replaces the stale
-    one."""
+    path, or the launcher `command` carrying its stream path. Matched by path, not the
+    exact command, so a re-install replaces a stale handler whatever its host, port,
+    interpreter, or launch-script location — including one whose script a package
+    rename or venv move has retired."""
     if not isinstance(hook, dict):
         return False
     if hook.get("type") == "http":
         return str(hook.get("url", "")).endswith(CLAUDE_HOOK_PATH)
     if hook.get("type") == "command":
-        return str(LAUNCH_SCRIPT) in str(hook.get("command", ""))
+        return CLAUDE_STREAM_PATH in str(hook.get("command", ""))
     return False
 
 

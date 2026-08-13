@@ -161,6 +161,32 @@ def test_install_adds_the_stream_launcher_on_prompt_submit_only(
     assert "ws://127.0.0.1:9999/hooks/claude/stream" in launcher["command"]
 
 
+def test_install_replaces_a_launcher_left_by_an_older_install(tmp_path: Path) -> None:
+    """Launchers are matched on the stream path they point at, not the launch script's
+    own location, so an install replaces one whose script path a package rename or venv
+    move has retired — instead of stacking a fresh launcher beside a broken one."""
+    path = tmp_path / "settings.json"
+    stale = {
+        "type": "command",
+        "command": "/old/venv/bin/python /old/packages/inklet/inklet/launch.py"
+        " --url ws://127.0.0.1:9999/hooks/claude/stream --octomate /old/venv/bin/octomate",
+    }
+    path.write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [stale]}]}}))
+
+    runner.invoke(
+        claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)]
+    )
+
+    commands = [
+        hook["command"]
+        for group in read(path)["hooks"]["UserPromptSubmit"]
+        for hook in group["hooks"]
+        if hook["type"] == "command"
+    ]
+    assert stale["command"] not in commands
+    assert sum(str(LAUNCH_SCRIPT) in command for command in commands) == 1
+
+
 def test_no_launcher_skips_the_stream_and_retires_a_previous_one(
     tmp_path: Path,
 ) -> None:
