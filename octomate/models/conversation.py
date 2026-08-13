@@ -98,7 +98,9 @@ class Conversation(Base, TransmuterProxiedMixin):
         "AgentRun",
         back_populates="conversation",
         cascade="all, delete-orphan",
-        order_by="AgentRun.started_at",
+        # `id` breaks started_at ties so two reads never disagree on the order; at
+        # equal stamps chronology is unknowable, and stability is what is owed.
+        order_by="(AgentRun.started_at, AgentRun.id)",
         lazy="selectin",
     )
     thread: Mapped[Thread | None] = relationship(
@@ -113,7 +115,7 @@ class Conversation(Base, TransmuterProxiedMixin):
         secondary="agent_runs",
         primaryjoin="Conversation.id == AgentRun.conversation_id",
         secondaryjoin="AgentRun.id == ModelMessage.run_id",
-        order_by="(AgentRun.started_at, ModelMessage.id)",
+        order_by="(AgentRun.started_at, AgentRun.id, ModelMessage.id)",
         viewonly=True,
         lazy="selectin",
     )

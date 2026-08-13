@@ -98,6 +98,9 @@ class AgentRun(Base, TransmuterProxiedMixin):
         "ModelMessage",
         back_populates="run",
         cascade="all",
+        # Ids are uuid7 minted in fold order and monotonic even inside a
+        # same-millisecond backfill burst (pinned by the tailer's ordering tests),
+        # so id order is transcript order — the ingest stream's ordering guarantee.
         order_by="ModelMessage.id",
         lazy="selectin",
     )
