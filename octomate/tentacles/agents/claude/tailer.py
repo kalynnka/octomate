@@ -12,12 +12,10 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from octomate_cli.stream import SESSION_FILE
 from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
-from watchfiles import awatch
 
 from octomate.capabilities.harness.events import StreamEvents
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
-from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -37,11 +35,9 @@ from octomate.tentacles.agents.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptLine,
     TranscriptUserLine,
-    locate_transcript,
     prompt_text,
     transcript_line_adapter,
 )
-from octomate.tentacles.agents.hooks import RemoteTailRefused
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.permissions import is_claude_mode
 
@@ -53,17 +49,9 @@ logger = logging.getLogger(__name__)
 LIVE_STREAM_BUFFER = 256
 
 # Bound the wait for the session lock when committing a turn, so a wedged hook holder
-# can't hang the follow loop (and, through `finalize`, shutdown). Timing out ends the
-# loop — see `close_turn` for why a turn that can't commit must stop the tail rather
-# than be skipped past.
+# can't hang the stream that feeds it. Timing out propagates — see `close_turn` for
+# why a turn that can't commit must stop the tail rather than be skipped past.
 COMMIT_LOCK_TIMEOUT = 30.0
-
-# Reclaim a follow loop whose session went silent (crash, hooks removed — no SessionEnd
-# ever arrives): if no new bytes land for this long, the loop self-finalizes (drains,
-# commits the trailing turn, drops itself) instead of parking on the watch forever. The
-# watch wakes every `IDLE_POLL_MS` even without a file change, to check the deadline.
-IDLE_TIMEOUT = 30 * 60.0
-IDLE_POLL_MS = 60_000
 
 # A subagent's final answer line races its synchronous SubagentStop hook — measured
 # live, 2 of 3 children had it land ~1-2KB after the hook fired. The event names the
@@ -145,8 +133,10 @@ class SubagentTail:
 
 @dataclass
 class TailState:
-    """One session's follow loop: the file cursor, the turn being assembled, and the
-    live stream its events are pushed to."""
+    """One streamed session: its transcript lives on the client machine that streams
+    it (`octomate claude tail`); the stream route feeds `feed_remote`, which drives
+    the per-line assembly. `transcript_path` is the client's claim in the client's
+    own namespace, a label never opened here — as are the subagent tails' paths."""
 
     session_id: str
     transcript_path: Path
@@ -154,8 +144,6 @@ class TailState:
     receive_stream: MemoryObjectReceiveStream[StreamEvents[str]]
     stop_event: asyncio.Event
     offset: int = 0
-    # Monotonic time of the last pump that read new bytes; drives the idle reclaim.
-    last_active: float = field(default_factory=monotonic)
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
     open_turn: OpenTurn | None = None
@@ -164,17 +152,11 @@ class TailState:
     # parent's tool-result lines (`toolUseResult.agentId`); stamps each child run's
     # `parent_tool_call_id`.
     subagent_calls: dict[str, str] = field(default_factory=dict)
-    task: asyncio.Task[None] | None = None
-    # A remote session: its transcript lives on the client machine that streams it, so
-    # there is no follow task or watch — the stream route feeds `feed_remote`, which
-    # drives the same per-line assembly the pumps do. `transcript_path` is then the
-    # client's claim in the client's own namespace, a label never opened here.
-    remote: bool = False
     # The prompt id of a turn whose `Stop` hook fired (`stop_turn`): commit it without
     # waiting for the next prompt line — but commit nothing newer, so a prompt queued
-    # into a remote drain window is left open for the next connect to re-stream.
+    # into the drain window is left open for the next connect to re-stream.
     drain_turn: str | None = None
-    # Set once a remote session's trailing turns are committed (`finish_remote`), so
+    # Set once the session's trailing turns are committed (`finish_remote`), so
     # `finalize` can bound its wait for the client's drain.
     drained: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -185,13 +167,13 @@ class TailState:
 
 
 class ClaudeTranscriptTailer:
-    """Follows each native Claude session's transcript as it is written, streaming the
-    model timeline live instead of only rebuilding it after the fact.
+    """Assembles Claude turns from transcript lines streamed in by `octomate claude
+    tail` — the only assembler: the server never opens a transcript, even for a
+    session on this machine, and a session no tail streams keeps only the hooks'
+    prompt/answer sketch.
 
-    One follow loop per session watches the transcript's directory and, on every change,
-    reads the file forward from a byte cursor, frames complete newline-delimited lines,
-    and feeds them through a `ClaudeRunAccumulator` — the same translation the live
-    tentacle and the whole-file restore use. It drives two decoupled sinks:
+    Each framed line feeds a `ClaudeRunAccumulator` — the same translation the live
+    tentacle and the whole-file restore use — driving two decoupled sinks:
 
     - **durable** — one `ExternalAgentRun` per completed turn, carrying the byte range it
       was built from, replacing the provisional run the hooks sketched for the turn
@@ -199,27 +181,13 @@ class ClaudeTranscriptTailer:
     - **live** — a bounded, drop-on-full `StreamEvents` stream for a future UI, which
       never blocks the tailer and which durability never depends on.
 
-    A turn commits on a proven boundary: the next prompt line, EOF at `finalize`, or
-    its own `Stop` hook (`stop_turn`) — the transcript is flushed before Claude fires
-    that hook, so a local close waits for the cursor to reach EOF and a remote one for
-    the client's drained `eof`. Nothing newer than a stopped turn commits early.
-
-    Only `recover` resumes from a turn's `end_offset`; a follow loop re-reads its
-    transcript whole and lets the committed-turn guard drop what it has already seen.
-    Re-reading is what heals a session the tail was absent for, and it costs ~15ms per MB
-    (~160ms for a 3987-line, 56-turn session), paid once per start — cheaper than the
-    checkpoint's one real risk, resuming past bytes no run ever covered.
-
-    A *remote* session — its transcript on another machine, streamed in raw framed
-    lines by `octomate claude tail` — shares everything but the file mechanics:
-    `attach_remote` registers it (so `is_following` and `finalize` route the same),
-    `feed_remote` runs the same per-line assembly the pumps do, and the committed
-    runs' offsets are what a reconnecting client is told to resume from, exactly as
-    `recover` computes them. Its turns commit on the same boundaries, and a relayed
-    `Stop` drains it per turn — the tail process exits once the stopped turn is
-    durable, and the next prompt's launcher spawns a fresh one. A connection that
-    drops mid-stream leaves the open turn uncommitted for the next connect to
-    re-stream, as a crashed follow loop leaves its turns for recovery.
+    A turn commits on a proven boundary: the next prompt line, or the drained `eof`
+    a relayed `Stop`/`SessionEnd` asks the client for — the transcript is flushed
+    before Claude fires those hooks. Nothing newer than a stopped turn commits early
+    (`drain_turn`), and the tail process exits once the stopped turn is durable; the
+    next prompt's launcher spawns a fresh one. The committed runs' offsets are what
+    a reconnecting client is told to resume from, so a connection that drops
+    mid-stream leaves its open turn for the next connect to re-stream.
     """
 
     def __init__(
@@ -235,50 +203,6 @@ class ClaudeTranscriptTailer:
         # same session. Its own registry when the tailer runs standalone.
         self.locks = locks if locks is not None else SessionLocks()
         self.sessions: dict[str, TailState] = {}
-
-    def is_following(self, session_id: str) -> bool:
-        return session_id in self.sessions
-
-    def start(
-        self, session_id: str, transcript_path: Path, *, offset: int = 0
-    ) -> TailState:
-        """Begin (or rejoin) following a session. One loop per session: a live one on the
-        same path is returned as-is, so a repeated start (e.g. `SessionStart` then the
-        first `UserPromptSubmit`) is a no-op. `offset` seeds the cursor for a resume."""
-        existing = self.sessions.get(session_id)
-        if (
-            existing is not None
-            and existing.task is not None
-            and not existing.task.done()
-        ):
-            if existing.transcript_path == transcript_path:
-                return existing
-            # Same session, new transcript path (its slug moved): the bytes are the same,
-            # only relocated. Follow the new file, re-reading from the open turn's start
-            # so a not-yet-committed turn isn't lost; the fresh loop re-seeds its
-            # committed-turn guard from the DB, so nothing double-commits.
-            #
-            # KNOWN ISSUE: unreachable in production, so a slug move is not in fact
-            # handled. `ClaudeHookIngest.start_session` — the only caller that ever
-            # relocates — returns early while `is_following`, so `existing` is always
-            # None here and this branch never runs; the test covering it calls `start`
-            # directly, bypassing that guard. The live loop keeps watching the old
-            # directory, `pump` swallows `FileNotFoundError` on every wake, and the
-            # session goes untailed until the idle timeout reclaims it ~30 min later.
-            # Fixing it means letting the ingest hand a changed path through rather than
-            # returning early — and then reading `existing.open_turn` here races the
-            # loop's own mutation of it (it is None mid-`close_turn`, while `offset` has
-            # already advanced past the prompt line), which would silently drop a turn.
-            offset = (
-                existing.open_turn.start_offset
-                if existing.open_turn is not None
-                else existing.offset
-            )
-            existing.task.cancel()
-        state = self.new_state(session_id, transcript_path, offset)
-        state.task = asyncio.create_task(self.follow(state))
-        self.sessions[session_id] = state
-        return state
 
     def new_state(
         self, session_id: str, transcript_path: Path, offset: int = 0
@@ -303,17 +227,16 @@ class ClaudeTranscriptTailer:
         return state.receive_stream if state is not None else None
 
     async def stop_turn(self, session_id: str, prompt_id: str | None) -> None:
-        """The turn just stopped — its `Stop` hook fired: commit it now instead of
+        """The turn just stopped — its `Stop` hook fired: drain it now instead of
         waiting for the next prompt line to close it.
 
-        A remote session drains: the stream route relays `finalize` on `stop_event`,
-        the client ships its final lines and answers `eof`, and `finish_remote`
-        commits the stopped turn — the tail process exits, and the next prompt's
-        launcher spawns a fresh one. A local follow keeps its loop: the turn is
-        closed here when the cursor already sits at EOF — the transcript was flushed
-        before the hook fired — and otherwise on the loop's next wake. Scoped by
-        `prompt_id` so nothing newer than the stopped turn ever commits early;
-        without one there is nothing to scope, and the turn keeps its old boundary.
+        The stream route relays `finalize` on `stop_event`, the client ships its
+        final lines and answers `eof`, and `finish_remote` commits the stopped turn —
+        the tail process exits, and the next prompt's launcher spawns a fresh one.
+        Scoped by `prompt_id` so nothing newer than the stopped turn ever commits
+        early; without one there is nothing to scope, and the turn keeps its old
+        boundary. A session no stream covers has nothing to drain — the hooks'
+        sketch is its record until a tail connects.
         """
         if prompt_id is None:
             return
@@ -321,156 +244,47 @@ class ClaudeTranscriptTailer:
         if state is None:
             return
         state.drain_turn = prompt_id
-        if state.remote:
-            state.stop_event.set()
-            return
-        turn = state.open_turn
-        try:
-            size = state.transcript_path.stat().st_size
-        except FileNotFoundError:
-            return
-        if turn is not None and turn.prompt_id == prompt_id and state.offset >= size:
-            state.drain_turn = None
-            await self.close_turn(state)
+        state.stop_event.set()
 
-    async def finalize(
-        self, session_id: str, transcript_path: Path | None = None
-    ) -> None:
-        """End a session's follow loop: it drains to EOF, commits the trailing turn,
-        closes the live stream, and drops itself from the registry. Awaits the loop so the
-        last turn is durable on return.
-
-        With no loop to end, the session ran unwatched — Octomate restarted mid-session
-        and lost the registry, or came up after the session did — so this is the last
-        moment its tail can be rescued: `recover` rebuilds from the transcript instead.
-        Without that, `SessionEnd` would silently drop every turn since the loop died.
-
-        A remote session has no loop and no local file: the finalize is relayed — the
-        stream route watches `stop_event` and sends the client `finalize`; the client
-        drains, answers `eof`, and `finish_remote` commits the trailing turns and sets
-        `drained`. The wait is bounded: a client that is gone leaves its turns for the
-        next connect, and the SessionEnd hook must not hang on it.
-        """
+    async def finalize(self, session_id: str) -> None:
+        """End a session (`SessionEnd`): relay the drain to its stream — the route
+        watches `stop_event` and sends the client `finalize`; the client drains,
+        answers `eof`, and `finish_remote` commits the trailing turns and sets
+        `drained`. The wait is bounded: a client that is gone leaves its turns for
+        the next connect, and the SessionEnd hook must not hang on it. A session no
+        stream covers has nothing to finalize."""
         state = self.sessions.get(session_id)
         if state is None:
-            await self.recover(session_id, transcript_path)
-            return
-        if state.remote:
-            state.stop_event.set()
-            try:
-                await asyncio.wait_for(state.drained.wait(), REMOTE_DRAIN_TIMEOUT)
-            except TimeoutError:
-                logger.warning(
-                    "session %s: remote tail did not drain within %ss; its trailing "
-                    "turns are left for the next connect to recover",
-                    session_id,
-                    REMOTE_DRAIN_TIMEOUT,
-                )
-            return
-        if state.task is None:
-            await self.recover(session_id, transcript_path)
             return
         state.stop_event.set()
-        await state.task  # its finally drains, commits, and reclaims the registry slot
+        try:
+            await asyncio.wait_for(state.drained.wait(), REMOTE_DRAIN_TIMEOUT)
+        except TimeoutError:
+            logger.warning(
+                "session %s: remote tail did not drain within %ss; its trailing "
+                "turns are left for the next connect to recover",
+                session_id,
+                REMOTE_DRAIN_TIMEOUT,
+            )
 
     async def shutdown(self) -> None:
-        """Cancel every follow loop (tentacle disconnect). No final drain — an
-        interrupted session's trailing turn is recovered by re-tailing later."""
-        tasks = [s.task for s in self.sessions.values() if s.task is not None]
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        for state in self.sessions.values():
+            state.send_stream.close()
         self.sessions.clear()
-
-    async def recover(
-        self, session_id: str, transcript_path: Path | None = None
-    ) -> list[str]:
-        """Re-tail a session's transcript once, from the last committed offset, recording
-        any turns not yet persisted — the manual recovery path for a session Octomate
-        watched only partially or never (down during the run, hooks not wired). Runs the
-        same assembly as the live follow loop, so it rebuilds the model timeline and the
-        human ledger identically. Idempotent by `prompt_id` — re-running, or overlapping a
-        live follow, is a safe no-op. Resolves a moved slug when no path is given; returns
-        the ids of the turns it recovered."""
-        path = transcript_path or locate_transcript(session_id)
-        if path is None:
-            return []
-        with claude_logfire.span(
-            "claude.tailer.recover [{session_id}]", session_id=session_id
-        ):
-            # Own a materia context, mirroring the follow task's boundary.
-            with sqlalchemy_materia():
-                conversation = await self.ensure_session(session_id)
-                committed = assembled(conversation)
-                start = max(
-                    (
-                        run.end_offset or 0
-                        for run in conversation.runs
-                        if isinstance(run, ExternalAgentRun)
-                    ),
-                    default=0,
-                )
-                state = self.new_state(session_id, path, start)
-                state.conversation = conversation
-                state.recorded = set(committed)
-                try:
-                    await self.pump(
-                        state
-                    )  # read [start .. EOF), committing on boundaries
-                    await self.close_turn(state)  # commit the trailing turn
-                    await self.close_subagent_turns(state)
-                finally:
-                    state.send_stream.close()
-                fresh = await self.ensure_session(session_id)
-                recovered = sorted(
-                    (
-                        run
-                        for run in fresh.runs
-                        if isinstance(run, ExternalAgentRun)
-                        and run.end_offset is not None
-                        and run.id not in committed
-                    ),
-                    key=lambda run: run.start_offset or 0,
-                )
-                logger.info(
-                    "session %s: re-tailed from byte %d, recovering %d turn(s) no live "
-                    "tail saw",
-                    session_id,
-                    start,
-                    len(recovered),
-                )
-                return [run.id for run in recovered]
 
     async def attach_remote(
         self, session_id: str, transcript_path: Path
     ) -> tuple[TailState, dict[str, int]]:
-        """Register a remote session and answer where each of its files resumes.
+        """Register a streamed session and answer where each of its files resumes.
 
-        The offsets are recomputed from the committed runs — `recover`'s computation,
-        per file: the session transcript under `SESSION_FILE`, each known subagent
+        The offsets are recomputed from the committed runs, per file: the session
+        transcript under `SESSION_FILE`, each known subagent
         under its agent id — so the client holds no durable cursor and a reconnect is
-        just re-asking. Refuses a session a live local follow already covers: the file
-        is here, and a second assembler would only race the first. A lingering remote
-        registration (its client died without a close) is replaced; the dead route
-        feeds the state object it attached, and its commits are idempotent.
+        just re-asking. A lingering registration (its client died without a close) is
+        replaced; the dead route feeds the state object it attached, and its commits
+        are idempotent.
         """
-        existing = self.sessions.get(session_id)
-        if (
-            existing is not None
-            and existing.task is not None
-            and not existing.task.done()
-        ):
-            raise RemoteTailRefused(
-                f"session {session_id} is already tailed from a local transcript"
-            )
-
         state = self.new_state(session_id, transcript_path)
-        state.remote = True
-
         await self.prepare(state)
 
         conversation = state.conversation
@@ -512,7 +326,6 @@ class ClaudeTranscriptTailer:
         against offsets the client measured in its own file. Takes the state rather
         than a session id so a superseded connection keeps feeding the state it
         attached, never whoever registered after it."""
-        state.last_active = monotonic()
         if agent_id is None:
             state.offset = end
             line = self.parse_line(raw, state.session_id)
@@ -553,64 +366,10 @@ class ClaudeTranscriptTailer:
         """Drop a remote session's registration without committing anything: the
         connection died mid-stream, so its open turns' bytes were never provably
         complete. The next connect resumes from the committed offsets and re-streams
-        them — exactly as a crashed follow loop leaves its turns for recovery."""
+        them."""
         state.send_stream.close()
         if self.sessions.get(state.session_id) is state:
             del self.sessions[state.session_id]
-
-    async def follow(self, state: TailState) -> None:
-        """The per-session loop: catch up on what is already on disk, then pump on every
-        directory change until `finalize` stops it, and drain once more to EOF."""
-        with claude_logfire.span(
-            "claude.tailer.follow [{session_id}]",
-            session_id=state.session_id,
-            start_offset=state.offset,
-        ):
-            try:
-                # Own a materia context: a long-lived follow task outlives the request
-                # that started it, mirroring the restore task boundary.
-                with sqlalchemy_materia():
-                    await self.prepare(state)
-                    await self.pump(state)
-                    async for _ in awatch(
-                        state.transcript_path.parent,
-                        stop_event=state.stop_event,
-                        recursive=False,
-                        rust_timeout=IDLE_POLL_MS,
-                        yield_on_timeout=True,
-                    ):
-                        await self.pump(state)
-                        if state.drain_turn is not None:
-                            # A relayed `Stop` that `stop_turn` could not close on the
-                            # spot (the pump had bytes still to read): the pump is at
-                            # EOF now, so commit the stopped turn — or drop the flag,
-                            # a newer prompt line having closed it on its own boundary.
-                            turn = state.open_turn
-                            if turn is not None and turn.prompt_id == state.drain_turn:
-                                await self.close_turn(state)
-                            state.drain_turn = None
-                        if monotonic() - state.last_active > IDLE_TIMEOUT:
-                            logger.info(
-                                "session %s: silent for %ss, stopped tailing",
-                                state.session_id,
-                                IDLE_TIMEOUT,
-                            )
-                            break
-                    await self.pump(state)  # final drain to EOF
-                    await self.close_turn(state)  # commit the trailing turn
-                    await self.close_subagent_turns(state)
-            except Exception:
-                logger.exception(
-                    "session %s: stopped tailing on error; its remaining turns are left "
-                    "for the next prompt or SessionEnd to recover",
-                    state.session_id,
-                )
-            finally:
-                state.send_stream.close()
-                # Reclaim the registry slot on any exit (idle, finalize, crash), unless a
-                # relocation already replaced this state with a fresh loop.
-                if self.sessions.get(state.session_id) is state:
-                    del self.sessions[state.session_id]
 
     async def prepare(self, state: TailState) -> None:
         """Resolve the session's conversation and seed the committed-turn guard from it,
@@ -627,40 +386,6 @@ class ClaudeTranscriptTailer:
         return await self.conversation_manager.ensure(
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
         )
-
-    async def pump(self, state: TailState) -> None:
-        """Advance the session: the transcript itself, then its subagents' files. The
-        subagent pass runs even when the transcript has no new bytes — a working
-        subagent writes while its parent waits silently, so parent quiet is exactly
-        when the children have the most to say."""
-        await self.pump_transcript(state)
-        if await self.pump_subagents(state):
-            state.last_active = monotonic()  # child bytes keep the session alive too
-
-    async def pump_transcript(self, state: TailState) -> None:
-        """Read the transcript forward from the cursor, framing on raw `\\n`. Only bytes
-        up to the last complete line are consumed; a trailing fragment stays unread and
-        is re-read next pump, so a line split across two reads is never half-parsed. A
-        malformed / unmodeled line is skipped but still advances the cursor, so a bad
-        line never wedges ingest."""
-        try:
-            size = state.transcript_path.stat().st_size
-        except FileNotFoundError:
-            return  # the file may not exist yet; the dir-watch wakes us when it appears
-        if size < state.offset:  # truncation / rotation guard (append-only in practice)
-            state.offset = 0
-        with state.transcript_path.open("rb") as handle:
-            handle.seek(state.offset)
-            chunk = handle.read()
-        if not chunk:
-            return
-        state.last_active = monotonic()  # new bytes — the session is alive
-        for raw in chunk.split(b"\n")[:-1]:  # last element is the trailing fragment
-            start = state.offset
-            state.offset += len(raw) + 1  # + the '\n' the line was framed on
-            line = self.parse_line(raw, state.session_id)
-            if line is not None:
-                await self.process_line(state, line, start, state.offset)
 
     @staticmethod
     def parse_line(raw: str | bytes, session_id: str) -> TranscriptLine | None:
@@ -793,12 +518,13 @@ class ClaudeTranscriptTailer:
         overlap after a resume is a safe no-op. Held under the session lock so the commit
         can't interleave with the hooks' ledger writes for the same turn.
 
-        A commit that cannot be made ends the follow loop instead of being skipped past.
-        `recover` resumes from the last committed turn's `end_offset`, which only points
-        at the right bytes while the committed turns are the *earliest* ones: skipping a
-        turn and tailing on would let a later turn push that mark past the gap, stranding
-        the skipped turn where no recovery could reach it. Stopping keeps the mark honest
-        — the next prompt, or `SessionEnd`, re-reads the turn from there and commits it.
+        A commit that cannot be made propagates instead of being skipped past. A
+        reconnect resumes from the last committed turn's `end_offset`, which only
+        points at the right bytes while the committed turns are the *earliest* ones:
+        skipping a turn and streaming on would let a later turn push that mark past
+        the gap, stranding the skipped turn where no re-stream could reach it.
+        Failing keeps the mark honest — the next connect re-streams the turn from
+        there and commits it.
         """
         turn = state.open_turn
         state.open_turn = None
@@ -848,19 +574,6 @@ class ClaudeTranscriptTailer:
                     turn.end_offset,
                 )
 
-    async def pump_subagents(self, state: TailState) -> bool:
-        """Advance every subagent transcript of the session, discovering new ones by
-        listing the `subagents/` directory. Returns whether any child yielded bytes."""
-        directory = state.subagents_dir
-        if not directory.is_dir():
-            return False
-        consumed = False
-        for path in sorted(directory.glob("agent-*.jsonl")):
-            tail = self.subagent_tail(state, path.stem.removeprefix("agent-"))
-            if await self.pump_subagent(state, tail):
-                consumed = True
-        return consumed
-
     @staticmethod
     def subagent_tail(state: TailState, agent_id: str) -> SubagentTail:
         tail = state.subagents.get(agent_id)
@@ -872,44 +585,26 @@ class ClaudeTranscriptTailer:
             state.subagents[agent_id] = tail
         return tail
 
-    async def poke_subagent(self, session_id: str, agent_id: str) -> None:
-        """Advance one subagent's file right now — a `SubagentStart` hook's precise
-        wake, instead of waiting for the parent's next event or the poll tick. A
-        session nothing follows is left alone; `recover` rebuilds it later."""
-        state = self.sessions.get(session_id)
-        if state is None or state.remote:
-            # Remote: there is no file here to pump; its lines push themselves.
-            return
-        if state.conversation is None:
-            # The hook can outrun the follow task's first scheduling slice; prepare
-            # synchronously — the manager caches, so racing the task is harmless.
-            await self.prepare(state)
-        if await self.pump_subagent(state, self.subagent_tail(state, agent_id)):
-            state.last_active = monotonic()
-
     async def finish_subagent(
         self, session_id: str, agent_id: str, *, final_answer: str | None = None
     ) -> None:
         """Drain and commit one subagent on its `SubagentStop` — the child's
-        `finalize`. The hook is synchronous but the transcript writer is not: the
-        final answer line races it (measured: usually loses by ~1-2KB). When the
-        event names the answer, keep draining until the file yields it — the flush
-        barrier the hook itself provides — bounded so a mismatch can never hang the
-        pipe; without one, allow the writer a single settle beat.
-
-        A remote session settles on the same loop without the pumps: its lines arrive
-        through `feed_remote` on their own, and `tail.offset` still says whether the
-        writer has gone quiet."""
+        `finalize`, which a Claude child needs: its turns frame on promptId change,
+        so nothing in its own file closes the last one. The hook is synchronous but
+        the transcript writer is not: the final answer line races it (measured:
+        usually loses by ~1-2KB). The child's lines arrive through `feed_remote` on
+        their own; when the event names the answer, wait until the stream yields it,
+        bounded so a mismatch can never hang the pipe — `tail.offset` says whether
+        the writer has gone quiet. A session no stream covers has nothing to
+        settle."""
         state = self.sessions.get(session_id)
         if state is None:
             return
         if state.conversation is None:
             await self.prepare(state)
         tail = self.subagent_tail(state, agent_id)
-        if not state.remote:
-            await self.pump_subagent(state, tail)
         # The turn this stop is for. If a resume arrives inside the settle window,
-        # the pump itself closes this turn on the promptId change and opens the
+        # the stream itself closes this turn on the promptId change and opens the
         # next — which must NOT be committed by this stop, mid-flight.
         target = tail.open_turn
         deadline = monotonic() + SUBAGENT_SETTLE_TIMEOUT
@@ -928,8 +623,6 @@ class ClaudeTranscriptTailer:
                 break
             before = tail.offset
             await asyncio.sleep(SUBAGENT_SETTLE_POLL)
-            if not state.remote:
-                await self.pump_subagent(state, tail)
             quiet = quiet + 1 if tail.offset == before else 0
         if target is None or tail.open_turn is target:
             await self.close_subagent_turn(state, tail)
@@ -950,9 +643,9 @@ class ClaudeTranscriptTailer:
 
     async def prepare_subagent(self, state: TailState, tail: SubagentTail) -> None:
         """Resolve the child's conversation under the session's thread and seed its
-        committed-turn guard — the first time this child is seen, by pump or feed."""
+        committed-turn guard — the first time this child's lines are fed."""
         parent = state.conversation
-        assert parent is not None  # prepare()/recover() resolve it before any pump
+        assert parent is not None  # prepare() resolves it at attach
         tail.conversation = await self.conversation_manager.ensure(
             parent.thread_id,
             agent_tentacle_id=CLAUDE_NATIVE_ID,
@@ -960,30 +653,6 @@ class ClaudeTranscriptTailer:
             parent_conversation_id=parent.id,
         )
         tail.recorded = assembled(tail.conversation)
-
-    async def pump_subagent(self, state: TailState, tail: SubagentTail) -> bool:
-        """Read one subagent's file forward from its cursor — the same framing and
-        cursor discipline as `pump_transcript`, against the child's own byte space."""
-        if tail.conversation is None:
-            await self.prepare_subagent(state, tail)
-        try:
-            size = tail.path.stat().st_size
-        except FileNotFoundError:
-            return False
-        if size < tail.offset:  # truncation guard, mirroring the parent's
-            tail.offset = 0
-        with tail.path.open("rb") as handle:
-            handle.seek(tail.offset)
-            chunk = handle.read()
-        if not chunk:
-            return False
-        for raw in chunk.split(b"\n")[:-1]:
-            start = tail.offset
-            tail.offset += len(raw) + 1
-            line = self.parse_line(raw, state.session_id)
-            if line is not None:
-                await self.process_subagent_line(state, tail, line, start, tail.offset)
-        return True
 
     async def process_subagent_line(
         self,
@@ -1106,7 +775,7 @@ class ClaudeTranscriptTailer:
 
     async def close_subagent_turns(self, state: TailState) -> None:
         """Commit every child's trailing open turn — the subagent counterpart of the
-        final `close_turn`, at `finalize` and `recover`."""
+        final `close_turn`, at a session-ending drain (`finish_remote`)."""
         for tail in state.subagents.values():
             await self.close_subagent_turn(state, tail)
 
@@ -1115,8 +784,8 @@ class ClaudeTranscriptTailer:
     ) -> None:
         """Cross-reference the human ledger (inbound prompt / outbound answer, keyed by
         `prompt_id = run.id`) to this run. Rows the hooks already wrote live are reused;
-        any the live pipe never wrote — a session Octomate watched only after the fact,
-        via recovery — are created here from the transcript, so the ledger stands alone."""
+        any the live pipe never wrote — a session streamed in only after the fact —
+        are created here from the transcript, so the ledger stands alone."""
         thread = await self.thread_manager.ensure(
             ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
         )

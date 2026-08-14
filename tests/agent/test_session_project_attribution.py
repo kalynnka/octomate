@@ -250,8 +250,9 @@ async def test_attribution_does_not_touch_thread_identity(tmp_path: Path) -> Non
 
 async def end_session(octomate: Octomate, session_id: str, cwd: Path | str) -> None:
     """`SessionEnd` and nothing before it — Octomate came up in the middle of this
-    session, so the per-turn hooks that would have filed its thread never reached it,
-    and `finalize` falls through to `recover`, which creates the thread itself."""
+    session, so the per-turn hooks that would have filed its thread never reached
+    it. The hook still creates the thread: it is the last event carrying a cwd, and
+    a backfill tail attaching later would otherwise create it unfiled."""
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
     ingest = ClaudeHookIngest(octomate, tailer)
     await ingest.handle(
@@ -274,12 +275,12 @@ async def filed_under(octomate: Octomate, session_id: str) -> str:
     return project.name if project is not None else ""
 
 
-async def test_a_session_recovered_before_any_hook_is_still_filed(
+async def test_a_session_ending_before_any_hook_is_still_filed(
     tmp_path: Path,
 ) -> None:
     # `SessionEnd` carries a cwd like every other hook, and this is the last moment it
-    # can be used: `recover` creates the thread, and a thread's project is frozen at
-    # creation, so one born there unfiled would stay unfiled.
+    # can be used: the hook creates the thread, and a thread's project is frozen at
+    # creation, so one born unfiled would stay unfiled.
     inky = repo(tmp_path / "inky")
     octomate = Octomate(projects=await a_registry(Project(root=inky, origin="codex")))
 

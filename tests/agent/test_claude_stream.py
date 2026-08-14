@@ -1,8 +1,7 @@
-"""Remote transcript ingest: raw framed lines over the stream endpoint, assembled by
-the same tailer machinery the local pumps feed. The server owns every cursor — a
-connect is answered with where each file resumes, computed from the committed runs —
-and a connection that drops without `eof` leaves its open turns for the next connect,
-exactly as a crashed local follow leaves its turns for recovery."""
+"""Transcript ingest over the stream endpoint — the only assembler: raw framed
+lines fed per file. The server owns every cursor — a connect is answered with where
+each file resumes, computed from the committed runs — and a connection that drops
+without `eof` leaves its open turns for the next connect to re-stream."""
 
 from __future__ import annotations
 
@@ -32,7 +31,6 @@ from octomate import Octomate
 from octomate.config import ClaudeCodeConfig
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer, TailState
-from octomate.tentacles.agents.hooks import RemoteTailRefused
 from octomate.types.json import JsonObject
 from tests.agent.test_claude_tailer import (
     AGENT_ID,
@@ -44,7 +42,6 @@ from tests.agent.test_claude_tailer import (
     line_bytes,
     runs_of,
     subagent_runs_of,
-    write_records,
 )
 
 SECRET = SecretStr("the-hook-secret")
@@ -93,7 +90,7 @@ async def test_remote_feed_assembles_the_same_runs_as_a_local_tail() -> None:
 
     state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
     assert offsets == {SESSION_FILE: 0}
-    assert tailer.is_following(SESSION_ID)  # so hooks route finalize here, not recover
+    assert SESSION_ID in tailer.sessions  # so hooks route the drains here
     await feed(tailer, state, frames(TURN_ONE + TURN_TWO))
     await tailer.finish_remote(state)
 
@@ -105,7 +102,7 @@ async def test_remote_feed_assembles_the_same_runs_as_a_local_tail() -> None:
     assert p1.end_offset == p2.start_offset
     kinds = [type(message).__name__ for message in p1.messages]
     assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
-    assert not tailer.is_following(SESSION_ID)  # registry slot reclaimed
+    assert SESSION_ID not in tailer.sessions  # registry slot reclaimed
 
 
 async def test_a_reconnect_is_told_to_resume_from_the_committed_runs() -> None:
@@ -176,7 +173,7 @@ async def test_a_stop_drains_the_remote_tail_and_commits_the_stopped_turn() -> N
     (p1,) = await runs_of(octomate)
     assert p1.id == "p1"
     assert p1.end_offset is not None
-    assert not tailer.is_following(SESSION_ID)  # the tail is done; slot reclaimed
+    assert SESSION_ID not in tailer.sessions  # the tail is done; slot reclaimed
 
 
 async def test_a_prompt_queued_into_the_drain_stays_open_for_the_next_connect() -> None:
@@ -222,20 +219,19 @@ async def test_subagent_lines_stream_into_child_runs() -> None:
     tailer.detach_remote(state)
 
 
-async def test_a_session_tailed_locally_refuses_a_remote_attach(
-    tmp_path: Path,
-) -> None:
-    """The file is here, so the local follow is already the assembler; a second one
-    over the stream would only race it."""
-    octomate, tailer = remote_tailer()
-    transcript = tmp_path / f"{SESSION_ID}.jsonl"
-    write_records(transcript, TURN_ONE)
-    tailer.start(SESSION_ID, transcript)
+async def test_a_new_attach_replaces_a_lingering_registration() -> None:
+    """A client that died without a close leaves its registration behind; the next
+    connect replaces it, and the dead route's detach must not evict the
+    replacement."""
+    _, tailer = remote_tailer()
+    stale, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
 
-    with pytest.raises(RemoteTailRefused):
-        await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
-    await tailer.finalize(SESSION_ID)
-    assert [run.id for run in await runs_of(octomate)] == ["p1"]
+    fresh, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    assert tailer.sessions[SESSION_ID] is fresh
+    tailer.detach_remote(stale)
+    assert tailer.sessions[SESSION_ID] is fresh
+    tailer.detach_remote(fresh)
+    assert SESSION_ID not in tailer.sessions
 
 
 def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:

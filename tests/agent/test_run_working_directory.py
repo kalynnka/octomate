@@ -167,6 +167,18 @@ async def test_a_claude_hook_with_no_cwd_records_none() -> None:
     assert sketch.cwd is None
 
 
+async def stream_transcript(tailer: ClaudeTranscriptTailer, transcript: Path) -> None:
+    """Stream one transcript file the way production reaches it: attach and feed its
+    framed lines — the server never opens the file itself."""
+    state, _ = await tailer.attach_remote(CLAUDE_SESSION, transcript)
+    offset = 0
+    for raw in transcript.read_bytes().split(b"\n")[:-1]:
+        end = offset + len(raw) + 1
+        await tailer.feed_remote(state, None, raw.decode(), offset, end)
+        offset = end
+    await tailer.finish_remote(state)
+
+
 async def test_each_claude_turn_records_its_own_prompt_directory(
     tmp_path: Path,
 ) -> None:
@@ -185,8 +197,7 @@ async def test_each_claude_turn_records_its_own_prompt_directory(
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
 
-    tailer.start(CLAUDE_SESSION, transcript)
-    await tailer.finalize(CLAUDE_SESSION)
+    await stream_transcript(tailer, transcript)
 
     runs = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
     assert {run.id: run.cwd for run in runs} == {
@@ -211,8 +222,7 @@ async def test_a_claude_turn_keeps_the_directory_it_was_asked_in(
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
 
-    tailer.start(CLAUDE_SESSION, transcript)
-    await tailer.finalize(CLAUDE_SESSION)
+    await stream_transcript(tailer, transcript)
 
     [run] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
     assert run.cwd == Path(REPO)
@@ -230,9 +240,7 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
     tailer = ClaudeTranscriptTailer(
         octomate.conversations, octomate.thread_manager, locks
     )
-    ingest = ClaudeHookIngest(
-        octomate, tailer, locks, extra_transcript_roots=(tmp_path,)
-    )
+    ingest = ClaudeHookIngest(octomate, tailer, locks)
 
     await ingest.handle(
         ClaudeHookInput.model_validate(
@@ -253,7 +261,7 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
         transcript,
         [claude_prompt("p1", "here", 1, REPO), claude_answer("a1", 2, "ok", REPO)],
     )
-    await tailer.finalize(CLAUDE_SESSION)
+    await stream_transcript(tailer, transcript)
 
     [run] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
     assert run.cwd == Path(REPO)

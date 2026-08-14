@@ -277,17 +277,6 @@ class ClaudeCodeConfig(BaseModel):
             "is what to drop when a remote run can say where it is."
         ),
     )
-    transcript_root: ConfigPath | None = Field(
-        default=None,
-        description=(
-            "An additional directory native session transcripts may live under; a hook "
-            "naming a path outside every known root is not tailed. Claude's own "
-            "<CLAUDE_CONFIG_DIR or ~/.claude>/projects is always accepted, so this "
-            "widens the set rather than replacing it — set it when Claude Code writes "
-            "somewhere else too, since the default is where it writes today rather than "
-            "a promise it always will."
-        ),
-    )
     approval_timeout: float | None = Field(
         default=None,
         description=(

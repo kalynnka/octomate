@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 from pydantic import JsonValue
@@ -41,82 +40,18 @@ def hook(name: str, prompt_id: str | None = None, **body: JsonValue) -> ClaudeHo
     )
 
 
-async def test_a_transcript_outside_the_projects_tree_is_not_tailed(
-    tmp_path: Path,
-) -> None:
-    """`transcript_path` is the caller's claim, and following it means reading whatever
-    it names into this session's history — so only Claude's own tree is in scope. The
-    `..` case is the one a lexical root test would wave through."""
-    projects = tmp_path / "projects"
-    projects.mkdir()
-    outside = tmp_path / "outside.jsonl"
-    outside.write_text("")
+async def test_a_hooks_transcript_path_is_never_followed() -> None:
+    """`transcript_path` is recorded context, never something to follow: the stream
+    is the only assembler, so the hook pipe must not put the server in the business
+    of opening whatever path a hook claims — and the ledger writes either way."""
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
-    ingest = ClaudeHookIngest(octomate, tailer, extra_transcript_roots=(projects,))
+    ingest = ClaudeHookIngest(octomate, tailer)
 
-    for claimed in (outside, projects / ".." / "outside.jsonl"):
-        await ingest.handle(
-            hook("UserPromptSubmit", "p1", prompt="hi", transcript_path=str(claimed))
-        )
-        assert not tailer.is_following(SESSION_ID)
+    await ingest.handle(hook("UserPromptSubmit", "p1", prompt="hi"))
 
-    # The ledger is unaffected: a path it will not tail does not cost the turn its prompt.
+    assert tailer.sessions == {}
     assert await ledger(octomate) == [("inbound", "p1", "hi")]
-
-
-async def test_a_transcript_under_any_known_root_is_tailed(tmp_path: Path) -> None:
-    """The roots are plural — CLAUDE_CONFIG_DIR alone may name several — so a transcript
-    under any of them is Claude's own."""
-    first, second = tmp_path / "one" / "projects", tmp_path / "two" / "projects"
-    for root in (first, second):
-        (root / "slug").mkdir(parents=True)
-    octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
-    ingest = ClaudeHookIngest(octomate, tailer, extra_transcript_roots=(first, second))
-
-    await ingest.handle(
-        hook(
-            "UserPromptSubmit",
-            "p1",
-            prompt="hi",
-            transcript_path=str(second / "slug" / f"{SESSION_ID}.jsonl"),
-        )
-    )
-
-    assert tailer.is_following(SESSION_ID)
-    await tailer.shutdown()
-
-
-async def test_a_configured_root_widens_rather_than_replaces_the_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The configured root is a union with Claude's own tree, not a substitute for it.
-    Otherwise adding a second location would silently switch off the first — and the
-    only symptom would be sessions that stop being tailed for no stated reason."""
-    default = tmp_path / "default" / "projects"
-    (default / "slug").mkdir(parents=True)
-    monkeypatch.setattr(
-        "octomate.tentacles.agents.claude.ingest.CLAUDE_PROJECTS_DIRS", (default,)
-    )
-    octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
-    ingest = ClaudeHookIngest(
-        octomate, tailer, extra_transcript_roots=(tmp_path / "somewhere-else",)
-    )
-
-    # A transcript in the default tree, with an unrelated root configured beside it.
-    await ingest.handle(
-        hook(
-            "UserPromptSubmit",
-            "p1",
-            prompt="hi",
-            transcript_path=str(default / "slug" / f"{SESSION_ID}.jsonl"),
-        )
-    )
-
-    assert tailer.is_following(SESSION_ID)
-    await tailer.shutdown()
 
 
 async def submit(ingest: ClaudeHookIngest, prompt_id: str, prompt: str) -> None:

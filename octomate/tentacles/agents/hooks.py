@@ -8,11 +8,6 @@ from fastapi import Header, HTTPException, status
 from pydantic import SecretStr
 
 
-class RemoteTailRefused(Exception):
-    """A remote attach a transcript tailer will not take; the reason is the message,
-    and the stream route hands it to the client as the close reason."""
-
-
 def hook_guard(secret: SecretStr) -> Callable[[str | None], Awaitable[None]]:
     """A bearer check for a hook router, as a FastAPI dependency.
 

@@ -91,7 +91,7 @@ from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.agents.claude.transport import SSHTransport
-from octomate.tentacles.agents.hooks import RemoteTailRefused, hook_guard
+from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 from octomate.types.permissions import ClaudePermissionMode, is_claude_mode
@@ -226,34 +226,28 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
         # session's ledger writes (hooks) and run commits (tailer) serialize.
         self.session_locks = SessionLocks()
-        # Follows live native sessions' transcripts, recording each turn's run and
-        # streaming its events — one follow loop per session, shared by the hook
-        # lifecycle and any stream consumer. Its `recover` is the manual on-demand
-        # rebuild for a session Octomate watched only partially or never.
+        # Assembles native sessions' turns from streamed transcript lines — the
+        # stream is the only assembler; the server never opens a transcript.
         self.session_tailer = ClaudeTranscriptTailer(
             self.octomate.conversations,
             self.octomate.thread_manager,
             self.session_locks,
         )
-        # Live hook ingest: writes the human ledger and drives the tailer's lifecycle.
+        # Live hook ingest: writes the human ledger and relays the stream's drains.
         # Reads the same managers this tentacle writes, through the bound `octomate`.
         self.session_ingest = ClaudeHookIngest(
             self.octomate,
             self.session_tailer,
             self.session_locks,
-            # Accepted alongside Claude's own tree, never instead of it.
-            extra_transcript_roots=(
-                (config.transcript_root,) if config.transcript_root else ()
-            ),
         )
 
     def routers(self) -> tuple[APIRouter]:
         """The tentacle's HTTP surface, mounted by `Octomate.connect`: the hook router
         native Claude clients (app / CLI / VSCode) POST their session events into, and
-        the stream endpoint a client-side tail feeds raw transcript lines through when
-        the session runs on another machine (`octomate claude tail`).
-        `octomate claude hooks install` writes the client-side settings that point a
-        session at both.
+        the stream endpoint every session's client-side tail feeds raw transcript
+        lines through (`octomate claude tail`) — the server never reads a transcript
+        from disk, this machine's sessions included. `octomate claude hooks install`
+        writes the client-side settings that point a session at both.
         """
         return (self.hook_router,)
 
@@ -343,13 +337,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             ThreadKey(CLAUDE_NATIVE_ID, "thread", hello.session_id),
             project=project,
         )
-        try:
-            state, offsets = await self.session_tailer.attach_remote(
-                hello.session_id, Path(hello.transcript_path)
-            )
-        except RemoteTailRefused as refusal:
-            await websocket.close(code=1008, reason=str(refusal))
-            return
+        state, offsets = await self.session_tailer.attach_remote(
+            hello.session_id, Path(hello.transcript_path)
+        )
         logger.info(
             "session %s: remote tail connected (octomate %s)",
             hello.session_id,
