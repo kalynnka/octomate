@@ -39,6 +39,7 @@ from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIng
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
+from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
 from tests.support.agents import RecordingClaudeClient
 from tests.support.managers import a_registry
@@ -325,24 +326,12 @@ async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> 
 
 
 async def codex_rollout_run(octomate: Octomate, rollout: Path) -> AgentRun:
-    """Tail one rollout the way production reaches it: `SessionStart` starts the tail,
-    and the turn commits off the file."""
-    locks = SessionLocks()
+    """Stream one rollout the way production reaches it: a tail attaches and feeds
+    the file's framed lines, and the turn commits off its own `task_complete`."""
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects, locks
+        octomate.conversations, octomate.thread_manager, octomate.projects
     )
-    ingest = CodexHookIngest(
-        octomate, tailer, locks, extra_transcript_roots=(rollout.parent,)
-    )
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SessionStart",
-            session_id=CODEX_SESSION,
-            transcript_path=rollout,
-        )
-    )
-    await tailer.pump_session(CODEX_SESSION)
-    await tailer.shutdown()
+    await stream_rollout(tailer, CODEX_SESSION, rollout)
     [run] = await runs_of(octomate, CODEX_NATIVE_ID, CODEX_SESSION)
     return run
 

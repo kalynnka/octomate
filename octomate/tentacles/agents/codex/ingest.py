@@ -26,7 +26,6 @@ from octomate.schemas.thread import (
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agents.codex.hooks import CodexHookInput
-from octomate.tentacles.agents.codex.transcript import CODEX_SESSIONS_DIRS
 from octomate.tentacles.agents.locks import SessionLocks
 
 if TYPE_CHECKING:
@@ -38,26 +37,21 @@ logger = logging.getLogger(__name__)
 
 
 class CodexHookIngest:
+    """The hook pipe's half of native-session ingest: the immediate ledger sketch
+    (prompt at `UserPromptSubmit`, answer at `Stop`) and the session skeleton. The
+    transcript itself arrives only through the stream (`octomate codex tail`) — the
+    server never opens a rollout, so a hook's `transcript_path` is recorded context,
+    never something to follow."""
+
     def __init__(
         self,
         octomate: Octomate,
         tailer: CodexTranscriptTailer,
         locks: SessionLocks | None = None,
-        extra_transcript_roots: tuple[Path, ...] = (),
     ) -> None:
         self.octomate = octomate
         self.tailer = tailer
         self.locks = locks if locks is not None else SessionLocks()
-        # The trees a hook may name a rollout in: Codex's own, plus any an operator adds.
-        # A union rather than a replacement — the documented location keeps working
-        # whatever else is configured, so naming an extra root can never be the reason a
-        # session silently stops being ingested.
-        #
-        # Resolved once: the test is `is_relative_to`, which is lexical, so both sides
-        # must be resolved for `..` to mean anything.
-        self.transcript_roots = tuple(
-            root.resolve() for root in (*CODEX_SESSIONS_DIRS, *extra_transcript_roots)
-        )
         self.driven: Counter[str] = Counter()
 
     @contextmanager
@@ -112,14 +106,15 @@ class CodexHookIngest:
                     event.session_id,
                     event.turn_id,
                 )
-        # Stop is a turn boundary in Codex, not a session boundary. Pump after the hook
-        # releases the shared lock; the rollout's task_complete line may now be durable.
-        await self.tailer.pump_session(event.session_id)
+        # Stop is a turn boundary in Codex, not a session boundary. Settle after the
+        # hook releases the shared lock: the rollout's task_complete line flushes a
+        # beat behind the hook, and the tailer waits it out (then drains a remote
+        # tail) instead of leaving the turn to the watch's next wake.
+        await self.tailer.stop_turn(event.session_id, event.turn_id)
 
     async def on_subagent_start(self, event: CodexHookInput) -> None:
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
-        await self.tailer.poke_subagents(event.session_id)
         logger.info(
             "session %s: Codex subagent %s started",
             event.session_id,
@@ -127,21 +122,11 @@ class CodexHookIngest:
         )
 
     async def on_subagent_stop(self, event: CodexHookInput) -> None:
+        # The child's turns close on their own `task_complete` lines as they stream
+        # in; the launcher hook's spool is what hands the tail the child's path, so
+        # the server has nothing to add here beyond the session skeleton.
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
-        if event.agent_transcript_path is None:
-            return
-        path = self.accepted_transcript_path(
-            event.session_id, event.agent_transcript_path
-        )
-        if path is None:
-            return
-        await self.tailer.finish_subagent(
-            event.session_id,
-            path,
-            agent_id=event.agent_id,
-            final_answer=event.last_assistant_message,
-        )
         logger.info(
             "session %s: Codex subagent %s stopped",
             event.session_id,
@@ -149,34 +134,10 @@ class CodexHookIngest:
         )
 
     async def start_session(self, event: CodexHookInput) -> None:
-        if event.transcript_path is None:
-            return
-        path = self.accepted_transcript_path(event.session_id, event.transcript_path)
-        if path is None:
-            return
-        if not path.parent.is_dir():
-            return
         thread = await self.session_thread(event)
         await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=CODEX_NATIVE_ID
         )
-        self.tailer.start(event.session_id, path)
-
-    def accepted_transcript_path(self, session_id: str, claimed: Path) -> Path | None:
-        # Resolved before the root test: `is_relative_to` is lexical, so an unresolved
-        # `.../sessions/../../elsewhere` would pass it. The path is the caller's claim,
-        # and following it means reading whatever it names into this session's history.
-        path = claimed.resolve()
-        if not any(path.is_relative_to(root) for root in self.transcript_roots):
-            logger.warning(
-                "session %s: refusing transcript outside %s: %s. If Codex writes "
-                "elsewhere here, set agents.codex.transcript_root.",
-                session_id,
-                ", ".join(str(root) for root in self.transcript_roots),
-                path,
-            )
-            return None
-        return path
 
     async def session_thread(self, event: CodexHookInput) -> Thread:
         """This session's thread, attributed to the project it is running in.

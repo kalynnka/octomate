@@ -35,7 +35,7 @@ from octomate.tentacles.agents.codex import transcript as codex_transcript
 from octomate.tentacles.agents.codex.hooks import CodexHookInput
 from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
-from octomate.tentacles.agents.locks import SessionLocks
+from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.support.managers import a_registry
 
 
@@ -329,24 +329,13 @@ def codex_rollout(path: Path, cwd: Path, workspace_roots: Sequence[Path]) -> Non
 
 
 async def tail_rollout(octomate: Octomate, rollout: Path) -> None:
-    """Tail one rollout the way production reaches it — `SessionStart` starts the tail,
-    which is also what ensures the session's skeleton before the follow task runs."""
-    locks = SessionLocks()
+    """Stream one rollout the way production reaches it: a loopback tail attaches
+    and feeds the file's framed lines — workspace roots register only for such a
+    local client, whose directories are this machine's."""
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects, locks
+        octomate.conversations, octomate.thread_manager, octomate.projects
     )
-    ingest = CodexHookIngest(
-        octomate, tailer, locks, extra_transcript_roots=(rollout.parent,)
-    )
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SessionStart",
-            session_id="codex-ws",
-            transcript_path=rollout,
-        )
-    )
-    await tailer.pump_session("codex-ws")
-    await tailer.shutdown()
+    await stream_rollout(tailer, "codex-ws", rollout, local_client=True)
 
 
 async def test_every_workspace_root_becomes_its_own_project(tmp_path: Path) -> None:

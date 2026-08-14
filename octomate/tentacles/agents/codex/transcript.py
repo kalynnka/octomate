@@ -9,15 +9,10 @@ from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from octomate.types.json import JsonObject
 
-# Where Codex writes rollout transcripts (dated dirs beneath). `CODEX_HOME` relocates
-# the tree and names a single directory, unlike Claude's comma-separated
-# `CLAUDE_CONFIG_DIR` — but the tuple shape matches, so both ingests gate the same way.
-# The default, not the law: override with `agents.codex.transcript_root`.
+# Codex's own tree (`CODEX_HOME` relocates it): a workspace root under it is the
+# runtime's per-session storage, never a project.
 CODEX_HOME_DIRS: tuple[Path, ...] = (
     Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"),
-)
-CODEX_SESSIONS_DIRS: tuple[Path, ...] = tuple(
-    home / "sessions" for home in CODEX_HOME_DIRS
 )
 
 

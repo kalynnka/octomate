@@ -131,21 +131,14 @@ def install(
     ] = None,
     scope: Annotated[Scope, typer.Option()] = Scope.user,
     path: Annotated[Path | None, typer.Option("--hooks-file")] = None,
-    launcher: Annotated[
-        bool,
-        typer.Option(
-            "--launcher/--no-launcher",
-            help="Also install the transcript-stream launcher. Skip it on the "
-            "machine Octomate itself runs on: local sessions are tailed from disk, "
-            "and a spawned tail would only be refused.",
-        ),
-    ] = True,
 ) -> None:
     """Install observing command hooks without replacing the operator's hooks.
 
-    Re-running replaces a stale Octomate handler in place rather than stacking
-    another — so re-running with `--no-launcher` also retires a launcher a previous
-    install left.
+    The transcript-stream launcher installs unconditionally, the machine Octomate
+    itself runs on included: the stream is the only assembler — the server never
+    reads a rollout from disk — so a session without a tail keeps only the hooks'
+    sketch. Re-running replaces a stale Octomate handler in place rather than
+    stacking another.
     """
     target = hooks_file(scope, path)
     document = load(target)
@@ -181,7 +174,7 @@ def install(
                 if remaining:
                     kept.append({**existing, "hooks": remaining})
         installed = [*kept, group]
-        if launcher and event in LAUNCHER_HOOK_EVENTS:
+        if event in LAUNCHER_HOOK_EVENTS:
             installed.append(launcher_group)
         hooks[event] = installed
     write(target, document)
@@ -189,13 +182,10 @@ def install(
     typer.echo(f"Installed Octomate Codex hooks in {target} → {hook_target}")
     typer.echo(f"  events: {', '.join(HANDLED_HOOK_EVENTS)}")
     typer.echo(f"  emit:   {EMIT_SCRIPT}")
-    if launcher:
-        stream = (
-            stream_url_for(url)
-            if url is not None
-            else f"derived from ${OCTOMATE_URL_ENV}"
-        )
-        typer.echo(f"  stream: {stream} (via {LAUNCH_SCRIPT.name})")
+    stream = (
+        stream_url_for(url) if url is not None else f"derived from ${OCTOMATE_URL_ENV}"
+    )
+    typer.echo(f"  stream: {stream} (via {LAUNCH_SCRIPT.name})")
     typer.echo("Open /hooks in Codex and trust the new command hooks.")
     announce_hook_secret()
 

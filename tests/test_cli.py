@@ -320,35 +320,6 @@ def test_codex_install_adds_the_launcher_on_the_session_events(tmp_path: Path) -
     assert "ws://127.0.0.1:9999/hooks/codex/stream" in launcher["command"]
 
 
-def test_codex_no_launcher_skips_the_stream_and_retires_a_previous_one(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "hooks.json"
-    runner.invoke(
-        codex_typer,
-        ["hooks", "install", "--url", CODEX_URL, "--hooks-file", str(path)],
-    )
-    runner.invoke(
-        codex_typer,
-        [
-            "hooks",
-            "install",
-            "--url",
-            CODEX_URL,
-            "--hooks-file",
-            str(path),
-            "--no-launcher",
-        ],
-    )
-
-    [remaining] = [
-        hook
-        for group in read(path)["hooks"]["UserPromptSubmit"]
-        for hook in group["hooks"]
-    ]
-    assert str(LAUNCH_SCRIPT) not in remaining["command"]  # only the emit hook is left
-
-
 def test_configure_writes_the_client_file_with_tight_permissions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

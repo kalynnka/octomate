@@ -1,10 +1,11 @@
-"""Where each agent's transcripts are looked for by default.
+"""Where Claude's transcripts are looked for by default.
 
-The defaults are read off documented behaviour (`<CLAUDE_CONFIG_DIR or ~/.claude>/
-projects`, `<CODEX_HOME or ~/.codex>/sessions`), and the ingest gates a hook's
-`transcript_path` against them — so a default that is subtly wrong does not fail loudly,
-it silently stops ingesting. Hence these, and hence `transcript_root` in config for when
-the default is wrong anyway.
+The default is read off documented behaviour (`<CLAUDE_CONFIG_DIR or ~/.claude>/
+projects`), and the ingest gates a hook's `transcript_path` against it — so a default
+that is subtly wrong does not fail loudly, it silently stops ingesting. Hence these,
+and hence `transcript_root` in config for when the default is wrong anyway. Codex has
+no counterpart: its rollouts reach the server only through the stream, which never
+opens a path.
 """
 
 from __future__ import annotations
@@ -59,34 +60,20 @@ def test_a_configured_root_expands_home() -> None:
     """`~/...` is the natural way to write it in yaml, and pydantic keeps it literal.
     A literal `~` root matches no transcript, so the gate would refuse every one of
     them and say only that the path was outside."""
-    from octomate.config import ClaudeCodeConfig, CodexConfig
+    from octomate.config import ClaudeCodeConfig
 
     claude = ClaudeCodeConfig.model_validate(
         {"models": ["opus"], "transcript_root": "~/elsewhere/projects"}
     )
-    codex = CodexConfig.model_validate({"transcript_root": "~/elsewhere/sessions"})
 
     assert claude.transcript_root == Path.home() / "elsewhere" / "projects"
-    assert codex.transcript_root == Path.home() / "elsewhere" / "sessions"
-
-
-def test_codex_home_relocates_the_sessions_tree(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
-    module = importlib.reload(
-        importlib.import_module("octomate.tentacles.agents.codex.transcript")
-    )
-    assert module.CODEX_SESSIONS_DIRS == (Path("/tmp/codex-home/sessions"),)
 
 
 @pytest.fixture(autouse=True)
 def restore_modules() -> Iterator[None]:
-    """Reload both modules at their real env once the reloading above is done, so a
+    """Reload the module at its real env once the reloading above is done, so a
     mutated constant cannot leak into another test."""
     yield
-    for name in (
-        "octomate.tentacles.agents.claude.transcript",
-        "octomate.tentacles.agents.codex.transcript",
-    ):
-        importlib.reload(importlib.import_module(name))
+    importlib.reload(
+        importlib.import_module("octomate.tentacles.agents.claude.transcript")
+    )

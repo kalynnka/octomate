@@ -322,17 +322,6 @@ class CodexConfig(BaseModel):
         default=True,
         description="Whether to register the Codex tentacle when the config block exists.",
     )
-    transcript_root: ConfigPath | None = Field(
-        default=None,
-        description=(
-            "An additional directory native session rollouts may live under; a hook "
-            "naming a path outside every known root is not tailed. Codex's own "
-            "<CODEX_HOME or ~/.codex>/sessions is always accepted, so this widens the "
-            "set rather than replacing it — set it when Codex writes somewhere else "
-            "too, since the default is where it writes today rather than a promise it "
-            "always will."
-        ),
-    )
     cwd: str = Field(
         default=".",
         description=(

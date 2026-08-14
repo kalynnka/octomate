@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +12,7 @@ from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.agents.codex.hooks import CodexHookInput
 from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
-from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer, TailState
 from octomate.tentacles.agents.codex.transcript import rollout_line_adapter
 from octomate.tentacles.agents.locks import SessionLocks
 
@@ -29,6 +28,10 @@ CHILD_TURN_TWO = "019f6b2d-b541-7090-8ea7-95bbe0b68c27"
 @pytest.fixture(autouse=True)
 async def db(in_memory_engine: AsyncEngine) -> None:
     return
+
+
+# The rollout in the *client's* namespace: a label the server records, never opens.
+ROLLOUT_LABEL = Path("/laptop/.codex/sessions/rollout.jsonl")
 
 
 def write_rollout(path: Path) -> None:
@@ -87,19 +90,51 @@ def write_rollout(path: Path) -> None:
     path.write_text("".join(json.dumps(record) + "\n" for record in records))
 
 
-def wired(
-    octomate: Octomate, roots: tuple[Path, ...] = ()
-) -> tuple[CodexHookIngest, CodexTranscriptTailer]:
-    """The ingest only tails rollouts inside a known session tree, so tests that expect
-    tailing add the tmp tree they write into — the same injection the tentacle does from
-    `agents.codex.transcript_root`, and additive there for the same reason."""
+def wired(octomate: Octomate) -> tuple[CodexHookIngest, CodexTranscriptTailer]:
     locks = SessionLocks()
     tailer = CodexTranscriptTailer(
         octomate.conversations, octomate.thread_manager, octomate.projects, locks
     )
-    return CodexHookIngest(
-        octomate, tailer, locks, extra_transcript_roots=roots
-    ), tailer
+    return CodexHookIngest(octomate, tailer, locks), tailer
+
+
+async def feed_records(
+    tailer: CodexTranscriptTailer,
+    state: TailState,
+    records: list[dict[str, object]],
+    *,
+    key: str | None = None,
+    start: int = 0,
+) -> int:
+    """Feed records as the stream client frames them — complete lines with the byte
+    range each occupies in its own file — returning the offset past the last one."""
+    offset = start
+    for record in records:
+        raw = json.dumps(record)
+        end = offset + len(raw.encode()) + 1
+        await tailer.feed_remote(state, key, raw, offset, end)
+        offset = end
+    return offset
+
+
+async def stream_rollout(
+    tailer: CodexTranscriptTailer,
+    session_id: str,
+    rollout: Path,
+    *,
+    local_client: bool = False,
+) -> None:
+    """Stream one rollout file the way production reaches it: attach, feed its framed
+    lines, detach — the server never opens the file itself."""
+    state, _ = await tailer.attach_remote(
+        session_id, rollout, local_client=local_client
+    )
+    offset = 0
+    for raw in rollout.read_bytes().split(b"\n")[:-1]:
+        end = offset + len(raw) + 1
+        await tailer.feed_remote(state, None, raw.decode(), offset, end)
+        offset = end
+    tailer.detach_remote(state)
 
 
 async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
@@ -108,7 +143,7 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
     path = tmp_path / "rollout.jsonl"
     path.write_text("")
     octomate = Octomate()
-    ingest, tailer = wired(octomate, (tmp_path,))
+    ingest, tailer = wired(octomate)
 
     common = {
         "session_id": SESSION_ID,
@@ -143,7 +178,7 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
     assert sketch.end_offset is None
 
     write_rollout(path)
-    await tailer.pump_session(SESSION_ID)
+    await stream_rollout(tailer, SESSION_ID, path)
 
     conversation = await octomate.conversations.ensure(
         conversation.thread_id, agent_tentacle_id=CODEX_NATIVE_ID
@@ -160,29 +195,23 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
     await tailer.shutdown()
 
 
-async def test_a_transcript_outside_the_session_tree_is_not_tailed(
+async def test_a_session_start_hook_never_tails_the_claimed_path(
     tmp_path: Path,
 ) -> None:
-    """`transcript_path` is the caller's claim, and following it means reading whatever
-    it names into this session's history — so only Codex's own tree is in scope. The
-    `..` case is the one a lexical root test would wave through."""
-    outside = tmp_path.parent / "outside.jsonl"
-    outside.write_text("")
+    """`transcript_path` is recorded context, never something to follow: the stream
+    is the only assembler, so the hook pipe must not put the server in the business
+    of opening whatever path a hook claims."""
     octomate = Octomate()
-    # tmp_path is a known root here, so `outside` beside it is genuinely outside every
-    # root — without this the paths would be refused only for being outside the real
-    # ~/.codex/sessions, and the test would pass against a gate that never ran.
-    ingest, tailer = wired(octomate, (tmp_path,))
+    ingest, tailer = wired(octomate)
 
-    for claimed in (outside, tmp_path / ".." / "outside.jsonl"):
-        await ingest.handle(
-            CodexHookInput(
-                hook_event_name="SessionStart",
-                session_id=SESSION_ID,
-                transcript_path=claimed,
-            )
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="SessionStart",
+            session_id=SESSION_ID,
+            transcript_path=tmp_path / "rollout.jsonl",
         )
-        assert SESSION_ID not in tailer.sessions
+    )
+    assert tailer.sessions == {}
 
 
 async def test_driven_session_hooks_are_ignored() -> None:
@@ -303,46 +332,26 @@ def subagent_activity(
     }
 
 
-def write_records(path: Path, records: list[dict[str, object]]) -> None:
-    path.write_text("".join(json.dumps(record) + "\n" for record in records))
-
-
-def append_records(path: Path, records: list[dict[str, object]]) -> None:
-    with path.open("a") as handle:
-        handle.write("".join(json.dumps(record) + "\n" for record in records))
-
-
-async def pumped_runs(tmp_path: Path, records: list[dict[str, object]]):
-    path = tmp_path / "rollout.jsonl"
-    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+async def streamed_runs(records: list[dict[str, object]]):
     octomate = Octomate()
-    ingest, tailer = wired(octomate, (tmp_path,))
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SessionStart",
-            session_id=SESSION_ID,
-            transcript_path=path,
-        )
-    )
-    await tailer.pump_session(SESSION_ID)
+    _, tailer = wired(octomate)
+    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL)
+    await feed_records(tailer, state, records)
+    tailer.detach_remote(state)
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CODEX_NATIVE_ID
     )
-    await tailer.shutdown()
     return conversation.runs
 
 
-async def test_an_aborted_turn_closes_and_the_next_turn_still_records(
-    tmp_path: Path,
-) -> None:
+async def test_an_aborted_turn_closes_and_the_next_turn_still_records() -> None:
     """The 24% bug: a turn that ends in `turn_aborted` never closed, and the stuck
     open turn then misread every later `task_started` as nested and swallowed the
     rest of the session. One abort must cost at most its own turn's tail."""
-    runs = await pumped_runs(
-        tmp_path,
+    runs = await streamed_runs(
         [
             event(0, "task_started", turn_id="turn-a"),
             event(1, "user_message", message="first ask"),
@@ -362,11 +371,8 @@ async def test_an_aborted_turn_closes_and_the_next_turn_still_records(
     ]
 
 
-async def test_a_second_task_started_interrupts_and_replaces_the_open_turn(
-    tmp_path: Path,
-) -> None:
-    runs = await pumped_runs(
-        tmp_path,
+async def test_a_second_task_started_interrupts_and_replaces_the_open_turn() -> None:
+    runs = await streamed_runs(
         [
             event(0, "task_started", turn_id=TURN_ID),
             event(1, "user_message", message="parent prompt"),
@@ -396,19 +402,10 @@ async def test_a_backfilled_row_is_dated_by_the_rollout_not_the_replay(
     path = tmp_path / "rollout.jsonl"
     write_rollout(path)
     octomate = Octomate()
-    ingest, tailer = wired(octomate, (tmp_path,))
+    _, tailer = wired(octomate)
 
-    # SessionStart alone: the live tier never saw this turn's prompt or answer.
-    await ingest.handle(
-        CodexHookInput.model_validate(
-            {
-                "hook_event_name": "SessionStart",
-                "session_id": SESSION_ID,
-                "transcript_path": path,
-            }
-        )
-    )
-    await tailer.pump_session(SESSION_ID)
+    # The stream alone: the live tier never saw this turn's prompt or answer.
+    await stream_rollout(tailer, SESSION_ID, path)
 
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
@@ -428,7 +425,7 @@ async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
     path = tmp_path / "rollout.jsonl"
     path.write_text("")
     octomate = Octomate()
-    ingest, tailer = wired(octomate, (tmp_path,))
+    ingest, tailer = wired(octomate)
     common = {"session_id": SESSION_ID, "turn_id": TURN_ID, "transcript_path": path}
     before = datetime.now(UTC)
 
@@ -453,13 +450,14 @@ async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
     await tailer.shutdown()
 
 
-async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
-    tmp_path: Path,
-) -> None:
-    parent_path = tmp_path / f"rollout-parent-{ROOT_THREAD_ID}.jsonl"
-    child_path = tmp_path / f"rollout-child-{CHILD_THREAD_ID}.jsonl"
-    write_records(
-        parent_path,
+async def test_thread_spawn_rollout_tree_records_resumed_child_runs() -> None:
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL)
+
+    await feed_records(
+        tailer,
+        state,
         [
             parent_metadata(),
             event(0, "task_started", turn_id=PARENT_TURN_ID),
@@ -470,8 +468,9 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
             event(11, "task_complete", turn_id=PARENT_TURN_ID),
         ],
     )
-    write_records(
-        child_path,
+    await feed_records(
+        tailer,
+        state,
         [
             child_metadata(),
             parent_metadata(),
@@ -485,18 +484,9 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
             answer_item(8, "second finding"),
             event(9, "task_complete", turn_id=CHILD_TURN_TWO),
         ],
+        key=f"rollout-child-{CHILD_THREAD_ID}.jsonl",
     )
-    octomate = Octomate()
-    ingest, tailer = wired(octomate, (tmp_path,))
-
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SessionStart",
-            session_id=SESSION_ID,
-            transcript_path=parent_path,
-        )
-    )
-    await tailer.pump_session(SESSION_ID)
+    tailer.detach_remote(state)
 
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
@@ -534,49 +524,47 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
     await tailer.shutdown()
 
 
-async def test_child_turn_links_activity_that_arrives_after_it_starts(
-    tmp_path: Path,
-) -> None:
-    parent_path = tmp_path / f"rollout-parent-{ROOT_THREAD_ID}.jsonl"
-    child_path = tmp_path / f"rollout-child-{CHILD_THREAD_ID}.jsonl"
-    write_records(
-        parent_path,
+async def test_child_turn_links_activity_that_arrives_after_it_starts() -> None:
+    child_key = f"rollout-child-{CHILD_THREAD_ID}.jsonl"
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL)
+
+    parent_offset = await feed_records(
+        tailer,
+        state,
         [
             parent_metadata(),
             event(0, "task_started", turn_id=PARENT_TURN_ID),
         ],
     )
-    write_records(
-        child_path,
+    child_offset = await feed_records(
+        tailer,
+        state,
         [
             child_metadata(),
             event(3, "task_started", turn_id=CHILD_TURN_ONE),
             answer_item(4, "working", phase="commentary"),
         ],
+        key=child_key,
     )
-    octomate = Octomate()
-    ingest, tailer = wired(octomate, (tmp_path,))
-
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SessionStart",
-            session_id=SESSION_ID,
-            transcript_path=parent_path,
-        )
-    )
-    await tailer.pump_session(SESSION_ID)
-    append_records(
-        parent_path,
+    await feed_records(
+        tailer,
+        state,
         [subagent_activity(2, "call-after-start", kind="started")],
+        start=parent_offset,
     )
-    append_records(
-        child_path,
+    await feed_records(
+        tailer,
+        state,
         [
             answer_item(5, "done"),
             event(6, "task_complete", turn_id=CHILD_TURN_ONE),
         ],
+        key=child_key,
+        start=child_offset,
     )
-    await tailer.pump_session(SESSION_ID)
+    tailer.detach_remote(state)
 
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
@@ -596,14 +584,15 @@ async def test_child_turn_links_activity_that_arrives_after_it_starts(
     await tailer.shutdown()
 
 
-async def test_guardian_rollout_is_not_ingested_as_a_subagent(
-    tmp_path: Path,
-) -> None:
-    parent_path = tmp_path / f"rollout-parent-{ROOT_THREAD_ID}.jsonl"
-    guardian_path = tmp_path / "rollout-guardian.jsonl"
-    write_records(parent_path, [parent_metadata()])
-    write_records(
-        guardian_path,
+async def test_guardian_rollout_is_not_ingested_as_a_subagent() -> None:
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL)
+
+    await feed_records(tailer, state, [parent_metadata()])
+    await feed_records(
+        tailer,
+        state,
         [
             child_metadata(
                 child_thread_id="019f6b28-4ad5-78b0-979f-70a0f1661b0b",
@@ -616,111 +605,14 @@ async def test_guardian_rollout_is_not_ingested_as_a_subagent(
             ),
             answer_item(4, "internal verdict"),
         ],
+        key="rollout-guardian.jsonl",
     )
-    octomate = Octomate()
-    ingest, tailer = wired(octomate, (tmp_path,))
-
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SessionStart",
-            session_id=SESSION_ID,
-            transcript_path=parent_path,
-        )
-    )
-    await tailer.pump_session(SESSION_ID)
+    tailer.detach_remote(state)
 
     assert all(
         conversation.subagent_id == ""
         for conversation in octomate.conversations.conversations.values()
     )
-    await tailer.shutdown()
-
-
-async def test_subagent_stop_waits_for_the_final_answer_line(
-    tmp_path: Path,
-) -> None:
-    parent_path = tmp_path / f"rollout-parent-{ROOT_THREAD_ID}.jsonl"
-    child_path = tmp_path / f"rollout-child-{CHILD_THREAD_ID}.jsonl"
-    write_records(
-        parent_path,
-        [
-            parent_metadata(),
-            event(0, "task_started", turn_id=PARENT_TURN_ID),
-            subagent_activity(2, "call-spawn", kind="started"),
-        ],
-    )
-    write_records(
-        child_path,
-        [
-            child_metadata(),
-            parent_metadata(),
-            event(0, "task_started", turn_id=PARENT_TURN_ID),
-            event(3, "task_started", turn_id=CHILD_TURN_ONE),
-            answer_item(4, "still working", phase="commentary"),
-        ],
-    )
-    octomate = Octomate()
-    ingest, tailer = wired(octomate, (tmp_path,))
-
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SubagentStart",
-            session_id=SESSION_ID,
-            transcript_path=parent_path,
-            agent_id="opaque-hook-agent-id",
-        )
-    )
-    thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
-    )
-    parent = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
-    )
-    child = await octomate.conversations.ensure(
-        thread.id,
-        agent_tentacle_id=CODEX_NATIVE_ID,
-        subagent_id=CHILD_THREAD_ID,
-        parent_conversation_id=parent.id,
-    )
-    assert child.runs == []
-    assert thread.messages == []
-
-    async def late_writer() -> None:
-        await asyncio.sleep(0.3)
-        append_records(
-            child_path,
-            [
-                answer_item(5, "settled answer"),
-                event(6, "task_complete", turn_id=CHILD_TURN_ONE),
-            ],
-        )
-
-    writer = asyncio.create_task(late_writer())
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SubagentStop",
-            session_id=SESSION_ID,
-            transcript_path=parent_path,
-            agent_transcript_path=child_path,
-            agent_id="opaque-hook-agent-id",
-            last_assistant_message="settled answer",
-        )
-    )
-    await writer
-
-    child = await octomate.conversations.ensure(
-        thread.id,
-        agent_tentacle_id=CODEX_NATIVE_ID,
-        subagent_id=CHILD_THREAD_ID,
-        parent_conversation_id=parent.id,
-    )
-    [run] = child.runs
-    assert run.id == CHILD_TURN_ONE
-    assert run.end_offset == child_path.stat().st_size
-    assert [message.message_text for message in run.messages] == [
-        "still working",
-        "settled answer",
-    ]
     await tailer.shutdown()
 
 
