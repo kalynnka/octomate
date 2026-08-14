@@ -200,22 +200,15 @@ def install(
     ] = None,
     scope: ScopeOption = Scope.user,
     settings: SettingsOption = None,
-    launcher: Annotated[
-        bool,
-        typer.Option(
-            "--launcher/--no-launcher",
-            help="Also install the transcript-stream launcher (a command hook on "
-            "UserPromptSubmit). Skip it on the machine Octomate itself runs on: "
-            "local sessions are tailed from disk, and a spawned tail would only "
-            "be refused.",
-        ),
-    ] = True,
 ) -> None:
     """Point native Claude Code sessions at Octomate's hook router.
 
-    Merges into the settings file: other hooks are preserved, and re-running replaces a
-    stale Octomate handler in place rather than stacking another — so re-running with
-    `--no-launcher` also retires a launcher a previous install left.
+    The transcript-stream launcher (a command hook on UserPromptSubmit) installs
+    unconditionally, the machine Octomate itself runs on included: the stream is the
+    only assembler — the server never reads a transcript from disk — so a session
+    without a tail keeps only the hooks' sketch. Merges into the settings file:
+    other hooks are preserved, and re-running replaces a stale Octomate handler in
+    place rather than stacking another.
     """
     path = settings_file(scope, settings)
     document = load_settings(path)
@@ -234,7 +227,7 @@ def install(
         kept = without_octomate_hooks(hooks.get(event))
         if event in HANDLED_HOOK_EVENTS:
             kept.append(group)
-        if event == "UserPromptSubmit" and launcher:
+        if event == "UserPromptSubmit":
             kept.append(launcher_group)
         if kept:
             hooks[event] = kept
@@ -245,13 +238,10 @@ def install(
     target = url if url is not None else f"${OCTOMATE_URL_ENV} at fire time"
     typer.echo(f"Installed Octomate hooks → {target}")
     typer.echo(f"  events:   {', '.join(HANDLED_HOOK_EVENTS)}")
-    if launcher:
-        stream = (
-            stream_url_for(url)
-            if url is not None
-            else f"derived from ${OCTOMATE_URL_ENV}"
-        )
-        typer.echo(f"  stream:   {stream} (via {LAUNCH_SCRIPT.name})")
+    stream = (
+        stream_url_for(url) if url is not None else f"derived from ${OCTOMATE_URL_ENV}"
+    )
+    typer.echo(f"  stream:   {stream} (via {LAUNCH_SCRIPT.name})")
     typer.echo(f"  settings: {path}")
     typer.echo(f"  auth:     Bearer ${{{HOOK_SECRET_ENV}}} from the environment")
     announce_hook_secret()

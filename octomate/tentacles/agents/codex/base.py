@@ -18,6 +18,7 @@ from octomate_cli.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
+    StreamFinalize,
     StreamHello,
     StreamWelcome,
     client_message_adapter,
@@ -89,7 +90,7 @@ from octomate.tentacles.agents.codex.hooks import (
 )
 from octomate.tentacles.agents.codex.ingest import CodexHookIngest
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
-from octomate.tentacles.agents.hooks import RemoteTailRefused, hook_guard
+from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode, is_codex_mode
@@ -329,10 +330,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             self.octomate,
             self.session_tailer,
             self.session_locks,
-            # Accepted alongside Codex's own tree, never instead of it.
-            extra_transcript_roots=(
-                (config.transcript_root,) if config.transcript_root else ()
-            ),
         )
 
     def routers(self) -> tuple[APIRouter]:
@@ -341,10 +338,11 @@ class CodexTentacle(AgentTentacle[str, None]):
     @cached_property
     def hook_router(self) -> APIRouter:
         """The hook pipe native Codex sessions POST their events into, and the stream
-        endpoint a client-side tail feeds raw rollout lines through when the session
-        runs on another machine (`octomate codex tail`). The guard covers the
-        websocket too: FastAPI runs router dependencies at the handshake, so a bad
-        bearer is denied with the same 401 before any socket opens."""
+        endpoint every session's client-side tail feeds raw rollout lines through
+        (`octomate codex tail`) — the server never reads a rollout from disk, this
+        machine's sessions included. The guard covers the websocket too: FastAPI
+        runs router dependencies at the handshake, so a bad bearer is denied with
+        the same 401 before any socket opens."""
         router = APIRouter(
             tags=["codex"], dependencies=[Depends(hook_guard(self.hook_secret))]
         )
@@ -397,9 +395,13 @@ class CodexTentacle(AgentTentacle[str, None]):
         resume offsets, then feed each framed line through the tailer's assembly.
         Codex turns close on their own `task_complete`/`turn_aborted` lines, so
         nothing commits at the boundary either way — `eof` and a drop alike just
-        return the registry slot, and the next connect re-streams from byte 0. There
-        is no `finalize` relay: Codex fires no session-end hook, so a session ends by
-        the client's own idle drain."""
+        return the registry slot, and the next connect re-streams from byte 0. A
+        `Stop` on the hook pipe reaches here as the state's `stop_event`
+        (`stop_turn`, once the stopped turn is durable or its wait ran out); the
+        relay sends `finalize`, whose drain re-reads the client's files to EOF —
+        rescuing bytes a missed watch wake left behind — and the tail exits until
+        the next prompt's launcher. Codex fires no session-end hook, so a session
+        that just stops ends by the client's own idle drain."""
         # The thread before the attach, filed under the project its cwd names —
         # `CodexHookIngest.session_thread`'s ordering, because `attach_remote` falls
         # back to a project-less create and a thread's project is frozen at creation.
@@ -407,8 +409,9 @@ class CodexTentacle(AgentTentacle[str, None]):
         # directories, and a remote cwd naming one of them would be a false match.
         # TODO: assign remote sessions their project once projects can span machines.
         client = websocket.client
+        local_client = client is not None and client.host in {"127.0.0.1", "::1"}
         project = None
-        if client is not None and client.host in {"127.0.0.1", "::1"} and hello.cwd:
+        if local_client and hello.cwd:
             project = await self.octomate.projects.ensure(
                 Path(hello.cwd), origin="codex"
             )
@@ -416,19 +419,30 @@ class CodexTentacle(AgentTentacle[str, None]):
             ThreadKey(CODEX_NATIVE_ID, "thread", hello.session_id),
             project=project,
         )
-        try:
-            state, offsets = await self.session_tailer.attach_remote(
-                hello.session_id, Path(hello.transcript_path)
-            )
-        except RemoteTailRefused as refusal:
-            await websocket.close(code=1008, reason=str(refusal))
-            return
+        state, offsets = await self.session_tailer.attach_remote(
+            hello.session_id,
+            Path(hello.transcript_path),
+            local_client=local_client,
+        )
         logger.info(
             "session %s: remote tail connected (octomate %s)",
             hello.session_id,
             hello.client_version or "unversioned",
         )
         await websocket.send_text(StreamWelcome(offsets=offsets).model_dump_json())
+
+        async def relay_finalize() -> None:
+            await state.stop_event.wait()
+            try:
+                await websocket.send_text(StreamFinalize().model_dump_json())
+            except Exception:
+                # The socket died first; the drain this asked for cannot happen, and
+                # the next connect re-streams what it would have shipped.
+                logger.debug(
+                    "session %s: finalize relay lost its socket", hello.session_id
+                )
+
+        relay = asyncio.create_task(relay_finalize())
         # Per-file contiguity: each line must start where the last one ended, so a
         # dropped frame surfaces as a close (4000 — the client reconnects and re-asks)
         # instead of a silently mis-assembled turn.
@@ -469,6 +483,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                 hello.session_id,
             )
         finally:
+            relay.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await relay
             self.session_tailer.detach_remote(state)
             if clean:
                 with contextlib.suppress(Exception):

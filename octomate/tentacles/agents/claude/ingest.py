@@ -28,7 +28,6 @@ from octomate.schemas.thread import (
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
-from octomate.tentacles.agents.claude.transcript import CLAUDE_PROJECTS_DIRS
 from octomate.tentacles.agents.locks import SessionLocks
 
 if TYPE_CHECKING:
@@ -54,9 +53,10 @@ class ClaudeHookIngest:
     `ExternalAgentRun`, so a turn in flight is a whole conversation → run → messages
     chain and not a chat log with no model history to hang from. The events carry no
     thinking, tools or usage, so the full timeline comes from the
-    `ClaudeTranscriptTailer`, which this starts on the first prompt (`SessionStart` is
-    not delivered to http hooks) and finalizes at `SessionEnd`; it replaces each sketch
-    as its turn closes. No transcript is read here.
+    `ClaudeTranscriptTailer` — fed only by the stream (`octomate claude tail`): the
+    server never opens a transcript, and a hook's `transcript_path` is recorded
+    context, never something to follow. `Stop` and `SessionEnd` relay the stream's
+    per-turn and final drains.
 
     Ledger rows and the run alike are keyed by `prompt_id` — `platform_message_id` on
     the rows, the run's own id — the stable per-turn key both tiers write under, so the
@@ -68,20 +68,9 @@ class ClaudeHookIngest:
         octomate: Octomate,
         tailer: ClaudeTranscriptTailer,
         locks: SessionLocks | None = None,
-        extra_transcript_roots: tuple[Path, ...] = (),
     ) -> None:
         self.octomate = octomate
         self.tailer = tailer
-        # The trees a hook may name a transcript in: Claude's own, plus any an operator
-        # adds. A union rather than a replacement — the documented location keeps working
-        # whatever else is configured, so naming an extra root can never be the reason a
-        # session silently stops being ingested.
-        #
-        # Resolved once: the test is `is_relative_to`, which is lexical, so both sides
-        # must be resolved for `..` to mean anything.
-        self.transcript_roots = tuple(
-            root.resolve() for root in (*CLAUDE_PROJECTS_DIRS, *extra_transcript_roots)
-        )
         # Serialize a session's events so the existence check and the write can't race
         # (Claude fires the next event without waiting for our commit). Shared with the
         # tailer so its run/ledger commits serialize against these writes too; the
@@ -141,8 +130,6 @@ class ClaudeHookIngest:
         "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
     )
     async def on_user_prompt_submit(self, event: ClaudeHookInput) -> None:
-        # SessionStart is not registered (the server acts on nothing in it), so the
-        # first prompt starts the tailer if it is not already following (self-heal).
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
             if event.prompt:
@@ -173,15 +160,14 @@ class ClaudeHookIngest:
     )
     async def on_session_end(self, event: ClaudeHookInput) -> None:
         logger.info("session %s: ended", event.session_id)
-        # The thread before the tail, because `finalize` falls through to `recover` for
-        # a session nothing was following — Octomate came up mid-session, so this is the
-        # first hook it saw — and `recover` would then create the thread itself, from a
-        # path that knows no cwd. A thread's project is frozen at creation, so one born
-        # there would stay unfiled. Already-created sessions get a cache hit.
+        # The thread first: for a session whose earlier hooks never arrived this is
+        # the last event carrying a cwd, and a thread's project is frozen at creation
+        # — a backfill tail attaching later would create it unfiled. Already-created
+        # sessions get a cache hit.
         await self.session_thread(event)
-        # Finalize outside any lock: it awaits the follow loop's own last commit, which
-        # takes the session lock — holding it here would deadlock.
-        await self.tailer.finalize(event.session_id, event.transcript_path)
+        # Finalize outside any lock: it awaits the stream's drain commits, which take
+        # the session lock — holding it here would deadlock.
+        await self.tailer.finalize(event.session_id)
 
     @claude_logfire.instrument(
         "claude.hook SubagentStart [{event.session_id}/{event.agent_id}]",
@@ -191,15 +177,9 @@ class ClaudeHookIngest:
         if not event.agent_id:
             return
         async with self.locks.hold(event.session_id):
-            # A subagent starting proves its session is live: start the session tail
-            # if nothing is following (Octomate came up mid-session), exactly as the
-            # first prompt does.
-            await self.start_session(event, self.session_transcript_path(event))
+            await self.start_session(event)
             if event.prompt_id and event.prompt:
                 await self.sketch_subagent_run(event)
-        # Outside the lock, like every tailer wait: give the child its first pump now
-        # instead of waiting for the parent's next event or the 60s poll tick.
-        await self.tailer.poke_subagent(event.session_id, event.agent_id)
         logger.info("session %s: subagent %s started", event.session_id, event.agent_id)
 
     @claude_logfire.instrument(
@@ -209,37 +189,16 @@ class ClaudeHookIngest:
     async def on_subagent_stop(self, event: ClaudeHookInput) -> None:
         if not event.agent_id:
             return
-        # As at `SessionEnd`, and for the same reason: the `recover` branch below
-        # creates the session's thread when nothing is following it.
-        await self.session_thread(event)
-        if self.tailer.is_following(event.session_id):
-            # The subagent has written its last line by the time this synchronous
-            # hook fires — the same trust `SessionEnd` extends to the parent's
-            # trailing turn — so drain and commit its open turn now.
-            await self.tailer.finish_subagent(
-                event.session_id,
-                event.agent_id,
-                final_answer=event.last_assistant_message,
-            )
-        else:
-            # Nothing following: rebuild from disk. `recover` walks the subagents
-            # directory too, so the child this hook announced is included.
-            await self.tailer.recover(
-                event.session_id, self.session_transcript_path(event)
-            )
+        # The subagent has written its last line by the time this synchronous hook
+        # fires — and a Claude child's own file never closes its last turn — so wait
+        # for the streamed answer and commit the open turn now. A session no stream
+        # covers has nothing to settle.
+        await self.tailer.finish_subagent(
+            event.session_id,
+            event.agent_id,
+            final_answer=event.last_assistant_message,
+        )
         logger.info("session %s: subagent %s stopped", event.session_id, event.agent_id)
-
-    def session_transcript_path(self, event: ClaudeHookInput) -> Path | None:
-        """The *session* transcript a subagent event names. Whether its
-        `transcript_path` is the child's own file or the parent's is undocumented, so
-        accept both: a child path (`…/<session-id>/subagents/agent-<id>.jsonl`)
-        derives its session's (`…/<session-id>.jsonl`); anything else is already it."""
-        path = event.transcript_path
-        if path is None or event.agent_id is None:
-            return path
-        if path.name == f"agent-{event.agent_id}.jsonl":
-            return path.parent.parent.with_suffix(".jsonl")
-        return path
 
     async def sketch_subagent_run(self, event: ClaudeHookInput) -> None:
         """The child's provisional run, from what the hook alone sees: its opening
@@ -276,45 +235,15 @@ class ClaudeHookIngest:
             parent_run_id=event.prompt_id,
         )
 
-    async def start_session(
-        self, event: ClaudeHookInput, transcript_path: Path | None = None
-    ) -> None:
-        """Ensure the session's skeleton (thread + conversation) and start its transcript
-        tailer, once per session. Ensuring the skeleton here — under the session lock,
-        before the follow loop runs — is what keeps the tailer's own `ensure` a cache hit
-        rather than a write that could race the hooks' first-sighting create.
-
-        Requires the transcript directory to exist (the tailer's watch needs it) and the
-        path to name a transcript in Claude's own tree; a hook carrying no usable path
-        leaves the tailer unstarted, and the ledger still writes. `transcript_path`
-        overrides the event's own — a subagent event may name the child's file, and the
-        session tail must follow the session's.
-        """
-        claimed = transcript_path or event.transcript_path
-        if self.tailer.is_following(event.session_id) or claimed is None:
-            return
-        # Resolved before the root test: `is_relative_to` is lexical, so an unresolved
-        # `.../projects/../../elsewhere` would pass it.
-        path = claimed.resolve()
-        if not any(path.is_relative_to(root) for root in self.transcript_roots):
-            # The path is the caller's claim, and following it means reading whatever it
-            # names into this session's history. Only Claude's own tree is in scope.
-            logger.warning(
-                "session %s: refusing transcript outside %s: %s. If Claude Code writes "
-                "elsewhere here, set agents.claude.transcript_root.",
-                event.session_id,
-                ", ".join(str(root) for root in self.transcript_roots),
-                path,
-            )
-            return
-        if not path.parent.is_dir():
-            return
+    async def start_session(self, event: ClaudeHookInput) -> None:
+        """Ensure the session's skeleton (thread + conversation), under the session
+        lock so the write can't race the hooks' first-sighting create. The transcript
+        itself arrives only through the stream; nothing here follows the path a hook
+        claims."""
         thread = await self.session_thread(event)
         await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
         )
-        self.tailer.start(event.session_id, path)
-        logger.info("session %s: tailing %s", event.session_id, path)
 
     async def session_thread(self, event: ClaudeHookInput) -> Thread:
         """This session's thread, filed under the project already holding the directory

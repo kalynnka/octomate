@@ -206,29 +206,6 @@ def test_install_replaces_a_launcher_left_by_an_older_install(tmp_path: Path) ->
     assert sum(str(LAUNCH_SCRIPT) in command for command in commands) == 1
 
 
-def test_no_launcher_skips_the_stream_and_retires_a_previous_one(
-    tmp_path: Path,
-) -> None:
-    """The server's own machine skips the launcher — local sessions are tailed from
-    disk, and a spawned tail would only be refused — and re-running with the flag
-    also retires a launcher a previous install left."""
-    path = tmp_path / "settings.json"
-    runner.invoke(
-        claude_typer, ["hooks", "install", "--url", URL, "--settings", str(path)]
-    )
-    runner.invoke(
-        claude_typer,
-        ["hooks", "install", "--url", URL, "--settings", str(path), "--no-launcher"],
-    )
-
-    [remaining] = [
-        hook
-        for group in read(path)["hooks"]["UserPromptSubmit"]
-        for hook in group["hooks"]
-    ]
-    assert str(LAUNCH_SCRIPT) not in remaining["command"]  # only the emit hook is left
-
-
 def test_uninstall_removes_the_launcher_too(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     runner.invoke(
@@ -318,35 +295,6 @@ def test_codex_install_adds_the_launcher_on_the_session_events(tmp_path: Path) -
     ]
     assert "--agent codex" in launcher["command"]
     assert "ws://127.0.0.1:9999/hooks/codex/stream" in launcher["command"]
-
-
-def test_codex_no_launcher_skips_the_stream_and_retires_a_previous_one(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "hooks.json"
-    runner.invoke(
-        codex_typer,
-        ["hooks", "install", "--url", CODEX_URL, "--hooks-file", str(path)],
-    )
-    runner.invoke(
-        codex_typer,
-        [
-            "hooks",
-            "install",
-            "--url",
-            CODEX_URL,
-            "--hooks-file",
-            str(path),
-            "--no-launcher",
-        ],
-    )
-
-    [remaining] = [
-        hook
-        for group in read(path)["hooks"]["UserPromptSubmit"]
-        for hook in group["hooks"]
-    ]
-    assert str(LAUNCH_SCRIPT) not in remaining["command"]  # only the emit hook is left
 
 
 def test_configure_writes_the_client_file_with_tight_permissions(

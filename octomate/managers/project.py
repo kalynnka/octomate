@@ -23,8 +23,8 @@ class ProjectManager:
     remain a small registry and are all cached.
 
     Note the name collision: ``projects:`` here is the operator's registry of code
-    locations, and is unrelated to ``~/.claude/projects/`` (``CLAUDE_PROJECTS_DIRS``
-    in ``tentacles/agents/claude/transcript.py``), which is transcript storage.
+    locations, and is unrelated to ``~/.claude/projects/``, which is where Claude
+    Code stores transcripts.
     """
 
     def __init__(self, config: dict[str, Project.Create] | None = None) -> None:

@@ -35,7 +35,7 @@ from octomate.tentacles.agents.codex import transcript as codex_transcript
 from octomate.tentacles.agents.codex.hooks import CodexHookInput
 from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
-from octomate.tentacles.agents.locks import SessionLocks
+from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.support.managers import a_registry
 
 
@@ -250,8 +250,9 @@ async def test_attribution_does_not_touch_thread_identity(tmp_path: Path) -> Non
 
 async def end_session(octomate: Octomate, session_id: str, cwd: Path | str) -> None:
     """`SessionEnd` and nothing before it — Octomate came up in the middle of this
-    session, so the per-turn hooks that would have filed its thread never reached it,
-    and `finalize` falls through to `recover`, which creates the thread itself."""
+    session, so the per-turn hooks that would have filed its thread never reached
+    it. The hook still creates the thread: it is the last event carrying a cwd, and
+    a backfill tail attaching later would otherwise create it unfiled."""
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
     ingest = ClaudeHookIngest(octomate, tailer)
     await ingest.handle(
@@ -274,12 +275,12 @@ async def filed_under(octomate: Octomate, session_id: str) -> str:
     return project.name if project is not None else ""
 
 
-async def test_a_session_recovered_before_any_hook_is_still_filed(
+async def test_a_session_ending_before_any_hook_is_still_filed(
     tmp_path: Path,
 ) -> None:
     # `SessionEnd` carries a cwd like every other hook, and this is the last moment it
-    # can be used: `recover` creates the thread, and a thread's project is frozen at
-    # creation, so one born there unfiled would stay unfiled.
+    # can be used: the hook creates the thread, and a thread's project is frozen at
+    # creation, so one born unfiled would stay unfiled.
     inky = repo(tmp_path / "inky")
     octomate = Octomate(projects=await a_registry(Project(root=inky, origin="codex")))
 
@@ -329,24 +330,13 @@ def codex_rollout(path: Path, cwd: Path, workspace_roots: Sequence[Path]) -> Non
 
 
 async def tail_rollout(octomate: Octomate, rollout: Path) -> None:
-    """Tail one rollout the way production reaches it — `SessionStart` starts the tail,
-    which is also what ensures the session's skeleton before the follow task runs."""
-    locks = SessionLocks()
+    """Stream one rollout the way production reaches it: a loopback tail attaches
+    and feeds the file's framed lines — workspace roots register only for such a
+    local client, whose directories are this machine's."""
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects, locks
+        octomate.conversations, octomate.thread_manager, octomate.projects
     )
-    ingest = CodexHookIngest(
-        octomate, tailer, locks, extra_transcript_roots=(rollout.parent,)
-    )
-    await ingest.handle(
-        CodexHookInput(
-            hook_event_name="SessionStart",
-            session_id="codex-ws",
-            transcript_path=rollout,
-        )
-    )
-    await tailer.pump_session("codex-ws")
-    await tailer.shutdown()
+    await stream_rollout(tailer, "codex-ws", rollout, local_client=True)
 
 
 async def test_every_workspace_root_becomes_its_own_project(tmp_path: Path) -> None:

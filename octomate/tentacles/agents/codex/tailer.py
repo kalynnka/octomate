@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from time import monotonic
 
 from octomate_cli.stream import SESSION_FILE
 from pydantic import ValidationError
@@ -21,12 +21,10 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RequestUsage
 from uuid_utils import UUID
-from watchfiles import awatch
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
-from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.runs import ExternalAgentRun
@@ -48,17 +46,17 @@ from octomate.tentacles.agents.codex.transcript import (
     rollout_line_adapter,
     session_metadata_adapter,
 )
-from octomate.tentacles.agents.hooks import RemoteTailRefused
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
 
 COMMIT_LOCK_TIMEOUT = 30.0
-IDLE_TIMEOUT = 30 * 60.0
-IDLE_POLL_MS = 60_000
-SUBAGENT_SETTLE_TIMEOUT = 2.0
-SUBAGENT_SETTLE_POLL = 0.2
+
+# Codex flushes the rollout's trailing lines *after* firing the Stop hook (measured:
+# `task_complete` lands ~1-3s behind it), so a Stop waits for the stopped turn's
+# commit before asking the drain — bounded well under the hook pipe's 10s budget.
+STOP_SETTLE_TIMEOUT = 5.0
 
 
 def assembled(conversation: Conversation) -> set[str]:
@@ -107,11 +105,16 @@ class SubagentTail:
 
 @dataclass
 class TailState:
+    """One streamed session. Its rollout lives on the client machine that streams it
+    (`octomate codex tail`); the stream route feeds `feed_remote`, which drives the
+    per-line assembly. `transcript_path` is the client's claim in the client's own
+    namespace, a label never opened here, and the subagent tails' paths are likewise
+    the client's labels for its sibling files."""
+
     session_id: str
     transcript_path: Path
     stop_event: asyncio.Event
     offset: int = 0
-    last_active: float = field(default_factory=monotonic)
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)
     thread_id: str | None = None
@@ -121,23 +124,25 @@ class TailState:
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
     subagent_calls: dict[str, list[SubagentCall]] = field(default_factory=dict)
     classified_rollouts: set[Path] = field(default_factory=set)
-    task: asyncio.Task[None] | None = None
-    pump_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # A remote session: its rollout lives on the client machine that streams it, so
-    # there is no follow task or watch — the stream route feeds `feed_remote`, which
-    # drives the same per-line assembly the pumps do. `transcript_path` is then the
-    # client's claim in the client's own namespace, a label never opened here, and the
-    # subagent tails' paths are likewise the client's labels for its sibling files.
-    remote: bool = False
+    # The turn a relayed `Stop` waits on before asking the drain, and the pulse
+    # `close_turn` answers with when that turn commits — set by `stop_turn`, so the
+    # wait ends the moment the streamed `task_complete` lands instead of on a poll.
+    drain_turn: str | None = None
+    drain_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    # The client streams from this same machine (a loopback peer): its workspace
+    # roots then name server-local directories, so `turn_context` registers them.
+    local_client: bool = False
 
 
 class CodexTranscriptTailer:
-    """Byte-cursor tailer for Codex rollout JSONL files.
+    """Assembles Codex turns from rollout lines streamed in by `octomate codex tail`.
 
-    Hooks own the immediate prompt/final-answer sketch. The rollout replaces that
-    sketch at `task_complete` with response items, tool activity, reasoning summaries,
-    and usage. Codex documents `transcript_path` for hook convenience while warning
-    that its format is unstable, so parsing is deliberately narrow and fail-forward.
+    The stream is the only assembler — the server never opens a rollout file, even
+    for a session on this machine; a session without a tail keeps only the hooks'
+    prompt/final-answer sketch. The rollout replaces that sketch at `task_complete`
+    with response items, tool activity, reasoning summaries, and usage. Codex
+    documents `transcript_path` for hook convenience while warning that its format
+    is unstable, so parsing is deliberately narrow and fail-forward.
     """
 
     def __init__(
@@ -155,141 +160,52 @@ class CodexTranscriptTailer:
         self.locks = locks if locks is not None else SessionLocks()
         self.sessions: dict[str, TailState] = {}
 
-    def start(self, session_id: str, transcript_path: Path) -> TailState:
-        existing = self.sessions.get(session_id)
-        # A remote registration holds too: the stream is already the assembler, and a
-        # local follow beside it would race it — the mirror of `attach_remote`'s
-        # refusal when a local follow is live.
-        if existing is not None and (
-            existing.remote or (existing.task is not None and not existing.task.done())
-        ):
-            return existing
-        state = TailState(session_id, transcript_path, asyncio.Event())
-        state.task = asyncio.create_task(self.follow(state))
-        self.sessions[session_id] = state
-        return state
+    async def stop_turn(self, session_id: str, turn_id: str | None) -> None:
+        """The turn just stopped — its `Stop` hook fired: wait for the stopped turn
+        to become durable, then ask the stream to drain.
 
-    async def pump_session(self, session_id: str) -> None:
-        state = self.sessions.get(session_id)
-        # No disk to pump for a remote session: the stream is already delivering the
-        # bytes the hook's nudge would have read.
-        if state is not None and not state.remote:
-            # A Stop hook can arrive immediately after start, before the follow task's
-            # first scheduling slice prepares its durable state. Prepare synchronously
-            # here too; manager.ensure is cached, so racing the follow task is harmless.
-            if state.conversation is None:
-                state.conversation = await self.ensure_session(session_id)
-                state.recorded = assembled(state.conversation)
-            await self.pump(state)
-
-    async def poke_subagents(self, session_id: str) -> None:
-        state = self.sessions.get(session_id)
-        if state is None or state.remote:
-            return
-        if state.conversation is None:
-            state.conversation = await self.ensure_session(session_id)
-            state.recorded = assembled(state.conversation)
-        await self.pump(state)
-
-    async def finish_subagent(
-        self,
-        session_id: str,
-        transcript_path: Path,
-        *,
-        agent_id: str | None = None,
-        final_answer: str | None = None,
-    ) -> None:
+        The session's lines feed themselves while this waits: Codex flushes
+        `task_complete` a beat after the hook, and `close_turn` pulses `drain_ready`
+        the moment the streamed line commits the turn. Only then does `stop_event`
+        make the route relay `finalize` — whose drain re-reads the client's files to
+        EOF, rescuing exactly the bytes a missed watch wake left behind — and the
+        tail exits until the next prompt's launcher. The wait is bounded; a turn
+        that outlives it is left for the drain or the next connect to land. A
+        session no stream covers has nothing to settle: the hooks' sketch is its
+        record until a tail connects."""
         state = self.sessions.get(session_id)
         if state is None:
             return
-        if state.remote:
-            # The settle-drain below reads disk this machine does not have. The child's
-            # own `task_complete` line closes its turn as it streams in, so the stop
-            # hook has nothing to add here.
-            return
-        if state.conversation is None:
-            state.conversation = await self.ensure_session(session_id)
-            state.recorded = assembled(state.conversation)
-        async with state.pump_lock:
-            await self.pump_transcript(state)
-            tail = self.discover_subagent(state, transcript_path)
-            if tail is None:
-                return
-            if agent_id and agent_id != tail.thread_id:
-                logger.debug(
-                    "session %s: Codex hook agent_id %s names child thread %s in %s",
-                    session_id,
-                    agent_id,
-                    tail.thread_id,
-                    transcript_path,
-                )
-            await self.pump_subagent(state, tail)
-            target = tail.open_turn
-            deadline = monotonic() + SUBAGENT_SETTLE_TIMEOUT
-            quiet = 0
-            while not self.subagent_settled(tail, final_answer):
-                if quiet >= 2:
-                    break
-                if monotonic() >= deadline:
-                    logger.warning(
-                        "session %s: subagent %s kept writing past the settle window "
-                        "without yielding its announced answer; committing what it "
-                        "reached",
-                        session_id,
-                        tail.thread_id,
-                    )
-                    break
-                before = tail.offset
-                await asyncio.sleep(SUBAGENT_SETTLE_POLL)
-                await self.pump_transcript(state)
-                await self.pump_subagent(state, tail)
-                quiet = quiet + 1 if tail.offset == before else 0
-            if target is None or tail.open_turn is target:
-                await self.close_subagent_turn(state, tail)
+        state.drain_turn = turn_id
+        if turn_id is not None and turn_id not in state.recorded:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(state.drain_ready.wait(), STOP_SETTLE_TIMEOUT)
+        state.stop_event.set()
 
     async def shutdown(self) -> None:
-        tasks = [
-            state.task for state in self.sessions.values() if state.task is not None
-        ]
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
         self.sessions.clear()
 
     async def attach_remote(
-        self, session_id: str, transcript_path: Path
+        self, session_id: str, transcript_path: Path, *, local_client: bool = False
     ) -> tuple[TailState, dict[str, int]]:
-        """Register a remote session — its rollout lives on the client machine that
-        streams it (`octomate codex tail`) — and answer where its files resume.
+        """Register a streamed session — its rollout lives on the client machine
+        that streams it (`octomate codex tail`) — and answer where its files resume.
 
         The answer is always byte 0: a rollout's head is load-bearing (`session_meta`
         carries the thread id every child classification checks against, and the
         parent's `sub_agent_activity` lines are what link child runs to their spawning
         calls), so a reconnect re-streams whole files and the committed-turn guard
-        skips what is already durable — the same re-read-and-skip a local `start`
-        does. Child files are not named here either: the client keys each by its own
-        label, and `remote_subagent` classifies it from its opening `session_meta`.
+        skips what is already durable. Child files are not named here either: the
+        client keys each by its own label, and `remote_subagent` classifies it from
+        its opening `session_meta`.
 
-        Refuses a session a live local follow already covers: the file is here, and a
-        second assembler would only race the first. A lingering remote registration
-        (its client died without a close) is replaced; the dead route feeds the state
-        object it attached, and its commits are idempotent.
+        A lingering registration (its client died without a close) is replaced; the
+        dead route feeds the state object it attached, and its commits are
+        idempotent. `local_client` marks a loopback peer, whose workspace roots name
+        directories on this machine and so register as projects.
         """
-        existing = self.sessions.get(session_id)
-        if (
-            existing is not None
-            and existing.task is not None
-            and not existing.task.done()
-        ):
-            raise RemoteTailRefused(
-                f"session {session_id} is already tailed from a local rollout"
-            )
         state = TailState(session_id, transcript_path, asyncio.Event())
-        state.remote = True
+        state.local_client = local_client
         state.conversation = await self.ensure_session(session_id)
         state.recorded = assembled(state.conversation)
         self.sessions[session_id] = state
@@ -304,7 +220,6 @@ class CodexTranscriptTailer:
         than a session id so a superseded connection keeps feeding the state it
         attached, never whoever registered after it. `key` is None for the session's
         own rollout, else the client's label for a sibling file."""
-        state.last_active = monotonic()
         if key is None:
             state.offset = end
             try:
@@ -369,35 +284,6 @@ class CodexTranscriptTailer:
         if self.sessions.get(state.session_id) is state:
             del self.sessions[state.session_id]
 
-    async def follow(self, state: TailState) -> None:
-        with codex_logfire.span(
-            "codex.tailer.follow [{session_id}]",
-            session_id=state.session_id,
-            start_offset=state.offset,
-        ):
-            try:
-                with sqlalchemy_materia():
-                    state.conversation = await self.ensure_session(state.session_id)
-                    state.recorded = assembled(state.conversation)
-                    await self.pump(state)
-                    async for _ in awatch(
-                        state.transcript_path.parent,
-                        stop_event=state.stop_event,
-                        recursive=False,
-                        rust_timeout=IDLE_POLL_MS,
-                        yield_on_timeout=True,
-                    ):
-                        await self.pump(state)
-                        if monotonic() - state.last_active > IDLE_TIMEOUT:
-                            break
-            except Exception:
-                logger.exception(
-                    "session %s: stopped tailing Codex rollout", state.session_id
-                )
-            finally:
-                if self.sessions.get(state.session_id) is state:
-                    del self.sessions[state.session_id]
-
     async def ensure_session(self, session_id: str) -> Conversation:
         thread = await self.thread_manager.ensure(
             ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
@@ -405,37 +291,6 @@ class CodexTranscriptTailer:
         return await self.conversation_manager.ensure(
             thread.id, agent_tentacle_id=CODEX_NATIVE_ID
         )
-
-    async def pump(self, state: TailState) -> None:
-        async with state.pump_lock:
-            await self.pump_transcript(state)
-            if await self.pump_subagents(state):
-                state.last_active = monotonic()
-
-    async def pump_transcript(self, state: TailState) -> None:
-        try:
-            size = state.transcript_path.stat().st_size
-        except FileNotFoundError:
-            return
-        if size < state.offset:
-            state.offset = 0
-        with state.transcript_path.open("rb") as handle:
-            handle.seek(state.offset)
-            chunk = handle.read()
-        if not chunk:
-            return
-        state.last_active = monotonic()
-        for raw in chunk.split(b"\n")[:-1]:
-            start = state.offset
-            state.offset += len(raw) + 1
-            if not raw.strip():
-                continue
-            try:
-                line = rollout_line_adapter.validate_json(raw)
-            except ValidationError:
-                logger.debug("skipping unmodeled Codex rollout line")
-                continue
-            await self.process_line(state, line, start, state.offset)
 
     async def process_line(
         self, state: TailState, line: RolloutLine, start: int, end: int
@@ -454,10 +309,10 @@ class CodexTranscriptTailer:
             )
             return
         if line.type == "turn_context":
-            # Not for a remote session: its workspace roots name directories on the
-            # client machine, and a project names server-local ones.
+            # Only for a loopback client: a far machine's workspace roots name
+            # directories this machine does not have, and a project names local ones.
             # TODO: register remote workspaces once projects can span machines.
-            if not state.remote:
+            if state.local_client:
                 await self.register_workspace(state, line.payload)
             return
         if line.type == "event_msg" and kind == "task_started":
@@ -555,34 +410,12 @@ class CodexTranscriptTailer:
                 project.name,
             )
 
-    async def pump_subagents(self, state: TailState) -> bool:
-        consumed = False
-        for path in sorted(state.transcript_path.parent.glob("*.jsonl")):
-            tail = self.discover_subagent(state, path)
-            if tail is not None and await self.pump_subagent(state, tail):
-                consumed = True
-        return consumed
-
-    def discover_subagent(self, state: TailState, path: Path) -> SubagentTail | None:
-        for tail in state.subagents.values():
-            if tail.path == path:
-                return tail
-        if path in state.classified_rollouts:
-            return None
-        if state.thread_id is None:
-            return None
-        metadata = self.read_session_metadata(path)
-        if metadata is None:
-            return None
-        state.classified_rollouts.add(path)
-        return self.subagent_from_metadata(state, metadata, path)
-
     def subagent_from_metadata(
         self, state: TailState, metadata: SessionMetadata, path: Path
     ) -> SubagentTail | None:
         """A new child tail when the metadata names a thread-spawned child of this
-        session — the classification both discovery paths share: `discover_subagent`
-        reads it off disk, `remote_subagent` off the streamed opening line."""
+        session — the test `remote_subagent` runs against a file's streamed opening
+        line."""
         source = metadata.source
         spawn = (
             source.subagent.thread_spawn
@@ -619,38 +452,6 @@ class CodexTranscriptTailer:
             parent_conversation_id=parent.id,
         )
         tail.recorded = assembled(tail.conversation)
-
-    async def pump_subagent(self, state: TailState, tail: SubagentTail) -> bool:
-        if tail.conversation is None:
-            await self.prepare_subagent(state, tail)
-        try:
-            size = tail.path.stat().st_size
-        except FileNotFoundError:
-            return False
-        if size < tail.offset:
-            tail.offset = 0
-            tail.own_turns_started = False
-        with tail.path.open("rb") as handle:
-            handle.seek(tail.offset)
-            chunk = handle.read()
-        if not chunk:
-            return False
-        for raw in chunk.split(b"\n")[:-1]:
-            start = tail.offset
-            tail.offset += len(raw) + 1
-            if not raw.strip():
-                continue
-            try:
-                line = rollout_line_adapter.validate_json(raw)
-            except ValidationError:
-                logger.debug(
-                    "skipping unmodeled Codex subagent line in session %s/%s",
-                    state.session_id,
-                    tail.thread_id,
-                )
-                continue
-            await self.process_subagent_line(state, tail, line, start, tail.offset)
-        return True
 
     async def process_subagent_line(
         self,
@@ -798,6 +599,8 @@ class CodexTranscriptTailer:
                 if run is None:
                     return
                 state.recorded.add(turn.turn_id)
+                if turn.turn_id == state.drain_turn:
+                    state.drain_ready.set()
                 await self.bind_ledger(state.session_id, run, turn.prompt, turn.answer)
                 logger.info(
                     "session %s: turn %s synced — %d messages, bytes %d-%d",
@@ -868,30 +671,6 @@ class CodexTranscriptTailer:
             await self.thread_manager.bind_assistant_replies(
                 [outbound.id], run_id=run.id
             )
-
-    @staticmethod
-    def subagent_settled(tail: SubagentTail, final_answer: str | None) -> bool:
-        if final_answer is None or tail.open_turn is None:
-            return False
-        return tail.open_turn.answer.strip() == final_answer.strip()
-
-    @staticmethod
-    def read_session_metadata(path: Path) -> SessionMetadata | None:
-        try:
-            with path.open("rb") as handle:
-                raw = handle.readline()
-        except FileNotFoundError:
-            return None
-        if not raw.endswith(b"\n"):
-            return None
-        try:
-            line = rollout_line_adapter.validate_json(raw)
-            if line.type != "session_meta":
-                return None
-            return session_metadata_adapter.validate_python(line.payload)
-        except ValidationError:
-            logger.debug("skipping rollout with malformed session metadata: %s", path)
-            return None
 
     @staticmethod
     def turn_belongs_to_subagent(thread_id: str, turn_id: str) -> bool:

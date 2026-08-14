@@ -9,17 +9,19 @@ what keeps the re-stream from duplicating anything."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from octomate_cli.codex import CODEX_STREAM_PATH
+from octomate_cli.codex import CODEX_HOOK_PATH, CODEX_STREAM_PATH
 from octomate_cli.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
+    StreamFinalize,
     StreamHello,
     StreamLine,
     StreamWelcome,
@@ -36,7 +38,6 @@ from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.tentacles.agents.codex import CodexTentacle
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer, TailState
-from octomate.tentacles.agents.hooks import RemoteTailRefused
 from tests.agent.test_codex_native_ingest import (
     CHILD_THREAD_ID,
     CHILD_TURN_ONE,
@@ -48,7 +49,6 @@ from tests.agent.test_codex_native_ingest import (
     event,
     parent_metadata,
     subagent_activity,
-    write_records,
 )
 
 SECRET = SecretStr("the-hook-secret")
@@ -261,33 +261,45 @@ async def test_a_foreign_sibling_rollout_is_classified_once_and_dropped() -> Non
     assert await runs_of(octomate) == []
 
 
-async def test_a_session_tailed_locally_refuses_a_remote_attach(
-    tmp_path: Path,
-) -> None:
-    """The file is here, so the local follow is already the assembler; a second one
-    over the stream would only race it."""
+async def test_a_new_attach_replaces_a_lingering_registration() -> None:
+    """A client that died without a close leaves its registration behind; the next
+    connect replaces it, and the dead route's detach must not evict the
+    replacement."""
     _, tailer = remote_tailer()
-    rollout = tmp_path / "rollout.jsonl"
-    write_records(rollout, [parent_metadata(), *TURN_A])
-    tailer.start(SESSION_ID, rollout)
+    stale, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
 
-    with pytest.raises(RemoteTailRefused):
-        await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
-    await tailer.shutdown()
+    fresh, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    assert offsets == {SESSION_FILE: 0}
+    assert tailer.sessions[SESSION_ID] is fresh
+    tailer.detach_remote(stale)
+    assert tailer.sessions[SESSION_ID] is fresh
+    tailer.detach_remote(fresh)
+    assert SESSION_ID not in tailer.sessions
 
 
-async def test_a_local_start_defers_to_a_live_remote_registration(
-    tmp_path: Path,
-) -> None:
-    """The other direction of the same exclusion: while a stream is attached, a hook
-    naming a local path must not spawn a second assembler over it."""
-    _, tailer = remote_tailer()
+async def test_a_stop_waits_for_the_stopped_turn_then_asks_the_drain() -> None:
+    """`Stop` reaches a remote session as a per-turn drain, sequenced as a rescue
+    rather than a cutoff: `stop_turn` waits for the stopped turn's own
+    `task_complete` to commit it, and only then sets the `stop_event` the route's
+    finalize relay watches — the client's drain then ships whatever a missed watch
+    wake left behind, and the tail exits until the next prompt's launcher."""
+    octomate, tailer = remote_tailer()
     state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    head = [parent_metadata(), *TURN_A[:-1]]
+    await feed(tailer, state, frames(head))
 
-    same = tailer.start(SESSION_ID, tmp_path / "rollout.jsonl")
-    assert same is state
-    assert same.task is None  # no follow loop was spawned over the stream
+    stopping = asyncio.create_task(tailer.stop_turn(SESSION_ID, "turn-a"))
+    await asyncio.sleep(0)
+    assert not state.stop_event.is_set()  # the drain waits for the commit
+
+    start = sum(len(line_bytes(record)) for record in head)
+    await feed(tailer, state, frames([TURN_A[-1]], start=start))
+    await asyncio.wait_for(stopping, 2.0)
+    assert state.stop_event.is_set()
     tailer.detach_remote(state)
+
+    [run] = await runs_of(octomate)
+    assert run.id == "turn-a"
 
 
 def stream_client() -> tuple[TestClient, CodexTentacle]:
@@ -344,6 +356,46 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
                         agent_id=agent_id, start=start, end=end, line=line
                     ).model_dump_json()
                 )
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets == {SESSION_FILE: 0}
+
+
+def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
+    """End to end: the `Stop` hook's POST waits for the streamed turn to commit,
+    reaches the open socket as `finalize`, and the client's `eof` closes the
+    connection — the tail process's exit. Codex resumes by re-streaming, so the
+    next welcome is byte 0 again; the committed run is the proof of the drain."""
+    client, _ = stream_client()
+
+    with client:
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            websocket.receive_text()  # welcome
+            for agent_id, start, end, line in frames([parent_metadata(), *TURN_A]):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            posted = client.post(
+                CODEX_HOOK_PATH,
+                json={
+                    "hook_event_name": "Stop",
+                    "session_id": SESSION_ID,
+                    "turn_id": "turn-a",
+                },
+                headers=AUTH,
+            )
+            assert posted.status_code == 200
+            relayed = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(relayed, StreamFinalize)
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()

@@ -15,8 +15,7 @@ from octomate.types.projects import ProjectOrigin
 class Project(Base, TransmuterProxiedMixin):
     """A project: a code location Octomate knows by name, registered when a native
     session is found running in it. Note that `projects` here has nothing to do with
-    `~/.claude/projects/`, which is where Claude Code stores transcripts
-    (`CLAUDE_PROJECTS_DIRS`)."""
+    `~/.claude/projects/`, which is where Claude Code stores transcripts."""
 
     __tablename__ = "projects"
     # Named, so the constraint alembic generates carries the name it can drop again.
