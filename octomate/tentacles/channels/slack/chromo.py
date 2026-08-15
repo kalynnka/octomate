@@ -37,7 +37,10 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
             thread_ts = raw.get("thread_ts", "")
             thread_id = thread_ts if thread_ts and thread_ts != message_id else None
 
-            chat_type: ChatType = "dm" if channel_type == "im" else "group"
+            # An assistant pane is an `im` whose every message is a thread reply, so
+            # the promotion below would otherwise read a private chat as a group one.
+            shared = channel_type not in {"im", "app_home"}
+            chat_type: ChatType = "group" if shared else "dm"
             if thread_id:
                 chat_type = "thread"
 
@@ -84,6 +87,7 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
                 user_id=raw.get("user", ""),
                 chat_id=raw.get("channel", ""),
                 chat_type=chat_type,
+                shared=shared,
                 segments=segments,
                 raw=json.dumps(raw, ensure_ascii=False),
             )

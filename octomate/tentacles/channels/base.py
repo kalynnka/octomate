@@ -285,6 +285,9 @@ class ChannelTentacle(
         try:
             event = await self.chromo.sip(raw)
             if event is None:
+                # Not necessarily a message: a chromo also returns None for a frame
+                # that was never one — an API echo, a heartbeat. Only it can tell that
+                # from a decode that failed, and it warns for the second already.
                 return
             event.tentacle_id = self.id
             event.self_id = self.self_profile.channel_user_id
@@ -302,19 +305,36 @@ class ChannelTentacle(
                 channel_id=self.id,
                 conversation_address=str(address),
                 message_id=str(event.message_id),
+                # What arrived beside what we made of it. The span's own `raw` is the
+                # platform payload where it serializes and the class name where it
+                # does not (Lark hands us an SDK object), so the judgement is recorded
+                # next to it rather than left to be re-derived from a decoded address.
+                raw_type=type(raw).__name__,
+                chat_type=event.chat_type,
+                shared=event.shared,
             )
             thread_message = await self.octomate.thread_manager.record_inbound(event)
-            if (
-                self.config.mention_only
-                and address.chat_type != "dm"
-                and not event.is_at(self.self_profile.channel_user_id)
-            ):
-                logger.debug(
-                    "Channel %s: ignored unmentioned group event %s",
-                    self.id,
-                    address,
+            if self.config.mention_only and event.shared:
+                # Only a surface others can read has to be addressed, and a thread an
+                # agent already owns counts as addressed — its next turn continues
+                # work that is already this agent's. A group main pins no owner, so
+                # there it stays the mention.
+                thread = await self.octomate.thread_manager.ensure(address)
+                addressed = (
+                    event.is_at(self.self_profile.channel_user_id)
+                    or thread.active_agent_tentacle_id is not None
                 )
-                return
+                if not addressed:
+                    # Warn, not debug: this is a message nobody will answer, and the
+                    # level it used to sit at was below the configured one, so the
+                    # drop left nothing behind on the console or in Logfire.
+                    logger.warning(
+                        "Channel %s: ignored an unaddressed %s message %s",
+                        self.id,
+                        event.chat_type,
+                        address,
+                    )
+                    return
             await self.octomate.kick(
                 UserMessageSignal(
                     [event],

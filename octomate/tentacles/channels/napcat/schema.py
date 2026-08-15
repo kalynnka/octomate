@@ -241,6 +241,7 @@ def to_message_event(event: NapcatMessageEvent) -> MessageEvent:
         user_id=event.user_id,
         chat_id=chat_id,
         chat_type=chat_type,
+        shared=chat_type == "group",
         self_id=event.self_id,
         sender=event.sender,
         segments=segments,

@@ -19,6 +19,15 @@ class MessageEvent(BaseModel):
     user_id: str = ""
     chat_id: str = ""
     chat_type: ChatType = "dm"
+    shared: bool = Field(
+        default=False,
+        description=(
+            "Whether anyone besides the sender can read this surface. Separate from "
+            "`chat_type`, which a thread overwrites and which therefore cannot tell a "
+            "thread in a group chat from one inside a DM. Only the channel knows: it "
+            "is what the mention gate asks before it drops an unaddressed message."
+        ),
+    )
     self_id: str = ""
     sender: UserProfile = Field(default_factory=UserProfile)
     segments: list[MessageSegment] = Field(default_factory=list)

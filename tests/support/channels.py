@@ -94,6 +94,11 @@ class RawMessage(TypedDict, total=False):
     user_id: str
     chat_id: str
     chat_type: ChatType
+    thread_id: NotRequired[str]
+    # Whether others can read the surface. Defaults to `chat_type == "group"`, which
+    # is every case but the one a real channel has to say out loud: a thread, whose
+    # `chat_type` no longer tells a group's from a DM's.
+    shared: NotRequired[bool]
     segments: NotRequired[list[MessageSegment]]
 
 
@@ -185,6 +190,8 @@ class FakeChromo(Chromo[RawMessage, NativeMessage]):
             user_id=raw.get("user_id", "u1"),
             chat_id=raw.get("chat_id", "c1"),
             chat_type=chat_type,
+            channel_thread_id=raw.get("thread_id"),
+            shared=raw.get("shared", chat_type == "group"),
             segments=raw.get("segments", []),
         )
 

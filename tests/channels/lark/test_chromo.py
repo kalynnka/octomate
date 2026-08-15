@@ -132,6 +132,46 @@ async def test_lark_chromo_ignores_thread_without_thread_id() -> None:
     assert event.channel_thread_id is None
 
 
+async def test_lark_chromo_keeps_a_p2p_topic_private() -> None:
+    """A topic reply promotes `chat_type` to a thread in a p2p chat exactly as it
+    does in a group, so the surface has to be read from Lark's own `chat_type`."""
+    chromo = LarkChromo()
+
+    event = await chromo.sip(
+        _lark_raw(
+            message_type="text",
+            chat_type="p2p",
+            content={"text": "hello"},
+            sender_id="ou_private",
+            thread_id="omt_thread",
+            root_id="om_root",
+        )
+    )
+
+    assert event is not None
+    assert event.chat_type == "thread"
+    assert event.shared is False
+    assert event.chat_id == "ou_private"
+
+
+async def test_lark_chromo_marks_a_group_topic_shared() -> None:
+    chromo = LarkChromo()
+
+    event = await chromo.sip(
+        _lark_raw(
+            message_type="text",
+            chat_type="group",
+            content={"text": "hello"},
+            thread_id="omt_thread",
+            root_id="om_root",
+        )
+    )
+
+    assert event is not None
+    assert event.chat_type == "thread"
+    assert event.shared is True
+
+
 async def test_lark_chromo_decodes_private_images() -> None:
     chromo = LarkChromo()
 

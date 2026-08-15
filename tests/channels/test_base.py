@@ -173,6 +173,78 @@ async def test_group_mention_filter_records_unmentioned_events_before_ignore(
     assert [message.message_text for message in thread.messages] == ["hello"]
 
 
+async def test_mention_filter_answers_an_unmentioned_private_thread(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """A thread inside a DM — a Slack assistant chat, a Lark topic in a p2p — is a
+    thread by `chat_type` and private by surface. Nobody else is there to address."""
+    channel = FakeChannelTentacle(id="chan1")
+    await channel.ingest(
+        {
+            "message_id": "m42",
+            "user_id": "alice",
+            "chat_id": "alice",
+            "chat_type": "thread",
+            "thread_id": "t1",
+            "shared": False,
+            "segments": [TextSegment(data={"text": "hello"})],
+        }
+    )
+
+    octomate = channel.octomate
+    assert isinstance(octomate, FakeOctomate)
+    assert len(octomate.kicks) == 1
+
+
+async def test_mention_filter_ignores_an_unowned_shared_thread(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    channel = FakeChannelTentacle(id="chan1")
+    await channel.ingest(
+        {
+            "message_id": "m42",
+            "user_id": "alice",
+            "chat_id": "lobby",
+            "chat_type": "thread",
+            "thread_id": "t1",
+            "shared": True,
+            "segments": [TextSegment(data={"text": "hello"})],
+        }
+    )
+
+    octomate = channel.octomate
+    assert isinstance(octomate, FakeOctomate)
+    assert octomate.kicks == []
+
+
+async def test_mention_filter_answers_a_shared_thread_an_agent_owns(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """Once a handoff has pinned an owner to a thread, its follow-ups continue that
+    agent's work — asking for the mention again would strand the conversation."""
+    channel = FakeChannelTentacle(id="chan1")
+    octomate = channel.octomate
+    assert isinstance(octomate, FakeOctomate)
+    await octomate.thread_manager.record_handoff(
+        _key(chat_type="thread", chat_id="lobby", thread_id="t1"),
+        to_agent_tentacle_id="inkling",
+    )
+
+    await channel.ingest(
+        {
+            "message_id": "m42",
+            "user_id": "alice",
+            "chat_id": "lobby",
+            "chat_type": "thread",
+            "thread_id": "t1",
+            "shared": True,
+            "segments": [TextSegment(data={"text": "carry on"})],
+        }
+    )
+
+    assert len(octomate.kicks) == 1
+
+
 async def test_next_mention_prompt_includes_stored_unmentioned_messages(
     in_memory_engine: AsyncEngine,
 ) -> None:

@@ -81,6 +81,10 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 user_id=sender_id,
                 chat_id=chat_id,
                 chat_type=lark_chat_type,
+                # A topic reply promotes `lark_chat_type` to a thread whether the chat
+                # around it is a group or a p2p, so the surface is read from Lark's own
+                # word for it rather than from what the promotion left behind.
+                shared=chat_type == "group",
                 segments=segments,
                 raw=message.content or "",
             )
