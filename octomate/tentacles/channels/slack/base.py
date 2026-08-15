@@ -58,6 +58,10 @@ SlackQuestionActionBodyAdapter = TypeAdapter(SlackQuestionActionBody)
 
 IGNORED_SUBTYPES = frozenset(
     {
+        # The root Slack writes when someone opens the assistant pane or starts a new
+        # chat in it. It carries the thread's title, never the person's own words, and
+        # `assistant_thread_started` already created the thread it heads.
+        "assistant_app_thread",
         "bot_message",
         "message_changed",
         "message_deleted",

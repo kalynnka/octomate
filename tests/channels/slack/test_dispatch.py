@@ -108,6 +108,14 @@ async def test_on_message_ignores_bot_and_subtype_events() -> None:
     await channel.on_message(
         cast(SlackMessageEvent, {"user": "bot"}), cast(AsyncSay, None)
     )
+    # The root Slack writes for a new assistant chat: a title, not the user's words.
+    await channel.on_message(
+        cast(
+            SlackMessageEvent,
+            {"subtype": "assistant_app_thread", "user": "U1", "channel_type": "im"},
+        ),
+        cast(AsyncSay, None),
+    )
     await asyncio.sleep(0)
 
     assert calls == []
