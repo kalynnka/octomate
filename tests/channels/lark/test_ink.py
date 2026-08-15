@@ -31,6 +31,17 @@ async def test_lark_ink_selects_group_and_private_targets() -> None:
     ]
 
 
+async def test_lark_ink_keeps_the_open_id_target_of_a_p2p_topic() -> None:
+    """A topic in a p2p chat calls itself a thread, but the address it carries is
+    still the person's open_id — sending it as a chat_id is a target Lark rejects."""
+    ink = FakeLarkInk()
+    message = LarkOutboundMessage(msg_type="interactive", content="{}")
+
+    await ink.send_message("ou_user", "thread", [message])
+
+    assert ink.created == [("ou_user", "open_id", "interactive", "{}")]
+
+
 async def test_lark_ink_replies_to_first_message_unless_threaded() -> None:
     ink = FakeLarkInk()
     messages = [

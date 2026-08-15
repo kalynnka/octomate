@@ -288,7 +288,11 @@ class LarkInk(Ink[LarkOutboundMessage]):
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
-        receive_id_type = "open_id" if chat_type == "dm" else "chat_id"
+        # Read from the id we were handed, not from `chat_type`: a p2p address keys on
+        # the person's open_id, and a topic reply inside one still does even though it
+        # calls itself a thread. Lark's own prefixes are what the feelers already sort
+        # `om_` replies by.
+        receive_id_type = "open_id" if chat_id.startswith("ou_") else "chat_id"
         first_msg_id: IMMessageID | None = None
         for msg in messages:
             try:

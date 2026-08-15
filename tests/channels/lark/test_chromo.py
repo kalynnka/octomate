@@ -35,6 +35,7 @@ def _lark_raw(
     thread_id: str = "",
     parent_id: str = "",
     root_id: str = "",
+    create_time: str = "",
 ) -> P2ImMessageReceiveV1:
     return P2ImMessageReceiveV1(
         {
@@ -49,6 +50,7 @@ def _lark_raw(
                     "thread_id": thread_id,
                     "parent_id": parent_id,
                     "root_id": root_id,
+                    "create_time": create_time,
                 },
                 "sender": {"sender_id": {"open_id": sender_id}},
             }
@@ -170,6 +172,36 @@ async def test_lark_chromo_marks_a_group_topic_shared() -> None:
     assert event is not None
     assert event.chat_type == "thread"
     assert event.shared is True
+
+
+async def test_lark_chromo_dates_the_message_by_larks_clock() -> None:
+    chromo = LarkChromo()
+
+    event = await chromo.sip(
+        _lark_raw(
+            message_type="text",
+            chat_type="p2p",
+            content={"text": "hello"},
+            create_time="1786786511884",
+        )
+    )
+
+    assert event is not None
+    assert event.timestamp == 1786786511.884
+    # The whole event, not just its content: the decode is judged on chat type,
+    # topic ids and mentions, none of which live in `message.content`.
+    assert '"chat_type": "p2p"' in event.raw
+
+
+async def test_lark_chromo_leaves_an_undated_message_to_the_ledger_clock() -> None:
+    chromo = LarkChromo()
+
+    event = await chromo.sip(
+        _lark_raw(message_type="text", chat_type="p2p", content={"text": "hello"})
+    )
+
+    assert event is not None
+    assert event.timestamp == 0.0
 
 
 async def test_lark_chromo_decodes_private_images() -> None:

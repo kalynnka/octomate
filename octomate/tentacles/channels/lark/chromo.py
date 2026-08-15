@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-import time
 
+import lark_oapi
 from lark_oapi.api.im.v1.model.mention_event import MentionEvent
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import TypeAdapter, ValidationError
@@ -77,7 +77,11 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 message_id=message.message_id or "",
                 channel_thread_id=thread_id,
                 reply_id=reply_id,
-                timestamp=time.time(),
+                # Lark dates the message in milliseconds; 0.0 leaves `record_inbound`
+                # to fall back to the moment it arrived.
+                timestamp=int(message.create_time) / 1000
+                if message.create_time
+                else 0.0,
                 user_id=sender_id,
                 chat_id=chat_id,
                 chat_type=lark_chat_type,
@@ -86,7 +90,9 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 # word for it rather than from what the promotion left behind.
                 shared=chat_type == "group",
                 segments=segments,
-                raw=message.content or "",
+                # The whole event, as Slack keeps it: `message.content` alone drops the
+                # chat type, the topic ids and the mentions a decode is judged on.
+                raw=lark_oapi.JSON.marshal(raw) or "",
             )
         except Exception:
             logger.warning("LarkChromo: failed to decode event", exc_info=True)
