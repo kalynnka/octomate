@@ -196,6 +196,37 @@ async def test_mention_filter_answers_an_unmentioned_private_thread(
     assert len(octomate.kicks) == 1
 
 
+@pytest.mark.parametrize("shared", [True, False])
+async def test_ingest_carries_the_surfaces_privacy_onto_the_address(
+    in_memory_engine: AsyncEngine,
+    shared: bool,
+) -> None:
+    """Both ingests are `chat_type="thread"`; only the surface around them differs.
+    The gate and the OAuth feeler decide on `shared`, so it has to survive the trip
+    from the chromo's judgement to the address they are handed."""
+    channel = FakeChannelTentacle(id="chan1")
+    await channel.ingest(
+        {
+            "message_id": "m42",
+            "user_id": "alice",
+            "chat_id": "lobby",
+            "chat_type": "thread",
+            "thread_id": "t1",
+            "shared": shared,
+            "segments": [
+                AtSegment(data=AtData(user_id="bot")),
+                TextSegment(data={"text": "hello"}),
+            ],
+        }
+    )
+
+    octomate = channel.octomate
+    assert isinstance(octomate, FakeOctomate)
+    signal = octomate.kicks[0]
+    assert isinstance(signal, UserMessageSignal)
+    assert signal.address.shared is shared
+
+
 async def test_mention_filter_ignores_an_unowned_shared_thread(
     in_memory_engine: AsyncEngine,
 ) -> None:

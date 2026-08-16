@@ -597,13 +597,16 @@ def _group_key(thread_id: str = "") -> ChannelAddress:
         chat_id="team",
         user_id="alice",
         channel_thread_id=thread_id,
+        shared=True,
     )
 
 
 def _private_key(thread_id: str = "") -> ChannelAddress:
+    """A Slack assistant pane: a thread by type, readable by one person. `_key` is
+    the DM around it — this is the surface whose privacy the type cannot state."""
     return ChannelAddress(
         channel_tentacle_id="im",
-        chat_type="dm",
+        chat_type="thread",
         chat_id="alice",
         user_id="alice",
         channel_thread_id=thread_id,

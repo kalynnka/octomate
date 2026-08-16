@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import ClassVar, cast
+from typing import ClassVar, Literal, cast
 
 import pytest
 from pydantic import ValidationError
@@ -17,7 +17,7 @@ from octomate.capabilities.gateway import (
     PrivateBlocker,
 )
 from octomate.config.agents import AgentRouteModelName
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
@@ -38,16 +38,29 @@ class _NoDmChannel(FakeChannelTentacle):
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
 
 
-def _capability(
-    allow_here: bool = True,
-    private_blocked_by: PrivateBlocker | None = None,
-) -> GatewayCapability:
-    """A gate that allows `summon here` for `allow_here`, and whose `scheme` is
-    refused for `private_blocked_by` or reachable for None.
+# The four surfaces a run can sit on, as (chat_type, shared, channel_thread_id).
+# They are not three free booleans: a thread overwrites the type of the chat around
+# it, and a shared surface with no thread is a group's main channel. So a gate can
+# never both take over in place and open a sub-thread from the same address unless
+# the surface is private — which is why the summon tests below sit on a group main.
+Shape = Literal["private_main", "private_thread", "shared_main", "shared_thread"]
+SHAPES: dict[Shape, tuple[ChatType, bool, str]] = {
+    "private_main": ("dm", False, ""),
+    "private_thread": ("thread", False, "t-1"),
+    "shared_main": ("group", True, ""),
+    "shared_thread": ("thread", True, "t-1"),
+}
 
-    Both are derived from the channel's surfaces and the run's own address, so ask
-    for the pair you want and get the channel and address producing it — the closing
-    asserts keep the two ends honest. `test_reflex_graph` covers the derivations."""
+
+def _capability(
+    shape: Shape = "shared_main",
+    *,
+    channel: FakeChannelTentacle | None = None,
+    user_id: str = "alice",
+) -> GatewayCapability:
+    """A gate answering from `shape`, on a channel with every surface unless one is
+    passed. `test_reflex_graph` covers how the real channels reach each shape."""
+    chat_type, shared, thread_id = SHAPES[shape]
     capability = GatewayCapability(
         routes=[
             AgentRoute(
@@ -65,33 +78,27 @@ def _capability(
             ),
         ],
         current_agent_id="inkling",
-        channels={
-            "im": (
-                _NoDmChannel()
-                if private_blocked_by == "no_surface"
-                else FakeChannelTentacle()
-            )
-        },
+        channels={"im": channel or FakeChannelTentacle()},
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
-            # A group's main channel is the one place `summon here` is refused.
-            chat_type=(
-                "dm"
-                if private_blocked_by == "already_private"
-                else "thread"
-                if allow_here
-                else "group"
-            ),
+            chat_type=chat_type,
             chat_id="room",
-            channel_thread_id="t-1"
-            if allow_here and private_blocked_by is None
-            else "",
-            user_id="" if private_blocked_by == "no_user" else "alice",
+            channel_thread_id=thread_id,
+            user_id=user_id,
+            shared=shared,
         ),
     )
-    assert capability.allow_here == allow_here
-    assert capability.private_blocked_by == private_blocked_by
     return capability
+
+
+def _blocked(reason: PrivateBlocker) -> GatewayCapability:
+    """A gate whose `scheme` has nowhere to land, each wall reached by the surface
+    or the channel that actually produces it rather than by asking for the wall."""
+    if reason == "no_surface":
+        return _capability(channel=_NoDmChannel())
+    if reason == "already_private":
+        return _capability("private_main")
+    return _capability(user_id="")
 
 
 def _decision(
@@ -175,7 +182,8 @@ def test_gate_instruction_explains_each_spell_in_plain_words() -> None:
 
 
 async def test_scry_tool_returns_other_routes() -> None:
-    capability = _capability()
+    # A shared thread: the one shape that offers both built-ins at once.
+    capability = _capability("shared_thread")
     assert capability.toolset is not None
     scry = capability.toolset.tools[SCRY_TOOL_NAME].function
 
@@ -275,8 +283,39 @@ async def test_summon_refuses_an_unclaimed_effort() -> None:
     assert capability.decision is None
 
 
+@pytest.mark.parametrize(
+    ("shared", "blocked_by"),
+    [(True, None), (False, "already_private")],
+)
+async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
+    shared: bool,
+    blocked_by: PrivateBlocker | None,
+) -> None:
+    """Both of these are `chat_type="thread"`: a thread in a group channel, and a
+    Slack assistant pane or Lark p2p topic. Only one has somewhere private left to
+    move to — reading the type alone would offer `scheme` a surface beside the one
+    it is already in, under whatever agent owns that."""
+    capability = GatewayCapability(
+        routes=[],
+        current_agent_id="inkling",
+        channels={"im": FakeChannelTentacle()},
+        conversation_address=ChannelAddress(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            user_id="alice",
+            channel_thread_id="t-1",
+            shared=shared,
+        ),
+    )
+
+    assert capability.private_blocked_by == blocked_by
+    # A thread pins an owner either way, so taking one over in place is always fine.
+    assert capability.allow_here is True
+
+
 async def test_summon_here_refused_when_disallowed() -> None:
-    capability = _capability(allow_here=False)
+    capability = _capability("shared_main")
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
@@ -294,7 +333,7 @@ async def test_summon_here_refused_when_disallowed() -> None:
 
 
 async def test_summon_here_allowed_on_bounded_surface() -> None:
-    capability = _capability(allow_here=True)
+    capability = _capability("shared_thread")
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
@@ -353,11 +392,11 @@ def test_tool_schemas_do_not_vary_with_dm_availability() -> None:
     # the cached prefix, so anything address-derived is refused in the tool body rather
     # than kept out of the schema. If this ever fails, a conversation that moves
     # busts its whole prefix — system prompt included.
-    reachable = _schemas(_capability(private_blocked_by=None))
+    reachable = _schemas(_capability("shared_thread"))
     for reason in ("no_surface", "already_private", "no_user"):
-        assert _schemas(_capability(private_blocked_by=reason)) == reachable
+        assert _schemas(_blocked(reason)) == reachable
 
-    assert _schemas(_capability(allow_here=False)) == reachable
+    assert _schemas(_capability("shared_main")) == reachable
 
 
 def test_tool_schemas_do_not_carry_the_live_routes() -> None:
@@ -386,7 +425,7 @@ async def test_scheme_refuses_with_the_reason_it_cannot_land(
     reason: PrivateBlocker,
     expected: str,
 ) -> None:
-    capability = _capability(private_blocked_by=reason)
+    capability = _blocked(reason)
     assert capability.toolset is not None
     scheme = capability.toolset.tools[SCHEME_TOOL_NAME].function
 

@@ -383,6 +383,9 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             chat_id=channel_id,
             user_id=user_id,
             channel_thread_id=thread_ts,
+            # An assistant pane is a chat inside the bot's own DM channel: a thread
+            # by type, and nobody but its one user can read it.
+            shared=False,
         )
         with sqlalchemy_materia():
             # Pre-create the thread that owns this assistant chat's conversations;

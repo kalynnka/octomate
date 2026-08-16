@@ -283,7 +283,10 @@ class GatewayCapability(AbstractCapability[None]):
         channel = self.channels.get(address.channel_tentacle_id)
         if channel is None or not channel.surfaces.direct_message:
             return "no_surface"
-        if address.chat_type == "dm":
+        # Read the surface, not the type: a Slack assistant pane and a Lark p2p topic
+        # are threads that only one person can read, and moving them to "their direct
+        # messages" would land beside where they already are, under another owner.
+        if not address.shared:
             return "already_private"
         if not address.user_id:
             return "no_user"
@@ -311,6 +314,7 @@ class GatewayCapability(AbstractCapability[None]):
                         chat_type="dm",
                         chat_id="",
                         channel_thread_id=None,
+                        shared=False,
                     ),
                 )
             )

@@ -62,13 +62,20 @@ def _text(value: JsonValue) -> str:
     return value
 
 
-def _address(channel: str, chat_type: ChatType = "dm") -> ChannelAddress:
+def _address(
+    channel: str,
+    chat_type: ChatType = "dm",
+    *,
+    shared: bool = False,
+    channel_thread_id: str | None = None,
+) -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id=channel,
         chat_type=chat_type,
         chat_id="C1",
         user_id="U1",
-        channel_thread_id=None,
+        channel_thread_id=channel_thread_id,
+        shared=shared,
     )
 
 
@@ -158,7 +165,7 @@ async def test_a_group_request_delivers_the_code_to_the_user_dm() -> None:
     ink = FakeLarkCardsInk(dm_chat_id="D1")
 
     await LarkOAuthFeeler(cast(LarkInk, ink)).present(
-        _address("lark", "group"), AUTHORIZATION
+        _address("lark", "group", shared=True), AUTHORIZATION
     )
 
     # The code authorizes one person's account; the group it was asked from does
@@ -169,6 +176,21 @@ async def test_a_group_request_delivers_the_code_to_the_user_dm() -> None:
     assert reply_to is None
 
 
+async def test_a_private_thread_keeps_the_code_where_it_was_asked_for() -> None:
+    """A Slack assistant pane is a thread only its own user can read. Moving the code
+    out of it would put the link in one surface and "return here and tell me to
+    confirm" in another."""
+    ink = RecordingSlackInk(dm_chat_id="D1")
+
+    await SlackOAuthFeeler(cast(SlackInk, ink)).present(
+        _address("slack", "thread", channel_thread_id="1700.1"), AUTHORIZATION
+    )
+
+    assert ink.opened == []
+    [(chat_id, chat_type, _messages, thread_ts)] = ink.sent
+    assert (chat_id, chat_type, thread_ts) == ("C1", "thread", "1700.1")
+
+
 async def test_every_channel_routes_a_group_request_the_same_way() -> None:
     # The rule belongs to the base feeler's `present`, so a channel that renders
     # cards and one that renders text cannot disagree about where a code may land.
@@ -177,10 +199,10 @@ async def test_every_channel_routes_a_group_request_the_same_way() -> None:
     plain_ink = FakeOAuthInk(dm_chat_id="D2")
 
     await SlackOAuthFeeler(cast(SlackInk, slack)).present(
-        _address("slack", "group"), AUTHORIZATION
+        _address("slack", "group", shared=True), AUTHORIZATION
     )
     await PlainTextOAuthFeeler(cast(Ink[str], plain_ink), markdown).present(
-        _address("napcat", "group"), AUTHORIZATION
+        _address("napcat", "group", shared=True), AUTHORIZATION
     )
 
     assert slack.opened == ["U1"]
@@ -196,7 +218,7 @@ async def test_a_platform_with_nowhere_private_refuses_to_use_the_group() -> Non
 
     with pytest.raises(RuntimeError, match="not going to a group"):
         await LarkOAuthFeeler(cast(LarkInk, ink)).present(
-            _address("lark", "group"), AUTHORIZATION
+            _address("lark", "group", shared=True), AUTHORIZATION
         )
 
     assert ink.sent == []

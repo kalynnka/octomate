@@ -26,7 +26,7 @@ from octomate.capabilities.todos import TodoCapability
 from octomate.config import AgentModelConfig, ChannelConfig
 from octomate.config.users import UserConfig
 from octomate.managers.user import UserManager
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import MarkdownSegment, MessageSegment
 from octomate.schemas.triage import Destination, Scrying
 from octomate.schemas.user import UserProfile
@@ -42,19 +42,26 @@ class _NoDmChannel(FakeChannelTentacle):
 
 
 def _gate(
-    *, direct_messages: bool = True, already_private: bool = False
+    *,
+    direct_messages: bool = True,
+    already_private: bool = False,
+    chat_type: ChatType | None = None,
 ) -> GatewayCapability:
     """A routing-only gate: on a channel with direct messages unless asked
-    otherwise, answering from a group unless asked to be in the DM already."""
+    otherwise, answering from a group unless asked to be in the DM already.
+
+    `chat_type` overrides the type the surface reports without changing whether it
+    is private — an assistant pane is a thread only one person can read."""
     return GatewayCapability(
         routes=[],
         current_agent_id="inkling",
         channels={"im": FakeChannelTentacle() if direct_messages else _NoDmChannel()},
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="dm" if already_private else "group",
+            chat_type=chat_type or ("dm" if already_private else "group"),
             chat_id="room",
             user_id="alice",
+            shared=not already_private,
         ),
     )
 
@@ -211,6 +218,21 @@ async def test_send_to_dm_from_a_dm_is_not_refused() -> None:
     assert result.metadata == [MessageSentEvent(segments=segments, destination=None)]
 
 
+async def test_send_to_dm_from_a_private_thread_is_not_refused() -> None:
+    # The same rule one surface further in: a Slack assistant pane is a thread by
+    # type and private in fact, so `dm` there names the pane rather than a second
+    # surface beside it. Resolving one would post outside the chat being had.
+    capability = _gate(already_private=True, chat_type="thread")
+    assert capability.private_blocked_by == "already_private"
+    assert capability.toolset is not None
+    send = capability.toolset.tools["send"].function
+    segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
+
+    result = await send(cast(RunContext[Any], None), segments, "dm")
+
+    assert result.metadata == [MessageSentEvent(segments=segments, destination=None)]
+
+
 async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None:
     # The cross-channel case: the model names a channel and nothing else. Who is
     # fixed — whoever asked — and their account there came from the identity
@@ -273,12 +295,14 @@ async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
 async def test_scry_does_not_file_this_conversation_as_somewhere_else() -> None:
     # `scry` is the model's only view of where it can go, so the heading has to be
     # true of every row under it: this chat is neither remote nor private.
-    capability = _gate()
+    # From a DM, where `here` is offered and `dm` is not: a group's main channel
+    # withholds `here`, so it could not tell a true heading from a false one.
+    capability = _gate(already_private=True)
     scrying = Scrying(routes=[], destinations=await capability.destinations())
 
-    # `thread` is a place in *this* chat, so a heading promising somewhere else, or
+    # `here` is this chat itself, so a heading promising somewhere else, or
     # somewhere private, would be false of it.
-    assert "thread" in [one.handle for one in scrying.destinations]
+    assert "here" in [one.handle for one in scrying.destinations]
     assert "privately" not in str(scrying)
     assert "Where else" not in str(scrying)
     assert "Where you can put this:" in str(scrying)

@@ -56,8 +56,12 @@ class OAuthFeeler(ABC, Generic[MessageT]):
         must not be read out to the group: it goes to that person's direct
         messages instead. A platform with nowhere private to reach them gets an
         error rather than the group, which is the whole point of asking.
+
+        What makes a surface private is `shared`, not the chat type: an assistant
+        pane is a thread only its own user can read, and moving the link out of it
+        would strand "return here and tell me to confirm" in another surface.
         """
-        if address.chat_type == "dm":
+        if not address.shared:
             return address
         chat_id = await self.ink.open_dm(address.user_id)
         if chat_id is None:
@@ -65,7 +69,13 @@ class OAuthFeeler(ABC, Generic[MessageT]):
                 f"no direct message to reach {address.user_id} on "
                 f"{address.channel_tentacle_id}; a one-time code is not going to a group"
             )
-        return replace(address, chat_type="dm", chat_id=chat_id, channel_thread_id=None)
+        return replace(
+            address,
+            chat_type="dm",
+            chat_id=chat_id,
+            channel_thread_id=None,
+            shared=False,
+        )
 
     @abstractmethod
     async def send(
