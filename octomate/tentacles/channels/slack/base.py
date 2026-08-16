@@ -393,6 +393,26 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             await self.octomate.thread_manager.ensure(address)
         logger.info("Channel %s: ensured Slack assistant thread %s", self.id, address)
 
+    async def open_dm(
+        self, user_id: str, opener: str | None = None
+    ) -> ChannelAddress | None:
+        """Their direct messages here — as a thread inside them when a turn is moving
+        in, and as the channel itself when a message is only being delivered.
+
+        Slack renders a run by streaming, and `chat.startStream` takes a `thread_ts`
+        that is not optional, so the channel root is somewhere this bot can post but
+        never stream: a turn landing there dies on `invalid_thread_ts`. A Slack thread
+        hangs off a message, and `opener` is the message — which is why a caller with
+        nothing to say gets the root, where posting still works fine.
+
+        The pane an inbound DM arrives in is already a thread, so this only bites
+        where Octomate opens the conversation itself.
+        """
+        address = await super().open_dm(user_id, opener)
+        if address is None or not opener:
+            return address
+        return await self.start_sub_thread(address, opener)
+
     async def start_sub_thread(
         self,
         address: ChannelAddress,

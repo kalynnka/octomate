@@ -207,7 +207,10 @@ class SchemeDecision(BaseModel):
     """
 
     action: Literal["scheme"] = "scheme"
-    hint: str
+    hint: str = Field(
+        description="The line that opens the conversation over there. Nothing is "
+        "posted where the request came from — the run's own reply closes that out."
+    )
     brief: str
     destination: ChannelAddress = Field(
         description="Which direct messages, resolved by the gate. The model names a "

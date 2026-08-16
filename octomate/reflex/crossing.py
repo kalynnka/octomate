@@ -32,7 +32,7 @@ async def open_crossing(
     `teleport` would fork a whole history onto a chat that already has one.
     """
     channel = ctx.deps.channel(landing.address.channel_tentacle_id)
-    dm_address = await channel.open_dm(landing.address.user_id)
+    dm_address = await channel.open_dm(landing.address.user_id, hint_text)
     if dm_address is None:
         logger.warning(
             "Channel %s could not open a DM with %s; leaving the turn here",

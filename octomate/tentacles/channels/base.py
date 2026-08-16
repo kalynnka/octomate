@@ -169,13 +169,17 @@ class Ink(ABC, Generic[MessageT]):
     ) -> IMMessageID | None:
         """Send platform-native message payloads."""
 
-    async def open_dm(self, user_id: str) -> str | None:
+    async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The chat id of this bot's 1:1 with `user_id`, opening it if needed.
 
         `None` when the platform offers nowhere private to reach them — no DM
         surface at all, or an open that failed. Both leave a caller that needs
         privacy with no answer, which is the only distinction it can act on.
         Opening is idempotent wherever it is a call at all.
+
+        `opener` is the first thing the person will read there, for a platform that
+        cannot open a private chat without saying something. `None` from a caller
+        with nothing to say — and ignored by every platform that opens one silently.
         """
         return None
 
@@ -366,17 +370,25 @@ class ChannelTentacle(
                         exc_info=True,
                     )
 
-    async def open_dm(self, user_id: str) -> ChannelAddress | None:
+    async def open_dm(
+        self, user_id: str, opener: str | None = None
+    ) -> ChannelAddress | None:
         """The 1:1 conversation with `user_id`, opening it if the platform needs to.
 
         `None` when this channel has nowhere private to reach them; a channel opts
         in by declaring `surfaces.direct_message` and giving its ink an `open_dm`.
         The returned address may already carry a history, which is why a `teleport`
         there lands in a fresh thread or stays put rather than forking onto it.
+
+        `opener` is the first thing the person will read there, passed by a caller
+        that is about to move a whole turn in — and empty from one that only wants
+        somewhere to deliver a message. A channel that can only be *run* inside a
+        thread starts one from it; most have nothing to do with it, since the
+        conversation they hand back can be posted to as it is.
         """
         if not user_id:
             return None
-        chat_id = await self.ink.open_dm(user_id)
+        chat_id = await self.ink.open_dm(user_id, opener)
         if chat_id is None:
             return None
         return ChannelAddress(

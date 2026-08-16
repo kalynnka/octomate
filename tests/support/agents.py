@@ -284,7 +284,10 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 brief=scheme_decision.brief,
                 destination=scheme_target(scheme_decision, capabilities),
             )
-            return AgentRunResult("")
+            # And a closing line, like a model does: `scheme` is an ordinary tool
+            # call, so the run carries on and writes a reply after it. Set
+            # `reception_output=""` for one that moves without a word.
+            return AgentRunResult(self.reception_output)
         summon_decision = self.reception_summon
         if summon_decision is not None:
             summon = next(

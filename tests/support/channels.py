@@ -136,6 +136,9 @@ class RecordingInk(Ink[NativeMessage]):
     )
     downloads: dict[str, DownloadedImage] = field(default_factory=dict)
     opened_dms: list[str] = field(default_factory=list)
+    # What each open was asked to say first, in step with `opened_dms` — None from a
+    # caller that only wants somewhere to deliver a message.
+    dm_openers: list[str | None] = field(default_factory=list)
     # Whether this platform will hand back a private chat; False is the open
     # failing at the moment of asking.
     dm_opens: bool = True
@@ -149,11 +152,12 @@ class RecordingInk(Ink[NativeMessage]):
             UserProfile(channel_user_id=user_id, name=f"user-{user_id}"),
         )
 
-    async def open_dm(self, user_id: str) -> str | None:
+    async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         # A user's own id is their private chat id, as on Lark and NapCat — and what
         # an inbound private message decodes to, so a DM seeded by one is the same
         # thread the channel's `open_dm` builds.
         self.opened_dms.append(user_id)
+        self.dm_openers.append(opener)
         return user_id if self.dm_opens else None
 
     async def upload_media(self, data: bytes) -> str | None:
@@ -257,6 +261,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     consumed: list[tuple[ChannelAddress, IMMessageID | None]]
     sub_threads: list[tuple[ChannelAddress, str]]
     opened_dms: list[str]
+    dm_openers: list[str | None]
 
     def __init__(
         self,
@@ -283,6 +288,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.consumed = []
         self.sub_threads = []
         self.opened_dms = self.recording_ink.opened_dms
+        self.dm_openers = self.recording_ink.dm_openers
         self.self_profile = self.recording_ink.self_profile
         self.feelers.timeline = RecordingTimelineFeeler(
             self.feelers.timeline, self.consumed
@@ -470,6 +476,6 @@ class FakeOAuthInk:
     dm_chat_id: str | None = None
     opened: list[str] = field(default_factory=list)
 
-    async def open_dm(self, user_id: str) -> str | None:
+    async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         self.opened.append(user_id)
         return self.dm_chat_id

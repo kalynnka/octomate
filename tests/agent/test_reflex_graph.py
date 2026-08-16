@@ -666,8 +666,9 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     address = _group_key()
     entry = FakeAgent(
         id="other",
+        reception_output="See you in your DMs!",
         reception_scheme=SchemeDecision(
-            hint="Continuing with you privately",
+            hint="Picking this up with you.",
             brief="Finish the migration write-up.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",
@@ -711,8 +712,16 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     # The DM's own owner picked it up, with the brief as its prompt.
     assert second.turns[0].prompt == "Finish the migration write-up."
     assert second.turns[0].address.chat_type == "dm"
-    # And the group was told the work moved, so it is not left watching silence.
-    assert im.recording_ink.sent[0][2][0]["text"] == "Continuing with you privately"
+    # The hint opened the far side, not the brief: a brief is written for whoever
+    # answers, and a channel that can only be run inside a thread would otherwise
+    # hang that thread off a prompt the person was never meant to read.
+    assert im.dm_openers == ["Picking this up with you."]
+    # The group gets the agent's own sign-off and nothing after it: `scheme` is an
+    # ordinary tool call, so the run carries on and closes this out itself. Only the
+    # group is read — the DM is on this same fake channel, and what lands there is
+    # the receiving run.
+    group = [sent[2][0]["text"] for sent in im.recording_ink.sent if sent[0] == "team"]
+    assert group == ["See you in your DMs!"]
 
 
 async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> None:
@@ -720,7 +729,7 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
     entry = FakeAgent(
         id="other",
         reception_scheme=SchemeDecision(
-            hint="Taking this private",
+            hint="Picking this up with you.",
             brief="Do it.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",
@@ -776,7 +785,7 @@ async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
     entry = FakeAgent(
         id="other",
         reception_scheme=SchemeDecision(
-            hint="Taking this private",
+            hint="Picking this up with you.",
             brief="Finish the migration write-up.",
             destination=ChannelAddress(
                 channel_tentacle_id="far",
@@ -824,7 +833,7 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
     entry = FakeAgent(
         id="other",
         reception_scheme=SchemeDecision(
-            hint="Taking this private",
+            hint="Picking this up with you.",
             brief="Do it.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",

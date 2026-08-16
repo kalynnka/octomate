@@ -143,9 +143,10 @@ conversation nobody else can read, since everything said here travels with you.
 Continue one-to-one with the person who asked, in their direct messages: for work that
 is theirs alone, or that does not belong in front of the group. Whoever already handles
 their direct messages picks it up, so write `brief` self-contained — it may not be you,
-and they cannot see this chat. `hint` is the line that closes this out where everyone
-can see it, so say the work is moving, not what it is. Only from a group, on a platform
-that has direct messages; the tool says so when it does not apply.
+and they cannot see this chat. `hint` opens the conversation over there and is the
+first thing they read; nothing is posted here, so close out your own reply by saying
+the work is moving, not what it is. Only from a group, on a platform that has direct
+messages; the tool says so when it does not apply.
 """
 
 # The framing every accomplice run carries, passed by the gateway at the
@@ -770,8 +771,9 @@ class GatewayCapability(AbstractCapability[None]):
         work that is that person's alone, or that does not belong in front of the group.
 
         Args:
-            hint: The short, user-facing line that closes this out here, where everyone
-                can see it — say the work is moving, not what it is.
+            hint: The short, user-facing line that opens the conversation over there,
+                where they will read it before anything else. Say that the work is
+                being picked up — not the brief, which is written for whoever answers.
             brief: The self-contained brief whoever answers there starts from. They
                 cannot see this conversation, so give the goal, the relevant context and
                 decisions, what's been tried, and what a finished result looks like.
