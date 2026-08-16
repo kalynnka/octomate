@@ -188,7 +188,12 @@ class SlackInk(Ink[SlackOutboundMessage]):
                 thread_ts = None
         return first_msg_id
 
-    @slack_logfire.instrument("slack.start_stream", extract_args=["channel"])
+    # Marks where a stream opens, not a round-trip: `chat_stream` only builds the
+    # `AsyncChatStream`, and `chat.startStream` is paid by the first append.
+    # `task_display_mode` is what tells a plan stream from a text one.
+    @slack_logfire.instrument(
+        "slack.start_stream", extract_args=["channel", "task_display_mode"]
+    )
     async def start_stream(
         self,
         channel: str,
@@ -222,7 +227,8 @@ class SlackInk(Ink[SlackOutboundMessage]):
         stream: AsyncChatStream,
         chunks: list[Chunk],
     ) -> None:
-        await stream.append(chunks=chunks)
+        with slack_logfire.span("slack.append_stream_chunks", chunks=len(chunks)):
+            await stream.append(chunks=chunks)
 
     @asynccontextmanager
     async def open_stream(

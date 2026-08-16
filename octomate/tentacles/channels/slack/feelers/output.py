@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -59,6 +60,8 @@ if TYPE_CHECKING:
     )
     from octomate.tentacles.channels.feelers.oauth import OAuthFeeler
 from octomate.types.todos import TodoStatus
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PLAN_TITLE = "Working..."
 
@@ -157,6 +160,7 @@ class SlackTimelineState(TimelineState):
     skipped_tool_call_ids: set[str] = field(default_factory=set)
     last_status: str | None = None
     status_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    stop_tasks: set[asyncio.Task[IMMessageID | None]] = field(default_factory=set)
     step_streams: dict[str, AsyncChatStream] = field(default_factory=dict)
     retired: list[AsyncChatStream] = field(default_factory=list)
     plan_stream: AsyncChatStream | None = None
@@ -252,7 +256,28 @@ class SlackTimelineState(TimelineState):
             for step in self.tool_steps.values()
         )
 
-    async def finish_plan(self) -> None:
+    def stop_later(self, stream: AsyncChatStream) -> None:
+        """Close a stream nothing will append to again without holding the drive
+        loop: `chat.stopStream` is a full round-trip, and the next surface can open
+        while Slack is still settling this one. Keep a reference (asyncio only
+        weak-refs tasks) and drop it once the call settles."""
+        task = asyncio.create_task(self.ink.stop_stream(stream))
+        self.stop_tasks.add(task)
+        task.add_done_callback(self.stop_tasks.discard)
+
+    async def join_stops(self) -> None:
+        """Let the backgrounded closes settle before the run lets go of its
+        surfaces. A close that failed leaves its message streaming until Slack
+        times it out, which is worth a line in the log but not the turn."""
+        if not self.stop_tasks:
+            return
+        for result in await asyncio.gather(*self.stop_tasks, return_exceptions=True):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "Slack timeline: failed to stop a stream", exc_info=result
+                )
+
+    def finish_plan(self) -> None:
         """Fold the current plan. If a tool is still running it stays open (and
         retired) so the late result lands where it started; otherwise it closes."""
         plan = self.plan_stream
@@ -262,12 +287,12 @@ class SlackTimelineState(TimelineState):
         if self.stream_has_inflight(plan):
             self.retired.append(plan)
         else:
-            await self.ink.stop_stream(plan)
+            self.stop_later(plan)
 
     async def ensure_text_stream(self) -> AsyncChatStream:
         if self.text_stream is None:
             await self.complete_active_thinking()
-            await self.finish_plan()
+            self.finish_plan()
             await self.set_status(STATUS_WRITING)
             # Each text part is its own Slack message: clear the batcher's carried
             # `full_text` so the previous message's length can't fold this one.
@@ -318,10 +343,10 @@ class SlackTimelineState(TimelineState):
         if stream is not None:
             self.last_message_id = await self.ink.stop_stream(stream)
 
-    async def release_drained(self) -> None:
+    def release_drained(self) -> None:
         for stream in [s for s in self.retired if not self.stream_has_inflight(s)]:
             self.retired.remove(stream)
-            await self.ink.stop_stream(stream)
+            self.stop_later(stream)
 
     async def complete_active_thinking(self) -> None:
         step = self.active_thinking
@@ -341,7 +366,7 @@ class SlackTimelineState(TimelineState):
         # and re-sets the status through the same cache this write goes through.
         await self.finish_text()
         await self.complete_active_thinking()
-        await self.finish_plan()
+        self.finish_plan()
         await self.set_status(STATUS_WAITING)
 
     async def thinking_start(self) -> None:
@@ -428,7 +453,7 @@ class SlackTimelineState(TimelineState):
             stripped = result_text.strip()
             step.output = stripped.splitlines()[0][:200] if stripped else "Failed"
         await self.emit(step, status=step.status)
-        await self.release_drained()
+        self.release_drained()
 
     async def tool_start(
         self, event: FunctionToolCallEvent | OutputToolCallEvent
@@ -497,7 +522,7 @@ class SlackTimelineState(TimelineState):
             case ImageSegment():
                 await self.complete_active_thinking()
                 await self.finish_text()
-                await self.finish_plan()
+                self.finish_plan()
                 await self.ink.upload_image(
                     channel=self.channel,
                     data=segment.data.path.read_bytes(),
@@ -507,7 +532,7 @@ class SlackTimelineState(TimelineState):
             case CardSegment():
                 await self.complete_active_thinking()
                 await self.finish_text()
-                await self.finish_plan()
+                self.finish_plan()
                 payload_blocks = segment.data.payload.get("blocks")
                 if not isinstance(payload_blocks, list):
                     raise ValueError("Slack card payload requires a 'blocks' list")
@@ -644,8 +669,9 @@ class SlackTimelineFeeler(TimelineFeeler):
             await state.settle_subagents("failed")
             await state.complete_pending()
             await state.finish_text()
-            await state.finish_plan()
-            await state.release_drained()
+            state.finish_plan()
+            state.release_drained()
+            await state.join_stops()
             # The last text message is the final reply.
             state.message_id = state.last_message_id
             await state.join_status()
