@@ -40,9 +40,19 @@ InklingPermissionMode = Literal["default", "dontAsk", "bypassPermissions"]
 # what every command in that thread may touch.
 CodexPermissionMode = Literal["user_review", "auto_review", "deny_all"]
 
+# dsh bundles both axes — sandbox mode and approval policy — into one named permission
+# preset, so unlike Codex there is nothing to keep apart: the preset is the posture.
+# The preset table is deployment-configurable; these two are what dsh ships
+# (workspace-write sandbox + ask, and danger-full-access + never). There is no
+# permission RPC — the tentacle switches a session's preset with the `/permission
+# <preset>` command on the remotes plane.
+DeepseekPermissionMode = Literal["workspace-write", "danger-full-access"]
+
 # One status, whichever provider it came from. Which arm applies is decided by the
 # row's `agent_tentacle_id`, not by a discriminator inside the value.
-AgentPermissionMode = ClaudePermissionMode | CodexPermissionMode
+AgentPermissionMode = (
+    ClaudePermissionMode | CodexPermissionMode | DeepseekPermissionMode
+)
 
 # Which statuses each agent answers to, so a Codex posture on a Claude conversation is
 # refused where it is written rather than where it is read. Derived from the literals
@@ -52,6 +62,7 @@ PERMISSION_MODES: dict[str, tuple[AgentPermissionMode, ...]] = {
     "inkling": get_args(InklingPermissionMode),
     "claude": get_args(ClaudePermissionMode),
     "codex": get_args(CodexPermissionMode),
+    "deepseek": get_args(DeepseekPermissionMode),
     # The runtimes Octomate tails rather than drives. They keep their provider's
     # vocabulary because a native session really is in one of these postures and its
     # transcript says which — the column records what was observed, which is the same
@@ -103,3 +114,7 @@ def is_claude_mode(mode: str | None) -> TypeIs[ClaudePermissionMode]:
 
 def is_codex_mode(mode: str | None) -> TypeIs[CodexPermissionMode]:
     return mode in PERMISSION_MODES["codex"]
+
+
+def is_deepseek_mode(mode: str | None) -> TypeIs[DeepseekPermissionMode]:
+    return mode in PERMISSION_MODES["deepseek"]

@@ -30,6 +30,7 @@ from octomate.managers.user import UserManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.codex import CodexTentacle
+from octomate.tentacles.agents.deepseek import DeepseekTentacle
 from octomate.tentacles.agents.inkling import InklingTentacle, build_mcp_toolsets
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.base import TentacleLogFormatter
@@ -242,6 +243,20 @@ def create_app() -> FastAPI:
                 octomate,
                 config=codex_config,
                 hook_secret=hook_secret("codex"),
+            )
+        )
+
+    # No hook secret: dsh serves no hook router — the tentacle drives a dsh
+    # over its /api gateway (one it attached to, or a `dsh web` child it
+    # started) and nothing external posts into octomate for it.
+    if (
+        deepseek_config := config.agents.deepseek
+    ) is not None and deepseek_config.enabled:
+        octomate.connect(
+            DeepseekTentacle(
+                "deepseek",
+                octomate,
+                config=deepseek_config,
             )
         )
 

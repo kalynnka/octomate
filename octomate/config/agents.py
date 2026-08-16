@@ -15,6 +15,7 @@ from octomate.config.models import ModelConfig
 from octomate.types.permissions import (
     ClaudePermissionMode,
     CodexPermissionMode,
+    DeepseekPermissionMode,
     InklingPermissionMode,
 )
 
@@ -62,7 +63,12 @@ CodexReasoningSummary: TypeAlias = Literal[
     "detailed",
     "none",
 ]
-AgentRouteModelName: TypeAlias = KnownModelName | ClaudeCodeModelName | CodexModelName
+# dsh identifies a model by (provider, model id); these are the model-id labels the
+# routes select from, all under `DeepseekConfig.provider`.
+DeepseekModelName: TypeAlias = Literal["deepseek-v4-flash", "deepseek-v4-pro"]
+AgentRouteModelName: TypeAlias = (
+    KnownModelName | ClaudeCodeModelName | CodexModelName | DeepseekModelName
+)
 
 
 @dataclass(frozen=True)
@@ -416,6 +422,141 @@ class CodexConfig(BaseModel):
     )
 
 
+class DeepseekConfig(BaseModel):
+    """DeepSeek Harness runner, registered as the `deepseek` agent tentacle.
+
+    Opt-in: `agents.deepseek` is null by default, so the agent is absent unless a
+    block is supplied. The tentacle attaches to a dsh already serving
+    `host:port` — one the operator runs — and starts its own `dsh web` child
+    only when nothing answers there. Either way it drives the harness over the
+    `/api` gateway — HTTP for unary calls, the mux WebSocket for events — the
+    same integration surface dsh's own web client uses. Sessions are
+    per-conversation: the dsh session id is stored as the conversation
+    `external_id` and prompted again for later turns.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether to register the deepseek tentacle when the config block exists.",
+    )
+    host: Literal["127.0.0.1", "localhost"] = Field(
+        default="127.0.0.1",
+        description=(
+            "Where a dsh serves `/api` — loopback only, enforced here: the "
+            "gateway has no TLS and no auth, and a started child binds loopback, "
+            "so a remote host could neither be trusted nor answered. A dsh "
+            "already answering here is attached to as it stands."
+        ),
+    )
+    port: int = Field(
+        default=3080,
+        ge=1,
+        le=65535,
+        description=(
+            "The `/api` port — dsh's own default bind. A started `dsh web` binds "
+            "this same port, fixed rather than ephemeral, so the next probe "
+            "attaches to it instead of starting a second writer of one DSH_HOME."
+        ),
+    )
+    executable: str = Field(
+        default="dsh",
+        description=(
+            "The dsh command to spawn `dsh web` with when nothing serves "
+            "`host:port` — a name resolved on PATH or an absolute path to a "
+            "built dsh."
+        ),
+    )
+    extra_args: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra arguments appended after `web --host 127.0.0.1 --port <port>`, "
+            "e.g. a `--patch` overlay. Only applies to a harness octomate starts."
+        ),
+    )
+    dsh_home: ConfigPath = Field(
+        default=Path("~/.dsh"),
+        # The default rides through ConfigPath's expanduser like any set value.
+        validate_default=True,
+        description=(
+            "DSH_HOME for a harness octomate starts — where dsh keeps its "
+            "sessions and settings. Defaults to dsh's own ~/.dsh; the child "
+            "always receives this value verbatim. An attached harness keeps "
+            "whatever home it was started with."
+        ),
+    )
+    cwd: str = Field(
+        default=".",
+        description=(
+            "Default working directory for a new dsh session whose thread is in "
+            "no project. A session's cwd is fixed at creation."
+        ),
+    )
+    provider: str = Field(
+        default="deepseek-official",
+        description=(
+            "The dsh provider route the model labels below belong to; "
+            "`session.selectModel` sends (provider, model) pairs."
+        ),
+    )
+    models: set[DeepseekModelName] = Field(
+        default={"deepseek-v4-flash", "deepseek-v4-pro"},
+        min_length=1,
+        description="dsh model route labels this agent exposes to channels.",
+    )
+    claims: dict[DeepseekModelName, Claim] = Field(
+        default_factory=dict,
+        description="Per-model claims (ability/efforts). A model with no claim "
+        "advertises nothing: it is not offered as a route, so it cannot be "
+        "summoned (or commissioned). DeepSeek's efforts collapse to off/high/max, "
+        "so claims should offer `[low, medium, high, xhigh]` at most.",
+    )
+    efforts: dict[ThinkingEffort, str] = Field(
+        default_factory=lambda: {
+            "minimal": "off",
+            "low": "off",
+            "medium": "high",
+            "high": "high",
+            "xhigh": "max",
+        },
+        description=(
+            "Octomate's one effort vocabulary mapped onto dsh's adapter-owned "
+            "reasoning-effort ids. The default fits llm-deepseek (off/high/max); "
+            "a deployment routing another adapter overrides it."
+        ),
+    )
+    permission_mode: DeepseekPermissionMode = Field(
+        default="workspace-write",
+        description=(
+            "Permission preset a dsh conversation falls back to when it carries "
+            "none of its own. dsh's preset bundles sandbox mode and approval "
+            "policy; switched per session via the `/permission` command."
+        ),
+    )
+    agent_preset: str | None = Field(
+        default=None,
+        description=(
+            "Agent preset new sessions are composed from (`session.create`'s "
+            "agentPreset). Null takes the deployment's default preset."
+        ),
+    )
+    approval_timeout: float | None = Field(
+        default=None,
+        description=(
+            "Seconds to wait for a human approval/answer before the card expires "
+            "and the dsh request is answered `cancelled` (so the turn unblocks). "
+            "None waits indefinitely."
+        ),
+    )
+    ready_timeout: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "Seconds to wait for the `dsh web:` readiness banner before the "
+            "spawn is declared failed."
+        ),
+    )
+
+
 class AgentsConfig(BaseModel):
     inkling: InklingConfig = Field(
         default_factory=lambda: InklingConfig(
@@ -427,3 +568,4 @@ class AgentsConfig(BaseModel):
     )
     claude: ClaudeCodeConfig | None = None
     codex: CodexConfig | None = None
+    deepseek: DeepseekConfig | None = None

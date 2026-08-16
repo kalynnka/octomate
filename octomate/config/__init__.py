@@ -26,6 +26,7 @@ from octomate.config.agents import (
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     CodexConfig,
+    DeepseekConfig,
     InklingConfig,
 )
 from octomate.config.channels import (
@@ -180,6 +181,8 @@ class OctomateConfig(BaseSettings):
             agent_ids.add("claude")
         if self.agents.codex is not None and self.agents.codex.enabled:
             agent_ids.add("codex")
+        if self.agents.deepseek is not None and self.agents.deepseek.enabled:
+            agent_ids.add("deepseek")
         inkling_models = {model.name for model in self.agents.inkling.models}
 
         errors: list[InitErrorDetails] = []
@@ -257,6 +260,32 @@ class OctomateConfig(BaseSettings):
                                 type=PydanticCustomError(
                                     "channel_agent_route",
                                     "{model} is not configured in agents.codex.models",
+                                    {"model": repr(route.model)},
+                                ),
+                                loc=("channels", channel_id, *route_location, "model"),
+                                input=route.model,
+                            )
+                        )
+                if route.agent == "deepseek":
+                    if self.agents.deepseek is None or not self.agents.deepseek.enabled:
+                        errors.append(
+                            InitErrorDetails(
+                                type=PydanticCustomError(
+                                    "channel_agent_route",
+                                    "deepseek agent is not configured",
+                                    {},
+                                ),
+                                loc=("channels", channel_id, *route_location, "agent"),
+                                input=route.agent,
+                            )
+                        )
+                        continue
+                    if route.model not in self.agents.deepseek.models:
+                        errors.append(
+                            InitErrorDetails(
+                                type=PydanticCustomError(
+                                    "channel_agent_route",
+                                    "{model} is not configured in agents.deepseek.models",
                                     {"model": repr(route.model)},
                                 ),
                                 loc=("channels", channel_id, *route_location, "model"),
@@ -347,6 +376,7 @@ __all__ = [  # noqa: RUF022
     "ClaudeCodeConfig",
     "ClaudeSSHConfig",
     "CodexConfig",
+    "DeepseekConfig",
     "InklingConfig",
     # models
     "AnthropicModelSettings",
