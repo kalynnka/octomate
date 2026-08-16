@@ -36,17 +36,15 @@ class Destination:
     resolved `address` is built here rather than accepted from the model.
 
     `address` is what the rest of the system already speaks: `thread_manager.ensure`,
-    `conversations.ensure`, `feelers.*.present` and `open_dm` all take one. A
-    destination that has to be *made* before it exists carries `open_sub_thread`
-    instead of a second type — its address is the parent chat.
+    `conversations.ensure`, `feelers.*.present` and `open_dm` all take one. Every
+    destination names somewhere that already exists and someone can be reached at,
+    which is why a sub-thread — a place made on the way — is not one of them.
     """
 
     handle: str
     # What this place is, in words, for `scry` to show.
     label: str
     address: ChannelAddress
-    # The place does not exist yet: open a sub-thread of `address` and land there.
-    open_sub_thread: bool = False
 
     def __str__(self) -> str:
         return f"- {self.handle}: {self.label}"

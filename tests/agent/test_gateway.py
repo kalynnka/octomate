@@ -38,6 +38,10 @@ class _NoDmChannel(FakeChannelTentacle):
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
 
 
+class _NoSubThreadChannel(FakeChannelTentacle):
+    surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(direct_message=True)
+
+
 # The four surfaces a run can sit on, as (chat_type, shared, channel_thread_id).
 # They are not three free booleans: a thread overwrites the type of the chat around
 # it, and a shared surface with no thread is a group's main channel. So a gate can
@@ -197,8 +201,10 @@ async def test_scry_tool_returns_other_routes() -> None:
         )
     ]
     # The same list every spell resolves against — built-ins, then anywhere the
-    # asker is registered. This run is a group thread, so all three are offered.
-    assert [one.handle for one in scrying.destinations] == ["here", "dm", "thread"]
+    # asker is registered. A sub-thread is not among them: `summon` names one
+    # through its own literal, and a resolved handle is always somewhere a person
+    # can be delivered to.
+    assert [one.handle for one in scrying.destinations] == ["here", "dm"]
 
 
 async def test_summon_capability_rejects_self_summon() -> None:
@@ -378,6 +384,83 @@ async def test_teleport_defers_the_run() -> None:
         await teleport(FAKE_CONTEXT, hint="let's move to a thread")
 
 
+@pytest.mark.parametrize(
+    ("shape", "channel"),
+    [
+        ("private_thread", None),
+        ("shared_thread", None),
+        ("shared_main", _NoSubThreadChannel()),
+    ],
+)
+async def test_teleport_refused_where_no_sub_thread_can_be_opened(
+    shape: Shape,
+    channel: FakeChannelTentacle | None,
+) -> None:
+    """Nothing nests — every channel with threads is `flat_thread` — and some open
+    none at all. Refusing beats deferring into a move that never happens and
+    telling the agent it relocated."""
+    capability = _capability(shape, channel=channel)
+    assert capability.toolset is not None
+    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+
+    with pytest.raises(ModelRetry, match="Nowhere to teleport to"):
+        await teleport(FAKE_CONTEXT, hint="let's move to a thread")
+
+
+@pytest.mark.parametrize(
+    ("shape", "channel"),
+    [
+        # Already in one — nothing nests.
+        ("shared_thread", None),
+        # A main, but on a channel that opens none at all.
+        ("private_main", _NoSubThreadChannel()),
+    ],
+)
+async def test_summon_thread_refused_where_no_sub_thread_can_be_opened(
+    shape: Shape,
+    channel: FakeChannelTentacle | None,
+) -> None:
+    capability = _capability(shape, channel=channel)
+    assert capability.toolset is not None
+    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+
+    with pytest.raises(ModelRetry, match="No sub-thread to summon into"):
+        await summon(
+            FAKE_CONTEXT,
+            agent_id="claude",
+            model="opus",
+            destination="thread",
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+        )
+    assert capability.decision is None
+
+
+@pytest.mark.parametrize("destination", ["here", "thread"])
+async def test_summon_refused_outright_where_neither_place_exists(
+    destination: SummonDestination,
+) -> None:
+    """A group's main channel on a channel that opens no sub-thread — napcat's
+    groups. Ownership cannot land in place and there is nowhere to open, so the
+    refusal names the way out rather than sending the model between two walls."""
+    capability = _capability("shared_main", channel=_NoSubThreadChannel())
+    assert capability.toolset is not None
+    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+
+    with pytest.raises(ModelRetry, match="Nowhere to summon to"):
+        await summon(
+            FAKE_CONTEXT,
+            agent_id="claude",
+            model="opus",
+            destination=destination,
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+        )
+    assert capability.decision is None
+
+
 def _schemas(capability: GatewayCapability) -> dict[str, object]:
     """What actually reaches the provider: the cached tool definitions."""
     assert capability.toolset is not None
@@ -396,7 +479,11 @@ def test_tool_schemas_do_not_vary_with_dm_availability() -> None:
     for reason in ("no_surface", "already_private", "no_user"):
         assert _schemas(_blocked(reason)) == reachable
 
+    # The same for the walls the other two spells hit: a group main refuses
+    # `summon here`, and a channel that opens no sub-thread refuses both it and
+    # `teleport`. Neither may reach the schema either.
     assert _schemas(_capability("shared_main")) == reachable
+    assert _schemas(_capability(channel=_NoSubThreadChannel())) == reachable
 
 
 def test_tool_schemas_do_not_carry_the_live_routes() -> None:

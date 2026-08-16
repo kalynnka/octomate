@@ -360,14 +360,17 @@ async def test_teleport_on_main_only_channel_stays_put() -> None:
     assert channel.sent[-1][2][0]["text"] == "stayed here"
 
 
-async def test_summon_keeps_reception_in_main_for_main_only_channel() -> None:
+async def test_summon_here_keeps_reception_in_main_for_main_only_channel() -> None:
+    # A channel that opens no sub-thread refuses `thread` at the gate rather than
+    # landing the handoff in main behind the model's back, so `here` is the
+    # destination that gets a summon anywhere on one. In a DM it is always allowed.
     octomate = Octomate()
     entry = FakeAgent(
         reception_summon=SummonDecision(
             action="summon",
             agent_id="claude",
             model="opus",
-            destination="thread",
+            destination="here",
             reason="needs work",
             hint="needs work",
             summon="Please investigate this in main.",

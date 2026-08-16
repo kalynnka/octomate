@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """A `teleport` deferred call: fork the running agent's history into a fresh
-    sub-thread of the current chat and resume it there. When a new thread can't be
-    opened (main_only, or already inside a thread), resolve in place and stay put."""
+    sub-thread of the current chat and resume it there. The gate refuses the call
+    outright where no sub-thread can be opened, so what is left here is the open
+    that fails at the moment of asking — then resolve in place and stay put."""
 
     request: TeleportRequest
     origin: ResponseTarget

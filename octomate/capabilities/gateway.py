@@ -223,7 +223,9 @@ class GatewayCapability(AbstractCapability[None]):
         toolset: FunctionToolset[None] = FunctionToolset(id=GATE_TOOLSET_ID)
         toolset.tool(name=SCRY_TOOL_NAME)(self.scry)
         toolset.tool(name=SUMMON_TOOL_NAME, retries=2)(self.summon)
-        toolset.tool(name=TELEPORT_TOOL_NAME)(self.teleport)
+        # `retries` to match its siblings: teleport refuses a surface with no
+        # sub-thread to open, so it needs the same room to be told and correct.
+        toolset.tool(name=TELEPORT_TOOL_NAME, retries=2)(self.teleport)
         toolset.tool(name=SCHEME_TOOL_NAME, retries=2)(self.scheme)
         toolset.tool(name=SEND_TOOL_NAME, retries=2)(self.send)
         if (
@@ -273,6 +275,26 @@ class GatewayCapability(AbstractCapability[None]):
         return address.chat_type != "group"
 
     @property
+    def allow_sub_thread(self) -> bool:
+        """Whether a new sub-thread can be opened from this run's own surface.
+
+        False inside one: every channel that has threads routes them `flat_thread`,
+        so a thread is the last one there is. False too where the platform opens
+        none at all. Both spells that target a sub-thread ask this, and both refuse
+        rather than landing somewhere they did not name.
+
+        True for a gate with no surface to judge by, as `allow_here` is: refusing
+        what it cannot see would block a spell the graph resolves correctly anyway.
+        """
+        address = self.conversation_address
+        if address is None:
+            return True
+        if address.channel_thread_id:
+            return False
+        channel = self.channels.get(address.channel_tentacle_id)
+        return channel is None or channel.surfaces.sub_thread
+
+    @property
     def private_blocked_by(self) -> PrivateBlocker | None:
         """Why `scheme` has nowhere to land from this run, or None when it does.
 
@@ -294,8 +316,13 @@ class GatewayCapability(AbstractCapability[None]):
 
     @property
     def built_in_destinations(self) -> list[Destination]:
-        """The places every run has: this chat, its direct messages, a sub-thread of
-        it. Each is offered only where it can actually be reached."""
+        """The places every run has: this chat, and its direct messages. Each is
+        offered only where it can actually be reached.
+
+        A sub-thread is not among them. `summon` names one through its own
+        `destination` literal, and the spells that resolve a handle — `scheme` and
+        `send` — deliver to a person, so every place they can name is somewhere
+        private."""
         address = self.conversation_address
         if address is None:
             return []
@@ -318,14 +345,6 @@ class GatewayCapability(AbstractCapability[None]):
                     ),
                 )
             )
-        built_in.append(
-            Destination(
-                handle="thread",
-                label="a new sub-thread of this chat",
-                address=address,
-                open_sub_thread=True,
-            )
-        )
         return built_in
 
     async def destinations(self) -> list[Destination]:
@@ -529,10 +548,30 @@ class GatewayCapability(AbstractCapability[None]):
                 route's claim offers. Set it only when the user explicitly asked
                 for a level; omitted, the agent's own default applies.
         """
+        if not self.allow_here and not self.allow_sub_thread:
+            # Both walls at once, so neither refusal below could name a way out.
+            # Checked first for exactly that reason: it is the only case where a
+            # summon has nowhere at all to land, and saying so beats sending the
+            # model between two dead ends.
+            raise ModelRetry(
+                "Nowhere to summon to: a group's main channel cannot be taken over "
+                "in place, and this channel opens no sub-thread. Answer it yourself"
+                + (
+                    f", or `{COMMISSION_TOOL_NAME}` an agent to work it in the "
+                    "background."
+                    if self.commissioning
+                    else "."
+                )
+            )
         if destination == "here" and not self.allow_here:
             raise ModelRetry(
                 "Cannot take over a group's main channel in place. "
                 "Summon into a `thread` instead."
+            )
+        if destination == "thread" and not self.allow_sub_thread:
+            raise ModelRetry(
+                "No sub-thread to summon into: this conversation is already a "
+                "thread, or the channel opens none. Summon `here` instead."
             )
         if agent_id == self.current_agent_id:
             raise ModelRetry(
@@ -556,6 +595,11 @@ class GatewayCapability(AbstractCapability[None]):
         """Continue this conversation yourself in a new sub-thread of the current
         chat; everything said so far comes with you. `hint` is the short
         user-facing thread-starter message."""
+        if not self.allow_sub_thread:
+            raise ModelRetry(
+                "Nowhere to teleport to: this conversation is already a thread, or "
+                "the channel opens none. Carry on here."
+            )
         raise CallDeferred(metadata={"kind": TELEPORT_DEFER_KIND, "hint": hint})
 
     async def scheme(

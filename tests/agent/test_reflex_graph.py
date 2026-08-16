@@ -405,7 +405,7 @@ async def test_reception_mounts_gate_capability() -> None:
     assert scrying.routes == []
     # One list for every spell: this run is a DM, so `dm` is not among them — it is
     # already where it would go — and nothing links this asker to another channel.
-    assert [one.handle for one in scrying.destinations] == ["here", "thread"]
+    assert [one.handle for one in scrying.destinations] == ["here"]
 
 
 async def test_non_stream_reception_presents_only_the_final_output() -> None:
@@ -817,6 +817,51 @@ async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
     assert not isinstance(result, DeferredResult)
     assert result.target.mode == "main"
     assert second.turns[0].address == address
+
+
+async def test_summon_thread_leaves_a_group_main_unclaimed_when_the_open_fails() -> (
+    None
+):
+    """The same failure one surface out. Handing over on a group's main channel pins
+    an owner there, and the ingest gate then answers every later message from anyone
+    without a mention — which is what `allow_here` refuses at the gate. A failed open
+    must not reach it by the back door, so the turn stays where it is."""
+
+    class FailingSubThreadChannel(FakeChannelTentacle):
+        async def start_sub_thread(
+            self, address: ChannelAddress, hint_text: str
+        ) -> ChannelAddress:
+            # Both inks swallow their own send failures, so `start_sub_thread` hands
+            # back the address it was given rather than raising. That is the shape
+            # the node has to recognise.
+            return address
+
+    address = _group_key()
+    entry = FakeAgent(
+        id="other",
+        reception_summon=_summon(agent_id="second", destination="thread"),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    im = FailingSubThreadChannel(config=_two_reception_config(stream=False))
+    target = _source_target(address)
+    thread = _thread(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=thread,
+        ),
+        deps=_summon_deps(im, entry, second),
+    )
+
+    assert not isinstance(result, DeferredResult)
+    assert result.target.address == address
+    assert second.turns == []
+    assert thread.active_agent_tentacle_id is None
 
 
 async def test_reception_returns_deferred_result_on_human_question() -> None:

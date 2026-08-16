@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 
-from pydantic_graph import BaseNode, GraphRunContext
+from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
     ReflexDeps,
     ReflexGraphResult,
+    ReflexResult,
     ReflexState,
 )
 from octomate.schemas.conversation import ChannelAddress
@@ -24,7 +25,7 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React:
+    ) -> React | End[ReflexGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target
@@ -49,6 +50,7 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 chat_id=source_address.chat_id,
                 user_id=source_address.user_id,
                 channel_thread_id=None,
+                shared=source_address.shared,
             )
             target = replace(target, address=target_address)
 
@@ -56,27 +58,41 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # Take over the current conversation in place — no new surface. The
             # allow_here gate already refused this on a group main (Case 1).
             target = replace(target, address=target_address)
-        elif not channel.surfaces.sub_thread:
-            # Nothing to open on this platform — the handoff lands in the main chat.
-            target = replace(target, mode="main")
-        elif not target_address.channel_thread_id:
+        else:
+            # The gate refused this destination unless a sub-thread can be opened
+            # from here, so there is one place to try and no fallback to pick.
             try:
-                target_address = await channel.start_sub_thread(
+                opened = await channel.start_sub_thread(
                     target_address,
                     decision.hint
                     or decision.reason
                     or "Octomate is continuing this request here.",
                 )
-                target = replace(target, address=target_address)
             except Exception:
                 logger.warning(
-                    "Channel %s failed to start a sub-thread; using main target",
+                    "Channel %s raised starting a sub-thread",
                     target.channel_id,
                     exc_info=True,
                 )
-                target = replace(target, mode="main")
-        else:
-            target = replace(target, address=target_address)
+                opened = target_address
+            group_main = target_address.shared and not target_address.channel_thread_id
+            if opened == target_address and group_main:
+                # Nothing moved, and the surface it would fall back to is a group's
+                # main channel. An ink swallows its own send failures, so a failed
+                # open hands back the address it was given rather than raising —
+                # and handing over on that one pins an owner where `allow_here`
+                # refuses to, which then answers every later message from anyone.
+                # Leave the turn with the agent that already replied.
+                logger.warning(
+                    "Channel %s opened no sub-thread for the summon to %s; "
+                    "leaving the turn here rather than claiming a group main",
+                    target.channel_id,
+                    decision.agent_id,
+                )
+                return End(ReflexResult(decision=None, target=source_target))
+            # Either it opened, or it did not and this surface can be taken over in
+            # place — which is a destination the gate would have allowed from here.
+            target = replace(target, address=opened)
 
         state.target = target
         if target.address is not None and state.thread is not None:
