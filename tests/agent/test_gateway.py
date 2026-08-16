@@ -21,6 +21,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.config.users import UserConfig
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
+from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.triage import (
     HERE_TARGET,
     THREAD_TARGET,
@@ -412,13 +413,33 @@ async def test_teleport_refused_where_no_sub_thread_can_be_opened(
 ) -> None:
     """Nothing nests — every channel with threads is `flat_thread` — and some open
     none at all. Refusing beats deferring into a move that never happens and
-    telling the agent it relocated."""
+    telling the agent it relocated. Nobody is linked anywhere else here, so there is
+    no crossing to fall back on and the refusal has nothing to offer instead."""
     capability = _capability(shape, channel=channel)
     assert capability.toolset is not None
     teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
 
-    with pytest.raises(ModelRetry, match="Nowhere to teleport to"):
+    with pytest.raises(ModelRetry, match="nowhere left to land"):
         await teleport(FAKE_CONTEXT, hint="let's move to a thread")
+
+
+def test_each_spell_declares_only_the_places_it_goes() -> None:
+    """The schema is the refusal for a place a spell never goes, so the body never
+    has to be. `here` is where a summon hands over and a send delivers, but a
+    teleport that stayed put would just be the agent carrying on; `dm` is what a
+    scheme means, and a summon into someone's direct messages is a scheme by
+    another name."""
+    capability = _capability()
+    assert capability.toolset is not None
+
+    assert _destination_kinds(capability, SUMMON_TOOL_NAME) == [
+        "channel",
+        "here",
+        "thread",
+    ]
+    assert _destination_kinds(capability, TELEPORT_TOOL_NAME) == ["channel", "thread"]
+    assert _destination_kinds(capability, SCHEME_TOOL_NAME) == ["channel", "dm"]
+    assert _destination_kinds(capability, SEND_TOOL_NAME) == ["channel", "dm", "here"]
 
 
 @pytest.mark.parametrize(
@@ -611,6 +632,57 @@ async def test_summon_across_names_the_agents_the_far_channel_runs(
         )
 
 
+async def test_teleport_crosses_only_out_of_a_conversation_nobody_else_reads(
+    in_memory_engine: None,
+) -> None:
+    """Everything said here travels with a teleport. Out of a group that would
+    republish what other people said into somewhere private on another platform,
+    under this person's name alone — so the crossing is not offered at all, while
+    the group's own sub-thread still is."""
+    shared = await _crossable("shared_main", far_routes=(INKLING_ROUTE,))
+    assert await shared.teleport_handles() == ["thread"]
+
+    private = await _crossable("private_main", far_routes=(INKLING_ROUTE,))
+    assert await private.teleport_handles() == ["thread", "far"]
+
+
+async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(
+    in_memory_engine: None,
+) -> None:
+    """A teleport takes *this* agent with it, so a channel that does not run this
+    one has nowhere to put the conversation it carries."""
+    capability = await _crossable("private_main", far_routes=(CLAUDE_ROUTE,))
+    assert capability.toolset is not None
+    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+
+    with pytest.raises(ModelRetry, match="does not run you \\(inkling\\)"):
+        await teleport(
+            FAKE_CONTEXT, hint="carrying on", destination=ChannelTarget(channel="far")
+        )
+
+
+async def test_teleport_defers_a_crossing_with_the_far_account_named(
+    in_memory_engine: None,
+) -> None:
+    capability = await _crossable("private_main", far_routes=(INKLING_ROUTE,))
+    assert capability.toolset is not None
+    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+
+    with pytest.raises(CallDeferred) as deferred:
+        await teleport(
+            FAKE_CONTEXT, hint="carrying on", destination=ChannelTarget(channel="far")
+        )
+
+    # Two plain strings, which is all the far end needs: `open_dm` takes the account,
+    # and the conversation it names does not exist until that call.
+    assert deferred.value.metadata == {
+        "kind": "teleport",
+        "hint": "carrying on",
+        "channel": "far",
+        "user": "ou_alice",
+    }
+
+
 @pytest.mark.parametrize("destination", [HERE_TARGET, THREAD_TARGET])
 async def test_summon_refused_outright_where_neither_place_exists(
     destination: SummonTarget,
@@ -634,6 +706,27 @@ async def test_summon_refused_outright_where_neither_place_exists(
             summon="Please investigate the failing test.",
         )
     assert capability.decision is None
+
+
+def _destination_kinds(capability: GatewayCapability, tool_name: str) -> list[str]:
+    """The `kind` each of a spell's `destination` variants declares, sorted.
+
+    Read off the tool definition rather than the annotation, because the definition
+    is what the provider is actually handed — and what must stay identical run to
+    run for the prompt cache to hold."""
+    assert capability.toolset is not None
+    schema = capability.toolset.tools[tool_name].tool_def.parameters_json_schema
+    assert isinstance(schema, dict)
+    defs = schema["$defs"]
+    assert isinstance(defs, dict)
+    kinds: list[str] = []
+    for name, definition in defs.items():
+        if not name.endswith("Target") or not isinstance(definition, dict):
+            continue
+        properties = definition["properties"]
+        assert isinstance(properties, dict)
+        kinds.append(str(properties["kind"]["const"]))
+    return sorted(kinds)
 
 
 def _schemas(capability: GatewayCapability) -> dict[str, object]:

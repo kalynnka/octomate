@@ -720,7 +720,7 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
     entry = FakeAgent(
         id="other",
         reception_scheme=SchemeDecision(
-            hint="Picking this up with you.",
+            hint="Taking this private",
             brief="Do it.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",
@@ -776,7 +776,7 @@ async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
     entry = FakeAgent(
         id="other",
         reception_scheme=SchemeDecision(
-            hint="Picking this up with you.",
+            hint="Taking this private",
             brief="Finish the migration write-up.",
             destination=ChannelAddress(
                 channel_tentacle_id="far",
@@ -824,7 +824,7 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
     entry = FakeAgent(
         id="other",
         reception_scheme=SchemeDecision(
-            hint="Picking this up with you.",
+            hint="Taking this private",
             brief="Do it.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",
@@ -1085,6 +1085,89 @@ async def test_a_crossing_stays_put_when_the_far_dm_never_opens(
     assert not isinstance(result, DeferredResult)
     assert result.target.address == _group_key()
     assert second.turns == []
+
+
+async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
+    in_memory_engine: None,
+) -> None:
+    """The same agent, one channel over. A teleport takes its whole history with it,
+    so the fork is what has to land there — not a fresh conversation."""
+    address = _key()  # A DM: nobody else's words travel with this.
+    entry = FakeAgent(
+        id="other",
+        reception_teleport="carrying on over there",
+        reception_teleport_destination="far",
+        reception_output="continued",
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="unused")
+    im = _channel(stream=False)
+    far = FakeChannelTentacle(
+        id="far",
+        config=ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="other", model="test")]
+        ),
+    )
+    target = _source_target(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_summon_deps(im, entry, second, far),
+    )
+
+    assert not isinstance(result, DeferredResult)
+    # Their direct messages there, then a sub-thread inside them — and the agent
+    # resumed against the fork in it.
+    assert far.opened_dms == ["ou_alice"]
+    landed = entry.turns[-1].address
+    assert landed.channel_tentacle_id == "far"
+    assert landed.channel_thread_id == "hint-thread"
+    # And the origin was told, since a crossing posts nothing where it came from.
+    assert im.recording_ink.sent[-1][2][0]["text"] == "carrying on over there"
+
+
+async def test_a_teleport_crossing_that_never_opens_resolves_in_place() -> None:
+    address = _key()
+    entry = FakeAgent(
+        id="other",
+        reception_teleport="carrying on over there",
+        reception_teleport_destination="far",
+        reception_output="stayed here",
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="unused")
+    im = _channel(stream=False)
+    far = FakeChannelTentacle(
+        id="far",
+        ink=RecordingInk(dm_opens=False),
+        config=ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="other", model="test")]
+        ),
+    )
+    target = _source_target(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_summon_deps(im, entry, second, far),
+    )
+
+    # The deferral still has to be resolved or the run hangs on it: stay put and
+    # answer here, with nothing forked anywhere.
+    assert not isinstance(result, DeferredResult)
+    assert entry.turns[-1].address == address
+    assert far.sub_threads == []
 
 
 async def test_reception_returns_deferred_result_on_human_question() -> None:

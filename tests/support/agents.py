@@ -87,7 +87,12 @@ ScriptedOutput = str | DeferredToolRequests
 def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRequests:
     """A reception run's `teleport` deferral — the suspender skips it and the graph
     forks + resumes. On the resumed run (deferred results present) the fake answers
-    normally, so a teleport turn does not loop."""
+    normally, so a teleport turn does not loop.
+
+    `destination` is the handle a model would name, and the metadata is what the gate
+    puts there once it has resolved one: a crossing carries the far channel and the
+    account on it, and `thread` carries neither."""
+    crossing = destination != "thread"
     return DeferredToolRequests(
         calls=[
             ToolCallPart(
@@ -100,7 +105,8 @@ def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRe
             "call_teleport": {
                 "kind": TELEPORT_DEFER_KIND,
                 "hint": hint,
-                "destination": destination,
+                "channel": destination if crossing else "",
+                "user": "ou_alice" if crossing else "",
             }
         },
     )

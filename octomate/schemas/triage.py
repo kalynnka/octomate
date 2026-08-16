@@ -92,6 +92,9 @@ class ChannelTarget(SpellTarget):
 SummonTarget: TypeAlias = Annotated[
     HereTarget | ThreadTarget | ChannelTarget, Field(discriminator="kind")
 ]
+TeleportTarget: TypeAlias = Annotated[
+    ThreadTarget | ChannelTarget, Field(discriminator="kind")
+]
 SchemeTarget: TypeAlias = Annotated[
     DirectTarget | ChannelTarget, Field(discriminator="kind")
 ]

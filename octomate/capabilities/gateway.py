@@ -58,6 +58,7 @@ from octomate.schemas.triage import (
     SummonDecision,
     SummonLanding,
     SummonTarget,
+    TeleportTarget,
     ThreadLanding,
     ThreadTarget,
 )
@@ -131,10 +132,12 @@ direct messages on that channel, for work that belongs where they actually do it
 You yourself are not a valid summon target.
 
 ### `teleport` — relocate yourself
-Move this conversation into a new sub-thread of the current chat that *you* keep
-handling, carrying everything said so far. Use it for multi-step or long-running work
-that deserves its own thread but that you are the right one to do — no other agent
-involved.
+Move this conversation into a new sub-thread that *you* keep handling, carrying
+everything said so far. Use it for multi-step or long-running work that deserves its
+own thread but that you are the right one to do — no other agent involved.
+`destination` is `thread`, a sub-thread of the current chat, unless you name a channel
+id from `scry` to carry it into their direct messages there — offered only from a
+conversation nobody else can read, since everything said here travels with you.
 
 ### `scheme` — take it to the user privately
 Continue one-to-one with the person who asked, in their direct messages: for work that
@@ -456,6 +459,21 @@ class GatewayCapability(AbstractCapability[None]):
             handles.append(THREAD_TARGET.handle)
         return handles + [one.handle for one in await self.crossing_destinations()]
 
+    async def teleport_handles(self) -> list[str]:
+        """Every handle `teleport` can land on. `here` is not among them at any
+        surface — a teleport that stayed put would be the agent simply carrying on.
+
+        A shared surface can only reach its own sub-thread. Everything said here
+        comes with a teleport, and on a crossing that would republish what other
+        people said into somewhere private on another platform, under this person's
+        name alone. A private conversation is already all theirs to move.
+        """
+        handles = [THREAD_TARGET.handle] if self.allow_sub_thread else []
+        address = self.conversation_address
+        if address is not None and address.shared:
+            return handles
+        return handles + [one.handle for one in await self.crossing_destinations()]
+
     def no_landing(self, handle: str, handles: list[str], *, spell: str) -> str:
         """Why `handle` is nowhere `spell` can land, and what is instead.
 
@@ -691,16 +709,52 @@ class GatewayCapability(AbstractCapability[None]):
         )
         return f"Summoning {route.agent_id} ({route.model}) → {destination.handle}."
 
-    async def teleport(self, ctx: RunContext[None], hint: str) -> str:
-        """Continue this conversation yourself in a new sub-thread of the current
-        chat; everything said so far comes with you. `hint` is the short
-        user-facing thread-starter message."""
-        if not self.allow_sub_thread:
+    async def teleport(
+        self,
+        ctx: RunContext[None],
+        hint: str,
+        destination: TeleportTarget = THREAD_TARGET,
+    ) -> str:
+        """Continue this conversation yourself in a new sub-thread; everything said
+        so far comes with you.
+
+        Args:
+            hint: The short, user-facing thread-starter message.
+            destination: Where to carry it, a sub-thread of this chat by default. A
+                channel takes it into their direct messages there, and is offered
+                only out of a conversation nobody else can read — everything said
+                here goes with you, and it is not all yours to move.
+        """
+        handles = await self.teleport_handles()
+        if destination.handle not in handles:
             raise ModelRetry(
-                "Nowhere to teleport to: this conversation is already a thread, or "
-                "the channel opens none. Carry on here."
+                self.no_landing(destination.handle, handles, spell="teleport")
             )
-        raise CallDeferred(metadata={"kind": TELEPORT_DEFER_KIND, "hint": hint})
+        crossing = (
+            await self.destination(destination.handle, spell="teleport")
+            if isinstance(destination, ChannelTarget)
+            else None
+        )
+        if crossing is not None and not any(
+            route.agent_id == self.current_agent_id for route in crossing.routes
+        ):
+            channel = self.channels[crossing.address.channel_tentacle_id]
+            raise ModelRetry(
+                f"{channel.name} does not run you ({self.current_agent_id}), and a "
+                f"teleport takes you with it. Carry on here, or `{SUMMON_TOOL_NAME}` "
+                "an agent it does run."
+            )
+        # Two plain strings rather than the resolved address: the far end is always
+        # somebody's direct messages, which is exactly what `open_dm` takes, and
+        # metadata rides through the deferral untyped either way.
+        raise CallDeferred(
+            metadata={
+                "kind": TELEPORT_DEFER_KIND,
+                "hint": hint,
+                "channel": crossing.address.channel_tentacle_id if crossing else "",
+                "user": crossing.address.user_id if crossing else "",
+            }
+        )
 
     async def scheme(
         self,
