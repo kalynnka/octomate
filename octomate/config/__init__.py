@@ -177,7 +177,7 @@ class OctomateConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_channel_agent_routes(self) -> Self:
         agent_ids = {"inkling"}
-        if self.agents.claude is not None:
+        if self.agents.claude is not None and self.agents.claude.enabled:
             agent_ids.add("claude")
         if self.agents.codex is not None and self.agents.codex.enabled:
             agent_ids.add("codex")
@@ -215,7 +215,7 @@ class OctomateConfig(BaseSettings):
                     )
                     continue
                 if route.agent == "claude":
-                    if self.agents.claude is None:
+                    if self.agents.claude is None or not self.agents.claude.enabled:
                         errors.append(
                             InitErrorDetails(
                                 type=PydanticCustomError(

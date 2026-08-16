@@ -545,6 +545,29 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
     assert error["msg"] == "'sonnet' is not configured in agents.claude.models"
 
 
+def test_channel_claude_route_requires_enabled_agent_config() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate(
+            {
+                "agents": {"claude": {"enabled": False}},
+                "channels": {
+                    "trunkline": None,
+                    "lark": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "agents": [{"agent": "claude", "model": "sonnet"}],
+                    },
+                },
+            },
+        )
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["msg"] == "'claude' does not match a configured agent tentacle"
+
+
 def test_channel_codex_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
         IsolatedTestConfig.model_validate(

@@ -44,6 +44,7 @@ octomate:
     # Agent SDK locally. List it in a channel's `agents:` to make it a summon
     # candidate.
     # claude:
+    #   enabled: true
     #   cwd: .
     #   models: [opus, sonnet, haiku]   # opus => Opus 4.8
     #   # A claim advertises what a route is for and the effort levels it

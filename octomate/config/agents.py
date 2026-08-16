@@ -254,6 +254,10 @@ class ClaudeCodeConfig(BaseModel):
     refused while remote runs are disabled.
     """
 
+    enabled: bool = Field(
+        default=True,
+        description="Whether to register the Claude tentacle when the config block exists.",
+    )
     cwd: str = "."
     models: set[ClaudeCodeModelName] = Field(
         default={"opusplan[1m]", "opus[1m]", "sonnet[1m]", "haiku"},

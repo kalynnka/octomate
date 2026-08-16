@@ -226,7 +226,7 @@ def create_app() -> FastAPI:
         ),
     )
 
-    if (claude_config := config.agents.claude) is not None:
+    if (claude_config := config.agents.claude) is not None and claude_config.enabled:
         octomate.connect(
             ClaudeCodeTentacle(
                 "claude",
