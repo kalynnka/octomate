@@ -560,3 +560,30 @@ async def test_slack_subagents_own_streams_separate_from_parent_and_siblings() -
     assert "test result" in str(second_stream.chunks)
     assert "docs result" in str(third_stream.chunks)
     assert all(stream.stopped for stream in ink.stream_objects)
+
+
+async def test_actions_presented_folds_the_surface_and_sets_waiting() -> None:
+    """An in-process agent bridge presented cards while the run stream is
+    live: the thinking spinner completes and the assistant status says the run
+    waits on the human, instead of both outliving the parked work."""
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+
+    async with channel.feelers.timeline.open(slack_key()) as state:
+        await state.thinking_start()
+        await state.actions_presented()
+
+        # Status hints are fire-and-forget tasks; let them land before looking.
+        assert isinstance(state, slack_output.SlackTimelineState)
+        if state.status_tasks:
+            await asyncio.gather(*state.status_tasks)
+        assert ink.statuses[-1] == slack_output.STATUS_WAITING
+        [plan] = ink.stream_objects
+        assert plan.stopped
+        task_chunks = [
+            chunk
+            for chunks in ink.stream_chunks
+            for chunk in chunks
+            if isinstance(chunk, TaskUpdateChunk)
+        ]
+        assert task_chunks[-1].status == "complete"

@@ -74,6 +74,7 @@ SLACK_TODO_STATUS: dict[TodoStatus, str] = {
 THINKING_TITLE = "Thinking"
 STATUS_THINKING = "Thinking…"
 STATUS_WRITING = "Writing the response…"
+STATUS_WAITING = "Waiting for your input…"
 
 TEXT_STREAM_ROTATE_AFTER = 270.0
 
@@ -332,6 +333,16 @@ class SlackTimelineState(TimelineState):
         step.title = f"Thought for {elapsed}s"
         step.status = "complete"
         await self.emit(step, status="complete")
+
+    async def actions_presented(self) -> None:
+        # The run is parked on a human: fold the in-flight surface, or the
+        # spinner and the last activity status outlive the work they described.
+        # Resuming needs nothing special — the next event opens a fresh plan
+        # and re-sets the status through the same cache this write goes through.
+        await self.finish_text()
+        await self.complete_active_thinking()
+        await self.finish_plan()
+        await self.set_status(STATUS_WAITING)
 
     async def thinking_start(self) -> None:
         await self.complete_active_thinking()
