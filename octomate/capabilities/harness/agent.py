@@ -21,6 +21,7 @@ final `Agent[Deps, list[Row]].stream_events(...)` value is a `FinalResult[list[R
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, cast, overload
 
@@ -71,6 +72,7 @@ from octomate.schemas.segments import (
     Segment,
     TextSegment,
 )
+from octomate.telemetry import react_logfire
 
 
 class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
@@ -213,6 +215,14 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                         # of it has already been emitted.
                         streamed_index: int | None = None
                         streamed_chars = 0
+                        # Pydantic AI times the first chunk (the `chat` span's
+                        # `gen_ai.client.operation.time_to_first_chunk`) but marks
+                        # neither instant on the trace, and has no notion of a last
+                        # one. These two bracket the window a channel timeline renders
+                        # into, so a render that trails the model reads as a gap
+                        # rather than being inferred from the request span.
+                        first_token: float | None = None
+                        streamed_events = 0
 
                         def settle_element(
                             segment: object,
@@ -240,6 +250,10 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                         # FinalResultEvent passes through here; injecting after it is
                         # not supported (todo events inject on the tools node).
                         async for event in wrapped:
+                            if first_token is None:
+                                first_token = time.perf_counter()
+                                react_logfire.info("llm.first_token")
+                            streamed_events += 1
                             if isinstance(event, FinalResultEvent):
                                 final_event = event
                                 continue
@@ -293,6 +307,12 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                                         delta = text[streamed_chars:]
                                         streamed_chars = len(text)
                                         yield ResultTextDeltaEvent(delta=delta)
+                        if first_token is not None:
+                            react_logfire.info(
+                                "llm.last_token",
+                                streamed=time.perf_counter() - first_token,
+                                events=streamed_events,
+                            )
                         if final_event is not None:
                             try:
                                 final = await stream.validate_response_output(
