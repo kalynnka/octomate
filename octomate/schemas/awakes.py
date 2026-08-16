@@ -30,6 +30,7 @@ class UserMessageSignal:
             chat_id=last_event.chat_id,
             user_id=last_event.user_id,
             channel_thread_id=last_event.channel_thread_id,
+            shared=last_event.shared,
         )
 
 

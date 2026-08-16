@@ -135,7 +135,7 @@ class FakeLarkCardsInk:
     dm_chat_id: str | None = None
     opened: list[str] = field(default_factory=list)
 
-    async def open_dm(self, user_id: str) -> str | None:
+    async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         self.opened.append(user_id)
         return self.dm_chat_id
 

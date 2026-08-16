@@ -169,13 +169,17 @@ class Ink(ABC, Generic[MessageT]):
     ) -> IMMessageID | None:
         """Send platform-native message payloads."""
 
-    async def open_dm(self, user_id: str) -> str | None:
+    async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The chat id of this bot's 1:1 with `user_id`, opening it if needed.
 
         `None` when the platform offers nowhere private to reach them — no DM
         surface at all, or an open that failed. Both leave a caller that needs
         privacy with no answer, which is the only distinction it can act on.
         Opening is idempotent wherever it is a call at all.
+
+        `opener` is the first thing the person will read there, for a platform that
+        cannot open a private chat without saying something. `None` from a caller
+        with nothing to say — and ignored by every platform that opens one silently.
         """
         return None
 
@@ -285,6 +289,9 @@ class ChannelTentacle(
         try:
             event = await self.chromo.sip(raw)
             if event is None:
+                # Not necessarily a message: a chromo also returns None for a frame
+                # that was never one — an API echo, a heartbeat. Only it can tell that
+                # from a decode that failed, and it warns for the second already.
                 return
             event.tentacle_id = self.id
             event.self_id = self.self_profile.channel_user_id
@@ -296,25 +303,43 @@ class ChannelTentacle(
                 chat_id=event.chat_id,
                 user_id=event.user_id,
                 channel_thread_id=event.channel_thread_id,
+                shared=event.shared,
             )
             channel_logfire.info(
                 "ingest decoded message",
                 channel_id=self.id,
                 conversation_address=str(address),
                 message_id=str(event.message_id),
+                # What arrived beside what we made of it. The span's own `raw` is the
+                # platform payload where it serializes and the class name where it
+                # does not (Lark hands us an SDK object), so the judgement is recorded
+                # next to it rather than left to be re-derived from a decoded address.
+                raw_type=type(raw).__name__,
+                chat_type=event.chat_type,
+                shared=event.shared,
             )
             thread_message = await self.octomate.thread_manager.record_inbound(event)
-            if (
-                self.config.mention_only
-                and address.chat_type != "dm"
-                and not event.is_at(self.self_profile.channel_user_id)
-            ):
-                logger.debug(
-                    "Channel %s: ignored unmentioned group event %s",
-                    self.id,
-                    address,
+            if self.config.mention_only and event.shared:
+                # Only a surface others can read has to be addressed, and a thread an
+                # agent already owns counts as addressed — its next turn continues
+                # work that is already this agent's. A group main pins no owner, so
+                # there it stays the mention.
+                thread = await self.octomate.thread_manager.ensure(address)
+                addressed = (
+                    event.is_at(self.self_profile.channel_user_id)
+                    or thread.active_agent_tentacle_id is not None
                 )
-                return
+                if not addressed:
+                    # Warn, not debug: this is a message nobody will answer, and the
+                    # level it used to sit at was below the configured one, so the
+                    # drop left nothing behind on the console or in Logfire.
+                    logger.warning(
+                        "Channel %s: ignored an unaddressed %s message %s",
+                        self.id,
+                        event.chat_type,
+                        address,
+                    )
+                    return
             await self.octomate.kick(
                 UserMessageSignal(
                     [event],
@@ -345,17 +370,25 @@ class ChannelTentacle(
                         exc_info=True,
                     )
 
-    async def open_dm(self, user_id: str) -> ChannelAddress | None:
+    async def open_dm(
+        self, user_id: str, opener: str | None = None
+    ) -> ChannelAddress | None:
         """The 1:1 conversation with `user_id`, opening it if the platform needs to.
 
         `None` when this channel has nowhere private to reach them; a channel opts
         in by declaring `surfaces.direct_message` and giving its ink an `open_dm`.
         The returned address may already carry a history, which is why a `teleport`
         there lands in a fresh thread or stays put rather than forking onto it.
+
+        `opener` is the first thing the person will read there, passed by a caller
+        that is about to move a whole turn in — and empty from one that only wants
+        somewhere to deliver a message. A channel that can only be *run* inside a
+        thread starts one from it; most have nothing to do with it, since the
+        conversation they hand back can be posted to as it is.
         """
         if not user_id:
             return None
-        chat_id = await self.ink.open_dm(user_id)
+        chat_id = await self.ink.open_dm(user_id, opener)
         if chat_id is None:
             return None
         return ChannelAddress(

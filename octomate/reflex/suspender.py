@@ -10,7 +10,12 @@ from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import ResponseTargetMode, RunName, SummonDecision
+from octomate.schemas.triage import (
+    CrossingLanding,
+    ResponseTargetMode,
+    RunName,
+    SummonDecision,
+)
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channels.base import ChannelTentacle
 
@@ -22,6 +27,10 @@ class TeleportRequest:
 
     tool_call_id: str
     hint: str
+    # Where it goes, when that is not a sub-thread of the chat it is already in. The
+    # gate refused a channel this agent does not run and one that opens no
+    # sub-thread, so the node has a place to open and no fallback to choose.
+    crossing: CrossingLanding | None = None
 
 
 @dataclass
@@ -55,9 +64,23 @@ class HumanReviewSuspender:
         for call in requests.calls:
             meta = requests.metadata.get(call.tool_call_id, {})
             if meta.get("kind") == TELEPORT_DEFER_KIND:
+                # The gate names the far channel and the account on it as two plain
+                # strings; the address is built back here, at the boundary, so the
+                # node is handed a typed landing rather than a metadata dict.
+                far = str(meta.get("channel") or "")
                 self.teleport = TeleportRequest(
                     tool_call_id=call.tool_call_id,
                     hint=str(meta.get("hint") or ""),
+                    crossing=CrossingLanding(
+                        address=ChannelAddress(
+                            channel_tentacle_id=far,
+                            chat_type="dm",
+                            chat_id="",
+                            user_id=str(meta.get("user") or ""),
+                        )
+                    )
+                    if far
+                    else None,
                 )
                 return None
         with reflex_logfire.span(

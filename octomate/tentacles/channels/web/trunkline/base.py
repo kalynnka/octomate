@@ -604,6 +604,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
                 chat_id=event.chat_id,
                 user_id=event.user_id,
                 channel_thread_id=event.channel_thread_id,
+                shared=event.shared,
             ),
             project=self.chosen_project(directive.project),
         )

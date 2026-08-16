@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_graph import BaseNode, GraphRunContext
 
+from octomate.reflex.crossing import open_crossing
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
     ReflexDeps,
@@ -22,8 +23,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """A `teleport` deferred call: fork the running agent's history into a fresh
-    sub-thread of the current chat and resume it there. When a new thread can't be
-    opened (main_only, or already inside a thread), resolve in place and stay put."""
+    sub-thread and resume it there — of the current chat, or of this person's direct
+    messages on another channel when the gate resolved one. The gate refuses the call
+    outright where no sub-thread can be opened, so what is left here is the open
+    that fails at the moment of asking — then resolve in place and stay put."""
 
     request: TeleportRequest
     origin: ResponseTarget
@@ -42,18 +45,30 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         origin_address = origin.address
         hint = self.request.hint or "Octomate is continuing this request here."
 
-        channel = ctx.deps.channel(origin)
         new_target = origin
-        if channel.surfaces.sub_thread and not origin_address.channel_thread_id:
-            try:
-                new_address = await channel.start_sub_thread(origin_address, hint)
-                new_target = replace(origin, address=new_address, mode="sub")
-            except Exception:
-                logger.warning(
-                    "Channel %s failed to open a teleport sub-thread; staying put",
-                    origin.channel_id,
-                    exc_info=True,
+        crossing = self.request.crossing
+        if crossing is not None:
+            crossed = await open_crossing(ctx, crossing, origin_address, hint)
+            if crossed is not None:
+                far = ctx.deps.channel(crossed.channel_tentacle_id)
+                new_target = ResponseTarget(
+                    channel_id=crossed.channel_tentacle_id,
+                    address=crossed,
+                    thread_strategy=far.thread_strategy,
+                    mode="sub",
                 )
+        else:
+            channel = ctx.deps.channel(origin)
+            if channel.surfaces.sub_thread and not origin_address.channel_thread_id:
+                try:
+                    new_address = await channel.start_sub_thread(origin_address, hint)
+                    new_target = replace(origin, address=new_address, mode="sub")
+                except Exception:
+                    logger.warning(
+                        "Channel %s failed to open a teleport sub-thread; staying put",
+                        origin.channel_id,
+                        exc_info=True,
+                    )
 
         results = DeferredToolResults(
             calls={self.request.tool_call_id: "Continuing the conversation here."}

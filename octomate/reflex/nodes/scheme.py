@@ -13,7 +13,7 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.triage import SchemeDecision, SummonDecision
+from octomate.schemas.triage import HereLanding, SchemeDecision, SummonDecision
 from octomate.telemetry import reflex_logfire
 
 logger = logging.getLogger(__name__)
@@ -43,13 +43,16 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         origin = self.origin
         if origin.address is None:
             raise ValueError("Scheme requires a resolved origin")
-        origin_address = origin.address
         # Where the gate resolved this to: this channel's direct messages, or another
         # channel's, with the account there taken from the identity registry.
         target = self.request.destination
         channel = ctx.deps.channel(target.channel_tentacle_id)
 
-        dm_address = await channel.open_dm(target.user_id)
+        # The hint opens it, the way a summon's does the sub-thread it lands in: on a
+        # channel that can only be run inside a thread it is the message that thread
+        # hangs from, and it is written to be read. The brief is not — that goes to
+        # whoever answers, as their prompt.
+        dm_address = await channel.open_dm(target.user_id, self.request.hint)
         if dm_address is None:
             # The gate refused the cases we can know in advance, so this is the platform
             # failing at the moment of asking. Nothing has moved: leave the turn where
@@ -71,21 +74,6 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             receiver,
             dm_thread.active_model if receiver else None,
         )
-        # Say so where it came from: a move into a DM posts nothing in the origin chat,
-        # so without this the group is left watching silence while the work continues
-        # somewhere it cannot see. (`summon thread` announces itself by opening the
-        # thread with the same hint.)
-        try:
-            await ctx.deps.channel(origin).feelers.markdown.present(
-                origin_address, self.request.hint
-            )
-        except Exception:
-            logger.warning(
-                "Channel %s failed to announce the move to a DM",
-                origin.channel_id,
-                exc_info=True,
-            )
-
         state.run_name = "summon"
         state.thread = dm_thread
         state.target = ResponseTarget(
@@ -98,7 +86,7 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             action="summon",
             agent_id=resolved.agent,
             model=resolved.model,
-            destination="here",
+            destination=HereLanding(),
             reason="Continuing with this user privately.",
             hint=self.request.hint,
             summon=self.request.brief,

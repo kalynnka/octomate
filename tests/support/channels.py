@@ -94,6 +94,11 @@ class RawMessage(TypedDict, total=False):
     user_id: str
     chat_id: str
     chat_type: ChatType
+    thread_id: NotRequired[str]
+    # Whether others can read the surface. Defaults to `chat_type == "group"`, which
+    # is every case but the one a real channel has to say out loud: a thread, whose
+    # `chat_type` no longer tells a group's from a DM's.
+    shared: NotRequired[bool]
     segments: NotRequired[list[MessageSegment]]
 
 
@@ -131,6 +136,9 @@ class RecordingInk(Ink[NativeMessage]):
     )
     downloads: dict[str, DownloadedImage] = field(default_factory=dict)
     opened_dms: list[str] = field(default_factory=list)
+    # What each open was asked to say first, in step with `opened_dms` — None from a
+    # caller that only wants somewhere to deliver a message.
+    dm_openers: list[str | None] = field(default_factory=list)
     # Whether this platform will hand back a private chat; False is the open
     # failing at the moment of asking.
     dm_opens: bool = True
@@ -144,11 +152,12 @@ class RecordingInk(Ink[NativeMessage]):
             UserProfile(channel_user_id=user_id, name=f"user-{user_id}"),
         )
 
-    async def open_dm(self, user_id: str) -> str | None:
+    async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         # A user's own id is their private chat id, as on Lark and NapCat — and what
         # an inbound private message decodes to, so a DM seeded by one is the same
         # thread the channel's `open_dm` builds.
         self.opened_dms.append(user_id)
+        self.dm_openers.append(opener)
         return user_id if self.dm_opens else None
 
     async def upload_media(self, data: bytes) -> str | None:
@@ -185,6 +194,8 @@ class FakeChromo(Chromo[RawMessage, NativeMessage]):
             user_id=raw.get("user_id", "u1"),
             chat_id=raw.get("chat_id", "c1"),
             chat_type=chat_type,
+            channel_thread_id=raw.get("thread_id"),
+            shared=raw.get("shared", chat_type == "group"),
             segments=raw.get("segments", []),
         )
 
@@ -250,6 +261,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     consumed: list[tuple[ChannelAddress, IMMessageID | None]]
     sub_threads: list[tuple[ChannelAddress, str]]
     opened_dms: list[str]
+    dm_openers: list[str | None]
 
     def __init__(
         self,
@@ -276,6 +288,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.consumed = []
         self.sub_threads = []
         self.opened_dms = self.recording_ink.opened_dms
+        self.dm_openers = self.recording_ink.dm_openers
         self.self_profile = self.recording_ink.self_profile
         self.feelers.timeline = RecordingTimelineFeeler(
             self.feelers.timeline, self.consumed
@@ -463,6 +476,6 @@ class FakeOAuthInk:
     dm_chat_id: str | None = None
     opened: list[str] = field(default_factory=list)
 
-    async def open_dm(self, user_id: str) -> str | None:
+    async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         self.opened.append(user_id)
         return self.dm_chat_id

@@ -58,6 +58,10 @@ SlackQuestionActionBodyAdapter = TypeAdapter(SlackQuestionActionBody)
 
 IGNORED_SUBTYPES = frozenset(
     {
+        # The root Slack writes when someone opens the assistant pane or starts a new
+        # chat in it. It carries the thread's title, never the person's own words, and
+        # `assistant_thread_started` already created the thread it heads.
+        "assistant_app_thread",
         "bot_message",
         "message_changed",
         "message_deleted",
@@ -379,12 +383,35 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             chat_id=channel_id,
             user_id=user_id,
             channel_thread_id=thread_ts,
+            # An assistant pane is a chat inside the bot's own DM channel: a thread
+            # by type, and nobody but its one user can read it.
+            shared=False,
         )
         with sqlalchemy_materia():
             # Pre-create the thread that owns this assistant chat's conversations;
             # the first message would otherwise create it on ingest.
             await self.octomate.thread_manager.ensure(address)
         logger.info("Channel %s: ensured Slack assistant thread %s", self.id, address)
+
+    async def open_dm(
+        self, user_id: str, opener: str | None = None
+    ) -> ChannelAddress | None:
+        """Their direct messages here — as a thread inside them when a turn is moving
+        in, and as the channel itself when a message is only being delivered.
+
+        Slack renders a run by streaming, and `chat.startStream` takes a `thread_ts`
+        that is not optional, so the channel root is somewhere this bot can post but
+        never stream: a turn landing there dies on `invalid_thread_ts`. A Slack thread
+        hangs off a message, and `opener` is the message — which is why a caller with
+        nothing to say gets the root, where posting still works fine.
+
+        The pane an inbound DM arrives in is already a thread, so this only bites
+        where Octomate opens the conversation itself.
+        """
+        address = await super().open_dm(user_id, opener)
+        if address is None or not opener:
+            return address
+        return await self.start_sub_thread(address, opener)
 
     async def start_sub_thread(
         self,

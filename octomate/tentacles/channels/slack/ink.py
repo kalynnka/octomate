@@ -71,7 +71,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
             title=profile.get("title") or None,
         )
 
-    async def open_dm(self, user_id: str) -> str | None:
+    async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The `D…` channel id of the bot's 1:1 with `user_id`.
 
         `conversations.open` is idempotent — it returns the existing DM when there is

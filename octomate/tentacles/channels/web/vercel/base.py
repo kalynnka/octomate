@@ -382,6 +382,7 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
                 chat_id=event.chat_id,
                 user_id=event.user_id,
                 channel_thread_id=event.channel_thread_id,
+                shared=event.shared,
             )
         )
         await self.claim_selected_route(thread, body.id, selected_model)

@@ -54,6 +54,14 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
         default_factory=list
     )
     uploads: list[tuple[str, bytes, str, str | None]] = field(default_factory=list)
+    opened_dms: list[str] = field(default_factory=list)
+    # Whether this workspace hands back a private chat; False is the open failing at
+    # the moment of asking, usually a missing `im:write` scope.
+    dm_opens: bool = True
+
+    async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
+        self.opened_dms.append(user_id)
+        return f"D-{user_id}" if self.dm_opens else None
 
     async def inspect(self) -> UserProfile:
         return UserProfile(channel_user_id="bot", name="Bot")

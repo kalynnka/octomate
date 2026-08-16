@@ -306,11 +306,6 @@ def batch_requests() -> DeferredToolRequests:
     )
 
 
-def plain_deferred_requests() -> ChannelScript:
-    """Only the terminal result, carrying deferred tool requests."""
-    return [AgentRunResultEvent(AgentRunResult(batch_requests()))]
-
-
 def action_batch(
     *,
     batch_id: str = "batch-1",

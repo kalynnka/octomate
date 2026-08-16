@@ -61,7 +61,19 @@ from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import Claim, SchemeDecision, SummonDecision
+from octomate.schemas.triage import (
+    DIRECT_TARGET,
+    HERE_TARGET,
+    THREAD_TARGET,
+    ChannelTarget,
+    Claim,
+    CrossingLanding,
+    HereLanding,
+    SchemeDecision,
+    SchemeTarget,
+    SummonDecision,
+    SummonTarget,
+)
 from octomate.tentacles.agents.base import AgentTentacle
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.channels.base import ChannelOutput
@@ -75,7 +87,12 @@ ScriptedOutput = str | DeferredToolRequests
 def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRequests:
     """A reception run's `teleport` deferral — the suspender skips it and the graph
     forks + resumes. On the resumed run (deferred results present) the fake answers
-    normally, so a teleport turn does not loop."""
+    normally, so a teleport turn does not loop.
+
+    `destination` is the handle a model would name, and the metadata is what the gate
+    puts there once it has resolved one: a crossing carries the far channel and the
+    account on it, and `thread` carries neither."""
+    crossing = destination != "thread"
     return DeferredToolRequests(
         calls=[
             ToolCallPart(
@@ -88,7 +105,8 @@ def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRe
             "call_teleport": {
                 "kind": TELEPORT_DEFER_KIND,
                 "hint": hint,
-                "destination": destination,
+                "channel": destination if crossing else "",
+                "user": "ou_alice" if crossing else "",
             }
         },
     )
@@ -109,6 +127,41 @@ def _gate_tool(
     if gate is None or gate.toolset is None:
         raise AssertionError("a gate decision requires a mounted gate toolset")
     return gate.toolset.tools[tool_name].function
+
+
+def scheme_target(
+    decision: SchemeDecision, capabilities: Sequence[AgentCapability[None]] | None
+) -> SchemeTarget:
+    """What a model would have named to produce `decision`'s destination.
+
+    Their direct messages on the channel the run is already on, or the channel it
+    names for anywhere else — the same conversion the gate runs forwards.
+    """
+    gate = next(
+        capability
+        for capability in capabilities or []
+        if isinstance(capability, GatewayCapability)
+    )
+    here = gate.conversation_address
+    far = decision.destination.channel_tentacle_id
+    if here is not None and far == here.channel_tentacle_id:
+        return DIRECT_TARGET
+    return ChannelTarget(channel=far)
+
+
+def summon_target(decision: SummonDecision) -> SummonTarget:
+    """What a model would have named to produce `decision`'s landing.
+
+    A fake configured with a decision still calls the *real* summon tool, which
+    takes the target and resolves the landing itself — so a replay has to run the
+    conversion backwards.
+    """
+    landing = decision.destination
+    if isinstance(landing, CrossingLanding):
+        return ChannelTarget(channel=landing.address.channel_tentacle_id)
+    if isinstance(landing, HereLanding):
+        return HERE_TARGET
+    return THREAD_TARGET
 
 
 @dataclass
@@ -229,8 +282,12 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 cast(RunContext[None], None),
                 hint=scheme_decision.hint,
                 brief=scheme_decision.brief,
+                destination=scheme_target(scheme_decision, capabilities),
             )
-            return AgentRunResult("")
+            # And a closing line, like a model does: `scheme` is an ordinary tool
+            # call, so the run carries on and writes a reply after it. Set
+            # `reception_output=""` for one that moves without a word.
+            return AgentRunResult(self.reception_output)
         summon_decision = self.reception_summon
         if summon_decision is not None:
             summon = next(
@@ -250,7 +307,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 cast(RunContext[None], None),
                 agent_id=summon_decision.agent_id,
                 model=summon_decision.model,
-                destination=summon_decision.destination,
+                destination=summon_target(summon_decision),
                 reason=summon_decision.reason,
                 hint=summon_decision.hint,
                 summon=summon_decision.summon,
@@ -305,6 +362,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                     cast(RunContext[None], None),
                     hint=scheme_decision.hint,
                     brief=scheme_decision.brief,
+                    destination=scheme_target(scheme_decision, capabilities),
                 )
                 yield AgentRunResultEvent(AgentRunResult(""))
 
@@ -333,7 +391,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                     cast(RunContext[None], None),
                     agent_id=summon_decision.agent_id,
                     model=summon_decision.model,
-                    destination=summon_decision.destination,
+                    destination=summon_target(summon_decision),
                     reason=summon_decision.reason,
                     hint=summon_decision.hint,
                     summon=summon_decision.summon,

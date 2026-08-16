@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import ClassVar, cast
+from typing import ClassVar, Literal, cast
 
 import pytest
 from pydantic import ValidationError
@@ -16,95 +16,111 @@ from octomate.capabilities.gateway import (
     GatewayCapability,
     PrivateBlocker,
 )
+from octomate.config import AgentModelConfig, ChannelConfig
 from octomate.config.agents import AgentRouteModelName
-from octomate.schemas.conversation import ChannelAddress
+from octomate.config.users import UserConfig
+from octomate.managers.user import UserManager
+from octomate.schemas.conversation import ChannelAddress, ChatType
+from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.triage import (
+    HERE_TARGET,
+    THREAD_TARGET,
     AgentRoute,
+    ChannelTarget,
     Claim,
+    CrossingLanding,
+    HereLanding,
     SchemeDecision,
     SummonDecision,
-    SummonDestination,
+    SummonLanding,
+    SummonTarget,
+    ThreadLanding,
 )
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.channels.base import ChannelSurfaces
+from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 
 FAKE_CONTEXT = cast(RunContext[None], None)
 
 
 CLAUDE_CLAIM = Claim(ability="coding work", efforts=("medium", "high"))
+CLAUDE_ROUTE = AgentRoute(agent_id="claude", model="opus", claim=CLAUDE_CLAIM)
+INKLING_ROUTE = AgentRoute(
+    agent_id="inkling",
+    model="deepseek:deepseek-chat",
+    claim=Claim(ability="current agent", efforts=("low", "medium", "high")),
+)
 
 
 class _NoDmChannel(FakeChannelTentacle):
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
 
 
-def _capability(
-    allow_here: bool = True,
-    private_blocked_by: PrivateBlocker | None = None,
-) -> GatewayCapability:
-    """A gate that allows `summon here` for `allow_here`, and whose `scheme` is
-    refused for `private_blocked_by` or reachable for None.
+class _NoSubThreadChannel(FakeChannelTentacle):
+    surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(direct_message=True)
 
-    Both are derived from the channel's surfaces and the run's own address, so ask
-    for the pair you want and get the channel and address producing it — the closing
-    asserts keep the two ends honest. `test_reflex_graph` covers the derivations."""
+
+# The four surfaces a run can sit on, as (chat_type, shared, channel_thread_id).
+# They are not three free booleans: a thread overwrites the type of the chat around
+# it, and a shared surface with no thread is a group's main channel. So a gate can
+# never both take over in place and open a sub-thread from the same address unless
+# the surface is private — which is why the summon tests below sit on a group main.
+Shape = Literal["private_main", "private_thread", "shared_main", "shared_thread"]
+SHAPES: dict[Shape, tuple[ChatType, bool, str]] = {
+    "private_main": ("dm", False, ""),
+    "private_thread": ("thread", False, "t-1"),
+    "shared_main": ("group", True, ""),
+    "shared_thread": ("thread", True, "t-1"),
+}
+
+
+def _capability(
+    shape: Shape = "shared_main",
+    *,
+    channel: FakeChannelTentacle | None = None,
+    user_id: str = "alice",
+) -> GatewayCapability:
+    """A gate answering from `shape`, on a channel with every surface unless one is
+    passed. `test_reflex_graph` covers how the real channels reach each shape."""
+    chat_type, shared, thread_id = SHAPES[shape]
     capability = GatewayCapability(
-        routes=[
-            AgentRoute(
-                agent_id="claude",
-                model="opus",
-                claim=CLAUDE_CLAIM,
-            ),
-            AgentRoute(
-                agent_id="inkling",
-                model="deepseek:deepseek-chat",
-                claim=Claim(
-                    ability="current agent",
-                    efforts=("low", "medium", "high"),
-                ),
-            ),
-        ],
+        channel_routes={"im": [CLAUDE_ROUTE, INKLING_ROUTE]},
         current_agent_id="inkling",
-        channels={
-            "im": (
-                _NoDmChannel()
-                if private_blocked_by == "no_surface"
-                else FakeChannelTentacle()
-            )
-        },
+        channels={"im": channel or FakeChannelTentacle()},
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
-            # A group's main channel is the one place `summon here` is refused.
-            chat_type=(
-                "dm"
-                if private_blocked_by == "already_private"
-                else "thread"
-                if allow_here
-                else "group"
-            ),
+            chat_type=chat_type,
             chat_id="room",
-            channel_thread_id="t-1"
-            if allow_here and private_blocked_by is None
-            else "",
-            user_id="" if private_blocked_by == "no_user" else "alice",
+            channel_thread_id=thread_id,
+            user_id=user_id,
+            shared=shared,
         ),
     )
-    assert capability.allow_here == allow_here
-    assert capability.private_blocked_by == private_blocked_by
     return capability
+
+
+def _blocked(reason: PrivateBlocker) -> GatewayCapability:
+    """A gate whose `scheme` has nowhere to land, each wall reached by the surface
+    or the channel that actually produces it rather than by asking for the wall."""
+    if reason == "no_surface":
+        return _capability(channel=_NoDmChannel())
+    if reason == "already_private":
+        return _capability("private_main")
+    return _capability(user_id="")
 
 
 def _decision(
     agent_id: str = "claude",
     model: AgentRouteModelName = "opus",
-    destination: SummonDestination = "thread",
+    destination: SummonLanding | None = None,
     effort: ThinkingEffort | None = None,
 ) -> SummonDecision:
     return SummonDecision(
         action="summon",
         agent_id=agent_id,
         model=model,
-        destination=destination,
+        destination=destination or ThreadLanding(),
         effort=effort,
         reason="needs coding",
         hint="Working on it",
@@ -140,7 +156,17 @@ def test_summon_decision_requires_concrete_model(model: str | None) -> None:
 
 
 def test_summon_decision_defaults_to_thread_destination() -> None:
-    assert _decision().destination == "thread"
+    assert (
+        SummonDecision(
+            action="summon",
+            agent_id="claude",
+            model="opus",
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+        ).destination
+        == ThreadLanding()
+    )
 
 
 async def test_summon_capability_accepts_exact_route() -> None:
@@ -152,7 +178,7 @@ async def test_summon_capability_accepts_exact_route() -> None:
         FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
-        destination="thread",
+        destination=THREAD_TARGET,
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
@@ -175,7 +201,8 @@ def test_gate_instruction_explains_each_spell_in_plain_words() -> None:
 
 
 async def test_scry_tool_returns_other_routes() -> None:
-    capability = _capability()
+    # A shared thread: the one shape that offers both built-ins at once.
+    capability = _capability("shared_thread")
     assert capability.toolset is not None
     scry = capability.toolset.tools[SCRY_TOOL_NAME].function
 
@@ -189,8 +216,10 @@ async def test_scry_tool_returns_other_routes() -> None:
         )
     ]
     # The same list every spell resolves against — built-ins, then anywhere the
-    # asker is registered. This run is a group thread, so all three are offered.
-    assert [one.handle for one in scrying.destinations] == ["here", "dm", "thread"]
+    # asker is registered. A sub-thread is not among them: `summon` names one
+    # through its own literal, and a resolved handle is always somewhere a person
+    # can be delivered to.
+    assert [one.handle for one in scrying.destinations] == ["here", "dm"]
 
 
 async def test_summon_capability_rejects_self_summon() -> None:
@@ -203,7 +232,7 @@ async def test_summon_capability_rejects_self_summon() -> None:
             FAKE_CONTEXT,
             agent_id="inkling",
             model="opus",
-            destination="thread",
+            destination=THREAD_TARGET,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -230,7 +259,7 @@ async def test_summon_tool_retries_invalid_route(agent_id: str, model: str) -> N
             FAKE_CONTEXT,
             agent_id=agent_id,
             model=model,
-            destination="thread",
+            destination=THREAD_TARGET,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -246,7 +275,7 @@ async def test_summon_carries_a_claimed_effort() -> None:
         FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
-        destination="thread",
+        destination=THREAD_TARGET,
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
@@ -266,7 +295,7 @@ async def test_summon_refuses_an_unclaimed_effort() -> None:
             FAKE_CONTEXT,
             agent_id="claude",
             model="opus",
-            destination="thread",
+            destination=THREAD_TARGET,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -275,8 +304,39 @@ async def test_summon_refuses_an_unclaimed_effort() -> None:
     assert capability.decision is None
 
 
+@pytest.mark.parametrize(
+    ("shared", "blocked_by"),
+    [(True, None), (False, "already_private")],
+)
+async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
+    shared: bool,
+    blocked_by: PrivateBlocker | None,
+) -> None:
+    """Both of these are `chat_type="thread"`: a thread in a group channel, and a
+    Slack assistant pane or Lark p2p topic. Only one has somewhere private left to
+    move to — reading the type alone would offer `scheme` a surface beside the one
+    it is already in, under whatever agent owns that."""
+    capability = GatewayCapability(
+        channel_routes={},
+        current_agent_id="inkling",
+        channels={"im": FakeChannelTentacle()},
+        conversation_address=ChannelAddress(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            user_id="alice",
+            channel_thread_id="t-1",
+            shared=shared,
+        ),
+    )
+
+    assert capability.private_blocked_by == blocked_by
+    # A thread pins an owner either way, so taking one over in place is always fine.
+    assert capability.allow_here is True
+
+
 async def test_summon_here_refused_when_disallowed() -> None:
-    capability = _capability(allow_here=False)
+    capability = _capability("shared_main")
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
@@ -285,7 +345,7 @@ async def test_summon_here_refused_when_disallowed() -> None:
             FAKE_CONTEXT,
             agent_id="claude",
             model="opus",
-            destination="here",
+            destination=HERE_TARGET,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -294,7 +354,7 @@ async def test_summon_here_refused_when_disallowed() -> None:
 
 
 async def test_summon_here_allowed_on_bounded_surface() -> None:
-    capability = _capability(allow_here=True)
+    capability = _capability("shared_thread")
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
@@ -302,13 +362,13 @@ async def test_summon_here_allowed_on_bounded_surface() -> None:
         FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
-        destination="here",
+        destination=HERE_TARGET,
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
     )
 
-    assert capability.decision == _decision(destination="here")
+    assert capability.decision == _decision(destination=HereLanding())
 
 
 async def test_summon_tool_records_decision() -> None:
@@ -320,7 +380,7 @@ async def test_summon_tool_records_decision() -> None:
         FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
-        destination="thread",
+        destination=THREAD_TARGET,
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
@@ -339,6 +399,336 @@ async def test_teleport_defers_the_run() -> None:
         await teleport(FAKE_CONTEXT, hint="let's move to a thread")
 
 
+@pytest.mark.parametrize(
+    ("shape", "channel"),
+    [
+        ("private_thread", None),
+        ("shared_thread", None),
+        ("shared_main", _NoSubThreadChannel()),
+    ],
+)
+async def test_teleport_refused_where_no_sub_thread_can_be_opened(
+    shape: Shape,
+    channel: FakeChannelTentacle | None,
+) -> None:
+    """Nothing nests — every channel with threads is `flat_thread` — and some open
+    none at all. Refusing beats deferring into a move that never happens and
+    telling the agent it relocated. Nobody is linked anywhere else here, so there is
+    no crossing to fall back on and the refusal has nothing to offer instead."""
+    capability = _capability(shape, channel=channel)
+    assert capability.toolset is not None
+    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+
+    with pytest.raises(ModelRetry, match="nowhere left to land"):
+        await teleport(FAKE_CONTEXT, hint="let's move to a thread")
+
+
+def test_each_spell_declares_only_the_places_it_goes() -> None:
+    """The schema is the refusal for a place a spell never goes, so the body never
+    has to be. `here` is where a summon hands over and a send delivers, but a
+    teleport that stayed put would just be the agent carrying on; `dm` is what a
+    scheme means, and a summon into someone's direct messages is a scheme by
+    another name."""
+    capability = _capability()
+    assert capability.toolset is not None
+
+    assert _destination_kinds(capability, SUMMON_TOOL_NAME) == [
+        "channel",
+        "here",
+        "thread",
+    ]
+    assert _destination_kinds(capability, TELEPORT_TOOL_NAME) == ["channel", "thread"]
+    assert _destination_kinds(capability, SCHEME_TOOL_NAME) == ["channel", "dm"]
+    assert _destination_kinds(capability, SEND_TOOL_NAME) == ["channel", "dm", "here"]
+
+
+@pytest.mark.parametrize(
+    ("shape", "channel"),
+    [
+        # Already in one — nothing nests.
+        ("shared_thread", None),
+        # A main, but on a channel that opens none at all.
+        ("private_main", _NoSubThreadChannel()),
+    ],
+)
+async def test_summon_thread_refused_where_no_sub_thread_can_be_opened(
+    shape: Shape,
+    channel: FakeChannelTentacle | None,
+) -> None:
+    capability = _capability(shape, channel=channel)
+    assert capability.toolset is not None
+    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+
+    with pytest.raises(ModelRetry, match="No sub-thread to open here"):
+        await summon(
+            FAKE_CONTEXT,
+            agent_id="claude",
+            model="opus",
+            destination=THREAD_TARGET,
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+        )
+    assert capability.decision is None
+
+
+async def _crossable(
+    shape: Shape = "shared_main",
+    *,
+    far_channel: FakeChannelTentacle | None = None,
+    far_routes: tuple[AgentRoute, ...] = (CLAUDE_ROUTE,),
+) -> GatewayCapability:
+    """A gate on `shape` whose asker is also registered on `far`, where `far_routes`
+    run.
+
+    The registry is the real one — a crossing exists precisely because two accounts
+    are linked, and faking that link would fake the thing under test. What `far` runs
+    is its own config, so the routes drive both what it advertises and who the gate
+    will let a spell name there.
+    """
+    users = UserManager(
+        {
+            "luhui": UserConfig.model_validate(
+                {
+                    "profiles": {
+                        "im": {"channel_user_id": "alice"},
+                        "far": {"channel_user_id": "ou_alice"},
+                    }
+                }
+            )
+        }
+    )
+    await users.reconcile()
+    capability = _capability(shape)
+    capability.users = users
+    capability.user_profile = await users.ensure_profile(
+        "im", UserProfile(channel_user_id="alice")
+    )
+    capability.channel_routes = {
+        **capability.channel_routes,
+        "far": list(far_routes),
+    }
+    capability.channels = {
+        "im": FakeChannelTentacle(),
+        "far": far_channel
+        or FakeChannelTentacle(
+            id="far",
+            config=ChannelConfig(
+                type="fake",
+                agents=[
+                    AgentModelConfig(agent=route.agent_id, model=route.model)
+                    for route in far_routes
+                ],
+            ),
+        ),
+    }
+    capability.agents = {
+        route.agent_id: FakeAgent(id=route.agent_id) for route in far_routes
+    }
+    return capability
+
+
+async def test_summon_crosses_to_a_sub_thread_of_their_dms_elsewhere(
+    in_memory_engine: None,
+) -> None:
+    """A group's main channel refuses a handoff in place and opens no sub-thread of
+    its own — but the asker is on another channel that does. The landing names that
+    channel and the account on it; the chat id is still empty, because which
+    conversation it is only exists once the channel opens it."""
+    capability = await _crossable()
+    assert capability.toolset is not None
+    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+
+    await summon(
+        FAKE_CONTEXT,
+        agent_id="claude",
+        model="opus",
+        destination=ChannelTarget(channel="far"),
+        reason="needs coding",
+        hint="Working on it",
+        summon="Please investigate the failing test.",
+    )
+
+    assert capability.decision is not None
+    landing = capability.decision.destination
+    assert isinstance(landing, CrossingLanding)
+    assert landing.address.channel_tentacle_id == "far"
+    assert landing.address.user_id == "ou_alice"
+    assert landing.address.chat_id == ""
+
+
+async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
+    in_memory_engine: None,
+) -> None:
+    """`scheme` reaches a channel like this — it lands in the direct messages
+    themselves. A summon lands in a sub-thread of them, so there is nowhere for it
+    to go and the channel is not offered at all."""
+    capability = await _crossable(
+        far_channel=_NoSubThreadChannel(
+            id="far",
+            config=ChannelConfig(
+                type="fake", agents=[AgentModelConfig(agent="claude", model="opus")]
+            ),
+        )
+    )
+    assert capability.toolset is not None
+    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+
+    assert await capability.crossing_destinations() == []
+    with pytest.raises(ModelRetry, match="No destination 'far'"):
+        await summon(
+            FAKE_CONTEXT,
+            agent_id="claude",
+            model="opus",
+            destination=ChannelTarget(channel="far"),
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+        )
+    assert capability.decision is None
+
+
+async def test_summon_across_names_the_agents_the_far_channel_runs(
+    in_memory_engine: None,
+) -> None:
+    """Which agents serve a channel is that channel's own config, so crossing both
+    widens what can be summoned and narrows it: an agent that only runs over there
+    becomes nameable, and one that only runs here stops being."""
+    only_far = AgentRoute(
+        agent_id="codex", model="opus", claim=Claim(ability="far-side coding")
+    )
+    capability = await _crossable(far_routes=(only_far,))
+    assert capability.toolset is not None
+    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+
+    # `codex` is on no route here, and `scry` says where it is instead.
+    assert only_far not in capability.other_routes
+    assert [one.routes for one in await capability.crossing_destinations()] == [
+        (only_far,)
+    ]
+
+    await summon(
+        FAKE_CONTEXT,
+        agent_id="codex",
+        model="opus",
+        destination=ChannelTarget(channel="far"),
+        reason="needs coding",
+        hint="Working on it",
+        summon="Please investigate the failing test.",
+    )
+    assert isinstance(capability.decision, SummonDecision)
+    assert capability.decision.agent_id == "codex"
+
+    # And the other way: `claude` runs here, but not there.
+    with pytest.raises(ModelRetry, match="Invalid summon route"):
+        await summon(
+            FAKE_CONTEXT,
+            agent_id="claude",
+            model="opus",
+            destination=ChannelTarget(channel="far"),
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+        )
+
+
+async def test_teleport_crosses_only_out_of_a_conversation_nobody_else_reads(
+    in_memory_engine: None,
+) -> None:
+    """Everything said here travels with a teleport. Out of a group that would
+    republish what other people said into somewhere private on another platform,
+    under this person's name alone — so the crossing is not offered at all, while
+    the group's own sub-thread still is."""
+    shared = await _crossable("shared_main", far_routes=(INKLING_ROUTE,))
+    assert await shared.teleport_handles() == ["thread"]
+
+    private = await _crossable("private_main", far_routes=(INKLING_ROUTE,))
+    assert await private.teleport_handles() == ["thread", "far"]
+
+
+async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(
+    in_memory_engine: None,
+) -> None:
+    """A teleport takes *this* agent with it, so a channel that does not run this
+    one has nowhere to put the conversation it carries."""
+    capability = await _crossable("private_main", far_routes=(CLAUDE_ROUTE,))
+    assert capability.toolset is not None
+    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+
+    with pytest.raises(ModelRetry, match="does not run you \\(inkling\\)"):
+        await teleport(
+            FAKE_CONTEXT, hint="carrying on", destination=ChannelTarget(channel="far")
+        )
+
+
+async def test_teleport_defers_a_crossing_with_the_far_account_named(
+    in_memory_engine: None,
+) -> None:
+    capability = await _crossable("private_main", far_routes=(INKLING_ROUTE,))
+    assert capability.toolset is not None
+    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+
+    with pytest.raises(CallDeferred) as deferred:
+        await teleport(
+            FAKE_CONTEXT, hint="carrying on", destination=ChannelTarget(channel="far")
+        )
+
+    # Two plain strings, which is all the far end needs: `open_dm` takes the account,
+    # and the conversation it names does not exist until that call.
+    assert deferred.value.metadata == {
+        "kind": "teleport",
+        "hint": "carrying on",
+        "channel": "far",
+        "user": "ou_alice",
+    }
+
+
+@pytest.mark.parametrize("destination", [HERE_TARGET, THREAD_TARGET])
+async def test_summon_refused_outright_where_neither_place_exists(
+    destination: SummonTarget,
+) -> None:
+    """A group's main channel on a channel that opens no sub-thread — napcat's
+    groups, with nobody linked anywhere else. Ownership cannot land in place, there
+    is nowhere to open, and no channel to cross to, so the refusal has no "instead"
+    to name and says to answer it here."""
+    capability = _capability("shared_main", channel=_NoSubThreadChannel())
+    assert capability.toolset is not None
+    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+
+    with pytest.raises(ModelRetry, match="nowhere left to land"):
+        await summon(
+            FAKE_CONTEXT,
+            agent_id="claude",
+            model="opus",
+            destination=destination,
+            reason="needs coding",
+            hint="Working on it",
+            summon="Please investigate the failing test.",
+        )
+    assert capability.decision is None
+
+
+def _destination_kinds(capability: GatewayCapability, tool_name: str) -> list[str]:
+    """The `kind` each of a spell's `destination` variants declares, sorted.
+
+    Read off the tool definition rather than the annotation, because the definition
+    is what the provider is actually handed — and what must stay identical run to
+    run for the prompt cache to hold."""
+    assert capability.toolset is not None
+    schema = capability.toolset.tools[tool_name].tool_def.parameters_json_schema
+    assert isinstance(schema, dict)
+    defs = schema["$defs"]
+    assert isinstance(defs, dict)
+    kinds: list[str] = []
+    for name, definition in defs.items():
+        if not name.endswith("Target") or not isinstance(definition, dict):
+            continue
+        properties = definition["properties"]
+        assert isinstance(properties, dict)
+        kinds.append(str(properties["kind"]["const"]))
+    return sorted(kinds)
+
+
 def _schemas(capability: GatewayCapability) -> dict[str, object]:
     """What actually reaches the provider: the cached tool definitions."""
     assert capability.toolset is not None
@@ -353,11 +743,15 @@ def test_tool_schemas_do_not_vary_with_dm_availability() -> None:
     # the cached prefix, so anything address-derived is refused in the tool body rather
     # than kept out of the schema. If this ever fails, a conversation that moves
     # busts its whole prefix — system prompt included.
-    reachable = _schemas(_capability(private_blocked_by=None))
+    reachable = _schemas(_capability("shared_thread"))
     for reason in ("no_surface", "already_private", "no_user"):
-        assert _schemas(_capability(private_blocked_by=reason)) == reachable
+        assert _schemas(_blocked(reason)) == reachable
 
-    assert _schemas(_capability(allow_here=False)) == reachable
+    # The same for the walls the other two spells hit: a group main refuses
+    # `summon here`, and a channel that opens no sub-thread refuses both it and
+    # `teleport`. Neither may reach the schema either.
+    assert _schemas(_capability("shared_main")) == reachable
+    assert _schemas(_capability(channel=_NoSubThreadChannel())) == reachable
 
 
 def test_tool_schemas_do_not_carry_the_live_routes() -> None:
@@ -386,12 +780,14 @@ async def test_scheme_refuses_with_the_reason_it_cannot_land(
     reason: PrivateBlocker,
     expected: str,
 ) -> None:
-    capability = _capability(private_blocked_by=reason)
+    capability = _blocked(reason)
     assert capability.toolset is not None
     scheme = capability.toolset.tools[SCHEME_TOOL_NAME].function
 
     with pytest.raises(ModelRetry, match=expected):
-        await scheme(FAKE_CONTEXT, hint="Taking this private", brief="Do the thing.")
+        await scheme(
+            FAKE_CONTEXT, hint="Picking this up with you.", brief="Do the thing."
+        )
 
 
 async def test_scheme_records_a_decision_that_names_no_agent() -> None:
@@ -403,18 +799,18 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
 
     result = await scheme(
         FAKE_CONTEXT,
-        hint="Continuing with you privately",
+        hint="Picking this up with you here.",
         brief="Finish the migration write-up for this user.",
     )
 
     assert result == "Taking this to their direct messages here."
     assert capability.decision == SchemeDecision(
+        hint="Picking this up with you here.",
         destination=ChannelAddress(
             channel_tentacle_id="im",
             chat_type="dm",
             chat_id="",
             user_id="alice",
         ),
-        hint="Continuing with you privately",
         brief="Finish the migration write-up for this user.",
     )
