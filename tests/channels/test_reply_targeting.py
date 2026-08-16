@@ -56,7 +56,7 @@ def test_split_reply_takes_first_reply_anywhere_and_strips_all() -> None:
 
 async def test_send_tool_accepts_reply_and_mention() -> None:
     capability = GatewayCapability(
-        routes=[],
+        channel_routes={},
         current_agent_id="inkling",
     )
     assert capability.toolset is not None

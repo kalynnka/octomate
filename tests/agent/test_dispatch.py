@@ -22,7 +22,12 @@ from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadMessage
-from octomate.schemas.triage import Claim, SummonDecision
+from octomate.schemas.triage import (
+    Claim,
+    HereLanding,
+    SummonDecision,
+    ThreadLanding,
+)
 from octomate.tentacles.agents.inkling import InklingTentacle
 from octomate.tentacles.agents.inkling.base import InklingOutput
 from octomate.tentacles.base import Tentacle
@@ -140,7 +145,7 @@ async def test_entry_agent_summons_into_a_sub_thread() -> None:
             action="summon",
             agent_id="claude",
             model="opus",
-            destination="thread",
+            destination=ThreadLanding(),
             reason="needs code work",
             hint="Working on it",
             summon="Please debug this.",
@@ -170,7 +175,7 @@ async def test_summon_here_transmits_current_dm_ownership() -> None:
             action="summon",
             agent_id="claude",
             model="opus",
-            destination="here",
+            destination=HereLanding(),
             reason="you own this DM now",
             hint="Taking over",
             summon="Continue with the user directly.",
@@ -201,7 +206,7 @@ async def test_owned_thread_follow_up_skips_the_entry_agent() -> None:
             action="summon",
             agent_id="claude",
             model="opus",
-            destination="thread",
+            destination=ThreadLanding(),
             reason="needs code work",
             hint="Working on it",
             summon="Please debug this.",
@@ -235,7 +240,7 @@ async def test_owner_survives_cold_manager_reload() -> None:
                 action="summon",
                 agent_id="claude",
                 model="opus",
-                destination="thread",
+                destination=ThreadLanding(),
                 reason="needs code work",
                 hint="Working on it",
                 summon="Please debug this.",
@@ -272,7 +277,7 @@ async def test_chained_summon_updates_thread_owner() -> None:
             action="summon",
             agent_id="first",
             model="test",
-            destination="thread",
+            destination=ThreadLanding(),
             reason="needs first pass",
             hint="First pass",
             summon="First agent brief.",
@@ -285,7 +290,7 @@ async def test_chained_summon_updates_thread_owner() -> None:
             action="summon",
             agent_id="second",
             model="test",
-            destination="here",
+            destination=HereLanding(),
             reason="needs second pass",
             hint="Second pass",
             summon="Second agent brief.",
@@ -370,7 +375,7 @@ async def test_summon_here_keeps_reception_in_main_for_main_only_channel() -> No
             action="summon",
             agent_id="claude",
             model="opus",
-            destination="here",
+            destination=HereLanding(),
             reason="needs work",
             hint="needs work",
             summon="Please investigate this in main.",
@@ -414,7 +419,7 @@ async def test_reception_model_is_resolved_from_agent() -> None:
             action="summon",
             agent_id="claude",
             model="openai:gpt-4o-mini",
-            destination="thread",
+            destination=ThreadLanding(),
             reason="needs stronger model",
             hint="needs stronger model",
             summon="Use the stronger model.",

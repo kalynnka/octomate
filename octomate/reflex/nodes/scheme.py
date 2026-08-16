@@ -13,7 +13,7 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.triage import SchemeDecision, SummonDecision
+from octomate.schemas.triage import HereLanding, SchemeDecision, SummonDecision
 from octomate.telemetry import reflex_logfire
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             action="summon",
             agent_id=resolved.agent,
             model=resolved.model,
-            destination="here",
+            destination=HereLanding(),
             reason="Continuing with this user privately.",
             hint=self.request.hint,
             summon=self.request.brief,

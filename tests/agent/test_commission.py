@@ -79,7 +79,7 @@ async def _gate(
     }
     conversations = conversations or FakeConversationManager()
     gate = GatewayCapability(
-        routes=[CLAUDE_ROUTE],
+        channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         agents=agents,
         conversations=conversations,
@@ -294,7 +294,9 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
 
 
 async def test_a_gate_without_commission_deps_offers_no_commission() -> None:
-    bare = GatewayCapability(routes=[CLAUDE_ROUTE], current_agent_id="inkling")
+    bare = GatewayCapability(
+        channel_routes={"im": [CLAUDE_ROUTE]}, current_agent_id="inkling"
+    )
     assert bare.toolset is not None
     assert COMMISSION_TOOL_NAME not in bare.toolset.tools
     assert not bare.commissioning

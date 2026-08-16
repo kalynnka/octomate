@@ -18,7 +18,9 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from octomate.capabilities.gateway import SCRY_TOOL_NAME, GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
+from octomate.config.users import UserConfig
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.user import UserManager
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
@@ -43,8 +45,11 @@ from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
+    CrossingLanding,
+    HereLanding,
     SchemeDecision,
-    SummonDestination,
+    SummonLanding,
+    ThreadLanding,
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channels.base import ChannelSurfaces
@@ -190,14 +195,14 @@ def _deferred_results() -> DeferredToolResults:
 
 def _summon(
     agent_id: str = "other",
-    destination: SummonDestination = "thread",
+    destination: SummonLanding | None = None,
     effort: ThinkingEffort | None = None,
 ) -> SummonDecision:
     return SummonDecision(
         action="summon",
         agent_id=agent_id,
         model="test",
-        destination=destination,
+        destination=destination or ThreadLanding(),
         effort=effort,
         reason="needs work",
         hint="Working on it",
@@ -206,10 +211,13 @@ def _summon(
 
 
 def _summon_deps(
-    im: FakeChannelTentacle, entry: FakeAgent, second: FakeAgent
+    im: FakeChannelTentacle,
+    entry: FakeAgent,
+    second: FakeAgent,
+    far: FakeChannelTentacle | None = None,
 ) -> ReflexDeps:
     return ReflexDeps(
-        channels={"im": im},
+        channels={"im": im} if far is None else {"im": im, "far": far},
         agents={entry.id: entry, second.id: second},
         conversation_manager=FakeConversationManager(),
         thread_manager=FakeThreadManager(),
@@ -565,7 +573,7 @@ async def test_summon_here_takes_over_current_conversation() -> None:
     address = _key()
     entry = FakeAgent(
         id="other",
-        reception_summon=_summon(agent_id="second", destination="here"),
+        reception_summon=_summon(agent_id="second", destination=HereLanding()),
         allow_reception_run=True,
     )
     second = FakeAgent(
@@ -712,7 +720,7 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
     entry = FakeAgent(
         id="other",
         reception_scheme=SchemeDecision(
-            hint="Taking this private",
+            hint="Picking this up with you.",
             brief="Do it.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",
@@ -744,12 +752,79 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
     assert entry.turns[-1].address.chat_type == "dm"
 
 
+async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
+    in_memory_engine: None,
+) -> None:
+    """`scheme` picks the receiver from the DM's own thread, resolved against the
+    channel that DM is on. `im` does not run `second` at all, so a handoff resolved
+    against the origin instead would land back on `im`'s own first agent — with the
+    brief delivered somewhere nobody chose."""
+    users = UserManager(
+        {
+            "luhui": UserConfig.model_validate(
+                {
+                    "profiles": {
+                        "im": {"channel_user_id": "alice"},
+                        "far": {"channel_user_id": "ou_alice"},
+                    }
+                }
+            )
+        }
+    )
+    await users.reconcile()
+    address = _group_key()
+    entry = FakeAgent(
+        id="other",
+        reception_scheme=SchemeDecision(
+            hint="Picking this up with you.",
+            brief="Finish the migration write-up.",
+            destination=ChannelAddress(
+                channel_tentacle_id="far",
+                chat_type="dm",
+                chat_id="",
+                user_id="ou_alice",
+            ),
+        ),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="on it", allow_reception_run=True)
+    im = _channel(stream=False)  # runs `other` only
+    far = FakeChannelTentacle(
+        id="far",
+        config=ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="second", model="test")]
+        ),
+    )
+    deps = _summon_deps(im, entry, second, far)
+    deps.thread_manager = FakeThreadManager(users=users)
+    target = _source_target(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+            user_profile=await users.ensure_profile(
+                "im", UserProfile(channel_user_id="alice")
+            ),
+        ),
+        deps=deps,
+    )
+
+    assert not isinstance(result, DeferredResult)
+    assert far.opened_dms == ["ou_alice"]
+    assert [turn.prompt for turn in second.turns] == ["Finish the migration write-up."]
+    assert second.turns[0].address.channel_tentacle_id == "far"
+
+
 async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
     address = _group_key()
     entry = FakeAgent(
         id="other",
         reception_scheme=SchemeDecision(
-            hint="Taking this private",
+            hint="Picking this up with you.",
             brief="Do it.",
             destination=ChannelAddress(
                 channel_tentacle_id="im",
@@ -796,7 +871,7 @@ async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
     address = _key()
     entry = FakeAgent(
         id="other",
-        reception_summon=_summon(agent_id="second", destination="thread"),
+        reception_summon=_summon(agent_id="second", destination=ThreadLanding()),
         allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
@@ -839,7 +914,7 @@ async def test_summon_thread_leaves_a_group_main_unclaimed_when_the_open_fails()
     address = _group_key()
     entry = FakeAgent(
         id="other",
-        reception_summon=_summon(agent_id="second", destination="thread"),
+        reception_summon=_summon(agent_id="second", destination=ThreadLanding()),
         allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
@@ -862,6 +937,154 @@ async def test_summon_thread_leaves_a_group_main_unclaimed_when_the_open_fails()
     assert result.target.address == address
     assert second.turns == []
     assert thread.active_agent_tentacle_id is None
+
+
+async def _crossing_state(
+    im: FakeChannelTentacle,
+) -> tuple[ReflexState, ReflexDeps, FakeChannelTentacle, FakeAgent, FakeAgent]:
+    """A group main on `im` whose asker is also registered on `far`, mid-summon.
+
+    The registry is the real one: a crossing exists because two accounts are linked,
+    and the gate the entry agent calls resolves the handle through it. `far` runs
+    `second` and nothing else, which is what makes the handoff land on the agent the
+    summon named rather than on whatever `im` happens to list first.
+    """
+    users = UserManager(
+        {
+            "luhui": UserConfig.model_validate(
+                {
+                    "profiles": {
+                        "im": {"channel_user_id": "alice"},
+                        "far": {"channel_user_id": "ou_alice"},
+                    }
+                }
+            )
+        }
+    )
+    await users.reconcile()
+    address = _group_key()
+    far_landing = CrossingLanding(
+        address=ChannelAddress(
+            channel_tentacle_id="far",
+            chat_type="dm",
+            chat_id="",
+            user_id="ou_alice",
+        )
+    )
+    entry = FakeAgent(
+        id="other",
+        reception_summon=_summon(agent_id="second", destination=far_landing),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    far = FakeChannelTentacle(
+        id="far",
+        config=ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="second", model="test")]
+        ),
+    )
+    deps = _summon_deps(im, entry, second, far)
+    deps.thread_manager = FakeThreadManager(users=users)
+    target = _source_target(address)
+    state = ReflexState(
+        source_target=target,
+        target=target,
+        decision=_summon(),
+        thread=_thread(address),
+        user_profile=await users.ensure_profile(
+            "im", UserProfile(channel_user_id="alice")
+        ),
+    )
+    return state, deps, far, entry, second
+
+
+async def test_summon_crosses_into_a_sub_thread_of_their_dms_elsewhere(
+    in_memory_engine: None,
+) -> None:
+    # Serves the entry agent and nobody else. The summoned one is routable only
+    # on `far`, which is the whole point: crossing reaches an agent this channel
+    # does not run, and the handoff has to resolve against the one it lands on.
+    im = _channel(stream=False)
+    state, deps, far, _entry, second = await _crossing_state(im)
+
+    result = await _run(React(), state=state, deps=deps)
+
+    assert not isinstance(result, DeferredResult)
+    # Their direct messages there had to be opened before there was anywhere to
+    # open a sub-thread of, and the sub-thread is what the turn actually lands in.
+    assert far.opened_dms == ["ou_alice"]
+    assert [address for address, _hint in far.sub_threads] == [
+        ChannelAddress(
+            channel_tentacle_id="far",
+            chat_type="dm",
+            chat_id="ou_alice",
+            user_id="ou_alice",
+        )
+    ]
+    landed = second.turns[0].address
+    assert landed.channel_tentacle_id == "far"
+    assert landed.channel_thread_id == "hint-thread"
+    assert second.turns[0].prompt == "Please debug this in reception."
+    # The group is told, or it watches the conversation leave without a word.
+    assert im.recording_ink.sent[-1][2][0]["text"] == "Working on it"
+
+
+async def test_a_crossing_that_opens_no_sub_thread_leaves_the_dms_unclaimed(
+    in_memory_engine: None,
+) -> None:
+    """The direct messages open but the sub-thread does not. Landing on the direct
+    messages themselves would pin an agent the *group* chose onto this person's
+    private conversation — the one thing `scheme` exists to route around — so the
+    turn stays where it is instead."""
+
+    class NoSubThreadOpens(FakeChannelTentacle):
+        async def start_sub_thread(
+            self, address: ChannelAddress, hint_text: str
+        ) -> ChannelAddress:
+            return address
+
+    # Serves the entry agent and nobody else. The summoned one is routable only
+    # on `far`, which is the whole point: crossing reaches an agent this channel
+    # does not run, and the handoff has to resolve against the one it lands on.
+    im = _channel(stream=False)
+    state, deps, _far, _entry, second = await _crossing_state(im)
+    deps.channels["far"] = NoSubThreadOpens(
+        id="far",
+        config=ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="second", model="test")]
+        ),
+    )
+
+    result = await _run(React(), state=state, deps=deps)
+
+    assert not isinstance(result, DeferredResult)
+    assert result.target.address == _group_key()
+    assert second.turns == []
+
+
+async def test_a_crossing_stays_put_when_the_far_dm_never_opens(
+    in_memory_engine: None,
+) -> None:
+    # Serves the entry agent and nobody else. The summoned one is routable only
+    # on `far`, which is the whole point: crossing reaches an agent this channel
+    # does not run, and the handoff has to resolve against the one it lands on.
+    im = _channel(stream=False)
+    state, deps, _far, _entry, second = await _crossing_state(im)
+    deps.channels["far"] = FakeChannelTentacle(
+        id="far",
+        ink=RecordingInk(dm_opens=False),
+        config=ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="second", model="test")]
+        ),
+    )
+
+    result = await _run(React(), state=state, deps=deps)
+
+    # The platform refused as it was asked, so nothing moved and the origin agent's
+    # own reply is all that landed.
+    assert not isinstance(result, DeferredResult)
+    assert result.target.address == _group_key()
+    assert second.turns == []
 
 
 async def test_reception_returns_deferred_result_on_human_question() -> None:

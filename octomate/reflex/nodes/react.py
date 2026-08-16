@@ -57,8 +57,12 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             raise ValueError("React requires a summon decision")
         target_address = target.address
         source_address = source_target.address
+        # Against the channel the run will happen on, not the one it came from. A
+        # spell that moves the turn to another channel leaves those two different,
+        # and which agents serve a channel is that channel's own config — resolving
+        # against the origin swaps in whatever the origin happens to list first.
         resolved = ctx.deps.resolve_agent(
-            source_address.channel_tentacle_id, decision.agent_id, decision.model
+            target.channel_id, decision.agent_id, decision.model
         )
         model = resolved.model
         decision = decision.model_copy(
@@ -95,14 +99,16 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             state.claim_handoff = False
             state.handoff_from_agent_tentacle_id = None
         target_channel = ctx.deps.channel(target)
-        routes = [
+        state.summon_routes = [
             route
-            for route in ctx.deps.available_routes[source_address.channel_tentacle_id]
+            for route in ctx.deps.available_routes[target.channel_id]
             if route.agent_id != agent.id
         ]
-        state.summon_routes = routes
         gate = GatewayCapability(
-            routes=routes,
+            # Every channel's, not just this one's: a spell that crosses lands where
+            # another channel's config decides who runs, so the gate has to be able
+            # to offer — and check against — that channel's routes too.
+            channel_routes=ctx.deps.available_routes,
             current_agent_id=agent.id,
             # Every channel, not just this one: the gate reads `surfaces` off the
             # address's own channel to know whether `scheme` can land, and asks the
@@ -376,7 +382,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 span.set_attribute("react.action", gate_decision.action)
                 reflex_logfire.info(
                     "react -> scheme into the asker's dm",
-                    hint=gate_decision.hint,
+                    destination=str(gate_decision.destination),
                 )
                 return Scheme(
                     request=gate_decision,

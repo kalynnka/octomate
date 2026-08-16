@@ -72,7 +72,7 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
             AskCapability(),
             TodoCapability(),
             GatewayCapability(
-                routes=[],
+                channel_routes={},
                 current_agent_id="inkling",
             ),
         ],
@@ -353,7 +353,7 @@ async def test_a_teleport_reaches_the_suspender_under_a_bypassing_posture() -> N
         thread_id=_THREAD,
         output_type=STR_OUTPUT,
         deferred_suspender=suspender,
-        capabilities=[GatewayCapability(routes=[], current_agent_id="inkling")],
+        capabilities=[GatewayCapability(channel_routes={}, current_agent_id="inkling")],
     )
 
     [suspended] = suspender.suspended
@@ -389,7 +389,7 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
         output_type=[str, DeferredToolRequests],
         capabilities=[
             AskCapability(),
-            GatewayCapability(routes=[], current_agent_id="inkling"),
+            GatewayCapability(channel_routes={}, current_agent_id="inkling"),
         ],
         system_prompt=SYSTEM_PROMPT,
     )

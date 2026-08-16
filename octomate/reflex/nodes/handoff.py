@@ -5,15 +5,17 @@ from dataclasses import dataclass, replace
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
+from octomate.reflex.crossing import open_crossing
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
     ReflexDeps,
     ReflexGraphResult,
     ReflexResult,
     ReflexState,
+    ResponseTarget,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import SummonDecision
+from octomate.schemas.triage import CrossingLanding, HereLanding, SummonDecision
 from octomate.telemetry import reflex_logfire
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,11 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             raise ValueError("Handoff requires a summon decision")
         source_address = source_target.address
         channel = ctx.deps.channel(target)
+        hint_text = (
+            decision.hint
+            or decision.reason
+            or "Octomate is continuing this request here."
+        )
 
         target_address = target.address
         if target_address is None:
@@ -54,7 +61,23 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             )
             target = replace(target, address=target_address)
 
-        if decision.destination == "here":
+        if isinstance(decision.destination, CrossingLanding):
+            crossed = await open_crossing(
+                ctx, decision.destination, source_address, hint_text
+            )
+            if crossed is None:
+                return End(ReflexResult(decision=None, target=source_target))
+            far = ctx.deps.channel(crossed.channel_tentacle_id)
+            state.target = ResponseTarget(
+                channel_id=crossed.channel_tentacle_id,
+                address=crossed,
+                thread_strategy=far.thread_strategy,
+                mode="sub",
+            )
+            state.thread = await ctx.deps.thread_manager.ensure(crossed)
+            return React()
+
+        if isinstance(decision.destination, HereLanding):
             # Take over the current conversation in place — no new surface. The
             # allow_here gate already refused this on a group main (Case 1).
             target = replace(target, address=target_address)
@@ -62,12 +85,7 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # The gate refused this destination unless a sub-thread can be opened
             # from here, so there is one place to try and no fallback to pick.
             try:
-                opened = await channel.start_sub_thread(
-                    target_address,
-                    decision.hint
-                    or decision.reason
-                    or "Octomate is continuing this request here.",
-                )
+                opened = await channel.start_sub_thread(target_address, hint_text)
             except Exception:
                 logger.warning(
                     "Channel %s raised starting a sub-thread",

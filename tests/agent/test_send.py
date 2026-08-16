@@ -7,6 +7,7 @@ channel's surfaces, so an unreachable `dm` is refused rather than redirected.
 from __future__ import annotations
 
 import inspect
+import json
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar, cast
 
@@ -28,7 +29,13 @@ from octomate.config.users import UserConfig
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import MarkdownSegment, MessageSegment
-from octomate.schemas.triage import Destination, Scrying
+from octomate.schemas.triage import (
+    DIRECT_TARGET,
+    HERE_TARGET,
+    ChannelTarget,
+    Destination,
+    Scrying,
+)
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.inkling.base import InklingOutput
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
@@ -53,7 +60,7 @@ def _gate(
     `chat_type` overrides the type the surface reports without changing whether it
     is private — an assistant pane is a thread only one person can read."""
     return GatewayCapability(
-        routes=[],
+        channel_routes={},
         current_agent_id="inkling",
         channels={"im": FakeChannelTentacle() if direct_messages else _NoDmChannel()},
         conversation_address=ChannelAddress(
@@ -90,6 +97,21 @@ async def test_send_returns_sent_and_announces_event() -> None:
     assert result.metadata == [MessageSentEvent(segments=segments)]
 
 
+def _destination_kinds(schema: dict[str, object]) -> list[str]:
+    """The `kind` each `destination` variant declares, dug out of the refs the union
+    generates. What matters is that the set is closed and named in the schema."""
+    defs = schema["$defs"]
+    assert isinstance(defs, dict)
+    kinds: list[str] = []
+    for name, definition in defs.items():
+        if not name.endswith("Target") or not isinstance(definition, dict):
+            continue
+        properties = definition["properties"]
+        assert isinstance(properties, dict)
+        kinds.append(str(properties["kind"]["const"]))
+    return kinds
+
+
 def test_send_tool_exposes_no_channel_fields() -> None:
     # `destination` names one of a closed set; no channel, chat or user id ever
     # reaches the tool, which is what keeps the schema constant across runs.
@@ -99,14 +121,17 @@ def test_send_tool_exposes_no_channel_fields() -> None:
     params = set(inspect.signature(tool.function).parameters)
     assert params == {"ctx", "segments", "destination"}
 
+    # A closed set of shapes — one per kind of place — and the only free text in it
+    # is a channel id the model copies from `scry`. Which channels *this* person is
+    # on never reaches the schema: that list is per-user and the tool block is a
+    # cached prompt segment, so it would fork the prefix at the front.
     schema = tool.tool_def.parameters_json_schema
     assert isinstance(schema, dict)
-    properties = schema["properties"]
-    assert isinstance(properties, dict)
-    # A plain string, never an enum of the surfaces this run can reach: that list is
-    # per-user, and the tool block is a cached prompt segment. `scry` carries it.
-    assert properties["destination"]["type"] == "string"
-    assert "enum" not in properties["destination"]
+    assert sorted(_destination_kinds(schema)) == ["channel", "dm", "here"]
+    # And no id from this run reaches any of it.
+    rendered = json.dumps(schema)
+    for runtime_state in ("im", "alice", "room", "lark"):
+        assert f'"{runtime_state}"' not in rendered
 
 
 async def test_send_carries_the_named_destination() -> None:
@@ -115,7 +140,7 @@ async def test_send_carries_the_named_destination() -> None:
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
 
-    result = await send(cast(RunContext[Any], None), segments, "dm")
+    result = await send(cast(RunContext[Any], None), segments, DIRECT_TARGET)
 
     # The event carries the *resolved* surface, so the consumer addresses it without
     # deciding anything and a refused surface can never reach one.
@@ -195,10 +220,10 @@ async def test_send_to_dm_is_refused_where_there_are_none() -> None:
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
 
     with pytest.raises(ModelRetry, match="no direct messages"):
-        await send(cast(RunContext[Any], None), segments, "dm")
+        await send(cast(RunContext[Any], None), segments, DIRECT_TARGET)
 
     # `here` is unaffected — only the destination that cannot land is refused.
-    assert await send(cast(RunContext[Any], None), segments, "here")
+    assert await send(cast(RunContext[Any], None), segments, HERE_TARGET)
 
 
 async def test_send_to_dm_from_a_dm_is_not_refused() -> None:
@@ -210,7 +235,7 @@ async def test_send_to_dm_from_a_dm_is_not_refused() -> None:
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
 
-    result = await send(cast(RunContext[Any], None), segments, "dm")
+    result = await send(cast(RunContext[Any], None), segments, DIRECT_TARGET)
 
     # The event carries the *resolved* surface, so the consumer addresses it without
     # deciding anything and a refused surface can never reach one.
@@ -228,7 +253,7 @@ async def test_send_to_dm_from_a_private_thread_is_not_refused() -> None:
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
 
-    result = await send(cast(RunContext[Any], None), segments, "dm")
+    result = await send(cast(RunContext[Any], None), segments, DIRECT_TARGET)
 
     assert result.metadata == [MessageSentEvent(segments=segments, destination=None)]
 
@@ -255,7 +280,9 @@ async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
 
-    result = await send(cast(RunContext[Any], None), segments, "lark")
+    result = await send(
+        cast(RunContext[Any], None), segments, ChannelTarget(channel="lark")
+    )
 
     assert result.metadata == [
         MessageSentEvent(segments=segments, destination=lark.address)
@@ -263,7 +290,9 @@ async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None
 
     # A channel it was never told about is refused, with the list it could have used.
     with pytest.raises(ModelRetry, match="No such destination 'napcat'"):
-        await send(cast(RunContext[Any], None), segments, "napcat")
+        await send(
+            cast(RunContext[Any], None), segments, ChannelTarget(channel="napcat")
+        )
 
 
 async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
