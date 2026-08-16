@@ -820,9 +820,19 @@ class TimelineState:
             self.capture_reply(reply_to)
             for segment in body:
                 await self.answer_segment(segment)
-        elif not failed and not answered and final_output is not None:
+        elif (
+            not failed
+            and not answered
+            and final_output is not None
+            and not isinstance(final_output, DeferredToolRequests)
+        ):
             # The reply never streamed; render the final output once so the turn
-            # is not left blank.
+            # is not left blank. A deferral is the exception: the run parked rather
+            # than finished, and there is nothing to show for it here — a `teleport`
+            # resumes in the place it moved to, and a batch put up for review has
+            # already drawn itself through `present_actions`. `str()` on one is its
+            # own repr, tool call and metadata and all, which is what this used to
+            # post into the chat.
             await self.answer_delta(str(final_output))
 
     async def present_actions(self, event: ActionBatchEvent) -> None:

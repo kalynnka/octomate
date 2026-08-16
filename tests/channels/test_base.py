@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
 )
 from pydantic_ai.result import FinalResult
+from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.harness.events import (
@@ -59,7 +60,6 @@ from tests.support.scenarios import (
     action_batch,
     message_sent,
     mid_run_notice,
-    plain_deferred_requests,
     plain_segments,
     plan_tool_noise,
     play,
@@ -451,10 +451,18 @@ async def test_consume_falls_back_to_final_output_when_no_text_streamed(
 async def test_consume_falls_back_to_stringified_final_output(
     channel: FakeChannelTentacle,
 ) -> None:
-    await channel.consume(_key(), play(plain_deferred_requests()))
+    """A run whose answer never streamed still says it once, so the turn is not
+    left blank — the result carries the text even when no part event did."""
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield AgentRunResultEvent(AgentRunResult("said once, at the end"))
+
+    await channel.consume(_key(), events())
 
     assert len(channel.sent) == 1
-    assert "DeferredToolRequests" in channel.sent[0][2][0]["text"]
+    assert channel.sent[0][2][0]["text"] == "said once, at the end"
 
 
 async def test_consume_falls_back_to_final_segments_when_no_segments_streamed(
@@ -724,3 +732,31 @@ async def test_channel_context_manager_probes_on_enter(
         assert entered is channel
 
     assert probed == [True]
+
+
+async def test_consume_says_nothing_for_a_run_that_parked(
+    channel: FakeChannelTentacle,
+) -> None:
+    """A deferral is not an answer. The backup that renders a final output when
+    nothing streamed used to `str()` this one straight into the chat — the whole
+    `DeferredToolRequests(calls=[ToolCallPart(...)], metadata={...})` repr, tool
+    args and all. A `teleport` hits it every time: it defers with no text before
+    it, and resumes wherever it moved to rather than replying here."""
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        requests = DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    tool_name="teleport",
+                    args={"hint": "Back on Lark!"},
+                    tool_call_id="call_teleport",
+                )
+            ]
+        )
+        yield AgentRunResultEvent(AgentRunResult(requests))
+
+    await channel.consume(_key(), events())
+
+    assert channel.sent == []
