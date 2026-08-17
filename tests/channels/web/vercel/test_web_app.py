@@ -103,7 +103,13 @@ def test_vercel_router_requires_registered_channel() -> None:
     with pytest.raises(ValueError, match="VercelTentacle"):
         build_vercel_router(octomate, channel_id="dev_ui")
 
-    channel = VercelTentacle("dev_ui", octomate, config=VercelChannelConfig())
+    channel = VercelTentacle(
+        "dev_ui",
+        octomate,
+        config=VercelChannelConfig(
+            agents=[AgentModelConfig(agent="inkling", model="test")]
+        ),
+    )
     assert isinstance(channel, ChannelTentacle)
     # connect mounts the channel's router (VercelTentacle.routers) — no manual include.
     octomate.connect(channel)

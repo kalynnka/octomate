@@ -8,11 +8,9 @@ import pytest
 from openai_codex import CodexConfig as CodexSdkConfig
 from pydantic import SecretStr, ValidationError
 from pydantic_ai.settings import ThinkingEffort
-from pydantic_settings import SettingsConfigDict
 
 from octomate.config import (
     AgentModelConfig,
-    ChannelsConfig,
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     CodexConfig,
@@ -22,46 +20,84 @@ from octomate.config import (
     LarkChannelConfig,
     LinearIntegrationConfig,
     McpServerConfig,
+    ModelConfig,
     NapcatChannelConfig,
     OctomateConfig,
     SlackChannelConfig,
     UserConfig,
 )
+from octomate.config.base import CONFIG_FILES, DEFAULTS_DIR, config_home
 from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
 from octomate.schemas.project import Project
 from octomate.schemas.triage import Claim
-from tests.support.config import IsolatedTestConfig
+from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, DEEPSEEK_MODELS
+from tests.support.config import ISOLATED_HOME
 
 IN_MEMORY_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 
-class DefaultYamlOnlyConfig(OctomateConfig):
-    model_config = SettingsConfigDict(
-        env_prefix="OCTOMATE_",
-        env_nested_delimiter="__",
-        yaml_file=("octomate.default.yaml",),
-        yaml_config_section="octomate",
-        nested_model_default_partial_update=True,
-        extra="ignore",
-    )
-
-
 def test_the_suite_never_reads_the_developers_config() -> None:
-    """`octomate.yaml` and `.env` are gitignored, so anything they carry — a user,
-    half a channel's secrets — would make a result depend on the
-    machine. The session fixture repoints the files and clears the environment;
-    this is what notices if either half stops."""
+    """`./.octomate/` and `~/.octomate/` are gitignored, so anything they carry — a
+    user, half a channel's secrets — would make a result depend on the machine. The
+    session fixture points `OCTOMATE_HOME` at `tests/config/` and clears the
+    environment; this is what notices if either half stops."""
 
-    assert OctomateConfig.model_config.get("yaml_file") == ("octomate.test.yaml",)
-    assert OctomateConfig.model_config.get("env_file") is None
-    # `OCTOMATE_DB_URL` is the harness's own and stays; nothing else survives.
-    assert [name for name in os.environ if name.startswith("OCTOMATE")] == [
-        "OCTOMATE_DB_URL"
+    assert config_home() == ISOLATED_HOME
+    # `OCTOMATE_DB_URL` is the harness's own and stays; only the home joins it.
+    assert sorted(name for name in os.environ if name.startswith("OCTOMATE")) == [
+        "OCTOMATE_DB_URL",
+        "OCTOMATE_HOME",
     ]
 
     live = OctomateConfig()
     assert live.users == {}
+    assert live.hook_secret is None
+
+
+def test_an_explicit_home_wins_over_discovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`OCTOMATE_HOME` is obeyed as given, without probing for a config file.
+
+    That is what lets it isolate absolutely — the suite's own home declares nothing,
+    and an explicit home that had to prove itself first would silently fall through
+    to `./.octomate/` and read the developer's deployment instead.
+    """
+    monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
+    assert config_home() == tmp_path
+    assert list(tmp_path.iterdir()) == []
+    assert OctomateConfig().channels == {}
+
+
+def test_a_home_is_discovered_only_when_it_holds_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absent `OCTOMATE_HOME`, the project's `./.octomate/` is preferred over the
+    machine's `~/.octomate/` — but only once it holds config. Every checkout has a
+    `./.octomate/` for the database and `cli.toml` alone, and one carrying neither
+    must not shadow the machine's deployment."""
+    user_home = tmp_path / "home" / ".octomate"
+    user_home.mkdir(parents=True)
+    (user_home / "octomate.yaml").write_text("port: 9001\n")
+    project_home = tmp_path / "project" / ".octomate"
+    project_home.mkdir(parents=True)
+    (project_home / "cli.toml").write_text('url = "http://127.0.0.1:8000"\n')
+
+    monkeypatch.delenv("OCTOMATE_HOME")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path / "project")
+
+    # Data-only, so the machine's home still wins.
+    assert config_home() == user_home
+    assert OctomateConfig().port == 9001
+
+    # One config file is enough to claim it, and it replaces rather than merges.
+    (project_home / "octomate.yaml").write_text("host: 0.0.0.0\n")
+    assert config_home() == project_home
+    config = OctomateConfig()
+    assert str(config.host) == "0.0.0.0"
+    assert config.port == 8000
 
 
 def test_the_suite_never_points_at_the_real_database() -> None:
@@ -74,59 +110,67 @@ def test_the_suite_never_points_at_the_real_database() -> None:
     assert DatabaseSettings().db_url == IN_MEMORY_DB_URL
 
 
-def test_default_yaml_placeholders_fail_without_override() -> None:
-    # octomate.default.yaml ships `~` placeholders that must be overridden in
-    # octomate.yaml or via env; loading the defaults file alone fails fast with
-    # clear validation errors rather than silently falling back to code defaults.
-    with pytest.raises(ValidationError):
-        DefaultYamlOnlyConfig()
+def test_the_packaged_defaults_are_a_valid_deployment() -> None:
+    """The defaults under `octomate/config/defaults/` are the floor beneath every
+    config home, so they have to validate on their own — a home that declares only
+    `channels:` still loads the rest of them. They used to ship `~` placeholders that
+    could not, which only went unnoticed because a deployment replaced the file
+    whole; the suite runs on them now, which is what keeps them honest."""
 
+    assert set(CONFIG_FILES) == {path.name for path in DEFAULTS_DIR.glob("*.yaml")}
 
-def test_channels_default_to_none() -> None:
-    channels = ChannelsConfig()
-    assert channels.slack is None
-    assert channels.lark is None
-    assert channels.napcat is None
-    assert channels.trunkline is not None
-    assert channels.trunkline.agents == [
-        AgentModelConfig(model="deepseek:deepseek-v4-pro")
-    ]
+    config = OctomateConfig()
+    # Nothing is turned on: no agent, no channel, no provider. Which LLM an
+    # operator holds keys for is not guessable, so the defaults decline to guess.
+    assert config.agents.configured_models() == {}
+    assert config.channels == {}
+    assert config.providers.deepseek is None
 
 
 def test_channel_config_parses_supported_channels() -> None:
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {
+            "agents": {
+                "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+            },
             "channels": {
-                "trunkline": None,
                 "slack": {
+                    "type": "slack",
+                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
                 },
                 "lark": {
+                    "type": "lark",
+                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
                     "app_id": "cli-test",
                     "app_secret": "secret",
                 },
                 "napcat": {
+                    "type": "napcat",
+                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
                     "ws_url": "ws://127.0.0.1:3001",
                     "http_url": "http://127.0.0.1:3000",
                 },
-            }
+            },
         }
     )
 
-    assert isinstance(config.channels.slack, SlackChannelConfig)
-    assert isinstance(config.channels.lark, LarkChannelConfig)
-    assert isinstance(config.channels.napcat, NapcatChannelConfig)
-    assert config.channels.slack.stream.flush_interval == 0.2
-    assert config.channels.slack.stream.min_chars == 20
-    assert config.channels.lark.stream.flush_interval == 0.2
-    assert config.channels.lark.stream.min_chars == 20
-    assert config.channels.napcat.stream.enabled is False
+    assert isinstance(config.channels["slack"], SlackChannelConfig)
+    assert isinstance(config.channels["lark"], LarkChannelConfig)
+    assert isinstance(config.channels["napcat"], NapcatChannelConfig)
+    assert config.channels["slack"].stream.flush_interval == 0.2
+    assert config.channels["slack"].stream.min_chars == 20
+    assert config.channels["lark"].stream.flush_interval == 0.2
+    assert config.channels["lark"].stream.min_chars == 20
+    assert config.channels["napcat"].stream.enabled is False
 
 
 def test_inkling_request_limit_defaults_to_256() -> None:
-    assert OctomateConfig().agents.inkling.request_limit == 256
+    assert (
+        InklingConfig(models=[ModelConfig(name="openai:gpt-4o")]).request_limit == 256
+    )
 
 
 def test_inkling_request_limit_must_be_positive() -> None:
@@ -140,22 +184,21 @@ def test_inkling_request_limit_must_be_positive() -> None:
 
 
 def test_channel_config_parses_agent_model_routes() -> None:
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {
             "agents": {
+                "inkling": {"models": [{"name": "openai:gpt-4o"}]},
                 "claude": {"models": ["opus"]},
                 "codex": {"models": ["gpt-5.3-codex"]},
             },
             "channels": {
-                "trunkline": None,
-                "lark": None,
-                "napcat": None,
                 "slack": {
+                    "type": "slack",
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
                     "agents": [
-                        {"agent": "inkling", "model": "deepseek:deepseek-v4-pro"},
+                        {"agent": "inkling", "model": "openai:gpt-4o"},
                         {"agent": "claude", "model": "opus"},
                         {"agent": "codex", "model": "gpt-5.3-codex"},
                     ],
@@ -164,9 +207,9 @@ def test_channel_config_parses_agent_model_routes() -> None:
         }
     )
 
-    assert config.channels.slack is not None
-    assert config.channels.slack.agents == [
-        AgentModelConfig(agent="inkling", model="deepseek:deepseek-v4-pro"),
+    assert config.channels["slack"] is not None
+    assert config.channels["slack"].agents == [
+        AgentModelConfig(agent="inkling", model="openai:gpt-4o"),
         AgentModelConfig(agent="claude", model="opus"),
         AgentModelConfig(agent="codex", model="gpt-5.3-codex"),
     ]
@@ -196,7 +239,7 @@ def test_claude_code_config_requires_model_mapping() -> None:
 
 
 def test_claude_code_config_defaults_to_fixed_model_set() -> None:
-    config = ClaudeCodeConfig()
+    config = ClaudeCodeConfig(models=set(CLAUDE_MODELS))
 
     assert config.models == {"haiku", "sonnet[1m]", "opus[1m]", "opusplan[1m]"}
 
@@ -210,7 +253,9 @@ def test_claude_code_config_refuses_a_remote_host() -> None:
     # Remote runs are off while a run's directory is its thread's project root: the
     # root is a local path, and the host on the other end has nothing to match it.
     with pytest.raises(ValidationError, match="remote runs are disabled"):
-        ClaudeCodeConfig(ssh=ClaudeSSHConfig(host="user@box"))
+        ClaudeCodeConfig(
+            models=set(CLAUDE_MODELS), ssh=ClaudeSSHConfig(host="user@box")
+        )
 
 
 def test_claude_code_config_accepts_documented_model_aliases() -> None:
@@ -220,7 +265,7 @@ def test_claude_code_config_accepts_documented_model_aliases() -> None:
 
 
 def test_codex_config_defaults_to_current_model_set() -> None:
-    config = CodexConfig()
+    config = CodexConfig(models=set(CODEX_MODELS))
 
     assert config.models == {
         "gpt-5.6-sol",
@@ -242,6 +287,7 @@ def test_codex_config_rejects_stale_model_aliases() -> None:
 def test_codex_config_parses_sdk_runtime_config() -> None:
     config = CodexConfig.model_validate(
         {
+            "models": ["gpt-5.5"],
             "runtime": {
                 "codex_bin": "/opt/codex",
                 "launch_args_override": [
@@ -257,7 +303,7 @@ def test_codex_config_parses_sdk_runtime_config() -> None:
                 "client_title": "Octomate Test",
                 "client_version": "test-version",
                 "experimental_api": False,
-            }
+            },
         }
     )
 
@@ -281,6 +327,7 @@ def test_codex_config_parses_sdk_runtime_config() -> None:
 def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     config = CodexConfig.model_validate(
         {
+            "models": ["gpt-5.5"],
             "permission_mode": "auto_review",
             "sandbox": "read_only",
             "base_instructions": "stay concise",
@@ -303,7 +350,9 @@ def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     assert config.effort == "xhigh"
     assert config.summary == "detailed"
 
-    denied = CodexConfig.model_validate({"permission_mode": "deny_all"})
+    denied = CodexConfig.model_validate(
+        {"models": ["gpt-5.5"], "permission_mode": "deny_all"}
+    )
     assert denied.permission_mode == "deny_all"
     # The sandbox keeps its own default; no posture moves it.
     assert denied.sandbox == "workspace_write"
@@ -323,7 +372,7 @@ def test_codex_config_validates_sdk_setting_names() -> None:
 
 
 def test_deepseek_config_defaults_to_the_shipped_shape() -> None:
-    config = DeepseekConfig()
+    config = DeepseekConfig(models=set(DEEPSEEK_MODELS))
 
     assert config.models == {"deepseek-v4-flash", "deepseek-v4-pro"}
     assert config.permission_mode == "workspace-write"
@@ -362,10 +411,14 @@ def test_deepseek_config_rejects_a_non_loopback_host() -> None:
 
 def test_channel_agent_routes_must_reference_configured_agent() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                },
                 "channels": {
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -376,7 +429,7 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
                             }
                         ],
                     }
-                }
+                },
             }
         )
 
@@ -388,13 +441,15 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
 
 def test_channel_agent_route_validation_reports_all_errors() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
-                "agents": {"claude": {"models": ["opus"]}},
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                    "claude": {"models": ["opus"]},
+                },
                 "channels": {
-                    "trunkline": None,
-                    "napcat": None,
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -405,6 +460,7 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
                         ],
                     },
                     "lark": {
+                        "type": "lark",
                         "enabled": False,
                         "app_id": "cli-test",
                         "app_secret": "secret",
@@ -451,10 +507,11 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
 
 def test_disabled_channel_agent_routes_are_validated() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
                 "channels": {
                     "slack": {
+                        "type": "slack",
                         "enabled": False,
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
@@ -477,14 +534,15 @@ def test_disabled_channel_agent_routes_are_validated() -> None:
 
 def test_channel_claude_route_requires_claude_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
-                "agents": {"claude": None},
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                    "claude": None,
+                },
                 "channels": {
-                    "trunkline": None,
-                    "lark": None,
-                    "napcat": None,
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -501,14 +559,15 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
 
 def test_channel_routes_require_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
-                "agents": {"claude": {"models": ["opus"]}},
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                    "claude": {"models": ["opus"]},
+                },
                 "channels": {
-                    "trunkline": None,
-                    "lark": None,
-                    "napcat": None,
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -518,20 +577,23 @@ def test_channel_routes_require_model() -> None:
             },
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
+    # A discriminated union stamps the resolved tag into the path, so a field error
+    # inside a channel carries its `type` between the key and the field.
+    assert error["loc"] == ("channels", "slack", "slack", "agents", 0, "model")
     assert error["msg"] == "Field required"
 
 
 def test_channel_claude_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
-                "agents": {"claude": {"models": ["opus"]}},
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                    "claude": {"models": ["opus"]},
+                },
                 "channels": {
-                    "trunkline": None,
-                    "lark": None,
-                    "napcat": None,
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -547,14 +609,15 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
 
 def test_channel_claude_route_requires_enabled_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
-                "agents": {"claude": {"enabled": False}},
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                    "claude": {"enabled": False, "models": ["opus"]},
+                },
                 "channels": {
-                    "trunkline": None,
-                    "lark": None,
-                    "napcat": None,
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -570,14 +633,15 @@ def test_channel_claude_route_requires_enabled_agent_config() -> None:
 
 def test_channel_codex_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
-                "agents": {"codex": {"models": ["gpt-5.3-codex"]}},
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                    "codex": {"models": ["gpt-5.3-codex"]},
+                },
                 "channels": {
-                    "trunkline": None,
-                    "lark": None,
-                    "napcat": None,
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -593,14 +657,15 @@ def test_channel_codex_routes_must_reference_configured_model() -> None:
 
 def test_channel_codex_route_requires_enabled_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
-                "agents": {"codex": {"enabled": False}},
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                    "codex": {"enabled": False, "models": ["gpt-5.5"]},
+                },
                 "channels": {
-                    "trunkline": None,
-                    "lark": None,
-                    "napcat": None,
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -616,14 +681,15 @@ def test_channel_codex_route_requires_enabled_agent_config() -> None:
 
 def test_channel_deepseek_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
-                "agents": {"deepseek": {"models": ["deepseek-v4-flash"]}},
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                    "deepseek": {"models": ["deepseek-v4-flash"]},
+                },
                 "channels": {
-                    "trunkline": None,
-                    "lark": None,
-                    "napcat": None,
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -641,14 +707,15 @@ def test_channel_deepseek_routes_must_reference_configured_model() -> None:
 
 def test_channel_deepseek_route_requires_enabled_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
-                "agents": {"deepseek": {"enabled": False}},
+                "agents": {
+                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                    "deepseek": {"enabled": False, "models": ["deepseek-v4-pro"]},
+                },
                 "channels": {
-                    "trunkline": None,
-                    "lark": None,
-                    "napcat": None,
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
@@ -664,16 +731,18 @@ def test_channel_deepseek_route_requires_enabled_agent_config() -> None:
 
 def test_channel_inkling_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
+                "agents": {"inkling": {"models": [{"name": "openai:gpt-4o"}]}},
                 "channels": {
                     "slack": {
+                        "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
                         "agents": [{"agent": "inkling", "model": "openai:gpt-5.2"}],
                     }
-                }
+                },
             }
         )
     [error] = exc_info.value.errors()
@@ -694,7 +763,7 @@ def test_each_connection_carries_its_own_warm_timeout() -> None:
         GitHubIntegrationConfig(client_id="Iv1.test").mcp.warm_timeout_seconds == 16.0
     )
 
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {
             "mcp": {
                 "linear": {
@@ -722,7 +791,7 @@ def test_each_connection_carries_its_own_warm_timeout() -> None:
 def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
     # GitHub ignores a scope it does not recognise and returns a token quietly
     # missing that access, so a typo has to fail here instead.
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {
             "integrations": {
                 "github": {
@@ -747,7 +816,7 @@ def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
 def test_github_integration_cache_size_default_and_override() -> None:
     assert GitHubIntegrationConfig(client_id="Iv1.test").max_cached_users == 32
 
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {
             "integrations": {
                 "github": {
@@ -763,7 +832,7 @@ def test_github_integration_cache_size_default_and_override() -> None:
 
 
 def test_config_parses_integrations_and_mcp_servers() -> None:
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {
             "integrations": {
                 "github": {
@@ -800,7 +869,7 @@ def test_mcp_server_token_comes_from_the_environment(
     # Structure in YAML, secret in the environment: the key names the env var.
     monkeypatch.setenv("OCTOMATE__MCP__LINEAR__TOKEN", "lin_from_env")
 
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {"mcp": {"linear": {"url": "https://mcp.linear.app/mcp"}}}
     )
 
@@ -818,7 +887,7 @@ def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None
         "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
     )
 
-    config = IsolatedTestConfig()
+    config = OctomateConfig()
 
     assert config.integrations["github"] is not None
     assert config.integrations["github"].client_id == "Iv1.env"
@@ -826,58 +895,57 @@ def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_channel_stream_config_uses_partial_defaults_from_yaml(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config_file = tmp_path / "octomate.yaml"
-    config_file.write_text(
+    (tmp_path / "agents.yaml").write_text(
+        "agents:\n  inkling:\n    models:\n      - name: openai:gpt-4o\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "channels.yaml").write_text(
         """
-octomate:
-  channels:
-    slack:
-      app_id: A-test
-      bot_token: xoxb-test
-      app_token: xapp-test
-      stream:
-        enabled: false
-    lark:
-      app_id: cli-test
-      app_secret: secret
-      stream:
-        enabled: false
-    napcat:
-      ws_url: ws://127.0.0.1:3001
-      http_url: http://127.0.0.1:3000
-      stream:
-        flush_interval: 0.3
+channels:
+  slack:
+    type: slack
+    agents: [{agent: inkling, model: "openai:gpt-4o"}]
+    app_id: A-test
+    bot_token: xoxb-test
+    app_token: xapp-test
+    stream:
+      enabled: false
+  lark:
+    type: lark
+    agents: [{agent: inkling, model: "openai:gpt-4o"}]
+    app_id: cli-test
+    app_secret: secret
+    stream:
+      enabled: false
+  napcat:
+    type: napcat
+    agents: [{agent: inkling, model: "openai:gpt-4o"}]
+    ws_url: ws://127.0.0.1:3001
+    http_url: http://127.0.0.1:3000
+    stream:
+      flush_interval: 0.3
 """,
         encoding="utf-8",
     )
+    monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
 
-    class PartialYamlConfig(OctomateConfig):
-        model_config = SettingsConfigDict(
-            env_prefix="OCTOMATE_",
-            env_nested_delimiter="__",
-            yaml_file=(config_file,),
-            yaml_config_section="octomate",
-            nested_model_default_partial_update=True,
-            extra="ignore",
-        )
+    config = OctomateConfig()
 
-    config = PartialYamlConfig()
+    assert config.channels["slack"] is not None
+    assert config.channels["slack"].stream.enabled is False
+    assert config.channels["slack"].stream.flush_interval == 0.2
+    assert config.channels["slack"].stream.min_chars == 20
 
-    assert config.channels.slack is not None
-    assert config.channels.slack.stream.enabled is False
-    assert config.channels.slack.stream.flush_interval == 0.2
-    assert config.channels.slack.stream.min_chars == 20
+    assert config.channels["lark"] is not None
+    assert config.channels["lark"].stream.enabled is False
+    assert config.channels["lark"].stream.flush_interval == 0.2
+    assert config.channels["lark"].stream.min_chars == 20
 
-    assert config.channels.lark is not None
-    assert config.channels.lark.stream.enabled is False
-    assert config.channels.lark.stream.flush_interval == 0.2
-    assert config.channels.lark.stream.min_chars == 20
-
-    assert config.channels.napcat is not None
-    assert config.channels.napcat.stream.enabled is False
-    assert config.channels.napcat.stream.flush_interval == 0.3
+    assert config.channels["napcat"] is not None
+    assert config.channels["napcat"].stream.enabled is False
+    assert config.channels["napcat"].stream.flush_interval == 0.3
 
 
 def test_logfire_instrumentation_defaults_off() -> None:
@@ -900,12 +968,13 @@ def test_claim_efforts_default_matches_pydantic_ais_thinking_scale() -> None:
 def test_agent_claims_override_parses_from_config() -> None:
     config = CodexConfig.model_validate(
         {
+            "models": ["gpt-5.5"],
             "claims": {
                 "gpt-5.5": {
                     "ability": "Deep repository work in the acme monorepo.",
                     "efforts": ["low", "medium", "high"],
                 }
-            }
+            },
         }
     )
 
@@ -919,7 +988,7 @@ def test_agent_claims_override_parses_from_config() -> None:
 
 def test_user_links_must_reference_configured_channel() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {
                 "users": {
                     "luhui": {
@@ -989,7 +1058,7 @@ def test_projects_validate_as_projects(
     # and the block's key is the name, whatever the row would otherwise be called.
     monkeypatch.setenv("HOME", str(tmp_path))
 
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {
             "projects": {
                 "octomate": {
@@ -1010,7 +1079,7 @@ def test_projects_validate_as_projects(
 
 def test_a_project_without_a_root_is_refused() -> None:
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate({"projects": {"inky": {"description": "?"}}})
+        OctomateConfig.model_validate({"projects": {"inky": {"description": "?"}}})
 
     [error] = exc_info.value.errors()
     assert "inky.root: Field required" in error["msg"]
@@ -1021,7 +1090,7 @@ def test_a_projects_block_error_says_what_the_block_held() -> None:
     # where the mapping belongs would otherwise fail as a bare `dict_type`, and the
     # one block with nothing to hide is the one that most needs to show itself.
     with pytest.raises(ValidationError) as exc_info:
-        IsolatedTestConfig.model_validate({"projects": [{"root": "~/Projects/inky"}]})
+        OctomateConfig.model_validate({"projects": [{"root": "~/Projects/inky"}]})
 
     [error] = exc_info.value.errors()
     assert "the block: Input should be a valid dictionary" in error["msg"]
@@ -1029,10 +1098,22 @@ def test_a_projects_block_error_says_what_the_block_held() -> None:
 
 
 def test_user_links_accept_configured_channels() -> None:
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {
+            "agents": {
+                "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+            },
             "channels": {
-                "napcat": {"ws_url": "ws://x", "http_url": "http://x"},
+                "napcat": {
+                    "type": "napcat",
+                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+                    "ws_url": "ws://x",
+                    "http_url": "http://x",
+                },
+                "trunkline": {
+                    "type": "trunkline",
+                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+                },
             },
             "users": {
                 "luhui": {
@@ -1056,7 +1137,7 @@ def test_user_links_accept_configured_channels() -> None:
 def test_one_vendor_can_be_mounted_once_per_account() -> None:
     # The key is the connector id, so two Linears differ by name rather than by
     # anything the config has to invent.
-    config = IsolatedTestConfig.model_validate(
+    config = OctomateConfig.model_validate(
         {
             "integrations": {
                 "linear_work": {"type": "linear", "client_id": "lin_a"},
@@ -1080,6 +1161,6 @@ def test_one_vendor_can_be_mounted_once_per_account() -> None:
 def test_an_integration_without_a_type_is_refused() -> None:
     # Nothing else in the block says which provider builds it.
     with pytest.raises(ValidationError, match="tag"):
-        IsolatedTestConfig.model_validate(
+        OctomateConfig.model_validate(
             {"integrations": {"linear_home": {"client_id": "lin_b"}}}
         )

@@ -2,17 +2,16 @@
 
 Trigger tests replay the canonical scenario scripts through a REAL channel
 tentacle into a real chat, so a human can inspect the rendering in the IM
-client. They need two things from the gitignored octomate.yaml: the channel's
-credentials (the regular `octomate.channels` section) and a `trigger:` section
-naming the target chat per channel:
+client. They need two things from the gitignored config home: the channel's
+credentials (the regular `channels.yaml`) and a `trigger.yaml` naming the target
+chat per channel:
 
     trigger:
       slack: {chat_id: D0123, user_id: U0123}
       lark: {chat_type: group, chat_id: oc_xxx, user_id: ou_xxx}
 
-`OctomateConfig` reads only the `octomate:` yaml section, so the sibling
-`trigger:` section is invisible to the application. Tests skip cleanly when
-either piece is missing.
+`trigger.yaml` is not one of the config home's `CONFIG_FILES`, so it is invisible
+to the application. Tests skip cleanly when either piece is missing.
 
 Trigger tests never run as part of a full-suite run: a collection hook below
 skips them unless the invocation explicitly targets tests/trigger (a file,
@@ -26,7 +25,8 @@ you click one) or selects the marker. So both of these fire live:
 from __future__ import annotations
 
 import base64
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -41,7 +41,7 @@ from pydantic_settings import (
 )
 
 from octomate.config import OctomateConfig
-from tests.support.config import PRODUCTION_SOURCES, config_sources
+from octomate.config.base import OCTOMATE_HOME_ENV, config_home
 
 # Real images for the showcase live in tests/src/images (see tests/src/README);
 # the generated 1x1 transparent PNG below is only the fallback when none is there.
@@ -66,9 +66,20 @@ class TriggerTarget(BaseModel):
     thread_id: str = ""
 
 
+@contextmanager
+def real_config_home() -> Generator[None]:
+    """Undo the suite-wide `OCTOMATE_HOME` so discovery finds the machine's own.
+
+    These replays need this machine's actual credentials, which is the point of
+    them — the isolation every other test relies on is exactly what hides them.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.delenv(OCTOMATE_HOME_ENV, raising=False)
+        yield
+
+
 class TriggerTargets(BaseSettings):
     model_config = SettingsConfigDict(
-        yaml_file="octomate.yaml",
         yaml_config_section="trigger",
         extra="ignore",
     )
@@ -86,7 +97,12 @@ class TriggerTargets(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (init_settings, YamlConfigSettingsSource(settings_cls))
+        return (
+            init_settings,
+            YamlConfigSettingsSource(
+                settings_cls, yaml_file=config_home() / "trigger.yaml"
+            ),
+        )
 
 
 def pytest_collection_modifyitems(
@@ -116,16 +132,16 @@ def pytest_collection_modifyitems(
 
 @pytest.fixture(scope="session")
 def live_config() -> Iterator[OctomateConfig]:
-    """The real deployment, which the suite-wide isolation otherwise hides: these
-    replays need this machine's actual credentials, which is the point of them."""
-    with config_sources(PRODUCTION_SOURCES):
+    """The real deployment, which the suite-wide isolation otherwise hides."""
+    with real_config_home():
         yield OctomateConfig()
 
 
 @pytest.fixture(scope="session")
 def trigger_targets() -> TriggerTargets:
     try:
-        return TriggerTargets()
+        with real_config_home():
+            return TriggerTargets()
     except KeyError:
         # No `trigger:` section in octomate.yaml — every trigger test skips.
         # model_construct bypasses the settings sources (which would re-read

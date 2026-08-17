@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 from pydantic import SecretStr
 
-from octomate.config import LarkChannelConfig, LarkStreamConfig
+from octomate.config import AgentModelConfig, LarkChannelConfig, LarkStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.tentacles.channels.feelers.base import Feelers
 from octomate.tentacles.channels.feelers.output import DefaultSegmentsFeeler
@@ -162,6 +162,7 @@ def lark_channel(
         app_id="cli-test",
         app_secret=SecretStr("secret"),
         stream=LarkStreamConfig(flush_interval=0.2, min_chars=1),
+        agents=[AgentModelConfig(agent="inkling", model="test")],
     )
     compose_lark_feelers(channel, deferred_actions)
     return channel

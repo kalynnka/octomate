@@ -95,13 +95,17 @@ def test_default_spills_the_large_and_summarizes_the_enormous() -> None:
     assert isinstance(config.bands[1].action, SummarizeAction)
 
 
-def test_the_shipped_config_leaves_reduction_on() -> None:
-    """`octomate.default.yaml` names no `tool_output`, so a deployment that does
-    not either gets the defaults above rather than unbounded tool returns."""
+def test_an_inkling_naming_no_tool_output_leaves_reduction_on() -> None:
+    """A deployment declares its models and nothing else, so reduction has to be on
+    without being asked for — otherwise one oversized MCP reply rides in history for
+    the rest of the conversation."""
 
-    shipped = OctomateConfig().agents.inkling.tool_output
+    declared = OctomateConfig.model_validate(
+        {"agents": {"inkling": {"models": [{"name": "openai:gpt-4o"}]}}}
+    )
 
-    assert shipped == ToolOutputConfig()
+    assert declared.agents.inkling is not None
+    assert declared.agents.inkling.tool_output == ToolOutputConfig()
 
 
 def test_retention_is_offered_as_a_timedelta() -> None:

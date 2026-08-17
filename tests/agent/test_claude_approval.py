@@ -35,7 +35,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.config import ChannelConfig
+from octomate.config import AgentModelConfig, ChannelConfig
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -49,6 +49,7 @@ from octomate.schemas.deferred import (
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
 from octomate.tentacles.channels.base import ChannelTentacle
+from tests.support.agents import CLAUDE_MODELS
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -79,7 +80,9 @@ class FakeFeelers:
 class FakeChannel:
     feelers: FakeFeelers
     config: ChannelConfig = field(
-        default_factory=lambda: ChannelConfig(type="fake", agents=[])
+        default_factory=lambda: ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="inkling", model="test")]
+        )
     )
 
 
@@ -207,7 +210,7 @@ def _build(
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=config or ClaudeCodeConfig(),
+        config=config or ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
         hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
@@ -380,7 +383,7 @@ async def test_the_conversations_posture_reaches_the_sdk(
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
     tentacle, _dam, feelers = _build(
         FakePresentedBatch(),
-        config=ClaudeCodeConfig(permission_mode=configured),  # pyright: ignore[reportArgumentType]
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), permission_mode=configured),  # pyright: ignore[reportArgumentType]
         # Pre-granted so the scripted gated call needs no card; the posture is what
         # this asserts, not the gating.
         conversation=FakeConversation(
@@ -407,7 +410,7 @@ async def test_approval_timeout_denies_and_expires(
     )
     tentacle, _dam, _feelers = _build(
         FakePresentedBatch(approvals=[approval]),
-        config=ClaudeCodeConfig(approval_timeout=0.01),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), approval_timeout=0.01),
     )
 
     # No one ever answers; the wait times out and the tool is denied.

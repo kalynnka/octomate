@@ -140,7 +140,13 @@ def test_trunkline_router_requires_registered_channel() -> None:
     with pytest.raises(ValueError, match="TrunklineTentacle"):
         build_trunkline_router(octomate, channel_id="trunkline")
 
-    channel = TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
+    channel = TrunklineTentacle(
+        "trunkline",
+        octomate,
+        config=TrunklineChannelConfig(
+            agents=[AgentModelConfig(agent="inkling", model="test")]
+        ),
+    )
     assert isinstance(channel, ChannelTentacle)
     # connect mounts the channel's router (TrunklineTentacle.routers) — no
     # manual include.
@@ -741,7 +747,13 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
     project the thread is filed under and the directory each run ran in."""
     octomate = Octomate()
     octomate.connect(
-        TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
+        TrunklineTentacle(
+            "trunkline",
+            octomate,
+            config=TrunklineChannelConfig(
+                agents=[AgentModelConfig(agent="inkling", model="test")]
+            ),
+        )
     )
     project = Project(root=Path("/srv/inky"), origin="codex")
     octomate.projects = await a_registry(project)

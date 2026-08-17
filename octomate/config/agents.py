@@ -196,6 +196,8 @@ class ToolOutputConfig(BaseModel):
 
 
 class InklingConfig(BaseModel):
+    # Present so all four agents read the same way: declared and enabled, or absent.
+    enabled: bool = True
     models: list[ModelConfig] = Field(min_length=1)
 
     request_limit: int = Field(
@@ -260,8 +262,8 @@ class ClaudeCodeConfig(BaseModel):
     )
     cwd: str = "."
     models: set[ClaudeCodeModelName] = Field(
-        default={"opusplan[1m]", "opus[1m]", "sonnet[1m]", "haiku"},
         min_length=1,
+        description="Claude Code model route labels this agent exposes to channels.",
     )
     claims: dict[ClaudeCodeModelName, Claim] = Field(
         default_factory=dict,
@@ -335,15 +337,6 @@ class CodexConfig(BaseModel):
         ),
     )
     models: set[CodexModelName] = Field(
-        default={
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
-            "gpt-5.5-pro",
-            "gpt-5.3-codex",
-            "gpt-5.1-codex-mini",
-        },
         min_length=1,
         description="Codex model route labels this agent exposes to channels.",
     )
@@ -503,7 +496,6 @@ class DeepseekConfig(BaseModel):
         ),
     )
     models: set[DeepseekModelName] = Field(
-        default={"deepseek-v4-flash", "deepseek-v4-pro"},
         min_length=1,
         description="dsh model route labels this agent exposes to channels.",
     )
@@ -562,14 +554,34 @@ class DeepseekConfig(BaseModel):
 
 
 class AgentsConfig(BaseModel):
-    inkling: InklingConfig = Field(
-        default_factory=lambda: InklingConfig(
-            models=[
-                ModelConfig(name="deepseek:deepseek-v4-flash"),
-                ModelConfig(name="deepseek:deepseek-v4-pro"),
-            ]
-        )
-    )
+    """Every agent is opt-in and omitting one means it is absent, inkling included.
+
+    Nothing here defaults to a model: which LLM an operator has keys for is not
+    something this project can guess, and a defaulted one would be a route that
+    boots fine and 401s on first use. Declaring an agent means declaring at least
+    one model for it, which each agent's own `models` field enforces.
+    """
+
+    inkling: InklingConfig | None = None
     claude: ClaudeCodeConfig | None = None
     codex: CodexConfig | None = None
     deepseek: DeepseekConfig | None = None
+
+    def configured_models(self) -> dict[str, set[str]]:
+        """Each connectable agent id and the model names it routes.
+
+        The one place that knows the four slots and their differing `models`
+        shapes, so a channel route can be checked — and a tentacle built — without
+        anything downstream naming an agent.
+        """
+        configured: dict[str, set[str]] = {}
+        if self.inkling is not None and self.inkling.enabled:
+            configured["inkling"] = {model.name for model in self.inkling.models}
+        for agent_id, agent in (
+            ("claude", self.claude),
+            ("codex", self.codex),
+            ("deepseek", self.deepseek),
+        ):
+            if agent is not None and agent.enabled:
+                configured[agent_id] = set(agent.models)
+        return configured

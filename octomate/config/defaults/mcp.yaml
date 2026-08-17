@@ -1,0 +1,11 @@
+# Bare vendor MCP servers connected over Streamable HTTP with one operator token,
+# mounted process-wide. Tools are deferred-loaded until the model discovers them
+# through ToolSearch.
+
+# mcp:
+#   notion:                     # the key names the server: MCP session id and tool prefix
+#     url: https://mcp.notion.com/mcp
+#     token: ntn_xxx            # or OCTOMATE__MCP__NOTION__TOKEN
+#     prefix: nt                # tool-name prefix (default: the key above)
+#     enabled: true             # default: true
+#     warm_timeout_seconds: 16  # seconds to warm this server (default 16)

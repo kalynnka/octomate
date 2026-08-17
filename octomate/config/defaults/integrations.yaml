@@ -1,0 +1,29 @@
+# Per-user OAuth integrations: each registered user authorizes their own account
+# from their channel, and the integration mounts its MCP server with that user's
+# encrypted token. The key is the connector id — it keys stored connections, names
+# the capability, and prefixes the tools — so one vendor can be mounted once per
+# account. `type` picks the provider that builds it.
+#
+# Enabling any integration requires `oauth.encryption_key`; boot refuses without it.
+
+# integrations:
+#   github:                       # device flow: the user types a code, no callback
+#     type: github
+#     enabled: true
+#     client_id: Iv1.xxxxx        # required — OAuth App with Device Flow enabled
+#     scopes: [repo, read:org]    # fixed at authorization; widening = reconnect
+#     max_cached_users: 32        # warm per-user sessions before LRU close
+#     mcp:
+#       read_only: false          # true => the /readonly endpoint variant
+#       prefix: gh                # tool-name prefix (default: the key above)
+#   linear_me:                    # authorization code: approved in a browser
+#     type: linear
+#     enabled: true
+#     client_id: xxxxx            # required — OAuth application in Linear settings
+#     client_secret: xxxxx        # optional (PKCE covers it); prefer the env var
+#     # Where the authorizing BROWSER reaches Octomate, not where the internet
+#     # does — Linear redirects the user agent, it never connects here. Register
+#     # <callback_base_uri>/oauth/<key>/callback on the Linear application; it
+#     # must match character for character.
+#     callback_base_uri: http://localhost:8000
+#     scopes: [read, write]

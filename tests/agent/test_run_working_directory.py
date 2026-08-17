@@ -41,7 +41,7 @@ from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
-from tests.support.agents import RecordingClaudeClient
+from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, RecordingClaudeClient
 from tests.support.managers import a_registry
 
 CLAUDE_SESSION = "sess-cwd"
@@ -396,7 +396,7 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(cwd="/configured"),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd="/configured"),
         hook_secret=HOOK_SECRET,
     )
 
@@ -422,7 +422,9 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all", cwd="/configured"),
+        config=CodexConfig(
+            models=set(CODEX_MODELS), permission_mode="deny_all", cwd="/configured"
+        ),
         hook_secret=HOOK_SECRET,
     )
 

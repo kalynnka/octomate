@@ -19,7 +19,7 @@ from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import PartStartEvent
 
 from octomate import Octomate
-from octomate.config import ChannelConfig
+from octomate.config import AgentModelConfig, ChannelConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -46,6 +46,7 @@ from octomate.tentacles.agents.deepseek.wire import (
 )
 from octomate.tentacles.channels.base import ChannelTentacle
 from octomate.types.json import JsonObject, JsonValue
+from tests.support.agents import DEEPSEEK_MODELS
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -251,7 +252,9 @@ class FakeFeelers:
 class FakeChannel:
     feelers: FakeFeelers
     config: ChannelConfig = field(
-        default_factory=lambda: ChannelConfig(type="fake", agents=[])
+        default_factory=lambda: ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="inkling", model="test")]
+        )
     )
 
 
@@ -286,7 +289,7 @@ def _tentacle(
     return DeepseekTentacle(
         "deepseek",
         octomate or Octomate(conversations=conversations),
-        config=config or DeepseekConfig(),
+        config=config or DeepseekConfig(models=set(DEEPSEEK_MODELS)),
         hook_secret=SecretStr("the-hook-secret"),
     )
 
@@ -402,7 +405,9 @@ async def test_agent_preset_and_configured_cwd_reach_session_create(
     FakeDeepseekApi.reset(turn_events())
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(cwd="/repo", agent_preset="octopus"),
+        config=DeepseekConfig(
+            models=set(DEEPSEEK_MODELS), cwd="/repo", agent_preset="octopus"
+        ),
     )
 
     async with tentacle:
@@ -731,7 +736,7 @@ async def test_an_expired_approval_answers_cancelled() -> None:
     octomate = interaction_octomate(feelers, deferred_actions)
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(approval_timeout=0.01),
+        config=DeepseekConfig(models=set(DEEPSEEK_MODELS), approval_timeout=0.01),
         octomate=octomate,
     )
     octomate.connect(tentacle)
@@ -945,7 +950,10 @@ async def test_nothing_serving_starts_a_dsh_on_the_configured_port(
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset()
-    tentacle = _tentacle(FakeConversationManager(), config=DeepseekConfig(port=4090))
+    tentacle = _tentacle(
+        FakeConversationManager(),
+        config=DeepseekConfig(models=set(DEEPSEEK_MODELS), port=4090),
+    )
 
     async with tentacle:
         pass

@@ -7,21 +7,26 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 import octomate.database as database
+from octomate.config.base import OCTOMATE_HOME_ENV
 from octomate.models import Base
 from octomate.schemas.base import sqlalchemy_materia
-from tests.support.config import ISOLATED_SOURCES, config_sources
+from tests.support.config import ISOLATED_HOME, without_dotenv
 
 
 @pytest.fixture(scope="session", autouse=True)
 def isolated_config() -> Iterator[None]:
-    """No test reads the developer's `octomate.yaml` or their environment.
+    """No test reads the developer's config home or their environment.
 
-    Both are gitignored, so a suite that merged either would assert against
-    whatever this machine holds — green here, red on a bare checkout. The
-    environment half is not theoretical: an editor that loads `.env` for the test
-    run (VS Code does by default) supplies half a channel's secrets, and the
-    config fails on the half it did not. `OCTOMATE` covers the prefixes of both
-    settings classes. The live suites under tests/trigger opt back out.
+    `./.octomate/` and `~/.octomate/` are both gitignored, so a suite that read
+    either would assert against whatever this machine holds — green here, red on a
+    bare checkout. `OCTOMATE_HOME` is obeyed without probing, which is what makes
+    pointing it at `tests/config/` total for yaml: it covers `OctomateConfig`,
+    `DatabaseSettings`, and anything the CLI builds several frames down.
+
+    Three sources, three defences: the home moves the yaml, `OCTOMATE` covers the
+    exported variables of both settings classes, and `without_dotenv` drops `.env`,
+    which neither of the others reaches. The live suites under tests/trigger opt
+    back out.
     """
     with pytest.MonkeyPatch.context() as patch:
         for name in [
@@ -33,7 +38,8 @@ def isolated_config() -> Iterator[None]:
             if name.startswith("OCTOMATE") and name != "OCTOMATE_DB_URL"
         ]:
             patch.delenv(name)
-        with config_sources(ISOLATED_SOURCES):
+        patch.setenv(OCTOMATE_HOME_ENV, str(ISOLATED_HOME))
+        with without_dotenv():
             yield
 
 
