@@ -34,6 +34,7 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import CardData, CardSegment, ImageData, ImageSegment
 from octomate.schemas.todos import Todo
 from octomate.tentacles.channels.base import ChannelOutput
+from octomate.tentacles.channels.lark.schema import LarkStreamCard
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 from tests.support.channels import (
@@ -399,6 +400,48 @@ async def test_lark_answer_updates_coalesce_off_the_drive_loop() -> None:
     assert contents[0] == "A"
     assert contents[-1] == "ABC"
     assert "AB" not in contents
+
+
+async def test_lark_answer_card_opens_before_the_thinking_card_folds() -> None:
+    # Creating and sending the answer card is two round trips, and folding the
+    # thinking card is a third. Opening the answer card when the text part starts —
+    # and signalling the flusher before folding — keeps all three off the stretch
+    # between the last token and the first visible character.
+    class OrderedInk(FakeLarkInk):
+        def __init__(self) -> None:
+            super().__init__()
+            self.order: list[str] = []
+
+        async def create_stream_card(
+            self, card_data: str, *, element_id: str
+        ) -> LarkStreamCard:
+            self.order.append("open_answer_card")
+            return await super().create_stream_card(card_data, element_id=element_id)
+
+        async def patch_card(self, message_id: str, content: str) -> bool:
+            if "Thought for" in content:
+                self.order.append("fold_thinking")
+            return await super().patch_card(message_id, content)
+
+    ink = OrderedInk()
+    channel = lark_channel(ink)
+    address = ChannelAddress(
+        channel_tentacle_id="lark",
+        chat_type="dm",
+        chat_id="u1",
+        user_id="u1",
+    )
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        yield PartStartEvent(index=1, part=TextPart(content="answer"))
+        yield AgentRunResultEvent(AgentRunResult("answer"))
+
+    await drive(channel, address, events())
+
+    assert ink.order == ["open_answer_card", "fold_thinking"]
 
 
 async def test_lark_subagents_own_cards_separate_from_parent_and_siblings() -> None:

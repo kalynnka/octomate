@@ -44,6 +44,7 @@ octomate:
     # Agent SDK locally. List it in a channel's `agents:` to make it a summon
     # candidate.
     # claude:
+    #   enabled: true
     #   cwd: .
     #   models: [opus, sonnet, haiku]   # opus => Opus 4.8
     #   # A claim advertises what a route is for and the effort levels it
@@ -105,6 +106,40 @@ octomate:
     #   personality: ~             # none | friendly | pragmatic
     #   max_clients: 8             # warm app-server processes kept in the pool; ~ = unbounded
     #   client_idle_ttl: 600       # seconds an idle pooled client lives; ~ = until shutdown
+    # DeepSeek Harness agent (opt-in; omitted => absent). Attaches to a dsh
+    # already serving host:port and starts a `dsh web` child there only when
+    # nothing answers — two harnesses over one DSH_HOME corrupt session logs.
+    # Drives it over its /api gateway. List it in a channel's `agents:` to
+    # make it a summon candidate.
+    # deepseek:
+    #   enabled: true
+    #   host: 127.0.0.1            # where dsh serves /api; 127.0.0.1 | localhost — loopback only, the gateway has no auth
+    #   port: 3080                 # dsh's default bind; a started child binds this same fixed port
+    #   executable: dsh            # command on PATH, or an absolute path to a built dsh
+    #   extra_args: []             # appended after `web --host 127.0.0.1 --port <port>` when starting
+    #   dsh_home: ~/.dsh           # DSH_HOME for a started child; dsh's own default home
+    #   cwd: .
+    #   provider: deepseek-official
+    #   models: [deepseek-v4-pro, deepseek-v4-flash]
+    #   # A model with no claim is not summonable — list a claim for every
+    #   # model you expose. DeepSeek's efforts collapse to off/high/max, so
+    #   # offer `[low, medium, high, xhigh]` at most (no `minimal`).
+    #   claims:
+    #     deepseek-v4-pro:
+    #       ability: DeepSeek coding agent for multi-step engineering across a
+    #         repository.
+    #       efforts: [low, medium, high, xhigh]
+    #     deepseek-v4-flash:
+    #       ability: Fast DeepSeek coding agent for small, well-scoped fixes
+    #         and repository chores.
+    #       efforts: [low, medium]
+    #   permission_mode: workspace-write
+    #     # workspace-write | danger-full-access — dsh's shipped permission
+    #     # presets, each bundling sandbox mode and approval policy; what a
+    #     # conversation falls back to when it carries no posture of its own
+    #   agent_preset: ~            # session.create agentPreset; ~ = dsh's default
+    #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
+    #   ready_timeout: 60          # seconds to wait for the `dsh web:` banner
 
   logging:
     level: ~   # default: INFO

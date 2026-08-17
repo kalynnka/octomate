@@ -17,7 +17,10 @@ ThreadKind = Literal["dm", "group", "thread", "native_thread"]
 # schema that imports it back.
 CLAUDE_NATIVE_ID = "claude-native"
 CODEX_NATIVE_ID = "codex-native"
-NATIVE_TENTACLE_IDS: frozenset[str] = frozenset({CLAUDE_NATIVE_ID, CODEX_NATIVE_ID})
+DEEPSEEK_NATIVE_ID = "deepseek-native"
+NATIVE_TENTACLE_IDS: frozenset[str] = frozenset(
+    {CLAUDE_NATIVE_ID, CODEX_NATIVE_ID, DEEPSEEK_NATIVE_ID}
+)
 
 ThreadMessageDirection = Literal["inbound", "outbound"]
 ChannelActorKind = Literal["human", "agent", "bot", "system"]

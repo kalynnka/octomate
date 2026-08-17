@@ -33,9 +33,12 @@ const CHANNEL_DISPLAY: Record<string, Omit<ChannelMeta, 'id'>> = {
   lark: { label: 'Lark', sub: 'webhook', brand: '#666D82' },
   napcat: { label: 'Napcat', sub: 'ws', brand: '#6A828B' },
   // Keyed by the channel id the relay files a native session's thread under
-  // (CLAUDE_NATIVE_ID / CODEX_NATIVE_ID) — not the agent tentacle's own name.
+  // (CLAUDE_NATIVE_ID / CODEX_NATIVE_ID / DEEPSEEK_NATIVE_ID) — not the agent
+  // tentacle's own name. DeepSeek's tail reads the dsh gateway, not a file,
+  // hence its tagline.
   'claude-native': { label: 'Claude', sub: 'hook · tail', native: true, brand: '#98796A' },
   'codex-native': { label: 'Codex', sub: 'hook · tail', native: true, brand: '#677D73' },
+  'deepseek-native': { label: 'DeepSeek', sub: 'hook · gateway', native: true, brand: '#66709B' },
 }
 
 export function channelMeta(id: string): ChannelMeta {
@@ -62,9 +65,11 @@ function clock(iso: string): string {
 /**
  * Agents with a VS Code extension to hand a thread over to. Inkling has none —
  * it runs inside the relay, so there is no session on this machine to reopen and
- * no directory it was ever working in.
+ * no directory it was ever working in. DeepSeek qualifies through the shared
+ * daemon: its extension attaches to the same dsh the relay drives, so a driven
+ * session is already in the extension's session list.
  */
-const VSCODE_AGENTS = new Set(['claude', 'codex'])
+const VSCODE_AGENTS = new Set(['claude', 'codex', 'deepseek'])
 
 /**
  * Whether VS Code can pick this thread up. A native session always can: its own
@@ -84,7 +89,10 @@ function vscodeCanOpen(channel: string, agent: string | null): boolean {
  * - Codex routes any path into its webview, whose thread route is `/local/<id>`.
  *
  * Both are keyed by the session id the relay files the thread under, so a thread
- * on any other channel has no link — nothing on this machine to reopen.
+ * on any other channel has no link — nothing on this machine to reopen. The dsh
+ * extension registers no URI handler, so a deepseek-native thread gets the
+ * folder open only; its session waits in the extension's own list, which reads
+ * the same shared daemon.
  */
 function sessionLink(channel: string, chatId: string): string | undefined {
   if (!chatId) return undefined

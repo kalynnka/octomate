@@ -30,6 +30,7 @@ from octomate.managers.user import UserManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.codex import CodexTentacle
+from octomate.tentacles.agents.deepseek import DeepseekTentacle
 from octomate.tentacles.agents.inkling import InklingTentacle, build_mcp_toolsets
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.base import TentacleLogFormatter
@@ -225,7 +226,7 @@ def create_app() -> FastAPI:
         ),
     )
 
-    if (claude_config := config.agents.claude) is not None:
+    if (claude_config := config.agents.claude) is not None and claude_config.enabled:
         octomate.connect(
             ClaudeCodeTentacle(
                 "claude",
@@ -242,6 +243,18 @@ def create_app() -> FastAPI:
                 octomate,
                 config=codex_config,
                 hook_secret=hook_secret("codex"),
+            )
+        )
+
+    if (
+        deepseek_config := config.agents.deepseek
+    ) is not None and deepseek_config.enabled:
+        octomate.connect(
+            DeepseekTentacle(
+                "deepseek",
+                octomate,
+                config=deepseek_config,
+                hook_secret=hook_secret("deepseek"),
             )
         )
 

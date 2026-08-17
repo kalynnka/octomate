@@ -16,6 +16,7 @@ from octomate.config import (
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     CodexConfig,
+    DeepseekConfig,
     GitHubIntegrationConfig,
     InklingConfig,
     LarkChannelConfig,
@@ -321,6 +322,44 @@ def test_codex_config_validates_sdk_setting_names() -> None:
         )
 
 
+def test_deepseek_config_defaults_to_the_shipped_shape() -> None:
+    config = DeepseekConfig()
+
+    assert config.models == {"deepseek-v4-flash", "deepseek-v4-pro"}
+    assert config.permission_mode == "workspace-write"
+    assert config.provider == "deepseek-official"
+    assert config.executable == "dsh"
+    # dsh's own default bind, so an ordinary `dsh web` is attached to as-is.
+    assert (config.host, config.port) == ("127.0.0.1", 3080)
+    # dsh's own default home, expanded like any configured value.
+    assert config.dsh_home == Path("~/.dsh").expanduser()
+    # Octomate's one effort scale lands on the llm-deepseek adapter's ids.
+    assert config.efforts == {
+        "minimal": "off",
+        "low": "off",
+        "medium": "high",
+        "high": "high",
+        "xhigh": "max",
+    }
+
+
+def test_deepseek_config_rejects_unknown_model_labels() -> None:
+    with pytest.raises(ValidationError, match="Input should be"):
+        DeepseekConfig.model_validate({"models": {"deepseek-v3"}})
+
+
+def test_deepseek_config_rejects_a_foreign_permission_preset() -> None:
+    with pytest.raises(ValidationError, match="Input should be"):
+        DeepseekConfig.model_validate({"permission_mode": "user_review"})
+
+
+def test_deepseek_config_rejects_a_non_loopback_host() -> None:
+    # The /api gateway has no auth and a started child binds loopback, so a
+    # remote host is refused at load rather than failing at attach time.
+    with pytest.raises(ValidationError, match="Input should be"):
+        DeepseekConfig.model_validate({"host": "dsh.example"})
+
+
 def test_channel_agent_routes_must_reference_configured_agent() -> None:
     with pytest.raises(ValidationError) as exc_info:
         IsolatedTestConfig.model_validate(
@@ -506,6 +545,29 @@ def test_channel_claude_routes_must_reference_configured_model() -> None:
     assert error["msg"] == "'sonnet' is not configured in agents.claude.models"
 
 
+def test_channel_claude_route_requires_enabled_agent_config() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate(
+            {
+                "agents": {"claude": {"enabled": False}},
+                "channels": {
+                    "trunkline": None,
+                    "lark": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "agents": [{"agent": "claude", "model": "sonnet"}],
+                    },
+                },
+            },
+        )
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["msg"] == "'claude' does not match a configured agent tentacle"
+
+
 def test_channel_codex_routes_must_reference_configured_model() -> None:
     with pytest.raises(ValidationError) as exc_info:
         IsolatedTestConfig.model_validate(
@@ -550,6 +612,54 @@ def test_channel_codex_route_requires_enabled_agent_config() -> None:
     [error] = exc_info.value.errors()
     assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
     assert error["msg"] == "'codex' does not match a configured agent tentacle"
+
+
+def test_channel_deepseek_routes_must_reference_configured_model() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate(
+            {
+                "agents": {"deepseek": {"models": ["deepseek-v4-flash"]}},
+                "channels": {
+                    "trunkline": None,
+                    "lark": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "agents": [{"agent": "deepseek", "model": "deepseek-v4-pro"}],
+                    },
+                },
+            },
+        )
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
+    assert (
+        error["msg"] == "'deepseek-v4-pro' is not configured in agents.deepseek.models"
+    )
+
+
+def test_channel_deepseek_route_requires_enabled_agent_config() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        IsolatedTestConfig.model_validate(
+            {
+                "agents": {"deepseek": {"enabled": False}},
+                "channels": {
+                    "trunkline": None,
+                    "lark": None,
+                    "napcat": None,
+                    "slack": {
+                        "app_id": "A-test",
+                        "bot_token": "xoxb-test",
+                        "app_token": "xapp-test",
+                        "agents": [{"agent": "deepseek", "model": "deepseek-v4-pro"}],
+                    },
+                },
+            },
+        )
+    [error] = exc_info.value.errors()
+    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["msg"] == "'deepseek' does not match a configured agent tentacle"
 
 
 def test_channel_inkling_routes_must_reference_configured_model() -> None:

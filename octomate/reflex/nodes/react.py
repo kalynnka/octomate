@@ -230,7 +230,10 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     async with target_channel.feelers.timeline.open(
                         target_address
                     ) as timeline_state:
-                        await timeline_state.drive(stream_events())
+                        with target_channel.feelers.driving(
+                            target_address, timeline_state
+                        ):
+                            await timeline_state.drive(stream_events())
                 except AgentRunError:
                     # A model/provider failure (e.g. invalid Bedrock credentials)
                     # surfaces here from the run stream itself, not the render. It

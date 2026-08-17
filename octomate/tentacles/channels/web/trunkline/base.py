@@ -22,7 +22,6 @@ import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, TypeAlias
 
 import anyio
@@ -64,7 +63,6 @@ from octomate.tentacles.channels.base import (
     DownloadedImage,
     IMMessageID,
     Ink,
-    StaticMount,
     ThreadStrategy,
 )
 from octomate.tentacles.channels.feelers.deferred import ApprovalFeeler, QuestionFeeler
@@ -376,9 +374,6 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
     # its own thread without triage. There is no seam to open a sub-thread and no
     # DM surface, so `surfaces` stays empty.
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
-    # The built console SPA, resolved from the serving directory like
-    # FILES_ROOT is. `static_mounts` skips it while unbuilt.
-    CONSOLE_DIST: ClassVar[Path] = Path("trunkline/dist")
 
     config: TrunklineChannelConfig
 
@@ -412,32 +407,6 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         )
 
         return (build_trunkline_router(self.octomate, channel_id=self.id),)
-
-    def static_mounts(self) -> tuple[StaticMount, ...]:
-        """The console SPA at the app root — one entry serves UI and API.
-        Empty when config opts out (Vite dev server, separate deployment)."""
-        if not self.config.serve_console:
-            logger.info(
-                "Trunkline console serving disabled by config; the API serves "
-                "under /api/trunkline."
-            )
-            return ()
-        if not self.CONSOLE_DIST.is_dir():
-            logger.info(
-                "Trunkline console assets not built (%s missing); the API still "
-                "serves under /api/trunkline — run `pnpm build` in trunkline/ or "
-                "use the Vite dev server.",
-                self.CONSOLE_DIST,
-            )
-            return ()
-        logger.info("Trunkline console enabled — serving %s at /.", self.CONSOLE_DIST)
-        return (
-            StaticMount(
-                path="/",
-                directory=self.CONSOLE_DIST,
-                name="trunkline-console",
-            ),
-        )
 
     def routable_agents(self) -> list[AgentModelConfig]:
         """Every agent-model route the console can open a thread on.

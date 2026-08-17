@@ -39,6 +39,7 @@ from pydantic import SecretStr
 from uuid_utils import uuid7
 
 from octomate.schemas.segments import ImageSegment
+from octomate.telemetry import lark_logfire
 from octomate.tentacles.channels.base import DownloadedImage, Ink
 from octomate.tentacles.channels.feelers.output import IMMessageID
 from octomate.tentacles.channels.lark.schema import (
@@ -280,6 +281,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
         """A user's own open_id is their 1:1 chat id, so nothing has to be opened."""
         return user_id or None
 
+    @lark_logfire.instrument("lark.send_message", extract_args=["chat_id", "chat_type"])
     async def send_message(
         self,
         chat_id: str,
@@ -340,6 +342,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
             reply_in_thread=reply_in_thread,
         )
 
+    @lark_logfire.instrument("lark.create_stream_card", extract_args=False)
     async def create_stream_card(
         self,
         card_data: str,
@@ -396,32 +399,36 @@ class LarkInk(Ink[LarkOutboundMessage]):
         content: str,
         sequence: int,
     ) -> bool:
-        request = (
-            ContentCardElementRequest.builder()
-            .card_id(card.card_id)
-            .element_id(card.element_id)
-            .request_body(
-                ContentCardElementRequestBody.builder()
-                .uuid(str(uuid7()))
-                .content(content)
-                .sequence(sequence)
+        with lark_logfire.span(
+            "lark.update_stream_card", chars=len(content), sequence=sequence
+        ):
+            request = (
+                ContentCardElementRequest.builder()
+                .card_id(card.card_id)
+                .element_id(card.element_id)
+                .request_body(
+                    ContentCardElementRequestBody.builder()
+                    .uuid(str(uuid7()))
+                    .content(content)
+                    .sequence(sequence)
+                    .build()
+                )
                 .build()
             )
-            .build()
-        )
-        try:
-            resp = await self.client.cardkit.v1.card_element.acontent(request)  # type: ignore[union-attr]
-            if resp.success():
-                return True
-            logger.warning(
-                "LarkInk: update stream card failed: %s %s",
-                resp.code,
-                resp.msg,
-            )
-        except Exception:
-            logger.warning("LarkInk: update stream card failed", exc_info=True)
-        return False
+            try:
+                resp = await self.client.cardkit.v1.card_element.acontent(request)  # type: ignore[union-attr]
+                if resp.success():
+                    return True
+                logger.warning(
+                    "LarkInk: update stream card failed: %s %s",
+                    resp.code,
+                    resp.msg,
+                )
+            except Exception:
+                logger.warning("LarkInk: update stream card failed", exc_info=True)
+            return False
 
+    @lark_logfire.instrument("lark.finish_stream_card", extract_args=["sequence"])
     async def finish_stream_card(
         self,
         card: LarkStreamCard,
@@ -463,20 +470,23 @@ class LarkInk(Ink[LarkOutboundMessage]):
 
     async def patch_card(self, message_id: str, content: str) -> bool:
         """Replace the card of an already-sent interactive message in place."""
-        request = (
-            PatchMessageRequest.builder()
-            .message_id(message_id)
-            .request_body(PatchMessageRequestBody.builder().content(content).build())
-            .build()
-        )
-        try:
-            resp = await self.client.im.v1.message.apatch(request)  # type: ignore[union-attr]
-            if resp.success():
-                return True
-            logger.warning("LarkInk: patch card failed: %s %s", resp.code, resp.msg)
-        except Exception:
-            logger.warning("LarkInk: patch card failed", exc_info=True)
-        return False
+        with lark_logfire.span("lark.patch_card", chars=len(content)):
+            request = (
+                PatchMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(
+                    PatchMessageRequestBody.builder().content(content).build()
+                )
+                .build()
+            )
+            try:
+                resp = await self.client.im.v1.message.apatch(request)  # type: ignore[union-attr]
+                if resp.success():
+                    return True
+                logger.warning("LarkInk: patch card failed: %s %s", resp.code, resp.msg)
+            except Exception:
+                logger.warning("LarkInk: patch card failed", exc_info=True)
+            return False
 
     async def _create_message(
         self,

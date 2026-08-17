@@ -368,13 +368,25 @@ class LarkRunStateCards(TimelineState):
         else:
             await self.post(folded)
 
+    async def answer_start(self) -> None:
+        # Open the answer card when the text part starts rather than on its first
+        # flush: creating and sending it is ~0.9s of round trips, and leaving it to
+        # the first delta puts all of it between the last token and the first
+        # visible character.
+        await self.ensure_answer_card()
+
     async def answer_delta(self, text: str | None) -> None:
         if not text:
             return
-        await self.fold_thinking()
         self.noticed = True
         self.answer_batcher.push_text(text)
+        # Signal before folding, not after: the flusher pushes the card from its own
+        # task, so the fold's patch and the answer's update are two round trips at
+        # once instead of one behind the other. The answer card lands under a
+        # thinking card that is still open and collapses a moment later — the
+        # trade for showing the answer a round trip sooner.
         self.answer_flusher.signal()
+        await self.fold_thinking()
 
     async def flush_answer(self) -> None:
         """Push the answer card off the drive loop: each cardkit update is one ~2s

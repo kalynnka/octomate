@@ -854,6 +854,13 @@ class TimelineState:
                     action.id, message_ids.get(action.id)
                 )
 
+    async def actions_presented(self) -> None:
+        """A deferred-action batch was just presented into this timeline's
+        thread from *outside* its stream — an agent's in-process bridge parking
+        its live run on a human. Nothing will flow until the answer, so a
+        surface with live status should settle it and say so; the base renders
+        no status, so there is nothing to settle."""
+
     async def begin_entry(self) -> None:
         """A new timeline entry is opening: if answer content streamed since
         the last rotation, that content was a mid-run notice — rotate first."""

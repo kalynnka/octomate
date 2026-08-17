@@ -27,4 +27,5 @@ lark_logfire = logfire.with_settings(custom_scope_suffix="lark")
 # Agents, each scoped to the runtime it fronts.
 claude_logfire = logfire.with_settings(custom_scope_suffix="claude")
 codex_logfire = logfire.with_settings(custom_scope_suffix="codex")
+deepseek_logfire = logfire.with_settings(custom_scope_suffix="deepseek")
 inkling_logfire = logfire.with_settings(custom_scope_suffix="inkling")

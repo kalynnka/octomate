@@ -498,6 +498,69 @@ async def test_slack_text_stream_rotates_before_slack_expires(
     assert ink.stream_objects[1].appends == [" again"]
 
 
+async def test_slack_text_stream_opens_while_the_plan_is_still_closing() -> None:
+    # `chat.stopStream` is a full round-trip. The plan's close runs on its own task,
+    # so the message that follows it opens straight away instead of queueing behind
+    # it — and every close still lands before the run lets go of its surfaces.
+    class OrderedInk(FakeSlackInk):
+        def __init__(self) -> None:
+            super().__init__()
+            self.order: list[str] = []
+            self.plan: FakeSlackStream | None = None
+
+        async def start_stream(
+            self,
+            channel: str,
+            thread_ts: str,
+            *,
+            recipient_user_id: str | None = None,
+            recipient_team_id: str | None = None,
+            task_display_mode: str | None = None,
+        ) -> FakeSlackStream:
+            stream = await super().start_stream(
+                channel,
+                thread_ts,
+                recipient_user_id=recipient_user_id,
+                recipient_team_id=recipient_team_id,
+                task_display_mode=task_display_mode,
+            )
+            if task_display_mode == slack_output.TASK_DISPLAY_MODE:
+                self.plan = stream
+                self.order.append("open plan")
+            else:
+                self.order.append("open message")
+            return stream
+
+        async def stop_stream(
+            self,
+            stream: FakeSlackStream,
+            *,
+            markdown_text: str | None = None,
+        ) -> str:
+            self.order.append("close plan" if stream is self.plan else "close message")
+            return await super().stop_stream(stream, markdown_text=markdown_text)
+
+    ink = OrderedInk()
+    channel = slack_channel(ink)
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=ThinkingPart(content="checking"))
+        yield PartStartEvent(index=1, part=TextPart(content="answer"))
+        yield AgentRunResultEvent(AgentRunResult("answer"))
+
+    await drive(channel, slack_key(), events())
+
+    # The answer's message opened before the plan's close went out, not after it.
+    assert ink.order.index("open message") < ink.order.index("close plan")
+    plan, text = ink.stream_objects
+    assert plan.chunks
+    assert plan.stopped
+    assert "answer" in "".join(text.appends)
+    assert text.stopped
+
+
 async def test_slack_subagents_own_streams_separate_from_parent_and_siblings() -> None:
     ink = FakeSlackInk()
     channel = slack_channel(ink)
@@ -560,3 +623,32 @@ async def test_slack_subagents_own_streams_separate_from_parent_and_siblings() -
     assert "test result" in str(second_stream.chunks)
     assert "docs result" in str(third_stream.chunks)
     assert all(stream.stopped for stream in ink.stream_objects)
+
+
+async def test_actions_presented_folds_the_surface_and_sets_waiting() -> None:
+    """An in-process agent bridge presented cards while the run stream is
+    live: the thinking spinner completes and the assistant status says the run
+    waits on the human, instead of both outliving the parked work."""
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+
+    async with channel.feelers.timeline.open(slack_key()) as state:
+        await state.thinking_start()
+        await state.actions_presented()
+
+        # Status hints and stream closes are fire-and-forget tasks; let them
+        # land before looking.
+        assert isinstance(state, slack_output.SlackTimelineState)
+        if state.status_tasks:
+            await asyncio.gather(*state.status_tasks)
+        await state.join_stops()
+        assert ink.statuses[-1] == slack_output.STATUS_WAITING
+        [plan] = ink.stream_objects
+        assert plan.stopped
+        task_chunks = [
+            chunk
+            for chunks in ink.stream_chunks
+            for chunk in chunks
+            if isinstance(chunk, TaskUpdateChunk)
+        ]
+        assert task_chunks[-1].status == "complete"

@@ -161,21 +161,6 @@ def test_trunkline_router_requires_registered_channel() -> None:
     assert "/api/trunkline/batches/{batch_id}/resolve" in paths
 
 
-def test_static_mounts_respect_serve_console(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    octomate = Octomate()
-    monkeypatch.setattr(TrunklineTentacle, "CONSOLE_DIST", tmp_path)
-
-    served = TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
-    assert [mount.path for mount in served.static_mounts()] == ["/"]
-
-    skipped = TrunklineTentacle(
-        "trunkline2", octomate, config=TrunklineChannelConfig(serve_console=False)
-    )
-    assert skipped.static_mounts() == ()
-
-
 async def test_directive_streams_native_events(
     in_memory_engine: AsyncEngine,
 ) -> None:

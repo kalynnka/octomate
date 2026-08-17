@@ -99,15 +99,6 @@ class TrunklineChannelConfig(ChannelConfig):
     # Annotated as the subclass so a YAML `stream:` override keeps the
     # console defaults (the base class would flip `enabled` back to False).
     stream: TrunklineStreamConfig = Field(default_factory=TrunklineStreamConfig)
-    serve_console: bool = Field(
-        default=True,
-        description=(
-            "Serve the built console SPA (trunkline/dist) from the app root. Disable "
-            "when the Vite dev server fronts the UI or the SPA is deployed "
-            "separately — the API keeps serving either way "
-            "(OCTOMATE__CHANNELS__TRUNKLINE__SERVE_CONSOLE=false)."
-        ),
-    )
 
 
 class NapcatChannelConfig(ChannelConfig):
