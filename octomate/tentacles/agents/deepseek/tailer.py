@@ -98,13 +98,31 @@ def stamp(messages: list[ModelMessage], timestamp: datetime) -> None:
 
 @dataclass
 class PendingPrompt:
-    """One `user/message` seen between turns — the prompt(s) the next
-    `turn/start` belongs to."""
+    """One human `user/message` — the ledger row's raw material."""
 
     text: str
     time: datetime
     seq: int
     via_gateway: bool
+
+
+def human_prompt(event: SessionEvent) -> PendingPrompt | None:
+    """The human's own words in a `user/message`, or None. dsh logs injected
+    user-role messages in the same turn — `agent-instructions`, `plugin`
+    runtime context — which are the harness talking, not the ledger's prompt;
+    only `source.kind == "user"` is the person."""
+    message = user_message_of(event)
+    if message is None or message.source.kind != "user":
+        return None
+    text = text_of(message.content)
+    if not text:
+        return None
+    return PendingPrompt(
+        text=text,
+        time=event_time(event),
+        seq=event.seq,
+        via_gateway=message.source.rpc_id is not None,
+    )
 
 
 @dataclass
@@ -250,18 +268,9 @@ class DeepseekEventTailer:
         event = entry.event
         if state.open_turn is None:
             if event.type == "user/message":
-                message = user_message_of(event)
-                text = text_of(message.content) if message is not None else ""
-                if text:
-                    state.prompts.append(
-                        PendingPrompt(
-                            text=text,
-                            time=event_time(event),
-                            seq=event.seq,
-                            via_gateway=message is not None
-                            and message.source.rpc_id is not None,
-                        )
-                    )
+                prompt = human_prompt(event)
+                if prompt is not None:
+                    state.prompts.append(prompt)
             elif event.type == "permission/preset":
                 await self.record_permission_mode(state, permission_preset_of(event))
             elif event.type == "turn/start":
@@ -277,9 +286,23 @@ class DeepseekEventTailer:
                 )
                 self.fold(state.open_turn, state.session_id, entry)
             return
-        self.fold(state.open_turn, state.session_id, entry)
-        if state.open_turn.accumulator.turn_ended:
-            turn = state.open_turn
+        turn = state.open_turn
+        if event.type == "user/message":
+            # The turn's own prompt arrives *inside* it — dsh opens the turn,
+            # then splices the inbox into the step — and a steered prompt lands
+            # the same way, so every human message joins the turn's ledger row.
+            prompt = human_prompt(event)
+            if prompt is not None:
+                turn.prompt_text = (
+                    f"{turn.prompt_text}\n\n{prompt.text}"
+                    if turn.prompt_text
+                    else prompt.text
+                )
+                if turn.prompt_time is None:
+                    turn.prompt_time = prompt.time
+                turn.prompt_via_gateway = turn.prompt_via_gateway or prompt.via_gateway
+        self.fold(turn, state.session_id, entry)
+        if turn.accumulator.turn_ended:
             state.open_turn = None
             end = turn_end_of(event)
             if end is not None and end.turn is not None:

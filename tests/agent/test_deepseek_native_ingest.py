@@ -43,6 +43,24 @@ def ev(seq: int, kind: str, data: JsonValue) -> JsonObject:
     return {"type": kind, "seq": seq, "time": BASE_TIME_MS + seq * 1000, "data": data}
 
 
+def user_message(
+    seq: int, text: str, *, kind: str = "user", rpc_id: str | None = None
+) -> JsonObject:
+    source: JsonObject = {"kind": kind}
+    if rpc_id is not None:
+        source["rpcId"] = rpc_id
+    return ev(
+        seq,
+        "user/message",
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": text}],
+            "source": source,
+            "id": f"user-{seq}",
+        },
+    )
+
+
 def turn_events(
     turn: int,
     base_seq: int,
@@ -52,21 +70,11 @@ def turn_events(
     reason: str = "completed",
     rpc_id: str | None = None,
 ) -> list[JsonObject]:
-    source: JsonObject = {"kind": "user"}
-    if rpc_id is not None:
-        source["rpcId"] = rpc_id
+    # The log's real per-turn order: the turn opens first, then dsh splices the
+    # inbox into the step — the prompt lands *inside* the turn.
     return [
-        ev(
-            base_seq,
-            "user/message",
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}],
-                "source": source,
-                "id": f"user-{turn}",
-            },
-        ),
-        ev(base_seq + 1, "turn/start", {"turn": turn}),
+        ev(base_seq, "turn/start", {"turn": turn}),
+        user_message(base_seq + 1, prompt, rpc_id=rpc_id),
         ev(
             base_seq + 2,
             "assistant/message",
@@ -151,6 +159,55 @@ async def test_streamed_events_assemble_the_turn_and_its_ledger() -> None:
     assert directions == [("inbound", "inspect it"), ("outbound", "done")]
 
 
+async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
+    """dsh logs `agent-instructions` and `plugin` context as user-role
+    messages inside the turn; the ledger's prompt is the human's words only —
+    the opening prompt plus anything steered in later."""
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+
+    await stream_events(
+        tailer,
+        [
+            ev(0, "turn/start", {"turn": 1}),
+            user_message(1, "hi", rpc_id="rpc-1"),
+            user_message(
+                2,
+                "<system-reminder>workspace rules</system-reminder>",
+                kind="agent-instructions",
+            ),
+            user_message(3, "Current runtime context.", kind="plugin"),
+            user_message(4, "also check the tests", rpc_id="rpc-2"),
+            ev(
+                5,
+                "assistant/message",
+                {
+                    "turn": 1,
+                    "step": 1,
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "done"}],
+                        "source": {"kind": "model", "provider": "p", "model": "m"},
+                        "id": "assistant-1",
+                    },
+                },
+            ),
+            ev(6, "turn/end", {"turn": 1, "reason": {"kind": "completed"}}),
+        ],
+    )
+
+    conversation = await native_conversation(octomate)
+    [run] = conversation.runs
+    request = next(m for m in run.messages if isinstance(m, ModelRequest))
+    assert request.parts[0].content == "hi\n\nalso check the tests"
+    assert run.source == "gateway"
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
+    )
+    inbound = [m.message_text for m in thread.messages if m.direction == "inbound"]
+    assert inbound == ["hi\n\nalso check the tests"]
+
+
 async def test_a_reconnect_resumes_past_the_committed_floor() -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
@@ -200,7 +257,9 @@ async def test_runs_are_dated_by_the_log_not_the_replay() -> None:
     [run] = conversation.runs
     request = next(m for m in run.messages if isinstance(m, ModelRequest))
     response = next(m for m in run.messages if isinstance(m, ModelResponse))
-    assert request.timestamp == datetime.fromtimestamp(BASE_TIME_MS / 1000, tz=UTC)
+    assert request.timestamp == datetime.fromtimestamp(
+        (BASE_TIME_MS + 1000) / 1000, tz=UTC
+    )
     assert response.timestamp == datetime.fromtimestamp(
         (BASE_TIME_MS + 2000) / 1000, tz=UTC
     )

@@ -22,9 +22,11 @@ def entry(seq: int, kind: str, data: object = None) -> dict[str, object]:
 
 
 def turn(base: int, *, reason: str = "completed") -> list[dict[str, object]]:
+    # The log's real per-turn order: the turn opens first, the prompt splices
+    # in after it.
     return [
-        entry(base, "user/message", {"content": [{"type": "text", "text": "ask"}]}),
-        entry(base + 1, "turn/start", {"turn": 1}),
+        entry(base, "turn/start", {"turn": 1}),
+        entry(base + 1, "user/message", {"content": [{"type": "text", "text": "ask"}]}),
         entry(
             base + 2, "assistant/chunk", {"chunk": {"type": "text-delta", "text": "a"}}
         ),
@@ -101,8 +103,8 @@ def test_an_interrupted_tail_withholds_the_trailing_turn() -> None:
 
     shipped = shippable(entries)
 
-    # The first turn and the second's prompt ship; the trailing turn waits.
-    assert [seq_of(item) for item in shipped] == [0, 1, 2, 3, 4]
+    # The first turn ships whole; the trailing turn — prompt included — waits.
+    assert [seq_of(item) for item in shipped] == [0, 1, 2, 3]
 
 
 def test_an_interrupted_turn_with_a_successor_ships() -> None:

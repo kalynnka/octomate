@@ -43,8 +43,11 @@ limitations the first version accepts, and why.
      tail against `session.list` and skipped rather than ingested as threads
      of their own — the server never sees the session header, so a hand-run
      tail on a child id would mis-file it.
-   - Prompts steered into a live turn ride the turn's replay metadata, not the
-     ledger row — the row carries the prompts that opened the turn.
+   - A turn's prompt arrives *inside* it (dsh opens the turn, then splices the
+     inbox into the step), and dsh logs injected user-role messages there too.
+     The ledger row joins every `source.kind == "user"` message of the turn —
+     steered prompts included — and leaves the harness's own injections
+     (`agent-instructions`, `plugin` context) to the replay metadata.
    - Suppression of octomate's own driven sessions is a live claim around each
      driven turn: their hooks are dropped and their tails refused at the
      stream handshake. A driven session later prompted *natively* (dsh's web
