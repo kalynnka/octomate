@@ -6,12 +6,24 @@ import logging
 import uuid
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, get_args, overload
 from uuid import uuid4
 
 import httpx
-from pydantic import HttpUrl
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from octomate_cli.stream import (
+    SESSION_FILE,
+    STREAM_PROTOCOL,
+    StreamEof,
+    StreamFinalize,
+    StreamHello,
+    StreamWelcome,
+    client_message_adapter,
+)
+from pydantic import HttpUrl, SecretStr, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -43,6 +55,7 @@ from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import DeepseekConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -57,7 +70,10 @@ from octomate.tentacles.agents.deepseek.adapter import (
     DeepseekRunAccumulator,
 )
 from octomate.tentacles.agents.deepseek.client import DeepseekApiClient
+from octomate.tentacles.agents.deepseek.hooks import DeepseekHookInput
+from octomate.tentacles.agents.deepseek.ingest import DeepseekHookIngest
 from octomate.tentacles.agents.deepseek.process import DeepseekProcess
+from octomate.tentacles.agents.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.agents.deepseek.wire import (
     ApprovalRequestedFrame,
     CommandExecutionValue,
@@ -71,6 +87,7 @@ from octomate.tentacles.agents.deepseek.wire import (
     SessionPromptValue,
     StreamErrorFrame,
 )
+from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject, JsonValue
 from octomate.types.permissions import DeepseekPermissionMode, is_deepseek_mode
@@ -107,9 +124,20 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     turns. The event
     stream is translated into the same pydantic-ai event and message
     projections channel feelers already render for other agents.
+
+    Native sessions — ones a person drives in dsh's own web UI, CLI, or
+    another gateway client — are ingested too: the hook router takes the
+    events dsh's `dsh-hooks-claude-code` bridge POSTs in, and the stream
+    endpoint takes each session's history entries from the client-side tail
+    (`octomate deepseek tail`, reading *its* machine's dsh gateway) for the
+    tailer to assemble into turns. Sessions this tentacle drives itself are
+    claimed (`DeepseekHookIngest.driving`) so their hooks are dropped and
+    their tails refused rather than recorded twice.
     """
 
     config: DeepseekConfig = field(init=False)
+    # Bearer credential its hook router requires of native sessions.
+    hook_secret: SecretStr = field(init=False, repr=False)
     process: DeepseekProcess | None = field(default=None, init=False, repr=False)
     client: DeepseekApiClient = field(init=False, repr=False)
     mux_socket: ClientConnection | None = field(default=None, init=False, repr=False)
@@ -146,10 +174,12 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: DeepseekConfig,
+        hook_secret: SecretStr,
         description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.config = config
+        self.hook_secret = hook_secret
         self.description = description or self.description
         self.process = None
         # The endpoint is fixed by config, so the client lives as long as the
@@ -175,6 +205,156 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         # Serializes turns per conversation: dsh queues a second prompt into a
         # live turn as steering, which would interleave two runs' frames.
         self.conversation_locks = SessionLocks()
+        self.session_locks = SessionLocks()
+        self.session_tailer = DeepseekEventTailer(
+            self.octomate.conversations,
+            self.octomate.thread_manager,
+            self.octomate.projects,
+            self.session_locks,
+        )
+        self.session_ingest = DeepseekHookIngest(
+            self.octomate,
+            self.session_tailer,
+            self.session_locks,
+        )
+
+    def routers(self) -> tuple[APIRouter]:
+        return (self.hook_router,)
+
+    @cached_property
+    def hook_router(self) -> APIRouter:
+        """The hook pipe native dsh sessions POST their events into, and the
+        stream endpoint every session's client-side tail feeds history entries
+        through (`octomate deepseek tail`) — a tail that reads its machine's
+        dsh gateway, not a file, since the log is zstd-framed and the gateway
+        serves it decoded. The server never speaks to a client machine's dsh.
+        The guard covers the websocket too: FastAPI runs router dependencies
+        at the handshake, so a bad bearer is denied with the same 401 before
+        any socket opens."""
+        router = APIRouter(
+            tags=["deepseek"], dependencies=[Depends(hook_guard(self.hook_secret))]
+        )
+
+        @router.post("/hooks/deepseek", summary="dsh native-session hook pipe")
+        async def receive_hook(event: DeepseekHookInput) -> JSONResponse:
+            await self.session_ingest.handle(event)
+            return JSONResponse({})
+
+        @router.websocket("/hooks/deepseek/stream")
+        async def stream(websocket: WebSocket) -> None:
+            await self.stream_session(websocket)
+
+        return router
+
+    async def stream_session(self, websocket: WebSocket) -> None:
+        """One remote tail's connection, up to its attach: take the hello and
+        refuse what cannot stream — a stale protocol loudly, and a session this
+        tentacle is driving itself, whose events ingested here would write the
+        conversation a second time (`DeepseekHookIngest.driving`)."""
+        await websocket.accept()
+        try:
+            hello = client_message_adapter.validate_json(await websocket.receive_text())
+        except ValidationError:
+            await websocket.close(code=1008, reason="expected a hello message")
+            return
+        except WebSocketDisconnect:
+            return
+        if not isinstance(hello, StreamHello):
+            await websocket.close(code=1008, reason="expected a hello message")
+            return
+        if hello.protocol != STREAM_PROTOCOL:
+            await websocket.close(
+                code=1008,
+                reason=f"protocol {hello.protocol} unsupported; server speaks "
+                f"{STREAM_PROTOCOL}",
+            )
+            return
+        if hello.session_id in self.session_ingest.driven:
+            await websocket.close(code=1008, reason="octomate drives this session")
+            return
+        # Its own materia context: a stream outlives any request.
+        with sqlalchemy_materia():
+            await self.stream_attached(websocket, hello)
+
+    async def stream_attached(self, websocket: WebSocket, hello: StreamHello) -> None:
+        """The attached half of a stream connection: register the session,
+        answer the resume seq, then feed each framed entry through the
+        tailer's assembly. Offsets are event seqs (`end` is `seq + 1`), and
+        the contiguity check works unchanged in that space — dsh seqs are
+        dense per session. dsh turns close on their own `turn/end` lines, so
+        nothing commits at the boundary either way; a `Stop` on the hook pipe
+        reaches here as the state's `stop_event` (`stop_turn`, once the
+        stopped turn is durable or its wait ran out), and the relayed
+        `finalize` asks the client for its final drain and `eof`."""
+        state, offsets = await self.session_tailer.attach_remote(
+            hello.session_id, Path(hello.transcript_path), hello.cwd
+        )
+        logger.info(
+            "session %s: remote tail connected (octomate %s)",
+            hello.session_id,
+            hello.client_version or "unversioned",
+        )
+        await websocket.send_text(StreamWelcome(offsets=offsets).model_dump_json())
+
+        async def relay_finalize() -> None:
+            await state.stop_event.wait()
+            try:
+                await websocket.send_text(StreamFinalize().model_dump_json())
+            except Exception:
+                logger.debug(
+                    "session %s: finalize relay lost its socket", hello.session_id
+                )
+
+        relay = asyncio.create_task(relay_finalize())
+        expected = dict(offsets)
+        clean = False
+        try:
+            while True:
+                message = client_message_adapter.validate_json(
+                    await websocket.receive_text()
+                )
+                if isinstance(message, StreamEof):
+                    clean = True
+                    return
+                if isinstance(message, StreamHello):
+                    await websocket.close(code=1008, reason="hello already received")
+                    return
+                if message.agent_id is not None:
+                    # A dsh session streams as one event sequence; there are no
+                    # sibling files to label.
+                    await websocket.close(
+                        code=1008, reason="deepseek streams a single sequence"
+                    )
+                    return
+                want = expected.get(SESSION_FILE, 0)
+                if message.start != want:
+                    await websocket.close(
+                        code=4000,
+                        reason=f"seq gap: expected {want}, got {message.start}",
+                    )
+                    return
+                expected[SESSION_FILE] = message.end
+                await self.session_tailer.feed_remote(
+                    state, None, message.line, message.start, message.end
+                )
+        except WebSocketDisconnect:
+            pass
+        except ValidationError:
+            await websocket.close(code=1008, reason="unparseable stream message")
+        except Exception:
+            logger.exception(
+                "session %s: remote tail errored; its open turn is left for the "
+                "next connect to re-stream",
+                hello.session_id,
+            )
+        finally:
+            relay.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await relay
+            self.session_tailer.detach_remote(state)
+            if clean:
+                with contextlib.suppress(Exception):
+                    await websocket.close()
 
     async def attach_or_start(self) -> DeepseekProcess | None:
         """The harness behind the client's endpoint, attach-first: a dsh
@@ -243,6 +423,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
     async def __aexit__(self, *exc: object) -> None:
         self.closing = True
+        self.session_ingest.shutdown()
+        await self.session_tailer.shutdown()
         for session_id in list(self.subscribers):
             with contextlib.suppress(Exception):
                 await self.client.call("session.cancel", {"sessionId": session_id})
@@ -656,51 +838,60 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     interactive=interactive,
                 )
                 prompted = False
-                try:
-                    prompt_value = SessionPromptValue.model_validate(
-                        self.unwrap(
-                            await client.call(
+                # Claimed before the prompt goes out: the turn's hooks —
+                # `UserPromptSubmit` at pre-step, `Stop` inside turn-stopping,
+                # both ahead of the `turn/end` that ends this scope — must
+                # arrive claimed, or the native ingest would write this driven
+                # conversation a second time.
+                with self.session_ingest.driving(session_id):
+                    try:
+                        prompt_value = SessionPromptValue.model_validate(
+                            self.unwrap(
+                                await client.call(
+                                    "session.prompt",
+                                    {
+                                        "sessionId": session_id,
+                                        "mode": "queue",
+                                        "content": [
+                                            {"type": "text", "text": prompt_text}
+                                        ],
+                                    },
+                                ),
                                 "session.prompt",
-                                {
-                                    "sessionId": session_id,
-                                    "mode": "queue",
-                                    "content": [{"type": "text", "text": prompt_text}],
-                                },
-                            ),
-                            "session.prompt",
-                        )
-                    )
-                    if prompt_value.command is not None:
-                        # dsh intercepted the line as a slash command: no turn
-                        # opened, the command's answer is the whole result.
-                        command_text = (
-                            prompt_value.command.text
-                            or f"{prompt_value.command.kind} command executed"
-                        )
-                        for event in accumulator.complete_command(command_text):
-                            yield event
-                    else:
-                        prompted = True
-                        while not accumulator.turn_ended:
-                            frame = await queue.get()
-                            if isinstance(frame, StreamErrorFrame):
-                                accumulator.turn_error = (
-                                    "dsh event stream failed mid-turn: "
-                                    f"{frame.error.message}"
-                                )
-                                break
-                            for event in accumulator.consume(frame):
-                                yield event
-                finally:
-                    self.subscribers.pop(session_id, None)
-                    self.bridge_contexts.pop(session_id, None)
-                    if prompted and not accumulator.turn_ended:
-                        # The run is leaving mid-turn (cancelled, or its stream
-                        # died); don't leave dsh's turn burning.
-                        with contextlib.suppress(Exception):
-                            await client.call(
-                                "session.cancel", {"sessionId": session_id}
                             )
+                        )
+                        if prompt_value.command is not None:
+                            # dsh intercepted the line as a slash command: no
+                            # turn opened, the command's answer is the whole
+                            # result.
+                            command_text = (
+                                prompt_value.command.text
+                                or f"{prompt_value.command.kind} command executed"
+                            )
+                            for event in accumulator.complete_command(command_text):
+                                yield event
+                        else:
+                            prompted = True
+                            while not accumulator.turn_ended:
+                                frame = await queue.get()
+                                if isinstance(frame, StreamErrorFrame):
+                                    accumulator.turn_error = (
+                                        "dsh event stream failed mid-turn: "
+                                        f"{frame.error.message}"
+                                    )
+                                    break
+                                for event in accumulator.consume(frame):
+                                    yield event
+                    finally:
+                        self.subscribers.pop(session_id, None)
+                        self.bridge_contexts.pop(session_id, None)
+                        if prompted and not accumulator.turn_ended:
+                            # The run is leaving mid-turn (cancelled, or its
+                            # stream died); don't leave dsh's turn burning.
+                            with contextlib.suppress(Exception):
+                                await client.call(
+                                    "session.cancel", {"sessionId": session_id}
+                                )
 
                 run_id = str(uuid7())
                 recorded_run = await self.octomate.conversations.record_agent_run(

@@ -29,13 +29,16 @@ from octomate.tentacles.agents.deepseek.wire import (
     UsageChunk,
     assistant_message_of,
     chunk_delta,
+    history_entry_adapter,
     parse_mux_frame,
+    permission_preset_of,
     provenance_of,
     request_route_of,
     text_of,
     tool_call_of,
     tool_result_of,
     turn_end_of,
+    user_message_of,
 )
 
 
@@ -350,3 +353,55 @@ def test_banner_regex_matches_the_readiness_line() -> None:
     assert match is not None
     assert match.group(1) == "http://127.0.0.1:51234"
     assert BANNER.search("dsh loading plugins…") is None
+
+
+def test_user_message_reader_carries_text_and_gateway_provenance() -> None:
+    local = user_message_of(
+        event(
+            "user/message",
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}],
+                "source": {"kind": "user"},
+            },
+        )
+    )
+    via_gateway = user_message_of(
+        event(
+            "user/message",
+            {
+                "content": [{"type": "text", "text": "hello"}],
+                "source": {"kind": "user", "rpcId": "rpc-9"},
+            },
+        )
+    )
+
+    assert local is not None
+    assert text_of(local.content) == "hi"
+    assert local.source.rpc_id is None
+    assert via_gateway is not None
+    assert via_gateway.source.rpc_id == "rpc-9"
+    assert user_message_of(event("user/message", "not an object")) is None
+
+
+def test_permission_preset_reader() -> None:
+    assert (
+        permission_preset_of(event("permission/preset", {"preset": "workspace-write"}))
+        == "workspace-write"
+    )
+    assert permission_preset_of(event("permission/preset", {})) is None
+
+
+def test_a_history_entry_parses_the_streamed_line_shape() -> None:
+    entry = history_entry_adapter.validate_json(
+        '{"event": {"type": "turn/start", "seq": 3, "time": 1.0, "data": {}},'
+        ' "view": {"kind": "shell"}}'
+    )
+    bare = history_entry_adapter.validate_json(
+        '{"event": {"type": "turn/end", "seq": 9, "time": 2.0, "data": null}}'
+    )
+
+    assert entry.event.seq == 3
+    assert entry.view == {"kind": "shell"}
+    assert bare.event.type == "turn/end"
+    assert bare.view is None

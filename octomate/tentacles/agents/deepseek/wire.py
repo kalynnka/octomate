@@ -510,6 +510,68 @@ def tool_result_of(event: SessionEvent) -> DeepseekToolResult | None:
     )
 
 
+class UserMessageSource(BaseModel):
+    """A `user/message` event's provenance. `rpc_id` is stamped by the /api
+    gateway on prompts submitted through it; a prompt typed into a local
+    CLI/TUI carries a bare `{kind: 'user'}`."""
+
+    model_config = PERMISSIVE
+
+    kind: str = "user"
+    rpc_id: str | None = None
+
+
+class UserMessageData(BaseModel):
+    model_config = PERMISSIVE
+
+    content: list[ContentBlock] = Field(default_factory=list)
+    source: UserMessageSource = Field(default_factory=UserMessageSource)
+
+
+user_message_adapter: TypeAdapter[UserMessageData] = TypeAdapter(UserMessageData)
+
+
+def user_message_of(event: SessionEvent) -> UserMessageData | None:
+    """The body of a `user/message` event — a human prompt in the session log."""
+    try:
+        return user_message_adapter.validate_python(event.data)
+    except ValidationError:
+        return None
+
+
+class PermissionPresetData(BaseModel):
+    model_config = PERMISSIVE
+
+    preset: str
+
+
+permission_preset_adapter: TypeAdapter[PermissionPresetData] = TypeAdapter(
+    PermissionPresetData
+)
+
+
+def permission_preset_of(event: SessionEvent) -> str | None:
+    """The preset a `permission/preset` event says the session switched to."""
+    try:
+        return permission_preset_adapter.validate_python(event.data).preset
+    except ValidationError:
+        return None
+
+
+class HistoryEntry(BaseModel):
+    """One `session.history` row — and the line shape `octomate deepseek tail`
+    streams in: the raw persisted event plus the host-computed render `view`
+    when a presenter produced one (pagination-time, never stored)."""
+
+    model_config = PERMISSIVE
+
+    event: SessionEvent
+    view: JsonValue = None
+
+
+history_entry_adapter: TypeAdapter[HistoryEntry] = TypeAdapter(HistoryEntry)
+
+
 class SessionCreateValue(BaseModel):
     model_config = PERMISSIVE
 

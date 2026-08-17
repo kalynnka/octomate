@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 import pytest
-from pydantic import HttpUrl
+from pydantic import HttpUrl, SecretStr
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import PartStartEvent
@@ -287,6 +287,7 @@ def _tentacle(
         "deepseek",
         octomate or Octomate(conversations=conversations),
         config=config or DeepseekConfig(),
+        hook_secret=SecretStr("the-hook-secret"),
     )
 
 

@@ -13,6 +13,7 @@ import typer
 from octomate_cli.claude import claude_typer
 from octomate_cli.codex import codex_typer
 from octomate_cli.config import configure
+from octomate_cli.deepseek import deepseek_typer
 from octomate_cli.hooks import hooks_typer
 from octomate_cli.serve import serve
 
@@ -21,6 +22,7 @@ app.command("serve")(serve)
 app.command("configure")(configure)
 app.add_typer(claude_typer, name="claude")
 app.add_typer(codex_typer, name="codex")
+app.add_typer(deepseek_typer, name="deepseek")
 # Cross-tentacle: the hook credential is one secret every agent's router shares.
 app.add_typer(hooks_typer, name="hooks")
 

@@ -11,10 +11,51 @@ limitations the first version accepts, and why.
 
 ## Accepted limitations
 
-1. **Driven runs only — no native-session ingest.** Unlike Claude and Codex,
-   there is no hook router and no transcript tailer: dsh has no octomate hook
-   mechanism, and the gateway pattern is a driven-client pattern. A dsh session
-   the operator runs in their own terminal is invisible to octomate.
+1. **Native ingest reads the gateway through a client-side tail, and is
+   turn-grained.** Native dsh sessions are ingested the way Claude's and
+   Codex's are — hooks plus a per-session stream — with one substitution:
+   `octomate deepseek tail` reads no file. dsh's log is zstd-framed and only
+   advances at checkpoints, so the tail polls *its* machine's dsh gateway
+   (`session.history`, which serves the log decoded and unpacked, cold
+   sessions included) and ships each event to `/hooks/deepseek/stream`, the
+   event's dense `seq` standing where byte offsets stand. The
+   `dsh-hooks-claude-code` bridge POSTs `UserPromptSubmit`/`Stop` into
+   `/hooks/deepseek` for the skeleton and the turn boundary, and the launcher
+   hook on the prompt event spawns the tail. The octomate server never speaks
+   to a client machine's dsh. The consequences accepted with that:
+   - A turn appears in octomate when it closes, not token-by-token; the
+     prompt/answer ledger rows land at turn close too, because dsh's hook
+     dialect carries no per-turn key and no answer to sketch them from live.
+   - Sessions run while octomate was down are caught up when their next
+     prompt's launcher spawns a tail (the server re-welcomes it at the
+     committed floor); a session never touched again stays unrecorded — there
+     is no startup sweep.
+   - For a session whose last turn is still open, the gateway's reader
+     *synthesizes* `turn/end {reason: interrupted}` closers in memory, and the
+     session's own process may later write different events at those seqs. The
+     tail therefore withholds a trailing interrupted turn until a successor
+     event proves the closers durable — so an abandoned crashed session keeps
+     its last turn unrecorded until the session is touched again.
+   - The tail polls the gateway (~1s) and reads the dsh default endpoint
+     (`http://127.0.0.1:3080`; `$DSH_API_URL` or `--dsh-url` override a moved
+     port).
+   - dsh subagent child sessions (`origin: subagent`) are classified by the
+     tail against `session.list` and skipped rather than ingested as threads
+     of their own — the server never sees the session header, so a hand-run
+     tail on a child id would mis-file it.
+   - Prompts steered into a live turn ride the turn's replay metadata, not the
+     ledger row — the row carries the prompts that opened the turn.
+   - Suppression of octomate's own driven sessions is a live claim around each
+     driven turn: their hooks are dropped and their tails refused at the
+     stream handshake. A driven session later prompted *natively* (dsh's web
+     UI on the same session, or after an octomate restart) ingests as a native
+     thread and re-records its turns there — the same exposure the Claude and
+     Codex ingests accept.
+   - The hooks bridge mounts via `$DSH_HOME/cordis.patch.yml`, which every dsh
+     process sharing that home loads — but the bridge package ships outside
+     dsh's bundled dependency closure, so the first install must link it
+     (`--bridge <checkout>/packages/hooks/hooks-claude-code`), and dsh
+     processes need a restart to pick the row up.
 
 2. **The permission vocabulary is the two shipped presets.**
    `DeepseekPermissionMode` is `workspace-write | danger-full-access` — what dsh
@@ -105,3 +146,11 @@ Not covered by CI — the unit tests fake the gateway. To smoke-test live:
 6. Switch the conversation's permission mode to `danger-full-access` and
    confirm the next run sends `/permission danger-full-access` (tentacle log)
    and no longer asks.
+7. For native ingest: `octomate deepseek hooks install --bridge
+   <checkout>/packages/hooks/hooks-claude-code`, restart the dsh web daemon,
+   then drive a session in dsh's own web UI. The tentacle log should show the
+   `deepseek.hook` lines as you prompt and a `remote tail connected` line as
+   the launcher's `octomate deepseek tail` attaches; the turn should appear as
+   a `deepseek-native` thread (prompt + answer rows, full model timeline) once
+   it completes, and the tail process should exit shortly after the `Stop`
+   settles. Prompting the same session again should not duplicate runs.

@@ -246,9 +246,6 @@ def create_app() -> FastAPI:
             )
         )
 
-    # No hook secret: dsh serves no hook router — the tentacle drives a dsh
-    # over its /api gateway (one it attached to, or a `dsh web` child it
-    # started) and nothing external posts into octomate for it.
     if (
         deepseek_config := config.agents.deepseek
     ) is not None and deepseek_config.enabled:
@@ -257,6 +254,7 @@ def create_app() -> FastAPI:
                 "deepseek",
                 octomate,
                 config=deepseek_config,
+                hook_secret=hook_secret("deepseek"),
             )
         )
 

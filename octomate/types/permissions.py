@@ -4,7 +4,11 @@ from typing import Literal, TypeIs, get_args
 
 from claude_agent_sdk import PermissionMode as ClaudePermissionMode
 
-from octomate.types.threads import CLAUDE_NATIVE_ID, CODEX_NATIVE_ID
+from octomate.types.threads import (
+    CLAUDE_NATIVE_ID,
+    CODEX_NATIVE_ID,
+    DEEPSEEK_NATIVE_ID,
+)
 
 # The approval posture an agent works under. Each provider keeps its own vocabulary
 # rather than sharing one: Claude has a single mode, Codex has three orthogonal SDK
@@ -73,6 +77,7 @@ PERMISSION_MODES: dict[str, tuple[AgentPermissionMode, ...]] = {
     # switches. A session's posture is the client's to change, in the client.
     CLAUDE_NATIVE_ID: get_args(ClaudePermissionMode),
     CODEX_NATIVE_ID: get_args(CodexPermissionMode),
+    DEEPSEEK_NATIVE_ID: get_args(DeepseekPermissionMode),
 }
 
 
