@@ -59,7 +59,12 @@ from octomate.capabilities.gateway import (
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import AgentRouteModelName
+from octomate.config.agents import (
+    AgentRouteModelName,
+    ClaudeCodeModelName,
+    CodexModelName,
+    DeepseekModelName,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     DIRECT_TARGET,
@@ -82,6 +87,27 @@ from tests.support.scenarios import plain_answer, play
 
 FakeRunOutput = ChannelOutput
 ScriptedOutput = str | DeferredToolRequests
+
+# Every agent config requires at least one model — nothing is defaulted, since which
+# LLM an operator holds keys for is not guessable. These are what a test names when
+# the model set is not what it is testing.
+CLAUDE_MODELS: frozenset[ClaudeCodeModelName] = frozenset(
+    {"opusplan[1m]", "opus[1m]", "sonnet[1m]", "haiku"}
+)
+CODEX_MODELS: frozenset[CodexModelName] = frozenset(
+    {
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.5-pro",
+        "gpt-5.3-codex",
+        "gpt-5.1-codex-mini",
+    }
+)
+DEEPSEEK_MODELS: frozenset[DeepseekModelName] = frozenset(
+    {"deepseek-v4-flash", "deepseek-v4-pro"}
+)
 
 
 def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRequests:

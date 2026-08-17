@@ -38,7 +38,7 @@ def napcat_run(
     trigger_targets: TriggerTargets,
 ) -> tuple[NapcatTentacle, ChannelAddress]:
     """One tentacle and one run notice, shared by the whole run (no threads)."""
-    config = live_config.channels.napcat
+    config = live_config.channels.get("napcat")
     if config is None or not config.enabled or trigger_targets.napcat is None:
         pytest.skip("napcat credentials/trigger target not configured in octomate.yaml")
     target = trigger_targets.napcat

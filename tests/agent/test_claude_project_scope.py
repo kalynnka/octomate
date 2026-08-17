@@ -28,7 +28,7 @@ from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
 from octomate.tentacles.agents.claude.base import WRITE_TOOL_PATHS, deny_outside_project
-from tests.support.agents import RecordingClaudeClient
+from tests.support.agents import CLAUDE_MODELS, RecordingClaudeClient
 from tests.support.managers import FakeConversationManager, a_registry
 
 KEY = ChannelAddress(
@@ -184,7 +184,7 @@ async def a_run(
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(cwd=configured),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd=configured),
         hook_secret=HOOK_SECRET,
     )
     async with tentacle.run_stream_events(

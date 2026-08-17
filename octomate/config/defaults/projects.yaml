@@ -1,0 +1,12 @@
+# Declared code locations keyed by project name, reconciled into the registry at
+# startup. Declaring one is the operator vouching for its contents, which reach an
+# agent as instructions.
+#
+# Unrelated to `~/.claude/projects/`, which is transcript storage. Two checkouts of
+# one repository are two projects, not one: name them after their directories, since
+# a run in one must not write into another.
+
+# projects:
+#   octomate:
+#     root: ~/Projects/octomate
+#     description: The Octomate checkout this instance runs from.

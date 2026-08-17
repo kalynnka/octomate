@@ -50,6 +50,7 @@ from tests.agent.test_codex_native_ingest import (
     parent_metadata,
     subagent_activity,
 )
+from tests.support.agents import CODEX_MODELS
 
 SECRET = SecretStr("the-hook-secret")
 AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
@@ -307,7 +308,7 @@ def stream_client() -> tuple[TestClient, CodexTentacle]:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all"),
+        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
         hook_secret=SECRET,
     )
     app = FastAPI()

@@ -1,0 +1,18 @@
+# Registered cross-channel humans, keyed by a stable username. Profiles are
+# reconciled into the identity registry at startup, before any tentacle starts, so a
+# declared user exists from the first ingested message; every other sender remains a
+# visitor.
+#
+# A profile's key is the channel tentacle id it belongs to — the key under
+# `channels:`, not the channel's type. A key that matches no configured channel
+# fails the boot rather than producing a link nothing will resolve.
+
+# users:
+#   your_username:
+#     name: Your Name         # what the agent calls them; defaults to the key
+#     nickname: You           # a shorter, casual name
+#     profiles:
+#       slack:
+#         channel_user_id: U01234567
+#       lark:
+#         channel_user_id: ou_xxxxxxxx

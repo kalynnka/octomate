@@ -1,0 +1,63 @@
+# Channel tentacles, keyed by instance id with `type` selecting the platform — so a
+# deployment can run two Lark apps, or two consoles, by naming them apart. The key is
+# the channel tentacle id everywhere downstream: what a `users[]` profile names, and
+# what a thread records as its origin. Renaming a key therefore re-homes its threads,
+# so pick one and keep it.
+#
+# Every channel must list at least one `agents:` route; nothing picks a model on an
+# operator's behalf, so a channel with no route would have nothing to answer with.
+#
+# Nothing is declared here, the web console included. Keep real secrets in the
+# environment (OCTOMATE__CHANNELS__<KEY>__<FIELD>) rather than in a config home; the
+# examples below show the shape, not the practice.
+
+# channels:
+#   trunkline:                    # the web console
+#     type: trunkline
+#     agents:
+#       - agent: inkling
+#         model: anthropic:claude-sonnet-5
+#   slack:
+#     type: slack
+#     agents:
+#       - agent: inkling
+#         model: anthropic:claude-sonnet-5
+#       - agent: codex
+#         model: gpt-5.5
+#     app_id: A...
+#     bot_token: xoxb-...
+#     app_token: xapp-...
+#     stream:
+#       flush_interval: 0.2
+#       min_chars: 20
+#
+#   # Two Lark apps side by side: same `type`, different keys, separate threads.
+#   lark_main:
+#     type: lark
+#     agents:
+#       - agent: inkling
+#         model: anthropic:claude-sonnet-5
+#       - agent: claude
+#         model: opus
+#     app_id: cli_...
+#     app_secret: ...
+#     stream:
+#       flush_interval: 0.2
+#       min_chars: 20
+#   lark_ops:
+#     type: lark
+#     agents:
+#       - agent: claude
+#         model: opus
+#     app_id: cli_...
+#     app_secret: ...
+#
+#   napcat:
+#     type: napcat
+#     agents:
+#       - agent: inkling
+#         model: anthropic:claude-sonnet-5
+#     stream:
+#       enabled: false
+#     ws_url: ws://127.0.0.1:3001
+#     http_url: http://127.0.0.1:3000

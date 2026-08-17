@@ -36,6 +36,7 @@ from tests.agent.test_deepseek_native_ingest import (
     SESSION_ID,
     turn_events,
 )
+from tests.support.agents import DEEPSEEK_MODELS
 
 SECRET = SecretStr("the-hook-secret")
 AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
@@ -49,7 +50,10 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 def stream_client() -> tuple[TestClient, DeepseekTentacle]:
     octomate = Octomate()
     tentacle = DeepseekTentacle(
-        "deepseek", octomate, config=DeepseekConfig(), hook_secret=SECRET
+        "deepseek",
+        octomate,
+        config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
+        hook_secret=SECRET,
     )
     app = FastAPI()
     for router in tentacle.routers():

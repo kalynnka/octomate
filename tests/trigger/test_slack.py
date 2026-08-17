@@ -43,7 +43,7 @@ def slack_run_thread(
     trigger_targets: TriggerTargets,
 ) -> tuple[SlackTentacle, ChannelAddress]:
     """One tentacle and one freshly opened thread, shared by the whole run."""
-    config = live_config.channels.slack
+    config = live_config.channels.get("slack")
     if config is None or not config.enabled or trigger_targets.slack is None:
         pytest.skip("slack credentials/trigger target not configured in octomate.yaml")
     target = trigger_targets.slack

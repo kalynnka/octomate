@@ -1,0 +1,148 @@
+# Agent tentacles.
+#
+# Every agent is opt-in, and an omitted block means the agent is absent rather than
+# disabled. Nothing is declared here on purpose: which LLM you hold keys for is not
+# something this project can guess, and a defaulted model would be a route that boots
+# fine and 401s on first use.
+#
+# Declaring an agent means declaring at least one model for it — the config refuses
+# an empty list. `models[0]` is what a conversation carrying no model of its own runs
+# on, so put the everyday one first and summon the expensive one by name.
+#
+# Claims live beside the models they describe, for every agent. A model with no claim
+# is not summonable, so list a claim for every model you expose. A claim's `efforts`
+# is pydantic-ai's thinking scale — minimal, low, medium, high, xhigh — and it must
+# offer only what the provider actually takes, since nothing downgrades a grade the
+# provider lacks: DeepSeek has no `minimal`, so a claim offering it advertises a
+# summon that answers 400. Omitting `efforts` means the full scale.
+#
+# A home that declares `agents:` replaces this whole block.
+
+# agents:
+
+  # The in-process pydantic-ai agent. Takes any pydantic-ai model id and reaches each
+  # provider through `providers.yaml`, or that provider's own environment variable.
+  #
+  # inkling:
+  #   models:
+  #     - name: anthropic:claude-sonnet-5
+  #     - name: anthropic:claude-opus-5
+  #       settings:
+  #         thinking: high
+  #   claims:
+  #     "anthropic:claude-sonnet-5":
+  #       ability: General assistant for everyday questions, writing, and
+  #         coordinating multi-step work.
+  #     "anthropic:claude-opus-5":
+  #       ability: Heavyweight assistant for hard reasoning, deep analysis, and
+  #         long-form writing.
+  #
+  #   # Oversized tool returns are reduced by default: spilled past ~10k (lossless,
+  #   # read back via `read_tool_result`), summarized past ~100k, and truncated if
+  #   # either cannot run. Override `tool_output.bands` to change the thresholds,
+  #   # `tool_output.retention_hours` for how long a spill stays readable, or
+  #   # `tool_output.enabled: false` to send every return whole.
+  #   #
+  #   # permission_mode is what a conversation falls back to when it carries no
+  #   # posture of its own: `default` parks every deferral for a human, `dontAsk`
+  #   # answers questions in-process so the agent decides for itself, and
+  #   # `bypassPermissions` grants approvals without a card. Claude's scale,
+  #   # narrowed to what deferred resolution can honor.
+  #   permission_mode: default
+  #   request_limit: 256   # maximum model requests in one Inkling run
+
+  # Anthropic Claude Code agent. Runs the Claude Agent SDK locally, and serves the
+  # hook router native sessions report into — which needs `hook_secret`.
+  #
+  # claude:
+  #   enabled: true
+  #   cwd: .
+  #   models: [opus, sonnet, haiku]   # opus => Opus 4.8
+  #   claims:
+  #     opus:
+  #       ability: Coding agent for deep, multi-step engineering across a
+  #         repository.
+  #     sonnet:
+  #       ability: Coding agent for everyday software tasks and mid-sized
+  #         changes.
+  #     haiku:
+  #       ability: Fast coding agent for small, well-scoped fixes and
+  #         repository chores.
+  #
+  #   # The SDK's own scale, handed over verbatim:
+  #   # default | acceptEdits | plan | bypassPermissions | dontAsk | auto
+  #   permission_mode: default
+  #   max_turns: ~
+  #   approval_timeout: ~   # seconds to wait for a human approval; ~ = forever
+  #   ssh: ~                # remote runs are disabled: a run happens in its
+  #                         # thread's project root, and that is a local path the
+  #                         # remote host has nothing to match. Setting a block is
+  #                         # refused rather than ignored.
+
+  # OpenAI Codex agent. Runs Codex through the openai-codex SDK, and serves its own
+  # hook router.
+  #
+  # codex:
+  #   enabled: true
+  #   cwd: .
+  #   runtime:
+  #     # codex_bin: /opt/bin/codex
+  #     config_overrides: []
+  #   models: [gpt-5.5, gpt-5.5-pro, gpt-5.3-codex, gpt-5.1-codex-mini]
+  #   claims:
+  #     gpt-5.5:
+  #       ability: Codex agent for general software engineering across a
+  #         repository.
+  #     gpt-5.5-pro:
+  #       ability: Deep-reasoning Codex agent for large, difficult engineering
+  #         work across a repository.
+  #     gpt-5.3-codex:
+  #       ability: Codex agent tuned for hands-on coding tasks and mid-sized
+  #         changes.
+  #     gpt-5.1-codex-mini:
+  #       ability: Fast Codex agent for small, well-scoped code edits and
+  #         quick fixes.
+  #
+  #   # Who answers when the agent asks to step past the sandbox:
+  #   # user_review | auto_review | deny_all
+  #   permission_mode: user_review
+  #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
+  #   # What a command may touch when nobody is asked. Fixed for a run, and
+  #   # deliberately not part of the posture, so switching one never widens it.
+  #   sandbox: workspace_write   # read_only | workspace_write | full_access
+  #   effort: ~                  # none | minimal | low | medium | high | xhigh
+  #   summary: ~                 # auto | concise | detailed | none
+  #   personality: ~             # none | friendly | pragmatic
+  #   max_clients: 8             # warm app-server processes pooled; ~ = unbounded
+  #   client_idle_ttl: 600       # seconds an idle pooled client lives; ~ = forever
+
+  # DeepSeek Harness agent. Attaches to a dsh already serving host:port and starts a
+  # `dsh web` child there only when nothing answers — two harnesses over one DSH_HOME
+  # corrupt session logs. Drives it over its /api gateway.
+  #
+  # deepseek:
+  #   enabled: true
+  #   host: 127.0.0.1            # loopback only; the gateway has no auth
+  #   port: 3080                 # dsh's default bind, and what a started child takes
+  #   executable: dsh            # on PATH, or an absolute path to a built dsh
+  #   extra_args: []             # appended after `web --host ... --port ...`
+  #   dsh_home: ~/.dsh           # DSH_HOME for a started child
+  #   cwd: .
+  #   provider: deepseek-official
+  #   models: [deepseek-v4-pro, deepseek-v4-flash]
+  #   claims:
+  #     deepseek-v4-pro:
+  #       ability: DeepSeek coding agent for multi-step engineering across a
+  #         repository.
+  #       efforts: [low, medium, high, xhigh]
+  #     deepseek-v4-flash:
+  #       ability: Fast DeepSeek coding agent for small, well-scoped fixes and
+  #         repository chores.
+  #       efforts: [low, medium]
+  #
+  #   # dsh's shipped presets, each bundling sandbox mode and approval policy:
+  #   # workspace-write | danger-full-access
+  #   permission_mode: workspace-write
+  #   agent_preset: ~            # session.create agentPreset; ~ = dsh's default
+  #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
+  #   ready_timeout: 60          # seconds to wait for the `dsh web:` banner

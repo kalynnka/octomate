@@ -150,9 +150,14 @@ up first.
 ```bash
 uv sync
 uv run alembic upgrade head
-cp octomate.default.yaml octomate.yaml   # add one provider key and one channel
+mkdir -p .octomate                       # this checkout's config home
 uv run octomate serve
 ```
+
+A config home with nothing in it boots with no agents and no channels — nothing is
+turned on by default, since which LLM you hold keys for is not something the project
+can guess. See **Configuration** below for the files that go in it; the packaged
+defaults document every key with its shape, commented out.
 
 `octomate serve --reload` restarts on changes under `octomate/`. `octomate serve --tmux`
 serves in a detached tmux session and attaches to it — creating it if it is not already
@@ -169,20 +174,49 @@ docker compose --profile qq up -d        # ...and a NapCat bridge, for QQ
 
 ## Configuration
 
-Three layers, each overriding the one before:
+A deployment is a **config home**: one directory, one flat YAML per subsystem. Each
+file's top-level keys are config field names, so changing a channel touches
+`channels.yaml` and nothing else.
 
-| Layer | Where | Purpose |
+```
+.octomate/
+  octomate.yaml        host, port, hook_secret, db_url
+  agents.yaml          inkling, claude, codex, deepseek
+  channels.yaml        slack, lark, napcat, trunkline
+  users.yaml           registered humans and their per-channel ids
+  projects.yaml        code locations an agent may run in
+  providers.yaml       LLM credentials
+  integrations.yaml    per-user OAuth connectors
+  mcp.yaml             vendor MCP servers on one operator token
+  observability.yaml   logging, logfire
+  oauth.yaml           the key that encrypts stored tokens
+```
+
+The home is **chosen, not merged** — the first of these that applies:
+
+| | Where | When |
 |---|---|---|
-| Defaults | `octomate.default.yaml` | Committed baseline; every key documented with its default |
-| Overrides | `octomate.yaml` | Your credentials and deployment (gitignored) |
-| Environment | `OCTOMATE__*` | Anything, at runtime |
+| 1 | `$OCTOMATE_HOME` | Set. Used as given, even if empty |
+| 2 | `./.octomate/` | It holds at least one of the files above |
+| 3 | `~/.octomate/` | Otherwise — one deployment for the machine |
 
-Environment variables use `OCTOMATE__` with `__` as the nested delimiter, so
+Beneath whichever wins sit the packaged defaults in `octomate/config/defaults/`,
+layered per top-level key: a home that declares `channels:` replaces the default
+`channels:` whole and inherits the rest. Every default file is commented rather than
+set, so it doubles as the reference for what a key means.
+
+Nothing is defaulted on, and no model is chosen for you. Every agent is opt-in and
+must name at least one model; every channel must name at least one agent route. A
+model picked on your behalf would be a route that boots fine and 401s on first use.
+
+Channels are keyed by instance id with `type` selecting the platform, so one platform
+can be mounted more than once — two Lark apps are two keys. That key is the channel
+tentacle id everywhere else: what a `users[]` profile names, and what a thread
+records as its origin.
+
+Secrets stay out of the home. `.env` in the working directory and the process
+environment both override it, using `OCTOMATE__` with `__` as the nested delimiter —
 `OCTOMATE__CHANNELS__SLACK__BOT_TOKEN` sets `channels.slack.bot_token`.
-
-The main sections are `agents` (inkling, claude, codex), `channels` (slack, lark, napcat,
-dev_ui), `providers` (LLM credentials), `mcp` (vendor MCP servers on one operator token),
-`integrations` (per-user OAuth) and `users`.
 
 ### Native session hooks
 
@@ -197,7 +231,7 @@ octomate claude hooks install                    # merges an http handler into ~
 octomate codex hooks install                     # merges a command handler into ~/.codex/hooks.json
 ```
 
-`hooks secret` prints one line — `export OCTOMATE__HOOK_SECRET=…` — and writes nothing; where your login environment comes from is yours to know. Sessions only ever read the **environment**, and they are separate processes that never see your `octomate.yaml`, so that line is the bridge, and it has to reach whatever launches them.
+`hooks secret` prints one line — `export OCTOMATE__HOOK_SECRET=…` — and writes nothing; where your login environment comes from is yours to know. Sessions only ever read the **environment**, and they are separate processes that never see your config home, so that line is the bridge, and it has to reach whatever launches them.
 
 `~/.zshrc` covers interactive zsh, which is what VSCode resolves the environment from; use `~/.zshenv` instead if you want non-interactive shells to have it too, and on another shell put the line wherever that shell would find it. Either way an environment is captured when a process starts: shells already open keep the one they had, and a GUI client (VSCode, the desktop app) grabs it when *it* launches — so restart them before expecting the hooks to carry the secret.
 

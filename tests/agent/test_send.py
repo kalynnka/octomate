@@ -367,8 +367,14 @@ async def test_the_gate_works_out_where_else_the_asker_is(
             type="fake", agents=[AgentModelConfig(agent="other", model="test")]
         ),
     )
-    # Serves nobody, so it is not offered however reachable it looks.
-    mute = FakeChannelTentacle(id="mute", config=ChannelConfig(type="fake", agents=[]))
+    # Routes only to an agent this gate does not have, so it is not offered
+    # however reachable it looks.
+    mute = FakeChannelTentacle(
+        id="mute",
+        config=ChannelConfig(
+            type="fake", agents=[AgentModelConfig(agent="absent", model="test")]
+        ),
+    )
 
     capability = _gate()
     capability.users = users

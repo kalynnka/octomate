@@ -1,0 +1,26 @@
+# LLM providers. Every block is optional; an omitted block falls back to the
+# provider's native env vars (OPENAI_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY,
+# ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, AWS_* ...), which is why nothing is declared
+# here. Prefer OCTOMATE__PROVIDERS__<NAME>__API_KEY in the environment over a key
+# written into a config home.
+
+# providers:
+#   openai:
+#     api_key: sk-...
+#     base_url: https://api.openai.com/v1
+#   deepseek:
+#     api_key: sk-...
+#   gemini:              # Google AI Studio (Developer API)
+#     api_key: AIza...
+#   vertex:              # Gemini via Vertex AI
+#     project: my-gcp-project
+#     location: global
+#     credentials_file: /secrets/sa.json   # omit => Application Default Credentials
+#   anthropic:
+#     api_key: sk-ant-...
+#   bedrock:
+#     region_name: us-east-1
+#     aws_access_key_id: AKIA...
+#     aws_secret_access_key: ...
+#     # or: profile_name: my-profile
+#     # or: api_key: <AWS_BEARER_TOKEN_BEDROCK>

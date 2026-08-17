@@ -8,4 +8,4 @@ web/dist/
 .vscode/
 .octomate/
 .env
-octomate.yaml
+/octomate.yaml

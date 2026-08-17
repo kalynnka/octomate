@@ -24,7 +24,7 @@ from octomate.tentacles.agents.claude import base as claude_base
 from octomate.tentacles.agents.codex import CodexTentacle
 from octomate.tentacles.agents.codex import base as codex_base
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
-from tests.support.agents import RecordingClaudeClient
+from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, RecordingClaudeClient
 from tests.support.managers import FakeConversationManager, a_registry
 
 KEY = ChannelAddress(
@@ -58,7 +58,7 @@ async def claude_run(octomate: Octomate, thread: Thread) -> ClaudeAgentOptions:
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(cwd="/configured"),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd="/configured"),
         hook_secret=HOOK_SECRET,
     )
     async with tentacle.run_stream_events(
@@ -76,7 +76,9 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all", cwd="/configured"),
+        config=CodexConfig(
+            models=set(CODEX_MODELS), permission_mode="deny_all", cwd="/configured"
+        ),
         hook_secret=HOOK_SECRET,
     )
     async with tentacle:

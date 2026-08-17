@@ -38,6 +38,7 @@ from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
+from tests.support.agents import CLAUDE_MODELS
 from tests.support.managers import FakeConversation, FakeConversationManager
 
 SummonDecisionAdapter = TypeAdapter(SummonDecision)
@@ -113,7 +114,7 @@ def _tentacle(
     return ClaudeCodeTentacle(
         "claude",
         Octomate(conversations=conversations),
-        config=config or ClaudeCodeConfig(),
+        config=config or ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
         hook_secret=HOOK_SECRET,
     )
 
@@ -542,8 +543,8 @@ def test_claims_come_from_config_and_default_to_none() -> None:
     claim = Claim(ability="acme monorepo work", efforts=("high",))
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=ClaudeCodeConfig(claims={"haiku": claim}),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), claims={"haiku": claim}),
     )
 
     assert tentacle.claims == {"haiku": claim}
-    assert ClaudeCodeConfig().claims == {}
+    assert ClaudeCodeConfig(models=set(CLAUDE_MODELS)).claims == {}

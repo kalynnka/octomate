@@ -32,7 +32,7 @@ from octomate.capabilities.harness.events import (
     TodoEvent,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.config import ChannelConfig, ChannelStreamConfig
+from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
@@ -282,6 +282,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
             or ChannelConfig(
                 type="fake",
                 stream=ChannelStreamConfig(),
+                agents=[AgentModelConfig(agent="inkling", model="openai:gpt-4o")],
             ),
         )
         self.sent = self.recording_ink.sent

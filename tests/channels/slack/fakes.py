@@ -13,7 +13,7 @@ from pydantic import SecretStr
 from slack_sdk.models.messages.chunk import Chunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 
-from octomate.config import SlackChannelConfig, SlackStreamConfig
+from octomate.config import AgentModelConfig, SlackChannelConfig, SlackStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
@@ -242,6 +242,7 @@ def slack_channel(
         bot_token=SecretStr("xoxb-test"),
         app_token=SecretStr("xapp-test"),
         stream=SlackStreamConfig(flush_interval=0),
+        agents=[AgentModelConfig(agent="inkling", model="test")],
     )
     channel.config = config
     # `__init__` is bypassed here, so mirror the one field it lifts off the concrete
