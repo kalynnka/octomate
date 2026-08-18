@@ -32,13 +32,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.harness.agent import Agent
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.project import Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.agents.inkling import InklingTentacle
 from octomate.tentacles.agents.inkling.base import InklingOutput
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
-from tests.support.managers import a_registry
+from tests.support.managers import a_project, a_registry
 
 ADDRESS = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
@@ -112,7 +111,7 @@ async def test_a_run_in_a_project_carries_that_project_s_instructions(
     tmp_path: Path,
 ) -> None:
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(projects=await a_registry(a_project(inky)))
     scripted = Scripted()
 
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
@@ -124,7 +123,7 @@ async def test_a_run_in_a_project_can_act_in_it(tmp_path: Path) -> None:
     # The filesystem and shell stay native: a nested approval inside run_code cannot
     # suspend into Inkling's human-review loop, while a native call can.
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(projects=await a_registry(a_project(inky)))
     scripted = Scripted()
 
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
@@ -148,7 +147,7 @@ async def test_a_run_in_a_project_can_act_in_it(tmp_path: Path) -> None:
 
 async def test_project_file_calls_defer_for_user_approval(tmp_path: Path) -> None:
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(projects=await a_registry(a_project(inky)))
     thread = await a_thread(octomate, "chat", "inky")
 
     async def request_file(
@@ -197,7 +196,7 @@ async def test_outside_every_project_there_is_nothing_to_act_with(
 def test_every_project_capability_is_rooted_at_the_project(tmp_path: Path) -> None:
     # One root and no other: a capability pointed anywhere else is a way out of the
     # project, and `extra_roots` would be a second place to write.
-    project = Project(root=tmp_path / "inky")
+    project = a_project(tmp_path / "inky")
     tentacle = InklingTentacle("inkling", Octomate(), agent=Scripted().agent())
 
     repo_context, files, shell = tentacle.project_capabilities(project)
@@ -235,9 +234,7 @@ async def test_two_projects_never_see_each_other_s_instructions(
 ) -> None:
     inky = a_repo(tmp_path / "inky", "inky is the checkout this instance runs from.")
     kraken = a_repo(tmp_path / "kraken", "kraken is the second checkout.")
-    octomate = Octomate(
-        projects=await a_registry(Project(root=inky), Project(root=kraken))
-    )
+    octomate = Octomate(projects=await a_registry(a_project(inky), a_project(kraken)))
     scripted = Scripted()
 
     await inkling_run(octomate, await a_thread(octomate, "one", "inky"), scripted)
@@ -255,7 +252,7 @@ async def test_nothing_above_the_project_root_is_loaded(tmp_path: Path) -> None:
     # `~/.claude/CLAUDE.md` is what that rule is really protecting.
     (tmp_path / "AGENTS.md").write_text("the operator's private rules")
     inky = a_repo(tmp_path / "inky", "inky's own rules")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(projects=await a_registry(a_project(inky)))
     scripted = Scripted()
 
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
@@ -271,8 +268,8 @@ async def test_a_disabled_project_reaches_no_run(tmp_path: Path) -> None:
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
     octomate = Octomate(
         projects=await a_registry(
-            Project(root=inky, enabled=False),
-            Project(root=a_repo(tmp_path / "kraken", "kraken's rules")),
+            a_project(inky, enabled=False),
+            a_project(a_repo(tmp_path / "kraken", "kraken's rules")),
         )
     )
     scripted = Scripted()
@@ -287,7 +284,7 @@ async def test_a_disabled_project_reaches_no_run(tmp_path: Path) -> None:
 
 async def test_a_run_in_a_project_records_its_root(tmp_path: Path) -> None:
     inky = a_repo(tmp_path / "inky", "inky's own rules")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(projects=await a_registry(a_project(inky)))
     thread = await a_thread(octomate, "chat", "inky")
 
     await inkling_run(octomate, thread, Scripted())

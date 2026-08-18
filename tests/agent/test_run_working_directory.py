@@ -24,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.project import Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
@@ -42,7 +41,7 @@ from octomate.types.json import JsonObject
 from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
 from tests.support.agents import RecordingClaudeClient
-from tests.support.managers import a_registry
+from tests.support.managers import a_project, a_registry
 
 CLAUDE_SESSION = "sess-cwd"
 CODEX_SESSION = "codex-cwd"
@@ -391,7 +390,7 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
 ) -> None:
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(projects=await a_registry(a_project(inky)))
     thread = await a_thread(octomate, "inky")
     tentacle = ClaudeCodeTentacle(
         "claude",

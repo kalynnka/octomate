@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
@@ -25,7 +24,7 @@ from octomate.tentacles.agents.codex import CodexTentacle
 from octomate.tentacles.agents.codex import base as codex_base
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
 from tests.support.agents import RecordingClaudeClient
-from tests.support.managers import FakeConversationManager, a_registry
+from tests.support.managers import FakeConversationManager, a_project, a_registry
 
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
@@ -114,7 +113,7 @@ async def test_a_thread_in_a_project_runs_claude_in_its_root(tmp_path: Path) -> 
     inky = repo(tmp_path / "inky")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(Project(root=inky)),
+        projects=await a_registry(a_project(inky)),
     )
 
     options = await claude_run(octomate, await a_thread(octomate, "chat", "inky"))
@@ -126,7 +125,7 @@ async def test_a_thread_in_a_project_runs_codex_in_its_root(tmp_path: Path) -> N
     inky = repo(tmp_path / "inky")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(Project(root=inky)),
+        projects=await a_registry(a_project(inky)),
     )
 
     thread = await a_thread(octomate, "chat", "inky")
@@ -138,7 +137,7 @@ async def test_a_project_extra_root_is_reachable(tmp_path: Path) -> None:
     inky, settings = repo(tmp_path / "inky"), repo(tmp_path / "settings")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(Project(root=inky, extra_roots=[settings])),
+        projects=await a_registry(a_project(inky, extra_roots=[settings])),
     )
 
     options = await claude_run(octomate, await a_thread(octomate, "chat", "inky"))
@@ -154,7 +153,7 @@ async def test_a_second_run_in_the_same_conversation_stays_in_the_root(
     inky = repo(tmp_path / "inky")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(Project(root=inky)),
+        projects=await a_registry(a_project(inky)),
     )
     thread = await a_thread(octomate, "chat", "inky")
 
@@ -169,7 +168,7 @@ async def test_a_thread_naming_an_undeclared_project_falls_back(
 ) -> None:
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(Project(root=repo(tmp_path / "inky"))),
+        projects=await a_registry(a_project(repo(tmp_path / "inky"))),
     )
 
     # A thread's project is a reference into the registry; a name the registry does

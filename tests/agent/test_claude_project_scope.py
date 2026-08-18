@@ -23,7 +23,7 @@ from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.managers.project import ProjectManager
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.project import Project
+from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
@@ -52,7 +52,11 @@ def a_project(root: Path, *extra_roots: Path) -> Project:
     root.mkdir(parents=True, exist_ok=True)
     for extra in extra_roots:
         extra.mkdir(parents=True, exist_ok=True)
-    return Project(root=root, extra_roots=list(extra_roots))
+    return Project(
+        root=root,
+        extra_roots=list(extra_roots),
+        upstream=DirectoryUpstream(path=root),
+    )
 
 
 def a_write(tool_name: str, path: str | Path) -> HookInput:
@@ -210,7 +214,7 @@ async def a_run(
 async def test_a_run_in_a_project_registers_the_scope_hook(tmp_path: Path) -> None:
     inky = a_project(tmp_path / "inky").root
 
-    matchers, scope = await a_run(await a_registry(Project(root=inky)), declared="inky")
+    matchers, scope = await a_run(await a_registry(a_project(inky)), declared="inky")
 
     assert matchers == ["AskUserQuestion", "Write|Edit|NotebookEdit"]
     assert scope is not None
@@ -224,7 +228,7 @@ async def test_the_boundary_follows_the_thread_not_the_configured_directory(
     # landed, so where it runs and what bounds it can never disagree.
     inky = a_project(tmp_path / "inky").root
     kraken = a_project(tmp_path / "kraken").root
-    projects = await a_registry(Project(root=inky), Project(root=kraken))
+    projects = await a_registry(a_project(inky), a_project(kraken))
 
     _matchers, scope = await a_run(projects, declared="kraken", configured=str(inky))
 
@@ -242,7 +246,7 @@ async def test_a_run_in_no_project_is_unaffected(tmp_path: Path) -> None:
 
     # Belonging to no project, and configured to a directory no project claims.
     matchers, scope = await a_run(
-        await a_registry(Project(root=inky)), configured=str(elsewhere)
+        await a_registry(a_project(inky)), configured=str(elsewhere)
     )
 
     # No declared root covers the run's directory, so nothing scopes it.

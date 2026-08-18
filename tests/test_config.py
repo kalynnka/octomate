@@ -28,7 +28,7 @@ from octomate.config import (
 )
 from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
-from octomate.schemas.project import Project
+from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.triage import Claim
 from tests.support.config import IsolatedTestConfig
 
@@ -886,6 +886,7 @@ def test_projects_validate_as_projects(
                     "root": "~/Projects/inky",
                     "extra_roots": ["~/Library/Code"],
                     "description": "Octomate itself.",
+                    "upstream": {"kind": "directory", "path": "~/Projects/inky"},
                 }
             }
         }
@@ -896,6 +897,7 @@ def test_projects_validate_as_projects(
     assert project.root == tmp_path / "Projects" / "inky"
     assert project.extra_roots == [tmp_path / "Library" / "Code"]
     assert project.origin == "declared"
+    assert project.upstream == DirectoryUpstream(path=tmp_path / "Projects" / "inky")
 
 
 def test_a_project_without_a_root_is_refused() -> None:

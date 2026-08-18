@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self, TypeAlias
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
 from pydantic import (
+    BaseModel,
     BeforeValidator,
     ConfigDict,
     Field,
@@ -51,6 +52,30 @@ def local_path(value: str | Path) -> Path:
 LocalPath = Annotated[Path, BeforeValidator(local_path)]
 
 
+class RemoteUpstream(BaseModel):
+    """An upstream whose mirror is made by cloning and kept current by fetching."""
+
+    kind: Literal["remote"] = "remote"
+    url: str = Field(description="The git remote the mirror clones and fetches from.")
+
+
+class DirectoryUpstream(BaseModel):
+    """An upstream whose mirror is made by `git init` and kept current by copying
+    the directory in and committing."""
+
+    kind: Literal["directory"] = "directory"
+    path: LocalPath = Field(
+        description="The local directory the mirror is synced from."
+    )
+
+
+# Not one optional url: the two kinds carry different fields and drive different
+# sync code, so the branch lives in the type rather than in an `if url is None`.
+UpstreamVariant: TypeAlias = Annotated[
+    RemoteUpstream | DirectoryUpstream, Field(discriminator="kind")
+]
+
+
 @sqlalchemy_materia.bless(ProjectModel)
 class Project(BaseTransmuter):
     """A project: the roots that are it, and how it is driven.
@@ -90,6 +115,14 @@ class Project(BaseTransmuter):
         description=(
             "Further directories that are also this project — a settings tree, a "
             "sibling checkout — each an absolute local path."
+        ),
+    )
+    upstream: UpstreamVariant = Field(
+        description=(
+            "Where this project's mirror comes from and how it is kept current: a "
+            "remote is cloned and fetched, a directory is `git init`'d and synced by "
+            "copying in and committing. Required: where a mirror syncs from is the "
+            "declaration's to say, not guessed from the root."
         ),
     )
     description: str | None = Field(

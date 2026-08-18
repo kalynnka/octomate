@@ -20,7 +20,7 @@ from octomate.schemas.thread import (
     Thread,
     ThreadKey,
 )
-from tests.support.managers import a_registry
+from tests.support.managers import a_project, a_registry
 
 SLACK_DM = ThreadKey("slack", "dm", "D1")
 SLACK_CHANNEL = ThreadKey("slack", "group", "C1")
@@ -40,7 +40,7 @@ async def inky(tmp_path: Path) -> Project:
     `threads.project_id` is a real foreign key."""
     root = tmp_path / "inky"
     root.mkdir(parents=True, exist_ok=True)
-    manager = await a_registry(Project(root=root))
+    manager = await a_registry(a_project(root))
     project = manager.get("inky")
     assert project is not None
     return project

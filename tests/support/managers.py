@@ -33,7 +33,7 @@ from octomate.schemas.conversation import (
     Conversation,
 )
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
-from octomate.schemas.project import Project
+from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import (
@@ -48,6 +48,27 @@ from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
 from octomate.types.deferred import DeferredBatchStatus
 from octomate.types.permissions import AgentPermissionMode
+from octomate.types.projects import ProjectOrigin
+
+
+def a_project(
+    root: Path,
+    *,
+    name: str = "",
+    extra_roots: list[Path] | None = None,
+    origin: ProjectOrigin = "declared",
+    enabled: bool = True,
+) -> Project:
+    """A project mirrored from its own root — the upstream a test that is not about
+    upstreams means, since `Project` requires one to be named."""
+    return Project(
+        root=root,
+        name=name,
+        extra_roots=extra_roots or [],
+        origin=origin,
+        enabled=enabled,
+        upstream=DirectoryUpstream(path=root),
+    )
 
 
 async def a_registry(*projects: Project) -> ProjectManager:

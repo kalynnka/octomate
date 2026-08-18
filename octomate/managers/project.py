@@ -6,7 +6,7 @@ from itertools import count
 from pathlib import Path
 
 from octomate.database import async_session
-from octomate.schemas.project import Project, local_path
+from octomate.schemas.project import DirectoryUpstream, Project, local_path
 from octomate.types.projects import ProjectOrigin
 
 
@@ -108,6 +108,7 @@ class ProjectManager:
                     continue
                 project.name = name
                 project.extra_roots = declared.extra_roots
+                project.upstream = declared.upstream
                 project.description = declared.description
             named: dict[str, Path] = {}
             rooted: dict[Path, str] = {}
@@ -159,7 +160,12 @@ class ProjectManager:
                 return self.projects[name]
             root = local_path(cwd)
             project = Project(
-                root=root, name=self.available_name(root.name), origin=origin
+                root=root,
+                name=self.available_name(root.name),
+                origin=origin,
+                # A discovered project's mirror syncs from the directory it was
+                # discovered at — the only upstream a bare cwd can name.
+                upstream=DirectoryUpstream(path=root),
             )
             async with async_session() as session:
                 session.add(project)

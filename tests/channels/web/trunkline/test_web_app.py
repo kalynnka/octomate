@@ -22,7 +22,6 @@ from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest
-from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.user import UserProfile
@@ -41,7 +40,7 @@ from octomate.tentacles.channels.web.trunkline.base import (
 )
 from octomate.types.permissions import InklingPermissionMode
 from tests.support.agents import build_non_stream_agent, build_scripted_agent
-from tests.support.managers import a_registry
+from tests.support.managers import a_project, a_registry
 
 # The console drives one configured reception agent through octomate.kick.
 RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
@@ -346,7 +345,7 @@ async def test_a_first_directive_files_the_thread_under_a_project(
     # operator's pick is the whole of how it gets one.
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(projects=await a_registry(a_project(inky)))
     agent, _ = build_scripted_agent(["done"])
     channel = await _register(octomate, agent)
 
@@ -366,7 +365,7 @@ async def test_a_directive_naming_no_project_leaves_the_thread_a_chat(
     # agent works nowhere in particular.
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(projects=await a_registry(a_project(inky)))
     agent, _ = build_scripted_agent(["done"])
     channel = await _register(octomate, agent)
 
@@ -396,7 +395,7 @@ async def test_a_new_thread_posted_by_the_console_carries_its_project(
     to a fresh thread key, and read the thread back filed under it."""
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(projects=await a_registry(a_project(inky)))
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
@@ -567,8 +566,8 @@ async def test_the_projects_endpoint_offers_only_enabled_ones(
     inky.mkdir()
     octomate = Octomate(
         projects=await a_registry(
-            Project(root=inky),
-            Project(root=tmp_path / "deleted", enabled=False),
+            a_project(inky),
+            a_project(tmp_path / "deleted", enabled=False),
         )
     )
     agent, _ = build_scripted_agent(["done"])
@@ -758,7 +757,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
     octomate.connect(
         TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
     )
-    project = Project(root=Path("/srv/inky"), origin="codex")
+    project = a_project(Path("/srv/inky"), origin="codex")
     octomate.projects = await a_registry(project)
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", "session-1"), project=project

@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 
 from arcanus.base import TransmuterProxiedMixin
+from pydantic import JsonValue
 from sqlalchemy import JSON, Boolean, String, UniqueConstraint, Uuid, true
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
@@ -55,6 +56,16 @@ class Project(Base, TransmuterProxiedMixin):
         nullable=False,
         default=list,
         comment="Further directories that are also this project, as absolute paths.",
+    )
+    upstream: Mapped[JsonValue] = mapped_column(
+        JSON,
+        nullable=False,
+        comment=(
+            "Where this project's mirror comes from and how it is kept current: kind "
+            "`remote` carries a url that is cloned and fetched; kind `directory` "
+            "carries a path that is `git init`'d and synced by copying in and "
+            "committing."
+        ),
     )
     description: Mapped[str | None] = mapped_column(
         String,
