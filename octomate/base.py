@@ -22,6 +22,7 @@ from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.oauth.routes import oauth_router
 from octomate.reflex import (
     Awake,
@@ -107,6 +108,7 @@ class Octomate:
     users: UserManager = field(default_factory=UserManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
     mirrors: MirrorManager = field(default_factory=MirrorManager)
+    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
@@ -216,6 +218,10 @@ class Octomate:
                 # the resolution index, so a declared project resolves before
                 # anything is running that could ask.
                 await self.projects.reconcile()
+                # How a workspace is forked is the filesystem's answer, not a
+                # setting: probed here so the log says which mechanism this host
+                # got, once, before anything asks for a workspace.
+                await self.workspaces.detect()
                 # Each tentacle is an async context manager owning its own
                 # long-lived resources (agents: warm MCP sessions; channels:
                 # the inbound receive loop). Channels live on the inner stack so
