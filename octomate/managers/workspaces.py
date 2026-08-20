@@ -114,8 +114,13 @@ class WorkspaceManager:
         that work away. Serialized per thread, so two turns arriving together
         materialize once.
 
-        A fork that fails is removed before the error travels on: half a
-        workspace would read as that live tree ever after.
+        The fork is made beside the workspace and moved into place, so a
+        workspace only ever exists whole: a rename within one directory is
+        atomic, where a copy the machine dies in the middle of would leave half a
+        tree that every later turn reads as this thread's own. That is what makes
+        "the directory is there" mean "the workspace is there", here and for a
+        caller that asks the same question. A fork that merely fails is removed
+        the same way, before the error travels on.
         """
         path = self.path(thread_id)
         async with self.locks.setdefault(thread_id, asyncio.Lock()):
@@ -123,16 +128,23 @@ class WorkspaceManager:
                 return path
             self.workspaces_dir.mkdir(parents=True, exist_ok=True)
             flag = await self.detect()
+            # Hidden, and named after the thread, so it is never mistaken for a
+            # workspace and the next fork of this thread reclaims whatever a
+            # killed one left — the case the cleanup below cannot reach.
+            staging = path.with_name(f".{thread_id}.forking")
+            if staging.exists():
+                shutil.rmtree(staging)
             try:
                 if flag is not None:
-                    await copy(mirror, path, flag)
+                    await copy(mirror, staging, flag)
                 else:
-                    await run_git("clone", str(mirror), str(path))
+                    await run_git("clone", str(mirror), str(staging))
                 await run_git(
-                    "checkout", "-b", f"octomate/thread-{thread_id}", cwd=path
+                    "checkout", "-b", f"octomate/thread-{thread_id}", cwd=staging
                 )
+                staging.rename(path)
             except BaseException:
-                shutil.rmtree(path, ignore_errors=True)
+                shutil.rmtree(staging, ignore_errors=True)
                 raise
         return path
 

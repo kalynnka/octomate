@@ -176,6 +176,26 @@ async def test_a_fork_that_fails_leaves_nothing_behind(
         await manager.materialize(thread, tmp_path / "no-such-mirror")
 
     assert not manager.path(thread).exists()
+    assert list((tmp_path / "workspaces").iterdir()) == []
+
+
+async def test_what_a_killed_fork_left_is_never_a_workspace(
+    manager: WorkspaceManager, tmp_path: Path
+) -> None:
+    # The case the cleanup cannot reach: a machine that dies mid-copy leaves the
+    # half-copied tree behind. It is not where the workspace goes, and the next
+    # fork of this thread reclaims it rather than building on it.
+    mirror = await a_mirror(tmp_path / "mirror", {"readme.md": "hello"})
+    thread = uuid7()
+    abandoned = (tmp_path / "workspaces" / f".{thread}.forking").resolve()
+    abandoned.mkdir(parents=True)
+    (abandoned / "half.md").write_text("copied before the power went")
+
+    workspace = await manager.materialize(thread, mirror)
+
+    assert (workspace / "readme.md").read_text() == "hello"
+    assert not (workspace / "half.md").exists()
+    assert not abandoned.exists()
 
 
 async def test_two_materializations_of_one_thread_serialize(
