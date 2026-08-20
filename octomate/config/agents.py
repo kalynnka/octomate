@@ -466,8 +466,11 @@ class DeepseekConfig(BaseModel):
     extra_args: list[str] = Field(
         default_factory=list,
         description=(
-            "Extra arguments appended after `web --host 127.0.0.1 --port <port>`, "
-            "e.g. a `--patch` overlay. Only applies to a harness octomate starts."
+            "Extra arguments appended after "
+            "`web --host 127.0.0.1 --port <port> --no-open`, e.g. a `--patch` "
+            "overlay. Only applies to a harness octomate starts. A dsh that "
+            "refuses one of these exits and fails the start — only octomate's "
+            "own `--no-open` is dropped and retried."
         ),
     )
     dsh_home: ConfigPath = Field(
