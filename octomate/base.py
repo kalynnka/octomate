@@ -5,7 +5,7 @@ import colorsys
 import logging
 import zlib
 from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import InitVar, dataclass, field
 from functools import lru_cache
 from typing import TypeVar
@@ -18,6 +18,7 @@ from rich.style import Style
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.mirrors import MirrorManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
@@ -106,6 +107,7 @@ class Octomate:
     )
     users: UserManager = field(default_factory=UserManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
+    mirrors: MirrorManager = field(default_factory=MirrorManager)
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
@@ -262,6 +264,12 @@ class Octomate:
                     # binds. `start` already isolates and time-bounds each entry,
                     # so this task settles on its own and never raises.
                     starting = asyncio.create_task(start_all())
+                    # Mirrors in the background too: a first clone takes as long
+                    # as the repository is big, and serving must not wait on it.
+                    # `reconcile` isolates per-project failures itself.
+                    mirroring = asyncio.create_task(
+                        self.mirrors.reconcile(self.projects.list())
+                    )
                     try:
                         yield
                     finally:
@@ -271,6 +279,12 @@ class Octomate:
                         # onto it. `start` bounds each entry, so this wait is
                         # bounded too; on a normal shutdown it is a no-op.
                         await starting
+                        # Cancelled rather than awaited: a mirror sync is not
+                        # bounded the way `start` is, and creation cleans up
+                        # after a cancellation, so shutdown stays prompt.
+                        mirroring.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await mirroring
 
         app = FastAPI(title=title, docs_url="/docs", redoc_url=None, lifespan=lifespan)
         app.state.octomate = self

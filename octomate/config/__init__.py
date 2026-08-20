@@ -30,6 +30,7 @@ from octomate.config.integrations import (
     LinearMcpConfig,
 )
 from octomate.config.mcp import McpConfig, McpIntegrationConfig, McpServerConfig
+from octomate.config.mirrors import GitIdentity, MirrorsConfig
 from octomate.config.models import (
     AnthropicModelSettings,
     BedrockModelSettings,
@@ -91,6 +92,9 @@ __all__ = [  # noqa: RUF022
     "LinearMcpConfig",
     # users
     "UserConfig",
+    # mirrors
+    "GitIdentity",
+    "MirrorsConfig",
     # channels
     "AgentModelConfig",
     "ChannelConfig",

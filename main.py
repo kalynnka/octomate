@@ -24,6 +24,7 @@ from octomate.config import OctomateConfig
 from octomate.config.agents import SpillAction, SummarizeAction, TruncateAction
 from octomate.database import engine as db_engine
 from octomate.integrations import build_integration
+from octomate.managers.mirrors import MirrorManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.spills import SpillStore
 from octomate.managers.user import UserManager
@@ -112,6 +113,7 @@ def create_app() -> FastAPI:
     octomate = Octomate(
         users=UserManager(config.users),
         projects=ProjectManager(config.projects),
+        mirrors=MirrorManager(config=config.mirrors),
         oauth_encryption_key=config.oauth.encryption_key,
     )
 

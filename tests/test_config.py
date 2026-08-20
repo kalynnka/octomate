@@ -899,6 +899,20 @@ def test_projects_validate_as_projects(
     assert project.upstream == DirectoryUpstream(path=tmp_path / "Projects" / "inky")
 
 
+def test_a_mirrors_block_validates() -> None:
+    config = IsolatedTestConfig.model_validate(
+        {
+            "mirrors": {
+                "freshness_window": 300,
+                "identity": {"name": "Lu Hui", "email": "lu@example.com"},
+            }
+        }
+    )
+
+    assert config.mirrors.freshness_window == 300
+    assert config.mirrors.identity.name == "Lu Hui"
+
+
 def test_a_project_without_a_root_is_refused() -> None:
     with pytest.raises(ValidationError) as exc_info:
         IsolatedTestConfig.model_validate({"projects": {"inky": {"description": "?"}}})

@@ -24,6 +24,7 @@ from octomate.config.agents import AgentsConfig
 from octomate.config.channels import AgentModelConfig, ChannelConfig, ChannelsConfig
 from octomate.config.integrations import IntegrationConfig
 from octomate.config.mcp import McpServerConfig
+from octomate.config.mirrors import MirrorsConfig
 from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
 from octomate.config.providers import ProvidersConfig
@@ -96,6 +97,10 @@ class OctomateConfig(BaseSettings):
             "contents, which reach an agent as instructions. Unrelated to "
             "`~/.claude/projects/`, which is transcript storage."
         ),
+    )
+    mirrors: MirrorsConfig = Field(
+        default_factory=MirrorsConfig,
+        description="How the declared projects' mirrors are synced.",
     )
 
     @field_validator("projects", mode="wrap")

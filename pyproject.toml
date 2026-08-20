@@ -38,6 +38,7 @@ dependencies = [
     "rich>=13",
     "openai-codex>=0.1.0b3",
     "typer>=0.25.1",
+    "email-validator",
 ]
 
 [build-system]
