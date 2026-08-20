@@ -119,7 +119,15 @@ limitations the first version accepts, and why.
     anything else to `custom` — so a multi-select can only ever carry one
     selection from octomate.
 
-11. **Whatever answers `host:port` is trusted.** dsh's `/api` has no TLS and
+11. **An old dsh still opens a browser tab.** A started child is passed
+    `--no-open`, but `dsh web` parses without `allowUnknownOption`, so a dsh
+    predating the flag refuses it and exits instead of ignoring it. There is no
+    version probe: the flag is offered, and a refusal naming it costs one
+    failed spawn before the child is started again without it — which then
+    opens a tab on the octomate host. A refusal naming any other flag (one from
+    `extra_args`) fails the start instead of being retried.
+
+12. **Whatever answers `host:port` is trusted.** dsh's `/api` has no TLS and
     no auth, so the attach probe (`host.describe`) trusts anything that
     answers it. `agents.deepseek.host` is therefore validated to loopback at
     config load — the trust fence is the machine — and a remote dsh (the VS

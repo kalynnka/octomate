@@ -125,7 +125,7 @@
   #   host: 127.0.0.1            # loopback only; the gateway has no auth
   #   port: 3080                 # dsh's default bind, and what a started child takes
   #   executable: dsh            # on PATH, or an absolute path to a built dsh
-  #   extra_args: []             # appended after `web --host ... --port ...`
+  #   extra_args: []             # appended after `web --host ... --port ... --no-open`
   #   dsh_home: ~/.dsh           # DSH_HOME for a started child
   #   cwd: .
   #   provider: deepseek-official
