@@ -970,9 +970,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         else:
             summary = ReasoningSummary(ReasoningSummaryValue(self.config.summary))
 
-        # The thread's project root, or the configured directory when it is in none.
-        # `sandbox="workspace_write"` scopes writes to it, so for Codex the directory
-        # is the whole of running inside a project.
+        # The thread's workspace, or the configured directory when it is in no
+        # project. `sandbox="workspace_write"` scopes writes to it, so for Codex the
+        # directory is the whole of running inside a project — and the workspace is
+        # what makes that boundary the thread's own rather than everyone's checkout.
         run_cwd = await self.run_cwd(conversation.thread_id, self.config.cwd)
 
         codex_thread_id: str | None = None

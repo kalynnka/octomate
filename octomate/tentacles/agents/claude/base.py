@@ -82,7 +82,6 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
-from octomate.schemas.project import Project
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
@@ -117,22 +116,25 @@ WRITE_TOOL_PATHS: dict[str, str] = {
 }
 
 
-async def deny_outside_project(
-    project: Project,
+async def deny_outside_workspace(
+    workspace: Path,
     hook_input: HookInput,
     tool_use_id: str | None,
     context: HookContext,
 ) -> HookJSONOutput:
-    """Refuse a file write whose target resolves outside `project`'s roots.
+    """Refuse a file write whose target resolves outside `workspace`.
 
     A PreToolUse hook rather than `can_use_tool`, which the CLI does not call at all
-    under `bypassPermissions` — the mode an out-of-project write is likeliest to
+    under `bypassPermissions` — the mode an out-of-workspace write is likeliest to
     reach. The hook fires in every mode, and fires before `can_use_tool`, so a
     refused write raises no approval card either.
 
-    Bound to its project with `partial` and registered only for a run that resolved
-    to one, so a run under no declared root is never on this path. The reason names
-    the project, so the model reports a blocker rather than retrying the same path.
+    Bound to the thread's workspace with `partial` and registered only for a run that
+    has one, so a run in no project is never on this path. The boundary is the
+    workspace rather than the project's roots because that is where the run happens:
+    the project's own checkout is the person's, and a run may not reach into it. The
+    reason names the workspace, so the model reports a blocker rather than retrying
+    the same path.
     """
     pre_tool_use = cast(PreToolUseHookInput, hook_input)
     target = pre_tool_use["tool_input"].get(WRITE_TOOL_PATHS[pre_tool_use["tool_name"]])
@@ -140,17 +142,19 @@ async def deny_outside_project(
     # nothing to judge, and the CLI refuses it on the tool's own schema anyway.
     if not isinstance(target, str):
         return {}
-    if project.contains(Path(target)):
+    # `is_relative_to` is lexical, so the target resolves first: a `..` and a symlink
+    # are the whole attack surface of a check that compares the string it was handed.
+    # The workspace arrives resolved, being the path the fork was made at.
+    if Path(target).resolve().is_relative_to(workspace):
         return {}
-    roots = ", ".join(str(root) for root in project.roots)
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": (
-                f"{target} is outside project {project.name}. This run may only "
-                f"write under: {roots}. The same path will be refused again, so "
-                f"work inside the project or report what you could not change."
+                f"{target} is outside this thread's workspace. This run may only "
+                f"write under: {workspace}. The same path will be refused again, so "
+                f"work inside the workspace or report what you could not change."
             ),
         }
     }
@@ -670,16 +674,15 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # other, never both.
         session_id = conversation.external_id or str(uuid7())
 
-        # The thread's project root, or the configured directory when it is in none.
-        # A project root is a local path, and an SSH run happens on another machine
-        # where it names nothing, so a remote run stays where it is configured.
-        run_cwd = (
-            self.config.cwd
-            if self.config.ssh
-            else await self.run_cwd(conversation.thread_id, self.config.cwd)
-        )
-        project_name = self.octomate.projects.resolve(Path(run_cwd))
-        project = self.octomate.projects.get(project_name) if project_name else None
+        # The thread's workspace, or the configured directory when it is in no
+        # project. A workspace is a local path, and an SSH run happens on another
+        # machine where it names nothing, so a remote run stays where it is
+        # configured — and is in no project there, since nothing local bounds it.
+        if self.config.ssh:
+            project, run_cwd = None, self.config.cwd
+        else:
+            project = await self.run_project(conversation.thread_id)
+            run_cwd = await self.run_cwd(conversation.thread_id, self.config.cwd)
         # `setting_sources` is left unset on purpose: verified against the CLI, the
         # unset default loads every source, so the bound directory arrives with its
         # own CLAUDE.md and .claude/settings.json — the useful half of "work on this
@@ -690,11 +693,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         ]
         if project is not None:
             # `cwd` is a default Claude can walk out of, not a boundary, so the
-            # project that owns this directory also bounds what may be written in it.
+            # thread's own workspace — which is what `cwd` is — bounds what may be
+            # written in it.
             pre_tool_use_hooks.append(
                 HookMatcher(
                     matcher="|".join(WRITE_TOOL_PATHS),
-                    hooks=[partial(deny_outside_project, project)],
+                    hooks=[partial(deny_outside_workspace, Path(run_cwd))],
                 )
             )
 

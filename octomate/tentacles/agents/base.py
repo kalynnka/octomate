@@ -138,8 +138,29 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         project = self.octomate.projects.get(attributed.name)
         return project if project is not None and project.enabled else None
 
+    async def run_workspace(self, thread_id: uuid.UUID, project: Project) -> Path:
+        """This thread's own checkout of `project`: the project's mirror, synced, and
+        forked into `.octomate/workspaces/<thread_id>` on the thread's branch.
+
+        A thread runs here rather than in `project.root`, so two threads on one
+        project cannot walk over each other's uncommitted work — and the root stays
+        the person's, untouched by anything an agent does.
+
+        Only a thread's first turn does any of that. A workspace that exists is
+        resumed into as it stands, and the mirror is not synced for it either: a
+        workspace is not re-made from the mirror once it is there, so a fetch would
+        buy the turn nothing and would couple continuing a thread to the upstream
+        being reachable. `materialize` answers an existing workspace anyway; the
+        check is here to keep the sync in front of it from running.
+        """
+        workspace = self.octomate.workspaces.path(thread_id)
+        if workspace.is_dir():
+            return workspace
+        mirror = await self.octomate.mirrors.sync(project)
+        return await self.octomate.workspaces.materialize(thread_id, mirror)
+
     async def run_cwd(self, thread_id: uuid.UUID, agent_cwd: str) -> str:
-        """The directory a run in this thread happens in: its project's root, or
+        """The directory a run in this thread happens in: its workspace, or
         `agent_cwd` when the thread is in no project.
 
         `agent_cwd` is the agent's own configured directory, and is where a thread in
@@ -154,7 +175,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         project = await self.run_project(thread_id)
         if project is None:
             return str(Path(agent_cwd).absolute())
-        return str(project.root)
+        return str(await self.run_workspace(thread_id, project))
 
     @overload
     async def run(

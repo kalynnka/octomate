@@ -1,10 +1,13 @@
-"""OCTO-36 — Claude's file writes are scoped to its project's roots.
+"""OCTO-36, OCTO-48 — Claude's file writes are scoped to its thread's workspace.
 
 `cwd` is a default Claude can walk out of, so the boundary is enforced in a
-PreToolUse hook: a write whose path resolves outside the project's roots is denied
-with a reason that names the project. The hook is registered only for a run whose
-directory — the one its thread's project put it in — resolves to a declared project,
-so an unscoped run is untouched.
+PreToolUse hook: a write whose path resolves outside the workspace is denied with a
+reason that names it. The hook is registered only for a run whose thread is in a
+project, since that is the run that has a workspace; an unscoped run is untouched.
+
+The boundary moved with the run. It was the project's roots while runs happened in
+`project.root`; now a run happens in a fork of that project's mirror, and the
+person's own checkout is one of the places it may not write.
 """
 
 from __future__ import annotations
@@ -27,7 +30,10 @@ from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
-from octomate.tentacles.agents.claude.base import WRITE_TOOL_PATHS, deny_outside_project
+from octomate.tentacles.agents.claude.base import (
+    WRITE_TOOL_PATHS,
+    deny_outside_workspace,
+)
 from tests.support.agents import CLAUDE_MODELS, RecordingClaudeClient
 from tests.support.managers import FakeConversationManager, a_registry
 
@@ -82,89 +88,87 @@ async def denial(hook: HookCallback, tool_name: str, path: str | Path) -> str | 
     return specific["permissionDecisionReason"]
 
 
-async def refusal(project: Project, tool_name: str, path: str | Path) -> str | None:
-    """The same question, of the boundary a run bound to `project` would register."""
-    return await denial(partial(deny_outside_project, project), tool_name, path)
+async def refusal(workspace: Path, tool_name: str, path: str | Path) -> str | None:
+    """The same question, of the boundary a run in `workspace` would register."""
+    return await denial(partial(deny_outside_workspace, workspace), tool_name, path)
 
 
-async def test_a_write_inside_the_root_is_allowed(tmp_path: Path) -> None:
-    project = a_project(tmp_path / "inky")
+def a_workspace(tmp_path: Path) -> Path:
+    """A workspace directory as `WorkspaceManager` hands one over: absolute, and
+    resolved, since the hook compares against it without resolving it again."""
+    workspace = tmp_path / "workspaces" / "t1"
+    workspace.mkdir(parents=True, exist_ok=True)
+    return workspace.resolve()
 
-    assert (
-        await refusal(project, "Write", tmp_path / "inky" / "octomate" / "new.py")
-        is None
-    )
+
+async def test_a_write_inside_the_workspace_is_allowed(tmp_path: Path) -> None:
+    workspace = a_workspace(tmp_path)
+
+    assert await refusal(workspace, "Write", workspace / "octomate" / "new.py") is None
 
 
-async def test_an_edit_outside_the_roots_is_denied_naming_the_project(
+async def test_an_edit_outside_the_workspace_is_denied_naming_it(
     tmp_path: Path,
 ) -> None:
-    project = a_project(tmp_path / "inky")
+    workspace = a_workspace(tmp_path)
     outside = tmp_path / "kraken" / "base.py"
 
-    reason = await refusal(project, "Edit", outside)
+    reason = await refusal(workspace, "Edit", outside)
 
     # The model has to be able to report a blocker instead of retrying the path.
     assert reason is not None
-    assert "inky" in reason
+    assert str(workspace) in reason
     assert str(outside) in reason
 
 
-async def test_an_edit_inside_an_extra_root_is_allowed(tmp_path: Path) -> None:
-    project = a_project(tmp_path / "octoview", tmp_path / "Code" / "User")
-    settings = tmp_path / "Code" / "User" / "settings.json"
+async def test_a_write_into_the_projects_own_checkout_is_denied(
+    tmp_path: Path,
+) -> None:
+    # The boundary that moved: the project's root is where a person works, and a
+    # run reaches it only through what its thread commits.
+    project = a_project(tmp_path / "inky")
 
-    assert await refusal(project, "Edit", settings) is None
+    assert (
+        await refusal(
+            a_workspace(tmp_path), "Write", project.root / "octomate" / "x.py"
+        )
+        is not None
+    )
 
 
 async def test_a_path_escaping_with_dotdot_is_denied(tmp_path: Path) -> None:
     # `is_relative_to` is lexical, so the check resolves before it compares.
-    project = a_project(tmp_path / "inky")
-    escaping = tmp_path / "inky" / ".." / "kraken" / "base.py"
+    workspace = a_workspace(tmp_path)
+    escaping = workspace / ".." / "t2" / "base.py"
 
-    assert await refusal(project, "Edit", escaping) is not None
+    assert await refusal(workspace, "Edit", escaping) is not None
 
 
 async def test_a_path_escaping_through_a_symlink_is_denied(tmp_path: Path) -> None:
-    project = a_project(tmp_path / "inky")
+    workspace = a_workspace(tmp_path)
     (tmp_path / "kraken").mkdir()
-    (tmp_path / "inky" / "sibling").symlink_to(tmp_path / "kraken")
+    (workspace / "sibling").symlink_to(tmp_path / "kraken")
 
-    escaping = tmp_path / "inky" / "sibling" / "base.py"
+    escaping = workspace / "sibling" / "base.py"
 
-    assert await refusal(project, "Edit", escaping) is not None
-
-
-async def test_a_symlinked_root_still_contains_its_own_files(tmp_path: Path) -> None:
-    # The root itself may be a symlink (a home directory often is). Both sides
-    # resolve, so the project still contains what lives under it.
-    real = tmp_path / "real" / "inky"
-    real.mkdir(parents=True)
-    linked = tmp_path / "inky"
-    linked.symlink_to(real)
-    project = a_project(linked)
-
-    assert await refusal(project, "Write", linked / "octomate" / "new.py") is None
+    assert await refusal(workspace, "Edit", escaping) is not None
 
 
 async def test_a_notebook_edit_is_scoped_by_its_own_path_key(tmp_path: Path) -> None:
-    project = a_project(tmp_path / "inky")
-
     assert (
-        await refusal(project, "NotebookEdit", tmp_path / "kraken" / "n.ipynb")
+        await refusal(a_workspace(tmp_path), "NotebookEdit", tmp_path / "n.ipynb")
         is not None
     )
 
 
 async def test_a_write_naming_no_path_decides_nothing(tmp_path: Path) -> None:
-    project = a_project(tmp_path / "inky")
     malformed = cast(
         HookInput,
         {"hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {}},
     )
 
-    decision = await deny_outside_project(
-        project, malformed, "t1", cast(HookContext, {})
+    decision = await deny_outside_workspace(
+        a_workspace(tmp_path), malformed, "t1", cast(HookContext, {})
     )
 
     assert decision == {}
@@ -175,11 +179,11 @@ async def a_run(
     *,
     declared: str = "",
     configured: str = "/configured",
-) -> tuple[list[str | None], HookCallback | None]:
-    """Drive one run and answer with the PreToolUse matchers it handed the SDK, and
-    the scope hook it registered — the boundary itself, callable, so a test asks it
-    rather than inspecting how it was bound. `declared` names the project the run's
-    thread is in; a thread in none runs at `configured`."""
+) -> tuple[list[str | None], HookCallback | None, Path]:
+    """Drive one run and answer with the PreToolUse matchers it handed the SDK, the
+    scope hook it registered — the boundary itself, callable, so a test asks it
+    rather than inspecting how it was bound — and the directory it ran in. `declared`
+    names the project the run's thread is in; a thread in none runs at `configured`."""
     octomate = Octomate(conversations=FakeConversationManager(), projects=projects)
     thread = await octomate.thread_manager.ensure(
         ThreadKey("im", "thread", "c", "t1"),
@@ -208,35 +212,42 @@ async def a_run(
         ),
         None,
     )
-    return [matcher.matcher for matcher in hooks], scope
+    return [matcher.matcher for matcher in hooks], scope, Path(options.cwd or "")
 
 
 async def test_a_run_in_a_project_registers_the_scope_hook(tmp_path: Path) -> None:
     inky = a_project(tmp_path / "inky").root
 
-    matchers, scope = await a_run(await a_registry(a_project(inky)), declared="inky")
+    matchers, scope, cwd = await a_run(
+        await a_registry(a_project(inky)), declared="inky"
+    )
 
     assert matchers == ["AskUserQuestion", "Write|Edit|NotebookEdit"]
     assert scope is not None
     assert await denial(scope, "Edit", tmp_path / "elsewhere" / "x.py") is not None
+    assert await denial(scope, "Edit", cwd / "base.py") is None
 
 
-async def test_the_boundary_follows_the_thread_not_the_configured_directory(
+async def test_the_boundary_is_the_workspace_not_either_checkout(
     tmp_path: Path,
 ) -> None:
-    # A run dispatched away from the configured directory is scoped to where it
-    # landed, so where it runs and what bounds it can never disagree.
+    # A run is scoped to where it landed, so where it runs and what bounds it can
+    # never disagree — and neither project's own checkout is where it landed.
     inky = a_project(tmp_path / "inky").root
     kraken = a_project(tmp_path / "kraken").root
     projects = await a_registry(a_project(inky), a_project(kraken))
 
-    _matchers, scope = await a_run(projects, declared="kraken", configured=str(inky))
+    _matchers, scope, cwd = await a_run(
+        projects, declared="kraken", configured=str(inky)
+    )
 
     assert scope is not None
-    assert await denial(scope, "Edit", kraken / "base.py") is None
+    assert cwd.parent == (tmp_path / ".octomate" / "workspaces")
+    assert await denial(scope, "Edit", cwd / "base.py") is None
+    assert await denial(scope, "Edit", kraken / "base.py") is not None
     reason = await denial(scope, "Edit", inky / "base.py")
     assert reason is not None
-    assert "kraken" in reason
+    assert str(cwd) in reason
 
 
 async def test_a_run_in_no_project_is_unaffected(tmp_path: Path) -> None:
@@ -245,14 +256,18 @@ async def test_a_run_in_no_project_is_unaffected(tmp_path: Path) -> None:
     elsewhere.mkdir()
 
     # Belonging to no project, and configured to a directory no project claims.
-    matchers, scope = await a_run(
+    matchers, scope, cwd = await a_run(
         await a_registry(a_project(inky)), configured=str(elsewhere)
     )
 
-    # No declared root covers the run's directory, so nothing scopes it.
+    # A thread in no project has no workspace, so nothing scopes it — and it runs
+    # where it always did.
     assert matchers == ["AskUserQuestion"]
     assert scope is None
+    assert cwd == elsewhere
 
 
 async def test_with_nothing_declared_no_run_is_scoped() -> None:
-    assert await a_run(await a_registry()) == (["AskUserQuestion"], None)
+    matchers, scope, _cwd = await a_run(await a_registry())
+
+    assert (matchers, scope) == (["AskUserQuestion"], None)

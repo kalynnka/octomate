@@ -105,6 +105,16 @@ class TriggerTargets(BaseSettings):
         )
 
 
+@pytest.fixture(autouse=True)
+def isolated_cwd() -> None:
+    """Stay in the checkout, against the suite-wide move to a tmp_path.
+
+    `real_config_home` drops `OCTOMATE_HOME` so discovery finds this machine's own
+    home, and discovery probes the working directory for `./.octomate/` — from
+    anywhere else these replays would find no credentials and skip.
+    """
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
