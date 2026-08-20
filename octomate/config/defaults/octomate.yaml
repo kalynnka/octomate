@@ -1,0 +1,23 @@
+# The host's own settings.
+#
+# Every file in a config home is flat like this one: its top-level keys are
+# `OctomateConfig` field names, and the files add up to one deployment. A key a home
+# declares replaces the packaged default under it wholesale.
+#
+# Nothing here is set — a commented key documents its built-in default. Uncomment
+# what you mean to change; the environment (OCTOMATE__*) still wins over all of it.
+
+# host: 127.0.0.1   # in a container this must be 0.0.0.0 to be reachable at all
+# port: 8000
+
+# Bearer credential the Claude/Codex/DeepSeek hook routers authenticate against.
+# Required whenever one of those agents is configured — serving a hook router
+# unauthenticated would let anything that can reach the port write a session's
+# prompts and answers into thread history. Prefer OCTOMATE__HOOK_SECRET in the
+# environment; `octomate hooks secret` generates one and says where to put it.
+# hook_secret: ...
+
+# Where the database lives, read by both the app engine and alembic. The default is
+# relative to the working directory, so each checkout keeps its own history even
+# when they share a config home. OCTOMATE_DB_URL overrides it.
+# db_url: sqlite+aiosqlite:///.octomate/octomate.db

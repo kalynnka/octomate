@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from collections.abc import Generator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from pydantic_ai.tools import DeferredToolRequests
@@ -20,10 +23,13 @@ from octomate.tentacles.channels.feelers.output import (
     MarkdownFeeler,
     SegmentsFeeler,
     TimelineFeeler,
+    TimelineState,
 )
 
 if TYPE_CHECKING:
     from octomate.managers.deferred import DeferredActionManager
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,6 +42,24 @@ class Feelers:
     approvals: ApprovalFeeler
     ask_questions: QuestionFeeler
     oauth: OAuthFeeler
+    # The timeline a live run stream is rendering onto, keyed by str(address).
+    # Registered around `drive` so a batch presented from an agent's in-process
+    # bridge — outside the stream — can settle that surface (see
+    # `TimelineState.actions_presented`).
+    live_timelines: dict[str, TimelineState] = field(default_factory=dict)
+
+    @contextmanager
+    def driving(
+        self, address: ChannelAddress, timeline: TimelineState
+    ) -> Generator[None]:
+        """Marks `timeline` as the surface rendering `address`'s live run."""
+        key = str(address)
+        self.live_timelines[key] = timeline
+        try:
+            yield
+        finally:
+            if self.live_timelines.get(key) is timeline:
+                del self.live_timelines[key]
 
     async def present_actions(
         self,
@@ -86,4 +110,18 @@ class Feelers:
                     message_ids.get(action.id),
                 )
 
+            timeline = self.live_timelines.get(str(target_address))
+            if timeline is not None:
+                # The cards are the load-bearing part and are already up; the
+                # surface settle is a UI hint, and a render hiccup must not
+                # fail the presentation (or cancel the approval behind it).
+                try:
+                    await timeline.actions_presented()
+                except Exception:
+                    logger.warning(
+                        "live timeline for %s failed to settle after "
+                        "presenting actions",
+                        target_address,
+                        exc_info=True,
+                    )
             return batch

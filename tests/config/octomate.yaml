@@ -1,0 +1,17 @@
+# The config home the unit suite runs against, and it declares nothing.
+#
+# `tests/conftest.py` points `OCTOMATE_HOME` here for the whole session, which is
+# obeyed without probing — so no test can reach `./.octomate/` or `~/.octomate/`,
+# both of which are gitignored and would make a result depend on the machine: green
+# here, red on a bare checkout, and broken by adding a user locally.
+#
+# What a test sees is therefore the packaged defaults under
+# `octomate/config/defaults/` plus the payload it passed, and nothing else. The
+# defaults are deliberately included: they ship with the wheel, so every real
+# deployment has them as its floor, and running the suite on them is what keeps them
+# valid. Anything else a test needs belongs in that test, next to the assertion it
+# explains.
+#
+# The live replay suites under tests/trigger are the exception and point
+# `OCTOMATE_HOME` back at the real home — they need this machine's actual
+# credentials, which is the whole point of them.

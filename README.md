@@ -1,8 +1,20 @@
 # Octomate 🐙
 
-One durable record of every coding-agent session you run — including the ones you start
-yourself, in your own terminal — and a place for you and your colleagues to continue
-them: from Slack, Lark, QQ or the web, with whichever agent is worth the question.
+**Relay and collect every chat you have with a coding agent — whichever harness made
+it — then spread tentacles out to wherever you already work, and offer that history
+and those tools wherever you want them.**
+
+Three things, in that order:
+
+- **Collect.** Claude Code, Codex, DeepSeek Harness, or a run you drove from chat —
+  every turn lands in one record, including the sessions you start yourself in your own
+  terminal or app.
+- **Spread.** The same thread reaches Slack, Lark, the web console and QQ, rendered
+  natively on each. You go on working where you already work — and more channels are
+  on the way.
+- **Offer.** That history, and the tools built on it, are available from any of those
+  surfaces — searchable mid-run, resumable later, handed to a different agent when the
+  one that started is not the one that should finish.
 
 > ⚠️ **Early development** (v0.0.1) — APIs and architecture are subject to change.
 
@@ -10,35 +22,53 @@ them: from Slack, Lark, QQ or the web, with whichever agent is worth the questio
 
 ## It does not ask you to change how you work
 
-Keep running `claude` or `codex` the way you already do: your terminal, your flags, your
-harness, your choice of agent. There is no wrapper to launch through and no session to
-start somewhere else first.
+Keep running Claude Code, Codex or DeepSeek Harness (`dsh`) the way you already do: your
+terminal, your flags, your harness, your choice of agent. There is no wrapper to launch
+through and no session to start somewhere else first.
 
 Octomate follows the transcript from a byte offset and takes the hook stream alongside
 it, so every turn — the prompt, the tool calls, the answer, and any subagents it spawned
-— lands in the same record as the work you drive from chat. Two commands set it up:
+— lands in the same record as the work you drive from chat. One command per harness sets
+it up:
 
 ```bash
 octomate claude hooks install
 octomate codex hooks install
+octomate deepseek hooks install
 ```
 
 What that buys you is everything downstream of having the session at all: read it back
 later, resume it from a chat thread, or hand the same context to a different agent
 because the one you started with is not the one that should finish.
 
-## One gateway, every channel
+## Channel Tentacles
 
 A run is an event stream that channels consume, rather than text one channel formats. The
 same turn renders natively wherever it lands — streaming text, tool cards, todo lists,
 approval buttons — and the thread it belongs to is the same thread on every surface.
 
-| Channel | Transport | Inbound port |
+| Channel | Transport | Status |
 |---|---|---|
-| **Slack** | Slack Bolt, Socket Mode | not needed |
-| **Lark / Feishu** | lark-oapi | webhook |
-| **QQ** | NapCat, OneBot WebSocket | not needed |
-| **Web** | dev UI, served by the same app | — |
+| **Slack** | Slack Bolt, Socket Mode | ready |
+| **Lark / Feishu** | lark-oapi, WebSocket long connection | ready |
+| **Trunkline** | the web console, over `/api/trunkline` | 🚧 WIP |
+| **QQ (NapCat)** | NapCat, OneBot WebSocket | 🚧 WIP |
+
+Every one of these dials out, so none of them needs an inbound port. A port is only
+needed for what you point at Octomate yourself: the native-session hook routers, and
+OAuth callbacks.
+
+**QQ (NapCat)** is named for its bridge rather than for QQ, because that is what it
+really is: NapCat is a community reimplementation on top of NTQQ, not a vendor SDK like
+the others. It sits apart for that reason, and it has not been exercised in a while —
+treat it as unverified.
+
+**More channels are coming.** A channel is a `Chromo` (platform events in), an `Ink`
+(what sends and edits), and a set of `Feelers` (how a run is drawn), so adding one does
+not touch the graph or the agents.
+
+Channels are keyed by instance, not by platform, so two Lark apps — or two consoles —
+are two keys in `channels.yaml` and two separate sets of threads.
 
 Which is worth having when:
 
@@ -51,6 +81,56 @@ Which is worth having when:
   and the conversation continues there.
 - The work turns out to belong to someone else: whoever picked it up `summon`s the agent
   you trust for that kind of work, handing over a brief rather than a pasted transcript.
+
+## Agent Tentacles
+
+The other half of the pair. Each agent tentacle wraps somebody else's harness — Octomate
+drives them, it does not reimplement them.
+
+| Agent | Runtime | Native session ingest | Notes |
+|---|---|---|---|
+| **claude** | Claude Agent SDK | ✅ hooks + transcript tailer | runs locally; 🚧 an SSH transport for running on another host is WIP |
+| **codex** | openai-codex SDK | ✅ hooks + rollout tailer | |
+| **deepseek** | DeepSeek Harness (`dsh`), over its `/api` gateway | ✅ hooks + event tailer | attaches to a `dsh web` you already run, and starts one only if nothing answers |
+| **inkling** | in-process pydantic-ai agent | — | any pydantic-ai supported providers or models; MCP toolsets, per-user OAuth integrations |
+
+The first three feed the native-session ingest above, so a session started in your
+terminal and a run summoned from Slack are the same kind of thing afterwards. `inkling`
+is the one that runs in-process, and it is the chat-side generalist rather than the
+point of the project.
+
+Models are advertised through **claims** — what a route is for, and which thinking
+efforts it accepts. A model with no claim is not summonable, so what an agent offers is
+config rather than a hardcoded list. Nothing is defaulted: an agent names the models you
+hold keys for, or it is absent.
+
+## Trunkline — the web console 🚧
+
+> **Work in progress.** Usable, and changing week to week: panels, API shape and
+> design are all still moving. Treat it as a preview rather than a stable surface.
+
+Trunkline is Octomate's own web console, and the one channel that is not somebody
+else's chat app. One screen, five panels — threads sidebar, control rail, review
+dossier, chat ledger, timeline — over a status bar.
+
+It is both an entry and a reader. Threads on the `trunkline` channel are yours to
+start and continue from the browser; every *other* channel's threads, and every
+native session the tailers picked up, are readable there too. So it is where you go
+to see the terminal session you ran an hour ago next to the Slack thread a colleague
+opened about it.
+
+React + TypeScript + Vite, using the Lonetrail design system. It is served
+separately from the API and proxies `/api` and `/oauth` back to it:
+
+```bash
+cd trunkline
+pnpm install
+pnpm dev              # http://localhost:5173, proxying to 127.0.0.1:8000
+```
+
+With the API down the status bar shows `relay offline` and the ledger panels stay
+empty. See [`trunkline/DESIGN.md`](trunkline/DESIGN.md) for the visual world and
+[`trunkline/PRODUCT.md`](trunkline/PRODUCT.md) for what it is meant to do.
 
 ## Approvals and questions are actions, in batches
 
@@ -85,7 +165,7 @@ for thinking with other people:
 ## How it works
 
 ```
-  Slack / Lark / QQ / Web       a session you run yourself
+  Slack / Lark / Trunkline / QQ    a session you run yourself
              |                               |
              v                               v
       ChannelTentacle              tailer + hook router
@@ -100,7 +180,7 @@ for thinking with other people:
                              |
                              v
                        AgentTentacle
-                 inkling / claude / codex
+          claude / codex / deepseek / inkling
                              |
                  +-----------+---------------+
                  v                           v
@@ -115,89 +195,181 @@ annotation, so a transition is written where it happens. A run ends either with 
 or suspended on a batch of actions that has not come back yet — and a suspended run is a
 row, which is why restarts are survivable.
 
-## Built on pydantic-ai
-
-Octomate is a pydantic-ai application. Agents, tools and capabilities are pydantic-ai's
-own, the reflex graph is `pydantic-graph`, and an approval or a question is a pydantic-ai
-deferred tool call — which is exactly why one survives a restart, since a deferred run is
-a value that can be stored and handed back rather than a callback waiting in memory.
-`pydantic-ai-harness` supplies the tool-output banding that keeps an oversized return
-from being re-sent on every later turn, and persistence is SQLAlchemy behind Arcanus
-transmuters.
-
-## Agents
-
-| Agent | Runtime | Models | Notes |
-|---|---|---|---|
-| **inkling** | native pydantic-ai agent | OpenAI, DeepSeek, Google, Anthropic, Bedrock | MCP toolsets, per-user integrations, oversized tool returns spilled rather than re-sent |
-| **claude** | Claude Agent SDK | opus, sonnet, haiku | runs locally or over SSH on another host |
-| **codex** | openai-codex SDK | gpt-5.5-codex | |
-
-Claude and Codex both feed the native-session ingest above, so a session started in your
-terminal and a run summoned from Slack are the same kind of thing afterwards.
-
-Models are advertised through **claims** — what a route is for, and which thinking
-efforts it accepts. A model with no claim is not summonable, so what an agent offers is
-config rather than a hardcoded list.
-
 ## Quickstart
 
-**Requirements:** Python 3.13+, [uv](https://docs.astral.sh/uv/).
+**Requirements:** Python 3.13+, [uv](https://docs.astral.sh/uv/). The database is a
+SQLite file under `.octomate/`, so there is nothing to stand up first.
 
-The database is a SQLite file under `.octomate/`, so there is no infrastructure to stand
-up first.
+### 1. Collect your own sessions
+
+The smallest useful Octomate. No API key, no chat platform, no tokens — it records the
+Claude Code sessions you already run.
 
 ```bash
 uv sync
 uv run alembic upgrade head
-cp octomate.default.yaml octomate.yaml   # add one provider key and one channel
-uv run octomate serve
+mkdir -p .octomate
 ```
 
-`octomate serve --reload` restarts on changes under `octomate/`. `octomate serve --tmux`
-serves in a detached tmux session and attaches to it — creating it if it is not already
-running, so the same command is both "start" and "go look at it". Octomate is meant to
-outlive the terminal that started it: channels hold their sockets open, and the tailers
-keep watching for native sessions started somewhere else entirely.
-
-Docker is the other route, and it starts one container:
+Declare one agent — that is the whole config:
 
 ```bash
-docker compose up -d
-docker compose --profile qq up -d        # ...and a NapCat bridge, for QQ
+cat > .octomate/agents.yaml <<'YAML'
+agents:
+  claude:
+    models: [opus, sonnet]
+    claims:
+      opus:
+        ability: Deep, multi-step engineering across a repository.
+      sonnet:
+        ability: Everyday software tasks and mid-sized changes.
+YAML
 ```
+
+A configured `claude` serves a hook router, and that router authenticates — so it needs
+a credential before it will boot. Order matters here: the first call generates one and
+exports it, the second sees it resolve and appends the *same* line.
+
+```bash
+eval "$(octomate hooks secret)"     # this shell
+octomate hooks secret >> ~/.zshrc   # and every later one (zsh)
+```
+
+The secret stays in the environment, never in the config home — the server and the
+hooks both read `OCTOMATE__HOOK_SECRET` from there.
+
+Then serve it and point Claude Code at it:
+
+```bash
+uv run octomate serve --tmux
+octomate claude hooks install
+```
+
+Start a Claude Code session anywhere — a terminal, the VSCode extension, the desktop
+app. Every turn is now recorded: prompt, tool calls, answer, subagents. Nothing about
+how you work changed.
+
+### 2. Relay it to Slack
+
+This is the part worth having. The thread you started in your terminal is now readable
+from Slack, and answerable there too.
+
+Create a Slack app with Socket Mode on, then declare the channel — structure in the
+config home, secrets in `.env`:
+
+```bash
+cat > .octomate/channels.yaml <<'YAML'
+channels:
+  slack:
+    type: slack
+    app_id: A0123456789
+    mention_only: true
+    agents:
+      - agent: claude
+        model: sonnet
+      - agent: claude
+        model: opus
+YAML
+
+cat >> .env <<'ENV'
+OCTOMATE__CHANNELS__SLACK__BOT_TOKEN=xoxb-...
+OCTOMATE__CHANNELS__SLACK__APP_TOKEN=xapp-...
+ENV
+```
+
+Restart, and `@`-mention the bot in a channel or DM it. `agents[0]` is what answers by
+default; the rest are summon candidates. Lark is the same shape with `type: lark` and an
+`app_id`/`app_secret` pair.
+
+### 3. Add the web console
+
+Optional, and no platform account needed — `type: trunkline` alongside the Slack block:
+
+```yaml
+  trunkline:
+    type: trunkline
+    agents:
+      - agent: claude
+        model: sonnet
+```
+
+```bash
+cd trunkline && pnpm install && pnpm dev   # http://localhost:5173
+```
+
+### Running it
+
+`octomate serve --tmux` serves in a detached tmux session and attaches to it, creating
+it if it is not already running — so the same command is both "start" and "go look at
+it". Octomate is meant to outlive the terminal that started it: channels hold their
+sockets open, and the tailers keep watching for native sessions started somewhere else
+entirely. `--reload` restarts on changes under `octomate/`.
+
+Run it on the machine you work on. The tailers read transcript files off local disk and
+agents run in your checkouts, so Octomate is not a service you host away from your
+filesystem.
 
 ## Configuration
 
-Three layers, each overriding the one before:
+A deployment is a **config home**: one directory, one flat YAML per subsystem. Each
+file's top-level keys are config field names, so changing a channel touches
+`channels.yaml` and nothing else.
 
-| Layer | Where | Purpose |
+```
+.octomate/
+  octomate.yaml        host, port, hook_secret, db_url
+  agents.yaml          claude, codex, deepseek, inkling
+  channels.yaml        slack, lark, napcat, trunkline
+  users.yaml           registered humans and their per-channel ids
+  projects.yaml        code locations an agent may run in
+  providers.yaml       LLM credentials
+  integrations.yaml    per-user OAuth connectors
+  mcp.yaml             vendor MCP servers on one operator token
+  observability.yaml   logging, logfire
+  oauth.yaml           the key that encrypts stored tokens
+```
+
+The home is **chosen, not merged** — the first of these that applies:
+
+| | Where | When |
 |---|---|---|
-| Defaults | `octomate.default.yaml` | Committed baseline; every key documented with its default |
-| Overrides | `octomate.yaml` | Your credentials and deployment (gitignored) |
-| Environment | `OCTOMATE__*` | Anything, at runtime |
+| 1 | `$OCTOMATE_HOME` | Set. Used as given, even if empty |
+| 2 | `./.octomate/` | It holds at least one of the files above |
+| 3 | `~/.octomate/` | Otherwise — one deployment for the machine |
 
-Environment variables use `OCTOMATE__` with `__` as the nested delimiter, so
+Beneath whichever wins sit the packaged defaults in `octomate/config/defaults/`,
+layered per top-level key: a home that declares `channels:` replaces the default
+`channels:` whole and inherits the rest. Every default file is commented rather than
+set, so it doubles as the reference for what a key means.
+
+Nothing is defaulted on, and no model is chosen for you. Every agent is opt-in and
+must name at least one model; every channel must name at least one agent route. A
+model picked on your behalf would be a route that boots fine and 401s on first use.
+
+Channels are keyed by instance id with `type` selecting the platform, so one platform
+can be mounted more than once — two Lark apps are two keys. That key is the channel
+tentacle id everywhere else: what a `users[]` profile names, and what a thread
+records as its origin.
+
+Secrets stay out of the home. `.env` in the working directory and the process
+environment both override it, using `OCTOMATE__` with `__` as the nested delimiter —
 `OCTOMATE__CHANNELS__SLACK__BOT_TOKEN` sets `channels.slack.bot_token`.
-
-The main sections are `agents` (inkling, claude, codex), `channels` (slack, lark, napcat,
-dev_ui), `providers` (LLM credentials), `mcp` (vendor MCP servers on one operator token),
-`integrations` (per-user OAuth) and `users`.
 
 ### Native session hooks
 
-Configuring `agents.claude` or `agents.codex` serves a hook router (`/hooks/claude`, `/hooks/codex`) that native Claude Code / Codex sessions POST their prompts and answers into. Those routes write straight into thread history, which agents read back, so they authenticate — Octomate refuses to boot without a credential.
+Configuring `agents.claude`, `agents.codex` or `agents.deepseek` serves that agent's hook router (`/hooks/claude`, `/hooks/codex`, `/hooks/deepseek`) for native sessions to POST their prompts and answers into. Those routes write straight into thread history, which agents read back, so they authenticate — Octomate refuses to boot without a credential.
 
 Set the credential up, then point your clients at it:
 
 ```bash
 eval "$(octomate hooks secret)"                  # this shell
 octomate hooks secret >> ~/.zshrc                # and every later one (zsh)
-octomate claude hooks install                    # merges an http handler into ~/.claude/settings.json
-octomate codex hooks install                     # merges a command handler into ~/.codex/hooks.json
+octomate claude hooks install                    # merges handlers into ~/.claude/settings.json
+octomate codex hooks install                     # merges handlers into ~/.codex/hooks.json
+octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hooks.json + a patch row
 ```
 
-`hooks secret` prints one line — `export OCTOMATE__HOOK_SECRET=…` — and writes nothing; where your login environment comes from is yours to know. Sessions only ever read the **environment**, and they are separate processes that never see your `octomate.yaml`, so that line is the bridge, and it has to reach whatever launches them.
+`hooks secret` prints one line — `export OCTOMATE__HOOK_SECRET=…` — and writes nothing; where your login environment comes from is yours to know. Sessions only ever read the **environment**, and they are separate processes that never see your config home, so that line is the bridge, and it has to reach whatever launches them.
 
 `~/.zshrc` covers interactive zsh, which is what VSCode resolves the environment from; use `~/.zshenv` instead if you want non-interactive shells to have it too, and on another shell put the line wherever that shell would find it. Either way an environment is captured when a process starts: shells already open keep the one they had, and a GUI client (VSCode, the desktop app) grabs it when *it* launches — so restart them before expecting the hooks to carry the secret.
 
@@ -212,15 +384,17 @@ octomate codex hooks install                     # merges a command handler into
 |   +-- base.py                # Octomate: the coordinator every tentacle is connected to
 |   +-- reflex/                # The run graph - nodes, state, and the suspender
 |   +-- tentacles/
-|   |   +-- agents/             # inkling, claude, codex - adapters, ingest, tailers, hooks
-|   |   `-- channels/           # slack, lark, napcat, web - and the feelers they draw with
+|   |   +-- agents/             # claude, codex, deepseek, inkling - adapters, ingest, tailers, hooks
+|   |   `-- channels/           # slack, lark, napcat, trunkline - and the feelers they draw with
 |   +-- capabilities/          # Tools agents are given: gateway, ask, todos, history, harness
 |   +-- managers/              # Threads, conversations, deferred actions, spills, users
 |   +-- schemas/               # Pydantic/Arcanus transmuters - the persisted domain types
 |   +-- models/                # SQLAlchemy ORM models behind those schemas
-|   +-- config/                # Layered settings
-|   +-- oauth/                 # Device and authorization-code flows, per user
-|   `-- cli/                   # `octomate ...`
+|   +-- config/                # The config home, and the settings it validates into
+|   |   `-- defaults/           # Packaged defaults - commented reference for every key
+|   `-- oauth/                 # Device and authorization-code flows, per user
++-- cli/octomate_cli/          # `octomate ...` - the client half, installable alone
++-- trunkline/                 # The web console (React + Vite)
 +-- migrations/                # Alembic
 `-- tests/
 ```
@@ -241,10 +415,8 @@ nowhere otherwise.
 
 ## In progress
 
-- **Octoview** — turn-by-turn review of agent changes in the editor, where the language
-  server is already running. Its comments are meant to come back as an Octomate review
-  batch that can be resumed into a run.
-- **Per-user OAuth integrations** — GitHub and Linear, each colleague authorizing their
+- **Trunkline** — the web console above: usable, and still moving.
+- **Per-user OAuth integrations** — GitHub and Linear, each user authorizing their
   own account from their own channel, so an agent acts as the person who asked.
 
 ## Anatomy
@@ -254,8 +426,8 @@ The codebase keeps an octopus metaphor, and these are the words it uses:
 | Body part | Concept | What it is |
 |---|---|---|
 | **Octomate** 🐙 | `octomate/base.py` | The coordinator. Owns every tentacle, and the managers they share. |
-| **Tentacle** 🦑 | `ChannelTentacle` | One per platform: Slack, Lark, NapCat, web. |
-| **Agent tentacle** 🧠 | `AgentTentacle` | One per agent: inkling, claude, codex. |
+| **Tentacle** 🦑 | `ChannelTentacle` | One per configured channel, keyed by instance: Slack, Lark, NapCat, Trunkline. |
+| **Agent tentacle** 🧠 | `AgentTentacle` | One per agent: claude, codex, deepseek, inkling. |
 | **Reflex** ⚡ | `octomate/reflex/` | The graph a signal runs through, from waking to a result or a suspension. |
 | **Feeler** 🫧 | `feelers/` | The view. Decides how a streamed run event is rendered on a channel — timeline, segments and markdown, plus the cards you answer. |
 | **Ink** 🖊️ | per-channel client | What actually sends, edits and uploads on the platform. |

@@ -5,39 +5,20 @@ import logging
 import logfire
 from fastapi import FastAPI
 from pydantic import SecretStr
-from pydantic_ai import AgentCapability
-from pydantic_ai_harness.tool_output_limits import (
-    Band,
-    Spill,
-    Summarize,
-    ToolOutputLimits,
-    Truncate,
-)
-from pydantic_ai_harness.warn_on_cache_busts import WarnOnCacheBusts
 
 from octomate import Octomate
-from octomate.capabilities.ask import AskCapability
-from octomate.capabilities.history import HistoryCapability
-from octomate.capabilities.todos import TodoCapability
-from octomate.capabilities.tools import ToolFailureCapability
 from octomate.config import OctomateConfig
-from octomate.config.agents import SpillAction, SummarizeAction, TruncateAction
 from octomate.database import engine as db_engine
-from octomate.integrations import build_integration
 from octomate.managers.mirrors import MirrorManager
 from octomate.managers.project import ProjectManager
-from octomate.managers.spills import SpillStore
 from octomate.managers.user import UserManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.codex import CodexTentacle
-from octomate.tentacles.agents.inkling import InklingTentacle, build_mcp_toolsets
-from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.agents.deepseek import DeepseekTentacle
+from octomate.tentacles.agents.inkling import build_inkling
 from octomate.tentacles.base import TentacleLogFormatter
-from octomate.tentacles.channels.lark import LarkTentacle
-from octomate.tentacles.channels.napcat import NapcatTentacle
-from octomate.tentacles.channels.slack import SlackTentacle
-from octomate.tentacles.channels.web.trunkline import TrunklineTentacle
+from octomate.tentacles.channels import build_channel
 
 config = OctomateConfig()
 
@@ -117,61 +98,6 @@ def create_app() -> FastAPI:
         oauth_encryption_key=config.oauth.encryption_key,
     )
 
-    inkling_capabilities: list[AgentCapability[None]] = [
-        # Observational only: it warns, it never edits a request. A collapsed prompt
-        # cache is otherwise invisible — the run still succeeds, just slower and dearer.
-        WarnOnCacheBusts(),
-        ToolFailureCapability(),
-        AskCapability(),
-        TodoCapability(
-            id="todos",
-            description="Persisted task list for planning and tracking "
-            "multi-step work.",
-            defer_loading=True,
-        ),
-        HistoryCapability(
-            octomate.conversations,
-            octomate.thread_manager,
-            id="history",
-            description="Search and page this thread's chat ledger and "
-            "this conversation's model ledger.",
-            defer_loading=True,
-        ),
-    ]
-    # One capability per configured integration; each run mounts its own copy of one,
-    # bound to the user that run is answering.
-    inkling_capabilities.extend(
-        build_integration(name, integration, octomate.oauth)
-        for name, integration in config.integrations.items()
-        if integration.enabled
-    )
-
-    # An MCP server answers with whatever it answers with, and a tool return persists
-    # in history, so one oversized reply is re-sent on every later request for the rest
-    # of the conversation. Spill and summarize each fall back to truncation, which is
-    # the floor: a reduction that cannot run must not leave the payload whole.
-    tool_output = config.agents.inkling.tool_output
-    if tool_output.enabled:
-        bands: list[Band] = []
-        for band in tool_output.bands:
-            match band.action:
-                case TruncateAction(strategy=strategy, max_chars=max_chars):
-                    action = Truncate(strategy=strategy, max_chars=max_chars)
-                case SpillAction(preview_chars=preview_chars):
-                    action = Spill(preview_chars=preview_chars, then=Truncate())
-                case SummarizeAction():
-                    action = Summarize(then=Truncate())
-            bands.append(Band(over=band.over, action=action))
-        inkling_capabilities.append(
-            ToolOutputLimits(
-                bands=bands,
-                over_tokens=tool_output.over_tokens,
-                # Spills go to the database, not local disk, so a handle read back a
-                # turn later resolves in whichever process picks that turn up.
-                store=SpillStore(retention=tool_output.retention),
-            )
-        )
-
     console_handler = logging.StreamHandler()
     # Tint the level + each tentacle's header, but only on a real terminal so the
     # ANSI codes don't leak into piped/redirected logs.
@@ -210,24 +136,19 @@ def create_app() -> FastAPI:
     for name, level in config.logging.loggers.items():
         logging.getLogger(name).setLevel(level)
 
-    octomate.connect(
-        InklingTentacle(
-            "inkling",
-            octomate,
-            models={
-                model.name: registry.build_model(model)
-                for model in config.agents.inkling.models
-            },
-            claims=config.agents.inkling.claims,
-            permission_mode=config.agents.inkling.permission_mode,
-            request_limit=config.agents.inkling.request_limit,
-            toolsets=build_mcp_toolsets(config.mcp),
-            capabilities=inkling_capabilities,
-            system_prompt=SYSTEM_PROMPT,
-        ),
-    )
+    if (inkling_config := config.agents.inkling) is not None and inkling_config.enabled:
+        octomate.connect(
+            build_inkling(
+                "inkling",
+                inkling_config,
+                octomate,
+                registry=registry,
+                mcp=config.mcp,
+                integrations=config.integrations,
+            )
+        )
 
-    if (claude_config := config.agents.claude) is not None:
+    if (claude_config := config.agents.claude) is not None and claude_config.enabled:
         octomate.connect(
             ClaudeCodeTentacle(
                 "claude",
@@ -247,44 +168,22 @@ def create_app() -> FastAPI:
             )
         )
 
-    if (channel_config := config.channels.slack) is not None and channel_config.enabled:
-        octomate.connect(
-            SlackTentacle(
-                "slack",
-                octomate,
-                config=channel_config,
-            )
-        )
-
-    if (channel_config := config.channels.lark) is not None and channel_config.enabled:
-        octomate.connect(
-            LarkTentacle(
-                "lark",
-                octomate,
-                config=channel_config,
-            )
-        )
-
     if (
-        channel_config := config.channels.napcat
-    ) is not None and channel_config.enabled:
+        deepseek_config := config.agents.deepseek
+    ) is not None and deepseek_config.enabled:
         octomate.connect(
-            NapcatTentacle(
-                "napcat",
+            DeepseekTentacle(
+                "deepseek",
                 octomate,
-                config=channel_config,
+                config=deepseek_config,
+                hook_secret=hook_secret("deepseek"),
             )
         )
 
-    if (
-        channel_config := config.channels.trunkline
-    ) is not None and channel_config.enabled:
-        octomate.connect(
-            TrunklineTentacle(
-                "trunkline",
-                octomate,
-                config=channel_config,
+    for channel_id, channel_config in config.channels.items():
+        if channel_config.enabled:
+            octomate.connect(
+                build_channel(channel_id, channel_config, octomate),
             )
-        )
 
     return octomate.app(title="Octomate")

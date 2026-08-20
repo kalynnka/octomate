@@ -139,7 +139,13 @@ def test_trunkline_router_requires_registered_channel() -> None:
     with pytest.raises(ValueError, match="TrunklineTentacle"):
         build_trunkline_router(octomate, channel_id="trunkline")
 
-    channel = TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
+    channel = TrunklineTentacle(
+        "trunkline",
+        octomate,
+        config=TrunklineChannelConfig(
+            agents=[AgentModelConfig(agent="inkling", model="test")]
+        ),
+    )
     assert isinstance(channel, ChannelTentacle)
     # connect mounts the channel's router (TrunklineTentacle.routers) — no
     # manual include.
@@ -158,21 +164,6 @@ def test_trunkline_router_requires_registered_channel() -> None:
     assert "/api/trunkline/threads/{thread_id}/batches" in paths
     assert "/api/trunkline/threads/{thread_key}/messages" in paths
     assert "/api/trunkline/batches/{batch_id}/resolve" in paths
-
-
-def test_static_mounts_respect_serve_console(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    octomate = Octomate()
-    monkeypatch.setattr(TrunklineTentacle, "CONSOLE_DIST", tmp_path)
-
-    served = TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
-    assert [mount.path for mount in served.static_mounts()] == ["/"]
-
-    skipped = TrunklineTentacle(
-        "trunkline2", octomate, config=TrunklineChannelConfig(serve_console=False)
-    )
-    assert skipped.static_mounts() == ()
 
 
 async def test_directive_streams_native_events(
@@ -755,7 +746,13 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
     project the thread is filed under and the directory each run ran in."""
     octomate = Octomate()
     octomate.connect(
-        TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
+        TrunklineTentacle(
+            "trunkline",
+            octomate,
+            config=TrunklineChannelConfig(
+                agents=[AgentModelConfig(agent="inkling", model="test")]
+            ),
+        )
     )
     project = a_project(Path("/srv/inky"))
     octomate.projects = await a_registry(project)

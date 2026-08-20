@@ -20,7 +20,7 @@ from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
 from octomate.types.conversations import ChatType
 
-# The two native ids are re-exported under their old home: they moved to
+# The native ids are re-exported under their old home: they moved to
 # `types.threads` so `types.permissions` could name them without importing a schema
 # that imports it back, and every reader already reaches for them through here.
 from octomate.types.threads import (
@@ -28,6 +28,9 @@ from octomate.types.threads import (
 )
 from octomate.types.threads import (
     CODEX_NATIVE_ID as CODEX_NATIVE_ID,
+)
+from octomate.types.threads import (
+    DEEPSEEK_NATIVE_ID as DEEPSEEK_NATIVE_ID,
 )
 from octomate.types.threads import (
     NATIVE_TENTACLE_IDS,

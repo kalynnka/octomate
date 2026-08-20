@@ -498,6 +498,85 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
     ]
 
 
+class SettlingTimeline(NoopTimeline):
+    settled: int = 0
+
+    async def actions_presented(self) -> None:
+        self.settled += 1
+
+
+class HiccupTimeline(NoopTimeline):
+    async def actions_presented(self) -> None:
+        raise RuntimeError("render hiccup")
+
+
+def plain_feelers() -> Feelers:
+    return Feelers(
+        markdown=RecordingMarkdownFeeler(),
+        timeline=NoopTimeline(),
+        segments=NoopSegmentsFeeler(),
+        approvals=RecordingApprovalFeeler(),
+        ask_questions=RecordingQuestionFeeler(),
+        oauth=PlainTextOAuthFeeler(
+            cast(Ink[str], FakeOAuthInk()), RecordingMarkdownFeeler()
+        ),
+    )
+
+
+async def present_one_approval(
+    feelers: Feelers, target_address: ChannelAddress
+) -> None:
+    approval = _approval()
+    manager = FakeActionManager(
+        presented_batch=FakePresentedBatch(approvals=[approval])
+    )
+    await feelers.present_actions(
+        action_manager=cast(DeferredActionManager, manager),
+        conversation=Conversation(thread_id=uuid7(), agent_tentacle_id="deepseek"),
+        agent_tentacle_id="deepseek",
+        run_name="react",
+        source_address=target_address,
+        target_address=target_address,
+        target_mode="main",
+        decision=None,
+        requests=DeferredToolRequests(
+            approvals=[
+                ToolCallPart(tool_name="shell", args={}, tool_call_id="call_approval")
+            ]
+        ),
+    )
+
+
+async def test_present_actions_settles_the_live_timeline() -> None:
+    """A batch presented from an agent's in-process bridge — outside the run
+    stream — still reaches the surface rendering that thread, so its status
+    stops claiming the agent is thinking while the run parks on the human."""
+    feelers = plain_feelers()
+    target_address = _key("target")
+    timeline = SettlingTimeline()
+
+    with feelers.driving(target_address, timeline):
+        await present_one_approval(feelers, target_address)
+    # Nobody driving the thread: nothing to settle, and nothing raises.
+    await present_one_approval(feelers, target_address)
+
+    assert timeline.settled == 1
+    assert not feelers.live_timelines
+
+
+async def test_a_settle_hiccup_does_not_fail_the_presentation() -> None:
+    # The cards are the load-bearing part; the surface settle is a UI hint,
+    # and its failure must not cancel the approval riding on the batch.
+    feelers = plain_feelers()
+    target_address = _key("target")
+
+    with feelers.driving(target_address, HiccupTimeline()):
+        await present_one_approval(feelers, target_address)
+
+    approvals = cast(RecordingApprovalFeeler, feelers.approvals)
+    assert approvals.presented
+
+
 async def test_default_timeline_rotates_answer_messages() -> None:
     channel = FakeChannelTentacle()
     address = _key()

@@ -4,7 +4,11 @@ from typing import Literal, TypeIs, get_args
 
 from claude_agent_sdk import PermissionMode as ClaudePermissionMode
 
-from octomate.types.threads import CLAUDE_NATIVE_ID, CODEX_NATIVE_ID
+from octomate.types.threads import (
+    CLAUDE_NATIVE_ID,
+    CODEX_NATIVE_ID,
+    DEEPSEEK_NATIVE_ID,
+)
 
 # The approval posture an agent works under. Each provider keeps its own vocabulary
 # rather than sharing one: Claude has a single mode, Codex has three orthogonal SDK
@@ -40,9 +44,19 @@ InklingPermissionMode = Literal["default", "dontAsk", "bypassPermissions"]
 # what every command in that thread may touch.
 CodexPermissionMode = Literal["user_review", "auto_review", "deny_all"]
 
+# dsh bundles both axes — sandbox mode and approval policy — into one named permission
+# preset, so unlike Codex there is nothing to keep apart: the preset is the posture.
+# The preset table is deployment-configurable; these two are what dsh ships
+# (workspace-write sandbox + ask, and danger-full-access + never). There is no
+# permission RPC — the tentacle switches a session's preset with the `/permission
+# <preset>` command on the remotes plane.
+DeepseekPermissionMode = Literal["workspace-write", "danger-full-access"]
+
 # One status, whichever provider it came from. Which arm applies is decided by the
 # row's `agent_tentacle_id`, not by a discriminator inside the value.
-AgentPermissionMode = ClaudePermissionMode | CodexPermissionMode
+AgentPermissionMode = (
+    ClaudePermissionMode | CodexPermissionMode | DeepseekPermissionMode
+)
 
 # Which statuses each agent answers to, so a Codex posture on a Claude conversation is
 # refused where it is written rather than where it is read. Derived from the literals
@@ -52,6 +66,7 @@ PERMISSION_MODES: dict[str, tuple[AgentPermissionMode, ...]] = {
     "inkling": get_args(InklingPermissionMode),
     "claude": get_args(ClaudePermissionMode),
     "codex": get_args(CodexPermissionMode),
+    "deepseek": get_args(DeepseekPermissionMode),
     # The runtimes Octomate tails rather than drives. They keep their provider's
     # vocabulary because a native session really is in one of these postures and its
     # transcript says which — the column records what was observed, which is the same
@@ -62,6 +77,7 @@ PERMISSION_MODES: dict[str, tuple[AgentPermissionMode, ...]] = {
     # switches. A session's posture is the client's to change, in the client.
     CLAUDE_NATIVE_ID: get_args(ClaudePermissionMode),
     CODEX_NATIVE_ID: get_args(CodexPermissionMode),
+    DEEPSEEK_NATIVE_ID: get_args(DeepseekPermissionMode),
 }
 
 
@@ -103,3 +119,7 @@ def is_claude_mode(mode: str | None) -> TypeIs[ClaudePermissionMode]:
 
 def is_codex_mode(mode: str | None) -> TypeIs[CodexPermissionMode]:
     return mode in PERMISSION_MODES["codex"]
+
+
+def is_deepseek_mode(mode: str | None) -> TypeIs[DeepseekPermissionMode]:
+    return mode in PERMISSION_MODES["deepseek"]

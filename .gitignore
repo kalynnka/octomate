@@ -3,12 +3,16 @@
 
 # Environments / secrets
 .env
-octomate.yaml
+# Anchored: a deployment's config home is `.octomate/` below, and an unanchored
+# pattern would also swallow `octomate/config/defaults/octomate.yaml` and
+# `tests/config/octomate.yaml` — both committed, and one of them ships in the wheel.
+# This line covers the pre-config-home file only, and goes with it.
+/octomate.yaml
 
 # Github
 .github/prompts/
 
-# Octomate runtime data
+# Octomate runtime data and this checkout's config home
 .octomate/
 
 # Agent tooling: local settings, and skills symlinked into a machine's own install

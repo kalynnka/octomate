@@ -1,3 +1,7 @@
+"""The config package's public surface: `OctomateConfig` and every leaf model it
+validates into, re-exported so a caller imports from `octomate.config` and never has
+to know which module owns a name. The deployment itself lives in `base.py`."""
+
 from __future__ import annotations
 
 from octomate.config.agents import (
@@ -6,13 +10,21 @@ from octomate.config.agents import (
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     CodexConfig,
+    DeepseekConfig,
     InklingConfig,
 )
-from octomate.config.base import OctomateConfig
+from octomate.config.base import (
+    CONFIG_FILES,
+    DEFAULTS_DIR,
+    OCTOMATE_HOME_ENV,
+    OctomateConfig,
+    config_files,
+    config_home,
+)
 from octomate.config.channels import (
     AgentModelConfig,
     ChannelConfig,
-    ChannelsConfig,
+    ChannelConfigVariant,
     ChannelStreamConfig,
     LarkChannelConfig,
     LarkStreamConfig,
@@ -39,6 +51,7 @@ from octomate.config.models import (
     OpenAIModelSettings,
     supported_providers,
 )
+from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig, LogLevel
 from octomate.config.providers import (
     AnthropicProviderConfig,
@@ -61,6 +74,7 @@ __all__ = [  # noqa: RUF022
     "ClaudeCodeConfig",
     "ClaudeSSHConfig",
     "CodexConfig",
+    "DeepseekConfig",
     "InklingConfig",
     # models
     "AnthropicModelSettings",
@@ -80,6 +94,12 @@ __all__ = [  # noqa: RUF022
     # database
     "DatabaseSettings",
     "database_settings",
+    # config home
+    "CONFIG_FILES",
+    "DEFAULTS_DIR",
+    "OCTOMATE_HOME_ENV",
+    "config_files",
+    "config_home",
     # mcp
     "McpConfig",
     "McpIntegrationConfig",
@@ -98,7 +118,7 @@ __all__ = [  # noqa: RUF022
     # channels
     "AgentModelConfig",
     "ChannelConfig",
-    "ChannelsConfig",
+    "ChannelConfigVariant",
     "ChannelStreamConfig",
     "LarkChannelConfig",
     "LarkStreamConfig",
@@ -106,6 +126,8 @@ __all__ = [  # noqa: RUF022
     "NapcatStreamConfig",
     "SlackChannelConfig",
     "SlackStreamConfig",
+    # oauth
+    "OAuthConfig",
     # observability
     "LogfireConfig",
     "LoggingConfig",

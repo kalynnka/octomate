@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 from octomate.config.agents import AgentRouteModelName
 
-DEFAULT_AGENT_MODEL: AgentRouteModelName = "deepseek:deepseek-v4-pro"
-
 
 class AgentModelConfig(BaseModel):
-    agent: str = "inkling"
+    agent: str
     model: AgentRouteModelName
 
 
@@ -47,10 +45,12 @@ class ChannelConfig(BaseModel):
     enabled: bool = True
     stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)
     agents: list[AgentModelConfig] = Field(
-        default_factory=lambda: [AgentModelConfig(model=DEFAULT_AGENT_MODEL)],
+        min_length=1,
         description=(
             "The agents this channel can dispatch to: agents[0] is the default "
-            "entry agent; all of them are summon candidates."
+            "entry agent; all of them are summon candidates. Required — nothing "
+            "picks a model on an operator's behalf, so a channel with no route "
+            "would have nothing to answer with."
         ),
     )
 
@@ -99,15 +99,6 @@ class TrunklineChannelConfig(ChannelConfig):
     # Annotated as the subclass so a YAML `stream:` override keeps the
     # console defaults (the base class would flip `enabled` back to False).
     stream: TrunklineStreamConfig = Field(default_factory=TrunklineStreamConfig)
-    serve_console: bool = Field(
-        default=True,
-        description=(
-            "Serve the built console SPA (trunkline/dist) from the app root. Disable "
-            "when the Vite dev server fronts the UI or the SPA is deployed "
-            "separately — the API keeps serving either way "
-            "(OCTOMATE__CHANNELS__TRUNKLINE__SERVE_CONSOLE=false)."
-        ),
-    )
 
 
 class NapcatChannelConfig(ChannelConfig):
@@ -121,17 +112,14 @@ class NapcatChannelConfig(ChannelConfig):
     backoff_factor: float = 2.0
 
 
-class ChannelsConfig(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    slack: SlackChannelConfig | None = None
-    lark: LarkChannelConfig | None = None
-    napcat: NapcatChannelConfig | None = None
-    trunkline: TrunklineChannelConfig | None = Field(
-        default_factory=TrunklineChannelConfig,
-        description=(
-            "The Trunkline web console ships on by default; disable it with "
-            "`enabled: false` or `null`. Keyed `trunkline` to match the channel "
-            "id it is registered under."
-        ),
-    )
+# One variant per platform, selected by `type`. Keyed by instance id rather than by
+# platform, so a deployment can run two Lark apps — or two consoles — by naming them
+# apart; the key is the channel tentacle id everywhere downstream, which is what
+# `users[].profiles` and `Thread.channel_tentacle_id` already mean by it.
+ChannelConfigVariant: TypeAlias = Annotated[
+    SlackChannelConfig
+    | LarkChannelConfig
+    | NapcatChannelConfig
+    | TrunklineChannelConfig,
+    Field(discriminator="type"),
+]

@@ -1,0 +1,8 @@
+# Encrypts pending device codes, authorization-code state and PKCE verifiers, and
+# user OAuth tokens at rest. Required once any integration is enabled.
+#
+# Prefer OCTOMATE__OAUTH__ENCRYPTION_KEY in the environment over a config home.
+# Generate a key with: openssl rand -base64 32 | tr '+/' '-_'
+
+# oauth:
+#   encryption_key: ...

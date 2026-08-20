@@ -62,20 +62,6 @@ RawT = TypeVar("RawT")
 
 
 @dataclass(frozen=True)
-class StaticMount:
-    """One static-file surface a channel asks the host app to serve.
-
-    Declared as data rather than a Starlette app so the host controls mount
-    order: `Octomate.app` mounts these after every router, which is what lets
-    a catch-all `path="/"` coexist with the API routes."""
-
-    path: str
-    directory: Path
-    name: str
-    html: bool = True
-
-
-@dataclass(frozen=True)
 class ChannelSurfaces:
     """Which places this channel can open, as opposed to how it routes them.
 
@@ -246,13 +232,6 @@ class ChannelTentacle(
             ask_questions=questions_feeler,
             oauth=oauth_feeler,
         )
-
-    def static_mounts(self) -> tuple[StaticMount, ...]:
-        """Static-file surfaces the host app serves for this channel — empty by
-        default. A channel that ships a web UI overrides this; `Octomate.app`
-        mounts the declarations after every router, so they cannot shadow API
-        routes."""
-        return ()
 
     async def probe(self) -> None:
         """Resolve the channel's own identity from the platform. Awaited by the

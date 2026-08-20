@@ -13,6 +13,7 @@ from octomate_cli.claude import claude_typer
 from octomate_cli.cli import app
 from octomate_cli.codex import codex_typer
 from octomate_cli.config import resolved_secret, resolved_url, user_config_path
+from octomate_cli.deepseek import deepseek_typer
 from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT
 from typer.testing import CliRunner
 
@@ -564,3 +565,166 @@ def test_uninstall_removes_only_octomate_hooks(tmp_path: Path) -> None:
 
     # Only the command hook remains; the events that held just Octomate's are dropped.
     assert read(path)["hooks"] == {"Stop": [{"hooks": [COMMAND_HOOK]}]}
+
+
+def test_deepseek_install_writes_the_hooks_file_and_patch_row(tmp_path: Path) -> None:
+    result = runner.invoke(
+        deepseek_typer, ["hooks", "install", "--home", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    document = read(tmp_path / "octomate-hooks.json")
+    assert sorted(document["hooks"]) == ["Stop", "UserPromptSubmit"]
+    for groups in document["hooks"].values():
+        for group in groups:
+            [handler] = group["hooks"]
+            assert handler["type"] == "command"
+            assert "/hooks/deepseek" in handler["command"]
+            assert "--url" not in handler["command"]
+            assert handler["timeout"] == 10
+    # The stream launcher rides the prompt event only; Stop keeps just the emit.
+    assert hook_types(document["hooks"]["UserPromptSubmit"]) == ["command", "command"]
+    assert hook_types(document["hooks"]["Stop"]) == ["command"]
+    [launcher] = [
+        hook
+        for group in document["hooks"]["UserPromptSubmit"]
+        for hook in group["hooks"]
+        if str(LAUNCH_SCRIPT) in hook["command"]
+    ]
+    assert "--agent deepseek" in launcher["command"]
+    [stop_group] = document["hooks"]["Stop"]
+    assert str(EMIT_SCRIPT) in stop_group["hooks"][0]["command"]
+
+    patch = (tmp_path / "cordis.patch.yml").read_text()
+    assert "octomate-hooks" in patch
+    assert "@deepseek-ai/dsh-hooks-claude-code" in patch
+    assert str(tmp_path / "octomate-hooks.json") in patch
+
+
+def test_deepseek_install_pins_the_stream_url_only_with_a_pinned_hook_url(
+    tmp_path: Path,
+) -> None:
+    runner.invoke(
+        deepseek_typer,
+        [
+            "hooks",
+            "install",
+            "--home",
+            str(tmp_path),
+            "--url",
+            "http://127.0.0.1:9999/hooks/deepseek",
+        ],
+    )
+
+    document = read(tmp_path / "octomate-hooks.json")
+    [launcher] = [
+        hook
+        for group in document["hooks"]["UserPromptSubmit"]
+        for hook in group["hooks"]
+        if str(LAUNCH_SCRIPT) in hook["command"]
+    ]
+    assert "ws://127.0.0.1:9999/hooks/deepseek/stream" in launcher["command"]
+
+
+def test_deepseek_install_replaces_the_default_empty_patch_document(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "cordis.patch.yml").write_text(
+        "# Your patch layer for this dsh profile.\n[]\n"
+    )
+    runner.invoke(deepseek_typer, ["hooks", "install", "--home", str(tmp_path)])
+
+    text = (tmp_path / "cordis.patch.yml").read_text()
+    assert "# Your patch layer" in text
+    assert text.count("- insert:") == 1
+    # The lone `[]` was the whole document; appending after it would be
+    # invalid YAML, so the install replaces it with the block.
+    assert "[]" not in text
+
+
+def test_deepseek_install_is_idempotent_and_keeps_the_operators_rows(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "cordis.patch.yml").write_text(
+        "# machine prefs\n- id: session-query-sqlite\n  disabled: true\n"
+    )
+    runner.invoke(deepseek_typer, ["hooks", "install", "--home", str(tmp_path)])
+    runner.invoke(
+        deepseek_typer,
+        ["hooks", "install", "--home", str(tmp_path), "--url", URL],
+    )
+
+    text = (tmp_path / "cordis.patch.yml").read_text()
+    assert text.count("- insert:") == 1
+    assert "session-query-sqlite" in text
+    assert "# machine prefs" in text
+
+
+def test_deepseek_uninstall_restores_an_empty_document(tmp_path: Path) -> None:
+    runner.invoke(deepseek_typer, ["hooks", "install", "--home", str(tmp_path)])
+    result = runner.invoke(
+        deepseek_typer, ["hooks", "uninstall", "--home", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / "octomate-hooks.json").exists()
+    text = (tmp_path / "cordis.patch.yml").read_text()
+    assert "octomate-hooks" not in text
+    assert text.strip().splitlines()[-1] == "[]"
+
+
+def test_deepseek_uninstall_keeps_the_operators_rows(tmp_path: Path) -> None:
+    (tmp_path / "cordis.patch.yml").write_text(
+        "- id: session-query-sqlite\n  disabled: true\n"
+    )
+    runner.invoke(deepseek_typer, ["hooks", "install", "--home", str(tmp_path)])
+    runner.invoke(deepseek_typer, ["hooks", "uninstall", "--home", str(tmp_path)])
+
+    text = (tmp_path / "cordis.patch.yml").read_text()
+    assert "session-query-sqlite" in text
+    assert "octomate-hooks" not in text
+    assert "[]" not in text
+
+
+def test_deepseek_install_links_a_valid_bridge_package(tmp_path: Path) -> None:
+    bridge = tmp_path / "checkout" / "hooks-claude-code"
+    (bridge / "lib").mkdir(parents=True)
+    (bridge / "lib" / "index.js").write_text("export {}\n")
+    (bridge / "package.json").write_text(
+        json.dumps({"name": "@deepseek-ai/dsh-hooks-claude-code"})
+    )
+    home = tmp_path / "dsh-home"
+
+    result = runner.invoke(
+        deepseek_typer,
+        ["hooks", "install", "--home", str(home), "--bridge", str(bridge)],
+    )
+
+    assert result.exit_code == 0, result.output
+    link = home / "profiles" / "node_modules" / "@deepseek-ai" / "dsh-hooks-claude-code"
+    assert link.is_symlink()
+    assert link.readlink() == bridge.resolve()
+
+
+def test_deepseek_install_refuses_a_wrong_bridge_package(tmp_path: Path) -> None:
+    bridge = tmp_path / "somewhere-else"
+    (bridge / "lib").mkdir(parents=True)
+    (bridge / "lib" / "index.js").write_text("export {}\n")
+    (bridge / "package.json").write_text(json.dumps({"name": "@deepseek-ai/dsh-agent"}))
+
+    result = runner.invoke(
+        deepseek_typer,
+        ["hooks", "install", "--home", str(tmp_path / "home"), "--bridge", str(bridge)],
+    )
+
+    assert result.exit_code != 0
+    assert "dsh-hooks-claude-code" in result.output
+
+
+def test_deepseek_install_without_a_bridge_link_warns(tmp_path: Path) -> None:
+    result = runner.invoke(
+        deepseek_typer, ["hooks", "install", "--home", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0
+    assert "--bridge" in result.output
