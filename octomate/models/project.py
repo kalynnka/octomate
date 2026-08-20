@@ -10,12 +10,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, PathString
-from octomate.types.projects import ProjectOrigin
 
 
 class Project(Base, TransmuterProxiedMixin):
-    """A project: a code location Octomate knows by name, registered when a native
-    session is found running in it. Note that `projects` here has nothing to do with
+    """A project: a code location Octomate knows by name, declared in the operator's
+    ``projects:`` block. Note that `projects` here has nothing to do with
     `~/.claude/projects/`, which is where Claude Code stores transcripts."""
 
     __tablename__ = "projects"
@@ -29,17 +28,6 @@ class Project(Base, TransmuterProxiedMixin):
         unique=True,
         comment="Stable name for this project; defaults to its root's directory name.",
     )
-    origin: Mapped[ProjectOrigin] = mapped_column(
-        String,
-        nullable=False,
-        default="declared",
-        server_default="declared",
-        comment=(
-            "What registered this project: `declared` for one registered directly, or "
-            "the native runtime whose session was found running in it."
-        ),
-    )
-
     root: Mapped[Path] = mapped_column(
         PathString,
         nullable=False,

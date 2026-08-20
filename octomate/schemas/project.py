@@ -17,7 +17,6 @@ from uuid_utils.compat import uuid7
 
 from octomate.models.project import Project as ProjectModel
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.types.projects import ProjectOrigin
 
 
 def local_path(value: str | Path) -> Path:
@@ -35,10 +34,10 @@ def local_path(value: str | Path) -> Path:
     Having a name is the one thing a root needs that a directory does not, so that
     everything downstream gets a directory it can call the project by.
 
-    The directory is deliberately not required to exist. A project is discovered from
-    the sessions that ran in it, so a row outlives the directory it was discovered at,
-    and this type is what rehydrates every row: refusing a dead path here would make
-    one deleted checkout enough to stop the registry loading at all.
+    The directory is deliberately not required to exist. A row outlives the directory
+    it was declared at — reconciliation disables it rather than deleting it — and this
+    type is what rehydrates every row: refusing a dead path here would make one
+    deleted checkout enough to stop the registry loading at all.
     """
     if "://" in str(value):
         raise ValueError(f"{value!r} is a url; a root is a plain local path")
@@ -80,9 +79,8 @@ UpstreamVariant: TypeAlias = Annotated[
 class Project(BaseTransmuter):
     """A project: the roots that are it, and how it is driven.
 
-    A project exists because work happened in it — a Codex session whose workspace names
-    a directory no project claims registers one. Nothing declares a project ahead of the
-    first session that runs in one.
+    Every project is declared — the operator's ``projects:`` block is the only way in.
+    A session running where no project claims is recorded under none.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -96,17 +94,6 @@ class Project(BaseTransmuter):
             "when another root already answers to it."
         ),
     )
-    origin: ProjectOrigin = Field(
-        default="declared",
-        frozen=True,
-        description=(
-            "What registered this project: `declared` for one registered directly, "
-            "or the native runtime whose session was found running in it. Write-once, "
-            "because it is a fact about how the row came to exist: reconciling a "
-            "declaration over a row a session left does not rewrite that history."
-        ),
-    )
-
     root: LocalPath = Field(
         description="The directory this project is, as an absolute local path."
     )
@@ -147,8 +134,8 @@ class Project(BaseTransmuter):
         """A project with no name of its own is called after its root's directory.
 
         `local_path` has already refused a root with no name, so there is always one
-        to take. A name the registry is already using is stepped around by
-        `ProjectManager.available_name`, which is where the names in use are known.
+        to take. A name two projects both want is refused by
+        `ProjectManager.reconcile`, which is where the names in use are known.
         """
         self.name = self.name or self.root.name
         return self

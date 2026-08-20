@@ -757,7 +757,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
     octomate.connect(
         TrunklineTentacle("trunkline", octomate, config=TrunklineChannelConfig())
     )
-    project = a_project(Path("/srv/inky"), origin="codex")
+    project = a_project(Path("/srv/inky"))
     octomate.projects = await a_registry(project)
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", "session-1"), project=project

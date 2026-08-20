@@ -93,7 +93,7 @@ def write_rollout(path: Path) -> None:
 def wired(octomate: Octomate) -> tuple[CodexHookIngest, CodexTranscriptTailer]:
     locks = SessionLocks()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects, locks
+        octomate.conversations, octomate.thread_manager, locks
     )
     return CodexHookIngest(octomate, tailer, locks), tailer
 
@@ -121,14 +121,10 @@ async def stream_rollout(
     tailer: CodexTranscriptTailer,
     session_id: str,
     rollout: Path,
-    *,
-    local_client: bool = False,
 ) -> None:
     """Stream one rollout file the way production reaches it: attach, feed its framed
     lines, detach — the server never opens the file itself."""
-    state, _ = await tailer.attach_remote(
-        session_id, rollout, local_client=local_client
-    )
+    state, _ = await tailer.attach_remote(session_id, rollout)
     offset = 0
     for raw in rollout.read_bytes().split(b"\n")[:-1]:
         end = offset + len(raw) + 1

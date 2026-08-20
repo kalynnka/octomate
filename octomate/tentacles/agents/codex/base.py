@@ -323,7 +323,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.session_tailer = CodexTranscriptTailer(
             self.octomate.conversations,
             self.octomate.thread_manager,
-            self.octomate.projects,
             self.session_locks,
         )
         self.session_ingest = CodexHookIngest(
@@ -412,9 +411,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         local_client = client is not None and client.host in {"127.0.0.1", "::1"}
         project = None
         if local_client and hello.cwd:
-            project = await self.octomate.projects.ensure(
-                Path(hello.cwd), origin="codex"
-            )
+            holder = self.octomate.projects.resolve(Path(hello.cwd))
+            project = self.octomate.projects.get(holder) if holder is not None else None
         await self.octomate.thread_manager.ensure(
             ThreadKey(CODEX_NATIVE_ID, "thread", hello.session_id),
             project=project,
@@ -422,7 +420,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         state, offsets = await self.session_tailer.attach_remote(
             hello.session_id,
             Path(hello.transcript_path),
-            local_client=local_client,
         )
         logger.info(
             "session %s: remote tail connected (octomate %s)",

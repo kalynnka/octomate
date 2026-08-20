@@ -896,7 +896,6 @@ def test_projects_validate_as_projects(
     project = Project.shell(declared)
     assert project.root == tmp_path / "Projects" / "inky"
     assert project.extra_roots == [tmp_path / "Library" / "Code"]
-    assert project.origin == "declared"
     assert project.upstream == DirectoryUpstream(path=tmp_path / "Projects" / "inky")
 
 

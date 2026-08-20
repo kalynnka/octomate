@@ -140,19 +140,18 @@ class CodexHookIngest:
         )
 
     async def session_thread(self, event: CodexHookInput) -> Thread:
-        """This session's thread, attributed to the project it is running in.
+        """This session's thread, filed under the project already holding the
+        directory it is running in — and under none when no project holds it.
 
         As on the Claude side: the session's own directory says which project this
-        is, a directory no project holds yet becomes one, the project lands only when
-        the thread is created, and a rollout root is never a project root. Only a cwd
-        the hook carried — `Path("")` is the process's own directory, which would
-        attribute every session to whatever project Octomate itself was started in.
+        is, the project lands only when the thread is created, and a rollout root is
+        never a project root. Nothing is registered from here — every project is
+        declared. Only a cwd the hook carried — `Path("")` is the process's own
+        directory, which would attribute every session to whatever project Octomate
+        itself was started in.
         """
-        project = None
-        if event.cwd:
-            project = await self.octomate.projects.ensure(
-                Path(event.cwd), origin="codex"
-            )
+        holder = self.octomate.projects.resolve(Path(event.cwd)) if event.cwd else None
+        project = self.octomate.projects.get(holder) if holder is not None else None
         return await self.octomate.thread_manager.ensure(
             ThreadKey(CODEX_NATIVE_ID, "thread", event.session_id),
             project=project,

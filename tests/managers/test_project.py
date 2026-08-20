@@ -1,10 +1,9 @@
 """The project registry: what resolves a working directory to a project, and how a
 project comes to exist at all.
 
-Two ways in. The operator declares one in `projects:` and `reconcile` upserts it by
-root at startup; or a native session runs where nothing claims and registers that
-directory (`ensure`). `load` reads every row back without either — so a test that wants
-a project declares one, ensures one, or persists the row a registration would have left.
+One way in: the operator declares a project in `projects:` and `reconcile` upserts it
+by root at startup. `load` reads every row back without reconciling — so a test that
+wants a project declares one, or persists the row a declaration would have left.
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.database import async_session
 from octomate.managers.project import ProjectManager
 from octomate.schemas.project import DirectoryUpstream, Project, RemoteUpstream
-from octomate.types.projects import ProjectOrigin
 from tests.support.managers import a_project, a_registry
 
 # Built at import, so nothing has entered `sqlalchemy_materia` yet — the state a
@@ -48,18 +46,10 @@ async def find_project(name: str) -> Project | None:
         )
 
 
-async def registered(root: Path, origin: ProjectOrigin = "codex") -> ProjectManager:
-    """A registry holding one project at `root`, as a session there would leave it."""
-    manager = ProjectManager()
-    await manager.load()
-    await manager.ensure(root, origin=origin)
-    return manager
-
-
 async def test_a_cwd_under_no_registered_root_resolves_to_nothing(
     tmp_path: Path,
 ) -> None:
-    manager = await registered(directory(tmp_path / "inky"))
+    manager = await a_registry(a_project(directory(tmp_path / "inky")))
 
     assert manager.resolve(tmp_path / "elsewhere") is None
 
@@ -68,16 +58,28 @@ async def test_a_cwd_under_a_registered_root_resolves_to_that_project(
     tmp_path: Path,
 ) -> None:
     root = directory(tmp_path / "inky")
-    manager = await registered(root)
+    manager = await a_registry(a_project(root))
 
     assert manager.resolve(root / "octomate" / "managers") == "inky"
 
 
 async def test_the_root_itself_resolves(tmp_path: Path) -> None:
     root = directory(tmp_path / "inky")
-    manager = await registered(root)
+    manager = await a_registry(a_project(root))
 
     assert manager.resolve(root) == "inky"
+
+
+async def test_resolving_registers_nothing(tmp_path: Path) -> None:
+    # OCTO-45: sessions stopped registering projects, so resolution is a pure read —
+    # a miss mints no project, and a hit does not duplicate one.
+    manager = await a_registry(a_project(directory(tmp_path / "inky")))
+
+    assert manager.resolve(tmp_path / "elsewhere") is None
+    assert manager.resolve(tmp_path / "inky" / "src") == "inky"
+
+    assert set(manager.projects) == {"inky"}
+    assert await find_project("elsewhere") is None
 
 
 async def test_nested_roots_resolve_to_the_deeper_project(tmp_path: Path) -> None:
@@ -217,7 +219,7 @@ async def test_a_root_that_is_not_on_disk_still_resolves(tmp_path: Path) -> None
 
 async def test_load_reads_every_row_back(tmp_path: Path) -> None:
     root = directory(tmp_path / "inky")
-    await registered(root)
+    await a_registry(a_project(root))
 
     fresh = ProjectManager()
     await fresh.load()
@@ -239,77 +241,15 @@ async def test_get_and_list_read_the_cache(tmp_path: Path) -> None:
 
 
 async def test_get_is_none_for_a_name_nothing_is_registered_as(tmp_path: Path) -> None:
-    manager = await registered(directory(tmp_path / "inky"))
+    manager = await a_registry(a_project(directory(tmp_path / "inky")))
 
     assert manager.get("kraken") is None
 
 
 async def test_a_project_is_named_after_its_root_directory(tmp_path: Path) -> None:
-    manager = await registered(directory(tmp_path / "octoverse" / "kraken"))
+    manager = await a_registry(a_project(directory(tmp_path / "octoverse" / "kraken")))
 
     assert set(manager.projects) == {"kraken"}
-
-
-async def test_ensure_registers_a_directory_no_project_holds(tmp_path: Path) -> None:
-    manager = await a_registry()
-
-    project = await manager.ensure(directory(tmp_path / "inky"), origin="codex")
-
-    assert project.name == "inky"
-    assert project.root == tmp_path / "inky"
-    assert project.origin == "codex"
-    assert await find_project("inky") is not None
-    assert manager.resolve(tmp_path / "inky" / "octomate") == "inky"
-
-
-async def test_ensure_inside_a_registered_project_returns_it(tmp_path: Path) -> None:
-    # The run is simply below its project's root, which is where runs are allowed to
-    # be — every package of a monorepo becoming its own project is the failure here.
-    root = directory(tmp_path / "inky")
-    manager = await a_registry(a_project(root))
-
-    project = await manager.ensure(
-        directory(root / "octomate" / "managers"), origin="codex"
-    )
-
-    assert project.name == "inky"
-    assert set(manager.projects) == {"inky"}
-
-
-async def test_ensure_is_idempotent(tmp_path: Path) -> None:
-    manager = await a_registry()
-    root = directory(tmp_path / "inky")
-
-    first = await manager.ensure(root, origin="codex")
-    second = await manager.ensure(root / "octomate", origin="codex")
-
-    assert first.id == second.id
-    assert set(manager.projects) == {"inky"}
-
-
-async def test_ensure_renames_around_a_name_already_taken(tmp_path: Path) -> None:
-    # Two directories really can be called the same thing, and the root is the
-    # identity, so the newcomer steps aside rather than being refused.
-    manager = await a_registry(a_project(directory(tmp_path / "vita" / "api")))
-
-    second = await manager.ensure(directory(tmp_path / "api"), origin="codex")
-
-    assert second.name == "api-2"
-    assert manager.resolve(tmp_path / "api" / "src") == "api-2"
-    assert manager.resolve(tmp_path / "vita" / "api" / "src") == "api"
-
-
-async def test_ensure_above_a_registered_project_keeps_the_deeper_one(
-    tmp_path: Path,
-) -> None:
-    inner = directory(tmp_path / "octoverse" / "inky")
-    manager = await a_registry(a_project(inner))
-
-    outer = await manager.ensure(directory(tmp_path / "octoverse"), origin="codex")
-
-    assert outer.name == "octoverse"
-    assert manager.resolve(inner / "octomate") == "inky"
-    assert manager.resolve(tmp_path / "octoverse" / "kraken") == "octoverse"
 
 
 async def test_an_empty_registry_resolves_nothing(tmp_path: Path) -> None:
@@ -399,10 +339,10 @@ async def test_declaring_a_registered_directory_adopts_its_row(
     tmp_path: Path,
 ) -> None:
     # The root is the identity and the unique column, so a declaration renames the row
-    # a session left rather than racing it to a second row for one directory.
+    # an earlier block left rather than racing it to a second row for one directory.
     root = directory(tmp_path / "octoverse" / "inky")
-    discovered = await registered(root)
-    [existing] = discovered.list()
+    earlier = await a_registry(a_project(root))
+    [existing] = earlier.list()
 
     manager = await reconciled(
         octomate=Project.Create(root=root, upstream=DirectoryUpstream(path=root))
@@ -412,28 +352,11 @@ async def test_declaring_a_registered_directory_adopts_its_row(
     assert manager.resolve(root / "octomate") == "octomate"
 
 
-async def test_a_declaration_does_not_rewrite_how_a_project_got_here(
-    tmp_path: Path,
-) -> None:
-    root = directory(tmp_path / "inky")
-    await registered(root)
-
-    manager = await reconciled(
-        inky=Project.Create(root=root, upstream=DirectoryUpstream(path=root))
-    )
-
-    project = manager.get("inky")
-    assert project is not None
-    assert project.origin == "codex"
-    # Write-once, so nothing revises it later either.
-    assert "origin" not in Project.Update.model_fields
-
-
 async def test_an_undeclared_project_is_left_alone(tmp_path: Path) -> None:
-    # Declaring is not the only way in, so absence from YAML says nothing about a
-    # project a session registered.
+    # The threads and runs recorded under a row still name it, so dropping a
+    # declaration is not a request to forget the history filed there.
     root = directory(tmp_path / "kraken")
-    await registered(root)
+    await a_registry(a_project(root))
 
     inky = directory(tmp_path / "inky")
     manager = await reconciled(
@@ -477,12 +400,13 @@ async def test_a_project_re_enables_when_its_directory_is_back(
     assert manager.resolve(root / "octomate") == "inky"
 
 
-async def test_a_discovered_project_is_disabled_when_its_root_goes(
+async def test_an_undeclared_project_is_disabled_when_its_root_goes(
     tmp_path: Path,
 ) -> None:
-    # Nothing declared it, and it is still swept: the flag is about disk, not YAML.
+    # The block no longer declares it, and it is still swept: the flag is about disk,
+    # not YAML.
     root = directory(tmp_path / "kraken")
-    await registered(root)
+    await a_registry(a_project(root))
     root.rmdir()
 
     manager = await reconciled()
@@ -507,7 +431,7 @@ async def test_an_extra_root_another_project_already_holds_is_refused(
     # Nothing constrains `extra_roots`, and a directory two projects claim resolves to
     # whichever sorted first — so the check runs over the registry, not the block.
     kraken = directory(tmp_path / "kraken")
-    await registered(kraken)
+    await a_registry(a_project(kraken))
 
     inky = directory(tmp_path / "inky")
     with pytest.raises(ValueError, match="claimed by both 'kraken' and 'inky'"):
@@ -525,7 +449,7 @@ async def test_a_declared_name_a_registered_project_already_holds_is_refused(
 ) -> None:
     # Ahead of the unique constraint, which would not say which two directories
     # wanted the name.
-    await registered(directory(tmp_path / "vita" / "api"))
+    await a_registry(a_project(directory(tmp_path / "vita" / "api")))
 
     api = directory(tmp_path / "api")
     with pytest.raises(ValueError, match="both named 'api'"):

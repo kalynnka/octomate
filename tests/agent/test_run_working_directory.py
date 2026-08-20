@@ -311,9 +311,7 @@ def codex_rollout(cwd: str) -> list[JsonObject]:
 
 async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> None:
     octomate = Octomate()
-    tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects
-    )
+    tailer = CodexTranscriptTailer(octomate.conversations, octomate.thread_manager)
     ingest = CodexHookIngest(octomate, tailer)
 
     await ingest.handle(
@@ -335,9 +333,7 @@ async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> 
 async def codex_rollout_run(octomate: Octomate, rollout: Path) -> AgentRun:
     """Stream one rollout the way production reaches it: a tail attaches and feeds
     the file's framed lines, and the turn commits off its own `task_complete`."""
-    tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects
-    )
+    tailer = CodexTranscriptTailer(octomate.conversations, octomate.thread_manager)
     await stream_rollout(tailer, CODEX_SESSION, rollout)
     [run] = await runs_of(octomate, CODEX_NATIVE_ID, CODEX_SESSION)
     return run
