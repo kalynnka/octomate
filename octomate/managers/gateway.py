@@ -13,6 +13,8 @@ session from.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
@@ -545,13 +547,26 @@ class GatewayManager:
         self.sessions: dict[uuid.UUID, GatewaySession] = {}
 
     def register(self, session: GatewaySession) -> None:
+        """Hold the conversation for `session`, first arrival only.
+
+        Nothing else serialises turns of one conversation, so two can overlap; an
+        external caller naming the conversation must find exactly one session, and
+        a second run racing the first would otherwise have its calls land on the
+        first's. So the second is refused outright rather than queued or ignored.
+        """
         if session.conversation_id is None:
             raise ValueError("a registered gateway session needs its conversation id")
+        holder = self.sessions.get(session.conversation_id)
+        if holder is not None and holder is not session:
+            raise RuntimeError(
+                f"conversation {session.conversation_id} already has a turn at the "
+                "gateway; a second run on it is refused until that turn ends"
+            )
         self.sessions[session.conversation_id] = session
 
     def unregister(self, session: GatewaySession) -> None:
-        # Only its own entry: a follow-up turn may have superseded this one while it
-        # was still finishing, and the successor's registration must survive.
+        # Only its own entry — a session that was never registered (no conversation
+        # id, or refused) removes nothing.
         if (
             session.conversation_id is not None
             and self.sessions.get(session.conversation_id) is session
@@ -560,3 +575,18 @@ class GatewayManager:
 
     def get(self, conversation_id: uuid.UUID) -> GatewaySession | None:
         return self.sessions.get(conversation_id)
+
+    @contextmanager
+    def driving(self, session: GatewaySession | None) -> Generator[None]:
+        """The registration span of one driven turn: external tool calls reach
+        `session` only while the run that mounted it is in flight, and a second
+        turn of the same conversation is refused at the door. Tolerates a gateway
+        that was never built (disabled connection) or never got a conversation id
+        (no thread), which is simply not registered."""
+        if session is not None and session.conversation_id is not None:
+            self.register(session)
+        try:
+            yield
+        finally:
+            if session is not None:
+                self.unregister(session)

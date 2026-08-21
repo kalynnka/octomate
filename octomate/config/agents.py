@@ -195,9 +195,23 @@ class ToolOutputConfig(BaseModel):
         )
 
 
-class InklingConfig(BaseModel):
-    # Present so all four agents read the same way: declared and enabled, or absent.
-    enabled: bool = True
+class AgentConfig(BaseModel):
+    """What every agent tentacle's config block declares, whichever runtime it
+    drives: the agent reads the same way everywhere — declared and enabled, or
+    absent — and carries its own half of the gateway switch."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether to register the tentacle when its config block exists.",
+    )
+    gateway: bool = Field(
+        default=True,
+        description="Whether this agent's driven turns offer the gateway spells. Off, "
+        "no channel connection can switch them on for it.",
+    )
+
+
+class InklingConfig(AgentConfig):
     models: list[ModelConfig] = Field(min_length=1)
 
     request_limit: int = Field(
@@ -245,7 +259,7 @@ class ClaudeSSHConfig(BaseModel):
     claude_bin: str = "claude"
 
 
-class ClaudeCodeConfig(BaseModel):
+class ClaudeCodeConfig(AgentConfig):
     """Claude Agent SDK runner, registered as the `claude` agent tentacle.
 
     Opt-in: `agents.claude` is null by default, so the agent is absent unless a
@@ -256,10 +270,6 @@ class ClaudeCodeConfig(BaseModel):
     refused while remote runs are disabled.
     """
 
-    enabled: bool = Field(
-        default=True,
-        description="Whether to register the Claude tentacle when the config block exists.",
-    )
     cwd: str = "."
     models: set[ClaudeCodeModelName] = Field(
         min_length=1,
@@ -309,7 +319,7 @@ class ClaudeCodeConfig(BaseModel):
         return ssh
 
 
-class CodexConfig(BaseModel):
+class CodexConfig(AgentConfig):
     """OpenAI Codex SDK runner, registered as the `codex` agent tentacle.
 
     Opt-in: `agents.codex` is null by default, so the agent is absent unless a
@@ -319,10 +329,6 @@ class CodexConfig(BaseModel):
     per-run overrides before calling the SDK.
     """
 
-    enabled: bool = Field(
-        default=True,
-        description="Whether to register the Codex tentacle when the config block exists.",
-    )
     cwd: str = Field(
         default=".",
         description=(
@@ -419,7 +425,7 @@ class CodexConfig(BaseModel):
     )
 
 
-class DeepseekConfig(BaseModel):
+class DeepseekConfig(AgentConfig):
     """DeepSeek Harness runner, registered as the `deepseek` agent tentacle.
 
     Opt-in: `agents.deepseek` is null by default, so the agent is absent unless a
@@ -432,10 +438,6 @@ class DeepseekConfig(BaseModel):
     `external_id` and prompted again for later turns.
     """
 
-    enabled: bool = Field(
-        default=True,
-        description="Whether to register the deepseek tentacle when the config block exists.",
-    )
     host: Literal["127.0.0.1", "localhost"] = Field(
         default="127.0.0.1",
         description=(

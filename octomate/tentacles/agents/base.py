@@ -67,6 +67,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # is read-only, so the empty one cannot be shared into.
     claims: Mapping[AgentRouteModelName, Claim] = MappingProxyType({})
 
+    # Whether this agent's driven turns offer the gateway spells — the agent's side
+    # of the switch; the channel-agent connection's `gateway` is the other, and both
+    # must be on. Subclasses assign it from their config in `__init__`.
+    gateway: bool = True
+
     @cached_property
     def routes(self) -> list[AgentRoute]:
         """The routes this agent offers — one per claim it can actually honor.

@@ -192,10 +192,12 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         claims: Mapping[KnownModelName, Claim] | None = None,
         permission_mode: InklingPermissionMode = "default",
         request_limit: int = 256,
+        gateway: bool = True,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.permission_mode = permission_mode
         self.request_limit = request_limit
+        self.gateway = gateway
         self.models = dict(models or {})
         self.capabilities = [
             capability

@@ -201,6 +201,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.claims = {  # noqa: C416
             model: claim for model, claim in config.claims.items()
         }
+        self.gateway = config.gateway
         self.models = {model: model for model in config.models}
         # Serializes turns per conversation: dsh queues a second prompt into a
         # live turn as steering, which would interleave two runs' frames.

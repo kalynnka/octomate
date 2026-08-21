@@ -318,6 +318,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.claims = {  # noqa: C416
             model: claim for model, claim in config.claims.items()
         }
+        self.gateway = config.gateway
         self.models = {model: model for model in config.models}
         self.session_locks = SessionLocks()
         self.session_tailer = CodexTranscriptTailer(

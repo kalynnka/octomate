@@ -214,6 +214,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.claims = {  # noqa: C416
             model: claim for model, claim in config.claims.items()
         }
+        self.gateway = config.gateway
         # One live Claude client per conversation, keyed by conversation id: a new
         # turn interrupts the prior run for the same conversation (Phase 6). Not
         # thread id — a thread also holds subagent conversations, whose runs must
