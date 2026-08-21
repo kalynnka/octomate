@@ -1,10 +1,10 @@
 # Thread Workspaces
 
 Records what OCTO-42's discussion settled and what it did not. The mirror
-(OCTO-46), the fork (OCTO-47), and running a project thread in it (OCTO-48) are
-built. The lifecycle below — per-turn commits, pruning, resume — along with the
-chat workspace, dependency reuse, the bind capability, and the sandboxes, is
-still ahead.
+(OCTO-46), the fork (OCTO-47), running a project thread in it (OCTO-48), and the
+lifecycle below — per-turn save, pruning, resume (OCTO-51) — are built. The chat
+workspace, dependency reuse, the bind capability, and the sandboxes are still
+ahead.
 
 A run currently happens in `project.root` — one directory on the Octomate host,
 shared by every thread that resolves to that project. This document replaces that
@@ -31,7 +31,7 @@ That is what collapses the variants. There is no "repo project" and "non-repo
 project" with separate forking, review, and release stories; there is one
 mechanism, and the only difference is whether the mirror has an `origin` to sync
 with. A documents project gets branches, diffs, history, and the same
-commit-and-prune lifecycle for free, and the earlier objection — that forking
+save-and-prune lifecycle for free, and the earlier objection — that forking
 something with no merge operation manufactures divergence you cannot reconcile —
 stops applying, because git *is* the merge.
 
@@ -216,15 +216,31 @@ account keys. A chat agent parked in that directory can read all of it.
 The workspace is a cache, not the only copy. That is what makes reclaiming it a
 disk decision rather than a data-loss decision.
 
-- **Each turn** commits to the thread's branch and pushes it to the mirror under
-  `refs/octomate/threads/<id>`. Pushing to a ref namespace rather than
-  `refs/heads/` keeps `git branch` clean and keeps the refs out of ordinary
-  clones. Nothing reaches GitHub until a human asks for a PR.
+- **Each turn** snapshots the whole tree — staged, unstaged and untracked alike —
+  and pushes that to the mirror under `refs/octomate/threads/<id>`. Pushing to a
+  ref namespace rather than `refs/heads/` keeps `git branch` clean and keeps the
+  refs out of ordinary clones. Nothing reaches GitHub until a human asks for a PR.
+
+  A snapshot, not a commit, and that distinction is the whole of it. The snapshot
+  is built with `commit-tree` over a copy of the index, so HEAD does not move, the
+  branch keeps only the agent's own commits, and a workspace in the middle of
+  something is not finished on its behalf. A machine `wip` on the end of every
+  turn would otherwise be buried inside the history a person reviews. The commit
+  object still exists — a push needs one — but no branch points at it, exactly as
+  no branch points at a stash. `git stash create` is the obvious tool and the
+  wrong one: it takes no options, so it captures tracked changes only, and an
+  agent's first turn is mostly new files.
+- **Resuming** puts the workspace back the way the turn left it: the branch to the
+  snapshot's parent, the tree from the snapshot, then the index back to HEAD so
+  uncommitted work reads as uncommitted. Modifications, deletions, untracked files
+  and a detached HEAD all make the round trip. What does not is the staged/unstaged
+  split, since one tree cannot hold both, and `.gitignore`d files — a rebuilt
+  workspace has no `.venv`. Reconciling the history that comes back is the agent's
+  job, not Octomate's.
 - **Pruning** happens on an idle timer. Being wrong costs a slow resume, never
   lost work, so the heuristic does not need to be good. A thread with a pending
   `DeferredAction` is known to be alive and is a reasonable last choice to evict,
   but that only orders eviction — it never blocks it.
-- **Resuming** re-materializes from the mirror and checks the ref back out.
 - The chat workspace is never pruned. It is empty.
 
 ## Mirror sync
