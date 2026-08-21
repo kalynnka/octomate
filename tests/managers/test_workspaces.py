@@ -726,6 +726,21 @@ async def test_a_fork_of_a_folder_project_has_no_remote(
     assert await run_git("remote", cwd=workspace) == ""
 
 
+async def test_the_chat_directory_is_shared_and_never_pruned(
+    manager: WorkspaceManager, tmp_path: Path
+) -> None:
+    # OCTO-50: one directory for every thread in no project. It is not a workspace —
+    # nothing is forked into it and no thread owns it — and the sweep leaves it
+    # alone for free, because it prunes by thread id and `chat` is not one.
+    chat = manager.chat()
+
+    assert chat == (tmp_path / "workspaces" / "chat").resolve()
+    assert chat.is_dir()
+    assert manager.chat() == chat
+    assert await manager.prune(idle=0.0) == []
+    assert chat.is_dir()
+
+
 async def test_a_fresh_fork_is_not_born_idle(
     manager: WorkspaceManager, tmp_path: Path
 ) -> None:

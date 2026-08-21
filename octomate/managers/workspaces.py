@@ -152,6 +152,27 @@ class WorkspaceManager:
         os.utime(path)
         return path
 
+    def chat(self) -> Path:
+        """The one directory every thread in no project runs in, made if missing.
+
+        Named rather than left to fall through, because what a run falls through to
+        is the agent's configured `cwd`, and that defaults to `"."` — on a server,
+        the directory holding `octomate.db`, the config home's yaml and whatever
+        keys are beside them. Read-only is no protection when the directory in
+        question is that one.
+
+        Shared by every such thread, which is safe only because nothing may write
+        to it: each runtime is told so where its run is set up. A writable
+        exception would have to stop the sharing first.
+
+        Not a workspace, despite living among them — nothing is forked into it and
+        no thread owns it — and the sweep skips it for free, since it prunes by
+        thread id and `chat` is not one.
+        """
+        path = (self.workspaces_dir / "chat").resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     async def detect(self) -> str | None:
         """The `cp` flag that forks without copying bytes on this host, or None
         where nothing does and workspaces are cloned instead.
