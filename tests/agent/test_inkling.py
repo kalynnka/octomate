@@ -31,7 +31,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.ask import ASK_DEFERR_KIND, AskCapability
-from octomate.capabilities.gateway import TELEPORT_DEFER_KIND, GatewayCapability
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import DeclineResolver, PostureResolver
 from octomate.capabilities.harness.events import ActionBatchEvent
@@ -45,6 +45,7 @@ from octomate.capabilities.harness.react import (
 from octomate.capabilities.todos import TodoCapability
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment, Segment
+from octomate.schemas.triage import TELEPORT_DEFER_KIND
 from octomate.tentacles.agents.inkling import (
     InklingTentacle,
 )

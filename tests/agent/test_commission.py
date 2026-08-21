@@ -20,12 +20,15 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.gateway import (
     ACCOMPLICE_INSTRUCTION,
-    COMMISSION_TOOL_NAME,
-    WHISPER_TOOL_NAME,
     GatewayCapability,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import AgentRoute, Claim
+from octomate.schemas.triage import (
+    COMMISSION_TOOL_NAME,
+    WHISPER_TOOL_NAME,
+    AgentRoute,
+    Claim,
+)
 from octomate.tentacles.agents.base import AgentTentacle
 from tests.support.agents import FakeAgent
 from tests.support.managers import FakeConversationManager

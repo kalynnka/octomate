@@ -43,9 +43,17 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
+    COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
+    GATEWAY_TOOLSET_ID,
     HERE_TARGET,
+    SCHEME_TOOL_NAME,
+    SCRY_TOOL_NAME,
+    SUMMON_TOOL_NAME,
+    TELEPORT_DEFER_KIND,
+    TELEPORT_TOOL_NAME,
     THREAD_TARGET,
+    WHISPER_TOOL_NAME,
     AgentRoute,
     ChannelTarget,
     CrossingLanding,
@@ -75,12 +83,6 @@ if TYPE_CHECKING:
     # `feelers.output`, which skips the accomplice spells' timeline rows by name.
     from octomate.tentacles.channels.base import ChannelTentacle
 
-SCRY_TOOL_NAME = "scry"
-SUMMON_TOOL_NAME = "summon"
-TELEPORT_TOOL_NAME = "teleport"
-SCHEME_TOOL_NAME = "scheme"
-COMMISSION_TOOL_NAME = "commission"
-WHISPER_TOOL_NAME = "whisper"
 # A commission holds the parent's live tool call open while the accomplice runs, so the
 # wait must not be unbounded (`approval_timeout` is the precedent). Seconds.
 COMMISSION_TIMEOUT = 900.0
@@ -94,11 +96,6 @@ PRIVATE_REFUSALS: dict[PrivateBlocker, str] = {
     ),
     "no_user": "This run has no single user whose direct messages could be opened.",
 }
-# The `teleport` deferral's declared metadata kind. The suspender and dispatch graph
-# classify the deferral by this kind rather than the tool name, so `gate` (which emits
-# it) and `reflex` (which resolves it) agree on one value without matching on the name.
-TELEPORT_DEFER_KIND = "teleport"
-GATE_TOOLSET_ID = "gate"
 
 GATE_INSTRUCTION = """\
 ## Gate — decide where this conversation goes and who handles it
@@ -246,7 +243,7 @@ class GatewayCapability(AbstractCapability[None]):
         # front of the prefix, so a schema that varies forks it into variants that never
         # warm each other. Hence plain `str` routes, validated by `claimed_route`
         # against the list `scry` returns — a tool *result*, after the breakpoint.
-        toolset: FunctionToolset[None] = FunctionToolset(id=GATE_TOOLSET_ID)
+        toolset: FunctionToolset[None] = FunctionToolset(id=GATEWAY_TOOLSET_ID)
         toolset.tool(name=SCRY_TOOL_NAME)(self.scry)
         toolset.tool(name=SUMMON_TOOL_NAME, retries=2)(self.summon)
         # `retries` to match its siblings: teleport refuses a surface with no

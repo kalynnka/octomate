@@ -15,7 +15,7 @@ from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
-from octomate.capabilities.gateway import SCRY_TOOL_NAME, GatewayCapability
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.config.users import UserConfig
@@ -43,6 +43,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import (
+    SCRY_TOOL_NAME,
     AgentRoute,
     Claim,
     CrossingLanding,
