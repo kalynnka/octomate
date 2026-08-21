@@ -236,6 +236,9 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             "opusplan[1m]": "fake-model",
         }
     )
+    # The agent's side of the gateway switch, as a real tentacle reads it off its
+    # config block.
+    gateway: bool = True
     # An unclaimed model is not routable, so the fake claims every model it
     # ships by default; pass claims={} to fake an agent that advertises nothing.
     claims: dict[AgentRouteModelName, Claim] = field(

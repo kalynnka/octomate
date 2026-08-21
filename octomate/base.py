@@ -17,6 +17,7 @@ from rich.style import Style
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.gateway import GatewayManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
@@ -105,6 +106,7 @@ class Octomate:
     )
     users: UserManager = field(default_factory=UserManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
+    gateway: GatewayManager = field(default_factory=GatewayManager)
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
@@ -199,6 +201,7 @@ class Octomate:
                         conversation_manager=self.conversations,
                         thread_manager=self.thread_manager,
                         action_manager=self.deferred_actions,
+                        gateway=self.gateway,
                     ),
                 )
 

@@ -123,6 +123,7 @@ def build_inkling(
         claims=config.claims,
         permission_mode=config.permission_mode,
         request_limit=config.request_limit,
+        gateway=config.gateway,
         toolsets=build_mcp_toolsets(mcp),
         capabilities=capabilities,
         system_prompt=SYSTEM_PROMPT,

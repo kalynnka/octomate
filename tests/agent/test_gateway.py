@@ -844,9 +844,10 @@ def test_a_session_without_a_conversation_cannot_be_registered() -> None:
         )
 
 
-def test_a_superseding_turns_registration_survives_the_first_exit() -> None:
-    # Two turns of one conversation can overlap at the edges; the earlier turn's
-    # exit must remove only its own entry, never the successor's.
+def test_a_second_turn_on_a_live_conversation_is_refused_not_queued() -> None:
+    # Nothing serialises two turns of one conversation, so the registry does the
+    # one thing it can: the first arrival holds the conversation, a second is
+    # refused outright, and the slot frees only when the holder's turn ends.
     manager = GatewayManager()
     first = _registered_session()
     second = GatewaySession(channel_routes={}, current_agent_id="inkling")
@@ -854,6 +855,33 @@ def test_a_superseding_turns_registration_survives_the_first_exit() -> None:
     assert first.conversation_id is not None
 
     manager.register(first)
-    manager.register(second)
+    with pytest.raises(RuntimeError, match="already has a turn at the gateway"):
+        manager.register(second)
+    assert manager.get(first.conversation_id) is first
+    # A refused session owns nothing, so its exit evicts nobody.
+    manager.unregister(second)
+    assert manager.get(first.conversation_id) is first
+
     manager.unregister(first)
+    manager.register(second)
     assert manager.get(first.conversation_id) is second
+
+
+def test_driving_registers_the_session_for_exactly_its_span() -> None:
+    manager = GatewayManager()
+    session = _registered_session()
+    assert session.conversation_id is not None
+
+    with manager.driving(session):
+        assert manager.get(session.conversation_id) is session
+    assert manager.get(session.conversation_id) is None
+
+
+def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
+    # A disabled connection builds no session, and a run with no thread has no
+    # conversation id — neither registers, and neither breaks the span.
+    manager = GatewayManager()
+    with manager.driving(None):
+        assert manager.sessions == {}
+    with manager.driving(GatewaySession(channel_routes={}, current_agent_id="i")):
+        assert manager.sessions == {}

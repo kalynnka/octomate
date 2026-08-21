@@ -4,6 +4,7 @@ agent/channel/managers. End-to-end behavior lives in test_dispatch.py."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -20,6 +21,7 @@ from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.config.users import UserConfig
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.gateway import GatewayManager
 from octomate.managers.user import UserManager
 from octomate.reflex import (
     DeferredResult,
@@ -164,6 +166,7 @@ def _deps(
     channels: dict[str, FakeChannelTentacle],
     agent: FakeAgent,
     action_manager: FakeActionManager | None = None,
+    gateway: GatewayManager | None = None,
 ) -> ReflexDeps:
     return ReflexDeps(
         channels=dict(channels),
@@ -173,6 +176,7 @@ def _deps(
         action_manager=cast(
             DeferredActionManager, action_manager or FakeActionManager()
         ),
+        gateway=gateway or GatewayManager(),
     )
 
 
@@ -218,6 +222,7 @@ def _summon_deps(
     far: FakeChannelTentacle | None = None,
 ) -> ReflexDeps:
     return ReflexDeps(
+        gateway=GatewayManager(),
         channels={"im": im} if far is None else {"im": im, "far": far},
         agents={entry.id: entry, second.id: second},
         conversation_manager=FakeConversationManager(),
@@ -260,6 +265,7 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
     )
     other = FakeAgent(id="other", claims={"test": Claim(ability="fake agent")})
     deps = ReflexDeps(
+        gateway=GatewayManager(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -308,6 +314,7 @@ def test_available_routes_are_the_exposed_agents_own_routes() -> None:
     )
     third = FakeAgent(id="third", claims={})
     deps = ReflexDeps(
+        gateway=GatewayManager(),
         channels={"chan1": channel},
         agents={"other": other, "second": second, "third": third},
         conversation_manager=FakeConversationManager(),
@@ -337,6 +344,7 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
     )
     other = FakeAgent(id="other")
     deps = ReflexDeps(
+        gateway=GatewayManager(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -472,6 +480,117 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
     assert "commission" in gate.toolset.tools
 
 
+async def test_react_keys_the_gateway_session_by_the_turns_conversation() -> None:
+    """React ensures the same (thread, agent) conversation the run resolves, so an
+    external runtime's tool call finds this turn's session by the conversation id
+    it already knows — and nothing stays registered once the turn ends."""
+    address = _key()
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    registry = GatewayManager()
+    thread = _thread(address)
+    target = _source_target(address)
+
+    await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=_deps(
+            conversations=conversations,
+            channels={"im": im},
+            agent=agent,
+            gateway=registry,
+        ),
+    )
+
+    gate = _recorded_gate_capability(agent.turns[0])
+    conversation = await conversations.ensure(thread.id, agent_tentacle_id="other")
+    assert gate.session.conversation_id == conversation.id
+    assert registry.sessions == {}
+
+
+@dataclass
+class SlowAgent(FakeAgent):
+    """A fake that takes its time, so two turns of one conversation can overlap."""
+
+    delay: float = 0.1
+
+    # Only delays; every argument passes through to the fake untouched.
+    async def run(self, *args: object, **kwargs: object):  # pyright: ignore[reportIncompatibleMethodOverride]
+        await asyncio.sleep(self.delay)
+        return await super().run(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+
+async def test_a_second_turn_racing_a_live_conversation_fails_before_it_starts() -> (
+    None
+):
+    """Nothing serialises two turns of one conversation, so the registry refuses
+    the second at the door: the first arrival keeps its session, the second run
+    raises before anything is presented, and the slot frees when the first ends."""
+    address = _key()
+    agent = SlowAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    registry = GatewayManager()
+    thread = _thread(address)
+    target = _source_target(address)
+
+    def turn() -> ReflexState:
+        return ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        )
+
+    deps = _deps(
+        conversations=conversations,
+        channels={"im": im},
+        agent=agent,
+        gateway=registry,
+    )
+    first, second = await asyncio.gather(
+        _run(React(), state=turn(), deps=deps),
+        _run(React(), state=turn(), deps=deps),
+        return_exceptions=True,
+    )
+
+    assert not isinstance(first, BaseException)
+    assert isinstance(second, RuntimeError)
+    assert "already has a turn at the gateway" in str(second)
+    # Only the first arrival ever ran, and nothing outlives its turn.
+    assert len(agent.turns) == 1
+    assert registry.sessions == {}
+
+
+async def test_an_agent_with_gateway_off_mounts_none_on_any_channel() -> None:
+    """Availability is the agent's own: with its flag off, no turn of it on any
+    channel mounts a gateway capability."""
+    address = _key()
+    agent = FakeAgent(
+        id="other", allow_reception_run=True, reception_output="done", gateway=False
+    )
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    target = _source_target(address)
+
+    await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    assert not [
+        capability
+        for capability in agent.turns[0].capabilities
+        if isinstance(capability, GatewayCapability)
+    ]
+
+
 async def test_react_passes_the_decision_effort_to_the_run() -> None:
     address = _key()
     agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
@@ -553,6 +672,7 @@ async def test_reception_summons_another_agent_into_sub_thread() -> None:
         React(),
         state=ReflexState(source_target=target, target=target, decision=_summon()),
         deps=ReflexDeps(
+            gateway=GatewayManager(),
             channels={"im": im},
             agents={"other": entry, "second": second},
             conversation_manager=conversations,
