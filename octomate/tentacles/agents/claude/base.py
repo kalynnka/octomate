@@ -41,7 +41,7 @@ from octomate_cli.stream import (
     StreamWelcome,
     client_message_adapter,
 )
-from pydantic import SecretStr, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_ai import (
     AgentCapability,
@@ -172,8 +172,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     """
 
     config: ClaudeCodeConfig = field(init=False)
-    # Bearer credential its hook router requires of native sessions.
-    hook_secret: SecretStr = field(init=False, repr=False)
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
@@ -200,12 +198,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: ClaudeCodeConfig,
-        hook_secret: SecretStr,
         description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.config = config
-        self.hook_secret = hook_secret
         self.description = description or self.description
         self.pending = {}
         # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
@@ -258,7 +254,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         covers the websocket too: FastAPI runs router dependencies at the handshake,
         so a bad bearer is denied with the same 401 before any socket opens."""
         router = APIRouter(
-            tags=["claude"], dependencies=[Depends(hook_guard(self.hook_secret))]
+            tags=["claude"],
+            dependencies=[Depends(hook_guard(self.octomate.secret, self.id))],
         )
 
         @router.post(

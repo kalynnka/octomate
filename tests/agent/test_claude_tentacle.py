@@ -21,7 +21,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import Message
-from pydantic import SecretStr, TypeAdapter
+from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -55,8 +55,6 @@ _SUMMON_OUTPUT = {
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
 )
-
-HOOK_SECRET = SecretStr("test-hook-secret")
 
 
 _THREAD = uuid7()
@@ -115,7 +113,6 @@ def _tentacle(
         "claude",
         Octomate(conversations=conversations),
         config=config or ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
-        hook_secret=HOOK_SECRET,
     )
 
 

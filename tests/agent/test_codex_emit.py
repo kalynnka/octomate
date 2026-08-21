@@ -20,15 +20,15 @@ from octomate_cli import emit as emit_module
 from octomate_cli.codex import CODEX_HOOK_PATH as CANONICAL_CODEX_HOOK_PATH
 from octomate_cli.codex import EMIT_SCRIPT
 from octomate_cli.codex import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
-from octomate_cli.config import HOOK_SECRET_ENV as CANONICAL_HOOK_SECRET_ENV
 from octomate_cli.config import OCTOMATE_URL_ENV as CANONICAL_OCTOMATE_URL_ENV
+from octomate_cli.config import SECRET_ENV as CANONICAL_SECRET_ENV
 from octomate_cli.config import project_config_path, user_config_path
 from octomate_cli.emit import (
     CODEX_HOOK_PATH,
     DRIVEN_ENV,
-    HOOK_SECRET_ENV,
     HOOK_TIMEOUT,
     OCTOMATE_URL_ENV,
+    SECRET_ENV,
 )
 
 from octomate.tentacles.agents.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
@@ -92,7 +92,7 @@ def test_the_payload_is_delivered_bearing_the_hook_credential(
     router: tuple[str, Received],
 ) -> None:
     url, received = router
-    result = emit(["--path", CODEX_HOOK_PATH, "--url", url], {HOOK_SECRET_ENV: SECRET})
+    result = emit(["--path", CODEX_HOOK_PATH, "--url", url], {SECRET_ENV: SECRET})
 
     assert result.returncode == 0
     assert received.body == PAYLOAD
@@ -107,7 +107,7 @@ def test_a_driven_session_is_marked_so_the_router_can_drop_it(
     url, received = router
     emit(
         ["--path", CODEX_HOOK_PATH, "--url", url],
-        {HOOK_SECRET_ENV: SECRET, DRIVEN_ENV: "1"},
+        {SECRET_ENV: SECRET, DRIVEN_ENV: "1"},
     )
 
     assert received.body is not None
@@ -116,7 +116,7 @@ def test_a_driven_session_is_marked_so_the_router_can_drop_it(
 
 def test_an_undriven_session_is_not_marked(router: tuple[str, Received]) -> None:
     url, received = router
-    emit(["--path", CODEX_HOOK_PATH, "--url", url], {HOOK_SECRET_ENV: SECRET})
+    emit(["--path", CODEX_HOOK_PATH, "--url", url], {SECRET_ENV: SECRET})
 
     assert received.body is not None
     assert "octomate_driven" not in received.body
@@ -130,14 +130,14 @@ def test_without_a_secret_nothing_is_posted(router: tuple[str, Received]) -> Non
 
     assert result.returncode == 1
     assert received.body is None
-    assert HOOK_SECRET_ENV in result.stderr
+    assert SECRET_ENV in result.stderr
 
 
 def test_an_unreachable_octomate_does_not_take_the_turn_down() -> None:
     """A session is the person's own work; ingest only observes it."""
     result = emit(
         ["--path", CODEX_HOOK_PATH, "--url", "http://127.0.0.1:1/hooks/codex"],
-        {HOOK_SECRET_ENV: SECRET},
+        {SECRET_ENV: SECRET},
     )
 
     assert result.returncode == 1
@@ -153,7 +153,7 @@ def test_the_target_resolves_from_the_environment_at_fire_time(
     url, received = router
     result = emit(
         ["--path", CODEX_HOOK_PATH],
-        {HOOK_SECRET_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
+        {SECRET_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
     )
 
     assert result.returncode == 0
@@ -166,7 +166,7 @@ def test_a_pinned_url_wins_over_the_environment(router: tuple[str, Received]) ->
     url, received = router
     result = emit(
         ["--path", CODEX_HOOK_PATH, "--url", url],
-        {HOOK_SECRET_ENV: SECRET, OCTOMATE_URL_ENV: "http://127.0.0.1:1"},
+        {SECRET_ENV: SECRET, OCTOMATE_URL_ENV: "http://127.0.0.1:1"},
     )
 
     assert result.returncode == 0
@@ -176,7 +176,7 @@ def test_a_pinned_url_wins_over_the_environment(router: tuple[str, Received]) ->
 def test_without_a_target_nothing_is_posted_and_the_turn_survives() -> None:
     """No pin and no OCTOMATE_URL: say so on stderr and stay out of the way — a fresh
     machine without the environment set must not lose its session to ingest."""
-    result = emit(["--path", CODEX_HOOK_PATH], {HOOK_SECRET_ENV: SECRET})
+    result = emit(["--path", CODEX_HOOK_PATH], {SECRET_ENV: SECRET})
 
     assert result.returncode == 1
     assert OCTOMATE_URL_ENV in result.stderr
@@ -190,7 +190,7 @@ def test_the_claude_path_stays_silent_on_stdout(router: tuple[str, Received]) ->
     url, received = router
     result = emit(
         ["--path", "/hooks/claude"],
-        {HOOK_SECRET_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
+        {SECRET_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
     )
 
     assert result.returncode == 0
@@ -206,7 +206,7 @@ def test_the_config_file_backstops_a_bare_environment(
     url, received = router
     (tmp_path / ".config" / "octomate").mkdir(parents=True)
     (tmp_path / ".config" / "octomate" / "cli.toml").write_text(
-        f'url = "{base_of(url)}"\nhook_secret = "{SECRET}"\n'
+        f'url = "{base_of(url)}"\nsecret = "{SECRET}"\n'
     )
     result = emit(["--path", CODEX_HOOK_PATH], {"HOME": str(tmp_path)})
 
@@ -227,9 +227,7 @@ def test_the_project_config_backstops_too_and_wins_over_the_user_scope(
     )
     project = tmp_path / "project" / ".octomate"
     project.mkdir(parents=True)
-    (project / "cli.toml").write_text(
-        f'url = "{base_of(url)}"\nhook_secret = "{SECRET}"\n'
-    )
+    (project / "cli.toml").write_text(f'url = "{base_of(url)}"\nsecret = "{SECRET}"\n')
     result = subprocess.run(
         [sys.executable, str(EMIT_SCRIPT), "--path", CODEX_HOOK_PATH],
         input=json.dumps(PAYLOAD),
@@ -259,7 +257,7 @@ def test_the_previous_generations_url_only_form_still_delivers(
     """Hooks written before `--path` existed invoke `emit.py --url <url>`; they keep
     delivering until their next re-install, rather than breaking on upgrade."""
     url, received = router
-    result = emit(["--url", url], {HOOK_SECRET_ENV: SECRET})
+    result = emit(["--url", url], {SECRET_ENV: SECRET})
 
     assert result.returncode == 0
     assert received.body == PAYLOAD
@@ -271,7 +269,7 @@ def test_its_duplicated_names_still_match_the_canonical_ones() -> None:
     below). Duplication across a boundary that cannot be crossed is the price; this is
     what stops it drifting — rename one and this fails rather than a session silently
     going unauthenticated or un-ingested."""
-    assert HOOK_SECRET_ENV == CANONICAL_HOOK_SECRET_ENV
+    assert SECRET_ENV == CANONICAL_SECRET_ENV
     assert DRIVEN_ENV == CANONICAL_DRIVEN_ENV
     assert HOOK_TIMEOUT == CANONICAL_HOOK_TIMEOUT
     assert OCTOMATE_URL_ENV == CANONICAL_OCTOMATE_URL_ENV

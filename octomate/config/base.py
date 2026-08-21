@@ -55,7 +55,7 @@ from octomate.schemas.project import Project
 OCTOMATE_HOME_ENV = "OCTOMATE_HOME"
 
 # One file per subsystem, in the order they are read. `octomate.yaml` carries the
-# host's own settings (host, port, hook_secret, db_url) and comes first so a later
+# host's own settings (host, port, secret, db_url) and comes first so a later
 # file cannot be shadowed by it.
 CONFIG_FILES: tuple[str, ...] = (
     "octomate.yaml",
@@ -115,15 +115,15 @@ class OctomateConfig(BaseSettings):
     host: IPvAnyAddress = IPv4Address("127.0.0.1")
     port: Annotated[int, Field(ge=1, le=65535)] = 8000
 
-    hook_secret: Annotated[
+    secret: Annotated[
         SecretStr | None,
         Field(
-            description="Bearer credential the Claude/Codex hook routers require. "
-            "Required whenever one of those agents is configured, since serving a hook "
-            "router unauthenticated would let anything that can reach the port write a "
-            "session's prompts and answers into thread history. Set it in the "
-            "environment (OCTOMATE__HOOK_SECRET) and the installed hooks will reference "
-            "the same variable."
+            description="The deployment's one bearer credential: what the Claude/Codex/"
+            "DeepSeek hook routers require. Required whenever one of those agents is "
+            "configured, since serving a hook router unauthenticated would let "
+            "anything that can reach the port write a session's prompts and answers "
+            "into thread history. Set it in the environment (OCTOMATE__SECRET) and "
+            "the installed hooks will reference the same variable."
         ),
     ] = None
 

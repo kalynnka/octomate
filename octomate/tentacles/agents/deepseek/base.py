@@ -23,7 +23,7 @@ from octomate_cli.stream import (
     StreamWelcome,
     client_message_adapter,
 )
-from pydantic import HttpUrl, SecretStr, ValidationError
+from pydantic import HttpUrl, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -136,8 +136,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     """
 
     config: DeepseekConfig = field(init=False)
-    # Bearer credential its hook router requires of native sessions.
-    hook_secret: SecretStr = field(init=False, repr=False)
     process: DeepseekProcess | None = field(default=None, init=False, repr=False)
     client: DeepseekApiClient = field(init=False, repr=False)
     mux_socket: ClientConnection | None = field(default=None, init=False, repr=False)
@@ -174,12 +172,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: DeepseekConfig,
-        hook_secret: SecretStr,
         description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.config = config
-        self.hook_secret = hook_secret
         self.description = description or self.description
         self.process = None
         # The endpoint is fixed by config, so the client lives as long as the
@@ -233,7 +229,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         at the handshake, so a bad bearer is denied with the same 401 before
         any socket opens."""
         router = APIRouter(
-            tags=["deepseek"], dependencies=[Depends(hook_guard(self.hook_secret))]
+            tags=["deepseek"],
+            dependencies=[Depends(hook_guard(self.octomate.secret, self.id))],
         )
 
         @router.post("/hooks/deepseek", summary="dsh native-session hook pipe")

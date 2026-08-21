@@ -39,7 +39,7 @@ from openai_codex.generated.v2_all import (
     ThreadStartParams,
     TurnStatus,
 )
-from pydantic import SecretStr, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -267,8 +267,6 @@ class CodexTentacle(AgentTentacle[str, None]):
     """
 
     config: CodexConfig = field(init=False)
-    # Bearer credential its hook router requires of native sessions.
-    hook_secret: SecretStr = field(init=False, repr=False)
     pool: CodexClientPool | None = field(default=None, init=False, repr=False)
     live_turns: dict[uuid.UUID, AsyncTurnHandle] = field(
         default_factory=dict, init=False
@@ -301,12 +299,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: CodexConfig,
-        hook_secret: SecretStr,
         description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.config = config
-        self.hook_secret = hook_secret
         self.description = description or self.description
         self.pool = None
         self.live_turns = {}
@@ -345,7 +341,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         runs router dependencies at the handshake, so a bad bearer is denied with
         the same 401 before any socket opens."""
         router = APIRouter(
-            tags=["codex"], dependencies=[Depends(hook_guard(self.hook_secret))]
+            tags=["codex"],
+            dependencies=[Depends(hook_guard(self.octomate.secret, self.id))],
         )
 
         @router.post("/hooks/codex", summary="Codex native-session hook pipe")

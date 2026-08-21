@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
-from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -52,7 +51,6 @@ ELSEWHERE = "/repo/docs"
 ADDRESS = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
 )
-HOOK_SECRET = SecretStr("test-hook-secret")
 
 
 @pytest.fixture(autouse=True)
@@ -397,7 +395,6 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
         "claude",
         octomate,
         config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd="/configured"),
-        hook_secret=HOOK_SECRET,
     )
 
     async with tentacle.run_stream_events(
@@ -425,7 +422,6 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
         config=CodexConfig(
             models=set(CODEX_MODELS), permission_mode="deny_all", cwd="/configured"
         ),
-        hook_secret=HOOK_SECRET,
     )
 
     async with tentacle:

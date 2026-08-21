@@ -16,7 +16,6 @@ from typing import cast
 import pytest
 from claude_agent_sdk import HookContext, HookInput
 from claude_agent_sdk.types import HookCallback
-from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -34,7 +33,6 @@ from tests.support.managers import FakeConversationManager, a_registry
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
 )
-HOOK_SECRET = SecretStr("test-hook-secret")
 
 
 @pytest.fixture(autouse=True)
@@ -185,7 +183,6 @@ async def a_run(
         "claude",
         octomate,
         config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd=configured),
-        hook_secret=HOOK_SECRET,
     )
     async with tentacle.run_stream_events(
         "do it", conversation_address=KEY, thread_id=thread.id, run_name="react"

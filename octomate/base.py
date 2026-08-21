@@ -107,6 +107,8 @@ class Octomate:
     users: UserManager = field(default_factory=UserManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
     gateway: GatewayManager = field(default_factory=GatewayManager)
+    # The deployment's one bearer credential: the hook routers require it.
+    secret: SecretStr | None = None
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)

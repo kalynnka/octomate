@@ -40,7 +40,7 @@ from watchfiles import awatch
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
-from octomate_cli.config import HOOK_SECRET_ENV, resolved_secret
+from octomate_cli.config import SECRET_ENV, resolved_secret
 from octomate_cli.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
@@ -308,8 +308,8 @@ async def run_tail(
             # close code — `hook_guard`'s 401 — and does not heal by retrying.
             if denied.response.status_code in {401, 403}:
                 print(
-                    "octomate: stream denied — the hook credential does not match "
-                    "Octomate's hook_secret.",
+                    "octomate: stream denied — the credential does not match "
+                    "Octomate's secret.",
                     file=sys.stderr,
                 )
                 return
@@ -343,7 +343,7 @@ def main(
     secret = resolved_secret()
     if not secret:
         print(
-            f"octomate: no hook credential — {HOOK_SECRET_ENV} is unset and the "
+            f"octomate: no credential — {SECRET_ENV} is unset and the "
             "client config holds none, so this session is not being streamed. "
             "Run `octomate configure`.",
             file=sys.stderr,

@@ -52,7 +52,7 @@
   #   request_limit: 256   # maximum model requests in one Inkling run
 
   # Anthropic Claude Code agent. Runs the Claude Agent SDK locally, and serves the
-  # hook router native sessions report into — which needs `hook_secret`.
+  # hook router native sessions report into — which needs `secret`.
   #
   # claude:
   #   enabled: true

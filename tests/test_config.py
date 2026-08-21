@@ -52,7 +52,7 @@ def test_the_suite_never_reads_the_developers_config() -> None:
 
     live = OctomateConfig()
     assert live.users == {}
-    assert live.hook_secret is None
+    assert live.secret is None
 
 
 def test_an_explicit_home_wins_over_discovery(

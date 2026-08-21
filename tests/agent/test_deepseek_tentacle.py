@@ -290,7 +290,6 @@ def _tentacle(
         "deepseek",
         octomate or Octomate(conversations=conversations),
         config=config or DeepseekConfig(models=set(DEEPSEEK_MODELS)),
-        hook_secret=SecretStr("the-hook-secret"),
     )
 
 
@@ -320,6 +319,7 @@ def interaction_octomate(
     conversations: FakeConversationManager | None = None,
 ) -> Octomate:
     return Octomate(
+        secret=SecretStr("the-hook-secret"),
         conversations=conversations or FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
         channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),

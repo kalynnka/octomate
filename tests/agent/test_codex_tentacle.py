@@ -394,7 +394,6 @@ def _tentacle(
         Octomate(conversations=conversations),
         config=config
         or CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
-        hook_secret=HOOK_SECRET,
     )
 
 
@@ -637,6 +636,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
     deferred_actions = RecordingDeferredActions()
     octomate = Octomate(
+        secret=HOOK_SECRET,
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
         channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
@@ -645,7 +645,6 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         "codex",
         octomate,
         config=CodexConfig(models=set(CODEX_MODELS), permission_mode="user_review"),
-        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
 
@@ -683,6 +682,7 @@ async def test_question_requests_bridge_to_cards() -> None:
     deferred_actions = RecordingDeferredActions()
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
+        secret=HOOK_SECRET,
         deferred_actions=cast(DeferredActionManager, deferred_actions),
         channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
     )
@@ -690,7 +690,6 @@ async def test_question_requests_bridge_to_cards() -> None:
         "codex",
         octomate,
         config=CodexConfig(models=set(CODEX_MODELS), permission_mode="user_review"),
-        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
@@ -736,6 +735,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
     deferred_actions = RecordingDeferredActions()
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
+        secret=HOOK_SECRET,
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
         channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
@@ -744,7 +744,6 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         "codex",
         octomate,
         config=CodexConfig(models=set(CODEX_MODELS), permission_mode="user_review"),
-        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
@@ -777,7 +776,6 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
             permission_mode="user_review",
             approval_timeout=0.01,
         ),
-        hook_secret=HOOK_SECRET,
     )
     octomate.connect(timeout_tentacle)
     timeout_tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
@@ -807,6 +805,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
     conversation = FakeConversation(thread_id=_THREAD)
     conversations = FakeConversationManager()
     octomate = Octomate(
+        secret=HOOK_SECRET,
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, deferred_actions),
         channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
@@ -815,7 +814,6 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         "codex",
         octomate,
         config=CodexConfig(models=set(CODEX_MODELS), permission_mode="user_review"),
-        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
