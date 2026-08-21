@@ -15,6 +15,7 @@ Inkling, so every runtime corrects from one wording.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
 from functools import wraps
 from inspect import cleandoc
@@ -22,10 +23,11 @@ from typing import ParamSpec, TypeVar
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_http_headers
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
-from octomate.managers.gateway import GatewayRefusal, GatewaySession
+from octomate.managers.gateway import GatewayManager, GatewayRefusal, GatewaySession
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
@@ -69,6 +71,10 @@ TELEPORT_RECORDED = (
     "Teleporting — wrap up your reply; the move happens after this turn."
 )
 
+# The header a served call names its turn's conversation with. It comes from a
+# launch config Octomate itself wrote, never from the model.
+CONVERSATION_HEADER = "X-Octomate-Conversation"
+
 SpellP = ParamSpec("SpellP")
 SpellT = TypeVar("SpellT")
 
@@ -98,6 +104,38 @@ def spoken(
             raise ToolError(str(refusal), log_level=logging.INFO) from refusal
 
     return cast
+
+
+def served_session(gateway: GatewayManager) -> Callable[[], GatewaySession]:
+    """The session a call served over HTTP runs against: the turn registered at
+    `gateway` under the conversation the request's `CONVERSATION_HEADER` names.
+    Identity is asserted by the launch config, not chosen by the model, so a call
+    without the header, or naming a conversation with no turn in flight, is
+    refused outright rather than guessed at."""
+
+    def resolve() -> GatewaySession:
+        named = get_http_headers().get(CONVERSATION_HEADER.lower())
+        if named is None:
+            raise ToolError(
+                f"This call names no conversation (no {CONVERSATION_HEADER} header); "
+                "the gateway answers only a driven turn whose launch config names "
+                "its own."
+            )
+        try:
+            conversation_id = uuid.UUID(named)
+        except ValueError:
+            raise ToolError(
+                f"{CONVERSATION_HEADER} is not a conversation id: {named!r}."
+            ) from None
+        session = gateway.get(conversation_id)
+        if session is None:
+            raise ToolError(
+                f"No turn of conversation {named} is at the gateway; a session "
+                "reaches it only while the run that opened it is in flight."
+            )
+        return session
+
+    return resolve
 
 
 def gateway_mcp(current: GatewaySession, thread_manager: ThreadManager) -> FastMCP:

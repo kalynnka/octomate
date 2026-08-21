@@ -317,7 +317,7 @@ file's top-level keys are config field names, so changing a channel touches
 
 ```
 .octomate/
-  octomate.yaml        host, port, secret, db_url
+  octomate.yaml        host, port, secret, mcp_path, db_url
   agents.yaml          claude, codex, deepseek, inkling
   channels.yaml        slack, lark, napcat, trunkline
   users.yaml           registered humans and their per-channel ids

@@ -11,6 +11,9 @@ from functools import lru_cache
 from typing import TypeVar
 
 from fastapi import APIRouter, FastAPI, Request, Response
+from fastmcp import FastMCP
+from fastmcp.dependencies import Depends
+from fastmcp.server.http import StarletteWithLifespan
 from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
@@ -22,6 +25,8 @@ from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.mcp.base import SharedSecret
+from octomate.mcp.gateway import gateway_mcp, served_session
 from octomate.oauth.routes import oauth_router
 from octomate.reflex import (
     Awake,
@@ -107,8 +112,11 @@ class Octomate:
     users: UserManager = field(default_factory=UserManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
     gateway: GatewayManager = field(default_factory=GatewayManager)
-    # The deployment's one bearer credential: the hook routers require it.
+    # The deployment's one bearer credential: the hook routers require it, and the
+    # MCP servers are served behind it — or, without one, not at all.
     secret: SecretStr | None = None
+    # The MCP endpoint under each served server's mount: `/<name>` + `mcp_path`.
+    mcp_path: str = "/mcp"
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
@@ -207,7 +215,34 @@ class Octomate:
                     ),
                 )
 
+    def mcp_servers(self) -> list[FastMCP]:
+        """The MCP servers Octomate serves, one per tool family.
+
+        Separate servers rather than one with namespaces: a runtime that defers MCP
+        tools behind a search does so per server, with the server's own instructions
+        as the family's card, and only a root server's instructions ever reach a
+        client. Each is served at `/<name>/mcp` behind the one shared secret, and
+        resolves the identity a call runs against from the request itself.
+        """
+        return [gateway_mcp(Depends(served_session(self.gateway)), self.thread_manager)]
+
     def app(self, *, title: str = "Octomate") -> FastAPI:
+        # The MCP servers are served only where there is a credential to serve them
+        # behind: the gateway's spells send to real channels and hand conversations
+        # to other agents, so an unauthenticated one would be a stranger's routing
+        # table. One verifier for the whole group — the same credential, and the
+        # same principal, as the hook routers.
+        mcp_apps: dict[str, StarletteWithLifespan] = {}
+        if self.secret is not None:
+            verifier = SharedSecret(self.secret)
+            for server in self.mcp_servers():
+                server.auth = verifier
+                # Stateless: identity is per call, from the request, so there is
+                # nothing for the transport to keep between calls.
+                mcp_apps[server.name] = server.http_app(
+                    path=self.mcp_path, stateless_http=True
+                )
+
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             with sqlalchemy_materia():
@@ -225,9 +260,16 @@ class Octomate:
                 # shutdown closes them first — nothing ingests into agents whose
                 # sessions are already torn down.
                 async with (
+                    # Starlette runs no lifespan for a mounted app, and the MCP
+                    # transport's task group lives in that lifespan; an endpoint
+                    # answers only inside it. Outermost, so the servers are up
+                    # before any tentacle starts and down after the last stops.
+                    AsyncExitStack() as mcp_stack,
                     AsyncExitStack() as agent_stack,
                     AsyncExitStack() as channel_stack,
                 ):
+                    for mcp_app in mcp_apps.values():
+                        await mcp_stack.enter_async_context(mcp_app.lifespan(mcp_app))
 
                     async def start(stack: AsyncExitStack, tentacle: Tentacle) -> None:
                         # Isolate + time-bound each start so one slow or hung
@@ -299,5 +341,11 @@ class Octomate:
 
         for router in self.routers:
             app.include_router(router)
+
+        # Mounted apps rather than routers: the MCP transport speaks all three
+        # methods on one path, reads and writes the stream itself, and carries
+        # its own bearer check.
+        for name, mcp_app in mcp_apps.items():
+            app.mount(f"/{name}", mcp_app, name=name)
 
         return app

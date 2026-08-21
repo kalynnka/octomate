@@ -20,7 +20,7 @@ from octomate_cli.serve import serve
 app = typer.Typer(help="Octomate operator CLI.", no_args_is_help=True)
 app.command("serve")(serve)
 app.command("configure")(configure)
-# Cross-tentacle: one secret every agent's hook router shares.
+# Cross-tentacle: one secret every agent's hook router, and every MCP server, shares.
 app.command("secret")(secret)
 app.add_typer(claude_typer, name="claude")
 app.add_typer(codex_typer, name="codex")
