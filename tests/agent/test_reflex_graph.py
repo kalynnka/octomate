@@ -466,8 +466,8 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
 
     gate = _recorded_gate_capability(agent.turns[0])
     assert gate.commissioning
-    assert gate.thread_id == thread.id
-    assert gate.conversation_address == address
+    assert gate.session.thread_id == thread.id
+    assert gate.session.conversation_address == address
     assert gate.toolset is not None
     assert "commission" in gate.toolset.tools
 
@@ -525,7 +525,7 @@ async def test_reception_allow_here_false_on_group_main() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert _recorded_gate_capability(agent.turns[0]).allow_here is False
+    assert _recorded_gate_capability(agent.turns[0]).session.allow_here is False
 
 
 async def test_reception_summons_another_agent_into_sub_thread() -> None:
@@ -644,23 +644,25 @@ async def _gate_for(
 async def test_scheme_is_reachable_only_from_a_group_with_an_asker() -> None:
     # The reason travels with the refusal, so the model is told which of the three
     # walls it hit. None of it reaches the tool schema — see test_gateway.
-    assert (await _gate_for(_group_key())).private_blocked_by is None
-    assert (await _gate_for(_group_key("in-thread"))).private_blocked_by is None
+    assert (await _gate_for(_group_key())).session.private_blocked_by is None
+    assert (await _gate_for(_group_key("in-thread"))).session.private_blocked_by is None
 
     # Already one-to-one with this person, thread inside it or not.
-    assert (await _gate_for(_key())).private_blocked_by == "already_private"
+    assert (await _gate_for(_key())).session.private_blocked_by == "already_private"
     private = await _gate_for(_private_key("assistant"))
-    assert private.private_blocked_by == "already_private"
+    assert private.session.private_blocked_by == "already_private"
 
     # Nobody in particular asked (a scheduled or awake run).
     anonymous = replace(_group_key(), user_id="")
-    assert (await _gate_for(anonymous)).private_blocked_by == "no_user"
+    assert (await _gate_for(anonymous)).session.private_blocked_by == "no_user"
 
     class NoDmChannel(FakeChannelTentacle):
         surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
 
     without = NoDmChannel(config=_two_reception_config(stream=False))
-    assert (await _gate_for(_group_key(), without)).private_blocked_by == "no_surface"
+    assert (
+        await _gate_for(_group_key(), without)
+    ).session.private_blocked_by == "no_surface"
 
 
 async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:

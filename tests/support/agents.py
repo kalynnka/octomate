@@ -168,7 +168,7 @@ def scheme_target(
         for capability in capabilities or []
         if isinstance(capability, GatewayCapability)
     )
-    here = gate.conversation_address
+    here = gate.session.conversation_address
     far = decision.destination.channel_tentacle_id
     if here is not None and far == here.channel_tentacle_id:
         return DIRECT_TARGET
