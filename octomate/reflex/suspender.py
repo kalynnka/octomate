@@ -22,13 +22,19 @@ from octomate.tentacles.channels.base import ChannelTentacle
 
 @dataclass(frozen=True)
 class TeleportRequest:
-    """A `teleport` deferral, classified out of a run's `DeferredToolRequests` by its
-    declared metadata kind — the graph resolves this call and relocates the run."""
+    """A teleport for the graph to perform: fork the history and resume the agent
+    in the new place. Reached two ways — an Inkling run defers the `teleport` call
+    mid-run (classified out of its `DeferredToolRequests` by metadata kind), while
+    a runtime that cannot be suspended records a `TeleportDecision` its turn's end
+    converts into one of these."""
 
-    tool_call_id: str
     hint: str
+    # The deferred call to resolve into the resumed run. None for a
+    # decision-reported teleport, which has no pending call — the resumed run
+    # opens from the hint instead.
+    tool_call_id: str | None = None
     # Where it goes, when that is not a sub-thread of the chat it is already in. The
-    # gate refused a channel this agent does not run and one that opens no
+    # gateway refused a channel this agent does not run and one that opens no
     # sub-thread, so the node has a place to open and no fallback to choose.
     crossing: CrossingLanding | None = None
 

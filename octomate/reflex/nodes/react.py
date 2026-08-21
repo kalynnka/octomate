@@ -20,9 +20,9 @@ from octomate.reflex.state import (
     ReflexResult,
     ReflexState,
 )
-from octomate.reflex.suspender import HumanReviewSuspender
+from octomate.reflex.suspender import HumanReviewSuspender, TeleportRequest
 from octomate.schemas.segments import MarkdownSegment
-from octomate.schemas.triage import SchemeDecision, SummonDecision
+from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channels.base import ChannelOutput
 from octomate.tentacles.channels.feelers.output import split_reply
@@ -35,6 +35,9 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     resume_batch_id: uuid.UUID | None = None
     # Set by Teleport to resume the same agent against the forked history.
     teleport_results: DeferredToolResults | None = None
+    # Set by Teleport instead of `teleport_results` when the teleport was reported
+    # as a decision (no pending call to resolve): the resumed run opens from this.
+    continuation_prompt: str | None = None
 
     @reflex_logfire.instrument("reflex.react", extract_args=False)
     async def run(
@@ -127,6 +130,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             deferred_results = batch.build_results()
         if deferred_results is not None:
             user_prompt: str | Sequence[UserContent] | None = None
+        elif self.continuation_prompt is not None:
+            user_prompt = self.continuation_prompt
         else:
             user_prompt = decision.summon or str(state.user_prompt or "")
 
@@ -387,6 +392,23 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 )
                 return Scheme(
                     request=gateway_decision,
+                    origin=target,
+                    agent_id=agent.id,
+                )
+            if isinstance(gateway_decision, TeleportDecision):
+                # Recorded, not deferred: a runtime that cannot be suspended
+                # mid-run reported the move and finished its turn; the graph
+                # performs it now, exactly as it resolves a deferral.
+                span.set_attribute("react.action", gateway_decision.action)
+                reflex_logfire.info(
+                    "react -> teleport reported as a decision",
+                    crossing=str(gateway_decision.crossing),
+                )
+                return Teleport(
+                    request=TeleportRequest(
+                        hint=gateway_decision.hint,
+                        crossing=gateway_decision.crossing,
+                    ),
                     origin=target,
                     agent_id=agent.id,
                 )

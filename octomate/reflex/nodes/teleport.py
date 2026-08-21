@@ -70,9 +70,19 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         exc_info=True,
                     )
 
-        results = DeferredToolResults(
-            calls={self.request.tool_call_id: "Continuing the conversation here."}
-        )
+        if self.request.tool_call_id is not None:
+            # An Inkling deferral: the pending call resolves into the resumed run.
+            next = React(
+                teleport_results=DeferredToolResults(
+                    calls={
+                        self.request.tool_call_id: "Continuing the conversation here."
+                    }
+                )
+            )
+        else:
+            # A decision-reported teleport (a runtime that cannot be suspended
+            # mid-run) left no pending call; the resumed run opens from the hint.
+            next = React(continuation_prompt=hint)
 
         new_address = new_target.address
         if new_address is None or new_address == origin_address:
@@ -80,10 +90,12 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # deferral, so just resolve it and resume in place — nothing to fork.
             state.target = origin
             state.claim_handoff = False
-            return React(teleport_results=results)
+            return next
 
         # Move: fork the origin conversation into the new sub-thread, claim it for the
-        # same agent so follow-ups continue there, and resume against the fork.
+        # same agent so follow-ups continue there, and resume against the fork. The
+        # resumable handle moves with it, so an external runtime's session continues
+        # in the new place rather than beside it.
         new_thread = await ctx.deps.thread_manager.ensure(new_address)
         source_conversation = await ctx.deps.conversation_manager.ensure(
             state.thread.id, agent_tentacle_id=self.agent_id
@@ -92,10 +104,10 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             new_thread.id, agent_tentacle_id=self.agent_id
         )
         await ctx.deps.conversation_manager.fork(
-            source_conversation, target_conversation
+            source_conversation, target_conversation, carry_external_id=True
         )
         state.thread = new_thread
         state.target = new_target
         state.claim_handoff = True
         state.handoff_from_agent_tentacle_id = self.agent_id
-        return React(teleport_results=results)
+        return next

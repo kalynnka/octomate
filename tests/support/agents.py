@@ -225,6 +225,10 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # the resumed run (deferred results present) falls through to `reception_output`.
     reception_teleport: str | None = None
     reception_teleport_destination: str = "thread"
+    # When set, the first reception run records a teleport decision directly on the
+    # mounted gateway's session — the way a non-deferring external runtime's MCP tool
+    # does — and ends its turn normally; the resumed run gets `reception_output`.
+    reception_recorded_teleport: str | None = None
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
     allow_reception_run: bool = False
     models: dict[AgentRouteModelName, Model | str] = field(
@@ -296,6 +300,22 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         )
         if not self.allow_reception_run:
             raise AssertionError("reception should use run_stream_events")
+        recorded_teleport = self.reception_recorded_teleport
+        if recorded_teleport is not None and deferred_tool_results is None:
+            # Consumed on first use, or the resumed run would teleport forever.
+            self.reception_recorded_teleport = None
+            gateway = next(
+                (
+                    capability
+                    for capability in capabilities or []
+                    if isinstance(capability, GatewayCapability)
+                ),
+                None,
+            )
+            if gateway is None:
+                raise AssertionError("a recorded teleport requires a mounted gateway")
+            await gateway.session.teleport(hint=recorded_teleport)
+            return AgentRunResult(self.reception_output)
         if self.reception_teleport is not None and deferred_tool_results is None:
             output: FakeRunOutput = _teleport_requests(
                 self.reception_teleport, self.reception_teleport_destination
