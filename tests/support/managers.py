@@ -24,9 +24,11 @@ from uuid_utils.compat import uuid7
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.mirrors import MirrorManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
@@ -463,3 +465,20 @@ class FakeActionManager:
         completed: bool = False,
     ) -> None:
         self.marked.append((batch_id, status, completed))
+
+
+class RecordingWorkspaceManager(WorkspaceManager):
+    """A workspace manager that records the threads a finished turn asked it to
+    save, instead of saving them.
+
+    Recorded rather than done: a graph test has no mirror to push to, and what the
+    graph has to get right is that the turn asks at all. Whether the save then
+    works is the workspace unit's to prove.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(projects=ProjectManager(), mirrors=MirrorManager())
+        self.saved: list[uuid.UUID] = []
+
+    async def save(self, thread: Thread) -> None:
+        self.saved.append(thread.id)

@@ -21,6 +21,7 @@ from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.config.users import UserConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
@@ -63,6 +64,7 @@ from tests.support.managers import (
     FakePresentedBatch,
     FakeThreadManager,
     FakeUserManager,
+    RecordingWorkspaceManager,
 )
 
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -163,8 +165,12 @@ def _deps(
     channels: dict[str, FakeChannelTentacle],
     agent: FakeAgent,
     action_manager: FakeActionManager | None = None,
+    workspaces: WorkspaceManager | None = None,
 ) -> ReflexDeps:
     return ReflexDeps(
+        workspaces=workspaces
+        if workspaces is not None
+        else RecordingWorkspaceManager(),
         channels=dict(channels),
         agents={"inkling": agent, "other": agent, agent.id: agent},
         conversation_manager=conversations,
@@ -217,6 +223,7 @@ def _summon_deps(
     far: FakeChannelTentacle | None = None,
 ) -> ReflexDeps:
     return ReflexDeps(
+        workspaces=RecordingWorkspaceManager(),
         channels={"im": im} if far is None else {"im": im, "far": far},
         agents={entry.id: entry, second.id: second},
         conversation_manager=FakeConversationManager(),
@@ -259,6 +266,7 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
     )
     other = FakeAgent(id="other", claims={"test": Claim(ability="fake agent")})
     deps = ReflexDeps(
+        workspaces=RecordingWorkspaceManager(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -307,6 +315,7 @@ def test_available_routes_are_the_exposed_agents_own_routes() -> None:
     )
     third = FakeAgent(id="third", claims={})
     deps = ReflexDeps(
+        workspaces=RecordingWorkspaceManager(),
         channels={"chan1": channel},
         agents={"other": other, "second": second, "third": third},
         conversation_manager=FakeConversationManager(),
@@ -336,6 +345,7 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
     )
     other = FakeAgent(id="other")
     deps = ReflexDeps(
+        workspaces=RecordingWorkspaceManager(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -471,6 +481,66 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
     assert "commission" in gate.toolset.tools
 
 
+async def test_a_finished_turn_saves_the_threads_workspace() -> None:
+    # OCTO-51: a turn is over when its answer is delivered, and that is when its
+    # work has to be somewhere the workspace going away cannot take it.
+    address = _key("t1")
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    host = RecordingWorkspaceManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    target = _source_target(address)
+    thread = _thread(address)
+
+    await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=_deps(
+            conversations=FakeConversationManager(),
+            channels={"im": im},
+            agent=agent,
+            workspaces=host,
+        ),
+    )
+
+    assert host.saved == [thread.id]
+
+
+async def test_a_turn_with_no_thread_saves_nothing() -> None:
+    # A workspace belongs to a thread, so a turn without one has none to save.
+    address = _key()
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    host = RecordingWorkspaceManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    target = _source_target(address)
+
+    await _run(
+        React(),
+        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        deps=_deps(
+            conversations=FakeConversationManager(),
+            channels={"im": im},
+            agent=agent,
+            workspaces=host,
+        ),
+    )
+
+    assert host.saved == []
+
+
 async def test_react_passes_the_decision_effort_to_the_run() -> None:
     address = _key()
     agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
@@ -552,6 +622,7 @@ async def test_reception_summons_another_agent_into_sub_thread() -> None:
         React(),
         state=ReflexState(source_target=target, target=target, decision=_summon()),
         deps=ReflexDeps(
+            workspaces=RecordingWorkspaceManager(),
             channels={"im": im},
             agents={"other": entry, "second": second},
             conversation_manager=conversations,

@@ -346,6 +346,12 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 # DeferredToolRequests / None: nothing to deliver here.
 
             output = run_result.output
+            # The turn is over, whichever way it ran, so its work goes where losing
+            # the workspace cannot cost it. A turn that parked on a question counts:
+            # it did the work before it asked. No thread is no workspace, since a
+            # workspace is a thread's.
+            if state.thread is not None:
+                await ctx.deps.workspaces.save(state.thread)
             if self.resume_batch_id is not None:
                 await ctx.deps.action_manager.mark_batch(
                     self.resume_batch_id,

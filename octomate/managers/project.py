@@ -5,6 +5,7 @@ from pathlib import Path
 
 from octomate.database import async_session
 from octomate.schemas.project import Project
+from octomate.schemas.thread import Thread
 
 
 class ProjectManager:
@@ -38,6 +39,25 @@ class ProjectManager:
         caller.
         """
         return self.projects.get(name)
+
+    async def of(self, thread: Thread) -> Project | None:
+        """The project this thread's work runs in, or None when it runs in none.
+
+        The thread is where a project is bound, so its attribution is the question;
+        whether that attribution still names somewhere an agent may run is this
+        registry's answer, and the two are not the same. A thread naming a project
+        the block no longer declares is in none, and so is one whose project is
+        disabled — the row is retained either way, because it still has to say where
+        the work was filed, but neither has a root left to offer.
+
+        Read through the registry rather than off the row, which is exactly why this
+        is not just `thread.project`.
+        """
+        attributed = await thread.project
+        if attributed is None:
+            return None
+        project = self.get(attributed.name)
+        return project if project is not None and project.enabled else None
 
     def list(self) -> list[Project]:
         """Every registered project."""

@@ -23,6 +23,7 @@ from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.thread import ThreadManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread
 from octomate.schemas.triage import (
@@ -112,6 +113,9 @@ class ReflexDeps:
     # No default: a deps object must carry the host's ledger manager, never a
     # private one with its own identity registry.
     thread_manager: ThreadManager
+    # For the bookkeeping a finished turn owes and the agent has no part in:
+    # leaving the thread's workspace somewhere losing the directory cannot cost it.
+    workspaces: WorkspaceManager
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
     conversation_manager: ConversationManager = field(
         default_factory=ConversationManager

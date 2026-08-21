@@ -16,7 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
 from octomate.managers.project import ProjectManager
+from octomate.managers.thread import ThreadManager
+from octomate.managers.user import UserManager
 from octomate.schemas.project import DirectoryUpstream, Project, RemoteUpstream
+from octomate.schemas.thread import Thread, ThreadKey
 from tests.support.managers import a_project, a_registry
 
 # Built at import, so nothing has entered `sqlalchemy_materia` yet — the state a
@@ -456,3 +459,54 @@ async def test_a_declared_name_a_registered_project_already_holds_is_refused(
         await reconciled(
             api=Project.Create(root=api, upstream=DirectoryUpstream(path=api))
         )
+
+
+async def a_work_thread(project: Project | None) -> Thread:
+    """A thread of the one kind that carries a project, attributed or not."""
+    return await ThreadManager(users=UserManager()).ensure(
+        ThreadKey(
+            channel_tentacle_id="test",
+            chat_type="thread",
+            chat_id="chat",
+            channel_thread_id=f"t-{project.name if project else 'none'}",
+        ),
+        project=project,
+    )
+
+
+async def test_a_threads_project_is_the_registered_one(tmp_path: Path) -> None:
+    registry = await a_registry(a_project(directory(tmp_path / "inky")))
+    thread = await a_work_thread(registry.get("inky"))
+
+    assert await registry.of(thread) == registry.get("inky")
+
+
+async def test_an_unattributed_thread_is_in_no_project() -> None:
+    # Every thread until one is declared for it, and every thread of a kind that
+    # cannot carry one.
+    assert await ProjectManager().of(await a_work_thread(None)) is None
+
+
+async def test_a_thread_filed_under_a_disabled_project_is_in_none(
+    tmp_path: Path,
+) -> None:
+    # The row is kept so the thread still says where its work was filed, but a
+    # project whose root the disk has lost has no root to run in.
+    root = directory(tmp_path / "inky")
+    registry = await a_registry(a_project(root))
+    thread = await a_work_thread(registry.get("inky"))
+    root.rmdir()
+    await registry.reconcile()
+
+    assert await registry.of(thread) is None
+
+
+async def test_a_thread_filed_under_an_unregistered_project_is_in_none(
+    tmp_path: Path,
+) -> None:
+    # Read through the registry rather than off the row: a project the block no
+    # longer declares is not somewhere a run may be sent.
+    registry = await a_registry(a_project(directory(tmp_path / "inky")))
+    thread = await a_work_thread(registry.get("inky"))
+
+    assert await ProjectManager().of(thread) is None

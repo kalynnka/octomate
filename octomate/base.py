@@ -108,7 +108,7 @@ class Octomate:
     users: UserManager = field(default_factory=UserManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
     mirrors: MirrorManager = field(default_factory=MirrorManager)
-    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
+    workspaces: WorkspaceManager = field(init=False)
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
@@ -119,6 +119,10 @@ class Octomate:
         # Every ledger row references its sender's registry profile, so the
         # thread manager records through the host's one identity registry.
         self.thread_manager = ThreadManager(users=self.users)
+        # A workspace belongs to a project-bound thread, so its manager is built
+        # around the registry that says which project and the mirrors that say
+        # where — the host's own, never a second set with their own locks.
+        self.workspaces = WorkspaceManager(projects=self.projects, mirrors=self.mirrors)
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=oauth_encryption_key,
@@ -198,6 +202,7 @@ class Octomate:
                     inputs=Awake(signal=signal),
                     state=ReflexState(),
                     deps=ReflexDeps(
+                        workspaces=self.workspaces,
                         agents=self.agents,
                         channels=self.channels,
                         conversation_manager=self.conversations,
@@ -275,6 +280,9 @@ class Octomate:
                     mirroring = asyncio.create_task(
                         self.mirrors.reconcile(self.projects.list())
                     )
+                    # Reclaiming disk is maintenance: it runs for as long as
+                    # the host does, and stops when the host stops.
+                    sweeping = asyncio.create_task(self.workspaces.sweep())
                     try:
                         yield
                     finally:
@@ -288,8 +296,10 @@ class Octomate:
                         # bounded the way `start` is, and creation cleans up
                         # after a cancellation, so shutdown stays prompt.
                         mirroring.cancel()
+                        sweeping.cancel()
                         with suppress(asyncio.CancelledError):
                             await mirroring
+                            await sweeping
 
         app = FastAPI(title=title, docs_url="/docs", redoc_url=None, lifespan=lifespan)
         app.state.octomate = self

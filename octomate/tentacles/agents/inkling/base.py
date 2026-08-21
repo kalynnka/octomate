@@ -736,7 +736,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # every entrypoint would otherwise have to resolve it identically.
         project = await self.run_project(thread_id)
         workspace = (
-            await self.run_workspace(thread_id, project)
+            await self.octomate.workspaces.prepare(thread_id, project)
             if project is not None
             else None
         )

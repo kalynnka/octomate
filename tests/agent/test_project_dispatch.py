@@ -7,10 +7,17 @@ both agents dispatch exactly where they did before, down to not reading the thre
 Where a declared thread lands moved in OCTO-48: not the project's root — the
 person's own checkout, shared by everyone — but this thread's fork of it, at
 `.octomate/workspaces/<thread_id>`. The project still decides which fork.
+
+And what the turn did there does not stay there: OCTO-51 leaves it on the
+thread's ref in the mirror, so the fork is a cache rather than the only copy.
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
+from octomate.managers.mirrors import run_git
+from octomate.managers.workspaces import thread_ref
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
@@ -56,14 +65,18 @@ async def a_thread(octomate: Octomate, chat_id: str, project: str = "") -> Threa
     )
 
 
-async def claude_run(octomate: Octomate, thread: Thread) -> ClaudeAgentOptions:
-    """Drive one Claude run and answer with the options it handed the SDK."""
-    tentacle = ClaudeCodeTentacle(
+def a_claude(octomate: Octomate) -> ClaudeCodeTentacle:
+    return ClaudeCodeTentacle(
         "claude",
         octomate,
         config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd="/configured"),
         hook_secret=HOOK_SECRET,
     )
+
+
+async def claude_run(octomate: Octomate, thread: Thread) -> ClaudeAgentOptions:
+    """Drive one Claude run and answer with the options it handed the SDK."""
+    tentacle = a_claude(octomate)
     async with tentacle.run_stream_events(
         "do it", conversation_address=KEY, thread_id=thread.id, run_name="react"
     ) as stream:
@@ -243,3 +256,82 @@ async def test_a_thread_naming_an_undeclared_project_falls_back(
     options = await claude_run(octomate, await a_thread(octomate, "chat", "retired"))
 
     assert options.cwd == "/configured"
+
+
+async def a_project_thread(tmp_path: Path) -> tuple[Octomate, Thread, Path]:
+    """An Octomate with one declared project, and a thread in it."""
+    inky = repo(tmp_path / "inky")
+    (inky / "readme.md").write_text("hello")
+    octomate = Octomate(
+        conversations=FakeConversationManager(),
+        projects=await a_registry(a_project(inky)),
+    )
+    return octomate, await a_thread(octomate, "chat", "inky"), inky
+
+
+def mirror_of(octomate: Octomate, name: str) -> Path:
+    project = octomate.projects.get(name)
+    assert project is not None
+    return octomate.mirrors.path(project)
+
+
+async def test_a_turn_stamps_its_workspace_as_in_use(tmp_path: Path) -> None:
+    # Idleness is measured from the turn that last asked for the workspace, and a
+    # turn asks for it here. Nothing else stamps it: a run that edits a file two
+    # directories down never touches the directory the sweep looks at, and a fork
+    # inherits its date from the mirror.
+    octomate, thread, _inky = await a_project_thread(tmp_path)
+    await claude_run(octomate, thread)
+    await octomate.workspaces.save(thread)
+    workspace = octomate.workspaces.path(thread.id)
+    long_ago = time.time() - 30 * 24 * 60 * 60
+    os.utime(workspace, (long_ago, long_ago))
+
+    await claude_run(octomate, thread)
+
+    assert await octomate.workspaces.prune(idle=3600.0) == []
+    assert workspace.is_dir()
+
+
+async def test_a_finished_turn_leaves_its_work_on_the_threads_ref(
+    tmp_path: Path,
+) -> None:
+    octomate, thread, _inky = await a_project_thread(tmp_path)
+    options = await claude_run(octomate, thread)
+    assert options.cwd is not None
+    (Path(options.cwd) / "work.md").write_text("done")
+
+    await octomate.workspaces.save(thread)
+
+    mirror = mirror_of(octomate, "inky")
+    ref = thread_ref(thread.id)
+    assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
+
+
+async def test_a_thread_in_no_project_has_no_work_to_leave(tmp_path: Path) -> None:
+    # No project is no workspace, and nowhere to push it to either.
+    octomate = Octomate(
+        conversations=FakeConversationManager(),
+        projects=await a_registry(a_project(repo(tmp_path / "inky"))),
+    )
+    thread = await a_thread(octomate, "chat")
+
+    await octomate.workspaces.save(thread)
+
+    assert not (tmp_path / ".octomate" / "mirrors").exists()
+
+
+async def test_a_turn_whose_work_cannot_be_saved_says_so_and_carries_on(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The turn already happened and already answered. Failing it now would report a
+    # delivered answer as an error, so the loss of the backup is reported instead.
+    octomate, thread, _inky = await a_project_thread(tmp_path)
+    await claude_run(octomate, thread)
+    shutil.rmtree(mirror_of(octomate, "inky"))
+
+    with caplog.at_level(logging.ERROR):
+        await octomate.workspaces.save(thread)
+
+    assert "could not be saved" in caplog.text
+    assert str(octomate.workspaces.path(thread.id)) in caplog.text
