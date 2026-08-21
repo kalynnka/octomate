@@ -513,6 +513,48 @@ async def test_a_finished_turn_saves_the_threads_workspace() -> None:
     assert host.saved == [thread.id]
 
 
+async def test_a_turn_that_failed_still_saves_its_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A turn that raised still did whatever it did on disk, and until the save runs
+    # the workspace is the only copy of it. It is also the only workspace the sweep
+    # can never reclaim, since it keeps anything the mirror has not seen — so a
+    # failed turn on a thread nobody resumes would hold its disk for good.
+    address = _key("t1")
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    host = RecordingWorkspaceManager()
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="other", model="test")],
+        )
+    )
+    target = _source_target(address)
+    thread = _thread(address)
+
+    async def gave_out(*_args: object, **_kwargs: object) -> AgentRunResult[str]:
+        raise RuntimeError("the provider gave out")
+
+    monkeypatch.setattr(agent, "run", gave_out)
+
+    with pytest.raises(RuntimeError, match="the provider gave out"):
+        await _run(
+            React(),
+            state=ReflexState(
+                source_target=target, target=target, decision=_summon(), thread=thread
+            ),
+            deps=_deps(
+                conversations=FakeConversationManager(),
+                channels={"im": im},
+                agent=agent,
+                workspaces=host,
+            ),
+        )
+
+    assert host.saved == [thread.id]
+
+
 async def test_a_turn_with_no_thread_saves_nothing() -> None:
     # A workspace belongs to a thread, so a turn without one has none to save.
     address = _key()
