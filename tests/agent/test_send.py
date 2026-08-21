@@ -26,6 +26,7 @@ from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import AgentModelConfig, ChannelConfig
 from octomate.config.users import UserConfig
+from octomate.managers.gateway import GatewaySession
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import MarkdownSegment, MessageSegment
@@ -60,16 +61,20 @@ def _gate(
     `chat_type` overrides the type the surface reports without changing whether it
     is private — an assistant pane is a thread only one person can read."""
     return GatewayCapability(
-        channel_routes={},
-        current_agent_id="inkling",
-        channels={"im": FakeChannelTentacle() if direct_messages else _NoDmChannel()},
-        conversation_address=ChannelAddress(
-            channel_tentacle_id="im",
-            chat_type=chat_type or ("dm" if already_private else "group"),
-            chat_id="room",
-            user_id="alice",
-            shared=not already_private,
-        ),
+        session=GatewaySession(
+            channel_routes={},
+            current_agent_id="inkling",
+            channels={
+                "im": FakeChannelTentacle() if direct_messages else _NoDmChannel()
+            },
+            conversation_address=ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type=chat_type or ("dm" if already_private else "group"),
+                chat_id="room",
+                user_id="alice",
+                shared=not already_private,
+            ),
+        )
     )
 
 
@@ -230,7 +235,7 @@ async def test_send_to_dm_from_a_dm_is_not_refused() -> None:
     # Being there already stops a `scheme` — nowhere to move the conversation to —
     # but not a send: "send that to me" from a DM means the place it is already in.
     capability = _gate(already_private=True)
-    assert capability.private_blocked_by == "already_private"
+    assert capability.session.private_blocked_by == "already_private"
     assert capability.toolset is not None
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
@@ -248,7 +253,7 @@ async def test_send_to_dm_from_a_private_thread_is_not_refused() -> None:
     # type and private in fact, so `dm` there names the pane rather than a second
     # surface beside it. Resolving one would post outside the chat being had.
     capability = _gate(already_private=True, chat_type="thread")
-    assert capability.private_blocked_by == "already_private"
+    assert capability.session.private_blocked_by == "already_private"
     assert capability.toolset is not None
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
@@ -275,7 +280,10 @@ async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None
     capability = _gate()
     # Seeded rather than computed: this is about resolving a handle, not about
     # reaching the identity registry, which `test_user` covers.
-    capability.computed_destinations = [*capability.built_in_destinations, lark]
+    capability.session.computed_destinations = [
+        *capability.session.built_in_destinations,
+        lark,
+    ]
     assert capability.toolset is not None
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
@@ -311,7 +319,10 @@ async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
     capability = _gate()
     # Seeded rather than computed: this is about resolving a handle, not about
     # reaching the identity registry, which `test_user` covers.
-    capability.computed_destinations = [*capability.built_in_destinations, lark]
+    capability.session.computed_destinations = [
+        *capability.session.built_in_destinations,
+        lark,
+    ]
     assert capability.toolset is not None
     scry = capability.toolset.tools["scry"].function
 
@@ -327,7 +338,7 @@ async def test_scry_does_not_file_this_conversation_as_somewhere_else() -> None:
     # From a DM, where `here` is offered and `dm` is not: a group's main channel
     # withholds `here`, so it could not tell a true heading from a false one.
     capability = _gate(already_private=True)
-    scrying = Scrying(routes=[], destinations=await capability.destinations())
+    scrying = Scrying(routes=[], destinations=await capability.session.destinations())
 
     # `here` is this chat itself, so a heading promising somewhere else, or
     # somewhere private, would be false of it.
@@ -376,12 +387,12 @@ async def test_the_gate_works_out_where_else_the_asker_is(
         ),
     )
 
-    capability = _gate()
-    capability.users = users
-    capability.user_profile = here
-    capability.channels = {"im": FakeChannelTentacle(), "lark": lark, "mute": mute}
-    capability.agents = {"other": cast(Any, object())}
+    session = _gate().session
+    session.users = users
+    session.user_profile = here
+    session.channels = {"im": FakeChannelTentacle(), "lark": lark, "mute": mute}
+    session.agents = {"other": cast(Any, object())}
 
-    assert [one.handle for one in await capability.linked_destinations()] == ["lark"]
-    # Computed once and kept: a gate lasts one turn.
-    assert await capability.destinations() is await capability.destinations()
+    assert [one.handle for one in await session.linked_destinations()] == ["lark"]
+    # Computed once and kept: a gateway lasts one turn.
+    assert await session.destinations() is await session.destinations()

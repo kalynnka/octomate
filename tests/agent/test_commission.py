@@ -22,6 +22,7 @@ from octomate.capabilities.gateway import (
     ACCOMPLICE_INSTRUCTION,
     GatewayCapability,
 )
+from octomate.managers.gateway import GatewaySession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
@@ -82,12 +83,14 @@ async def _gate(
     }
     conversations = conversations or FakeConversationManager()
     gate = GatewayCapability(
-        channel_routes={"im": [CLAUDE_ROUTE]},
-        current_agent_id="inkling",
-        agents=agents,
+        session=GatewaySession(
+            channel_routes={"im": [CLAUDE_ROUTE]},
+            current_agent_id="inkling",
+            agents=agents,
+            thread_id=THREAD,
+            conversation_address=ADDRESS,
+        ),
         conversations=conversations,
-        thread_id=THREAD,
-        conversation_address=ADDRESS,
         commission_timeout=commission_timeout,
     )
     parent = await conversations.ensure(THREAD, agent_tentacle_id="inkling")
@@ -298,7 +301,9 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
 
 async def test_a_gate_without_commission_deps_offers_no_commission() -> None:
     bare = GatewayCapability(
-        channel_routes={"im": [CLAUDE_ROUTE]}, current_agent_id="inkling"
+        session=GatewaySession(
+            channel_routes={"im": [CLAUDE_ROUTE]}, current_agent_id="inkling"
+        )
     )
     assert bare.toolset is not None
     assert COMMISSION_TOOL_NAME not in bare.toolset.tools
