@@ -1302,6 +1302,41 @@ async def test_a_teleport_crossing_that_never_opens_resolves_in_place() -> None:
     assert far.sub_threads == []
 
 
+async def test_a_recorded_teleport_moves_the_turn_after_it_ends() -> None:
+    """A runtime that cannot be suspended mid-run reports a teleport as a decision;
+    the graph performs the same move it makes for a deferral, and the resumed run
+    opens from the hint rather than from a resolved call."""
+    address = _key()
+    entry = FakeAgent(
+        id="other",
+        reception_recorded_teleport="carrying on in a thread",
+        reception_output="continued",
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="unused")
+    im = _channel(stream=False)
+    target = _source_target(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_summon_deps(im, entry, second),
+    )
+
+    assert not isinstance(result, DeferredResult)
+    assert len(entry.turns) == 2
+    resumed = entry.turns[-1]
+    # No pending call to resolve — the hint is the resumed run's opening prompt.
+    assert resumed.deferred_results is None
+    assert resumed.prompt == "carrying on in a thread"
+    assert resumed.address.channel_thread_id == "hint-thread"
+
+
 async def test_reception_returns_deferred_result_on_human_question() -> None:
     address = _key()
     requests = _requests()
