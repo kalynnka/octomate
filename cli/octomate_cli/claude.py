@@ -17,11 +17,11 @@ from typing import Annotated, Literal
 import typer
 
 from octomate_cli.config import (
-    HOOK_SECRET_ENV,
     OCTOMATE_URL_ENV,
+    SECRET_ENV,
     resolved_url,
 )
-from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_hook_secret
+from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
 from octomate_cli.jsontypes import JsonObject, JsonValue
 
 # The events the hook pipe registers and the server acts on. `UserPromptSubmit` and
@@ -243,8 +243,8 @@ def install(
     )
     typer.echo(f"  stream:   {stream} (via {LAUNCH_SCRIPT.name})")
     typer.echo(f"  settings: {path}")
-    typer.echo(f"  auth:     Bearer ${{{HOOK_SECRET_ENV}}} from the environment")
-    announce_hook_secret()
+    typer.echo(f"  auth:     Bearer ${{{SECRET_ENV}}} from the environment")
+    announce_secret()
 
 
 @hooks_typer.command("uninstall")

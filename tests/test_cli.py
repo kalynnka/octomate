@@ -99,7 +99,7 @@ def test_the_installed_handler_carries_neither_credential_nor_host(
     assert handler["type"] == "command"
     assert "--path /hooks/claude" in handler["command"]
     assert "--url" not in handler["command"]
-    assert "OCTOMATE__HOOK_SECRET" not in json.dumps(read(path))
+    assert "OCTOMATE__SECRET" not in json.dumps(read(path))
 
 
 def test_install_retires_an_event_octomate_no_longer_registers(tmp_path: Path) -> None:
@@ -313,7 +313,7 @@ def test_configure_writes_the_client_file_with_tight_permissions(
     path = user_config_path()
     assert tomllib.loads(path.read_text()) == {
         "url": "http://minidock.local:8000",
-        "hook_secret": "s3cr3t",
+        "secret": "s3cr3t",
     }
     assert path.stat().st_mode & 0o777 == 0o600
 
@@ -325,7 +325,7 @@ def test_configure_generates_a_secret_when_nothing_resolves(
     result = runner.invoke(app, ["configure", "--url", "http://minidock.local:8000"])
 
     assert result.exit_code == 0
-    assert tomllib.loads(user_config_path().read_text())["hook_secret"]
+    assert tomllib.loads(user_config_path().read_text())["secret"]
     assert "generated" in result.output
 
 
@@ -338,9 +338,7 @@ def test_configure_carries_an_env_secret_into_the_file(
     configured(monkeypatch, "from-the-shell")
     runner.invoke(app, ["configure", "--url", "http://minidock.local:8000"])
 
-    assert (
-        tomllib.loads(user_config_path().read_text())["hook_secret"] == "from-the-shell"
-    )
+    assert tomllib.loads(user_config_path().read_text())["secret"] == "from-the-shell"
 
 
 def test_the_environment_beats_the_file(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -410,13 +408,13 @@ def test_codex_install_without_url_leaves_the_target_to_the_environment(
         assert "--url" not in handler["command"]
 
 
-def configured(monkeypatch: pytest.MonkeyPatch, hook_secret: str | None) -> None:
+def configured(monkeypatch: pytest.MonkeyPatch, secret: str | None) -> None:
     """Pin what the client resolves, rather than reading the ambient environment:
-    whoever runs the suite has a hook secret of their own by now, and it must not
+    whoever runs the suite has a secret of their own by now, and it must not
     decide these. (The config-file source is already isolated per test.)"""
-    monkeypatch.delenv("OCTOMATE__HOOK_SECRET", raising=False)
-    if hook_secret is not None:
-        monkeypatch.setenv("OCTOMATE__HOOK_SECRET", hook_secret)
+    monkeypatch.delenv("OCTOMATE__SECRET", raising=False)
+    if secret is not None:
+        monkeypatch.setenv("OCTOMATE__SECRET", secret)
 
 
 def test_secret_hands_a_configured_credential_to_the_shell(
@@ -424,16 +422,13 @@ def test_secret_hands_a_configured_credential_to_the_shell(
 ) -> None:
     """Prints whatever the client already resolves — here the environment — as an
     eval'able line, so nobody copies a secret around by hand.
-
-    Invoked through the root app, which is how it is really reached: a lone command in a
-    sub-Typer is otherwise flattened away by Typer when invoked directly.
     """
     configured(monkeypatch, "from-the-env")
 
-    result = runner.invoke(app, ["hooks", "secret"])
+    result = runner.invoke(app, ["secret"])
 
     assert result.exit_code == 0
-    assert result.stdout.strip() == "export OCTOMATE__HOOK_SECRET=from-the-env"
+    assert result.stdout.strip() == "export OCTOMATE__SECRET=from-the-env"
 
 
 def test_a_configured_secret_is_never_rotated(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -441,8 +436,8 @@ def test_a_configured_secret_is_never_rotated(monkeypatch: pytest.MonkeyPatch) -
     would strand Octomate and every client still carrying the old one."""
     configured(monkeypatch, "already-configured")
 
-    first = runner.invoke(app, ["hooks", "secret"])
-    second = runner.invoke(app, ["hooks", "secret"])
+    first = runner.invoke(app, ["secret"])
+    second = runner.invoke(app, ["secret"])
 
     assert first.stdout == second.stdout
     assert "already-configured" in first.stdout
@@ -457,10 +452,10 @@ def test_secret_generates_one_when_none_is_configured(
     monkeypatch.chdir(tmp_path)
     configured(monkeypatch, None)
 
-    result = runner.invoke(app, ["hooks", "secret"])
+    result = runner.invoke(app, ["secret"])
 
     assert result.exit_code == 0
-    assert result.stdout.startswith("export OCTOMATE__HOOK_SECRET=")
+    assert result.stdout.startswith("export OCTOMATE__SECRET=")
     assert list(tmp_path.iterdir()) == []  # nothing placed
 
 
@@ -472,9 +467,9 @@ def test_the_pretty_guidance_stays_out_of_stdout(
     profile — or be eval'd."""
     configured(monkeypatch, "from-the-env")
 
-    result = runner.invoke(app, ["hooks", "secret"])
+    result = runner.invoke(app, ["secret"])
 
-    assert result.stdout == "export OCTOMATE__HOOK_SECRET=from-the-env\n"
+    assert result.stdout == "export OCTOMATE__SECRET=from-the-env\n"
     assert "\x1b[" not in result.stdout  # nor any styling
 
 
@@ -486,26 +481,26 @@ def test_secret_writes_nothing_and_leaves_placing_to_the_operator(
     monkeypatch.chdir(tmp_path)
     configured(monkeypatch, "from-the-env")
 
-    result = runner.invoke(app, ["hooks", "secret"])
+    result = runner.invoke(app, ["secret"])
 
     assert result.exit_code == 0
-    assert result.stdout.strip() == "export OCTOMATE__HOOK_SECRET=from-the-env"
+    assert result.stdout.strip() == "export OCTOMATE__SECRET=from-the-env"
     assert list(tmp_path.iterdir()) == []  # nothing written, anywhere
 
 
 def test_a_redirected_line_survives_a_round_trip_through_the_shell(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`octomate hooks secret >> ~/.zshenv` is the suggestion, so what matters is the
+    """`octomate secret >> ~/.zshenv` is the suggestion, so what matters is the
     value a shell reads back out of such a file — quoting and all."""
     configured(monkeypatch, "has spaces & $dollars")
     profile = tmp_path / ".zshenv"
 
-    result = runner.invoke(app, ["hooks", "secret"])
+    result = runner.invoke(app, ["secret"])
     profile.write_text(result.stdout)  # what the operator's `>>` would put there
 
     sourced = subprocess.run(
-        [f'. "{profile}"; printf %s "${{OCTOMATE__HOOK_SECRET}}"'],
+        [f'. "{profile}"; printf %s "${{OCTOMATE__SECRET}}"'],
         shell=True,
         capture_output=True,
         text=True,
@@ -519,15 +514,13 @@ def test_secret_quotes_a_credential_that_is_not_shell_safe(
     """The line is made to be eval'd, and a hand-written secret need not be shell-safe."""
     configured(monkeypatch, "has spaces & $dollars")
 
-    result = runner.invoke(app, ["hooks", "secret"])
+    result = runner.invoke(app, ["secret"])
 
-    assert result.stdout.strip() == (
-        "export OCTOMATE__HOOK_SECRET='has spaces & $dollars'"
-    )
+    assert result.stdout.strip() == ("export OCTOMATE__SECRET='has spaces & $dollars'")
     # And eval'ing it really does reproduce the secret, quoting and all.
     assert (
         subprocess.run(
-            [f'{result.stdout.strip()}; printf %s "${{OCTOMATE__HOOK_SECRET}}"'],
+            [f'{result.stdout.strip()}; printf %s "${{OCTOMATE__SECRET}}"'],
             shell=True,
             capture_output=True,
             text=True,

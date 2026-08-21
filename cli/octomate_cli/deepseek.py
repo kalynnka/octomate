@@ -30,7 +30,7 @@ from typing import Annotated
 import typer
 
 from octomate_cli.config import OCTOMATE_URL_ENV, resolved_url
-from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_hook_secret
+from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
 from octomate_cli.jsontypes import JsonObject
 
 # Bound so a wedged or slow Octomate can never freeze someone's dsh session —
@@ -318,7 +318,7 @@ def install(
     )
     typer.echo(f"  stream: {stream} (via {LAUNCH_SCRIPT.name})")
     typer.echo("Restart dsh (the web daemon included) to load the bridge.")
-    announce_hook_secret()
+    announce_secret()
 
 
 @hooks_typer.command("uninstall")

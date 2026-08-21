@@ -236,12 +236,11 @@ async def test_a_new_attach_replaces_a_lingering_registration() -> None:
 
 
 def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
-    octomate = Octomate()
+    octomate = Octomate(secret=SECRET)
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
         config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
-        hook_secret=SECRET,
     )
     app = FastAPI()
     for router in tentacle.routers():

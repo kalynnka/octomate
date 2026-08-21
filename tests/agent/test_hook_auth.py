@@ -31,27 +31,24 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 
 def client_for(path: str) -> TestClient:
-    octomate = Octomate()
+    octomate = Octomate(secret=SECRET)
     if path == CLAUDE_HOOK_PATH:
         tentacle = ClaudeCodeTentacle(
             "claude",
             octomate,
             config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
-            hook_secret=SECRET,
         )
     elif path == CODEX_HOOK_PATH:
         tentacle = CodexTentacle(
             "codex",
             octomate,
             config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
-            hook_secret=SECRET,
         )
     else:
         tentacle = DeepseekTentacle(
             "deepseek",
             octomate,
             config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
-            hook_secret=SECRET,
         )
     app = FastAPI()
     for router in tentacle.routers():

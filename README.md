@@ -231,12 +231,12 @@ a credential before it will boot. Order matters here: the first call generates o
 exports it, the second sees it resolve and appends the *same* line.
 
 ```bash
-eval "$(octomate hooks secret)"     # this shell
-octomate hooks secret >> ~/.zshrc   # and every later one (zsh)
+eval "$(octomate secret)"     # this shell
+octomate secret >> ~/.zshrc   # and every later one (zsh)
 ```
 
 The secret stays in the environment, never in the config home — the server and the
-hooks both read `OCTOMATE__HOOK_SECRET` from there.
+hooks both read `OCTOMATE__SECRET` from there.
 
 Then serve it and point Claude Code at it:
 
@@ -317,7 +317,7 @@ file's top-level keys are config field names, so changing a channel touches
 
 ```
 .octomate/
-  octomate.yaml        host, port, hook_secret, db_url
+  octomate.yaml        host, port, secret, mcp_path, db_url
   agents.yaml          claude, codex, deepseek, inkling
   channels.yaml        slack, lark, napcat, trunkline
   users.yaml           registered humans and their per-channel ids
@@ -362,14 +362,14 @@ Configuring `agents.claude`, `agents.codex` or `agents.deepseek` serves that age
 Set the credential up, then point your clients at it:
 
 ```bash
-eval "$(octomate hooks secret)"                  # this shell
-octomate hooks secret >> ~/.zshrc                # and every later one (zsh)
+eval "$(octomate secret)"                        # this shell
+octomate secret >> ~/.zshrc                      # and every later one (zsh)
 octomate claude hooks install                    # merges handlers into ~/.claude/settings.json
 octomate codex hooks install                     # merges handlers into ~/.codex/hooks.json
 octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hooks.json + a patch row
 ```
 
-`hooks secret` prints one line — `export OCTOMATE__HOOK_SECRET=…` — and writes nothing; where your login environment comes from is yours to know. Sessions only ever read the **environment**, and they are separate processes that never see your config home, so that line is the bridge, and it has to reach whatever launches them.
+`octomate secret` prints one line — `export OCTOMATE__SECRET=…` — and writes nothing; where your login environment comes from is yours to know. Sessions only ever read the **environment**, and they are separate processes that never see your config home, so that line is the bridge, and it has to reach whatever launches them.
 
 `~/.zshrc` covers interactive zsh, which is what VSCode resolves the environment from; use `~/.zshenv` instead if you want non-interactive shells to have it too, and on another shell put the line wherever that shell would find it. Either way an environment is captured when a process starts: shells already open keep the one they had, and a GUI client (VSCode, the desktop app) grabs it when *it* launches — so restart them before expecting the hooks to carry the secret.
 

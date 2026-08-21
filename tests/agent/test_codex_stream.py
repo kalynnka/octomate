@@ -304,12 +304,11 @@ async def test_a_stop_waits_for_the_stopped_turn_then_asks_the_drain() -> None:
 
 
 def stream_client() -> tuple[TestClient, CodexTentacle]:
-    octomate = Octomate()
+    octomate = Octomate(secret=SECRET)
     tentacle = CodexTentacle(
         "codex",
         octomate,
         config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
-        hook_secret=SECRET,
     )
     app = FastAPI()
     for router in tentacle.routers():

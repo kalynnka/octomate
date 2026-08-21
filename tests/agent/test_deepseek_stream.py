@@ -48,12 +48,11 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 
 def stream_client() -> tuple[TestClient, DeepseekTentacle]:
-    octomate = Octomate()
+    octomate = Octomate(secret=SECRET)
     tentacle = DeepseekTentacle(
         "deepseek",
         octomate,
         config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
-        hook_secret=SECRET,
     )
     app = FastAPI()
     for router in tentacle.routers():

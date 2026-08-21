@@ -203,6 +203,7 @@ def _build(
     if conversation is not None:
         conversations.store[(_THREAD, "claude", "")] = conversation
     octomate = Octomate(
+        secret=HOOK_SECRET,
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, dam),
         channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
@@ -211,7 +212,6 @@ def _build(
         "claude",
         octomate,
         config=config or ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
-        hook_secret=HOOK_SECRET,
     )
     octomate.connect(tentacle)
     return tentacle, dam, feelers
