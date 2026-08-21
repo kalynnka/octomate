@@ -50,10 +50,6 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.gateway import (
-    SCHEME_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_DEFER_KIND,
-    TELEPORT_TOOL_NAME,
     GatewayCapability,
 )
 from octomate.capabilities.harness.agent import Agent
@@ -69,6 +65,10 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     DIRECT_TARGET,
     HERE_TARGET,
+    SCHEME_TOOL_NAME,
+    SUMMON_TOOL_NAME,
+    TELEPORT_DEFER_KIND,
+    TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     ChannelTarget,
     Claim,

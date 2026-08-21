@@ -5,12 +5,12 @@ from dataclasses import dataclass, field
 
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.gateway import TELEPORT_DEFER_KIND
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
+    TELEPORT_DEFER_KIND,
     CrossingLanding,
     ResponseTargetMode,
     RunName,

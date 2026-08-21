@@ -9,10 +9,6 @@ from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import (
-    SCHEME_TOOL_NAME,
-    SCRY_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
     GatewayCapability,
     PrivateBlocker,
 )
@@ -24,6 +20,10 @@ from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.triage import (
     HERE_TARGET,
+    SCHEME_TOOL_NAME,
+    SCRY_TOOL_NAME,
+    SUMMON_TOOL_NAME,
+    TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     AgentRoute,
     ChannelTarget,

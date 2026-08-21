@@ -16,6 +16,25 @@ ResponseTargetMode = Literal["main", "sub"]
 # (continuing after human review). Labels each run's span and any batch it defers.
 RunName = Literal["react", "summon", "teleport", "resume"]
 
+# The gateway's vocabulary: the toolset id and each spell's tool name. They live with
+# the decision schemas rather than the capability because everyone speaks them — the
+# policy layer's refusal sentences, the reflex graph, channel rendering — and none of
+# those should have to import an agent capability for a string. `send` is the one
+# exception: its name is `octomate.schemas.messages.SEND_TOOL_NAME`, beside the
+# segment types it delivers.
+GATEWAY_TOOLSET_ID = "gateway"
+SCRY_TOOL_NAME = "scry"
+SUMMON_TOOL_NAME = "summon"
+TELEPORT_TOOL_NAME = "teleport"
+SCHEME_TOOL_NAME = "scheme"
+COMMISSION_TOOL_NAME = "commission"
+WHISPER_TOOL_NAME = "whisper"
+# The `teleport` deferral's declared metadata kind. The suspender and dispatch graph
+# classify the deferral by this kind rather than the tool name, so the gateway (which
+# emits it) and `reflex` (which resolves it) agree on one value without matching on
+# the name.
+TELEPORT_DEFER_KIND = "teleport"
+
 
 class AgentRouteKey(NamedTuple):
     agent_id: str
@@ -32,7 +51,7 @@ class SpellTarget(BaseModel):
     front of the prefix. So the *shape* is declared here and the *policy* — which of
     these this surface can actually reach — stays a refusal in the tool body.
 
-    `handle` is what the gate resolves against, and what `scry` prints.
+    `handle` is what the gateway resolves against, and what `scry` prints.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -185,7 +204,7 @@ class SummonDecision(BaseModel):
     model: AgentRouteModelName
     destination: SummonLanding = Field(
         default_factory=ThreadLanding,
-        description="Where the handoff lands, resolved by the gate. The model names "
+        description="Where the handoff lands, resolved by the gateway. The model names "
         "a handle; an address is built here, never accepted from it.",
     )
     effort: ThinkingEffort | None = None
@@ -213,9 +232,32 @@ class SchemeDecision(BaseModel):
     )
     brief: str
     destination: ChannelAddress = Field(
-        description="Which direct messages, resolved by the gate. The model names a "
+        description="Which direct messages, resolved by the gateway. The model names a "
         "handle; the address comes from the identity registry, never from the model."
     )
+
+
+class TeleportDecision(BaseModel):
+    """The same agent continues in a new sub-thread; Reflex performs the move.
+
+    Inkling never records one — its teleport rides a deferral so the graph can fork
+    mid-run — but a runtime that cannot be suspended by a tool result reports the
+    same intent this way, and the graph forks after its turn ends instead.
+    """
+
+    action: Literal["teleport"] = "teleport"
+    hint: str = Field(description="The short, user-facing thread-starter message.")
+    crossing: CrossingLanding | None = Field(
+        default=None,
+        description="The far channel's direct messages when the teleport crosses, "
+        "resolved by the gateway; None keeps it a sub-thread of the current chat.",
+    )
+
+
+# Every decision a gateway can record for the graph to act on after the turn.
+GatewayDecision: TypeAlias = Annotated[
+    SummonDecision | SchemeDecision | TeleportDecision, Field(discriminator="action")
+]
 
 
 @dataclass(frozen=True)

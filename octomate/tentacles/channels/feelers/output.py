@@ -52,11 +52,6 @@ from pydantic_core import to_json
 from typing_extensions import TypeVar
 
 from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
-from octomate.capabilities.gateway import (
-    COMMISSION_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
-    WHISPER_TOOL_NAME,
-)
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
@@ -77,6 +72,11 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
 from octomate.schemas.todos import Todo
+from octomate.schemas.triage import (
+    COMMISSION_TOOL_NAME,
+    TELEPORT_TOOL_NAME,
+    WHISPER_TOOL_NAME,
+)
 from octomate.telemetry import channel_logfire
 from octomate.types.todos import STATUS_MARKERS
 
