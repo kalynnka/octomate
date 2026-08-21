@@ -66,19 +66,6 @@ class MirrorManager:
     ) -> None:
         self.config = config if config is not None else MirrorsConfig()
         self.mirrors_dir = mirrors_dir
-        # The `-c` flags on every commit this manager makes: the configured
-        # identity — per invocation, so nothing leaks into the mirror's own
-        # config — and signing off, since a sync commit is the machine's record
-        # of a folder and nothing a host's signing key should vouch for.
-        identity = self.config.identity
-        self.commit_flags = (
-            "-c",
-            f"user.name={identity.name}",
-            "-c",
-            f"user.email={identity.email}",
-            "-c",
-            "commit.gpgsign=false",
-        )
         self.locks: dict[str, asyncio.Lock] = {}
         self.synced: dict[str, float] = {}
 
@@ -178,7 +165,7 @@ class MirrorManager:
         if not await run_git("status", "--porcelain", cwd=folder, env=against):
             return
         await run_git(
-            *self.commit_flags,
+            *self.config.identity.commit_flags,
             "commit",
             "-m",
             f"sync {folder}",

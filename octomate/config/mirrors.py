@@ -14,6 +14,24 @@ class GitIdentity(BaseModel):
     # a real-looking address that is guaranteed to belong to nobody.
     email: EmailStr = "octomate@example.com"
 
+    @property
+    def commit_flags(self) -> tuple[str, ...]:
+        """The `-c` flags that make a commit this identity's.
+
+        Passed per invocation rather than written with `git config`, so nothing
+        persists into a repository for whatever Octomate makes from it next to
+        inherit. Signing is off: these commits are the machine's record-keeping,
+        and nothing a host's signing key should be vouching for.
+        """
+        return (
+            "-c",
+            f"user.name={self.name}",
+            "-c",
+            f"user.email={self.email}",
+            "-c",
+            "commit.gpgsign=false",
+        )
+
 
 class MirrorsConfig(BaseModel):
     """How project mirrors are synced."""
