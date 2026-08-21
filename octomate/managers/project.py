@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
+from octomate.config.projects import ProjectsConfig
 from octomate.database import async_session
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
@@ -24,8 +25,8 @@ class ProjectManager:
     Code stores transcripts.
     """
 
-    def __init__(self, config: dict[str, Project.Create] | None = None) -> None:
-        self.config = config or {}
+    def __init__(self, config: ProjectsConfig | None = None) -> None:
+        self.config = config if config is not None else ProjectsConfig()
         self.projects: dict[str, Project] = {}
         # (resolved root, project name), deepest first, so the first hit is the
         # longest prefix and a monorepo plus a sub-package can both be projects.

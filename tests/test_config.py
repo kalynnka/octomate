@@ -1092,6 +1092,31 @@ def test_a_mirrors_block_validates() -> None:
     assert config.mirrors.identity.name == "Lu Hui"
 
 
+def test_a_workspaces_block_validates() -> None:
+    config = OctomateConfig.model_validate(
+        {"workspaces": {"idle_window": 3600, "sweep_interval": 600}}
+    )
+
+    assert config.workspaces.idle_window == 3600
+    assert config.workspaces.sweep_interval == 600
+
+
+def test_a_workspaces_block_defaults_to_a_day_and_an_hour() -> None:
+    config = OctomateConfig()
+
+    assert config.workspaces.idle_window == 24 * 60 * 60
+    assert config.workspaces.sweep_interval == 60 * 60
+
+
+def test_a_sweep_that_never_runs_is_refused() -> None:
+    # A zero interval is a busy loop and a zero window reclaims a workspace the
+    # moment a turn ends, which is the fork paid for on every single turn.
+    with pytest.raises(ValidationError):
+        OctomateConfig.model_validate({"workspaces": {"sweep_interval": 0}})
+    with pytest.raises(ValidationError):
+        OctomateConfig.model_validate({"workspaces": {"idle_window": 0}})
+
+
 def test_a_project_without_a_root_is_refused() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate({"projects": {"inky": {"description": "?"}}})

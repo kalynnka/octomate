@@ -63,6 +63,7 @@ from octomate.config.providers import (
     VertexProviderConfig,
 )
 from octomate.config.users import UserConfig
+from octomate.config.workspaces import WorkspacesConfig
 
 # Grouped by subsystem behind the section comments below, which say more than
 # alphabetical order would; sorting this would strand each comment on the wrong name.
@@ -115,6 +116,7 @@ __all__ = [  # noqa: RUF022
     # mirrors
     "GitIdentity",
     "MirrorsConfig",
+    "WorkspacesConfig",
     # channels
     "AgentModelConfig",
     "ChannelConfig",
