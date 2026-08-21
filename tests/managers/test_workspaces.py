@@ -36,9 +36,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate.config.mirrors import GitIdentity, MirrorsConfig
+from octomate.config.workspaces import WorkspacesConfig
 from octomate.managers import workspaces
 from octomate.managers.mirrors import GitCommandError, MirrorManager, run_git
-from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import CopyError, WorkspaceManager
@@ -62,6 +62,14 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
     return
 
 
+def a_root(tmp_path: Path) -> Path:
+    """The project's root on disk. It must exist, or `reconcile` disables the
+    project and a thread filed under it resolves to none."""
+    root = tmp_path / "inky"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 async def a_manager(
     tmp_path: Path, identity: GitIdentity | None = None
 ) -> WorkspaceManager:
@@ -71,10 +79,8 @@ async def a_manager(
     a project, the mirrors are where that project's lives, and the identity a
     snapshot is written under is the mirrors' rather than this manager's to hold.
     """
-    root = tmp_path / "inky"
-    root.mkdir(parents=True, exist_ok=True)
     return WorkspaceManager(
-        projects=await a_registry(a_project(root)),
+        projects=await a_registry(a_project(a_root(tmp_path))),
         mirrors=MirrorManager(
             config=MirrorsConfig(identity=identity) if identity else MirrorsConfig(),
             mirrors_dir=tmp_path / "mirrors",
@@ -325,10 +331,32 @@ async def test_a_workspace_path_is_absolute_from_a_relative_directory(
     # The default `.octomate/workspaces` is relative to wherever Octomate was
     # started, and a workspace is handed to processes started elsewhere.
     monkeypatch.chdir(tmp_path)
-    manager = WorkspaceManager(projects=ProjectManager(), mirrors=MirrorManager())
+    manager = WorkspaceManager()
     thread = uuid.uuid4()
 
     assert manager.path(thread) == (tmp_path / ".octomate/workspaces" / str(thread))
+
+
+async def test_the_sweep_works_from_the_default_relative_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every other test here names an absolute directory, which is the one shape
+    # production never uses: `.octomate/workspaces` hangs off wherever Octomate
+    # was started. A relative root reaches git as a relative `GIT_INDEX_FILE`
+    # against a workspace cwd, and resolves inside the workspace it describes.
+    monkeypatch.chdir(tmp_path)
+    manager = WorkspaceManager(
+        projects=await a_registry(a_project(a_root(tmp_path))),
+        mirrors=MirrorManager(mirrors_dir=Path(".octomate/mirrors")),
+    )
+    thread = await a_bound_thread(manager)
+    project = manager.projects.get("inky")
+    assert project is not None
+    mirror = await a_mirror(manager.mirrors.path(project), {"readme.md": "hello"})
+    await a_turn(await manager.materialize(thread.id, mirror), {"work.md": "done"})
+    await manager.save(thread)
+
+    assert await manager.prune(idle=0.0) == [thread.id]
 
 
 async def a_turn(workspace: Path, files: dict[str, str]) -> None:
@@ -756,7 +784,7 @@ async def test_the_sweep_prunes_on_its_interval(
     thread = await a_bound_thread(manager)
     workspace = await manager.materialize(thread.id, mirror)
     await manager.save(thread)
-    manager.idle_window, manager.sweep_interval = 0.0, 0.0
+    manager.config = WorkspacesConfig(idle_window=0.001, sweep_interval=0.001)
 
     sweeping = asyncio.create_task(manager.sweep())
     for _ in range(100):

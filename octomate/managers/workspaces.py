@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from octomate.config.mirrors import GitIdentity
+from octomate.config.workspaces import WorkspacesConfig
 from octomate.managers.mirrors import GitCommandError, MirrorManager, run_git
 from octomate.managers.project import ProjectManager
 from octomate.schemas.project import Project
@@ -103,20 +104,25 @@ class WorkspaceManager:
     def __init__(
         self,
         *,
-        projects: ProjectManager,
-        mirrors: MirrorManager,
+        projects: ProjectManager | None = None,
+        mirrors: MirrorManager | None = None,
+        config: WorkspacesConfig | None = None,
         workspaces_dir: Path = Path(".octomate/workspaces"),
-        idle_window: float = 24 * 60 * 60.0,
-        sweep_interval: float = 60 * 60.0,
     ) -> None:
-        self.projects = projects
-        self.mirrors = mirrors
-        self.workspaces_dir = workspaces_dir
-        # How long a workspace goes unused before the sweep reclaims it, and how
-        # often the sweep looks. Both generous: reclaiming early costs a resume,
-        # and a fork nobody has touched for a day is what the disk is for.
-        self.idle_window = idle_window
-        self.sweep_interval = sweep_interval
+        # A workspace is a project-bound thread's, so the registry that says which
+        # project and the mirrors that say where are what this works through. Its
+        # host replaces both with its own when it takes ownership — a second
+        # registry would resolve no thread to a project, and a second mirror
+        # manager would keep its own sync locks — so a manager built without them
+        # is one nobody has handed to a host yet.
+        self.projects = projects if projects is not None else ProjectManager()
+        self.mirrors = mirrors if mirrors is not None else MirrorManager()
+        self.config = config if config is not None else WorkspacesConfig()
+        # Resolved once, here: a workspace path leaves this manager to become a
+        # subprocess's cwd and a `GIT_INDEX_FILE` beside it, and the default is
+        # relative to wherever Octomate was started. Pinning it at construction
+        # also stops the root moving if anything ever chdirs underneath.
+        self.workspaces_dir = workspaces_dir.resolve()
         self.reflink: str | None = None
         self.probed = False
         self.locks: dict[uuid.UUID, asyncio.Lock] = {}
@@ -466,9 +472,9 @@ class WorkspaceManager:
         tidy up has the priority backwards.
         """
         while True:
-            await asyncio.sleep(self.sweep_interval)
+            await asyncio.sleep(self.config.sweep_interval)
             try:
-                await self.prune(self.idle_window)
+                await self.prune(self.config.idle_window)
             except Exception:
                 logger.exception("the workspace sweep failed")
 
