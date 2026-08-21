@@ -24,7 +24,6 @@ from uuid_utils.compat import uuid7
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
-from octomate.managers.mirrors import MirrorManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
@@ -477,7 +476,7 @@ class RecordingWorkspaceManager(WorkspaceManager):
     """
 
     def __init__(self) -> None:
-        super().__init__(projects=ProjectManager(), mirrors=MirrorManager())
+        super().__init__()
         self.saved: list[uuid.UUID] = []
 
     async def save(self, thread: Thread) -> None:

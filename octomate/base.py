@@ -106,9 +106,7 @@ class Octomate:
         default_factory=DeferredActionManager
     )
     users: UserManager = field(default_factory=UserManager)
-    projects: ProjectManager = field(default_factory=ProjectManager)
-    mirrors: MirrorManager = field(default_factory=MirrorManager)
-    workspaces: WorkspaceManager = field(init=False)
+    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
@@ -119,14 +117,23 @@ class Octomate:
         # Every ledger row references its sender's registry profile, so the
         # thread manager records through the host's one identity registry.
         self.thread_manager = ThreadManager(users=self.users)
-        # A workspace belongs to a project-bound thread, so its manager is built
-        # around the registry that says which project and the mirrors that say
-        # where — the host's own, never a second set with their own locks.
-        self.workspaces = WorkspaceManager(projects=self.projects, mirrors=self.mirrors)
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=oauth_encryption_key,
         )
+
+    @property
+    def projects(self) -> ProjectManager:
+        """The project registry. Kept by the workspace manager, which is the one
+        thing that cannot work without it, and reached here because most of what
+        asks — session attribution, the console, dispatch — wants the registry
+        rather than anything to do with workspaces."""
+        return self.workspaces.projects
+
+    @property
+    def mirrors(self) -> MirrorManager:
+        """Every project's mirror, kept beside the registry for the same reason."""
+        return self.workspaces.mirrors
 
     def connect(self, tentacle: TentacleT) -> TentacleT:
         if isinstance(tentacle, ChannelTentacle):

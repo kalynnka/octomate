@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.harness.agent import Agent
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest
@@ -336,7 +337,9 @@ async def test_a_first_directive_files_the_thread_under_a_project(
     # operator's pick is the whole of how it gets one.
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(projects=await a_registry(a_project(inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     agent, _ = build_scripted_agent(["done"])
     channel = await _register(octomate, agent)
 
@@ -356,7 +359,9 @@ async def test_a_directive_naming_no_project_leaves_the_thread_a_chat(
     # agent works nowhere in particular.
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(projects=await a_registry(a_project(inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     agent, _ = build_scripted_agent(["done"])
     channel = await _register(octomate, agent)
 
@@ -386,7 +391,9 @@ async def test_a_new_thread_posted_by_the_console_carries_its_project(
     to a fresh thread key, and read the thread back filed under it."""
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(projects=await a_registry(a_project(inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
@@ -556,9 +563,11 @@ async def test_the_projects_endpoint_offers_only_enabled_ones(
     inky = tmp_path / "inky"
     inky.mkdir()
     octomate = Octomate(
-        projects=await a_registry(
-            a_project(inky),
-            a_project(tmp_path / "deleted", enabled=False),
+        workspaces=WorkspaceManager(
+            projects=await a_registry(
+                a_project(inky),
+                a_project(tmp_path / "deleted", enabled=False),
+            )
         )
     )
     agent, _ = build_scripted_agent(["done"])
@@ -755,7 +764,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         )
     )
     project = a_project(Path("/srv/inky"))
-    octomate.projects = await a_registry(project)
+    octomate.workspaces.projects = await a_registry(project)
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", "session-1"), project=project
     )

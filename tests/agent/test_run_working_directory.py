@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
@@ -386,7 +387,9 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
 ) -> None:
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(projects=await a_registry(a_project(inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     thread = await a_thread(octomate, "inky")
     tentacle = ClaudeCodeTentacle(
         "claude",

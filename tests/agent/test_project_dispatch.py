@@ -27,8 +27,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
+from octomate.config.workspaces import WorkspacesConfig
 from octomate.managers.mirrors import run_git
-from octomate.managers.workspaces import thread_ref
+from octomate.managers.workspaces import WorkspaceManager, thread_ref
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
@@ -113,6 +114,30 @@ def _fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_fake_codex(text_script("done"))
 
 
+def test_a_host_shares_its_registry_and_mirrors_with_its_workspaces() -> None:
+    # The default is for a host nobody composed one for. It has to be built around
+    # this host's own managers: a second registry would resolve no thread to a
+    # project, and a second mirror manager would keep its own sync locks.
+    octomate = Octomate(conversations=FakeConversationManager())
+
+    assert octomate.workspaces.projects is octomate.projects
+    assert octomate.workspaces.mirrors is octomate.mirrors
+
+
+def test_a_composed_workspace_manager_is_the_one_the_host_uses() -> None:
+    # What `main` does: build it where the config is read, and hand it over. The
+    # host is still what wires it to the registry and mirrors it works through.
+    composed = WorkspaceManager(
+        config=WorkspacesConfig(idle_window=60.0, sweep_interval=30.0)
+    )
+
+    octomate = Octomate(conversations=FakeConversationManager(), workspaces=composed)
+
+    assert octomate.workspaces is composed
+    assert octomate.workspaces.config.idle_window == 60.0
+    assert composed.projects is octomate.projects
+
+
 async def test_with_nothing_declared_claude_dispatches_where_it_always_did() -> None:
     octomate = Octomate(conversations=FakeConversationManager())
 
@@ -135,7 +160,7 @@ async def test_a_thread_in_a_project_runs_claude_in_its_workspace(
     (inky / "readme.md").write_text("hello")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(a_project(inky)),
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky))),
     )
     thread = await a_thread(octomate, "chat", "inky")
 
@@ -153,7 +178,7 @@ async def test_a_thread_in_a_project_runs_codex_in_its_workspace(
     inky = repo(tmp_path / "inky")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(a_project(inky)),
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky))),
     )
 
     thread = await a_thread(octomate, "chat", "inky")
@@ -169,7 +194,7 @@ async def test_two_threads_on_one_project_never_share_a_directory(
     inky = repo(tmp_path / "inky")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(a_project(inky)),
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky))),
     )
     one = await a_thread(octomate, "first", "inky")
     other = await a_thread(octomate, "second", "inky")
@@ -190,7 +215,9 @@ async def test_a_project_extra_root_is_reachable(tmp_path: Path) -> None:
     inky, settings = repo(tmp_path / "inky"), repo(tmp_path / "settings")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(a_project(inky, extra_roots=[settings])),
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(inky, extra_roots=[settings]))
+        ),
     )
 
     options = await claude_run(octomate, await a_thread(octomate, "chat", "inky"))
@@ -207,7 +234,7 @@ async def test_a_second_run_in_the_same_conversation_stays_in_the_workspace(
     inky = repo(tmp_path / "inky")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(a_project(inky)),
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky))),
     )
     thread = await a_thread(octomate, "chat", "inky")
 
@@ -230,7 +257,7 @@ async def test_resuming_a_thread_syncs_nothing_and_forks_nothing(
     (inky / "readme.md").write_text("hello")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(a_project(inky)),
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky))),
     )
     thread = await a_thread(octomate, "chat", "inky")
     await claude_run(octomate, thread)
@@ -248,7 +275,9 @@ async def test_a_thread_naming_an_undeclared_project_falls_back(
 ) -> None:
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(a_project(repo(tmp_path / "inky"))),
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(repo(tmp_path / "inky")))
+        ),
     )
 
     # A thread's project is a reference into the registry; a name the registry does
@@ -264,7 +293,7 @@ async def a_project_thread(tmp_path: Path) -> tuple[Octomate, Thread, Path]:
     (inky / "readme.md").write_text("hello")
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(a_project(inky)),
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky))),
     )
     return octomate, await a_thread(octomate, "chat", "inky"), inky
 
@@ -308,11 +337,43 @@ async def test_a_finished_turn_leaves_its_work_on_the_threads_ref(
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
 
 
+async def test_a_thread_pruned_between_turns_picks_up_where_it_left_off(
+    tmp_path: Path,
+) -> None:
+    # OCTO-51 end to end, through the path a real turn takes: the first turn forks
+    # and leaves work, the sweep reclaims the disk, and the next turn finds the
+    # same directory with the same tree in it. What a person sees is a thread that
+    # carried on; what the disk saw in between is nothing at all.
+    octomate, thread, _inky = await a_project_thread(tmp_path)
+    first = await claude_run(octomate, thread)
+    assert first.cwd is not None
+    (Path(first.cwd) / "wip.py").write_text("half done")
+    await run_git("checkout", "-b", "feat/theirs", cwd=Path(first.cwd))
+    await octomate.workspaces.save(thread)
+
+    assert await octomate.workspaces.prune(idle=0.0) == [thread.id]
+    assert not Path(first.cwd).exists()
+
+    second = await claude_run(octomate, thread)
+
+    assert second.cwd == first.cwd
+    assert (Path(first.cwd) / "wip.py").read_text() == "half done"
+    branch = await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=Path(first.cwd))
+    assert branch.strip() == "feat/theirs"
+    # And the conversation carried on rather than starting over: it is the
+    # thread's, kept in the ledger, and losing the directory never touched it.
+    conversations = octomate.conversations
+    assert isinstance(conversations, FakeConversationManager)
+    assert len(conversations.store) == 1
+
+
 async def test_a_thread_in_no_project_has_no_work_to_leave(tmp_path: Path) -> None:
     # No project is no workspace, and nowhere to push it to either.
     octomate = Octomate(
         conversations=FakeConversationManager(),
-        projects=await a_registry(a_project(repo(tmp_path / "inky"))),
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(repo(tmp_path / "inky")))
+        ),
     )
     thread = await a_thread(octomate, "chat")
 

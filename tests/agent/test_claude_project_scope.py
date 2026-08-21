@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.managers.project import ProjectManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.thread import ThreadKey
@@ -184,7 +185,10 @@ async def a_run(
     scope hook it registered — the boundary itself, callable, so a test asks it
     rather than inspecting how it was bound — and the directory it ran in. `declared`
     names the project the run's thread is in; a thread in none runs at `configured`."""
-    octomate = Octomate(conversations=FakeConversationManager(), projects=projects)
+    octomate = Octomate(
+        conversations=FakeConversationManager(),
+        workspaces=WorkspaceManager(projects=projects),
+    )
     thread = await octomate.thread_manager.ensure(
         ThreadKey("im", "thread", "c", "t1"),
         project=projects.get(declared) if declared else None,
