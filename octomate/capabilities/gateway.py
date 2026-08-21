@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterable, Iterable
+from collections.abc import AsyncIterable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -79,14 +79,18 @@ if TYPE_CHECKING:
 # wait must not be unbounded (`approval_timeout` is the precedent). Seconds.
 COMMISSION_TIMEOUT = 900.0
 
-GATEWAY_INSTRUCTION = """\
+# The instruction prose, templated only where a spell is named: each runtime's
+# adapter renders the same contract under its own tool naming (`scry` for Inkling,
+# `mcp__gateway__scry` for an MCP runtime). Everything else — argument names, the
+# `here`/`thread`/`dm` handles — is the shared vocabulary and stays literal.
+GATEWAY_INSTRUCTION_TEMPLATE = """\
 ## Gateway — decide where this conversation goes and who handles it
 
 These tools route the conversation. Default to handling it yourself: if you can answer
 well or do the work, do it and call none of them. Routing is the exception — reach for a
 tool only when one of the signals below clearly fires.
 
-### `summon` — hand off to another agent
+### `{summon}` — hand off to another agent
 Summon transfers the conversation to a specialist who takes over this turn *and its
 follow-ups*: a real, sticky handoff, so the bar is high. Summon only when:
 - The request needs a capability you lack — e.g. running or editing code in a real
@@ -99,26 +103,26 @@ Do NOT summon when:
 - You are only mildly unsure — ask the user a clarifying question instead.
 - No route clearly fits — handle it yourself or ask; never summon on a guess.
 
-When one fires, call `scry` first to see the agents and what each is for. Every route
+When one fires, call `{scry}` first to see the agents and what each is for. Every route
 carries a claim: its ability (what that agent+model is for) and the effort levels it
 accepts — pick the route whose ability covers the work. Set `effort` only when the
 user explicitly asked for a level; otherwise leave it unset so the agent's own default
-applies. Then `summon` — copying its `agent_id` and `model` exactly from that route,
+applies. Then `{summon}` — copying its `agent_id` and `model` exactly from that route,
 and writing a self-contained brief since the other agent may not see this chat.
 Choose `destination`: `here` hands over this same conversation; `thread` opens a new
-sub-thread of the current chat; a channel id from `scry` opens one in that person's
+sub-thread of the current chat; a channel id from `{scry}` opens one in that person's
 direct messages on that channel, for work that belongs where they actually do it.
 You yourself are not a valid summon target.
 
-### `teleport` — relocate yourself
+### `{teleport}` — relocate yourself
 Move this conversation into a new sub-thread that *you* keep handling, carrying
 everything said so far. Use it for multi-step or long-running work that deserves its
 own thread but that you are the right one to do — no other agent involved.
 `destination` is `thread`, a sub-thread of the current chat, unless you name a channel
-id from `scry` to carry it into their direct messages there — offered only from a
+id from `{scry}` to carry it into their direct messages there — offered only from a
 conversation nobody else can read, since everything said here travels with you.
 
-### `scheme` — take it to the user privately
+### `{scheme}` — take it to the user privately
 Continue one-to-one with the person who asked, in their direct messages: for work that
 is theirs alone, or that does not belong in front of the group. Whoever already handles
 their direct messages picks it up, so write `brief` self-contained — it may not be you,
@@ -139,9 +143,9 @@ what you can do unaided; if something is under-specified or unapprovable, state 
 assumption or the blocker in your report and proceed.
 """
 
-SEND_INSTRUCTION = """\
+SEND_INSTRUCTION_TEMPLATE = """\
 
-### `send` — deliver something now, without ending your turn
+### `{send}` — deliver something now, without ending your turn
 For a progress update, an intermediate result, or an image/file you produced along
 the way. Anything sent this way is already delivered: your final reply continues from
 there — summarize or extend it, never restate it. If everything worth saying went out
@@ -150,13 +154,30 @@ already, close with a short wrap-up rather than re-sending it.
 `destination` is `here` by default. `dm` delivers to the person who asked, privately —
 for something that is *for them*, like a summary sent over; say in your reply that you
 sent it. `dm` hands nothing over: you keep this conversation and nobody picks the work
-up there, so use `scheme` when the work itself should continue privately. Asking for
+up there, so use `{scheme}` when the work itself should continue privately. Asking for
 `dm` while already in that person's direct messages is fine — it lands here.
 
 To thread onto a specific message in a busy chat, lead with a reply segment whose id
 is that message's `#msg:<id>` handle — it must be the first segment. To ping someone,
 use an `at` segment with their user id.
 """
+
+
+def gateway_instructions(tool_name: Callable[[str], str]) -> str:
+    """The gateway's routing instruction, each spell rendered by the caller's own tool
+    naming — the identity for Inkling, `mcp__gateway__…` for an MCP runtime — so every
+    agent reads one contract under the names it can actually call."""
+    names = {
+        "scry": tool_name(SCRY_TOOL_NAME),
+        "summon": tool_name(SUMMON_TOOL_NAME),
+        "teleport": tool_name(TELEPORT_TOOL_NAME),
+        "scheme": tool_name(SCHEME_TOOL_NAME),
+        "send": tool_name(SEND_TOOL_NAME),
+    }
+    return GATEWAY_INSTRUCTION_TEMPLATE.format(
+        **names
+    ) + SEND_INSTRUCTION_TEMPLATE.format(**names)
+
 
 COMMISSION_INSTRUCTION = """\
 
@@ -554,9 +575,10 @@ class GatewayCapability(AbstractCapability[None]):
         )
 
     def get_instructions(self) -> str:
+        instructions = gateway_instructions(lambda name: name)
         if self.commissioning:
-            return GATEWAY_INSTRUCTION + SEND_INSTRUCTION + COMMISSION_INSTRUCTION
-        return GATEWAY_INSTRUCTION + SEND_INSTRUCTION
+            return instructions + COMMISSION_INSTRUCTION
+        return instructions
 
     async def wrap_run_event_stream(
         self,
