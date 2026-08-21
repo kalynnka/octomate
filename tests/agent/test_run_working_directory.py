@@ -435,7 +435,7 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
             async for _event in stream:
                 pass
 
-    # No project declared, so dispatch stays where it is configured — and that is
-    # what the run records.
+    # No project declared, so the run happens in the shared chat directory rather
+    # than the configured one — and that is what the run records.
     [run] = await driven_runs(octomate, thread, "codex")
-    assert run.cwd == Path("/configured")
+    assert run.cwd == octomate.workspaces.chat()

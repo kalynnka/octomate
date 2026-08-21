@@ -947,10 +947,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         if not interactive and permission_mode == "user_review":
             permission_mode = "deny_all"
         plan = CODEX_PERMISSION_PLANS[permission_mode]
-        # The other axis, and the operator's rather than the conversation's: what a
-        # command may touch when nobody is asked. Fixed for the run, so a posture
-        # never rewrites what the whole thread reaches.
-        sandbox = Sandbox[self.config.sandbox]
         personality = (
             Personality(self.config.personality)
             if self.config.personality is not None
@@ -970,11 +966,18 @@ class CodexTentacle(AgentTentacle[str, None]):
         else:
             summary = ReasoningSummary(ReasoningSummaryValue(self.config.summary))
 
-        # The thread's workspace, or the configured directory when it is in no
+        # The thread's own workspace, or the shared chat directory when it is in no
         # project. `sandbox="workspace_write"` scopes writes to it, so for Codex the
         # directory is the whole of running inside a project — and the workspace is
         # what makes that boundary the thread's own rather than everyone's checkout.
-        run_cwd = await self.run_cwd(conversation.thread_id, self.config.cwd)
+        project = await self.run_project(conversation.thread_id)
+        run_cwd = await self.run_cwd(conversation.thread_id, project)
+        # The other axis, and the operator's rather than the conversation's: what a
+        # command may touch when nobody is asked. Fixed for the run, so a posture
+        # never rewrites what the whole thread reaches — except that a thread in no
+        # project runs in the shared chat directory, and read-only is the whole of
+        # what makes sharing one directory safe.
+        sandbox = Sandbox[self.config.sandbox if project is not None else "read_only"]
 
         codex_thread_id: str | None = None
         with codex_logfire.span(

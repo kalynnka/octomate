@@ -5,7 +5,6 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from functools import cached_property
-from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, TypeAlias, TypeVar, overload
 
@@ -129,22 +128,24 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             raise ValueError(f"unknown thread {thread_id}")
         return await self.octomate.projects.of(thread)
 
-    async def run_cwd(self, thread_id: uuid.UUID, agent_cwd: str) -> str:
-        """The directory a run in this thread happens in: its workspace, or
-        `agent_cwd` when the thread is in no project.
+    async def run_cwd(self, thread_id: uuid.UUID, project: Project | None) -> str:
+        """The directory a run in this thread happens in: its own workspace when it
+        is in a project, and the shared chat directory when it is in none.
 
-        `agent_cwd` is the agent's own configured directory, and is where a thread in
-        no project runs — which is every thread until a project claims one, and what
-        keeps dispatch exactly where it has always been.
+        `project` is passed rather than looked up because the caller has already
+        asked — the answer decides more than the directory, and asking twice would
+        be two reads of the same thread for one run.
 
-        Always absolute, because the run records this: an agent's `cwd` defaults to
-        `"."`, which hangs off wherever Octomate was started and names nothing once the
-        process is gone. Symlinks are left alone, exactly as a project root leaves
-        them — the registry resolves both sides when it compares.
+        A thread in no project used to run in the agent's configured `cwd`, which
+        defaults to `"."`: on a server, Octomate's own install directory. It runs
+        somewhere chosen instead, and somewhere nothing may write to.
+
+        Always absolute, because the run records this and a relative path names
+        nothing once the process is gone. Symlinks are left alone, exactly as a
+        project root leaves them — the registry resolves both sides to compare.
         """
-        project = await self.run_project(thread_id)
         if project is None:
-            return str(Path(agent_cwd).absolute())
+            return str(self.octomate.workspaces.chat())
         return str(await self.octomate.workspaces.prepare(thread_id, project))
 
     @overload

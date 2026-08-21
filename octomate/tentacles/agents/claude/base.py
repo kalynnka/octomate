@@ -160,6 +160,35 @@ async def deny_outside_workspace(
     }
 
 
+async def deny_write(
+    hook_input: HookInput,
+    tool_use_id: str | None,
+    context: HookContext,
+) -> HookJSONOutput:
+    """Refuse every file write in a thread that is in no project.
+
+    Such a thread runs in the shared chat directory — the same one every other
+    projectless thread runs in — and sharing one directory is safe only because
+    nothing may write to it. There is no path to check: the answer is the same
+    wherever the write points, which is why this takes no workspace.
+
+    The reason says what would make writing possible, so the model reports a
+    blocker and asks rather than retrying under a different filename.
+    """
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                "This thread is in no project, so it runs in a directory shared "
+                "with every other conversation and nothing may write there. Say "
+                "what you would have written and which project this work belongs "
+                "in; the same write will be refused again."
+            ),
+        }
+    }
+
+
 @dataclass
 class ClaudeCodeTentacle(AgentTentacle[str, None]):
     """Claude Agent SDK runner exposed as an Octomate agent tentacle.
@@ -682,7 +711,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             project, run_cwd = None, self.config.cwd
         else:
             project = await self.run_project(conversation.thread_id)
-            run_cwd = await self.run_cwd(conversation.thread_id, self.config.cwd)
+            run_cwd = await self.run_cwd(conversation.thread_id, project)
         # `setting_sources` is left unset on purpose: verified against the CLI, the
         # unset default loads every source, so the bound directory arrives with its
         # own CLAUDE.md and .claude/settings.json — the useful half of "work on this
@@ -700,6 +729,13 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     matcher="|".join(WRITE_TOOL_PATHS),
                     hooks=[partial(deny_outside_workspace, Path(run_cwd))],
                 )
+            )
+        elif self.config.ssh is None:
+            # In no project and running locally, so the directory is the shared one
+            # every such thread gets. An ssh run is somewhere else entirely, under
+            # whatever the operator pointed it at, and is not this to police.
+            pre_tool_use_hooks.append(
+                HookMatcher(matcher="|".join(WRITE_TOOL_PATHS), hooks=[deny_write])
             )
 
         options = ClaudeAgentOptions(

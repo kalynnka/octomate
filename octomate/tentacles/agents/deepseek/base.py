@@ -764,7 +764,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             if is_deepseek_mode(conversation.permission_mode)
             else self.config.permission_mode
         )
-        run_cwd = await self.run_cwd(conversation.thread_id, self.config.cwd)
+        run_cwd = await self.run_cwd(
+            conversation.thread_id, await self.run_project(conversation.thread_id)
+        )
 
         with deepseek_logfire.span(
             "DeepseekTentacle {agent_id} {run_name} [{conversation_address}]",

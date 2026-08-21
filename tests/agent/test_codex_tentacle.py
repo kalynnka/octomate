@@ -446,7 +446,8 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     assert thread_call.kind == "start"
     assert thread_call.model == "gpt-5.3-codex"
     assert thread_call.approval_mode == ApprovalMode.deny_all
-    assert thread_call.sandbox == Sandbox.workspace_write
+    # No project, so the run is a chat run and read-only whatever the block says.
+    assert thread_call.sandbox == Sandbox.read_only
 
     [recorded] = conversations.runs
     fake, _label, messages = recorded
@@ -533,7 +534,8 @@ async def test_run_resumes_prior_thread_and_applies_config(
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "resume"
     assert thread_call.thread_id == "prev-thread"
-    assert thread_call.cwd == "/repo"
+    # The configured `cwd` is not where a projectless thread lands any more.
+    assert thread_call.cwd == str(tentacle.octomate.workspaces.chat())
     assert thread_call.approval_mode == ApprovalMode.auto_review
     assert thread_call.base_instructions == "base"
     assert thread_call.developer_instructions == "dev"
@@ -541,10 +543,11 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert thread_call.model == "gpt-5.5"
     assert thread_call.model_provider == "openai"
     assert thread_call.personality == Personality.pragmatic
-    assert thread_call.sandbox == Sandbox.workspace_write
+    # No project, so the run is a chat run and read-only whatever the block says.
+    assert thread_call.sandbox == Sandbox.read_only
 
     [turn_call] = FakeCodex.turn_calls
-    assert turn_call.cwd == "/repo"
+    assert turn_call.cwd == str(tentacle.octomate.workspaces.chat())
     assert turn_call.effort == ReasoningEffort.xhigh
     assert turn_call.summary == ReasoningSummary(ReasoningSummaryValue.detailed)
 

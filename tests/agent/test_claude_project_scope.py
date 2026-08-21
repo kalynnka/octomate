@@ -254,7 +254,7 @@ async def test_the_boundary_is_the_workspace_not_either_checkout(
     assert str(cwd) in reason
 
 
-async def test_a_run_in_no_project_is_unaffected(tmp_path: Path) -> None:
+async def test_a_run_in_no_project_may_not_write_at_all(tmp_path: Path) -> None:
     inky = a_project(tmp_path / "inky").root
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -264,14 +264,22 @@ async def test_a_run_in_no_project_is_unaffected(tmp_path: Path) -> None:
         await a_registry(a_project(inky)), configured=str(elsewhere)
     )
 
-    # A thread in no project has no workspace, so nothing scopes it — and it runs
-    # where it always did.
-    assert matchers == ["AskUserQuestion"]
-    assert scope is None
-    assert cwd == elsewhere
+    # It runs in the shared chat directory rather than where it was configured, and
+    # the same tools are hooked — but with a refusal that has no boundary to
+    # compare against, since no path in a chat thread is one that may be written.
+    assert matchers == ["AskUserQuestion", "Write|Edit|NotebookEdit"]
+    assert scope is not None
+    assert await denial(scope, "Write", cwd / "notes.md") is not None
+    assert await denial(scope, "Edit", elsewhere / "x.py") is not None
+    assert cwd != elsewhere
+    assert cwd.name == "chat"
 
 
-async def test_with_nothing_declared_no_run_is_scoped() -> None:
-    matchers, scope, _cwd = await a_run(await a_registry())
+async def test_with_nothing_declared_every_run_is_a_chat_run() -> None:
+    # No registry means no thread can be in a project, so every run is one that may
+    # not write — including on a host that has simply never declared anything.
+    matchers, scope, cwd = await a_run(await a_registry())
 
-    assert (matchers, scope) == (["AskUserQuestion"], None)
+    assert matchers == ["AskUserQuestion", "Write|Edit|NotebookEdit"]
+    assert scope is not None
+    assert await denial(scope, "Write", cwd / "notes.md") is not None

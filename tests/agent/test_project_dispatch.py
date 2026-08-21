@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
+from openai_codex.api import Sandbox
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -138,19 +139,54 @@ def test_a_composed_workspace_manager_is_the_one_the_host_uses() -> None:
     assert composed.projects is octomate.projects
 
 
-async def test_with_nothing_declared_claude_dispatches_where_it_always_did() -> None:
+async def test_with_nothing_declared_claude_runs_in_the_chat_directory() -> None:
+    # OCTO-50: never the agent's configured `cwd`, which defaults to `"."` — on a
+    # server, the directory holding the database and the config home's secrets.
     octomate = Octomate(conversations=FakeConversationManager())
 
     options = await claude_run(octomate, await a_thread(octomate, "chat"))
 
-    assert options.cwd == "/configured"
+    assert options.cwd == str(octomate.workspaces.chat())
+    assert options.cwd != "/configured"
     assert options.add_dirs == []
 
 
-async def test_with_nothing_declared_codex_dispatches_where_it_always_did() -> None:
+async def test_with_nothing_declared_codex_runs_in_the_chat_directory() -> None:
     octomate = Octomate(conversations=FakeConversationManager())
 
-    assert await codex_run(octomate, await a_thread(octomate, "chat")) == "/configured"
+    cwd = await codex_run(octomate, await a_thread(octomate, "chat"))
+
+    assert cwd == str(octomate.workspaces.chat())
+
+
+async def test_every_thread_in_no_project_shares_one_directory() -> None:
+    # Safe only because nothing may write there, which is what each runtime is told
+    # where its run is set up. A writable exception would have to stop the sharing.
+    octomate = Octomate(conversations=FakeConversationManager())
+
+    one = (await claude_run(octomate, await a_thread(octomate, "first"))).cwd
+    other = (await claude_run(octomate, await a_thread(octomate, "second"))).cwd
+
+    assert one == other == str(octomate.workspaces.chat())
+
+
+async def test_codex_is_read_only_in_a_chat_thread_and_not_in_a_project(
+    tmp_path: Path,
+) -> None:
+    # The directory is the whole of Codex's boundary, so a shared directory has to
+    # be read-only; a thread with a workspace of its own keeps the configured mode.
+    octomate = Octomate(
+        conversations=FakeConversationManager(),
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(repo(tmp_path / "inky")))
+        ),
+    )
+
+    await codex_run(octomate, await a_thread(octomate, "chat"))
+    assert FakeCodex.thread_calls[-1].sandbox == Sandbox.read_only
+
+    await codex_run(octomate, await a_thread(octomate, "work", "inky"))
+    assert FakeCodex.thread_calls[-1].sandbox == Sandbox.workspace_write
 
 
 async def test_a_thread_in_a_project_runs_claude_in_its_workspace(
@@ -281,10 +317,10 @@ async def test_a_thread_naming_an_undeclared_project_falls_back(
     )
 
     # A thread's project is a reference into the registry; a name the registry does
-    # not carry has no root to run in.
+    # not carry has no root to run in, so the thread is a chat thread.
     options = await claude_run(octomate, await a_thread(octomate, "chat", "retired"))
 
-    assert options.cwd == "/configured"
+    assert options.cwd == str(octomate.workspaces.chat())
 
 
 async def a_project_thread(tmp_path: Path) -> tuple[Octomate, Thread, Path]:
