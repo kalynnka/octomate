@@ -1,5 +1,5 @@
-"""OCTO-47, OCTO-51 — a thread's workspace is a fork of its project's mirror,
-and a disposable one.
+"""OCTO-47, OCTO-51, OCTO-52 — a thread's workspace is a fork of its project's
+mirror, and a disposable one.
 
 Every test here runs twice, once per mechanism: the copy-on-write fork where the
 filesystem under the test host offers one, and the `git clone` fallback always,
@@ -811,3 +811,41 @@ async def test_the_sweep_prunes_on_its_interval(
         await sweeping
 
     assert not workspace.exists()
+
+
+async def test_a_named_ref_is_where_the_workspace_starts(
+    manager: WorkspaceManager,
+) -> None:
+    # OCTO-52: the default branch is the wrong answer often enough — continuing
+    # someone's feature branch, reproducing against a tag, working from a PR head.
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    await run_git("checkout", "-b", "feat/theirs", cwd=mirror)
+    (mirror / "theirs.md").write_text("wip")
+    await run_git("add", "-A", cwd=mirror)
+    await run_git(*IDENTITY, "commit", "-m", "theirs", cwd=mirror)
+    await run_git("checkout", "main", cwd=mirror)
+    thread = await a_bound_thread(manager)
+
+    workspace = await manager.materialize(thread.id, mirror, "feat/theirs")
+
+    assert (workspace / "theirs.md").read_text() == "wip"
+    # Started there, but still on the thread's own branch: where the work begins
+    # and whose branch it lands on are separate questions.
+    assert await branch(workspace) == f"octomate/thread-{thread.id}"
+
+
+async def test_a_ref_the_mirror_does_not_have_fails_the_fork(
+    manager: WorkspaceManager,
+) -> None:
+    # A starting point that does not resolve has to fail where it was asked for.
+    # Falling back to the default branch would be a thread quietly doing its work
+    # somewhere nobody chose.
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    thread = await a_bound_thread(manager)
+
+    with pytest.raises(GitCommandError):
+        await manager.materialize(thread.id, mirror, "no/such/ref")
+
+    # And the half-made fork is gone, so the next turn forks again rather than
+    # reading a staging directory as this thread's workspace.
+    assert manager.existing(thread.id) is None

@@ -205,7 +205,12 @@ class WorkspaceManager:
         )
         return self.reflink
 
-    async def prepare(self, thread_id: uuid.UUID, project: Project) -> Path:
+    async def prepare(
+        self,
+        thread_id: uuid.UUID,
+        project: Project,
+        ref: str | None = None,
+    ) -> Path:
         """This thread's own checkout of `project`, ready for a run to happen in.
 
         A thread runs here rather than in `project.root`, so two threads on one
@@ -223,9 +228,14 @@ class WorkspaceManager:
         workspace = self.existing(thread_id)
         if workspace is not None:
             return workspace
-        return await self.materialize(thread_id, await self.mirrors.sync(project))
+        return await self.materialize(thread_id, await self.mirrors.sync(project), ref)
 
-    async def materialize(self, thread_id: uuid.UUID, mirror: Path) -> Path:
+    async def materialize(
+        self,
+        thread_id: uuid.UUID,
+        mirror: Path,
+        ref: str | None = None,
+    ) -> Path:
         """This thread's workspace: a fork of `mirror`, as its last turn left it.
 
         A workspace that already exists is the thread's live tree, uncommitted
@@ -259,7 +269,7 @@ class WorkspaceManager:
                 else:
                     await run_git("clone", str(mirror), str(staging))
                 await self.inherit_remotes(mirror, staging)
-                await self.checkout(thread_id, mirror, staging)
+                await self.checkout(thread_id, mirror, staging, ref)
                 staging.rename(path)
                 # `cp -a` preserves the mirror's timestamps and a rename does not
                 # refresh them, so without this a fork inherits an mtime that can
@@ -298,7 +308,11 @@ class WorkspaceManager:
         await run_git("remote", "add", "origin", url.strip(), cwd=workspace)
 
     async def checkout(
-        self, thread_id: uuid.UUID, mirror: Path, workspace: Path
+        self,
+        thread_id: uuid.UUID,
+        mirror: Path,
+        workspace: Path,
+        ref: str | None = None,
     ) -> None:
         """Put a freshly forked `workspace` back the way this thread's last turn left
         it, when `mirror` is keeping a snapshot of it.
@@ -311,13 +325,27 @@ class WorkspaceManager:
         reads as uncommitted rather than as staged.
 
         A thread forking for the first time starts on its own branch, where the
-        mirror's branch is.
+        mirror's branch is — or where `ref` names, when the bind asked for one.
+        The default branch is the wrong answer often enough: continuing someone's
+        feature branch, reproducing against a tag, working from a PR head.
+
+        `ref` is only consulted by a first fork. A thread whose workspace was
+        pruned resumes into its own snapshot, which is where its work is, and no
+        starting point competes with that.
         """
         saved = thread_ref(thread_id)
         if not await run_git("ls-remote", str(mirror), saved):
-            await run_git(
-                "checkout", "-b", f"octomate/thread-{thread_id}", cwd=workspace
-            )
+            branch = f"octomate/thread-{thread_id}"
+            if ref is None:
+                await run_git("checkout", "-b", branch, cwd=workspace)
+                return
+            # Fetched from the mirror rather than named directly: a clone's
+            # remote-tracking refs are removed with the `origin` `inherit_remotes`
+            # replaces, so the only commit a fork is certain to resolve is the one
+            # it was left on. A ref the mirror does not have fails here, which is
+            # what the caller has to be able to report.
+            await run_git("fetch", str(mirror), ref, cwd=workspace)
+            await run_git("checkout", "-b", branch, "FETCH_HEAD", cwd=workspace)
             return
         # A copied fork carries the mirror's refs already and a cloned one does not,
         # so both fetch: one to be sure it is current, the other to have it at all.
