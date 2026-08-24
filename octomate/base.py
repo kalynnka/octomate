@@ -18,6 +18,7 @@ from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
 
+from octomate.config.base import OctomateConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
@@ -117,6 +118,10 @@ class Octomate:
     secret: SecretStr | None = None
     # The MCP endpoint under each served server's mount: `/<name>` + `mcp_path`.
     mcp_path: str = "/mcp"
+    # The deployment config the host was built from. What a tentacle reads for
+    # serving facts the app object itself does not model — above all the uvicorn
+    # bind port, which only the config knows.
+    config: OctomateConfig | None = None
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
