@@ -249,13 +249,20 @@ def test_claude_code_config_validates_model_names() -> None:
         ClaudeCodeConfig.model_validate({"models": {"missing"}})
 
 
-def test_claude_code_config_refuses_a_remote_host() -> None:
-    # Remote runs are off while a run's directory is its thread's workspace: the
-    # workspace is a local path, and the host on the other end has nothing to match.
-    with pytest.raises(ValidationError, match="remote runs are disabled"):
-        ClaudeCodeConfig(
+def test_claude_code_config_warns_a_remote_host_is_not_honoured(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Remote runs are off while a run's directory is its thread's workspace, and
+    # nothing can make one on the host at the other end. The block is kept as
+    # written — the transport that would have read it is what is parked.
+    with caplog.at_level("WARNING"):
+        config = ClaudeCodeConfig(
             models=set(CLAUDE_MODELS), ssh=ClaudeSSHConfig(host="user@box")
         )
+
+    assert config.ssh is not None
+    assert "user@box" in caplog.text
+    assert "stays local" in caplog.text
 
 
 def test_claude_code_config_accepts_documented_model_aliases() -> None:

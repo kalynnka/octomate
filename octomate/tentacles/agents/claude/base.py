@@ -89,7 +89,6 @@ from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
-from octomate.tentacles.agents.claude.transport import SSHTransport
 from octomate.tentacles.agents.hooks import hook_guard
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -193,9 +192,8 @@ async def deny_write(
 class ClaudeCodeTentacle(AgentTentacle[str, None]):
     """Claude Agent SDK runner exposed as an Octomate agent tentacle.
 
-    A run drives a `ClaudeSDKClient` — a local subprocess, or the remote
-    `SSHTransport` when `config.ssh` is set — translating its message
-    stream through `ClaudeRunAccumulator` into live
+    A run drives a `ClaudeSDKClient` over a local subprocess, translating its
+    message stream through `ClaudeRunAccumulator` into live
     stream events (proxied to the channel feelers) and persisted
     `ModelMessage`s. The Claude session id is stored on the conversation as
     `external_id` and replayed via `resume=` so Claude owns its own
@@ -780,28 +778,33 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         if not prompt_text:
             raise ValueError("ClaudeCodeTentacle requires a non-empty text prompt")
 
-        transport = (
-            SSHTransport(prompt_text, options, ssh=self.config.ssh)
-            if self.config.ssh is not None
-            else None
-        )
+        # Parked, not dropped: remote runs are off because nothing makes a workspace
+        # on another machine. Restoring is this block, the import, the span label and
+        # `transport=transport` on the client — never the config validator alone.
+        # transport = (
+        #     SSHTransport(prompt_text, options, ssh=self.config.ssh)
+        #     if self.config.ssh is not None
+        #     else None
+        # )
         with (
             claude_logfire.span(
                 "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
                 agent_id=self.id,
                 run_name=run_name or "claude",
                 conversation_address=str(conversation_address),
-                transport=(
-                    f"ssh:{self.config.ssh.host}"
-                    if self.config.ssh is not None
-                    else "local"
-                ),
+                # transport=(
+                #     f"ssh:{self.config.ssh.host}"
+                #     if self.config.ssh is not None
+                #     else "local"
+                # ),
+                transport="local",
             ),
             # Taken before the CLI is launched and held until its teardown has waited
             # the process out, so it spans every hook this session can fire.
             self.session_ingest.driving(session_id),
         ):
-            async with ClaudeSDKClient(options=options, transport=transport) as client:
+            # async with ClaudeSDKClient(options=options, transport=transport) as client:
+            async with ClaudeSDKClient(options=options) as client:
                 # One live run per conversation: register this client and interrupt
                 # any prior run for the same conversation so a mid-run follow-up
                 # supersedes it. The weak-value map drops this entry once the run

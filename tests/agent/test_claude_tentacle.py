@@ -378,11 +378,13 @@ async def test_local_transport_passes_no_custom_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
-    tentacle = _tentacle(FakeConversationManager())  # default: no ssh block → local
+    tentacle = _tentacle(FakeConversationManager())
 
     await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
 
-    # A local run lets the SDK build its own subprocess transport.
+    # Every run is local and lets the SDK build its own subprocess transport. This
+    # is the guard on that: nothing here may hand the SDK a transport again while
+    # a workspace is something only the local host can make.
     assert FakeClaudeClient.last_transport is None
 
 

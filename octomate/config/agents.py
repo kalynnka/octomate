@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -24,6 +25,8 @@ from octomate.types.permissions import (
 # than a home directory — a root like that matches nothing and quietly stops a session
 # being ingested.
 ConfigPath: TypeAlias = Annotated[Path, AfterValidator(Path.expanduser)]
+
+logger = logging.getLogger(__name__)
 
 ClaudeCodeModelName: TypeAlias = Literal[
     "best",
@@ -281,13 +284,16 @@ class ClaudeCodeConfig(BaseModel):
     ssh: ClaudeSSHConfig | None = Field(
         default=None,
         description=(
-            "Remote host to run `claude` on. Disabled: a run happens in its "
-            "thread's workspace, a local path the host on the other end has "
-            "nothing to match, so a remote run would silently land somewhere "
-            "else. `SSHTransport` is kept as it is. Re-enabling means giving "
-            "`ClaudeSSHConfig` a remote directory of its own and then dropping "
-            "`refuse_remote_runs`; there is no agent-wide `cwd` left to fall "
-            "back to, which is what made landing somewhere else silent."
+            "Remote host to run `claude` on. Disabled, and no longer wired: a "
+            "run happens in its thread's workspace, and there is nothing that "
+            "makes a workspace on another machine. The tentacle hands the SDK "
+            "no transport at all now; `SSHTransport` is kept as it stands, but "
+            "nothing constructs it. Re-enabling is three things rather than "
+            "one — somewhere remote to fork a workspace into, a directory on "
+            "`ClaudeSSHConfig` to name it, and the transport wired back in. "
+            "Setting it is warned about rather than refused: with the transport "
+            "parked the block reaches nothing, so failing a start over it would "
+            "cost more than it saves."
         ),
     )
     approval_timeout: float | None = Field(
@@ -301,12 +307,21 @@ class ClaudeCodeConfig(BaseModel):
 
     @field_validator("ssh")
     @classmethod
-    def refuse_remote_runs(cls, ssh: ClaudeSSHConfig | None) -> ClaudeSSHConfig | None:
+    def warn_remote_runs_are_off(
+        cls, ssh: ClaudeSSHConfig | None
+    ) -> ClaudeSSHConfig | None:
+        """Say that a configured remote host is not honoured, and keep it as written.
+
+        This refused the whole config while the tentacle still built an SSH
+        transport, since a block that would have been obeyed had to be stopped
+        loudly. The transport is parked now and the block reaches nothing, so the
+        value is left as the operator wrote it and only the effect is reported.
+        """
         if ssh is not None:
-            raise ValueError(
-                "remote runs are disabled: a run happens in its thread's "
-                "workspace, which is a local path the remote host has nothing "
-                "to match"
+            logger.warning(
+                "agents.claude.ssh is not honoured and the run stays local: a run "
+                "happens in its thread's workspace, and nothing makes one on %s",
+                ssh.host,
             )
         return ssh
 
