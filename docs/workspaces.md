@@ -186,19 +186,25 @@ starts in a real workspace with write access.
 ## The chat workspace
 
 A process always has a working directory, so a thread with no project still needs
-one. Today that falls back to the agent's configured `cwd`, which defaults to
+one. It used to fall back to the agent's configured `cwd`, which defaults to
 `"."` — on a server, Octomate's own install directory.
 
 Instead: one empty directory, shared by every chat thread, with file writes
-refused for every runtime.
+refused.
 
 - **Codex** — `sandbox: read_only`.
-- **Claude** — two layers, because its sandbox and its tools are separate:
-  `sandbox.filesystem.denyWrite` on the directory covers Bash and its children;
-  a `PreToolUse` hook refuses `Write`/`Edit`/`NotebookEdit`, which the Bash
-  sandbox does not cover. This is the shape `deny_outside_project` already has.
+- **Claude** — a `PreToolUse` hook refuses `Write`/`Edit`/`NotebookEdit`, the
+  same shape `deny_outside_workspace` has. There is no sandbox key to pair it
+  with: `SandboxSettings` configures filesystem restrictions through permission
+  rules rather than through keys of its own, and `sandbox.enabled` covers Bash
+  alone. A Bash write is therefore still permitted here, and the deny rule that
+  closes it belongs with the sandbox work.
+- **DeepSeek** — not covered. dsh's two shipped presets are `workspace-write`
+  and `danger-full-access`, neither read-only, so a dsh chat thread can write to
+  the shared directory. A known hole rather than a posture.
 
-Sharing one directory is safe precisely because nothing can write to it.
+Sharing one directory is safe precisely because nothing can write to it, so the
+two gaps above are what stands between that sentence and being true.
 
 **Nothing writable is provided, and nothing needs to be.** Under Codex
 `read_only` there is no writable location at all, so no scratch directory is
