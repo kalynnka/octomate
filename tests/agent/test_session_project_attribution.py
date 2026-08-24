@@ -18,7 +18,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -201,20 +200,28 @@ async def test_a_codex_session_is_attributed_the_same_way(tmp_path: Path) -> Non
 
 
 async def test_a_thread_cannot_be_re_attributed(tmp_path: Path) -> None:
-    # The root a thread names is where every conversation in it runs, and an
+    # The workspace a thread names is where every conversation in it runs, and an
     # external session's history is full of absolute paths: a thread that changed
     # project would resume its sessions into a tree they were never written for.
+    # The rule is the manager's rather than the field's, because `project_id` has
+    # to be settable once for a chat thread to become a working one, and `frozen`
+    # cannot say once.
     inky = repo(tmp_path / "inky")
+    kraken = repo(tmp_path / "kraken")
     octomate = Octomate(
-        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(inky), a_project(kraken))
+        )
     )
     thread = await octomate.thread_manager.ensure(
         ThreadKey("im", "thread", "chat", "t1"),
         project=octomate.projects.get("inky"),
     )
+    kraken_project = octomate.projects.get("kraken")
+    assert kraken_project is not None
 
-    with pytest.raises(ValidationError):
-        thread.project_id = None
+    with pytest.raises(ValueError, match="binds once"):
+        await octomate.thread_manager.bind(thread.id, kraken_project)
 
 
 async def test_a_thread_cannot_name_a_project_that_is_not_there(
@@ -285,8 +292,8 @@ async def test_a_session_ending_before_any_hook_is_still_filed(
     tmp_path: Path,
 ) -> None:
     # `SessionEnd` carries a cwd like every other hook, and this is the last moment it
-    # can be used: the hook creates the thread, and a thread's project is frozen at
-    # creation, so one born unfiled would stay unfiled.
+    # can be used: the hook creates the thread, and a native session never binds
+    # one afterwards, so one born unfiled would stay unfiled.
     inky = repo(tmp_path / "inky")
     octomate = Octomate(
         workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))

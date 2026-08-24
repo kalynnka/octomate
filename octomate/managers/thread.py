@@ -113,6 +113,52 @@ class ThreadManager:
         self.cache_thread(thread)
         return thread
 
+    async def bind(self, thread_id: uuid.UUID, project: Project) -> Thread:
+        """Attribute a thread that is in no project to `project`, once.
+
+        The one exception to a project being written when the row is created: a
+        chat thread exists before anyone has said what it is about, so the
+        attribution has to be able to arrive later. It arrives once. A second bind
+        is refused rather than switching — the first project's workspace holds work
+        nobody has reviewed yet, and a thread whose project moved is a record of
+        what it did somewhere it no longer says it was. A different project is a
+        different thread.
+
+        A DM and a group chat are refused for the reason `ATTRIBUTABLE_KINDS`
+        gives: they outlive every project in them.
+
+        No workspace is made here. A run's working directory is fixed when its
+        process spawns, so this takes effect on the thread's next turn and the
+        caller has to say so.
+        """
+        async with async_session() as session:
+            thread = await session.get(Thread, thread_id)
+            if thread is None:
+                raise ValueError(f"no thread {thread_id} to bind")
+            if thread.kind not in ATTRIBUTABLE_KINDS:
+                raise ValueError(
+                    f"{thread.key} is a {thread.kind} and cannot be attributed to "
+                    f"project {project.name!r}: only a thread or a native_thread "
+                    f"is work."
+                )
+            current = await thread.project
+            if current is not None:
+                raise ValueError(
+                    f"{thread.key} is already about {current.name!r} and a thread "
+                    f"binds once; work on {project.name!r} in its own thread."
+                )
+            thread.project_id = project.id
+            await session.commit()
+
+        # Read the thread back rather than returning the row that changed. `project`
+        # is eagerly loaded, so the copy that set the id is still holding the answer
+        # it was loaded with — and `ensure` hands the cached copy to every later turn
+        # in the thread, which is exactly the run this binding is for.
+        bound = await self.get(thread_id)
+        if bound is None:
+            raise ValueError(f"thread {thread_id} vanished while binding")
+        return bound
+
     async def get(
         self, thread_id: uuid.UUID, *, with_messages: bool = True
     ) -> Thread | None:

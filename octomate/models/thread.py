@@ -147,11 +147,12 @@ class Thread(Base, TransmuterProxiedMixin):
         index=True,
         comment=(
             "The declared project this thread's work is in; NULL is unattributed. "
-            "Set when the row is created and never changed after: a thread's project "
-            "is where its work started, and its root is where the runs happen, so "
-            "moving it would move sessions whose history is full of absolute paths. "
-            "SET NULL rather than CASCADE: attribution describes a thread, and "
-            "losing the project it named must not take the thread's history with it."
+            "Set once — when the row is created, or later by binding a thread that "
+            "had none — and never moved after that: a thread's project is where its "
+            "work happens, and its sessions' history is full of absolute paths, so "
+            "moving it would resume them somewhere they do not fit. SET NULL rather "
+            "than CASCADE: attribution describes a thread, and losing the project it "
+            "named must not take the thread's history with it."
         ),
     )
     status: Mapped[ThreadStatus] = mapped_column(
