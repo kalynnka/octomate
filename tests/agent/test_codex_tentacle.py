@@ -34,9 +34,10 @@ from pydantic_ai.messages import PartStartEvent
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.config import AgentModelConfig, ChannelConfig
+from octomate.config import AgentModelConfig, ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.gateway import GatewaySession
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
@@ -1014,3 +1015,124 @@ async def test_a_subagent_run_declines_only_where_a_human_was_needed(
         else codex_base.CODEX_PERMISSION_PLANS[permission_mode].sdk_mode
     )
     assert thread_call.approval_mode == expected
+
+
+async def test_a_registered_gateway_session_wires_the_launch_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    octomate = Octomate(
+        conversations=conversations,
+        secret=SecretStr("s3"),
+        config=OctomateConfig(port=8123, mcp_path="/mcp"),
+    )
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
+    octomate.gateway.register(
+        GatewaySession(
+            channel_routes={},
+            current_agent_id="codex",
+            conversation_id=conversation.id,
+        )
+    )
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+    )
+
+    async with tentacle:
+        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+    config = FakeCodex.last_config
+    assert config is not None
+    assert config.env is not None
+    assert config.env[codex_base.GATEWAY_TOKEN_ENV] == "s3"
+    assert config.env[codex_base.GATEWAY_CONVERSATION_ENV] == str(conversation.id)
+    assert config.env[codex_base.DRIVEN_ENV] == "1"
+    assert config.config_overrides == (
+        "mcp_servers.gateway.url=http://127.0.0.1:8123/gateway/mcp",
+        "mcp_servers.gateway.bearer_token_env_var=OCTOMATE_GATEWAY_TOKEN",
+        "mcp_servers.gateway.env_http_headers="
+        '{"X-Octomate-Conversation" = "OCTOMATE_GATEWAY_CONVERSATION"}',
+    )
+
+
+async def test_a_turn_without_a_gateway_session_launches_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+    config = FakeCodex.last_config
+    assert config is not None
+    assert config.config_overrides == ()
+    assert codex_base.GATEWAY_TOKEN_ENV not in (config.env or {})
+
+
+async def test_a_gateway_wiring_flip_evicts_the_pooled_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    octomate = Octomate(
+        conversations=conversations,
+        secret=SecretStr("s3"),
+        config=OctomateConfig(port=8123, mcp_path="/mcp"),
+    )
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+    )
+
+    async with tentacle:
+        await tentacle.run("one", conversation_address=KEY, thread_id=_THREAD)
+        assert (FakeCodex.builds, FakeCodex.closed) == (1, 0)
+
+        conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
+        session = GatewaySession(
+            channel_routes={},
+            current_agent_id="codex",
+            conversation_id=conversation.id,
+        )
+        octomate.gateway.register(session)
+        await tentacle.run("two", conversation_address=KEY, thread_id=_THREAD)
+        assert (FakeCodex.builds, FakeCodex.closed) == (2, 1)
+
+        # And back again once the turn no longer has the gateway.
+        octomate.gateway.unregister(session)
+        await tentacle.run("three", conversation_address=KEY, thread_id=_THREAD)
+        assert (FakeCodex.builds, FakeCodex.closed) == (3, 2)
+
+
+async def test_a_registered_gateway_without_a_served_endpoint_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    octomate = Octomate(conversations=conversations)
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
+    octomate.gateway.register(
+        GatewaySession(
+            channel_routes={},
+            current_agent_id="codex",
+            conversation_id=conversation.id,
+        )
+    )
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+    )
+
+    async with tentacle:
+        with pytest.raises(RuntimeError, match="serves no MCP endpoint"):
+            await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)

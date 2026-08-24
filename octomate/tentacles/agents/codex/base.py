@@ -68,6 +68,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import CodexConfig
+from octomate.mcp.gateway import CONVERSATION_HEADER, GATEWAY_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
@@ -149,6 +150,13 @@ CODEX_PERMISSION_PLANS: dict[CodexPermissionMode, CodexPermissionPlan] = {
 }
 
 
+# How a driven turn's Codex process is told to reach the gateway MCP server: the
+# launch config names these variables, and `new_client` fills them per conversation,
+# so the identity the header asserts is the launch config's and never the model's.
+GATEWAY_TOKEN_ENV = "OCTOMATE_GATEWAY_TOKEN"
+GATEWAY_CONVERSATION_ENV = "OCTOMATE_GATEWAY_CONVERSATION"
+
+
 @dataclass
 class PooledCodexClient:
     client: AsyncCodex
@@ -158,6 +166,9 @@ class PooledCodexClient:
     last_used: float = 0.0
     # Active runs holding this client; a client with `in_use > 0` is never evicted.
     in_use: int = 0
+    # Whether this client was launched with the gateway MCP wiring; a turn wanting
+    # otherwise evicts and rebuilds, since launch config is fixed at process start.
+    gateway: bool = False
 
 
 class CodexClientPool:
@@ -174,7 +185,7 @@ class CodexClientPool:
     def __init__(
         self,
         *,
-        build: Callable[[uuid.UUID], AsyncCodex],
+        build: Callable[[uuid.UUID, bool], AsyncCodex],
         max_clients: int | None,
         idle_ttl: float | None,
     ) -> None:
@@ -184,14 +195,28 @@ class CodexClientPool:
         self.clients: OrderedDict[uuid.UUID, PooledCodexClient] = OrderedDict()
         self.lock = asyncio.Lock()
 
-    async def acquire(self, conversation_id: uuid.UUID) -> PooledCodexClient:
+    async def acquire(
+        self, conversation_id: uuid.UUID, *, gateway: bool = False
+    ) -> PooledCodexClient:
         async with self.lock:
             await self.evict_idle()
             pooled = self.clients.get(conversation_id)
+            if pooled is not None and pooled.gateway != gateway:
+                # Launch config is fixed at process start, so a turn whose gateway
+                # wiring disagrees gets a fresh process; the Codex thread itself
+                # survives, resumed from the conversation's external id.
+                if pooled.in_use:
+                    raise RuntimeError(
+                        f"conversation {conversation_id} has a live turn on a Codex "
+                        "client whose gateway wiring disagrees with this turn's"
+                    )
+                del self.clients[conversation_id]
+                await self.close(pooled)
+                pooled = None
             if pooled is None:
-                client = self.build(conversation_id)
+                client = self.build(conversation_id, gateway)
                 await client.__aenter__()
-                pooled = PooledCodexClient(client=client)
+                pooled = PooledCodexClient(client=client, gateway=gateway)
                 self.clients[conversation_id] = pooled
             self.clients.move_to_end(conversation_id)
             pooled.in_use += 1
@@ -493,11 +518,38 @@ class CodexTentacle(AgentTentacle[str, None]):
         # Only the pool is tentacle-wide shared state; each conversation's Codex
         # client is built here, entered/exited through the SDK's async context, and
         # reused or evicted by the pool.
-        def new_client(conversation_id: uuid.UUID) -> AsyncCodex:
-            runtime = replace(
-                self.config.runtime,
-                env={**(self.config.runtime.env or {}), DRIVEN_ENV: "1"},
-            )
+        def new_client(conversation_id: uuid.UUID, gateway: bool) -> AsyncCodex:
+            env = {**(self.config.runtime.env or {}), DRIVEN_ENV: "1"}
+            overrides = self.config.runtime.config_overrides
+            if gateway:
+                # The turn's session is at the gateway, so the launch config wires
+                # the process to the served MCP endpoint and asserts the turn's own
+                # conversation id — the model never chooses the header. The url is
+                # the deployment config's port and path over loopback: the bind is
+                # uvicorn's rather than the app's, and the app-server is a child
+                # of the host being served.
+                deployment = self.octomate.config
+                if self.octomate.secret is None or deployment is None:
+                    raise RuntimeError(
+                        "this turn's gateway session is registered, but the host "
+                        "serves no MCP endpoint to wire it to: octomate.secret "
+                        "and Octomate.config must both be set"
+                    )
+                env[GATEWAY_TOKEN_ENV] = self.octomate.secret.get_secret_value()
+                env[GATEWAY_CONVERSATION_ENV] = str(conversation_id)
+                url = (
+                    f"http://127.0.0.1:{deployment.port}"
+                    f"/{GATEWAY_SERVER_NAME}{deployment.mcp_path}"
+                )
+                overrides = (
+                    *overrides,
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.url={url}",
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.bearer_token_env_var="
+                    f"{GATEWAY_TOKEN_ENV}",
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.env_http_headers="
+                    f'{{"{CONVERSATION_HEADER}" = "{GATEWAY_CONVERSATION_ENV}"}}',
+                )
+            runtime = replace(self.config.runtime, env=env, config_overrides=overrides)
             client = AsyncCodex(config=runtime)
 
             # One client per conversation, so bind the approval handler to this
@@ -983,7 +1035,10 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_name=run_name or "codex",
             conversation_address=str(conversation_address),
         ):
-            pooled = await self.pool.acquire(conversation.id)
+            # Registered by the react node for exactly the turns whose connection
+            # has the gateway; an accomplice's or a stray conversation is not there.
+            gateway = self.octomate.gateway.get(conversation.id) is not None
+            pooled = await self.pool.acquire(conversation.id, gateway=gateway)
             try:
                 codex_thread = pooled.thread
                 if codex_thread is None:

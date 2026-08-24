@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
         logfire.instrument_sqlalchemy(engine=db_engine())
 
     octomate = Octomate(
+        config=config,
         users=UserManager(config.users),
         projects=ProjectManager(config.projects),
         oauth_encryption_key=config.oauth.encryption_key,
