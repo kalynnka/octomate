@@ -260,7 +260,6 @@ class ClaudeCodeConfig(BaseModel):
         default=True,
         description="Whether to register the Claude tentacle when the config block exists.",
     )
-    cwd: str = "."
     models: set[ClaudeCodeModelName] = Field(
         min_length=1,
         description="Claude Code model route labels this agent exposes to channels.",
@@ -282,11 +281,13 @@ class ClaudeCodeConfig(BaseModel):
     ssh: ClaudeSSHConfig | None = Field(
         default=None,
         description=(
-            "Remote host to run `claude` on. Disabled: a run belongs to the project "
-            "its thread is in, and a project root is a local path the host on the "
-            "other end has nothing to match, so a remote run would silently land "
-            "somewhere else. `SSHTransport` is kept as it is; `refuse_remote_runs` "
-            "is what to drop when a remote run can say where it is."
+            "Remote host to run `claude` on. Disabled: a run happens in its "
+            "thread's workspace, a local path the host on the other end has "
+            "nothing to match, so a remote run would silently land somewhere "
+            "else. `SSHTransport` is kept as it is. Re-enabling means giving "
+            "`ClaudeSSHConfig` a remote directory of its own and then dropping "
+            "`refuse_remote_runs`; there is no agent-wide `cwd` left to fall "
+            "back to, which is what made landing somewhere else silent."
         ),
     )
     approval_timeout: float | None = Field(
@@ -303,8 +304,9 @@ class ClaudeCodeConfig(BaseModel):
     def refuse_remote_runs(cls, ssh: ClaudeSSHConfig | None) -> ClaudeSSHConfig | None:
         if ssh is not None:
             raise ValueError(
-                "remote runs are disabled: a run happens in its thread's project "
-                "root, which is a local path the remote host has nothing to match"
+                "remote runs are disabled: a run happens in its thread's "
+                "workspace, which is a local path the remote host has nothing "
+                "to match"
             )
         return ssh
 
@@ -322,13 +324,6 @@ class CodexConfig(BaseModel):
     enabled: bool = Field(
         default=True,
         description="Whether to register the Codex tentacle when the config block exists.",
-    )
-    cwd: str = Field(
-        default=".",
-        description=(
-            "Default working directory for Codex thread_start, thread_resume, "
-            "and turn calls."
-        ),
     )
     runtime: CodexSdkConfig = Field(
         default_factory=CodexSdkConfig,
@@ -482,13 +477,6 @@ class DeepseekConfig(BaseModel):
             "sessions and settings. Defaults to dsh's own ~/.dsh; the child "
             "always receives this value verbatim. An attached harness keeps "
             "whatever home it was started with."
-        ),
-    )
-    cwd: str = Field(
-        default=".",
-        description=(
-            "Default working directory for a new dsh session whose thread is in "
-            "no project. A session's cwd is fixed at creation."
         ),
     )
     provider: str = Field(

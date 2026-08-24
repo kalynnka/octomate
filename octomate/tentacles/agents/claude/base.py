@@ -703,15 +703,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # other, never both.
         session_id = conversation.external_id or str(uuid7())
 
-        # The thread's workspace, or the configured directory when it is in no
-        # project. A workspace is a local path, and an SSH run happens on another
-        # machine where it names nothing, so a remote run stays where it is
-        # configured — and is in no project there, since nothing local bounds it.
-        if self.config.ssh:
-            project, run_cwd = None, self.config.cwd
-        else:
-            project = await self.run_project(conversation.thread_id)
-            run_cwd = await self.run_cwd(conversation.thread_id, project)
+        project = await self.run_project(conversation.thread_id)
+        run_cwd = await self.run_cwd(conversation.thread_id, project)
         # `setting_sources` is left unset on purpose: verified against the CLI, the
         # unset default loads every source, so the bound directory arrives with its
         # own CLAUDE.md and .claude/settings.json — the useful half of "work on this
@@ -730,10 +723,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     hooks=[partial(deny_outside_workspace, Path(run_cwd))],
                 )
             )
-        elif self.config.ssh is None:
-            # In no project and running locally, so the directory is the shared one
-            # every such thread gets. An ssh run is somewhere else entirely, under
-            # whatever the operator pointed it at, and is not this to police.
+        else:
+            # In no project, so the directory is the shared one every such thread
+            # gets, and nothing may write there.
             pre_tool_use_hooks.append(
                 HookMatcher(matcher="|".join(WRITE_TOOL_PATHS), hooks=[deny_write])
             )

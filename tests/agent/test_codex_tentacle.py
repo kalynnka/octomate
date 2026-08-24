@@ -503,7 +503,6 @@ async def test_run_resumes_prior_thread_and_applies_config(
         conversations,
         config=CodexConfig(
             models=set(CODEX_MODELS),
-            cwd="/repo",
             runtime=runtime,
             permission_mode="auto_review",
             base_instructions="base",

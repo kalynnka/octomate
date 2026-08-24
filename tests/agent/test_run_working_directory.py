@@ -394,7 +394,7 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd="/configured"),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
         hook_secret=HOOK_SECRET,
     )
 
@@ -422,9 +422,7 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(
-            models=set(CODEX_MODELS), permission_mode="deny_all", cwd="/configured"
-        ),
+        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
         hook_secret=HOOK_SECRET,
     )
 

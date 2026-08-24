@@ -250,8 +250,8 @@ def test_claude_code_config_validates_model_names() -> None:
 
 
 def test_claude_code_config_refuses_a_remote_host() -> None:
-    # Remote runs are off while a run's directory is its thread's project root: the
-    # root is a local path, and the host on the other end has nothing to match it.
+    # Remote runs are off while a run's directory is its thread's workspace: the
+    # workspace is a local path, and the host on the other end has nothing to match.
     with pytest.raises(ValidationError, match="remote runs are disabled"):
         ClaudeCodeConfig(
             models=set(CLAUDE_MODELS), ssh=ClaudeSSHConfig(host="user@box")

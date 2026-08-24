@@ -56,7 +56,6 @@
   #
   # claude:
   #   enabled: true
-  #   cwd: .
   #   models: [opus, sonnet, haiku]   # opus => Opus 4.8
   #   claims:
   #     opus:
@@ -84,7 +83,6 @@
   #
   # codex:
   #   enabled: true
-  #   cwd: .
   #   runtime:
   #     # codex_bin: /opt/bin/codex
   #     config_overrides: []
@@ -127,7 +125,6 @@
   #   executable: dsh            # on PATH, or an absolute path to a built dsh
   #   extra_args: []             # appended after `web --host ... --port ... --no-open`
   #   dsh_home: ~/.dsh           # DSH_HOME for a started child
-  #   cwd: .
   #   provider: deepseek-official
   #   models: [deepseek-v4-pro, deepseek-v4-flash]
   #   claims:

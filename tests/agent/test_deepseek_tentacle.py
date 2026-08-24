@@ -400,16 +400,14 @@ async def test_run_reuses_the_stored_session_and_skips_create(
     assert prompt_payload["sessionId"] == "sess-old"
 
 
-async def test_agent_preset_and_configured_cwd_reach_session_create(
+async def test_agent_preset_and_the_chat_cwd_reach_session_create(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset(turn_events())
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(
-            models=set(DEEPSEEK_MODELS), cwd="/repo", agent_preset="octopus"
-        ),
+        config=DeepseekConfig(models=set(DEEPSEEK_MODELS), agent_preset="octopus"),
     )
 
     async with tentacle:

@@ -179,12 +179,12 @@ async def a_run(
     projects: ProjectManager,
     *,
     declared: str = "",
-    configured: str = "/configured",
 ) -> tuple[list[str | None], HookCallback | None, Path]:
     """Drive one run and answer with the PreToolUse matchers it handed the SDK, the
     scope hook it registered — the boundary itself, callable, so a test asks it
     rather than inspecting how it was bound — and the directory it ran in. `declared`
-    names the project the run's thread is in; a thread in none runs at `configured`."""
+    names the project the run's thread is in; a thread in none runs in the shared
+    chat directory."""
     octomate = Octomate(
         conversations=FakeConversationManager(),
         workspaces=WorkspaceManager(projects=projects),
@@ -196,7 +196,7 @@ async def a_run(
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd=configured),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
         hook_secret=HOOK_SECRET,
     )
     async with tentacle.run_stream_events(
@@ -241,9 +241,7 @@ async def test_the_boundary_is_the_workspace_not_either_checkout(
     kraken = a_project(tmp_path / "kraken").root
     projects = await a_registry(a_project(inky), a_project(kraken))
 
-    _matchers, scope, cwd = await a_run(
-        projects, declared="kraken", configured=str(inky)
-    )
+    _matchers, scope, cwd = await a_run(projects, declared="kraken")
 
     assert scope is not None
     assert cwd.parent == (tmp_path / ".octomate" / "workspaces")
@@ -259,19 +257,15 @@ async def test_a_run_in_no_project_may_not_write_at_all(tmp_path: Path) -> None:
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
 
-    # Belonging to no project, and configured to a directory no project claims.
-    matchers, scope, cwd = await a_run(
-        await a_registry(a_project(inky)), configured=str(elsewhere)
-    )
+    matchers, scope, cwd = await a_run(await a_registry(a_project(inky)))
 
-    # It runs in the shared chat directory rather than where it was configured, and
-    # the same tools are hooked — but with a refusal that has no boundary to
-    # compare against, since no path in a chat thread is one that may be written.
+    # It runs in the shared chat directory, and the same tools are hooked — but
+    # with a refusal that has no boundary to compare against, since no path in a
+    # chat thread is one that may be written.
     assert matchers == ["AskUserQuestion", "Write|Edit|NotebookEdit"]
     assert scope is not None
     assert await denial(scope, "Write", cwd / "notes.md") is not None
     assert await denial(scope, "Edit", elsewhere / "x.py") is not None
-    assert cwd != elsewhere
     assert cwd.name == "chat"
 
 

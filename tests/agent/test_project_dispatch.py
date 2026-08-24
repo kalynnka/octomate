@@ -71,7 +71,7 @@ def a_claude(octomate: Octomate) -> ClaudeCodeTentacle:
     return ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd="/configured"),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
         hook_secret=HOOK_SECRET,
     )
 
@@ -94,9 +94,7 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(
-            models=set(CODEX_MODELS), permission_mode="deny_all", cwd="/configured"
-        ),
+        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
         hook_secret=HOOK_SECRET,
     )
     async with tentacle:
@@ -140,14 +138,13 @@ def test_a_composed_workspace_manager_is_the_one_the_host_uses() -> None:
 
 
 async def test_with_nothing_declared_claude_runs_in_the_chat_directory() -> None:
-    # OCTO-50: never the agent's configured `cwd`, which defaults to `"."` — on a
-    # server, the directory holding the database and the config home's secrets.
+    # OCTO-50: never Octomate's own directory, which is where a run with nothing
+    # set lands — on a server, the one holding the database and the config secrets.
     octomate = Octomate(conversations=FakeConversationManager())
 
     options = await claude_run(octomate, await a_thread(octomate, "chat"))
 
     assert options.cwd == str(octomate.workspaces.chat())
-    assert options.cwd != "/configured"
     assert options.add_dirs == []
 
 
