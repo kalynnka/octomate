@@ -53,6 +53,7 @@ from octomate.capabilities.harness.react import (
     StartTurn,
     iter_react_graph_events,
 )
+from octomate.capabilities.projects import ProjectCapability
 from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -741,6 +742,14 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             else None
         )
         if workspace is not None:
+            # A thread binds once, so the tools for choosing one are noise on a run
+            # that already has a workspace, and their instructions — which open by
+            # saying this conversation is in no project — would be untrue.
+            capabilities = [
+                capability
+                for capability in capabilities
+                if not isinstance(capability, ProjectCapability)
+            ]
             capabilities.extend(self.workspace_capabilities(workspace))
         graph_deps = ReactDeps(
             agent=self.agent,
