@@ -32,7 +32,9 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import Claim, ClaudeCodeConfig
+from octomate.managers.gateway import GatewaySession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
@@ -545,3 +547,57 @@ def test_claims_come_from_config_and_default_to_none() -> None:
 
     assert tentacle.claims == {"haiku": claim}
     assert ClaudeCodeConfig(models=set(CLAUDE_MODELS)).claims == {}
+
+
+async def test_a_gateway_capability_mounts_the_in_process_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    session = GatewaySession(channel_routes={}, current_agent_id="claude")
+
+    async with tentacle.run_stream_events(
+        "fix it",
+        conversation_address=KEY,
+        thread_id=_THREAD,
+        run_name="react",
+        instructions="House rules.",
+        capabilities=[GatewayCapability(session=session, conversations=conversations)],
+    ) as stream:
+        async for _ in stream:
+            pass
+
+    options = FakeClaudeClient.last_options
+    assert isinstance(options, ClaudeAgentOptions)
+    assert isinstance(options.mcp_servers, dict)
+    gateway = options.mcp_servers["gateway"]
+    assert gateway.get("type") == "sdk"
+    # Ordinary MCP tools on the normal approval route: nothing is pre-allowed.
+    assert options.allowed_tools == []
+    # The routing contract rides the same preset append as the run instructions.
+    assert isinstance(options.system_prompt, dict)
+    append = options.system_prompt.get("append")
+    assert isinstance(append, str)
+    assert append.startswith("House rules.\n\n")
+    assert "`mcp__gateway__scry`" in append
+
+
+async def test_without_the_gateway_no_server_and_no_instruction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+
+    async with tentacle.run_stream_events(
+        "fix it", conversation_address=KEY, thread_id=_THREAD, run_name="react"
+    ) as stream:
+        async for _ in stream:
+            pass
+
+    options = FakeClaudeClient.last_options
+    assert isinstance(options, ClaudeAgentOptions)
+    assert options.mcp_servers == {}
+    assert options.system_prompt is None
+    assert options.allowed_tools == []

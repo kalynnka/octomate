@@ -24,6 +24,7 @@ from claude_agent_sdk import (
     HookInput,
     HookJSONOutput,
     HookMatcher,
+    McpServerConfig,
     PermissionResultAllow,
     PermissionResultDeny,
     PreToolUseHookInput,
@@ -67,9 +68,11 @@ from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
+from octomate.mcp.gateway import GATEWAY_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
@@ -87,6 +90,10 @@ from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.agents.claude.gateway import (
+    GATEWAY_MCP_INSTRUCTION,
+    gateway_mcp_server,
+)
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
@@ -168,7 +175,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     `external_id` and replayed via `resume=` so Claude owns its own
     context across turns. Output is the run's final text (`str`); pydantic-ai
     run options that don't map onto Claude (custom output_type, toolsets,
-    capabilities, ...) are ignored.
+    capabilities, ...) are ignored — except a `GatewayCapability`, which mounts
+    the gateway as the turn's in-process MCP server.
     """
 
     config: ClaudeCodeConfig = field(init=False)
@@ -696,6 +704,31 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 )
             )
 
+        gateway_session = next(
+            (
+                capability.session
+                for capability in capabilities or ()
+                if isinstance(capability, GatewayCapability)
+            ),
+            None,
+        )
+        # The turn's gateway, mounted in process with the session closed over —
+        # identity by closure, nothing on the wire names it. Its spells take the
+        # normal tool-approval route like any other MCP tool; deliberately
+        # nothing goes into `allowed_tools`.
+        mcp_servers: dict[str, McpServerConfig] = {}
+        if gateway_session is not None:
+            mcp_servers[GATEWAY_SERVER_NAME] = await gateway_mcp_server(
+                gateway_session, self.octomate.thread_manager
+            )
+        appended = "\n\n".join(
+            part
+            for part in (
+                instructions if isinstance(instructions, str) else None,
+                GATEWAY_MCP_INSTRUCTION if gateway_session is not None else None,
+            )
+            if part
+        )
         options = ClaudeAgentOptions(
             cwd=run_cwd,
             # A project's other roots are directories this work legitimately spans —
@@ -717,18 +750,18 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             session_id=None if conversation.external_id else session_id,
             can_use_tool=can_use_tool,
             hooks={"PreToolUse": pre_tool_use_hooks},
+            mcp_servers=mcp_servers,
             output_format=output_format,
             # Stream partial assistant messages so the accumulator can emit token
             # deltas (typewriter) instead of whole blocks; see ClaudeRunAccumulator.
             include_partial_messages=True,
             # Run-level instructions are real instructions, not prompt text:
             # appended to the Claude Code system-prompt preset so the SDK weighs
-            # them as such (an accomplice's framing included).
+            # them as such (an accomplice's framing included), the gateway's
+            # routing contract riding along when the turn mounts it.
             system_prompt=(
-                SystemPromptPreset(
-                    type="preset", preset="claude_code", append=instructions
-                )
-                if isinstance(instructions, str)
+                SystemPromptPreset(type="preset", preset="claude_code", append=appended)
+                if appended
                 else None
             ),
             # Native Claude clients hide sdk-py transcripts from history. Tag these
