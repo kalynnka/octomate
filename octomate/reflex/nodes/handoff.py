@@ -42,7 +42,6 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if not isinstance(decision, SummonDecision):
             raise ValueError("Handoff requires a summon decision")
         source_address = source_target.address
-        channel = ctx.deps.channel(target)
         hint_text = (
             decision.hint
             or decision.reason
@@ -77,6 +76,10 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             state.thread = await ctx.deps.thread_manager.ensure(crossed)
             return React()
 
+        # Below the crossing branch on purpose: a native handoff always crosses,
+        # and its target names the native pseudo-channel nobody serves — a lookup
+        # here would refuse what the crossing never needs.
+        channel = ctx.deps.channel(target)
         if isinstance(decision.destination, HereLanding):
             # Take over the current conversation in place — no new surface. The
             # allow_here gate already refused this on a group main (Case 1).

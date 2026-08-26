@@ -193,20 +193,7 @@ class ReflexDeps:
 
     @cached_property
     def available_routes(self) -> dict[str, list[AgentRoute]]:
-        available: dict[str, list[AgentRoute]] = {}
-        for channel_id in self.channels:
-            # A channel exposes agents, and each agent manages its own
-            # routes (from its claims). The channel's (agent, model) entries
-            # only pick its entry/default models — they do not bound the routes.
-            available[channel_id] = [
-                route
-                for agent_id in dict.fromkeys(
-                    agent_config.agent
-                    for agent_config in self.agent_configs(channel_id)
-                )
-                for route in self.agent(agent_id).routes
-            ]
-        return available
+        return self.gateway.available_routes(self.channels, self.agents)
 
     def resolve_agent(
         self,

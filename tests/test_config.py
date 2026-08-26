@@ -1004,6 +1004,39 @@ def test_user_links_must_reference_configured_channel() -> None:
     assert error["msg"] == "'matrix' does not match a configured channel"
 
 
+def test_user_links_accept_a_declared_runtime_native_pseudo_channel() -> None:
+    # No `channels:` entry ever declares claude-native — claiming the shared
+    # native profile is how an operator's terminals reach the served gateway —
+    # so admission follows the `agents:` block instead.
+    config = OctomateConfig.model_validate(
+        {
+            "agents": {"claude": {"models": ["opus"]}},
+            "users": {
+                "luhui": {"profiles": {"claude-native": {"channel_user_id": "native"}}}
+            },
+        }
+    )
+
+    assert config.users["luhui"].profiles["claude-native"].channel_user_id == "native"
+
+
+def test_user_links_refuse_an_undeclared_runtime_pseudo_channel() -> None:
+    # Without `agents.codex` there is no hook router and the served gateway
+    # refuses codex-native — the link could never resolve, so the boot says so.
+    with pytest.raises(
+        ValidationError, match="'codex-native' does not match a configured channel"
+    ):
+        OctomateConfig.model_validate(
+            {
+                "users": {
+                    "luhui": {
+                        "profiles": {"codex-native": {"channel_user_id": "native"}}
+                    }
+                }
+            }
+        )
+
+
 def test_user_profile_config_rejects_the_old_user_id_field() -> None:
     with pytest.raises(ValidationError) as exc_info:
         UserConfig.model_validate(

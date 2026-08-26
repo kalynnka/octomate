@@ -270,7 +270,15 @@ class OctomateConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_user_links(self) -> Self:
         """A typo'd channel id in a user's links must fail the boot, not
-        silently produce a link no channel will ever resolve."""
+        silently produce a link no channel will ever resolve.
+
+        The native pseudo-channels are admissible without a `channels:` entry —
+        none ever declares those ids; linking the shared native profile —
+        `claude-native: {channel_user_id: native}` — is how an operator claims
+        their own terminals at the served gateway. But only a declared runtime's:
+        one absent from `agents:` mounts no hook router and is refused at the
+        gateway, so its pseudo-channel is unresolvable like any typo."""
+        native_ids = self.agents.native_ids()
         errors: list[InitErrorDetails] = [
             InitErrorDetails(
                 type=PydanticCustomError(
@@ -283,7 +291,7 @@ class OctomateConfig(BaseSettings):
             )
             for username, user in self.users.items()
             for channel_id, profile in user.profiles.items()
-            if channel_id not in self.channels
+            if channel_id not in self.channels and channel_id not in native_ids
         ]
         if errors:
             raise ValidationError.from_exception_data(type(self).__name__, errors)

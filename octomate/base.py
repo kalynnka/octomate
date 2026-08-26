@@ -38,6 +38,7 @@ from octomate.reflex import (
 from octomate.schemas.awakes import (
     AwakeSignal,
     DeferredActionBatchResponse,
+    GatewayHandoffSignal,
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
@@ -127,6 +128,8 @@ class Octomate:
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
     routers: list[APIRouter] = field(default_factory=list)
+    # Fire-and-forget graph turns (`kick_soon`), held strongly until they settle.
+    background: set[asyncio.Task[None]] = field(default_factory=set, init=False)
 
     def __post_init__(self, oauth_encryption_key: SecretStr | None) -> None:
         # Every ledger row references its sender's registry profile, so the
@@ -192,6 +195,9 @@ class Octomate:
                 address = signal.address
                 span.set_attribute("channel_id", address.channel_tentacle_id)
                 span.set_attribute("conversation_address", str(address))
+            elif isinstance(signal, GatewayHandoffSignal):
+                span.set_attribute("agent_id", signal.agent_id)
+                span.set_attribute("action", signal.decision.action)
             elif isinstance(signal, DeferredActionBatchResponse):
                 span.set_attribute("batch_id", str(signal.batch_id))
                 # Deliver the response to a live Claude run blocked on this batch
@@ -220,6 +226,13 @@ class Octomate:
                     ),
                 )
 
+    def kick_soon(self, signal: AwakeSignal) -> None:
+        """`kick` as its own task, for a caller that must answer now — a served
+        native spell whose handoff is a whole agent turn it cannot wait out."""
+        task = asyncio.create_task(self.kick(signal))
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
+
     def mcp_servers(self) -> list[FastMCP]:
         """The MCP servers Octomate serves, one per tool family.
 
@@ -229,7 +242,13 @@ class Octomate:
         client. Each is served at `/<name>/mcp` behind the one shared secret, and
         resolves the identity a call runs against from the request itself.
         """
-        return [gateway_mcp(Depends(served_session(self.gateway)), self.thread_manager)]
+        return [
+            gateway_mcp(
+                Depends(served_session(self)),
+                self.thread_manager,
+                kick=self.kick_soon,
+            )
+        ]
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
         # The MCP servers are served only where there is a credential to serve them
