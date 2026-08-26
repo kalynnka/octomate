@@ -375,6 +375,17 @@ octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hoo
 
 Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying the bearer plus a static `X-Octomate-Client` header written at install time. That surface authenticates the bearer, not the caller: the client header is attribution. Any holder of `OCTOMATE__SECRET` can already forge any session's ledger through the hook pipe; the gateway adds one power to the same credential — outbound sends and handoffs to real channels. Same trust domain (the operator's machines), same mitigations (per-deployment secret, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags. A native session is anonymous, so its spells light up only where a `users:` entry claims the shared native profile — `profiles: {claude-native: {channel_user_id: native}}` — beside real accounts: a single-operator assumption, on purpose.
 
+Point the runtimes' native sessions at it with one verb-first command — static MCP client config, written per selected runtime:
+
+```bash
+octomate mcp install --agent claude --agent codex --agent deepseek
+# claude:   mcpServers.gateway in ~/.claude.json (--scope project: ./.mcp.json)
+# codex:    [mcp_servers.gateway] in ~/.codex/config.toml
+# deepseek: a dsh-mcp-client row in $DSH_HOME/cordis.patch.yml
+```
+
+Unlike the hooks — whose scripts resolve the address and credential from the environment when each hook fires — a static entry is read by the runtime itself, so `mcp install` resolves both once and writes them into the file: the file holds the literal credential, and rotating it means re-running install. (Codex differs: its entry names `OCTOMATE__SECRET` as a `bearer_token_env_var`, resolved from each session's environment, so the secret must be exported in the shell profile.)
+
 ---
 
 ## Project structure
