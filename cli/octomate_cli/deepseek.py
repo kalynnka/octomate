@@ -179,18 +179,19 @@ def patch_block(config_path: Path) -> str:
     )
 
 
-def without_block(text: str) -> str:
-    """The patch file's text with our marker block removed, everything else
-    kept byte-for-byte."""
+def without_block(text: str, begin: str = MARK_BEGIN, end: str = MARK_END) -> str:
+    """The patch file's text with one marker block removed, everything else
+    kept byte-for-byte. Defaults to the hooks block's markers; the gateway
+    block passes its own."""
     lines = text.splitlines(keepends=True)
     kept: list[str] = []
     inside = False
     for line in lines:
         stripped = line.strip()
-        if stripped == MARK_BEGIN:
+        if stripped == begin:
             inside = True
             continue
-        if stripped == MARK_END:
+        if stripped == end:
             inside = False
             continue
         if not inside:
@@ -198,7 +199,9 @@ def without_block(text: str) -> str:
     return "".join(kept)
 
 
-def patch_text_with_block(text: str, block: str) -> str:
+def patch_text_with_block(
+    text: str, block: str, begin: str = MARK_BEGIN, end: str = MARK_END
+) -> str:
     """The patch file's text with our block installed exactly once.
 
     The file is a top-level YAML array. dsh's default is a lone `[]` flow
@@ -206,7 +209,7 @@ def patch_text_with_block(text: str, block: str) -> str:
     the block. A file already carrying block-sequence entries gets the block
     appended; a re-install replaces the existing block in place.
     """
-    remainder = without_block(text)
+    remainder = without_block(text, begin, end)
     lines = remainder.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if line.strip() == "[]":
@@ -216,11 +219,13 @@ def patch_text_with_block(text: str, block: str) -> str:
     return remainder + block
 
 
-def patch_text_without_block(text: str) -> str:
+def patch_text_without_block(
+    text: str, begin: str = MARK_BEGIN, end: str = MARK_END
+) -> str:
     """The uninstall splice: the block removed, and the empty-array document
     restored when nothing else remains — a comments-only file parses as null,
     not the empty entry list the loader expects."""
-    remainder = without_block(text)
+    remainder = without_block(text, begin, end)
     if any(
         line.strip() and not line.strip().startswith("#")
         for line in remainder.splitlines()

@@ -8,6 +8,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.12.5",
     "rich>=13",
+    "tomlkit>=0.13.2",
     "typer>=0.25.1",
     "watchfiles>=1.1.1",
     "websockets>=15",
