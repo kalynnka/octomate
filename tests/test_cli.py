@@ -745,9 +745,7 @@ def test_claude_mcp_install_writes_the_entry_beside_everything_else(
         json.dumps({"model": "opus", "mcpServers": {"other": {"type": "stdio"}}})
     )
 
-    result = runner.invoke(
-        app, ["mcp", "install", "--agent", "claude", "--claude-file", str(path)]
-    )
+    result = runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
     assert result.exit_code == 0, result.output
 
     document = read(path)
@@ -768,9 +766,11 @@ def test_claude_mcp_reinstall_replaces_the_entry_in_place(
 ) -> None:
     gateway_ready(monkeypatch)
     path = tmp_path / "claude.json"
-    install = ["mcp", "install", "--agent", "claude", "--claude-file", str(path)]
-    runner.invoke(app, install)
-    runner.invoke(app, [*install, "--url", "http://minidock.local:8000"])
+    runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
+    runner.invoke(
+        claude_typer,
+        ["mcp", "install", "--url", "http://minidock.local:8000", "--file", str(path)],
+    )
 
     servers = read(path)["mcpServers"]
     assert list(servers) == ["gateway"]
@@ -783,13 +783,9 @@ def test_claude_mcp_uninstall_keeps_foreign_servers(
     gateway_ready(monkeypatch)
     path = tmp_path / "claude.json"
     path.write_text(json.dumps({"mcpServers": {"other": {"type": "stdio"}}}))
-    runner.invoke(
-        app, ["mcp", "install", "--agent", "claude", "--claude-file", str(path)]
-    )
+    runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
 
-    result = runner.invoke(
-        app, ["mcp", "uninstall", "--agent", "claude", "--claude-file", str(path)]
-    )
+    result = runner.invoke(claude_typer, ["mcp", "uninstall", "--file", str(path)])
     assert result.exit_code == 0
 
     assert read(path)["mcpServers"] == {"other": {"type": "stdio"}}
@@ -800,12 +796,8 @@ def test_claude_mcp_uninstall_drops_an_emptied_section(
 ) -> None:
     gateway_ready(monkeypatch)
     path = tmp_path / "claude.json"
-    runner.invoke(
-        app, ["mcp", "install", "--agent", "claude", "--claude-file", str(path)]
-    )
-    runner.invoke(
-        app, ["mcp", "uninstall", "--agent", "claude", "--claude-file", str(path)]
-    )
+    runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
+    runner.invoke(claude_typer, ["mcp", "uninstall", "--file", str(path)])
 
     assert "mcpServers" not in read(path)
 
@@ -815,63 +807,14 @@ def test_claude_mcp_show_masks_the_credential(
 ) -> None:
     gateway_ready(monkeypatch)
     path = tmp_path / "claude.json"
-    runner.invoke(
-        app, ["mcp", "install", "--agent", "claude", "--claude-file", str(path)]
-    )
+    runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
 
-    result = runner.invoke(
-        app, ["mcp", "show", "--agent", "claude", "--claude-file", str(path)]
-    )
+    result = runner.invoke(claude_typer, ["mcp", "show", "--file", str(path)])
 
     assert result.exit_code == 0
     assert "http://127.0.0.1:9999/gateway/mcp" in result.output
     assert "Bearer ***" in result.output
     assert "the-secret" not in result.output
-
-
-def test_mcp_commands_require_naming_an_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The module is the command and the agents are selectors on it — but a
-    selector-less run configuring every runtime would write files for runtimes
-    the machine may not even have, so nothing is guessed."""
-    gateway_ready(monkeypatch)
-    for verb in ("install", "uninstall", "show"):
-        result = runner.invoke(app, ["mcp", verb])
-        assert result.exit_code != 0
-        assert "--agent" in result.output
-
-
-def test_mcp_install_aggregates_several_agents_in_one_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    gateway_ready(monkeypatch)
-    claude_path = tmp_path / "claude.json"
-    codex_path = tmp_path / "config.toml"
-
-    result = runner.invoke(
-        app,
-        [
-            "mcp",
-            "install",
-            "--agent",
-            "claude",
-            "--agent",
-            "codex",
-            "--claude-file",
-            str(claude_path),
-            "--codex-config",
-            str(codex_path),
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert (
-        read(claude_path)["mcpServers"]["gateway"]["url"]
-        == "http://127.0.0.1:9999/gateway/mcp"
-    )
-    table = tomllib.loads(codex_path.read_text())
-    assert table["mcp_servers"]["gateway"]["url"] == "http://127.0.0.1:9999/gateway/mcp"
 
 
 def test_mcp_install_refuses_without_an_address(
@@ -881,29 +824,15 @@ def test_mcp_install_refuses_without_an_address(
     so — unlike the hooks, which resolve at fire time — the install refuses."""
     monkeypatch.delenv("OCTOMATE_URL", raising=False)
     monkeypatch.setenv("OCTOMATE__SECRET", "the-secret")
-
-    result = runner.invoke(
-        app,
-        [
-            "mcp",
-            "install",
-            "--agent",
-            "claude",
-            "--agent",
-            "codex",
-            "--agent",
-            "deepseek",
-            "--claude-file",
-            str(tmp_path / "c.json"),
-            "--codex-config",
-            str(tmp_path / "c.toml"),
-            "--dsh-home",
-            str(tmp_path),
-        ],
-    )
-
-    assert result.exit_code != 0
-    assert "needs a concrete address" in result.output
+    invocations = [
+        (claude_typer, ["mcp", "install", "--file", str(tmp_path / "c.json")]),
+        (codex_typer, ["mcp", "install", "--config-file", str(tmp_path / "c.toml")]),
+        (deepseek_typer, ["mcp", "install", "--home", str(tmp_path)]),
+    ]
+    for typer_app, args in invocations:
+        result = runner.invoke(typer_app, args)
+        assert result.exit_code != 0
+        assert "needs a concrete address" in result.output
     assert list(tmp_path.iterdir()) == []  # nothing half-written
 
 
@@ -911,30 +840,17 @@ def test_mcp_install_refuses_without_the_credential_it_would_embed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Claude's and dsh's entries hold the literal credential; without one the
-    written entries would only 401, so the whole install refuses before the
-    first write — the codex file included, so a multi-agent run never
-    half-lands."""
+    written entry would only 401, so the install refuses instead."""
     monkeypatch.setenv("OCTOMATE_URL", "http://127.0.0.1:9999")
     monkeypatch.delenv("OCTOMATE__SECRET", raising=False)
-
-    result = runner.invoke(
-        app,
-        [
-            "mcp",
-            "install",
-            "--agent",
-            "codex",
-            "--agent",
-            "claude",
-            "--claude-file",
-            str(tmp_path / "c.json"),
-            "--codex-config",
-            str(tmp_path / "c.toml"),
-        ],
-    )
-
-    assert result.exit_code != 0
-    assert "no credential resolves" in result.output
+    invocations = [
+        (claude_typer, ["mcp", "install", "--file", str(tmp_path / "c.json")]),
+        (deepseek_typer, ["mcp", "install", "--home", str(tmp_path)]),
+    ]
+    for typer_app, args in invocations:
+        result = runner.invoke(typer_app, args)
+        assert result.exit_code != 0
+        assert "no credential resolves" in result.output
     assert list(tmp_path.iterdir()) == []
 
 
@@ -942,14 +858,12 @@ def test_codex_mcp_install_needs_no_credential_but_says_where_it_lives(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Codex's entry names the environment variable rather than embedding the
-    value, so a codex-only install gets the hooks' warning, not a refusal."""
+    value, so a missing credential gets the hooks' warning, not a refusal."""
     monkeypatch.setenv("OCTOMATE_URL", "http://127.0.0.1:9999")
     monkeypatch.delenv("OCTOMATE__SECRET", raising=False)
     path = tmp_path / "config.toml"
 
-    result = runner.invoke(
-        app, ["mcp", "install", "--agent", "codex", "--codex-config", str(path)]
-    )
+    result = runner.invoke(codex_typer, ["mcp", "install", "--config-file", str(path)])
 
     assert result.exit_code == 0, result.output
     assert "octomate configure" in result.output  # the missing-credential warning
@@ -967,9 +881,7 @@ def test_codex_mcp_install_preserves_comments_and_foreign_tables(
         '[mcp_servers.logfire]\nurl = "https://logfire.dev/mcp"\n'
     )
 
-    result = runner.invoke(
-        app, ["mcp", "install", "--agent", "codex", "--codex-config", str(path)]
-    )
+    result = runner.invoke(codex_typer, ["mcp", "install", "--config-file", str(path)])
     assert result.exit_code == 0, result.output
 
     text = path.read_text()
@@ -991,9 +903,18 @@ def test_codex_mcp_reinstall_and_uninstall_leave_the_operators_file(
     gateway_ready(monkeypatch)
     path = tmp_path / "config.toml"
     path.write_text('# machine prefs\n[mcp_servers.logfire]\nurl = "https://l/mcp"\n')
-    install = ["mcp", "install", "--agent", "codex", "--codex-config", str(path)]
-    runner.invoke(app, install)
-    runner.invoke(app, [*install, "--url", "http://minidock.local:8000"])
+    runner.invoke(codex_typer, ["mcp", "install", "--config-file", str(path)])
+    runner.invoke(
+        codex_typer,
+        [
+            "mcp",
+            "install",
+            "--url",
+            "http://minidock.local:8000",
+            "--config-file",
+            str(path),
+        ],
+    )
 
     table = tomllib.loads(path.read_text())
     assert (
@@ -1002,7 +923,7 @@ def test_codex_mcp_reinstall_and_uninstall_leave_the_operators_file(
     )
 
     result = runner.invoke(
-        app, ["mcp", "uninstall", "--agent", "codex", "--codex-config", str(path)]
+        codex_typer, ["mcp", "uninstall", "--config-file", str(path)]
     )
     assert result.exit_code == 0
     text = path.read_text()
@@ -1017,12 +938,8 @@ def test_codex_mcp_uninstall_drops_an_emptied_section(
 ) -> None:
     gateway_ready(monkeypatch)
     path = tmp_path / "config.toml"
-    runner.invoke(
-        app, ["mcp", "install", "--agent", "codex", "--codex-config", str(path)]
-    )
-    runner.invoke(
-        app, ["mcp", "uninstall", "--agent", "codex", "--codex-config", str(path)]
-    )
+    runner.invoke(codex_typer, ["mcp", "install", "--config-file", str(path)])
+    runner.invoke(codex_typer, ["mcp", "uninstall", "--config-file", str(path)])
 
     assert tomllib.loads(path.read_text()) == {}
 
@@ -1034,7 +951,7 @@ def test_deepseek_mcp_install_writes_the_gateway_row_beside_the_hooks_row(
     runner.invoke(deepseek_typer, ["hooks", "install", "--home", str(tmp_path)])
     for _ in range(2):  # running twice must not duplicate the row
         result = runner.invoke(
-            app, ["mcp", "install", "--agent", "deepseek", "--dsh-home", str(tmp_path)]
+            deepseek_typer, ["mcp", "install", "--home", str(tmp_path)]
         )
         assert result.exit_code == 0, result.output
 
@@ -1062,18 +979,14 @@ def test_deepseek_mcp_and_hooks_blocks_come_and_go_independently(
 ) -> None:
     gateway_ready(monkeypatch)
     runner.invoke(deepseek_typer, ["hooks", "install", "--home", str(tmp_path)])
-    runner.invoke(
-        app, ["mcp", "install", "--agent", "deepseek", "--dsh-home", str(tmp_path)]
-    )
+    runner.invoke(deepseek_typer, ["mcp", "install", "--home", str(tmp_path)])
     runner.invoke(deepseek_typer, ["hooks", "uninstall", "--home", str(tmp_path)])
 
     text = (tmp_path / "cordis.patch.yml").read_text()
     assert "octomate-gateway" in text  # the gateway row outlives the hooks row
     assert "octomate-hooks" not in text
 
-    runner.invoke(
-        app, ["mcp", "uninstall", "--agent", "deepseek", "--dsh-home", str(tmp_path)]
-    )
+    runner.invoke(deepseek_typer, ["mcp", "uninstall", "--home", str(tmp_path)])
     text = (tmp_path / "cordis.patch.yml").read_text()
     assert "octomate-gateway" not in text
     assert text.strip().splitlines()[-1] == "[]"  # the empty document restored
@@ -1083,13 +996,9 @@ def test_deepseek_mcp_show_masks_the_credential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gateway_ready(monkeypatch)
-    runner.invoke(
-        app, ["mcp", "install", "--agent", "deepseek", "--dsh-home", str(tmp_path)]
-    )
+    runner.invoke(deepseek_typer, ["mcp", "install", "--home", str(tmp_path)])
 
-    result = runner.invoke(
-        app, ["mcp", "show", "--agent", "deepseek", "--dsh-home", str(tmp_path)]
-    )
+    result = runner.invoke(deepseek_typer, ["mcp", "show", "--home", str(tmp_path)])
 
     assert result.exit_code == 0
     assert "serverName: gateway" in result.output
