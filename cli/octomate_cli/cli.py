@@ -15,7 +15,6 @@ from octomate_cli.codex import codex_typer
 from octomate_cli.config import configure
 from octomate_cli.deepseek import deepseek_typer
 from octomate_cli.hooks import secret
-from octomate_cli.mcp import mcp_typer
 from octomate_cli.serve import serve
 
 app = typer.Typer(help="Octomate operator CLI.", no_args_is_help=True)
@@ -23,10 +22,6 @@ app.command("serve")(serve)
 app.command("configure")(configure)
 # Cross-tentacle: one secret every agent's hook router, and every MCP server, shares.
 app.command("secret")(secret)
-# Verb-first module groups: the served module is the command, the agents are
-# selectors on it — one `octomate mcp install --agent claude --agent codex`
-# configures every selected runtime.
-app.add_typer(mcp_typer, name="mcp")
 app.add_typer(claude_typer, name="claude")
 app.add_typer(codex_typer, name="codex")
 app.add_typer(deepseek_typer, name="deepseek")

@@ -23,6 +23,13 @@ from octomate_cli.config import (
 )
 from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
 from octomate_cli.jsontypes import JsonObject, JsonValue
+from octomate_cli.mcp import (
+    CLAUDE_NATIVE_CLIENT,
+    CLIENT_HEADER,
+    GATEWAY_SERVER_KEY,
+    gateway_secret,
+    gateway_url,
+)
 
 # The events the hook pipe registers and the server acts on. `UserPromptSubmit` and
 # `Stop` carry the turn's prompt and answer — the whole human ledger — while
@@ -335,3 +342,110 @@ def tail(
     from octomate_cli.tail import main  # watchfiles/websockets; only when tailing
 
     main(session_id=session, transcript_path=path, url=url, cwd=cwd)
+
+
+mcp_typer = typer.Typer(
+    help="Manage the gateway MCP entry for native Claude Code sessions.",
+    no_args_is_help=True,
+)
+claude_typer.add_typer(mcp_typer, name="mcp")
+
+McpScopeOption = Annotated[
+    Scope,
+    typer.Option(
+        help="Which config to touch: 'user' (~/.claude.json) or "
+        "'project' (./.mcp.json)."
+    ),
+]
+McpFileOption = Annotated[
+    Path | None,
+    typer.Option("--file", help="Explicit config path; overrides --scope when given."),
+]
+
+
+def mcp_config_file(scope: Scope, file: Path | None) -> Path:
+    if file is not None:
+        return file
+    if scope is Scope.user:
+        return Path.home() / ".claude.json"
+    return Path.cwd() / ".mcp.json"
+
+
+@mcp_typer.command("install")
+def mcp_install(
+    url: Annotated[
+        str | None,
+        typer.Option(
+            help="Octomate's base URL (http://host:port) to write; defaults to "
+            f"${OCTOMATE_URL_ENV}, then cli.toml."
+        ),
+    ] = None,
+    scope: McpScopeOption = Scope.user,
+    file: McpFileOption = None,
+) -> None:
+    """Point native Claude Code sessions at the served gateway.
+
+    Writes the `mcpServers.gateway` entry — the gateway's URL, the bearer, and
+    the runtime attribution header — resolved once, now: unlike the hooks, a
+    static entry is read by Claude itself, so the file holds the literal
+    credential and rotating it means re-running install. Everything else in the
+    file is kept, and re-running replaces the entry in place.
+    """
+    target = gateway_url(url)
+    secret = gateway_secret()
+    path = mcp_config_file(scope, file)
+    document = load_settings(path)
+    servers = document.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise typer.BadParameter(f"{path} has a non-object 'mcpServers' section")
+    servers[GATEWAY_SERVER_KEY] = {
+        "type": "http",
+        "url": target,
+        "headers": {
+            "Authorization": f"Bearer {secret}",
+            CLIENT_HEADER: CLAUDE_NATIVE_CLIENT,
+        },
+    }
+    write_settings(path, document)
+    typer.echo(f"Installed the gateway MCP entry → {target}")
+    typer.echo(f"  file:   {path}")
+    typer.echo(f"  client: {CLAUDE_NATIVE_CLIENT}")
+    typer.echo(
+        "  auth:   embedded — the file holds the literal credential; rotation "
+        "means re-running install"
+    )
+
+
+@mcp_typer.command("uninstall")
+def mcp_uninstall(
+    scope: McpScopeOption = Scope.user, file: McpFileOption = None
+) -> None:
+    """Remove the gateway MCP entry, leaving every other server and setting."""
+    path = mcp_config_file(scope, file)
+    document = load_settings(path)
+    servers = document.get("mcpServers")
+    if not isinstance(servers, dict) or GATEWAY_SERVER_KEY not in servers:
+        typer.echo(f"No gateway MCP entry in {path}")
+        raise typer.Exit()
+    del servers[GATEWAY_SERVER_KEY]
+    if not servers:
+        del document["mcpServers"]
+    write_settings(path, document)
+    typer.echo(f"Removed the gateway MCP entry from {path}")
+
+
+@mcp_typer.command("show")
+def mcp_show(scope: McpScopeOption = Scope.user, file: McpFileOption = None) -> None:
+    """Show the gateway MCP entry, credential masked."""
+    path = mcp_config_file(scope, file)
+    servers = load_settings(path).get("mcpServers")
+    entry = servers.get(GATEWAY_SERVER_KEY) if isinstance(servers, dict) else None
+    if not isinstance(entry, dict):
+        typer.echo(f"No gateway MCP entry in {path}")
+        raise typer.Exit()
+    headers = entry.get("headers")
+    client = headers.get(CLIENT_HEADER) if isinstance(headers, dict) else None
+    typer.echo(f"Gateway MCP entry in {path}:")
+    typer.echo(f"  url:    {entry.get('url')}")
+    typer.echo(f"  client: {client}")
+    typer.echo("  auth:   Bearer ***")
