@@ -38,7 +38,11 @@ from octomate.reflex.graph import (
     Route,
     build_reflex_graph,
 )
-from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
+from octomate.schemas.awakes import (
+    DeferredActionBatchResponse,
+    GatewayHandoffSignal,
+    UserMessageSignal,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
@@ -57,6 +61,7 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channels.base import ChannelSurfaces
 from octomate.tentacles.channels.feelers.output import TimelineState
+from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, RecordingInk
 from tests.support.managers import (
@@ -1217,6 +1222,86 @@ async def test_a_crossing_stays_put_when_the_far_dm_never_opens(
     assert not isinstance(result, DeferredResult)
     assert result.target.address == _group_key()
     assert second.turns == []
+
+
+async def test_a_native_summon_signal_crosses_and_hands_off(
+    in_memory_engine: None,
+) -> None:
+    """Awake meets a native session's summon where React meets a driven one's: the
+    crossing opens on the far channel, the handoff row says from=claude-native,
+    and the brief is the far agent's prompt. The source is the native
+    pseudo-channel nobody serves, which the crossing never needs to look up."""
+    users = UserManager(
+        {
+            "luhui": UserConfig.model_validate(
+                {
+                    "profiles": {
+                        CLAUDE_NATIVE_ID: {"channel_user_id": "native"},
+                        "far": {"channel_user_id": "ou_alice"},
+                    }
+                }
+            )
+        }
+    )
+    await users.reconcile()
+    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    far = FakeChannelTentacle(
+        id="far",
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="second", model="test")],
+        ),
+    )
+    deps = ReflexDeps(
+        channels={"far": far},
+        agents={"second": second},
+        conversation_manager=FakeConversationManager(),
+        thread_manager=FakeThreadManager(users=users),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
+        gateway=GatewayManager(),
+    )
+    signal = GatewayHandoffSignal(
+        decision=SummonDecision(
+            action="summon",
+            agent_id="second",
+            model="test",
+            destination=CrossingLanding(
+                address=ChannelAddress(
+                    channel_tentacle_id="far",
+                    chat_type="dm",
+                    chat_id="",
+                    user_id="ou_alice",
+                )
+            ),
+            reason="needs work",
+            hint="Working on it",
+            summon="Please take this up over here.",
+        ),
+        agent_id=CLAUDE_NATIVE_ID,
+        user_profile=await users.profile(CLAUDE_NATIVE_ID, "native"),
+        source=ChannelAddress(
+            channel_tentacle_id=CLAUDE_NATIVE_ID,
+            chat_type="dm",
+            chat_id="",
+            user_id="native",
+        ),
+    )
+
+    result = await _run(Awake(signal=signal), state=ReflexState(), deps=deps)
+
+    assert not isinstance(result, DeferredResult)
+    assert far.opened_dms == ["ou_alice"]
+    landed = second.turns[0].address
+    assert landed.channel_tentacle_id == "far"
+    assert landed.channel_thread_id == "hint-thread"
+    assert second.turns[0].prompt == "Please take this up over here."
+    threads = deps.thread_manager
+    assert isinstance(threads, FakeThreadManager)
+    [handoff] = threads.handoffs
+    assert handoff.from_agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert handoff.to_agent_tentacle_id == "second"
+    assert handoff.brief == "Please take this up over here."
 
 
 async def test_teleport_carries_the_history_across_to_a_far_sub_thread(

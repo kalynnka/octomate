@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from functools import wraps
 from inspect import cleandoc
-from typing import ParamSpec, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -27,8 +27,9 @@ from fastmcp.server.dependencies import get_http_headers
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
-from octomate.managers.gateway import GatewayManager, GatewayRefusal, GatewaySession
+from octomate.managers.gateway import GatewayRefusal, GatewaySession
 from octomate.managers.thread import ThreadManager
+from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
@@ -44,6 +45,18 @@ from octomate.schemas.triage import (
     SummonTarget,
     TeleportTarget,
 )
+from octomate.types.threads import (
+    CLAUDE_NATIVE_ID,
+    CODEX_NATIVE_ID,
+    DEEPSEEK_NATIVE_ID,
+    NATIVE_CHANNEL_USER_ID,
+    NATIVE_TENTACLE_IDS,
+)
+
+if TYPE_CHECKING:
+    # Runtime dependency runs the other way (the host builds and mounts this
+    # module's servers); the resolver only needs the host's type here.
+    from octomate.base import Octomate
 
 # The MCP server name every runtime mounts the gateway under. Claude and dsh name a
 # server's tools `mcp__<server>__<tool>`, Codex namespaces them `mcp__<server>`.
@@ -74,6 +87,11 @@ TELEPORT_RECORDED = (
 # The header a served call names its turn's conversation with. It comes from a
 # launch config Octomate itself wrote, never from the model.
 CONVERSATION_HEADER = "X-Octomate-Conversation"
+
+# The header a native session's static MCP config attributes its runtime with —
+# written once at install time, never per session. Attribution within the bearer's
+# trust domain, not authentication: the bearer is what authenticates.
+CLIENT_HEADER = "X-Octomate-Client"
 
 SpellP = ParamSpec("SpellP")
 SpellT = TypeVar("SpellT")
@@ -106,45 +124,104 @@ def spoken(
     return cast
 
 
-def served_session(gateway: GatewayManager) -> Callable[[], GatewaySession]:
-    """The session a call served over HTTP runs against: the turn registered at
-    `gateway` under the conversation the request's `CONVERSATION_HEADER` names.
-    Identity is asserted by the launch config, not chosen by the model, so a call
-    without the header, or naming a conversation with no turn in flight, is
-    refused outright rather than guessed at."""
+def served_session(octomate: Octomate) -> Callable[[], Awaitable[GatewaySession]]:
+    """The session a call served over HTTP runs against.
 
-    def resolve() -> GatewaySession:
-        named = get_http_headers().get(CONVERSATION_HEADER.lower())
-        if named is None:
+    A driven turn names its conversation with `CONVERSATION_HEADER`, written into
+    its launch config by Octomate itself, and resolves to the session registered
+    while that run is in flight. A native session names only its runtime with
+    `CLIENT_HEADER`, written once at install time, and gets `native_session` built
+    for the call — if its runtime's `native_gateway` flag allows one. Identity is
+    asserted by config either way, never chosen by the model, so a call carrying
+    neither header is refused outright rather than guessed at."""
+
+    async def resolve() -> GatewaySession:
+        headers = get_http_headers()
+        named = headers.get(CONVERSATION_HEADER.lower())
+        if named is not None:
+            try:
+                conversation_id = uuid.UUID(named)
+            except ValueError:
+                raise ToolError(
+                    f"{CONVERSATION_HEADER} is not a conversation id: {named!r}."
+                ) from None
+            session = octomate.gateway.get(conversation_id)
+            if session is None:
+                raise ToolError(
+                    f"No turn of conversation {named} is at the gateway; a session "
+                    "reaches it only while the run that opened it is in flight."
+                )
+            return session
+        client = headers.get(CLIENT_HEADER.lower())
+        if client is None:
             raise ToolError(
-                f"This call names no conversation (no {CONVERSATION_HEADER} header); "
-                "the gateway answers only a driven turn whose launch config names "
-                "its own."
+                "This call names no identity: a driven turn names its conversation "
+                f"with {CONVERSATION_HEADER}, a native session its runtime with "
+                f"{CLIENT_HEADER}. Both are written by config, so a call carrying "
+                "neither has nothing the gateway may answer for."
             )
-        try:
-            conversation_id = uuid.UUID(named)
-        except ValueError:
+        if client not in NATIVE_TENTACLE_IDS:
             raise ToolError(
-                f"{CONVERSATION_HEADER} is not a conversation id: {named!r}."
-            ) from None
-        session = gateway.get(conversation_id)
-        if session is None:
-            raise ToolError(
-                f"No turn of conversation {named} is at the gateway; a session "
-                "reaches it only while the run that opened it is in flight."
+                f"{CLIENT_HEADER} names no native runtime: {client!r}. An install "
+                f"writes one of: {', '.join(sorted(NATIVE_TENTACLE_IDS))}."
             )
-        return session
+        return await native_session(octomate, client)
 
     return resolve
 
 
-def gateway_mcp(current: GatewaySession, thread_manager: ThreadManager) -> FastMCP:
+async def native_session(octomate: Octomate, client: str) -> GatewaySession:
+    """An ephemeral gateway for one anonymous native call, never registered.
+
+    Anonymous within the bearer's trust domain: the call is attributed to a
+    runtime, never to a terminal session, so the session has no thread and no
+    address — every destination is a crossing, lit only where the deployment's
+    YAML links the shared native profile to real accounts. Availability is the
+    runtime's own `native_gateway` flag, and this refusal is the only real
+    control: a static MCP config puts the tools in every session once installed.
+    """
+    config = octomate.config
+    native_config = (
+        {
+            CLAUDE_NATIVE_ID: config.agents.claude,
+            CODEX_NATIVE_ID: config.agents.codex,
+            DEEPSEEK_NATIVE_ID: config.agents.deepseek,
+        }[client]
+        if config is not None
+        else None
+    )
+    if native_config is None or not native_config.native_gateway:
+        agent = client.removesuffix("-native")
+        raise ToolError(
+            f"The gateway is not offered to {client} sessions: `agents.{agent}` "
+            f"is not configured here, or its `native_gateway` is off."
+        )
+    return GatewaySession(
+        channel_routes=octomate.gateway.available_routes(
+            octomate.channels, octomate.agents
+        ),
+        current_agent_id=client,
+        channels=octomate.channels,
+        users=octomate.users,
+        user_profile=await octomate.users.profile(client, NATIVE_CHANNEL_USER_ID),
+        agents=octomate.agents,
+        native=True,
+    )
+
+
+def gateway_mcp(
+    current: GatewaySession,
+    thread_manager: ThreadManager,
+    kick: Callable[[GatewayHandoffSignal], None] | None = None,
+) -> FastMCP:
     """The gateway's spells as an MCP server.
 
     `current` is the FastMCP dependency each call resolves its session through —
     `Depends(...)` of a fixed session for a server mounted in-process for one turn,
     of a per-request lookup for a server that answers over HTTP. `thread_manager`
-    is the ledger a delivering spell writes through.
+    is the ledger a delivering spell writes through. `kick` is how a native
+    session's summon or scheme becomes its own turn at once, so only the served
+    mount — the one place a native session can arrive — needs one.
     """
     mcp = FastMCP(name=GATEWAY_SERVER_NAME, instructions=GATEWAY_SERVER_INSTRUCTIONS)
 
@@ -169,7 +246,7 @@ def gateway_mcp(current: GatewaySession, thread_manager: ThreadManager) -> FastM
         effort: ThinkingEffort | None = None,
         session: GatewaySession = current,
     ) -> str:
-        return await session.summon(
+        sentence = await session.summon(
             agent_id=agent_id,
             model=model,
             destination=destination,
@@ -178,6 +255,13 @@ def gateway_mcp(current: GatewaySession, thread_manager: ThreadManager) -> FastM
             summon=summon,
             effort=effort,
         )
+        if session.native:
+            if kick is None:
+                raise RuntimeError(
+                    "a native session reached a gateway mounted without a kick"
+                )
+            kick(session.native_handoff())
+        return sentence
 
     @mcp.tool(
         name=TELEPORT_TOOL_NAME,
@@ -202,7 +286,14 @@ def gateway_mcp(current: GatewaySession, thread_manager: ThreadManager) -> FastM
         destination: SchemeTarget = DIRECT_TARGET,
         session: GatewaySession = current,
     ) -> str:
-        return await session.scheme(hint=hint, brief=brief, destination=destination)
+        sentence = await session.scheme(hint=hint, brief=brief, destination=destination)
+        if session.native:
+            if kick is None:
+                raise RuntimeError(
+                    "a native session reached a gateway mounted without a kick"
+                )
+            kick(session.native_handoff())
+        return sentence
 
     @mcp.tool(
         name=SEND_TOOL_NAME, description=capability_contract(GatewayCapability.send)

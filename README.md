@@ -373,6 +373,8 @@ octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hoo
 
 `~/.zshrc` covers interactive zsh, which is what VSCode resolves the environment from; use `~/.zshenv` instead if you want non-interactive shells to have it too, and on another shell put the line wherever that shell would find it. Either way an environment is captured when a process starts: shells already open keep the one they had, and a GUI client (VSCode, the desktop app) grabs it when *it* launches — so restart them before expecting the hooks to carry the secret.
 
+Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying the bearer plus a static `X-Octomate-Client` header written at install time. That surface authenticates the bearer, not the caller: the client header is attribution. Any holder of `OCTOMATE__SECRET` can already forge any session's ledger through the hook pipe; the gateway adds one power to the same credential — outbound sends and handoffs to real channels. Same trust domain (the operator's machines), same mitigations (per-deployment secret, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags. A native session is anonymous, so its spells light up only where a `users:` entry claims the shared native profile — `profiles: {claude-native: {channel_user_id: native}}` — beside real accounts: a single-operator assumption, on purpose.
+
 ---
 
 ## Project structure

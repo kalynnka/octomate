@@ -18,11 +18,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 
+from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
     HERE_TARGET,
+    SCHEME_TOOL_NAME,
     SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
     THREAD_TARGET,
@@ -44,6 +46,7 @@ from octomate.schemas.triage import (
     ThreadLanding,
     ThreadTarget,
 )
+from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
 if TYPE_CHECKING:
     from pydantic_ai.settings import ThinkingEffort
@@ -105,6 +108,11 @@ class GatewaySession:
     # runtime's tool call presents to `GatewayManager`. None on a gateway built
     # outside a driven turn, which is then never registered.
     conversation_id: uuid.UUID | None = None
+    # An anonymous native session — a terminal run reaching the served gateway with
+    # a runtime attribution and nothing else. Policy, never schema: there is no
+    # here or sub-thread to land on, every destination is a crossing, and a summon
+    # or scheme is kicked as its own turn instead of being read after this one.
+    native: bool = False
     # Whether the mounted gateway offers the accomplice spells; `no_landing` names
     # `commission` as the fallback only when it is actually on offer.
     commissioning: bool = field(default=False, init=False)
@@ -135,7 +143,10 @@ class GatewaySession:
         """Whether `summon here` may hand this conversation over in place.
 
         False on a group's main channel, where pinning an owner would route every
-        gated-in message, from any user, to one agent."""
+        gated-in message, from any user, to one agent — and false for a native
+        session, which has no conversation Octomate could hand over."""
+        if self.native:
+            return False
         address = self.conversation_address
         if address is None:
             return True
@@ -152,7 +163,11 @@ class GatewaySession:
 
         True for a gateway with no surface to judge by, as `allow_here` is: refusing
         what it cannot see would block a spell the graph resolves correctly anyway.
+        False for a native one, whose terminal is not a surface Octomate can open
+        anything from.
         """
+        if self.native:
+            return False
         address = self.conversation_address
         if address is None:
             return True
@@ -277,14 +292,18 @@ class GatewaySession:
         lands in the direct messages themselves, still reaches it. A channel running
         nothing this run could name is out for the same reason: the turn would arrive
         with nobody to take it. Both crossing spells ask this; neither may cross to
-        the channel it is already on.
+        the channel it is already on. A native session has no address and every
+        place it can reach is a crossing, so it alone crosses from nowhere.
         """
         address = self.conversation_address
-        if address is None:
+        if address is None and not self.native:
             return []
         crossing: list[Destination] = []
         for one in await self.destinations():
-            if one.address.channel_tentacle_id == address.channel_tentacle_id:
+            if (
+                address is not None
+                and one.address.channel_tentacle_id == address.channel_tentacle_id
+            ):
                 continue
             channel = self.channels.get(one.address.channel_tentacle_id)
             if channel is not None and channel.surfaces.sub_thread and one.routes:
@@ -478,7 +497,18 @@ class GatewaySession:
         """Validate and record a teleport decision — the same agent continuing in a
         new sub-thread. How the move happens is the caller's: Inkling's capability
         turns it into a deferral the graph forks mid-run; a runtime that cannot be
-        suspended reports it and the graph forks after its turn."""
+        suspended reports it and the graph forks after its turn.
+
+        A native session is refused before any handle is read: its turn lives in a
+        terminal Octomate does not drive, so there is nothing to relocate — only
+        work to hand off."""
+        if self.native:
+            raise GatewayRefusal(
+                "This session lives in your terminal — Octomate cannot relocate "
+                f"it. `{SUMMON_TOOL_NAME}` an agent to take the work up on a real "
+                f"channel, or `{SCHEME_TOOL_NAME}` it into someone's direct "
+                "messages."
+            )
         handles = await self.teleport_handles()
         if destination.handle not in handles:
             raise GatewayRefusal(
@@ -534,6 +564,25 @@ class GatewaySession:
             return None
         return (await self.destination(destination.handle, spell="send")).address
 
+    def native_handoff(self) -> GatewayHandoffSignal:
+        """This native session's recorded decision, packaged to be kicked as its
+        own turn. Only a native summon or scheme leaves one, so anything else
+        asking is a wiring bug, not a refusal a model could correct from."""
+        decision = self.decision
+        if not self.native or not isinstance(decision, SummonDecision | SchemeDecision):
+            raise RuntimeError("only a native summon or scheme kicks a handoff")
+        return GatewayHandoffSignal(
+            decision=decision,
+            agent_id=self.current_agent_id,
+            user_profile=self.user_profile,
+            source=ChannelAddress(
+                channel_tentacle_id=self.current_agent_id,
+                chat_type="dm",
+                chat_id="",
+                user_id=NATIVE_CHANNEL_USER_ID,
+            ),
+        )
+
 
 class GatewayManager:
     """The live gateway sessions, one per driven turn, keyed by conversation id.
@@ -575,6 +624,32 @@ class GatewayManager:
 
     def get(self, conversation_id: uuid.UUID) -> GatewaySession | None:
         return self.sessions.get(conversation_id)
+
+    def available_routes(
+        self,
+        channels: dict[str, ChannelTentacle],
+        agents: dict[str, AgentTentacle],
+    ) -> dict[str, list[AgentRoute]]:
+        """What each channel can route to: every connected agent it exposes, each
+        answering with its own routes (from its claims). The channel's (agent,
+        model) entries only pick its entry/default models — they do not bound the
+        routes.
+
+        The one computation behind both `ReflexDeps.available_routes` and the
+        served gateway's ephemeral native session, so a driven turn and a native
+        call cannot disagree about what a channel offers."""
+        return {
+            channel_id: [
+                route
+                for agent_id in dict.fromkeys(
+                    connection.agent
+                    for connection in channel.config.agents
+                    if connection.agent in agents
+                )
+                for route in agents[agent_id].routes
+            ]
+            for channel_id, channel in channels.items()
+        }
 
     @contextmanager
     def driving(self, session: GatewaySession | None) -> Generator[None]:

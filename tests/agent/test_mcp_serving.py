@@ -8,6 +8,7 @@ pinned in memory by `test_gateway_tools`.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,10 +23,18 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.base import Octomate
+from octomate.config.base import OctomateConfig
+from octomate.config.channels import AgentModelConfig, ChannelConfig
+from octomate.config.users import UserConfig
 from octomate.managers.gateway import GatewaySession
-from octomate.mcp.gateway import CONVERSATION_HEADER, GATEWAY_SPELLS
+from octomate.managers.user import UserManager
+from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
+from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
-from tests.support.channels import FakeChannelTentacle
+from octomate.schemas.triage import SummonDecision
+from octomate.types.threads import CLAUDE_NATIVE_ID, NATIVE_CHANNEL_USER_ID
+from tests.support.agents import FakeAgent
+from tests.support.channels import FakeChannelTentacle, FakeOctomate
 
 SECRET = SecretStr("the-hook-secret")
 BEARER = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
@@ -39,12 +48,14 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 
 @asynccontextmanager
-async def served() -> AsyncIterator[tuple[Octomate, FastAPI]]:
+async def served(
+    octomate: Octomate | None = None,
+) -> AsyncIterator[tuple[Octomate, FastAPI]]:
     """Octomate's app with its MCP servers up: their transports live in the app
     lifespan, which Starlette never runs for a mounted app on its own. A context
     rather than a fixture because the transport's task group must be left from
     the task that entered it, and a fixture's teardown runs in another."""
-    octomate = Octomate(secret=SECRET)
+    octomate = octomate or Octomate(secret=SECRET)
     app = octomate.app()
     async with app.router.lifespan_context(app):
         yield octomate, app
@@ -164,7 +175,7 @@ async def test_a_call_naming_no_turn_is_refused() -> None:
         a_driven_turn(octomate)
 
         async with over(octomate, app, BEARER) as client:
-            with pytest.raises(ToolError, match="names no conversation"):
+            with pytest.raises(ToolError, match="names no identity"):
                 await client.call_tool("scry", {})
 
         stray = {**BEARER, CONVERSATION_HEADER: "not-a-uuid"}
@@ -176,3 +187,105 @@ async def test_a_call_naming_no_turn_is_refused() -> None:
         async with over(octomate, app, unknown) as client:
             with pytest.raises(ToolError, match="No turn of conversation"):
                 await client.call_tool("scry", {})
+
+
+def a_native_deployment() -> FakeOctomate:
+    """A deployment a native claude session can route through: the flag on, the
+    shared native profile linked beside a real `im` account, and `im` serving an
+    agent whose routes a crossing can name."""
+    octomate = FakeOctomate(
+        secret=SECRET,
+        config=OctomateConfig.model_validate(
+            {"agents": {"claude": {"models": ["opus"]}}}
+        ),
+        users=UserManager(
+            {
+                "luhui": UserConfig.model_validate(
+                    {
+                        "profiles": {
+                            CLAUDE_NATIVE_ID: {
+                                "channel_user_id": NATIVE_CHANNEL_USER_ID
+                            },
+                            "im": {"channel_user_id": "alice"},
+                        }
+                    }
+                )
+            }
+        ),
+    )
+    octomate.connect(FakeAgent(id="other"))
+    octomate.connect(
+        FakeChannelTentacle(
+            config=ChannelConfig(
+                type="fake",
+                agents=[AgentModelConfig(agent="other", model="test")],
+            )
+        )
+    )
+    return octomate
+
+
+NATIVE = {CLIENT_HEADER: CLAUDE_NATIVE_ID}
+
+
+async def test_a_client_header_naming_no_native_runtime_is_refused() -> None:
+    async with served() as (octomate, app):
+        async with over(
+            octomate, app, {**BEARER, CLIENT_HEADER: "emacs-native"}
+        ) as client:
+            with pytest.raises(ToolError, match="names no native runtime"):
+                await client.call_tool("scry", {})
+
+
+async def test_a_native_call_needs_its_runtime_flag_on() -> None:
+    # Un-configured runtime and switched-off flag refuse with the same sentence:
+    # from the session's side there is no difference, and both are fixed in the
+    # deployment config. This refusal is the only real control — a static MCP
+    # install puts the tools in every session.
+    off = OctomateConfig.model_validate(
+        {"agents": {"claude": {"models": ["opus"], "native_gateway": False}}}
+    )
+    for octomate in (Octomate(secret=SECRET), Octomate(secret=SECRET, config=off)):
+        async with served(octomate) as (octomate, app):
+            async with over(octomate, app, {**BEARER, **NATIVE}) as client:
+                with pytest.raises(
+                    ToolError, match="not offered to claude-native sessions"
+                ):
+                    await client.call_tool("scry", {})
+
+
+async def test_a_native_call_runs_against_an_ephemeral_session() -> None:
+    async with served(a_native_deployment()) as (octomate, app):
+        async with over(octomate, app, {**BEARER, **NATIVE}) as client:
+            result = await client.call_tool("scry", {})
+
+    # The linked account's crossing is on offer, and nothing was ever registered:
+    # the session lived exactly one call.
+    assert "their direct messages on" in result.data
+    assert octomate.gateway.sessions == {}
+
+
+async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
+    octomate = a_native_deployment()
+    async with served(octomate) as (octomate, app):
+        async with over(octomate, app, {**BEARER, **NATIVE}) as client:
+            result = await client.call_tool(
+                "summon",
+                {
+                    "agent_id": "other",
+                    "model": "test",
+                    "destination": {"kind": "channel", "channel": "im"},
+                    "hint": "Working on it",
+                    "reason": "the operator asked",
+                    "summon": "Please take this up.",
+                },
+            )
+        await asyncio.gather(*octomate.background)
+
+    assert result.data == "Summoning other (test) → im."
+    assert isinstance(octomate, FakeOctomate)
+    [signal] = octomate.kicks
+    assert isinstance(signal, GatewayHandoffSignal)
+    assert signal.agent_id == CLAUDE_NATIVE_ID
+    assert isinstance(signal.decision, SummonDecision)
+    assert signal.decision.summon == "Please take this up."

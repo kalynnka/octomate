@@ -29,6 +29,7 @@ from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.locks import SessionLocks
+from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
 if TYPE_CHECKING:
     from octomate import Octomate
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # A native session carries no platform identity for whoever is typing.
-NATIVE_USER = UserProfile(channel_user_id="native", name="native")
+NATIVE_USER = UserProfile(channel_user_id=NATIVE_CHANNEL_USER_ID, name="native")
 
 
 class ClaudeHookIngest:

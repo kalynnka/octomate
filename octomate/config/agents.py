@@ -18,6 +18,11 @@ from octomate.types.permissions import (
     DeepseekPermissionMode,
     InklingPermissionMode,
 )
+from octomate.types.threads import (
+    CLAUDE_NATIVE_ID,
+    CODEX_NATIVE_ID,
+    DEEPSEEK_NATIVE_ID,
+)
 
 # A filesystem path from config, with `~` meaning what the person writing it meant:
 # pydantic keeps `~/...` literal, and `Path("~/x").resolve()` yields `<cwd>/~/x` rather
@@ -281,6 +286,13 @@ class ClaudeCodeConfig(AgentConfig):
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned).",
     )
+    native_gateway: bool = Field(
+        default=True,
+        description="Whether anonymous claude-native sessions may cast the served "
+        "gateway spells over `/gateway/mcp`. The bearer still authenticates every "
+        "call; this is the runtime's own switch, matched against the "
+        "X-Octomate-Client header a static install writes.",
+    )
     permission_mode: ClaudePermissionMode = Field(
         default="default",
         description=(
@@ -351,6 +363,13 @@ class CodexConfig(AgentConfig):
         description="Per-model claims (ability/efforts). A model with no claim "
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned).",
+    )
+    native_gateway: bool = Field(
+        default=True,
+        description="Whether anonymous codex-native sessions may cast the served "
+        "gateway spells over `/gateway/mcp`. The bearer still authenticates every "
+        "call; this is the runtime's own switch, matched against the "
+        "X-Octomate-Client header a static install writes.",
     )
     permission_mode: CodexPermissionMode = Field(
         default="user_review",
@@ -511,6 +530,13 @@ class DeepseekConfig(AgentConfig):
         "summoned (or commissioned). DeepSeek's efforts collapse to off/high/max, "
         "so claims should offer `[low, medium, high, xhigh]` at most.",
     )
+    native_gateway: bool = Field(
+        default=True,
+        description="Whether anonymous deepseek-native sessions may cast the served "
+        "gateway spells over `/gateway/mcp`. The bearer still authenticates every "
+        "call; this is the runtime's own switch, matched against the "
+        "X-Octomate-Client header a static install writes.",
+    )
     efforts: dict[ThinkingEffort, str] = Field(
         default_factory=lambda: {
             "minimal": "off",
@@ -590,3 +616,26 @@ class AgentsConfig(BaseModel):
             if agent is not None and agent.enabled:
                 configured[agent_id] = set(agent.models)
         return configured
+
+    def native_ids(self) -> frozenset[str]:
+        """The native pseudo-channel ids whose runtimes this deployment declares.
+
+        The set a user link may claim: linking `(claude-native, native)` is how
+        an operator owns that runtime's terminals, and only a declared runtime
+        has a native surface to own — one with no block mounts no hook router
+        and is refused at the served gateway. `enabled` is deliberately not
+        consulted: disabling unregisters the tentacle, and a link to a declared
+        runtime that is switched off is dormant, not mistyped.
+        """
+        # TODO: replace with real registration once real users are ready — the
+        # declared slots stand in while every native terminal is the one shared
+        # anonymous operator.
+        return frozenset(
+            native_id
+            for native_id, agent in (
+                (CLAUDE_NATIVE_ID, self.claude),
+                (CODEX_NATIVE_ID, self.codex),
+                (DEEPSEEK_NATIVE_ID, self.deepseek),
+            )
+            if agent is not None
+        )

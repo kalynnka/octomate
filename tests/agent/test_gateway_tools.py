@@ -15,19 +15,26 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
+from octomate.config.users import UserConfig
 from octomate.managers.gateway import GatewaySession
+from octomate.managers.user import UserManager
 from octomate.mcp.gateway import GATEWAY_SPELLS, TELEPORT_RECORDED, gateway_mcp
+from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
+    CrossingLanding,
+    SchemeDecision,
     SummonDecision,
     TeleportDecision,
     ThreadLanding,
 )
+from octomate.types.threads import CLAUDE_NATIVE_ID, NATIVE_CHANNEL_USER_ID
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager
 
@@ -65,6 +72,49 @@ def a_turn() -> tuple[FastMCP, GatewaySession, FakeChannelTentacle, FakeThreadMa
         ),
     )
     return gateway_mcp(Depends(lambda: session), threads), session, channel, threads
+
+
+async def a_native_call(
+    *, linked: bool = True
+) -> tuple[
+    FastMCP,
+    GatewaySession,
+    FakeChannelTentacle,
+    FakeThreadManager,
+    list[GatewayHandoffSignal],
+]:
+    """The gateway as the served endpoint builds it for one anonymous native call:
+    no thread, no address, the registry deciding whether anywhere is reachable —
+    `linked` is whether a YAML user claims the shared native profile beside a real
+    account on `im`."""
+    channel = FakeChannelTentacle()
+    threads = FakeThreadManager()
+    kicks: list[GatewayHandoffSignal] = []
+    users = UserManager(
+        {
+            "luhui": UserConfig.model_validate(
+                {
+                    "profiles": {
+                        CLAUDE_NATIVE_ID: {"channel_user_id": NATIVE_CHANNEL_USER_ID},
+                        "im": {"channel_user_id": "alice"},
+                    }
+                }
+            )
+        }
+        if linked
+        else {}
+    )
+    await users.reconcile()
+    session = GatewaySession(
+        channel_routes={"im": [CLAUDE_ROUTE]},
+        current_agent_id=CLAUDE_NATIVE_ID,
+        channels={"im": channel},
+        users=users,
+        user_profile=await users.profile(CLAUDE_NATIVE_ID, NATIVE_CHANNEL_USER_ID),
+        native=True,
+    )
+    server = gateway_mcp(Depends(lambda: session), threads, kick=kicks.append)
+    return server, session, channel, threads, kicks
 
 
 async def test_the_server_offers_exactly_the_five_shared_spells() -> None:
@@ -221,3 +271,162 @@ async def test_send_to_dm_opens_it_and_lands_there() -> None:
     assert channel.opened_dms == ["alice"]
     [outbound] = threads.outbounds
     assert outbound.direction == "outbound"
+
+
+async def test_a_native_session_scries_only_crossings(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    server, session, _channel, _threads, _kicks = await a_native_call()
+
+    async with Client(server) as client:
+        result = await client.call_tool("scry", {})
+
+    assert result.data == str(await session.scry())
+    # No conversation of its own: nothing to route to here, and neither built-in
+    # landing exists — everywhere it can go is the linked account's crossing.
+    assert "Agents you can route to here:\n- (none)" in result.data
+    assert "their direct messages on" in result.data
+    assert await session.summon_handles() == ["im"]
+
+
+async def test_a_native_session_nobody_claims_scries_nowhere(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    server, session, _channel, _threads, kicks = await a_native_call(linked=False)
+
+    async with Client(server) as client:
+        result = await client.call_tool("scry", {})
+        with pytest.raises(ToolError) as refusal:
+            await client.call_tool("summon", SUMMON_ARGUMENTS)
+
+    assert session.user_profile is None
+    assert result.data.count("- (none)") == 2
+    # The truthful dead end: no linked profile, so nowhere left to land.
+    assert "`summon` has nowhere left to land, so answer it." in str(refusal.value)
+    assert kicks == []
+
+
+async def test_a_native_teleport_is_refused_honestly(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    server, _session, _channel, _threads, kicks = await a_native_call()
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as refusal:
+            await client.call_tool("teleport", {"hint": "moving over"})
+
+    assert str(refusal.value).startswith(
+        "This session lives in your terminal — Octomate cannot relocate it."
+    )
+    assert kicks == []
+
+
+async def test_a_native_send_here_is_refused(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    server, _session, _channel, threads, _kicks = await a_native_call()
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as refusal:
+            await client.call_tool(
+                "send",
+                {"segments": [{"type": "markdown", "data": {"text": "hello"}}]},
+            )
+
+    assert str(refusal.value) == (
+        "This session has no conversation of its own to land a send on — "
+        "name a destination from `scry`."
+    )
+    assert threads.outbounds == []
+
+
+async def test_a_native_send_to_dm_is_refused(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    server, _session, _channel, threads, _kicks = await a_native_call()
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as refusal:
+            await client.call_tool(
+                "send",
+                {
+                    "segments": [{"type": "markdown", "data": {"text": "hello"}}],
+                    "destination": {"kind": "dm"},
+                },
+            )
+
+    assert str(refusal.value).startswith(
+        "This run has no single user whose direct messages could be opened."
+    )
+    assert threads.outbounds == []
+
+
+async def test_a_native_send_delivers_to_a_crossing(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    server, _session, channel, threads, kicks = await a_native_call()
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "send",
+            {
+                "segments": [{"type": "markdown", "data": {"text": "for you"}}],
+                "destination": {"kind": "channel", "channel": "im"},
+            },
+        )
+
+    assert result.data == "sent"
+    assert channel.opened_dms == ["alice"]
+    [outbound] = threads.outbounds
+    # The ledger row is attributed to the native runtime, never to a session.
+    assert outbound.agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert kicks == []
+
+
+async def test_a_native_summon_kicks_its_handoff_at_once(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    server, session, _channel, _threads, kicks = await a_native_call()
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "summon",
+            {**SUMMON_ARGUMENTS, "destination": {"kind": "channel", "channel": "im"}},
+        )
+
+    assert result.data == "Summoning claude (opus) → im."
+    [signal] = kicks
+    assert signal.agent_id == CLAUDE_NATIVE_ID
+    assert signal.user_profile is session.user_profile
+    assert signal.source is not None
+    assert signal.source.channel_tentacle_id == CLAUDE_NATIVE_ID
+    assert isinstance(signal.decision, SummonDecision)
+    assert signal.decision.summon == "Please investigate the failing test."
+    assert signal.decision.destination == CrossingLanding(
+        address=ChannelAddress(
+            channel_tentacle_id="im", chat_type="dm", chat_id="", user_id="alice"
+        )
+    )
+
+
+async def test_a_native_scheme_kicks_its_handoff_at_once(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    server, _session, _channel, _threads, kicks = await a_native_call()
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "scheme",
+            {
+                "hint": "carrying on with you directly",
+                "brief": "The operator asked for a summary.",
+                "destination": {"kind": "channel", "channel": "im"},
+            },
+        )
+
+    assert result.data.startswith("Taking this to")
+    [signal] = kicks
+    assert signal.agent_id == CLAUDE_NATIVE_ID
+    assert isinstance(signal.decision, SchemeDecision)
+    assert signal.decision.brief == "The operator asked for a summary."
+    assert signal.decision.destination.user_id == "alice"
