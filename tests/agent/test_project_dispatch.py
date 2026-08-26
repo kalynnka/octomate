@@ -1,8 +1,9 @@
 """OCTO-32, OCTO-48 — a thread's project decides where both agents run.
 
 The thread is the only place a project is declared: every conversation belongs to
-one, so a run asks its thread rather than carrying a copy. With nothing declared,
-both agents dispatch exactly where they did before, down to not reading the thread.
+one, so a run asks its thread rather than carrying a copy. With nothing declared, a
+run still gets a workspace — a fork of the empty repository, thrown away when the
+run ends — so the directory is never Octomate's own.
 
 Where a declared thread lands moved in OCTO-48: not the project's root — the
 person's own checkout, shared by everyone — but this thread's fork of it, at
@@ -137,41 +138,74 @@ def test_a_composed_workspace_manager_is_the_one_the_host_uses() -> None:
     assert composed.projects is octomate.projects
 
 
-async def test_with_nothing_declared_claude_runs_in_the_chat_directory() -> None:
+async def test_with_nothing_declared_claude_runs_in_a_workspace_of_its_own() -> None:
     # OCTO-50: never Octomate's own directory, which is where a run with nothing
     # set lands — on a server, the one holding the database and the config secrets.
+    # A fork of the empty repository instead, which this run may write in.
     octomate = Octomate(conversations=FakeConversationManager())
+    thread = await a_thread(octomate, "chat")
 
-    options = await claude_run(octomate, await a_thread(octomate, "chat"))
+    options = await claude_run(octomate, thread)
 
-    assert options.cwd == str(octomate.workspaces.chat())
+    assert options.cwd == str(octomate.workspaces.open(thread.id, None).path)
     assert options.add_dirs == []
 
 
-async def test_with_nothing_declared_codex_runs_in_the_chat_directory() -> None:
+async def test_with_nothing_declared_codex_runs_in_a_workspace_of_its_own() -> None:
     octomate = Octomate(conversations=FakeConversationManager())
+    thread = await a_thread(octomate, "chat")
 
-    cwd = await codex_run(octomate, await a_thread(octomate, "chat"))
+    cwd = await codex_run(octomate, thread)
 
-    assert cwd == str(octomate.workspaces.chat())
+    assert cwd == str(octomate.workspaces.open(thread.id, None).path)
 
 
-async def test_every_thread_in_no_project_shares_one_directory() -> None:
-    # Safe only because nothing may write there, which is what each runtime is told
-    # where its run is set up. A writable exception would have to stop the sharing.
+async def test_the_workspace_a_chat_run_had_is_gone_when_it_finishes() -> None:
+    # The other half of forking one per run: nothing survives the turn, so the
+    # empty tree stays empty and a conversation cannot accumulate a mess nobody
+    # asked for.
     octomate = Octomate(conversations=FakeConversationManager())
+    thread = await a_thread(octomate, "chat")
 
-    one = (await claude_run(octomate, await a_thread(octomate, "first"))).cwd
-    other = (await claude_run(octomate, await a_thread(octomate, "second"))).cwd
+    options = await claude_run(octomate, thread)
 
-    assert one == other == str(octomate.workspaces.chat())
+    assert options.cwd is not None
+    assert not Path(options.cwd).exists()
 
 
-async def test_codex_is_read_only_in_a_chat_thread_and_not_in_a_project(
+async def test_the_workspace_a_codex_chat_run_had_is_gone_when_it_finishes() -> None:
+    # Codex enters its workspace around the pooled client rather than around a
+    # subprocess, so the ending is worth its own proof.
+    octomate = Octomate(conversations=FakeConversationManager())
+    thread = await a_thread(octomate, "chat")
+
+    cwd = await codex_run(octomate, thread)
+
+    assert cwd is not None
+    assert not Path(cwd).exists()
+
+
+async def test_no_two_threads_in_no_project_share_a_directory() -> None:
+    # What made one shared directory safe was that nothing could write in it. A
+    # fork each is what lets a chat run write at all, and keeps two conversations
+    # out of each other's files.
+    octomate = Octomate(conversations=FakeConversationManager())
+    first = await a_thread(octomate, "first")
+    second = await a_thread(octomate, "second")
+
+    one = (await claude_run(octomate, first)).cwd
+    other = (await claude_run(octomate, second)).cwd
+
+    assert one == str(octomate.workspaces.open(first.id, None).path)
+    assert other == str(octomate.workspaces.open(second.id, None).path)
+
+
+async def test_codex_scopes_writes_to_the_workspace_in_every_thread(
     tmp_path: Path,
 ) -> None:
-    # The directory is the whole of Codex's boundary, so a shared directory has to
-    # be read-only; a thread with a workspace of its own keeps the configured mode.
+    # The directory is the whole of Codex's boundary, and every run now has one of
+    # its own to be scoped to — so the chat exception that made a shared directory
+    # safe has nothing left to protect.
     octomate = Octomate(
         conversations=FakeConversationManager(),
         workspaces=WorkspaceManager(
@@ -180,7 +214,7 @@ async def test_codex_is_read_only_in_a_chat_thread_and_not_in_a_project(
     )
 
     await codex_run(octomate, await a_thread(octomate, "chat"))
-    assert FakeCodex.thread_calls[-1].sandbox == Sandbox.read_only
+    assert FakeCodex.thread_calls[-1].sandbox == Sandbox.workspace_write
 
     await codex_run(octomate, await a_thread(octomate, "work", "inky"))
     assert FakeCodex.thread_calls[-1].sandbox == Sandbox.workspace_write
@@ -315,9 +349,11 @@ async def test_a_thread_naming_an_undeclared_project_falls_back(
 
     # A thread's project is a reference into the registry; a name the registry does
     # not carry has no root to run in, so the thread is a chat thread.
-    options = await claude_run(octomate, await a_thread(octomate, "chat", "retired"))
+    thread = await a_thread(octomate, "chat", "retired")
 
-    assert options.cwd == str(octomate.workspaces.chat())
+    options = await claude_run(octomate, thread)
+
+    assert options.cwd == str(octomate.workspaces.open(thread.id, None).path)
 
 
 async def a_project_thread(tmp_path: Path) -> tuple[Octomate, Thread, Path]:

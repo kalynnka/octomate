@@ -41,7 +41,12 @@ from octomate.managers import workspaces
 from octomate.managers.mirrors import GitCommandError, MirrorManager, run_git
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import CopyError, WorkspaceManager
+from octomate.managers.workspaces import (
+    ChatWorkspace,
+    CopyError,
+    ProjectWorkspace,
+    WorkspaceManager,
+)
 from octomate.schemas.thread import Thread, ThreadKey
 from tests.support.managers import a_project, a_registry
 
@@ -97,6 +102,15 @@ async def a_bound_thread(manager: WorkspaceManager) -> Thread:
         ThreadKey("test", "thread", "chat", str(uuid7())),
         project=manager.projects.get("inky"),
     )
+
+
+def a_workspace(manager: WorkspaceManager, thread_id: uuid.UUID) -> ProjectWorkspace:
+    """The handle a run is given before anything is forked. `materialize` takes one
+    rather than a thread id, because where a workspace goes and what it is forked
+    from are the workspace's to answer, not the caller's."""
+    project = manager.projects.get("inky")
+    assert project is not None
+    return ProjectWorkspace(manager, thread_id, project)
 
 
 async def a_project_mirror(manager: WorkspaceManager, files: dict[str, str]) -> Path:
@@ -164,7 +178,7 @@ async def test_a_workspace_is_an_independent_repository_on_the_threads_branch(
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
 
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     assert workspace == (tmp_path / "workspaces" / str(thread.id)).resolve()
     assert (workspace / "readme.md").read_text() == "hello"
@@ -177,7 +191,7 @@ async def test_a_commit_in_a_workspace_writes_only_inside_it(
 ) -> None:
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     before = sorted(path.relative_to(mirror) for path in (mirror / ".git").rglob("*"))
-    workspace = await manager.materialize(uuid7(), mirror)
+    workspace = await manager.materialize(a_workspace(manager, uuid7()), mirror)
 
     (workspace / "work.md").write_text("done")
     await run_git("add", "-A", cwd=workspace)
@@ -198,8 +212,8 @@ async def test_two_threads_on_one_project_fork_into_separate_directories(
     one = await a_bound_thread(manager)
     other = await a_bound_thread(manager)
 
-    first = await manager.materialize(one.id, mirror)
-    second = await manager.materialize(other.id, mirror)
+    first = await manager.materialize(a_workspace(manager, one.id), mirror)
+    second = await manager.materialize(a_workspace(manager, other.id), mirror)
 
     assert first != second
     (first / "mine.md").write_text("only here")
@@ -214,10 +228,12 @@ async def test_materializing_again_answers_the_live_tree(
     # is uncommitted more often than not.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     (workspace / "wip.md").write_text("half done")
 
-    assert await manager.materialize(thread.id, mirror) == workspace
+    assert (
+        await manager.materialize(a_workspace(manager, thread.id), mirror) == workspace
+    )
     assert (workspace / "wip.md").read_text() == "half done"
 
 
@@ -226,7 +242,7 @@ async def test_releasing_removes_the_workspace_and_leaves_the_mirror(
 ) -> None:
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     (workspace / "work.md").write_text("done")
 
     await manager.release(thread.id)
@@ -250,7 +266,9 @@ async def test_a_fork_that_fails_leaves_nothing_behind(
     thread = await a_bound_thread(manager)
 
     with pytest.raises((CopyError, GitCommandError)):
-        await manager.materialize(thread.id, tmp_path / "no-such-mirror")
+        await manager.materialize(
+            a_workspace(manager, thread.id), tmp_path / "no-such-mirror"
+        )
 
     assert not manager.path(thread.id).exists()
     assert list((tmp_path / "workspaces").iterdir()) == []
@@ -268,7 +286,7 @@ async def test_what_a_killed_fork_left_is_never_a_workspace(
     abandoned.mkdir(parents=True)
     (abandoned / "half.md").write_text("copied before the power went")
 
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     assert (workspace / "readme.md").read_text() == "hello"
     assert not (workspace / "half.md").exists()
@@ -281,11 +299,13 @@ async def test_two_materializations_of_one_thread_serialize(
     # Two turns arriving together must not have two `cp`s racing into one path.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    await manager.materialize(thread.id, mirror)
+    await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     lock = manager.locks[thread.id]
     await lock.acquire()
-    second = asyncio.create_task(manager.materialize(thread.id, mirror))
+    second = asyncio.create_task(
+        manager.materialize(a_workspace(manager, thread.id), mirror)
+    )
     for _ in range(5):
         await asyncio.sleep(0)
     assert not second.done()
@@ -317,7 +337,7 @@ async def test_a_host_without_copy_on_write_forks_by_cloning(
     thread = await a_bound_thread(manager)
 
     with caplog.at_level(logging.INFO):
-        workspace = await manager.materialize(thread.id, mirror)
+        workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     assert manager.reflink is None
     assert "thread workspaces fork by git clone" in caplog.text
@@ -353,7 +373,10 @@ async def test_the_sweep_works_from_the_default_relative_directory(
     project = manager.projects.get("inky")
     assert project is not None
     mirror = await a_mirror(manager.mirrors.path(project), {"readme.md": "hello"})
-    await a_turn(await manager.materialize(thread.id, mirror), {"work.md": "done"})
+    await a_turn(
+        await manager.materialize(a_workspace(manager, thread.id), mirror),
+        {"work.md": "done"},
+    )
     await manager.save(thread)
 
     assert await manager.prune(idle=0.0) == [thread.id]
@@ -379,7 +402,7 @@ async def test_a_turn_leaves_its_work_on_the_threads_ref(
 ) -> None:
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await a_turn(workspace, {"work.md": "done"})
 
     await manager.save(thread)
@@ -410,7 +433,7 @@ async def test_saving_a_turn_leaves_the_agents_repository_alone(
     # would bury it in a history a person is going to read.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await their_own_branch(workspace)
     before = await head(workspace)
 
@@ -434,13 +457,13 @@ async def test_a_workspace_comes_back_on_the_branch_the_agent_made(
     # to hand back the repository it was working in.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await their_own_branch(workspace)
     await manager.save(thread)
     left = await head(workspace)
 
     await manager.release(thread.id)
-    resumed = await manager.materialize(thread.id, mirror)
+    resumed = await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     assert await branch(resumed) == "feat/theirs"
     assert await head(resumed) == left
@@ -456,14 +479,14 @@ async def test_a_detached_head_comes_back_detached(
     # branch at all, which is a state to restore rather than one to correct.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await run_git("checkout", "--detach", "HEAD", cwd=workspace)
     await a_turn(workspace, {"probe.md": "why does it fail here"})
     await manager.save(thread)
     left = await head(workspace)
 
     await manager.release(thread.id)
-    resumed = await manager.materialize(thread.id, mirror)
+    resumed = await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     assert await branch(resumed) == "HEAD"
     assert await head(resumed) == left
@@ -477,7 +500,7 @@ async def test_a_turn_that_changed_nothing_still_names_the_ref(
     # turn had anything to commit.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     await manager.save(thread)
 
@@ -494,13 +517,13 @@ async def test_a_released_workspace_comes_back_with_its_work(
     # any other way would be handing the agent a state it never made.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await a_turn(workspace, {"work.md": "done", "deep/nested.md": "also"})
     await manager.save(thread)
     left = await head(workspace)
 
     await manager.release(thread.id)
-    resumed = await manager.materialize(thread.id, mirror)
+    resumed = await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     assert (resumed / "work.md").read_text() == "done"
     assert (resumed / "deep" / "nested.md").read_text() == "also"
@@ -521,13 +544,13 @@ async def test_a_modified_file_comes_back_modified(
         manager, {"readme.md": "hello", "gone.md": "not for long"}
     )
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     (workspace / "readme.md").write_text("changed")
     (workspace / "gone.md").unlink()
     await manager.save(thread)
 
     await manager.release(thread.id)
-    resumed = await manager.materialize(thread.id, mirror)
+    resumed = await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     assert (resumed / "readme.md").read_text() == "changed"
     assert not (resumed / "gone.md").exists()
@@ -540,12 +563,12 @@ async def test_a_resumed_thread_keeps_going_from_where_it_was(
 ) -> None:
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await a_turn(workspace, {"work.md": "first"})
     await manager.save(thread)
     await manager.release(thread.id)
 
-    resumed = await manager.materialize(thread.id, mirror)
+    resumed = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await a_turn(resumed, {"work.md": "second"})
     await manager.save(thread)
 
@@ -564,11 +587,11 @@ async def test_another_threads_work_is_no_branch_of_this_ones(
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     one = await a_bound_thread(manager)
     other = await a_bound_thread(manager)
-    first = await manager.materialize(one.id, mirror)
+    first = await manager.materialize(a_workspace(manager, one.id), mirror)
     await a_turn(first, {"mine.md": "one"})
     await manager.save(one)
 
-    second = await manager.materialize(other.id, mirror)
+    second = await manager.materialize(a_workspace(manager, other.id), mirror)
 
     branches = await run_git("branch", "--format=%(refname:short)", cwd=second)
     assert sorted(branches.split()) == sorted([f"octomate/thread-{other.id}", "main"])
@@ -580,7 +603,7 @@ async def test_snapshots_carry_the_machine_identity(
 ) -> None:
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await a_turn(workspace, {"work.md": "done"})
 
     await manager.save(thread)
@@ -598,7 +621,10 @@ async def test_snapshots_carry_the_configured_identity(tmp_path: Path) -> None:
     )
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    await a_turn(await manager.materialize(thread.id, mirror), {"work.md": "done"})
+    await a_turn(
+        await manager.materialize(a_workspace(manager, thread.id), mirror),
+        {"work.md": "done"},
+    )
 
     await manager.save(thread)
 
@@ -620,7 +646,10 @@ async def test_nothing_a_turn_saves_reaches_the_upstream(
     mirror = manager.mirrors.path(project)
     await run_git("clone", str(upstream), str(mirror))
     thread = await a_bound_thread(manager)
-    await a_turn(await manager.materialize(thread.id, mirror), {"work.md": "done"})
+    await a_turn(
+        await manager.materialize(a_workspace(manager, thread.id), mirror),
+        {"work.md": "done"},
+    )
 
     await manager.save(thread)
 
@@ -633,7 +662,7 @@ async def test_a_workspace_the_mirror_already_has_is_pruned(
 ) -> None:
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await a_turn(workspace, {"work.md": "done"})
     await manager.save(thread)
 
@@ -652,7 +681,7 @@ async def test_a_workspace_in_use_is_left_alone(
     # from the last one that changed a file in it.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await manager.save(thread)
 
     assert manager.existing(thread.id) == workspace
@@ -668,7 +697,7 @@ async def test_work_the_mirror_does_not_have_survives_the_sweep(
     # and may never cost the work.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await a_turn(workspace, {"unsaved.md": "never pushed"})
 
     with caplog.at_level(logging.WARNING):
@@ -686,7 +715,7 @@ async def test_a_commit_the_mirror_has_not_seen_survives_the_sweep(
     # on is a commit no push ever carried. Comparing snapshots is what sees it.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await manager.save(thread)
     await a_turn(workspace, {"work.md": "done"})
     await run_git("add", "-A", cwd=workspace)
@@ -708,7 +737,7 @@ async def test_a_fork_points_at_the_projects_upstream(
     mirror = tmp_path / "mirror"
     await run_git("clone", str(upstream), str(mirror))
 
-    workspace = await manager.materialize(uuid7(), mirror)
+    workspace = await manager.materialize(a_workspace(manager, uuid7()), mirror)
 
     url = await run_git("remote", "get-url", "origin", cwd=workspace)
     assert url.strip() == str(upstream)
@@ -721,24 +750,172 @@ async def test_a_fork_of_a_folder_project_has_no_remote(
     # nowhere to push rather than by failing when someone tries.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
 
-    workspace = await manager.materialize(uuid7(), mirror)
+    workspace = await manager.materialize(a_workspace(manager, uuid7()), mirror)
 
     assert await run_git("remote", cwd=workspace) == ""
 
 
-async def test_the_chat_directory_is_shared_and_never_pruned(
+async def test_a_thread_in_no_project_forks_an_empty_workspace(
     manager: WorkspaceManager, tmp_path: Path
 ) -> None:
-    # OCTO-50: one directory for every thread in no project. It is not a workspace —
-    # nothing is forked into it and no thread owns it — and the sweep leaves it
-    # alone for free, because it prunes by thread id and `chat` is not one.
-    chat = manager.chat()
+    # OCTO-50: a workspace like any other, through the same `materialize` — forked
+    # from the blank mirror rather than a project's, and landing on the thread's own
+    # branch exactly as a project fork does. A repository, not a directory: the run
+    # may write in it, and what a run does with git works because HEAD resolves.
+    thread_id = uuid7()
+    workspace = manager.open(thread_id, None)
 
-    assert chat == (tmp_path / "workspaces" / "chat").resolve()
-    assert chat.is_dir()
-    assert manager.chat() == chat
-    assert await manager.prune(idle=0.0) == []
-    assert chat.is_dir()
+    assert isinstance(workspace, ChatWorkspace)
+    assert (
+        workspace.path == (tmp_path / "workspaces" / "chat" / str(thread_id)).resolve()
+    )
+    # Known before anything is forked, which is what lets a runtime be told where it
+    # will run before the process that runs there exists.
+    assert not workspace.path.exists()
+
+    async with workspace as chat:
+        assert (chat.path / ".git").is_dir()
+        branch = await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=chat.path)
+        assert branch == f"octomate/thread-{thread_id}\n"
+        (chat.path / "scratch.txt").write_text("mine")
+
+
+async def test_a_chat_workspace_is_not_the_threads_project_workspace(
+    manager: WorkspaceManager,
+) -> None:
+    # The directory's existence is how `prepare` answers "is this thread's workspace
+    # already forked", so a chat fork left where a project one goes would be resumed
+    # into by the thread's first project turn — which would then run in an empty
+    # repository instead of the project's code.
+    thread = await a_bound_thread(manager)
+
+    async with manager.open(thread.id, None):
+        assert manager.existing(thread.id) is None
+
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
+
+    assert (workspace / "readme.md").read_text() == "hello"
+
+
+async def test_the_sweep_leaves_a_chat_workspace_alone(
+    manager: WorkspaceManager,
+) -> None:
+    # It is its run's to throw away and is kept nowhere the sweep could restore it
+    # from, so the pruner must not be the one to decide — and it is not asked,
+    # because it prunes by thread id and `chat` is not one.
+    async with manager.open(uuid7(), None) as chat:
+        assert await manager.prune(idle=0.0) == []
+        assert chat.path.is_dir()
+
+
+async def test_leaving_a_chat_workspace_discards_it(
+    manager: WorkspaceManager,
+) -> None:
+    # Nothing survives the turn: the next run of the same conversation is a fresh
+    # empty tree, at the same path — which is what the runtimes key a resumable
+    # session by.
+    workspace = manager.open(uuid7(), None)
+
+    async with workspace as chat:
+        (chat.path / "scratch.txt").write_text("mine")
+
+    assert not workspace.path.exists()
+
+    async with manager.open(workspace.thread_id, None) as second:
+        assert second.path == workspace.path
+        assert not (second.path / "scratch.txt").exists()
+
+
+async def test_leaving_a_chat_workspace_a_later_run_is_in_keeps_it(
+    manager: WorkspaceManager,
+) -> None:
+    # A mid-run follow-up starts its turn before the turn it supersedes has finished
+    # losing its own. Both are in this tree, and the first to leave must not take
+    # the floor out from under the second.
+    thread_id = uuid7()
+    superseded = manager.open(thread_id, None)
+    follow_up = manager.open(thread_id, None)
+
+    async with superseded:
+        await follow_up.prepare()
+        assert follow_up.path == superseded.path
+
+    assert follow_up.path.is_dir()
+
+    await manager.discard(follow_up)
+
+    assert not follow_up.path.exists()
+
+
+async def test_the_next_run_throws_away_what_a_killed_one_left(
+    manager: WorkspaceManager,
+) -> None:
+    # Nothing ever resumes into a chat workspace, so a fork that died half-made is
+    # reclaimed rather than resumed into — which is why claiming one clears it, and
+    # why it needs no staging directory to be forked through.
+    workspace = manager.open(uuid7(), None)
+    workspace.path.mkdir(parents=True)
+    (workspace.path / "half.txt").write_text("from a run nobody finished")
+
+    async with workspace as chat:
+        assert not (chat.path / "half.txt").exists()
+        assert (chat.path / ".git").is_dir()
+
+
+async def test_a_chat_run_leaves_nothing_in_the_blank_mirror(
+    manager: WorkspaceManager,
+) -> None:
+    # The mirror is what makes a project workspace disposable; this one has nothing
+    # to be disposable about. A ref per conversation for work nobody intends to keep
+    # is the opposite of what a mirror is for.
+    thread = await ThreadManager(users=UserManager()).ensure(
+        ThreadKey("test", "thread", "chat", str(uuid7()))
+    )
+
+    async with manager.open(thread.id, None) as chat:
+        (chat.path / "scratch.txt").write_text("mine")
+        await manager.save(thread)
+
+    blank = await manager.mirrors.create()
+    refs = await run_git("for-each-ref", "--format=%(refname)", cwd=blank)
+    # Its own empty commit and nothing else — no thread ref, no snapshot.
+    assert refs == "refs/heads/main\n"
+
+
+async def test_a_chat_workspace_goes_even_when_the_run_raised(
+    manager: WorkspaceManager,
+) -> None:
+    # The files an interrupted run wrote are exactly the files nothing will ever ask
+    # for again, and a failed turn on a thread nobody resumes would otherwise hold
+    # its disk for good.
+    workspace = manager.open(uuid7(), None)
+
+    with suppress(RuntimeError):
+        async with workspace as chat:
+            (chat.path / "scratch.txt").write_text("mine")
+            raise RuntimeError("the provider dropped the connection")
+
+    assert not workspace.path.exists()
+
+
+async def test_leaving_a_project_workspace_keeps_it(
+    manager: WorkspaceManager,
+) -> None:
+    # The other variant's whole ending: a project's workspace outlives the run that
+    # used it, which is what makes the next turn a resume.
+    thread = await a_bound_thread(manager)
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    workspace = a_workspace(manager, thread.id)
+    await manager.materialize(workspace, mirror)
+
+    # Entering one that is already there is a resume, not a fork: the mirror is not
+    # synced for it, and the tree is answered as the last turn left it.
+    async with workspace:
+        (workspace.path / "work.md").write_text("done")
+
+    assert (workspace.path / "work.md").read_text() == "done"
+    assert (workspace.path / "readme.md").read_text() == "hello"
 
 
 async def test_a_fresh_fork_is_not_born_idle(
@@ -752,7 +929,7 @@ async def test_a_fresh_fork_is_not_born_idle(
     os.utime(mirror, (long_ago, long_ago))
     thread = await a_bound_thread(manager)
 
-    await manager.materialize(thread.id, mirror)
+    await manager.materialize(a_workspace(manager, thread.id), mirror)
     await manager.save(thread)
 
     assert await manager.prune(idle=3600.0) == []
@@ -767,11 +944,14 @@ async def test_a_resumed_workspace_can_be_pruned_again(
     # until it next ran, on the strength of work the mirror already has.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    await a_turn(await manager.materialize(thread.id, mirror), {"work.md": "done"})
+    await a_turn(
+        await manager.materialize(a_workspace(manager, thread.id), mirror),
+        {"work.md": "done"},
+    )
     await manager.save(thread)
     await manager.release(thread.id)
 
-    resumed = await manager.materialize(thread.id, mirror)
+    resumed = await manager.materialize(a_workspace(manager, thread.id), mirror)
 
     assert await manager.saved(resumed)
     assert await manager.prune(idle=0.0) == [thread.id]
@@ -782,7 +962,7 @@ async def test_a_fork_in_progress_is_not_a_workspace_to_prune(
 ) -> None:
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await manager.save(thread)
     staging = workspace.with_name(f".{uuid7()}.forking")
     staging.mkdir()
@@ -797,7 +977,7 @@ async def test_the_sweep_prunes_on_its_interval(
 ) -> None:
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     thread = await a_bound_thread(manager)
-    workspace = await manager.materialize(thread.id, mirror)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
     await manager.save(thread)
     manager.config = WorkspacesConfig(idle_window=0.001, sweep_interval=0.001)
 
@@ -826,7 +1006,9 @@ async def test_a_named_ref_is_where_the_workspace_starts(
     await run_git("checkout", "main", cwd=mirror)
     thread = await a_bound_thread(manager)
 
-    workspace = await manager.materialize(thread.id, mirror, "feat/theirs")
+    workspace = await manager.materialize(
+        a_workspace(manager, thread.id), mirror, "feat/theirs"
+    )
 
     assert (workspace / "theirs.md").read_text() == "wip"
     # Started there, but still on the thread's own branch: where the work begins
@@ -844,7 +1026,9 @@ async def test_a_ref_the_mirror_does_not_have_fails_the_fork(
     thread = await a_bound_thread(manager)
 
     with pytest.raises(GitCommandError):
-        await manager.materialize(thread.id, mirror, "no/such/ref")
+        await manager.materialize(
+            a_workspace(manager, thread.id), mirror, "no/such/ref"
+        )
 
     # And the half-made fork is gone, so the next turn forks again rather than
     # reading a staging directory as this thread's workspace.

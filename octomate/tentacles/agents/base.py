@@ -128,26 +128,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             raise ValueError(f"unknown thread {thread_id}")
         return await self.octomate.projects.of(thread)
 
-    async def run_cwd(self, thread_id: uuid.UUID, project: Project | None) -> str:
-        """The directory a run in this thread happens in: its own workspace when it
-        is in a project, and the shared chat directory when it is in none.
-
-        `project` is passed rather than looked up because the caller has already
-        asked — the answer decides more than the directory, and asking twice would
-        be two reads of the same thread for one run.
-
-        A thread in no project used to run in the agent's configured `cwd`, which
-        defaults to `"."`: on a server, Octomate's own install directory. It runs
-        somewhere chosen instead, and somewhere nothing may write to.
-
-        Always absolute, because the run records this and a relative path names
-        nothing once the process is gone. Symlinks are left alone, exactly as a
-        project root leaves them — the registry resolves both sides to compare.
-        """
-        if project is None:
-            return str(self.octomate.workspaces.chat())
-        return str(await self.octomate.workspaces.prepare(thread_id, project))
-
     @overload
     async def run(
         self,

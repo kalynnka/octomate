@@ -446,8 +446,9 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     assert thread_call.kind == "start"
     assert thread_call.model == "gpt-5.3-codex"
     assert thread_call.approval_mode == ApprovalMode.deny_all
-    # No project, so the run is a chat run and read-only whatever the block says.
-    assert thread_call.sandbox == Sandbox.read_only
+    # The configured preset, in a chat thread as in any other: the run has a
+    # workspace of its own for it to be scoped to.
+    assert thread_call.sandbox == Sandbox.workspace_write
 
     [recorded] = conversations.runs
     fake, _label, messages = recorded
@@ -494,7 +495,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
     reset_fake_codex(text_script("done", thread_id="prev-thread"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        external_id="prev-thread"
+        thread_id=_THREAD, external_id="prev-thread"
     )
     runtime = CodexSdkConfig(
         client_name="octomate-test", env={"EXISTING_RUNTIME_VALUE": "kept"}
@@ -534,7 +535,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert thread_call.kind == "resume"
     assert thread_call.thread_id == "prev-thread"
     # The configured `cwd` is not where a projectless thread lands any more.
-    assert thread_call.cwd == str(tentacle.octomate.workspaces.chat())
+    assert thread_call.cwd == str(tentacle.octomate.workspaces.open(_THREAD, None).path)
     assert thread_call.approval_mode == ApprovalMode.auto_review
     assert thread_call.base_instructions == "base"
     assert thread_call.developer_instructions == "dev"
@@ -542,11 +543,10 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert thread_call.model == "gpt-5.5"
     assert thread_call.model_provider == "openai"
     assert thread_call.personality == Personality.pragmatic
-    # No project, so the run is a chat run and read-only whatever the block says.
-    assert thread_call.sandbox == Sandbox.read_only
+    assert thread_call.sandbox == Sandbox.workspace_write
 
     [turn_call] = FakeCodex.turn_calls
-    assert turn_call.cwd == str(tentacle.octomate.workspaces.chat())
+    assert turn_call.cwd == str(tentacle.octomate.workspaces.open(_THREAD, None).path)
     assert turn_call.effort == ReasoningEffort.xhigh
     assert turn_call.summary == ReasoningSummary(ReasoningSummaryValue.detailed)
 

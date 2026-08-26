@@ -305,3 +305,46 @@ async def test_reconcile_continues_past_a_failing_project(
 
     assert (tmp_path / "mirrors" / "good" / ".git").is_dir()
     assert "mirror for bad could not be made" in caplog.text
+
+
+async def test_the_blank_mirror_is_an_empty_repository_with_a_head(
+    tmp_path: Path,
+) -> None:
+    # OCTO-50: what a thread in no project forks its workspace from — a mirror with
+    # no upstream, made by the same `create` as every other. A repository with no
+    # commit forks onto an unborn branch, where git refuses the ordinary things a
+    # run does with one, so it gets an empty commit and nothing else.
+    manager = a_mirror_manager(tmp_path)
+
+    blank = await manager.create()
+
+    assert blank == (tmp_path / "mirrors" / ".blank").resolve() == manager.path()
+    assert await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=blank) == "main\n"
+    assert await run_git("ls-files", cwd=blank) == ""
+    # The machine's own identity, so a fresh server commits without a
+    # `git config --global` first.
+    assert await run_git("log", "--format=%an", cwd=blank) == "octomate\n"
+
+
+async def test_the_blank_mirror_is_made_once(tmp_path: Path) -> None:
+    # It has no upstream, so there is nothing for it to be behind and nothing a
+    # second call should do to it — including to the commit a fork resolves HEAD to.
+    manager = a_mirror_manager(tmp_path)
+    blank = await manager.create()
+    head = await run_git("rev-parse", "HEAD", cwd=blank)
+
+    assert await manager.create() == blank
+    assert await run_git("rev-parse", "HEAD", cwd=blank) == head
+
+
+async def test_the_blank_mirror_is_not_a_projects(tmp_path: Path) -> None:
+    # Nothing binds to it and it takes no registry row, so a project may be called
+    # anything without landing on top of it.
+    manager = a_mirror_manager(tmp_path)
+    folder = a_folder(tmp_path / "blank", {"readme.md": "hello"})
+
+    await manager.create()
+    mirror = await manager.sync(a_project(folder))
+
+    assert mirror != await manager.create()
+    assert await run_git("ls-files", cwd=mirror) == "readme.md\n"

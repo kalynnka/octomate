@@ -736,8 +736,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # added below: its project comes off the thread rather than the caller, so
         # every entrypoint would otherwise have to resolve it identically.
         project = await self.run_project(thread_id)
+        # Forked rather than entered: inkling runs in this process, so the tree is
+        # somewhere its file tools are rooted rather than somewhere a subprocess is
+        # started, and a project's workspace has no ending for a run to scope.
         workspace = (
-            await self.octomate.workspaces.prepare(thread_id, project)
+            await self.octomate.workspaces.open(thread_id, project).prepare()
             if project is not None
             else None
         )

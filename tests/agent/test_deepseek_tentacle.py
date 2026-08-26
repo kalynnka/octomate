@@ -352,9 +352,11 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
     assert events[-1].result.output == "done"
 
     [create_payload] = calls_of("session.create")
-    # A thread in no project runs in the shared chat directory, not at the
+    # A thread in no project runs in a workspace forked for the run, not at the
     # configured `cwd` — which defaults to `"."`, Octomate's own directory.
-    assert create_payload == {"cwd": str(tentacle.octomate.workspaces.chat())}
+    assert create_payload == {
+        "cwd": str(tentacle.octomate.workspaces.open(_THREAD, None).path)
+    }
     [select_payload] = calls_of("session.selectModel")
     assert select_payload == {
         "sessionId": "sess-1",
@@ -415,9 +417,11 @@ async def test_agent_preset_and_the_chat_cwd_reach_session_create(
 
     [create_payload] = calls_of("session.create")
     assert create_payload == {
-        "cwd": str(tentacle.octomate.workspaces.chat()),
+        "cwd": str(tentacle.octomate.workspaces.open(_THREAD, None).path),
         "agentPreset": "octopus",
     }
+    # And the run is what ends it: a thread in no project keeps nothing.
+    assert not tentacle.octomate.workspaces.open(_THREAD, None).path.exists()
 
 
 async def test_without_a_model_the_session_selection_is_left_alone(

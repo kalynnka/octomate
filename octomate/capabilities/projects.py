@@ -1,9 +1,9 @@
 """Project capability: how a thread says which project it is about.
 
-A thread in no project runs in the shared chat directory and may not write
-(OCTO-50). This is the door out of it: someone says what they want worked on, the
-thread is bound to that project once, and its workspace is forked ready for the
-turn after.
+A thread in no project runs in a workspace forked from nothing, thrown away when
+the turn ends (OCTO-50). This is the door out of it: someone says what they want
+worked on, the thread is bound to that project once, and its workspace is forked
+ready for the turn after — the project's code, and a tree that is kept.
 
 Two inputs are the agent's to judge and everything else is Octomate's — the path,
 the mechanism, whether this user may bind at all, the branch the work lands on,
@@ -108,13 +108,13 @@ def build_project_toolset(
             )
         thread = await thread_id(ctx, conversations)
         await threads.bind(thread, project)
-        await workspaces.materialize(thread, mirror, ref)
+        await workspaces.materialize(workspaces.open(thread, project), mirror, ref)
         start = f" starting from {ref!r}" if ref is not None else ""
         return (
             f"This thread is about {project.name!r} now, and its workspace is "
             f"ready{start}. It applies from your next turn — this run is still in "
-            f"the shared directory and still cannot write. Tell the person what "
-            f"you will do, and wait for them."
+            f"the empty one it started in, and nothing you write there is kept. "
+            f"Tell the person what you will do, and wait for them."
         )
 
     return toolset

@@ -2,8 +2,9 @@
 
 `cwd` is a default Claude can walk out of, so the boundary is enforced in a
 PreToolUse hook: a write whose path resolves outside the workspace is denied with a
-reason that names it. The hook is registered only for a run whose thread is in a
-project, since that is the run that has a workspace; an unscoped run is untouched.
+reason that names it. The hook is registered for every run, because every run has a
+workspace — a fork of its project's mirror, or of the empty repository when the
+thread is in no project.
 
 The boundary moved with the run. It was the project's roots while runs happened in
 `project.root`; now a run happens in a fork of that project's mirror, and the
@@ -252,28 +253,31 @@ async def test_the_boundary_is_the_workspace_not_either_checkout(
     assert str(cwd) in reason
 
 
-async def test_a_run_in_no_project_may_not_write_at_all(tmp_path: Path) -> None:
+async def test_a_run_in_no_project_writes_in_its_own_workspace(
+    tmp_path: Path,
+) -> None:
     inky = a_project(tmp_path / "inky").root
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
 
     matchers, scope, cwd = await a_run(await a_registry(a_project(inky)))
 
-    # It runs in the shared chat directory, and the same tools are hooked — but
-    # with a refusal that has no boundary to compare against, since no path in a
-    # chat thread is one that may be written.
+    # OCTO-50: the same hook and the same boundary as a project run. What differs is
+    # which mirror the workspace was forked from — and that this one is discarded
+    # rather than saved.
     assert matchers == ["AskUserQuestion", "Write|Edit|NotebookEdit"]
     assert scope is not None
-    assert await denial(scope, "Write", cwd / "notes.md") is not None
+    assert await denial(scope, "Write", cwd / "notes.md") is None
     assert await denial(scope, "Edit", elsewhere / "x.py") is not None
-    assert cwd.name == "chat"
+    assert cwd.parent.name == "chat"
 
 
 async def test_with_nothing_declared_every_run_is_a_chat_run() -> None:
-    # No registry means no thread can be in a project, so every run is one that may
-    # not write — including on a host that has simply never declared anything.
+    # No registry means no thread can be in a project, so every run is one whose
+    # work is not kept — including on a host that has simply never declared
+    # anything. It may still write where it runs.
     matchers, scope, cwd = await a_run(await a_registry())
 
     assert matchers == ["AskUserQuestion", "Write|Edit|NotebookEdit"]
     assert scope is not None
-    assert await denial(scope, "Write", cwd / "notes.md") is not None
+    assert await denial(scope, "Write", cwd / "notes.md") is None

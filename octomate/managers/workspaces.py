@@ -7,7 +7,11 @@ import shutil
 import tempfile
 import time
 import uuid
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
+from typing import Self, overload
 
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
@@ -76,6 +80,151 @@ async def copy(source: Path, target: Path, flag: str) -> None:
         )
 
 
+@dataclass
+class Workspace(ABC):
+    """The tree one run happens in, and what becomes of it when the run ends.
+
+    Handed out by `WorkspaceManager.open` and entered by the run that was given it.
+    Knowing where it is costs nothing — the path is the thread's — so a caller has
+    it before anything is forked, which is what lets a runtime be configured with
+    its own working directory before the process that will run there exists.
+
+    Two variants, and they differ in exactly three things: where the tree lives,
+    which mirror it is forked from, and whether leaving it keeps or throws away
+    what the run did. Everything else — the fork itself, the branch it lands on,
+    the lock that stops two turns forking it twice — is one mechanism on the
+    manager, and both go through it.
+    """
+
+    workspaces: WorkspaceManager
+    thread_id: uuid.UUID
+
+    @property
+    @abstractmethod
+    def path(self) -> Path:
+        """Where this run happens. Absolute, because it becomes the working
+        directory of a process Octomate did not start in its own, and known
+        without touching the disk."""
+
+    @abstractmethod
+    async def prepare(self) -> Path:
+        """The tree, forked and ready for a run to happen in."""
+
+    async def __aenter__(self) -> Self:
+        await self.prepare()
+        return self
+
+    @abstractmethod
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """End the run's claim on the tree, however the run ended."""
+
+
+@dataclass
+class ProjectWorkspace(Workspace):
+    """This thread's own checkout of its project, at ``workspaces_dir/<thread_id>``.
+
+    A thread runs here rather than in `project.root`, so two threads on one project
+    cannot walk over each other's uncommitted work — and the root stays the
+    person's, untouched by anything an agent does.
+    """
+
+    project: Project
+
+    @property
+    def path(self) -> Path:
+        return self.workspaces.path(self.thread_id)
+
+    async def prepare(self, ref: str | None = None) -> Path:
+        """This thread's checkout, resumed as it stands or forked when it is gone.
+
+        Only a thread's first turn does any of that. A workspace that exists is
+        resumed into as it stands, and its mirror is not synced for it either: a
+        workspace is not re-made from the mirror once it is there, so a fetch would
+        buy the turn nothing and would couple continuing a thread to the upstream
+        being reachable. `materialize` answers an existing workspace anyway; the
+        check is here to keep the sync in front of it from running — and to stamp
+        the workspace, which is what tells the sweep this thread is still running.
+        """
+        workspace = self.workspaces.existing(self.thread_id)
+        if workspace is not None:
+            return workspace
+        mirror = await self.workspaces.mirrors.sync(self.project)
+        return await self.workspaces.materialize(self, mirror, ref)
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Nothing. A project's workspace outlives the run that used it — that is
+        what makes the next turn a resume — and what the turn owes is a `save`,
+        which the graph does once for the turn rather than once per agent that
+        ran in it."""
+
+
+@dataclass
+class ChatWorkspace(Workspace):
+    """The tree a thread in no project runs in: a fork of the empty repository, at
+    ``workspaces_dir/chat/<thread_id>``, gone when the run ends.
+
+    A workspace rather than a bare directory, so a run in no project is a run like
+    any other — it may write, unpack, and script inside its own tree, bounded by
+    the same directory every run is bounded by. Forking nothing is what makes that
+    affordable: an empty repository costs a `git init`'s worth of disk, and binding
+    to a project stops meaning "you may write now" and starts meaning "your work is
+    kept now".
+
+    Under `chat/` rather than among the project workspaces, because up there the
+    directory's existence is the answer to "is this thread's workspace already
+    forked": a chat fork left at `path(thread_id)` would be resumed into by the same
+    thread's first project turn, which would then run in an empty repository instead
+    of the project's code.
+
+    The path is the thread's and does not change between turns, even though what is
+    in it does. Both runtimes key a resumable session by the directory it ran in —
+    Claude's `--resume` answers "no conversation found" from anywhere else — so a
+    tree named after the run rather than the thread would be a run that cannot
+    continue the conversation it belongs to.
+    """
+
+    @property
+    def path(self) -> Path:
+        return (self.workspaces.workspaces_dir / "chat" / str(self.thread_id)).resolve()
+
+    async def prepare(self) -> Path:
+        """An empty tree of this run's own, forked from the blank mirror.
+
+        Claimed first, which is what throws away whatever a killed run left at this
+        path: nothing resumes a chat workspace, so anything there when nobody is in
+        it belongs to a run that is over.
+
+        Nothing here is ever saved. The blank mirror would otherwise grow a ref per
+        conversation for work nobody intends to keep, which is the opposite of what
+        a mirror is for.
+        """
+        await self.workspaces.claim(self)
+        # The mirror of no project, which is what this thread is in.
+        mirror = await self.workspaces.mirrors.create()
+        return await self.workspaces.materialize(self, mirror)
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Throw the tree away. In `__aexit__` rather than after the run's last
+        event, so a turn that raised does not leave its files behind — they are
+        exactly the files nothing will ever ask for again."""
+        await self.workspaces.discard(self)
+
+
 class WorkspaceManager:
     """Every project-bound thread's workspace: a fork of the project's mirror at
     ``workspaces_dir/<thread_id>``, checked out on the thread's own branch and
@@ -92,13 +241,19 @@ class WorkspaceManager:
     is a disk decision and resuming lays that ref back over a fresh fork. What the
     agent did with git in there is the agent's — nothing here commits.
 
-    The whole lifecycle is here, both the mechanism and the two ends of it that a
-    thread's turn actually calls: `prepare` before a run, `save` after one.
-    Those need the registry to say which project a thread is in and the mirrors to
-    say where that project's is, which is why this holds both — a workspace exists
-    for a project-bound thread and for nothing else, so knowing what binds one is
-    not a dependency it is reaching for. The layer below stays free of it: every
-    method that touches git takes a mirror path and answers for a directory.
+    A thread in no project gets one too, at ``workspaces_dir/chat/<thread_id>``,
+    forked from the blank mirror and thrown away when the run that made it ends.
+    Same mechanism, opposite ending: there is no project to keep it for, so binding
+    to one is what turns a run's tree into work that outlives the run.
+
+    The whole lifecycle is here. A turn asks `open` for the workspace its thread
+    runs in and enters it, which is what forks the tree and what ends it; the turn
+    itself owes one more thing, `save`, which the graph does after the run. Those
+    need the registry to say which project a thread is in and the mirrors to say
+    where that project's is, which is why this holds both — which fork a thread gets
+    is exactly what the registry says about it, so knowing what binds one is not a
+    dependency it is reaching for. The layer below stays free of it: every method
+    that touches git takes a mirror path and answers for a directory.
     """
 
     def __init__(
@@ -126,6 +281,10 @@ class WorkspaceManager:
         self.reflink: str | None = None
         self.probed = False
         self.locks: dict[uuid.UUID, asyncio.Lock] = {}
+        # How many runs are in each thread's chat workspace right now. The tree
+        # is the run's, and two overlapping runs of one conversation share it —
+        # this is what stops the first to finish taking it from the second.
+        self.chatting: dict[uuid.UUID, int] = {}
 
     @property
     def identity(self) -> GitIdentity:
@@ -152,26 +311,66 @@ class WorkspaceManager:
         os.utime(path)
         return path
 
-    def chat(self) -> Path:
-        """The one directory every thread in no project runs in, made if missing.
+    @overload
+    def open(self, thread_id: uuid.UUID, project: Project) -> ProjectWorkspace: ...
 
-        Named rather than left to fall through, because what a run falls through to
-        is the agent's configured `cwd`, and that defaults to `"."` — on a server,
-        the directory holding `octomate.db`, the config home's yaml and whatever
-        keys are beside them. Read-only is no protection when the directory in
-        question is that one.
+    @overload
+    def open(self, thread_id: uuid.UUID, project: None) -> ChatWorkspace: ...
 
-        Shared by every such thread, which is safe only because nothing may write
-        to it: each runtime is told so where its run is set up. A writable
-        exception would have to stop the sharing first.
+    @overload
+    def open(self, thread_id: uuid.UUID, project: Project | None) -> Workspace: ...
 
-        Not a workspace, despite living among them — nothing is forked into it and
-        no thread owns it — and the sweep skips it for free, since it prunes by
-        thread id and `chat` is not one.
+    def open(self, thread_id: uuid.UUID, project: Project | None) -> Workspace:
+        """The workspace a run in this thread happens in, ready to be entered.
+
+        Which one it is, is the whole of what a project decides about a run: a
+        thread in one gets a checkout of it that outlives the turn, and a thread in
+        none gets an empty tree that does not. Nothing else about the two runs
+        differs — both may write where they are, and both are bounded by it.
+
+        `project` is passed rather than looked up because the caller has already
+        asked, and the answer decides more than the directory. No disk is touched
+        here: the path is settled, so a runtime can be told where it will run before
+        anything is forked, and the fork happens when the run enters it.
+
+        A thread in no project used to run in the agent's configured `cwd`, which
+        defaults to `"."`: on a server, Octomate's own install directory.
         """
-        path = (self.workspaces_dir / "chat").resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        if project is None:
+            return ChatWorkspace(self, thread_id)
+        return ProjectWorkspace(self, thread_id, project)
+
+    async def claim(self, workspace: ChatWorkspace) -> None:
+        """Count this run into `workspace`, and clear whatever the last one left.
+
+        Counted, because a mid-run follow-up starts its turn before the turn it
+        supersedes has finished losing its own: both runs are in this tree, and the
+        first to leave must not take the floor out from under the second. They share
+        it while they overlap, which is what two runs of one conversation are
+        entitled to.
+
+        A tree nobody is in belongs to a run that is over — one that was killed
+        before it could discard — so it goes, and this run forks its own. That is
+        also why a chat workspace needs no staging directory to be forked through:
+        nothing ever resumes into one, so a fork that died half-made is thrown away
+        here rather than mistaken for a tree.
+        """
+        async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
+            holders = self.chatting.get(workspace.thread_id, 0)
+            if holders == 0 and workspace.path.exists():
+                await asyncio.to_thread(shutil.rmtree, workspace.path)
+            self.chatting[workspace.thread_id] = holders + 1
+
+    async def discard(self, workspace: ChatWorkspace) -> None:
+        """Give this tree back to the disk, once no run is still in it."""
+        async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
+            holders = self.chatting.get(workspace.thread_id, 0) - 1
+            if holders > 0:
+                self.chatting[workspace.thread_id] = holders
+                return
+            self.chatting.pop(workspace.thread_id, None)
+            if workspace.path.is_dir():
+                await asyncio.to_thread(shutil.rmtree, workspace.path)
 
     async def detect(self) -> str | None:
         """The `cp` flag that forks without copying bytes on this host, or None
@@ -205,62 +404,44 @@ class WorkspaceManager:
         )
         return self.reflink
 
-    async def prepare(
-        self,
-        thread_id: uuid.UUID,
-        project: Project,
-        ref: str | None = None,
-    ) -> Path:
-        """This thread's own checkout of `project`, ready for a run to happen in.
-
-        A thread runs here rather than in `project.root`, so two threads on one
-        project cannot walk over each other's uncommitted work — and the root stays
-        the person's, untouched by anything an agent does.
-
-        Only a thread's first turn does any of that. A workspace that exists is
-        resumed into as it stands, and its mirror is not synced for it either: a
-        workspace is not re-made from the mirror once it is there, so a fetch would
-        buy the turn nothing and would couple continuing a thread to the upstream
-        being reachable. `materialize` answers an existing workspace anyway; the
-        check is here to keep the sync in front of it from running — and to stamp
-        the workspace, which is what tells the sweep this thread is still running.
-        """
-        workspace = self.existing(thread_id)
-        if workspace is not None:
-            return workspace
-        return await self.materialize(thread_id, await self.mirrors.sync(project), ref)
-
     async def materialize(
         self,
-        thread_id: uuid.UUID,
+        workspace: Workspace,
         mirror: Path,
         ref: str | None = None,
     ) -> Path:
-        """This thread's workspace: a fork of `mirror`, as its last turn left it.
+        """Fork `mirror` into `workspace`, and answer the tree.
 
-        A workspace that already exists is the thread's live tree, uncommitted
-        work included, and is answered as it stands — forking again would throw
-        that work away. Serialized per thread, so two turns arriving together
-        materialize once.
+        The one place a workspace is made, whichever kind it is: a project's
+        checkout and a chat thread's empty tree are the same fork of the same
+        shape, differing only in what they were forked from. Both land on the
+        thread's own branch, and neither carries the mirror's `origin` unless the
+        mirror has a real one to inherit.
 
-        The fork is made beside the workspace and moved into place, so a
-        workspace only ever exists whole: a rename within one directory is
-        atomic, where a copy the machine dies in the middle of would leave half a
-        tree that every later turn reads as this thread's own. That is what makes
-        "the directory is there" mean "the workspace is there", here and for a
-        caller that asks the same question. A fork that merely fails is removed
-        the same way, before the error travels on.
+        A workspace that already exists is answered as it stands — a project
+        thread's live tree, uncommitted work included, where forking again would
+        throw that work away, and for a chat thread the tree an overlapping run of
+        the same conversation is already in. Serialized per thread, so two turns
+        arriving together materialize once.
+
+        The fork is made beside the workspace and moved into place, so a workspace
+        only ever exists whole: a rename within one directory is atomic, where a
+        copy the machine dies in the middle of would leave half a tree that every
+        later turn reads as this thread's own. That is what makes "the directory is
+        there" mean "the workspace is there", here and for a caller that asks the
+        same question. A fork that merely fails is removed the same way, before the
+        error travels on.
         """
-        path = self.path(thread_id)
-        async with self.locks.setdefault(thread_id, asyncio.Lock()):
+        path = workspace.path
+        async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
             if path.is_dir():
                 return path
-            self.workspaces_dir.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             flag = await self.detect()
             # Hidden, and named after the thread, so it is never mistaken for a
             # workspace and the next fork of this thread reclaims whatever a
             # killed one left — the case the cleanup below cannot reach.
-            staging = path.with_name(f".{thread_id}.forking")
+            staging = path.with_name(f".{workspace.thread_id}.forking")
             if staging.exists():
                 shutil.rmtree(staging)
             try:
@@ -269,7 +450,7 @@ class WorkspaceManager:
                 else:
                     await run_git("clone", str(mirror), str(staging))
                 await self.inherit_remotes(mirror, staging)
-                await self.checkout(thread_id, mirror, staging, ref)
+                await self.checkout(workspace.thread_id, mirror, staging, ref)
                 staging.rename(path)
                 # `cp -a` preserves the mirror's timestamps and a rename does not
                 # refresh them, so without this a fork inherits an mtime that can
@@ -496,7 +677,10 @@ class WorkspaceManager:
             try:
                 thread_id = uuid.UUID(path.name)
             except ValueError:
-                # A staging directory, or a probe: neither is a workspace.
+                # A staging directory, a probe, or `chat/`: none of them is a
+                # workspace this may reclaim. A chat workspace is its run's to
+                # throw away, and is not kept anywhere the sweep could restore it
+                # from.
                 continue
             if time.time() - path.stat().st_mtime < idle:
                 continue

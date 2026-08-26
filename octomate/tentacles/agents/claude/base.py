@@ -128,12 +128,12 @@ async def deny_outside_workspace(
     reach. The hook fires in every mode, and fires before `can_use_tool`, so a
     refused write raises no approval card either.
 
-    Bound to the thread's workspace with `partial` and registered only for a run that
-    has one, so a run in no project is never on this path. The boundary is the
-    workspace rather than the project's roots because that is where the run happens:
-    the project's own checkout is the person's, and a run may not reach into it. The
-    reason names the workspace, so the model reports a blocker rather than retrying
-    the same path.
+    Bound to the run's workspace with `partial`, and every run has one — a thread in
+    a project gets a fork of its mirror, a thread in none a fork of the empty
+    repository. The boundary is the workspace rather than the project's roots
+    because that is where the run happens: the project's own checkout is the
+    person's, and a run may not reach into it. The reason names the workspace, so
+    the model reports a blocker rather than retrying the same path.
     """
     pre_tool_use = cast(PreToolUseHookInput, hook_input)
     target = pre_tool_use["tool_input"].get(WRITE_TOOL_PATHS[pre_tool_use["tool_name"]])
@@ -154,35 +154,6 @@ async def deny_outside_workspace(
                 f"{target} is outside this thread's workspace. This run may only "
                 f"write under: {workspace}. The same path will be refused again, so "
                 f"work inside the workspace or report what you could not change."
-            ),
-        }
-    }
-
-
-async def deny_write(
-    hook_input: HookInput,
-    tool_use_id: str | None,
-    context: HookContext,
-) -> HookJSONOutput:
-    """Refuse every file write in a thread that is in no project.
-
-    Such a thread runs in the shared chat directory — the same one every other
-    projectless thread runs in — and sharing one directory is safe only because
-    nothing may write to it. There is no path to check: the answer is the same
-    wherever the write points, which is why this takes no workspace.
-
-    The reason says what would make writing possible, so the model reports a
-    blocker and asks rather than retrying under a different filename.
-    """
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                "This thread is in no project, so it runs in a directory shared "
-                "with every other conversation and nothing may write there. Say "
-                "what you would have written and which project this work belongs "
-                "in; the same write will be refused again."
             ),
         }
     }
@@ -702,31 +673,26 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         session_id = conversation.external_id or str(uuid7())
 
         project = await self.run_project(conversation.thread_id)
-        run_cwd = await self.run_cwd(conversation.thread_id, project)
+        # Settled here, forked when the run enters it below: the options this builds
+        # have to name the directory before the process that will run there exists.
+        workspace = self.octomate.workspaces.open(conversation.thread_id, project)
+        run_cwd = str(workspace.path)
         # `setting_sources` is left unset on purpose: verified against the CLI, the
         # unset default loads every source, so the bound directory arrives with its
         # own CLAUDE.md and .claude/settings.json — the useful half of "work on this
         # project". Setting it to ["project"] would be the same behavior spelled
         # loudly; setting it to [] would silently drop a repo's instructions.
         pre_tool_use_hooks = [
-            HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
+            HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question]),
+            # `cwd` is a default Claude can walk out of, not a boundary, so the run's
+            # own workspace — which is what `cwd` is — bounds what may be written in
+            # it. Every run has one, in a project or not, so this is registered for
+            # every run.
+            HookMatcher(
+                matcher="|".join(WRITE_TOOL_PATHS),
+                hooks=[partial(deny_outside_workspace, Path(run_cwd))],
+            ),
         ]
-        if project is not None:
-            # `cwd` is a default Claude can walk out of, not a boundary, so the
-            # thread's own workspace — which is what `cwd` is — bounds what may be
-            # written in it.
-            pre_tool_use_hooks.append(
-                HookMatcher(
-                    matcher="|".join(WRITE_TOOL_PATHS),
-                    hooks=[partial(deny_outside_workspace, Path(run_cwd))],
-                )
-            )
-        else:
-            # In no project, so the directory is the shared one every such thread
-            # gets, and nothing may write there.
-            pre_tool_use_hooks.append(
-                HookMatcher(matcher="|".join(WRITE_TOOL_PATHS), hooks=[deny_write])
-            )
 
         options = ClaudeAgentOptions(
             cwd=run_cwd,
@@ -803,8 +769,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # the process out, so it spans every hook this session can fire.
             self.session_ingest.driving(session_id),
         ):
+            # Entered first so it leaves last: the tree exists before the CLI is
+            # launched into it, and a chat thread's is only thrown away once the CLI
+            # holding it open has been waited out.
             # async with ClaudeSDKClient(options=options, transport=transport) as client:
-            async with ClaudeSDKClient(options=options) as client:
+            async with (
+                workspace,
+                ClaudeSDKClient(options=options) as client,
+            ):
                 # One live run per conversation: register this client and interrupt
                 # any prior run for the same conversation so a mid-run follow-up
                 # supersedes it. The weak-value map drops this entry once the run

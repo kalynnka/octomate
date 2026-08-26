@@ -19,6 +19,11 @@ BATCH_GIT_ENV = {
     "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
 }
 
+# The empty repository every thread in no project forks from. Dot-prefixed to keep
+# it out of the way of the project mirrors it sits among, which are named after
+# projects and so after directories people actually have.
+BLANK_MIRROR = ".blank"
+
 
 class GitCommandError(RuntimeError):
     """A git command exited nonzero; the message carries its stderr."""
@@ -69,58 +74,104 @@ class MirrorManager:
         self.locks: dict[str, asyncio.Lock] = {}
         self.synced: dict[str, float] = {}
 
-    def path(self, project: Project) -> Path:
-        """Where `project`'s mirror lives. Absolute, because directory sync points
-        `GIT_DIR` here while running in the upstream folder, where a relative path
-        would resolve against the wrong tree."""
-        return (self.mirrors_dir / project.name).resolve()
+    def path(self, project: Project | None = None) -> Path:
+        """Where `project`'s mirror lives — or, with no project, where the blank one
+        does: the mirror of nothing, which every thread in no project forks.
+
+        Absolute, because directory sync points `GIT_DIR` here while running in the
+        upstream folder, where a relative path would resolve against the wrong tree.
+        """
+        return (self.mirrors_dir / self.name(project)).resolve()
+
+    def name(self, project: Project | None) -> str:
+        """What this mirror is filed under, which is also what its lock and its
+        freshness stamp are keyed by. The blank mirror is dot-prefixed, to keep it
+        out of the way of the mirrors it sits among — those are named after
+        projects, and so after directories people actually have."""
+        return project.name if project is not None else BLANK_MIRROR
 
     async def sync(self, project: Project) -> Path:
         """The mirror, current enough to fork from: created from the upstream when
         missing, freshened from it when the freshness window has lapsed.
 
-        Serialized per mirror, so a burst of materializations costs one sync. A
-        freshen that fails degrades to the stale mirror with a warning rather than
+        Serialized per mirror, so a burst of materializations costs one sync: the
+        making of it waits inside `create`, and the freshening of it waits here, on
+        the same lock. Which is why `create` is called before this takes it —
+        `asyncio.Lock` is not reentrant, and both halves are the same mirror's turn.
+
+        A freshen that fails degrades to the stale mirror with a warning rather than
         failing the caller — work continues on what the machine already has, and
         the stale stamp is not renewed, so the next sync tries again. A mirror
         that cannot be created is a hard failure: there is nothing to fall back to.
         """
-        path = self.path(project)
+        # Asked before `create`, which is where the waiting happens: a mirror this
+        # call had to make is one nothing can be behind, so it is not fetched again
+        # for the sync that made it.
+        missing = not self.path(project).is_dir()
+        path = await self.create(project)
         async with self.locks.setdefault(project.name, asyncio.Lock()):
+            if missing:
+                self.synced[project.name] = time.monotonic()
+                return path
             last = self.synced.get(project.name)
             window = self.config.freshness_window
             if last is not None and time.monotonic() - last < window:
                 return path
-            if not path.is_dir():
-                await self.create(project, path)
-            else:
-                try:
-                    await self.freshen(project, path)
-                except (GitCommandError, OSError) as error:
-                    logger.warning("mirror for %s is stale: %s", project.name, error)
-                    return path
+            try:
+                await self.freshen(project, path)
+            except (GitCommandError, OSError) as error:
+                logger.warning("mirror for %s is stale: %s", project.name, error)
+                return path
             self.synced[project.name] = time.monotonic()
         return path
 
-    async def create(self, project: Project, path: Path) -> None:
-        """Make the mirror: clone a remote upstream onto its default branch, or
-        `git init` a directory upstream's and commit the folder's contents.
+    async def create(self, project: Project | None = None) -> Path:
+        """The mirror, made where there is none, and where it is.
+
+        Three shapes, and a project's upstream picks between the first two: a remote
+        is cloned onto its default branch, and a directory is `git init`'d with the
+        folder's contents committed. With no project at all it is the blank mirror,
+        which is a `git init` and one empty commit — that commit being what makes it
+        forkable rather than special, since a repository with no commit clones onto
+        an unborn branch, where git refuses the ordinary things a run does with one.
+        Nothing binds to it and it takes no registry row: a thread that forks it is
+        exactly a thread that is in no project.
+
+        Serialized per mirror and idempotent, which is what the blank one needs —
+        two threads in no project starting at once both ask for it, and a mirror
+        half-made is a mirror something would fork. `sync` holds the same lock for
+        the freshening half, and takes it after this rather than around it.
 
         A partial mirror is worse than none — it would read as existing and turn
         every later sync into a stale-mirror warning — so a creation that fails or
         is cancelled removes what it left before the error travels on.
         """
-        self.mirrors_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            upstream = project.upstream
-            if isinstance(upstream, RemoteUpstream):
-                await run_git("clone", upstream.url, str(path), env=BATCH_GIT_ENV)
-            else:
+        path = self.path(project)
+        async with self.locks.setdefault(self.name(project), asyncio.Lock()):
+            if path.is_dir():
+                return path
+            self.mirrors_dir.mkdir(parents=True, exist_ok=True)
+            upstream = project.upstream if project is not None else None
+            try:
+                if isinstance(upstream, RemoteUpstream):
+                    await run_git("clone", upstream.url, str(path), env=BATCH_GIT_ENV)
+                    return path
                 await run_git("init", "-b", "main", str(path))
-                await self.commit_folder(upstream.path, path)
-        except BaseException:
-            shutil.rmtree(path, ignore_errors=True)
-            raise
+                if upstream is None:
+                    await run_git(
+                        *self.config.identity.commit_flags,
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        "empty",
+                        cwd=path,
+                    )
+                else:
+                    await self.commit_folder(upstream.path, path)
+            except BaseException:
+                shutil.rmtree(path, ignore_errors=True)
+                raise
+        return path
 
     async def freshen(self, project: Project, path: Path) -> None:
         """Bring an existing mirror up to its upstream: fetch and move the default

@@ -94,7 +94,7 @@ def build_inkling(
             octomate.conversations,
             id="projects",
             description="Say which project this thread is about, so its work "
-            "happens in a workspace instead of the shared chat directory.",
+            "happens in that project's code, and is kept.",
             defer_loading=True,
         ),
     ]

@@ -966,18 +966,19 @@ class CodexTentacle(AgentTentacle[str, None]):
         else:
             summary = ReasoningSummary(ReasoningSummaryValue(self.config.summary))
 
-        # The thread's own workspace, or the shared chat directory when it is in no
-        # project. `sandbox="workspace_write"` scopes writes to it, so for Codex the
-        # directory is the whole of running inside a project — and the workspace is
-        # what makes that boundary the thread's own rather than everyone's checkout.
+        # The run's own workspace: a fork of the project's mirror, or of the empty
+        # repository when the thread is in none. `sandbox="workspace_write"` scopes
+        # writes to it, so for Codex the directory is the whole of running inside a
+        # project — and the workspace is what makes that boundary this run's rather
+        # than everyone's checkout.
         project = await self.run_project(conversation.thread_id)
-        run_cwd = await self.run_cwd(conversation.thread_id, project)
+        workspace = self.octomate.workspaces.open(conversation.thread_id, project)
+        run_cwd = str(workspace.path)
         # The other axis, and the operator's rather than the conversation's: what a
         # command may touch when nobody is asked. Fixed for the run, so a posture
-        # never rewrites what the whole thread reaches — except that a thread in no
-        # project runs in the shared chat directory, and read-only is the whole of
-        # what makes sharing one directory safe.
-        sandbox = Sandbox[self.config.sandbox if project is not None else "read_only"]
+        # never rewrites what the whole thread reaches. One answer for every thread
+        # now that every thread has a workspace of its own to be scoped to.
+        sandbox = Sandbox[self.config.sandbox]
 
         codex_thread_id: str | None = None
         with codex_logfire.span(
@@ -986,74 +987,78 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_name=run_name or "codex",
             conversation_address=str(conversation_address),
         ):
-            pooled = await self.pool.acquire(conversation.id)
-            try:
-                codex_thread = pooled.thread
-                if codex_thread is None:
-                    if conversation.external_id:
-                        codex_thread = await self.resume_codex_thread(
-                            pooled.client,
-                            thread_id=conversation.external_id,
-                            plan=plan,
-                            base_instructions=self.config.base_instructions,
-                            cwd=run_cwd,
-                            developer_instructions=developer_instructions,
-                            model=sdk_model,
-                            model_provider=self.config.model_provider,
-                            personality=personality,
-                            sandbox=sandbox,
-                        )
-                    else:
-                        codex_thread = await self.start_codex_thread(
-                            pooled.client,
-                            plan=plan,
-                            base_instructions=self.config.base_instructions,
-                            cwd=run_cwd,
-                            developer_instructions=developer_instructions,
-                            ephemeral=self.config.ephemeral,
-                            model=sdk_model,
-                            model_provider=self.config.model_provider,
-                            personality=personality,
-                            sandbox=sandbox,
-                        )
-                    pooled.thread = codex_thread
-                codex_thread_id = codex_thread.id
-                self.bridge_contexts[conversation.id] = CodexBridgeContext(
-                    loop=asyncio.get_running_loop(),
-                    conversation=conversation,
-                    conversation_address=conversation_address,
-                    run_name=run_name,
-                    session_allowed=set(conversation.allowed_tools),
-                )
+            # Entered here so the tree exists before a turn is dispatched into it,
+            # and a chat thread's is thrown away when the run leaves — after the
+            # client is back in the pool, which is why the pool sits inside it.
+            async with workspace:
+                pooled = await self.pool.acquire(conversation.id)
                 try:
-                    with self.session_ingest.driving(codex_thread.id):
-                        turn = await codex_thread.turn(
-                            prompt_text,
-                            approval_mode=plan.sdk_mode,
-                            cwd=run_cwd,
-                            effort=turn_effort,
-                            model=sdk_model,
-                            output_schema=output_schema,
-                            personality=personality,
-                            sandbox=sandbox,
-                            summary=summary,
-                        )
-                        previous = self.live_turns.get(conversation.id)
-                        self.live_turns[conversation.id] = turn
-                        if previous is not None and previous is not turn:
-                            with contextlib.suppress(Exception):
-                                await previous.interrupt()
-                        try:
-                            async for notification in turn.stream():
-                                for event in accumulator.consume(notification):
-                                    yield event
-                        finally:
-                            if self.live_turns.get(conversation.id) is turn:
-                                self.live_turns.pop(conversation.id, None)
+                    codex_thread = pooled.thread
+                    if codex_thread is None:
+                        if conversation.external_id:
+                            codex_thread = await self.resume_codex_thread(
+                                pooled.client,
+                                thread_id=conversation.external_id,
+                                plan=plan,
+                                base_instructions=self.config.base_instructions,
+                                cwd=run_cwd,
+                                developer_instructions=developer_instructions,
+                                model=sdk_model,
+                                model_provider=self.config.model_provider,
+                                personality=personality,
+                                sandbox=sandbox,
+                            )
+                        else:
+                            codex_thread = await self.start_codex_thread(
+                                pooled.client,
+                                plan=plan,
+                                base_instructions=self.config.base_instructions,
+                                cwd=run_cwd,
+                                developer_instructions=developer_instructions,
+                                ephemeral=self.config.ephemeral,
+                                model=sdk_model,
+                                model_provider=self.config.model_provider,
+                                personality=personality,
+                                sandbox=sandbox,
+                            )
+                        pooled.thread = codex_thread
+                    codex_thread_id = codex_thread.id
+                    self.bridge_contexts[conversation.id] = CodexBridgeContext(
+                        loop=asyncio.get_running_loop(),
+                        conversation=conversation,
+                        conversation_address=conversation_address,
+                        run_name=run_name,
+                        session_allowed=set(conversation.allowed_tools),
+                    )
+                    try:
+                        with self.session_ingest.driving(codex_thread.id):
+                            turn = await codex_thread.turn(
+                                prompt_text,
+                                approval_mode=plan.sdk_mode,
+                                cwd=run_cwd,
+                                effort=turn_effort,
+                                model=sdk_model,
+                                output_schema=output_schema,
+                                personality=personality,
+                                sandbox=sandbox,
+                                summary=summary,
+                            )
+                            previous = self.live_turns.get(conversation.id)
+                            self.live_turns[conversation.id] = turn
+                            if previous is not None and previous is not turn:
+                                with contextlib.suppress(Exception):
+                                    await previous.interrupt()
+                            try:
+                                async for notification in turn.stream():
+                                    for event in accumulator.consume(notification):
+                                        yield event
+                            finally:
+                                if self.live_turns.get(conversation.id) is turn:
+                                    self.live_turns.pop(conversation.id, None)
+                    finally:
+                        self.bridge_contexts.pop(conversation.id, None)
                 finally:
-                    self.bridge_contexts.pop(conversation.id, None)
-            finally:
-                await self.pool.release(conversation.id)
+                    await self.pool.release(conversation.id)
 
         run_id = str(uuid7())
         recorded_run = await self.octomate.conversations.record_agent_run(
