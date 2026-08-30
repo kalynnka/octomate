@@ -184,6 +184,14 @@ This is also the path by which a chat thread becomes a project thread: someone
 says what they want worked on, the capability binds it, and the following turn
 starts in the project's code, in a workspace whose work is kept.
 
+**Only Inkling can call it today.** The capability is a pydantic-ai toolset, and
+the three CLI runtimes ignore capabilities — Claude's own docstring says so. A
+chat thread on Claude, Codex or dsh therefore has a workspace it may write to,
+whose work is thrown away, and no way to say what it is about. Claude can be
+reached in process with an SDK MCP server; Codex only by hosting the two tools
+out of process; dsh not at all, because `dsh web` is one daemon serving every
+thread and there is no per-thread process to attach a tool to (OCTO-68).
+
 ## The chat workspace
 
 A process always has a working directory, so a thread with no project still needs
@@ -407,6 +415,3 @@ covers the cases that exist, and a field can wait until one does not.
 3. **How a reviewed change returns to a locally-mirrored folder.** The copy-back
    is deliberate by design, but who performs it, and what it looks like in a
    channel, is unspecified.
-4. **What breaks under `read_only`.** No scratch is provided, so tools that
-   assume a writable temp directory will fail in chat threads. Which ones, and
-   whether the failure reads clearly to the model, will surface in use.
