@@ -745,7 +745,9 @@ def test_claude_mcp_install_writes_the_entry_beside_everything_else(
         json.dumps({"model": "opus", "mcpServers": {"other": {"type": "stdio"}}})
     )
 
-    result = runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
+    result = runner.invoke(
+        claude_typer, ["mcp", "install", "--scope", "user", "--file", str(path)]
+    )
     assert result.exit_code == 0, result.output
 
     document = read(path)
@@ -766,10 +768,21 @@ def test_claude_mcp_reinstall_replaces_the_entry_in_place(
 ) -> None:
     gateway_ready(monkeypatch)
     path = tmp_path / "claude.json"
-    runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
+    runner.invoke(
+        claude_typer, ["mcp", "install", "--scope", "user", "--file", str(path)]
+    )
     runner.invoke(
         claude_typer,
-        ["mcp", "install", "--url", "http://minidock.local:8000", "--file", str(path)],
+        [
+            "mcp",
+            "install",
+            "--url",
+            "http://minidock.local:8000",
+            "--scope",
+            "user",
+            "--file",
+            str(path),
+        ],
     )
 
     servers = read(path)["mcpServers"]
@@ -783,9 +796,13 @@ def test_claude_mcp_uninstall_keeps_foreign_servers(
     gateway_ready(monkeypatch)
     path = tmp_path / "claude.json"
     path.write_text(json.dumps({"mcpServers": {"other": {"type": "stdio"}}}))
-    runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
+    runner.invoke(
+        claude_typer, ["mcp", "install", "--scope", "user", "--file", str(path)]
+    )
 
-    result = runner.invoke(claude_typer, ["mcp", "uninstall", "--file", str(path)])
+    result = runner.invoke(
+        claude_typer, ["mcp", "uninstall", "--scope", "user", "--file", str(path)]
+    )
     assert result.exit_code == 0
 
     assert read(path)["mcpServers"] == {"other": {"type": "stdio"}}
@@ -796,8 +813,12 @@ def test_claude_mcp_uninstall_drops_an_emptied_section(
 ) -> None:
     gateway_ready(monkeypatch)
     path = tmp_path / "claude.json"
-    runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
-    runner.invoke(claude_typer, ["mcp", "uninstall", "--file", str(path)])
+    runner.invoke(
+        claude_typer, ["mcp", "install", "--scope", "user", "--file", str(path)]
+    )
+    runner.invoke(
+        claude_typer, ["mcp", "uninstall", "--scope", "user", "--file", str(path)]
+    )
 
     assert "mcpServers" not in read(path)
 
@@ -807,13 +828,97 @@ def test_claude_mcp_show_masks_the_credential(
 ) -> None:
     gateway_ready(monkeypatch)
     path = tmp_path / "claude.json"
+    runner.invoke(
+        claude_typer, ["mcp", "install", "--scope", "user", "--file", str(path)]
+    )
+
+    result = runner.invoke(
+        claude_typer, ["mcp", "show", "--scope", "user", "--file", str(path)]
+    )
+
+    assert result.exit_code == 0
+    assert "http://127.0.0.1:9999/gateway/mcp" in result.output
+    assert "Bearer ***" in result.output
+    assert "the-secret" not in result.output
+
+
+def test_claude_mcp_local_install_nests_under_the_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway_ready(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "claude.json"
+    path.write_text(
+        json.dumps(
+            {
+                "model": "opus",
+                "projects": {
+                    "/elsewhere": {"mcpServers": {"other": {"type": "stdio"}}}
+                },
+            }
+        )
+    )
+
+    result = runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
+    assert result.exit_code == 0, result.output
+
+    document = read(path)
+    assert document["model"] == "opus"
+    assert "mcpServers" not in document
+    assert document["projects"]["/elsewhere"] == {
+        "mcpServers": {"other": {"type": "stdio"}}
+    }
+    assert document["projects"][str(Path.cwd())]["mcpServers"]["gateway"] == {
+        "type": "http",
+        "url": "http://127.0.0.1:9999/gateway/mcp",
+        "headers": {
+            "Authorization": "Bearer the-secret",
+            "X-Octomate-Client": "claude-native",
+        },
+    }
+
+
+def test_claude_mcp_local_uninstall_prunes_what_install_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway_ready(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "claude.json"
+    runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
+
+    result = runner.invoke(claude_typer, ["mcp", "uninstall", "--file", str(path)])
+    assert result.exit_code == 0
+
+    assert read(path) == {}
+
+
+def test_claude_mcp_local_uninstall_keeps_the_projects_other_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway_ready(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    key = str(Path.cwd())
+    path = tmp_path / "claude.json"
+    path.write_text(json.dumps({"projects": {key: {"history": ["a prompt"]}}}))
+    runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
+
+    runner.invoke(claude_typer, ["mcp", "uninstall", "--file", str(path)])
+
+    assert read(path) == {"projects": {key: {"history": ["a prompt"]}}}
+
+
+def test_claude_mcp_show_reads_the_local_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway_ready(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "claude.json"
     runner.invoke(claude_typer, ["mcp", "install", "--file", str(path)])
 
     result = runner.invoke(claude_typer, ["mcp", "show", "--file", str(path)])
 
     assert result.exit_code == 0
     assert "http://127.0.0.1:9999/gateway/mcp" in result.output
-    assert "Bearer ***" in result.output
     assert "the-secret" not in result.output
 
 

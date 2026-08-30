@@ -3,6 +3,8 @@
 
 # Environments / secrets
 .env
+# Written by `octomate claude mcp install --scope project`; holds the literal bearer.
+/.mcp.json
 # Anchored: a deployment's config home is `.octomate/` below, and an unanchored
 # pattern would also swallow `octomate/config/defaults/octomate.yaml` and
 # `tests/config/octomate.yaml` — both committed, and one of them ships in the wheel.

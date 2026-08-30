@@ -350,25 +350,41 @@ mcp_typer = typer.Typer(
 )
 claude_typer.add_typer(mcp_typer, name="mcp")
 
+
+class McpScope(str, Enum):
+    """Claude's three MCP config placements. `local` — the default, since the entry
+    embeds a credential — is Claude's per-project slot inside `~/.claude.json`
+    (`projects.<cwd>.mcpServers`, the shape `claude mcp add --scope local` writes):
+    scoped to this directory without putting a secret-bearing file in the repo."""
+
+    local = "local"
+    user = "user"
+    project = "project"
+
+
 McpScopeOption = Annotated[
-    Scope,
+    McpScope,
     typer.Option(
-        help="Which config to touch: 'user' (~/.claude.json) or "
-        "'project' (./.mcp.json)."
+        help="Where the entry lives: 'local' (~/.claude.json, this project only), "
+        "'user' (~/.claude.json, every project), or 'project' (./.mcp.json)."
     ),
 ]
 McpFileOption = Annotated[
     Path | None,
-    typer.Option("--file", help="Explicit config path; overrides --scope when given."),
+    typer.Option(
+        "--file",
+        help="Explicit config path; replaces the file --scope implies, while the "
+        "scope keeps deciding where in it the entry lives.",
+    ),
 ]
 
 
-def mcp_config_file(scope: Scope, file: Path | None) -> Path:
+def mcp_config_file(scope: McpScope, file: Path | None) -> Path:
     if file is not None:
         return file
-    if scope is Scope.user:
-        return Path.home() / ".claude.json"
-    return Path.cwd() / ".mcp.json"
+    if scope is McpScope.project:
+        return Path.cwd() / ".mcp.json"
+    return Path.home() / ".claude.json"
 
 
 @mcp_typer.command("install")
@@ -380,22 +396,33 @@ def mcp_install(
             f"${OCTOMATE_URL_ENV}, then cli.toml."
         ),
     ] = None,
-    scope: McpScopeOption = Scope.user,
+    scope: McpScopeOption = McpScope.local,
     file: McpFileOption = None,
 ) -> None:
     """Point native Claude Code sessions at the served gateway.
 
-    Writes the `mcpServers.gateway` entry — the gateway's URL, the bearer, and
-    the runtime attribution header — resolved once, now: unlike the hooks, a
-    static entry is read by Claude itself, so the file holds the literal
-    credential and rotating it means re-running install. Everything else in the
-    file is kept, and re-running replaces the entry in place.
+    Writes the gateway entry — the gateway's URL, the bearer, and the runtime
+    attribution header — resolved once, now: unlike the hooks, a static entry is
+    read by Claude itself, so the file holds the literal credential and rotating
+    it means re-running install. Everything else in the file is kept, and
+    re-running replaces the entry in place.
     """
     target = gateway_url(url)
     secret = gateway_secret()
     path = mcp_config_file(scope, file)
     document = load_settings(path)
-    servers = document.setdefault("mcpServers", {})
+    if scope is McpScope.local:
+        projects = document.setdefault("projects", {})
+        if not isinstance(projects, dict):
+            raise typer.BadParameter(f"{path} has a non-object 'projects' section")
+        container = projects.setdefault(str(Path.cwd()), {})
+        if not isinstance(container, dict):
+            raise typer.BadParameter(
+                f"{path} has a non-object entry for project {Path.cwd()}"
+            )
+    else:
+        container = document
+    servers = container.setdefault("mcpServers", {})
     if not isinstance(servers, dict):
         raise typer.BadParameter(f"{path} has a non-object 'mcpServers' section")
     servers[GATEWAY_SERVER_KEY] = {
@@ -409,6 +436,8 @@ def mcp_install(
     write_settings(path, document)
     typer.echo(f"Installed the gateway MCP entry → {target}")
     typer.echo(f"  file:   {path}")
+    if scope is McpScope.local:
+        typer.echo(f"  scope:  local ({Path.cwd()})")
     typer.echo(f"  client: {CLAUDE_NATIVE_CLIENT}")
     typer.echo(
         "  auth:   embedded — the file holds the literal credential; rotation "
@@ -418,27 +447,50 @@ def mcp_install(
 
 @mcp_typer.command("uninstall")
 def mcp_uninstall(
-    scope: McpScopeOption = Scope.user, file: McpFileOption = None
+    scope: McpScopeOption = McpScope.local, file: McpFileOption = None
 ) -> None:
     """Remove the gateway MCP entry, leaving every other server and setting."""
     path = mcp_config_file(scope, file)
     document = load_settings(path)
-    servers = document.get("mcpServers")
+    key = str(Path.cwd())
+    projects = document.get("projects")
+    if scope is McpScope.local:
+        entry = projects.get(key) if isinstance(projects, dict) else None
+        container = entry if isinstance(entry, dict) else None
+    else:
+        container = document
+    servers = container.get("mcpServers") if container is not None else None
     if not isinstance(servers, dict) or GATEWAY_SERVER_KEY not in servers:
         typer.echo(f"No gateway MCP entry in {path}")
         raise typer.Exit()
     del servers[GATEWAY_SERVER_KEY]
-    if not servers:
-        del document["mcpServers"]
+    if not servers and container is not None:
+        del container["mcpServers"]
+        # A local install into a fresh file created the project entry too; an
+        # entry emptied by this removal goes with it, a lived-in one stays.
+        if scope is McpScope.local and not container and isinstance(projects, dict):
+            del projects[key]
+            if not projects:
+                del document["projects"]
     write_settings(path, document)
     typer.echo(f"Removed the gateway MCP entry from {path}")
 
 
 @mcp_typer.command("show")
-def mcp_show(scope: McpScopeOption = Scope.user, file: McpFileOption = None) -> None:
+def mcp_show(
+    scope: McpScopeOption = McpScope.local, file: McpFileOption = None
+) -> None:
     """Show the gateway MCP entry, credential masked."""
     path = mcp_config_file(scope, file)
-    servers = load_settings(path).get("mcpServers")
+    document = load_settings(path)
+    if scope is McpScope.local:
+        projects = document.get("projects")
+        container = (
+            projects.get(str(Path.cwd())) if isinstance(projects, dict) else None
+        )
+    else:
+        container = document
+    servers = container.get("mcpServers") if isinstance(container, dict) else None
     entry = servers.get(GATEWAY_SERVER_KEY) if isinstance(servers, dict) else None
     if not isinstance(entry, dict):
         typer.echo(f"No gateway MCP entry in {path}")

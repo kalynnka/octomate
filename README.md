@@ -378,7 +378,8 @@ Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the d
 Point the runtimes' native sessions at it with the `mcp` commands — static MCP client config, written once:
 
 ```bash
-octomate claude mcp install    # mcpServers.gateway in ~/.claude.json (--scope project: ./.mcp.json)
+octomate claude mcp install    # this project's mcpServers.gateway in ~/.claude.json
+                               # (--scope user: every project; --scope project: ./.mcp.json)
 octomate codex mcp install     # [mcp_servers.gateway] in ~/.codex/config.toml
 octomate deepseek mcp install  # a dsh-mcp-client row in $DSH_HOME/cordis.patch.yml
 ```
