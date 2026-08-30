@@ -26,7 +26,7 @@ from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.mcp.base import SharedSecret
+from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import gateway_mcp, served_session
 from octomate.oauth.routes import oauth_router
 from octomate.reflex import (
@@ -114,9 +114,6 @@ class Octomate:
     users: UserManager = field(default_factory=UserManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
     gateway: GatewayManager = field(default_factory=GatewayManager)
-    # The deployment's one bearer credential: the hook routers require it, and the
-    # MCP servers are served behind it — or, without one, not at all.
-    secret: SecretStr | None = None
     # The MCP endpoint under each served server's mount: `/<name>` + `mcp_path`.
     mcp_path: str = "/mcp"
     # The deployment config the host was built from. What a tentacle reads for
@@ -130,6 +127,11 @@ class Octomate:
     routers: list[APIRouter] = field(default_factory=list)
     # Fire-and-forget graph turns (`kick_soon`), held strongly until they settle.
     background: set[asyncio.Task[None]] = field(default_factory=set, init=False)
+    # Every credential this deployment accepts — the registered users' own secrets,
+    # nothing else. One registry shared by the MCP verifier and the hook guards;
+    # with no user registered it rejects every bearer, and whether that should
+    # refuse a boot is the hook routers' own mounting question.
+    bearers: KnownBearers = field(init=False)
 
     def __post_init__(self, oauth_encryption_key: SecretStr | None) -> None:
         # Every ledger row references its sender's registry profile, so the
@@ -138,6 +140,9 @@ class Octomate:
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=oauth_encryption_key,
+        )
+        self.bearers = KnownBearers(
+            self.config.users if self.config is not None else {}
         )
 
     def connect(self, tentacle: TentacleT) -> TentacleT:
@@ -239,8 +244,9 @@ class Octomate:
         Separate servers rather than one with namespaces: a runtime that defers MCP
         tools behind a search does so per server, with the server's own instructions
         as the family's card, and only a root server's instructions ever reach a
-        client. Each is served at `/<name>/mcp` behind the one shared secret, and
-        resolves the identity a call runs against from the request itself.
+        client. Each is served at `/<name>/mcp` behind the deployment's known
+        bearers, and resolves the identity a call runs against from the request
+        itself.
         """
         return [
             gateway_mcp(
@@ -251,21 +257,21 @@ class Octomate:
         ]
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
-        # The MCP servers are served only where there is a credential to serve them
-        # behind: the gateway's spells send to real channels and hand conversations
-        # to other agents, so an unauthenticated one would be a stranger's routing
-        # table. One verifier for the whole group — the same credential, and the
-        # same principal, as the hook routers.
+        # The MCP servers are always served, never open: the gateway's spells send
+        # to real channels and hand conversations to other agents, so every call
+        # authenticates against the registered users' own secrets — which locks
+        # the endpoints outright until a user is registered. One verifier for the
+        # whole group — the same credentials, and the same principals, as the
+        # hook routers.
         mcp_apps: dict[str, StarletteWithLifespan] = {}
-        if self.secret is not None:
-            verifier = SharedSecret(self.secret)
-            for server in self.mcp_servers():
-                server.auth = verifier
-                # Stateless: identity is per call, from the request, so there is
-                # nothing for the transport to keep between calls.
-                mcp_apps[server.name] = server.http_app(
-                    path=self.mcp_path, stateless_http=True
-                )
+        verifier = self.bearers
+        for server in self.mcp_servers():
+            server.auth = verifier
+            # Stateless: identity is per call, from the request, so there is
+            # nothing for the transport to keep between calls.
+            mcp_apps[server.name] = server.http_app(
+                path=self.mcp_path, stateless_http=True
+            )
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):

@@ -5,7 +5,7 @@ from typing import Annotated
 
 from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, SecretStr
 from uuid_utils.compat import uuid7
 
 from octomate.models.user import User as UserModel
@@ -83,6 +83,14 @@ class User(BaseTransmuter):
     nickname: str | None = Field(
         default=None,
         description="A shorter, casual name for this human.",
+    )
+    secret: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        description="This human's own bearer credential; the column is unique, "
+        "so a bearer names exactly one user, and None registers identity only. "
+        "Masked as `SecretStr` and excluded from dumps besides — it leaves the "
+        "row only through `UserManager.secret_of`.",
     )
 
     profiles: RelationCollection[UserProfile] = Relationships()

@@ -10,13 +10,12 @@
 # host: 127.0.0.1   # in a container this must be 0.0.0.0 to be reachable at all
 # port: 8000
 
-# The deployment's one bearer credential: the Claude/Codex/DeepSeek hook routers
-# authenticate against it, and the MCP servers Octomate serves sit behind it.
-# Required whenever one of those agents is configured — serving a hook router
-# unauthenticated would let anything that can reach the port write a session's
-# prompts and answers into thread history. Prefer OCTOMATE__SECRET in the
-# environment; `octomate secret` generates one and says where to put it.
-# secret: ...
+# There is no deployment-wide secret: every configured credential names a person.
+# Bearers live in `users.<name>.secret` (see users.yaml) — the Claude/Codex/DeepSeek
+# hook routers and the served MCP endpoints authenticate against those, and a hook
+# router refuses to boot while no user carries one, since serving it unauthenticated
+# would let anything that can reach the port write a session's prompts and answers
+# into thread history. `octomate secret` mints a value to hand a user.
 
 # The MCP endpoint under each served server's mount — the gateway answers at
 # /gateway/mcp by default.

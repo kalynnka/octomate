@@ -230,7 +230,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         any socket opens."""
         router = APIRouter(
             tags=["deepseek"],
-            dependencies=[Depends(hook_guard(self.octomate.secret, self.id))],
+            dependencies=[Depends(hook_guard(self.octomate.bearers, self.id))],
         )
 
         @router.post("/hooks/deepseek", summary="dsh native-session hook pipe")

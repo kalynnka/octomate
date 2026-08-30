@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from secrets import compare_digest
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Header, HTTPException, status
-from pydantic import SecretStr
+
+if TYPE_CHECKING:
+    from octomate.mcp.base import KnownBearers
 
 
 def hook_guard(
-    secret: SecretStr | None, agent: str
+    bearers: KnownBearers, agent: str
 ) -> Callable[[str | None], Awaitable[None]]:
     """A bearer check for `agent`'s hook router, as a FastAPI dependency.
 
@@ -19,30 +20,34 @@ def hook_guard(
     HTTP by design (a client may be a different machine than Octomate), and reachability
     is not a credential.
 
-    Takes the secret rather than reading an environment variable: the running app knows
-    this as `Octomate.secret`, and where that came from — `octomate.yaml`, the
-    environment, `.env` — is the config's business and not this module's. How a *client*
-    is told to carry it is the installer's business (`octomate_cli.hooks`).
+    Takes the bearer registry rather than reading an environment variable: the running
+    app builds it as `Octomate.bearers()`, and where its credentials came from — the
+    users' YAML entries — is the config's business and not this module's. How a *client*
+    is told to carry one is the installer's business (`octomate_cli.hooks`). Any known
+    bearer passes, though the rows a hook writes still carry the shared native
+    identity, whoever bore the token.
 
-    Demanded rather than defaulted: a host with no secret cannot mount the router at
-    all, since serving it open would let anything that can reach the port speak as the
-    human, and refusing to boot is the only honest answer — the alternative is an open
-    router nobody notices.
+    Registration is demanded rather than defaulted: a host where no user carries a
+    secret would serve a router no human's machine could ever reach, and refusing to
+    boot is the only honest answer — the alternative is a dead router nobody notices
+    until their sessions stop landing in the ledger.
     """
-    if secret is None:
+    if not bearers.users:
         raise RuntimeError(
-            f"octomate.secret is unset, but agents.{agent} serves a hook router that "
-            "authenticates against it. Run `octomate secret` to generate one and place "
-            f"it, then re-run `octomate {agent} hooks install`."
+            f"no registered user carries a secret, but agents.{agent} serves a hook "
+            "router that authenticates against them. Add one under `users.<name>."
+            "secret` (`octomate secret` mints one), hand it to that human, and have "
+            f"them re-run `octomate {agent} hooks install`."
         )
-    expected = f"Bearer {secret.get_secret_value()}"
 
     async def verify(
         authorization: Annotated[str | None, Header()] = None,
     ) -> None:
-        # Constant-time: the comparison is against a secret, and the caller controls how
-        # often it can ask.
-        if authorization is None or not compare_digest(authorization, expected):
+        if (
+            authorization is None
+            or not authorization.startswith("Bearer ")
+            or bearers.owner(authorization.removeprefix("Bearer ")) is None
+        ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid hook credentials",

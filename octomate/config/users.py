@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, Field, ValidateAs
+from pydantic import BaseModel, Field, SecretStr, ValidateAs
 
 from octomate.schemas.user import UserProfile
 
@@ -39,5 +39,19 @@ class UserConfig(BaseModel):
             "channel_user_id. Unknown fields are forbidden. Reconciliation "
             "makes this the profile's sole ownership authority; fields seed an "
             "unseen account and never overwrite channel observations."
+        ),
+    )
+    secret: SecretStr | None = Field(
+        default=None,
+        description=(
+            "This human's own bearer credential — what the served MCP "
+            "endpoints and the hook routers authenticate, and what the served "
+            "gateway resolves them from: a native session bearing it speaks "
+            "for this user. Every configured credential names a person; the "
+            "secret lives on the user's registry row, whose unique column "
+            "refuses a shared one at reconciliation. Handing it out is "
+            "registration: the user runs `octomate "
+            "configure --secret` with it, then `octomate <agent> mcp install`, "
+            "and exports it as OCTOMATE__SECRET for the installed hooks."
         ),
     )

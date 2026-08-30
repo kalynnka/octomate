@@ -263,7 +263,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         so a bad bearer is denied with the same 401 before any socket opens."""
         router = APIRouter(
             tags=["claude"],
-            dependencies=[Depends(hook_guard(self.octomate.secret, self.id))],
+            dependencies=[Depends(hook_guard(self.octomate.bearers, self.id))],
         )
 
         @router.post(

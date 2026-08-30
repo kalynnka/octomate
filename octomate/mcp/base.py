@@ -1,5 +1,3 @@
-"""What serving the MCP servers shares: the bearer check in front of every one."""
-
 from __future__ import annotations
 
 from secrets import compare_digest
@@ -7,25 +5,47 @@ from secrets import compare_digest
 from fastmcp.server.auth import AccessToken, TokenVerifier
 from pydantic import SecretStr
 
+from octomate.config.users import UserConfig
 
-class SharedSecret(TokenVerifier):
-    """The deployment's secret as every MCP server's bearer.
 
-    The same credential the hook routers take, for the same reason: reachability is
-    not a credential, and these tools send to real channels. Every holder is the one
-    principal — the operator's own machines — so a token either is the secret or is
-    nothing.
+class KnownBearers(TokenVerifier):
+    """Every credential this deployment accepts, and who each one speaks for.
+
+    Exactly the registered users' secrets from `users.<name>.secret` — every
+    configured credential names a person, and the host holds none of its own.
+    One registry for every authenticated surface: the served MCP servers verify
+    bearers through it, and the hook routers guard with it, so one credential
+    per machine reaches both. These tools send to real channels, which is why
+    reachability is not a credential: a token either is a registered user's
+    secret or is nothing — a deployment with no registered user serves its
+    endpoints locked outright.
     """
 
-    secret: SecretStr
+    users: dict[str, SecretStr]
 
-    def __init__(self, secret: SecretStr) -> None:
+    def __init__(self, users: dict[str, UserConfig]) -> None:
         super().__init__()
-        self.secret = secret
+        self.users = {
+            username: user.secret
+            for username, user in users.items()
+            if user.secret is not None
+        }
+
+    def owner(self, token: str) -> str | None:
+        """The username `token` speaks for, or None for a stranger.
+
+        Constant-time per candidate: the comparisons are against secrets, and
+        the caller controls how often it can ask."""
+        for username, secret in self.users.items():
+            if compare_digest(token, secret.get_secret_value()):
+                return username
+        return None
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        # Constant-time: the comparison is against a secret, and the caller controls
-        # how often it can ask.
-        if not compare_digest(token, self.secret.get_secret_value()):
+        principal = self.owner(token)
+        if principal is None:
             return None
-        return AccessToken(token=token, client_id="operator", scopes=[])
+        # The principal rides the verified token as its client id, which is how
+        # a served call downstream learns who it speaks for without trusting a
+        # header.
+        return AccessToken(token=token, client_id=principal, scopes=[])

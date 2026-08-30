@@ -226,17 +226,24 @@ agents:
 YAML
 ```
 
-A configured `claude` serves a hook router, and that router authenticates — so it needs
-a credential before it will boot. Order matters here: the first call generates one and
-exports it, the second sees it resolve and appends the *same* line.
+A configured `claude` serves a hook router, and that router authenticates — so someone
+must be registered before it will boot: every configured credential names a person.
+Register yourself with a secret of your own. Order matters here: the first call
+generates one and exports it, the second sees it resolve and appends the *same* line,
+and the `users:` entry is what tells the server whose that credential is.
 
 ```bash
 eval "$(octomate secret)"     # this shell
 octomate secret >> ~/.zshrc   # and every later one (zsh)
+cat > .octomate/users.yaml <<YAML
+users:
+  you:
+    secret: "${OCTOMATE__SECRET}"
+YAML
 ```
 
-The secret stays in the environment, never in the config home — the server and the
-hooks both read `OCTOMATE__SECRET` from there.
+Your machines read `OCTOMATE__SECRET` from the environment; the server reads your
+`users:` entry and knows every session bearing it is yours.
 
 Then serve it and point Claude Code at it:
 
@@ -317,7 +324,7 @@ file's top-level keys are config field names, so changing a channel touches
 
 ```
 .octomate/
-  octomate.yaml        host, port, secret, mcp_path, db_url
+  octomate.yaml        host, port, mcp_path, db_url
   agents.yaml          claude, codex, deepseek, inkling
   channels.yaml        slack, lark, napcat, trunkline
   users.yaml           registered humans and their per-channel ids
@@ -357,9 +364,17 @@ environment both override it, using `OCTOMATE__` with `__` as the nested delimit
 
 ### Native session hooks
 
-Configuring `agents.claude`, `agents.codex` or `agents.deepseek` serves that agent's hook router (`/hooks/claude`, `/hooks/codex`, `/hooks/deepseek`) for native sessions to POST their prompts and answers into. Those routes write straight into thread history, which agents read back, so they authenticate — Octomate refuses to boot without a credential.
+Configuring `agents.claude`, `agents.codex` or `agents.deepseek` serves that agent's hook router (`/hooks/claude`, `/hooks/codex`, `/hooks/deepseek`) for native sessions to POST their prompts and answers into. Those routes write straight into thread history, which agents read back, so they authenticate — and every configured credential names a person: each registered user carries their own secret in their `users:` entry, and Octomate refuses to boot a hook router while nobody is registered to reach it.
 
-Set the credential up, then point your clients at it:
+```yaml
+users:
+  lu:
+    secret: "..."                            # their own bearer — one secret, one user
+    profiles:
+      slack: {channel_user_id: U0123ABCD}    # where their gateway spells can reach
+```
+
+Each user sets their credential up on their machine, then points their clients at it:
 
 ```bash
 eval "$(octomate secret)"                        # this shell
@@ -369,11 +384,11 @@ octomate codex hooks install                     # merges handlers into ~/.codex
 octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hooks.json + a patch row
 ```
 
-`octomate secret` prints one line — `export OCTOMATE__SECRET=…` — and writes nothing; where your login environment comes from is yours to know. Sessions only ever read the **environment**, and they are separate processes that never see your config home, so that line is the bridge, and it has to reach whatever launches them.
+`octomate secret` prints one line — `export OCTOMATE__SECRET=…` — and writes nothing; where your login environment comes from is yours to know, and the printed value is what belongs in that user's `users:` entry. Sessions only ever read the **environment**, and they are separate processes that never see your config home, so that line is the bridge, and it has to reach whatever launches them.
 
 `~/.zshrc` covers interactive zsh, which is what VSCode resolves the environment from; use `~/.zshenv` instead if you want non-interactive shells to have it too, and on another shell put the line wherever that shell would find it. Either way an environment is captured when a process starts: shells already open keep the one they had, and a GUI client (VSCode, the desktop app) grabs it when *it* launches — so restart them before expecting the hooks to carry the secret.
 
-Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying the bearer plus a static `X-Octomate-Client` header written at install time. That surface authenticates the bearer, not the caller: the client header is attribution. Any holder of `OCTOMATE__SECRET` can already forge any session's ledger through the hook pipe; the gateway adds one power to the same credential — outbound sends and handoffs to real channels. Same trust domain (the operator's machines), same mitigations (per-deployment secret, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags. A native session is anonymous, so its spells light up only where a `users:` entry claims the shared native profile — `profiles: {claude-native: {channel_user_id: native}}` — beside real accounts: a single-operator assumption, on purpose.
+Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying its bearer plus a static `X-Octomate-Client` header written at install time. The client header is attribution (which runtime); the bearer is identity (which human): a native session bearing a user's secret speaks for that person, and its spells light up on *their* linked accounts. Driven turns answer to the same rule — every run represents the human who kicked it, so a driven Codex turn's loopback call carries the kicker's own secret and nobody else's credential can drive it, while a turn kicked by an unregistered user simply runs without the spells. Rotation or revocation is only ever the admin editing the YAML. The trust statement, plainly: a user's secret holds the hook pipe's ledger writes plus the gateway's outbound sends and handoffs, under that user's name. Same trust domain (the operator's machines), same mitigations (per-user secrets, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags.
 
 Point the runtimes' native sessions at it with the `mcp` commands — static MCP client config, written once:
 

@@ -20,6 +20,7 @@ from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.codex import CodexTentacle
 from octomate.tentacles.agents.deepseek import DeepseekTentacle
 from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, DEEPSEEK_MODELS
+from tests.support.config import registered
 
 SECRET = SecretStr("the-hook-secret")
 EVENT = {"hook_event_name": "SessionEnd", "session_id": "s1"}
@@ -31,7 +32,7 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 
 def client_for(path: str) -> TestClient:
-    octomate = Octomate(secret=SECRET)
+    octomate = Octomate(config=registered(SECRET.get_secret_value()))
     if path == CLAUDE_HOOK_PATH:
         tentacle = ClaudeCodeTentacle(
             "claude",
@@ -82,3 +83,15 @@ def test_the_configured_secret_is_accepted(path: str) -> None:
         headers={"Authorization": f"Bearer {SECRET.get_secret_value()}"},
     )
     assert response.status_code == 200
+
+
+def test_a_hook_router_refuses_to_mount_for_nobody() -> None:
+    # A deployment where no user carries a secret would serve a router no
+    # human's machine could reach — the boot says so instead.
+    tentacle = ClaudeCodeTentacle(
+        "claude",
+        Octomate(),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+    )
+    with pytest.raises(RuntimeError, match="no registered user carries a secret"):
+        tentacle.routers()

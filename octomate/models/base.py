@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TypeAlias
 
+from pydantic import SecretStr
 from sqlalchemy import Dialect, String
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.types import TypeDecorator
@@ -33,3 +34,23 @@ class PathString(TypeDecorator[Path]):
 
     def process_result_value(self, value: str | None, dialect: Dialect) -> Path | None:
         return Path(value) if value else None
+
+
+class SecretString(TypeDecorator[SecretStr]):
+    """A credential: `SecretStr` everywhere above this line, plain text in the
+    column. The driver binds only primitives, so the unwrapping belongs here
+    rather than at every caller — and a read re-wraps, so the value never sits
+    unmasked on a mapped attribute."""
+
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: SecretStr | None, dialect: Dialect
+    ) -> str | None:
+        return None if value is None else value.get_secret_value()
+
+    def process_result_value(
+        self, value: str | None, dialect: Dialect
+    ) -> SecretStr | None:
+        return None if value is None else SecretStr(value)

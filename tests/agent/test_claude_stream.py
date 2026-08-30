@@ -44,6 +44,7 @@ from tests.agent.test_claude_tailer import (
     subagent_runs_of,
 )
 from tests.support.agents import CLAUDE_MODELS
+from tests.support.config import registered
 
 SECRET = SecretStr("the-hook-secret")
 AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
@@ -236,7 +237,7 @@ async def test_a_new_attach_replaces_a_lingering_registration() -> None:
 
 
 def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
-    octomate = Octomate(secret=SECRET)
+    octomate = Octomate(config=registered(SECRET.get_secret_value()))
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,

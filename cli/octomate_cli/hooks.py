@@ -1,6 +1,6 @@
 """What every agent's hook installer shares: the credential the hooks carry — the
-deployment's one secret, which `octomate secret` hands to a shell — and the scripts
-the installed hooks run.
+user's own secret from their `users:` entry, which `octomate secret` hands to a
+shell — and the scripts the installed hooks run.
 """
 
 from __future__ import annotations

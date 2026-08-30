@@ -34,7 +34,7 @@ from octomate.schemas.triage import (
     TeleportDecision,
     ThreadLanding,
 )
-from octomate.types.threads import CLAUDE_NATIVE_ID, NATIVE_CHANNEL_USER_ID
+from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager
 
@@ -83,10 +83,10 @@ async def a_native_call(
     FakeThreadManager,
     list[GatewayHandoffSignal],
 ]:
-    """The gateway as the served endpoint builds it for one anonymous native call:
-    no thread, no address, the registry deciding whether anywhere is reachable —
-    `linked` is whether a YAML user claims the shared native profile beside a real
-    account on `im`."""
+    """The gateway as the served endpoint builds it for one native call: no
+    thread, no address, the session speaking for the registered user the
+    verified bearer named — `linked` is whether that user has a real account
+    on `im` for a destination to light up."""
     channel = FakeChannelTentacle()
     threads = FakeThreadManager()
     kicks: list[GatewayHandoffSignal] = []
@@ -94,15 +94,13 @@ async def a_native_call(
         {
             "luhui": UserConfig.model_validate(
                 {
-                    "profiles": {
-                        CLAUDE_NATIVE_ID: {"channel_user_id": NATIVE_CHANNEL_USER_ID},
-                        "im": {"channel_user_id": "alice"},
-                    }
+                    "secret": "luhui-token",
+                    "profiles": {"im": {"channel_user_id": "alice"}},
                 }
+                if linked
+                else {"secret": "luhui-token"}
             )
         }
-        if linked
-        else {}
     )
     await users.reconcile()
     session = GatewaySession(
@@ -110,7 +108,7 @@ async def a_native_call(
         current_agent_id=CLAUDE_NATIVE_ID,
         channels={"im": channel},
         users=users,
-        user_profile=await users.profile(CLAUDE_NATIVE_ID, NATIVE_CHANNEL_USER_ID),
+        user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
         native=True,
     )
     server = gateway_mcp(Depends(lambda: session), threads, kick=kicks.append)
@@ -289,7 +287,7 @@ async def test_a_native_session_scries_only_crossings(
     assert await session.summon_handles() == ["im"]
 
 
-async def test_a_native_session_nobody_claims_scries_nowhere(
+async def test_a_native_session_with_no_linked_accounts_scries_nowhere(
     in_memory_engine: AsyncEngine,
 ) -> None:
     server, session, _channel, _threads, kicks = await a_native_call(linked=False)
@@ -299,9 +297,11 @@ async def test_a_native_session_nobody_claims_scries_nowhere(
         with pytest.raises(ToolError) as refusal:
             await client.call_tool("summon", SUMMON_ARGUMENTS)
 
-    assert session.user_profile is None
+    # Registered, so the session knows who it speaks for — but the user has no
+    # account anywhere a destination could light up.
+    assert session.user_profile is not None
     assert result.data.count("- (none)") == 2
-    # The truthful dead end: no linked profile, so nowhere left to land.
+    # The truthful dead end: no linked account, so nowhere left to land.
     assert "`summon` has nowhere left to land, so answer it." in str(refusal.value)
     assert kicks == []
 

@@ -51,6 +51,7 @@ from tests.agent.test_codex_native_ingest import (
     subagent_activity,
 )
 from tests.support.agents import CODEX_MODELS
+from tests.support.config import registered
 
 SECRET = SecretStr("the-hook-secret")
 AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
@@ -304,7 +305,7 @@ async def test_a_stop_waits_for_the_stopped_turn_then_asks_the_drain() -> None:
 
 
 def stream_client() -> tuple[TestClient, CodexTentacle]:
-    octomate = Octomate(secret=SECRET)
+    octomate = Octomate(config=registered(SECRET.get_secret_value()))
     tentacle = CodexTentacle(
         "codex",
         octomate,
