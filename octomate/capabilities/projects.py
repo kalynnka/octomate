@@ -37,8 +37,9 @@ from octomate.schemas.user import UserProfile
 PROJECT_INSTRUCTIONS = """\
 ## Working on a project
 
-This conversation is in no project, so it runs in a directory shared with every
-other conversation and nothing may write there.
+This conversation is in no project, so it runs in a workspace of its own that is
+thrown away when the turn ends. You may write there, and nothing you write is
+still there next turn.
 
 - `list_projects()` — what this deployment knows, and what each project is.
 - `work_on_project(name[, ref])` — say what this thread is about. `ref` is the
