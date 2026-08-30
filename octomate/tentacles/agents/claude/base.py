@@ -7,7 +7,7 @@ import uuid
 import weakref
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
-from functools import cached_property, partial
+from functools import cached_property
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -98,65 +98,6 @@ if TYPE_CHECKING:
     from octomate.base import Octomate
 
 logger = logging.getLogger(__name__)
-
-
-# Claude's file-writing tools, and the input key each names its target with. A hook
-# matcher is a full match on the tool name, so the hook only ever sees these three
-# and the lookup cannot miss.
-#
-# Reads are absent deliberately: a write outside the project is what does damage,
-# where refusing a read only costs the model a sibling checkout or a system header.
-# So is Bash, which no path check can scope — a command reaches wherever the process
-# can until `sandbox.enabled` is set, so this is scoping, not sandboxing.
-WRITE_TOOL_PATHS: dict[str, str] = {
-    "Write": "file_path",
-    "Edit": "file_path",
-    "NotebookEdit": "notebook_path",
-}
-
-
-async def deny_outside_workspace(
-    workspace: Path,
-    hook_input: HookInput,
-    tool_use_id: str | None,
-    context: HookContext,
-) -> HookJSONOutput:
-    """Refuse a file write whose target resolves outside `workspace`.
-
-    A PreToolUse hook rather than `can_use_tool`, which the CLI does not call at all
-    under `bypassPermissions` — the mode an out-of-workspace write is likeliest to
-    reach. The hook fires in every mode, and fires before `can_use_tool`, so a
-    refused write raises no approval card either.
-
-    Bound to the run's workspace with `partial`, and every run has one — a thread in
-    a project gets a fork of its mirror, a thread in none a fork of the empty
-    repository. The boundary is the workspace rather than the project's roots
-    because that is where the run happens: the project's own checkout is the
-    person's, and a run may not reach into it. The reason names the workspace, so
-    the model reports a blocker rather than retrying the same path.
-    """
-    pre_tool_use = cast(PreToolUseHookInput, hook_input)
-    target = pre_tool_use["tool_input"].get(WRITE_TOOL_PATHS[pre_tool_use["tool_name"]])
-    # The SDK types a tool's input as free-form JSON. A call naming no path has
-    # nothing to judge, and the CLI refuses it on the tool's own schema anyway.
-    if not isinstance(target, str):
-        return {}
-    # `is_relative_to` is lexical, so the target resolves first: a `..` and a symlink
-    # are the whole attack surface of a check that compares the string it was handed.
-    # The workspace arrives resolved, being the path the fork was made at.
-    if Path(target).resolve().is_relative_to(workspace):
-        return {}
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                f"{target} is outside this thread's workspace. This run may only "
-                f"write under: {workspace}. The same path will be refused again, so "
-                f"work inside the workspace or report what you could not change."
-            ),
-        }
-    }
 
 
 @dataclass
@@ -682,18 +623,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # own CLAUDE.md and .claude/settings.json — the useful half of "work on this
         # project". Setting it to ["project"] would be the same behavior spelled
         # loudly; setting it to [] would silently drop a repo's instructions.
-        pre_tool_use_hooks = [
-            HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question]),
-            # `cwd` is a default Claude can walk out of, not a boundary, so the run's
-            # own workspace — which is what `cwd` is — bounds what may be written in
-            # it. Every run has one, in a project or not, so this is registered for
-            # every run.
-            HookMatcher(
-                matcher="|".join(WRITE_TOOL_PATHS),
-                hooks=[partial(deny_outside_workspace, Path(run_cwd))],
-            ),
-        ]
-
         options = ClaudeAgentOptions(
             cwd=run_cwd,
             # A project's other roots are directories this work legitimately spans —
@@ -714,7 +643,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             resume=conversation.external_id,
             session_id=None if conversation.external_id else session_id,
             can_use_tool=can_use_tool,
-            hooks={"PreToolUse": pre_tool_use_hooks},
+            hooks={
+                "PreToolUse": [
+                    HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
+                ]
+            },
             output_format=output_format,
             # Stream partial assistant messages so the accumulator can emit token
             # deltas (typewriter) instead of whole blocks; see ClaudeRunAccumulator.

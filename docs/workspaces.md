@@ -4,7 +4,7 @@ Records what OCTO-42's discussion settled and what it did not. The mirror
 (OCTO-46), the fork (OCTO-47), running a project thread in it (OCTO-48), and the
 lifecycle below — per-turn save, pruning, resume (OCTO-51) — are built, as are
 the bind capability (OCTO-52) and the chat workspace (OCTO-50). Dependency reuse
-and the sandboxes are still ahead.
+is still ahead.
 
 A run currently happens in `project.root` — one directory on the Octomate host,
 shared by every thread that resolves to that project. This document replaces that
@@ -195,11 +195,10 @@ repository at `mirrors/.blank`, and thrown away when the run that made it ends.
 
 **One code path, not two.** Both kinds are a fork of a mirror, made by the same
 `materialize`, landing on the same `octomate/thread-<id>` branch, writable, and
-bounded by the same `deny_outside_workspace` hook and the same
-`sandbox: workspace_write`. What binding changes is the ending — a project
-thread's tree is saved to its mirror and resumed into next turn, a chat thread's
-is discarded. That is a better thing to tell a model than "you may not write":
-**binding is what makes your work kept.**
+bounded by the same `sandbox: workspace_write`. What binding changes is the
+ending — a project thread's tree is saved to its mirror and resumed into next
+turn, a chat thread's is discarded. That is a better thing to tell a model than
+"you may not write": **binding is what makes your work kept.**
 
 A run asks `WorkspaceManager.open` for the workspace its thread runs in and enters
 it. The handle knows its path without touching the disk, so a runtime can be
@@ -213,7 +212,7 @@ This replaces one shared read-only directory, which was the earlier design and
 shipped briefly (`e80b288`, `f119e87`). Sharing was safe only because nothing
 could write there, so every capability a conversation might want had to be taken
 away to keep one property true — and two of the three runtimes could not enforce
-it anyway (Claude's hook left Bash open until the sandbox lands; dsh ships no
+it anyway (Claude's hook scoped the file tools and left Bash open; dsh ships no
 read-only preset at all). A fork each keeps the property by construction, and
 costs nothing, because a fork of an empty repository is a fork of nothing.
 
@@ -238,9 +237,13 @@ leave does not delete the floor from under the second.
 The directory must still be set explicitly. Leaving it unset means inheriting
 Octomate's own working directory, and a writable run parked there is worse than a
 read-only one: `.octomate/` holds the database, `users.yaml`, `providers.yaml`,
-and service account keys. Bounding writes to the workspace is what this section
-buys; bounding *reads* is the sandbox work (OCTO-53), and a workspace says nothing
-about them.
+and service account keys.
+
+What a run may do once it is there is the runtime's own answer, not Octomate's:
+Claude's permission mode, Codex's `sandbox` preset, dsh's bundled one. Octomate
+says where a run happens and relays what the agent decides; it adds no boundary
+of its own, so a runtime that lets a write out of its `cwd` will let one out
+here too.
 
 ## Lifecycle
 
