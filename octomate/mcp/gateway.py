@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.server.dependencies import get_http_headers
+from fastmcp.server.dependencies import get_access_token, get_http_headers
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
@@ -49,7 +49,6 @@ from octomate.types.threads import (
     CLAUDE_NATIVE_ID,
     CODEX_NATIVE_ID,
     DEEPSEEK_NATIVE_ID,
-    NATIVE_CHANNEL_USER_ID,
     NATIVE_TENTACLE_IDS,
 )
 
@@ -127,16 +126,21 @@ def spoken(
 def served_session(octomate: Octomate) -> Callable[[], Awaitable[GatewaySession]]:
     """The session a call served over HTTP runs against.
 
-    A driven turn names its conversation with `CONVERSATION_HEADER`, written into
-    its launch config by Octomate itself, and resolves to the session registered
-    while that run is in flight. A native session names only its runtime with
-    `CLIENT_HEADER`, written once at install time, and gets `native_session` built
-    for the call — if its runtime's `native_gateway` flag allows one. Identity is
-    asserted by config either way, never chosen by the model, so a call carrying
+    Every call speaks for the registered user its verified bearer names. A driven
+    turn names its conversation with `CONVERSATION_HEADER`, written into its
+    launch config by Octomate itself along with the kicker's own secret, and
+    resolves to the session registered while that run is in flight — a bearer
+    other than the kicker's is refused, so no user can drive another's turn. A
+    native session names its runtime with `CLIENT_HEADER`, written once at
+    install time, and gets `native_session` built for the bearer's user — if its
+    runtime's `native_gateway` flag allows one. Identity is asserted by config
+    and credential either way, never chosen by the model, so a call carrying
     neither header is refused outright rather than guessed at."""
 
     async def resolve() -> GatewaySession:
         headers = get_http_headers()
+        access = get_access_token()
+        principal = access.client_id if access is not None else None
         named = headers.get(CONVERSATION_HEADER.lower())
         if named is not None:
             try:
@@ -150,6 +154,17 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[GatewaySession]
                 raise ToolError(
                     f"No turn of conversation {named} is at the gateway; a session "
                     "reaches it only while the run that opened it is in flight."
+                )
+            kicker = (
+                await octomate.users.owner(session.user_profile)
+                if session.user_profile is not None
+                else None
+            )
+            if kicker is None or kicker.username != principal:
+                raise ToolError(
+                    f"Conversation {named}'s turn is not this bearer's to drive: "
+                    "a driven session speaks with its kicker's own credential, "
+                    "which its launch config carries."
                 )
             return session
         client = headers.get(CLIENT_HEADER.lower())
@@ -165,20 +180,32 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[GatewaySession]
                 f"{CLIENT_HEADER} names no native runtime: {client!r}. An install "
                 f"writes one of: {', '.join(sorted(NATIVE_TENTACLE_IDS))}."
             )
-        return await native_session(octomate, client)
+        if principal is None:
+            agent = client.removesuffix("-native")
+            raise ToolError(
+                "A native session speaks for a registered user, and this call's "
+                "bearer names none. Give this human their own under "
+                "`users.<name>.secret`, run `octomate configure --secret` with "
+                f"it on their machine, and re-run `octomate {agent} mcp "
+                "install`."
+            )
+        return await native_session(octomate, client, principal)
 
     return resolve
 
 
-async def native_session(octomate: Octomate, client: str) -> GatewaySession:
-    """An ephemeral gateway for one anonymous native call, never registered.
+async def native_session(
+    octomate: Octomate, client: str, username: str
+) -> GatewaySession:
+    """An ephemeral gateway for one native call, never registered.
 
-    Anonymous within the bearer's trust domain: the call is attributed to a
-    runtime, never to a terminal session, so the session has no thread and no
-    address — every destination is a crossing, lit only where the deployment's
-    YAML links the shared native profile to real accounts. Availability is the
-    runtime's own `native_gateway` flag, and this refusal is the only real
-    control: a static MCP config puts the tools in every session once installed.
+    `username` is the verified bearer's owner, so the session speaks for that
+    person: anchored on a transient profile of theirs, its destinations are
+    their own linked accounts. The call is still attributed to a runtime, never
+    to a terminal session, so the session has no thread and no address — every
+    destination is a crossing. Availability is the runtime's own
+    `native_gateway` flag, and that refusal is the only real control: a static
+    MCP config puts the tools in every session once installed.
     """
     config = octomate.config
     native_config = (
@@ -196,6 +223,12 @@ async def native_session(octomate: Octomate, client: str) -> GatewaySession:
             f"The gateway is not offered to {client} sessions: `agents.{agent}` "
             f"is not configured here, or its `native_gateway` is off."
         )
+    profile = await octomate.users.native_profile(client, username)
+    if profile is None:
+        raise RuntimeError(
+            f"the bearer verified as {username!r} but the registry holds no such "
+            "user — reconciliation runs before serving, so this is a wiring bug"
+        )
     return GatewaySession(
         channel_routes=octomate.gateway.available_routes(
             octomate.channels, octomate.agents
@@ -203,7 +236,7 @@ async def native_session(octomate: Octomate, client: str) -> GatewaySession:
         current_agent_id=client,
         channels=octomate.channels,
         users=octomate.users,
-        user_profile=await octomate.users.profile(client, NATIVE_CHANNEL_USER_ID),
+        user_profile=profile,
         agents=octomate.agents,
         native=True,
     )

@@ -39,7 +39,7 @@ from openai_codex.generated.v2_all import (
     ThreadStartParams,
     TurnStatus,
 )
-from pydantic import TypeAdapter, ValidationError
+from pydantic import SecretStr, TypeAdapter, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -153,6 +153,8 @@ CODEX_PERMISSION_PLANS: dict[CodexPermissionMode, CodexPermissionPlan] = {
 # How a driven turn's Codex process is told to reach the gateway MCP server: the
 # launch config names these variables, and `new_client` fills them per conversation,
 # so the identity the header asserts is the launch config's and never the model's.
+# The token is the kicking user's own secret — the turn speaks as the human it
+# represents, and a kicker carrying none gets no wiring at all.
 GATEWAY_TOKEN_ENV = "OCTOMATE_GATEWAY_TOKEN"
 GATEWAY_CONVERSATION_ENV = "OCTOMATE_GATEWAY_CONVERSATION"
 
@@ -166,9 +168,10 @@ class PooledCodexClient:
     last_used: float = 0.0
     # Active runs holding this client; a client with `in_use > 0` is never evicted.
     in_use: int = 0
-    # Whether this client was launched with the gateway MCP wiring; a turn wanting
-    # otherwise evicts and rebuilds, since launch config is fixed at process start.
-    gateway: bool = False
+    # The kicker's bearer this client's gateway wiring was launched with — None for
+    # no wiring. A turn wanting otherwise evicts and rebuilds, since launch config
+    # is fixed at process start.
+    gateway_bearer: SecretStr | None = None
 
 
 class CodexClientPool:
@@ -185,7 +188,7 @@ class CodexClientPool:
     def __init__(
         self,
         *,
-        build: Callable[[uuid.UUID, bool], AsyncCodex],
+        build: Callable[[uuid.UUID, SecretStr | None], AsyncCodex],
         max_clients: int | None,
         idle_ttl: float | None,
     ) -> None:
@@ -196,12 +199,12 @@ class CodexClientPool:
         self.lock = asyncio.Lock()
 
     async def acquire(
-        self, conversation_id: uuid.UUID, *, gateway: bool = False
+        self, conversation_id: uuid.UUID, *, gateway_bearer: SecretStr | None = None
     ) -> PooledCodexClient:
         async with self.lock:
             await self.evict_idle()
             pooled = self.clients.get(conversation_id)
-            if pooled is not None and pooled.gateway != gateway:
+            if pooled is not None and pooled.gateway_bearer != gateway_bearer:
                 # Launch config is fixed at process start, so a turn whose gateway
                 # wiring disagrees gets a fresh process; the Codex thread itself
                 # survives, resumed from the conversation's external id.
@@ -214,9 +217,9 @@ class CodexClientPool:
                 await self.close(pooled)
                 pooled = None
             if pooled is None:
-                client = self.build(conversation_id, gateway)
+                client = self.build(conversation_id, gateway_bearer)
                 await client.__aenter__()
-                pooled = PooledCodexClient(client=client, gateway=gateway)
+                pooled = PooledCodexClient(client=client, gateway_bearer=gateway_bearer)
                 self.clients[conversation_id] = pooled
             self.clients.move_to_end(conversation_id)
             pooled.in_use += 1
@@ -367,7 +370,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         the same 401 before any socket opens."""
         router = APIRouter(
             tags=["codex"],
-            dependencies=[Depends(hook_guard(self.octomate.secret, self.id))],
+            dependencies=[Depends(hook_guard(self.octomate.bearers, self.id))],
         )
 
         @router.post("/hooks/codex", summary="Codex native-session hook pipe")
@@ -518,10 +521,12 @@ class CodexTentacle(AgentTentacle[str, None]):
         # Only the pool is tentacle-wide shared state; each conversation's Codex
         # client is built here, entered/exited through the SDK's async context, and
         # reused or evicted by the pool.
-        def new_client(conversation_id: uuid.UUID, gateway: bool) -> AsyncCodex:
+        def new_client(
+            conversation_id: uuid.UUID, gateway_bearer: SecretStr | None
+        ) -> AsyncCodex:
             env = {**(self.config.runtime.env or {}), DRIVEN_ENV: "1"}
             overrides = self.config.runtime.config_overrides
-            if gateway:
+            if gateway_bearer is not None:
                 # The turn's session is at the gateway, so the launch config wires
                 # the process to the served MCP endpoint and asserts the turn's own
                 # conversation id — the model never chooses the header. The url is
@@ -529,13 +534,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                 # uvicorn's rather than the app's, and the app-server is a child
                 # of the host being served.
                 deployment = self.octomate.config
-                if self.octomate.secret is None or deployment is None:
+                if deployment is None:
                     raise RuntimeError(
                         "this turn's gateway session is registered, but the host "
-                        "serves no MCP endpoint to wire it to: octomate.secret "
-                        "and Octomate.config must both be set"
+                        "cannot name the served MCP endpoint to wire it to: "
+                        "Octomate.config must be set"
                     )
-                env[GATEWAY_TOKEN_ENV] = self.octomate.secret.get_secret_value()
+                env[GATEWAY_TOKEN_ENV] = gateway_bearer.get_secret_value()
                 env[GATEWAY_CONVERSATION_ENV] = str(conversation_id)
                 url = (
                     f"http://127.0.0.1:{deployment.port}"
@@ -1037,8 +1042,18 @@ class CodexTentacle(AgentTentacle[str, None]):
         ):
             # Registered by the react node for exactly the turns whose connection
             # has the gateway; an accomplice's or a stray conversation is not there.
-            gateway = self.octomate.gateway.get(conversation.id) is not None
-            pooled = await self.pool.acquire(conversation.id, gateway=gateway)
+            # The wiring carries the kicker's own credential, so a turn whose
+            # kicker is unregistered or carries no secret launches clean, with
+            # the spells withheld.
+            session = self.octomate.gateway.get(conversation.id)
+            gateway_bearer = (
+                await self.octomate.users.secret_of(session.user_profile)
+                if session is not None
+                else None
+            )
+            pooled = await self.pool.acquire(
+                conversation.id, gateway_bearer=gateway_bearer
+            )
             try:
                 codex_thread = pooled.thread
                 if codex_thread is None:

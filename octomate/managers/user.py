@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+from pydantic import SecretStr
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from octomate.config.users import UserConfig
@@ -84,6 +85,51 @@ class UserManager:
             if other.channel_tentacle_id != profile.channel_tentacle_id
         ]
 
+    async def secret_of(self, profile: UserProfile | None) -> SecretStr | None:
+        """The bearer credential `profile`'s registered owner carries on their
+        registry row, or None — for no profile, a visitor, or an owner whose
+        row holds no secret.
+
+        What a driven turn's gateway wiring resolves: the turn speaks with its
+        kicker's own credential or not at all, since every configured credential
+        names a person and the host holds none of its own."""
+        if profile is None:
+            return None
+        user = await self.owner(profile)
+        return user.secret if user is not None else None
+
+    async def native_profile(self, runtime: str, username: str) -> UserProfile | None:
+        """A transient anchor for `username`'s native session on `runtime`'s
+        pseudo-channel, or None for a username the registry never reconciled.
+
+        Never persisted: a native session's identity comes from its verified
+        bearer, not from a claimed row, so the profile exists only to give the
+        linked-profile walk its starting point — owned like a stored profile,
+        and standing on a channel id no channel ever resolves.
+        """
+        user = next(
+            (cached for cached in self.users.values() if cached.username == username),
+            None,
+        )
+        if user is None:
+            async with async_session() as session:
+                user = await session.one_or_none(
+                    User, expressions=[User["username"] == username]
+                )
+            if user is None:
+                return None
+            self.cache_user(user)
+        # `user_id` alone carries the ownership: `owner()` resolves it through the
+        # cache, and assigning the relation itself would backpopulate
+        # `user.profiles` — a lazy load the detached cached instance cannot do.
+        return UserProfile(
+            channel_tentacle_id=runtime,
+            channel_user_id=username,
+            user_id=user.id,
+            name=user.name,
+            nickname=user.nickname,
+        )
+
     async def profile(
         self, channel_tentacle_id: str, channel_user_id: str
     ) -> UserProfile | None:
@@ -161,18 +207,24 @@ class UserManager:
 
             for username, user_config in self.config.items():
                 name = user_config.name or username
+                # The row is the credential's home — the unique column is what
+                # makes a bearer name exactly one user, tripping the boot here
+                # when two entries share a value.
+                secret = user_config.secret
                 user = users_by_username.get(username)
                 if user is None:
                     user = User(
                         username=username,
                         name=name,
                         nickname=user_config.nickname,
+                        secret=secret,
                     )
                     session.add(user)
                     users_by_username[username] = user
                 else:
                     user.name = name
                     user.nickname = user_config.nickname
+                    user.secret = secret
 
             linked_profiles = list(
                 await session.list(

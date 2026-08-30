@@ -18,11 +18,6 @@ from octomate.types.permissions import (
     DeepseekPermissionMode,
     InklingPermissionMode,
 )
-from octomate.types.threads import (
-    CLAUDE_NATIVE_ID,
-    CODEX_NATIVE_ID,
-    DEEPSEEK_NATIVE_ID,
-)
 
 # A filesystem path from config, with `~` meaning what the person writing it meant:
 # pydantic keeps `~/...` literal, and `Path("~/x").resolve()` yields `<cwd>/~/x` rather
@@ -616,26 +611,3 @@ class AgentsConfig(BaseModel):
             if agent is not None and agent.enabled:
                 configured[agent_id] = set(agent.models)
         return configured
-
-    def native_ids(self) -> frozenset[str]:
-        """The native pseudo-channel ids whose runtimes this deployment declares.
-
-        The set a user link may claim: linking `(claude-native, native)` is how
-        an operator owns that runtime's terminals, and only a declared runtime
-        has a native surface to own — one with no block mounts no hook router
-        and is refused at the served gateway. `enabled` is deliberately not
-        consulted: disabling unregisters the tentacle, and a link to a declared
-        runtime that is switched off is dormant, not mistyped.
-        """
-        # TODO: replace with real registration once real users are ready — the
-        # declared slots stand in while every native terminal is the one shared
-        # anonymous operator.
-        return frozenset(
-            native_id
-            for native_id, agent in (
-                (CLAUDE_NATIVE_ID, self.claude),
-                (CODEX_NATIVE_ID, self.codex),
-                (DEEPSEEK_NATIVE_ID, self.deepseek),
-            )
-            if agent is not None
-        )

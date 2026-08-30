@@ -28,7 +28,6 @@ from typing import Annotated, Self
 from pydantic import (
     Field,
     IPvAnyAddress,
-    SecretStr,
     ValidationError,
     ValidatorFunctionWrapHandler,
     field_validator,
@@ -55,7 +54,7 @@ from octomate.schemas.project import Project
 OCTOMATE_HOME_ENV = "OCTOMATE_HOME"
 
 # One file per subsystem, in the order they are read. `octomate.yaml` carries the
-# host's own settings (host, port, secret, mcp_path, db_url) and comes first so a later
+# host's own settings (host, port, mcp_path, db_url) and comes first so a later
 # file cannot be shadowed by it.
 CONFIG_FILES: tuple[str, ...] = (
     "octomate.yaml",
@@ -115,19 +114,6 @@ class OctomateConfig(BaseSettings):
     host: IPvAnyAddress = IPv4Address("127.0.0.1")
     port: Annotated[int, Field(ge=1, le=65535)] = 8000
 
-    secret: Annotated[
-        SecretStr | None,
-        Field(
-            description="The deployment's one bearer credential: what the Claude/Codex/"
-            "DeepSeek hook routers require, and what the MCP servers Octomate serves "
-            "are served behind — unset, none of them is served at all. Required "
-            "whenever one of those agents is configured, since serving a hook router "
-            "unauthenticated would let anything that can reach the port write a "
-            "session's prompts and answers into thread history. Set it in the "
-            "environment (OCTOMATE__SECRET) and the installed hooks will reference the "
-            "same variable."
-        ),
-    ] = None
     mcp_path: Annotated[
         str,
         Field(
@@ -272,13 +258,10 @@ class OctomateConfig(BaseSettings):
         """A typo'd channel id in a user's links must fail the boot, not
         silently produce a link no channel will ever resolve.
 
-        The native pseudo-channels are admissible without a `channels:` entry —
-        none ever declares those ids; linking the shared native profile —
-        `claude-native: {channel_user_id: native}` — is how an operator claims
-        their own terminals at the served gateway. But only a declared runtime's:
-        one absent from `agents:` mounts no hook router and is refused at the
-        gateway, so its pseudo-channel is unresolvable like any typo."""
-        native_ids = self.agents.native_ids()
+        The native pseudo-channels are not admissible either: a native session
+        is registered by the user's own `secret`, which anchors it on a
+        transient profile — no claimed row exists for a link to seed, so a
+        pseudo-channel link is as unresolvable as any typo."""
         errors: list[InitErrorDetails] = [
             InitErrorDetails(
                 type=PydanticCustomError(
@@ -291,7 +274,7 @@ class OctomateConfig(BaseSettings):
             )
             for username, user in self.users.items()
             for channel_id, profile in user.profiles.items()
-            if channel_id not in self.channels and channel_id not in native_ids
+            if channel_id not in self.channels
         ]
         if errors:
             raise ValidationError.from_exception_data(type(self).__name__, errors)

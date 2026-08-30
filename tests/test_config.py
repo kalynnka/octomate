@@ -52,7 +52,6 @@ def test_the_suite_never_reads_the_developers_config() -> None:
 
     live = OctomateConfig()
     assert live.users == {}
-    assert live.secret is None
 
 
 def test_an_explicit_home_wins_over_discovery(
@@ -1004,37 +1003,37 @@ def test_user_links_must_reference_configured_channel() -> None:
     assert error["msg"] == "'matrix' does not match a configured channel"
 
 
-def test_user_links_accept_a_declared_runtime_native_pseudo_channel() -> None:
-    # No `channels:` entry ever declares claude-native — claiming the shared
-    # native profile is how an operator's terminals reach the served gateway —
-    # so admission follows the `agents:` block instead.
-    config = OctomateConfig.model_validate(
-        {
-            "agents": {"claude": {"models": ["opus"]}},
-            "users": {
-                "luhui": {"profiles": {"claude-native": {"channel_user_id": "native"}}}
-            },
-        }
-    )
-
-    assert config.users["luhui"].profiles["claude-native"].channel_user_id == "native"
-
-
-def test_user_links_refuse_an_undeclared_runtime_pseudo_channel() -> None:
-    # Without `agents.codex` there is no hook router and the served gateway
-    # refuses codex-native — the link could never resolve, so the boot says so.
+def test_user_links_refuse_a_native_pseudo_channel() -> None:
+    # The OCTO-62 claim retired: a native session is registered by the user's
+    # own `secret`, so a pseudo-channel link has no claimed row left to seed and
+    # is as unresolvable as any typo — declared runtime or not.
     with pytest.raises(
-        ValidationError, match="'codex-native' does not match a configured channel"
+        ValidationError, match="'claude-native' does not match a configured channel"
     ):
         OctomateConfig.model_validate(
             {
+                "agents": {"claude": {"models": ["opus"]}},
                 "users": {
                     "luhui": {
-                        "profiles": {"codex-native": {"channel_user_id": "native"}}
+                        "profiles": {"claude-native": {"channel_user_id": "native"}}
                     }
-                }
+                },
             }
         )
+
+
+def test_distinct_user_secrets_validate() -> None:
+    config = OctomateConfig.model_validate(
+        {"users": {"lu": {"secret": "lu-token"}, "hui": {"secret": "hui-token"}}}
+    )
+
+    lu_secret = config.users["lu"].secret
+    assert lu_secret is not None
+    assert lu_secret.get_secret_value() == "lu-token"
+    # A user with no secret stays valid: registration is opt-in per user.
+    assert OctomateConfig.model_validate({"users": {"lu": {}}}).users["lu"].secret is (
+        None
+    )
 
 
 def test_user_profile_config_rejects_the_old_user_id_field() -> None:

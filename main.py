@@ -74,7 +74,6 @@ def create_app() -> FastAPI:
         users=UserManager(config.users),
         projects=ProjectManager(config.projects),
         oauth_encryption_key=config.oauth.encryption_key,
-        secret=config.secret,
         mcp_path=config.mcp_path,
     )
 

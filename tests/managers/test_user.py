@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Mapping
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.config.users import UserConfig
@@ -375,6 +376,59 @@ async def test_yaml_can_declare_a_registered_user_without_profiles() -> None:
     assert user is not None
     assert user.name == "Lu Hui"
     assert list(await user.profiles) == []
+
+
+async def test_reconcile_carries_the_secret_onto_the_row_and_back_off() -> None:
+    manager = UserManager(config({"luhui": {"secret": "lu-token"}}))
+    await manager.reconcile()
+    user = await find_user("luhui")
+    assert user is not None
+    assert user.secret is not None
+    assert user.secret.get_secret_value() == "lu-token"
+
+    # Editing the YAML is rotation and revocation: the row follows it exactly.
+    await UserManager(config({"luhui": {"secret": "rotated"}})).reconcile()
+    rotated = await find_user("luhui")
+    assert rotated is not None
+    assert rotated.secret is not None
+    assert rotated.secret.get_secret_value() == "rotated"
+    await UserManager(config({"luhui": {}})).reconcile()
+    revoked = await find_user("luhui")
+    assert revoked is not None
+    assert revoked.secret is None
+
+
+async def test_a_shared_secret_trips_the_rows_unique_constraint() -> None:
+    manager = UserManager(
+        config({"lu": {"secret": "one-token"}, "hui": {"secret": "one-token"}})
+    )
+
+    with pytest.raises(IntegrityError, match=r"uq_users_secret|users\.secret"):
+        await manager.reconcile()
+
+
+async def test_secret_of_resolves_the_kickers_row() -> None:
+    manager = UserManager(
+        config(
+            {
+                "luhui": {
+                    "secret": "lu-token",
+                    "profiles": {"slack": profile_config("U1")},
+                }
+            }
+        )
+    )
+    await manager.reconcile()
+    theirs = await find_profile("slack", "U1")
+    assert theirs is not None
+    visitor = UserProfile(channel_tentacle_id="slack", channel_user_id="U9")
+
+    secret = await manager.secret_of(theirs)
+
+    assert secret is not None
+    assert secret.get_secret_value() == "lu-token"
+    assert await manager.secret_of(visitor) is None
+    assert await manager.secret_of(None) is None
 
 
 async def test_owner_loads_a_registered_user_with_a_fresh_manager() -> None:
