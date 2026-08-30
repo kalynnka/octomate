@@ -107,6 +107,8 @@
   #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
   #   # What a command may touch when nobody is asked. Fixed for a run, and
   #   # deliberately not part of the posture, so switching one never widens it.
+  #   # A driven run under workspace_write is given the network; read_only has no
+  #   # config key to open it with, so it closes the network too.
   #   sandbox: workspace_write   # read_only | workspace_write | full_access
   #   effort: ~                  # none | minimal | low | medium | high | xhigh
   #   summary: ~                 # auto | concise | detailed | none

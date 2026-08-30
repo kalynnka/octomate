@@ -368,10 +368,12 @@ class CodexConfig(BaseModel):
     sandbox: CodexSandbox = Field(
         default="workspace_write",
         description=(
-            "SDK filesystem sandbox preset for Codex threads and turns: what a command "
-            "may touch when nobody is asked. The operator's, and fixed for a run — "
+            "SDK filesystem sandbox preset for a Codex thread: what a command may "
+            "touch when nobody is asked. The operator's, and fixed for a run — "
             "deliberately not folded into `permission_mode`, so a conversation's "
-            "approval posture never rewrites what the whole thread reaches."
+            "approval posture never rewrites what the whole thread reaches. A driven "
+            "run under `workspace_write` is given the network; `read_only` has no "
+            "config key to open it with, so choosing it closes the network too."
         ),
     )
     base_instructions: str | None = Field(

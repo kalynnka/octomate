@@ -149,6 +149,14 @@ CODEX_PERMISSION_PLANS: dict[CodexPermissionMode, CodexPermissionPlan] = {
 }
 
 
+# `workspace_write` ships `networkAccess: false`, so every driven Codex turn has run
+# without a network. Octomate is a relay: a run that cannot reach the registry, the
+# API or the remote it is working against is broken rather than safer, and the other
+# runtimes have never been closed this way. The app-server resolves the preset against
+# its own config, so this opens the network without widening what a command may write.
+NETWORK_ACCESS = "sandbox_workspace_write.network_access=true"
+
+
 @dataclass
 class PooledCodexClient:
     client: AsyncCodex
@@ -496,6 +504,12 @@ class CodexTentacle(AgentTentacle[str, None]):
             runtime = replace(
                 self.config.runtime,
                 env={**(self.config.runtime.env or {}), DRIVEN_ENV: "1"},
+                # First, so an operator who sets the key themselves still wins:
+                # later `--config` arguments are the ones Codex keeps.
+                config_overrides=(
+                    NETWORK_ACCESS,
+                    *self.config.runtime.config_overrides,
+                ),
             )
             client = AsyncCodex(config=runtime)
 
@@ -1032,6 +1046,11 @@ class CodexTentacle(AgentTentacle[str, None]):
                     )
                     try:
                         with self.session_ingest.driving(codex_thread.id):
+                            # No `sandbox=` here. The thread already carries the
+                            # mode, and a turn's is sent as a whole policy built
+                            # from the SDK's defaults — which would stamp
+                            # `networkAccess: false` back over what the config
+                            # resolved, and narrow the writable roots with it.
                             turn = await codex_thread.turn(
                                 prompt_text,
                                 approval_mode=plan.sdk_mode,
@@ -1040,7 +1059,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 model=sdk_model,
                                 output_schema=output_schema,
                                 personality=personality,
-                                sandbox=sandbox,
                                 summary=summary,
                             )
                             previous = self.live_turns.get(conversation.id)

@@ -14,12 +14,14 @@ from openai_codex.client import ApprovalHandler
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
+    Config,
     ItemCompletedNotification,
     MessagePhase,
     Personality,
     ReasoningEffort,
     ReasoningSummary,
     ReasoningSummaryValue,
+    SandboxWorkspaceWrite,
     ThreadItem,
     Turn,
     TurnCompletedNotification,
@@ -958,6 +960,74 @@ async def test_the_sandbox_is_the_operators_and_no_posture_moves_it(
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.approval_mode == ApprovalMode.deny_all
     assert thread_call.sandbox == Sandbox.read_only
+
+
+async def test_a_driven_run_opens_the_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`workspace_write` ships `networkAccess: false`, which leaves a coding agent
+    with no registry, no API and no remote. Two things have to hold for the network
+    to be open, so both are asserted here: the app-server is told to resolve the
+    preset with it on, and the turn sends no policy of its own to stamp it back off.
+    """
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+    assert FakeCodex.last_config is not None
+    assert FakeCodex.last_config.config_overrides == (codex_base.NETWORK_ACCESS,)
+    [turn_call] = FakeCodex.turn_calls
+    assert turn_call.sandbox is None
+    # And the write scope is untouched: the thread still carries the preset.
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.sandbox == Sandbox.workspace_write
+
+
+async def test_an_operators_own_network_answer_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex keeps the last `--config` it is handed, so a deployment that has said
+    something about the key itself has to be the one that lands."""
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    operator = "sandbox_workspace_write.network_access=false"
+    tentacle = _tentacle(
+        FakeConversationManager(),
+        config=CodexConfig(
+            models=set(CODEX_MODELS),
+            permission_mode="deny_all",
+            runtime=CodexSdkConfig(config_overrides=(operator,)),
+        ),
+    )
+
+    async with tentacle:
+        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+    assert FakeCodex.last_config is not None
+    assert FakeCodex.last_config.config_overrides == (
+        codex_base.NETWORK_ACCESS,
+        operator,
+    )
+
+
+def test_the_network_override_names_a_key_the_sdk_still_has() -> None:
+    """The override is a config string, so nothing type-checks it and a renamed key
+    would fail silently in the safe-looking direction — the network simply staying
+    shut. The SDK ships the config schema it is a path into, so the key is pinned
+    against that here rather than left to a live run to disprove."""
+    key, _, value = codex_base.NETWORK_ACCESS.partition("=")
+    table, _, field = key.rpartition(".")
+
+    assert table in Config.model_fields
+    assert Config.model_fields[table].annotation == SandboxWorkspaceWrite | None
+    assert field in SandboxWorkspaceWrite.model_fields
+    assert SandboxWorkspaceWrite.model_fields[field].annotation == bool | None
+    # Off by default is the whole reason this exists.
+    assert SandboxWorkspaceWrite.model_fields[field].default is False
+    assert value == "true"
 
 
 async def test_a_claude_posture_on_a_codex_conversation_falls_back_to_config(
