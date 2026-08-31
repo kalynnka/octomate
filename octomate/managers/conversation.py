@@ -4,13 +4,14 @@ import asyncio
 import uuid
 from collections import OrderedDict
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, TypeVar
 
+from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import noload, selectinload
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
-from sqlalchemy import insert, select
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
@@ -347,67 +348,78 @@ class ConversationManager:
         self,
         source: Conversation,
         target: Conversation,
+        *,
+        carry_external_id: bool = False,
     ) -> AgentRun | None:
         """Fork `source`'s full message history into `target` as one new run, so a
         same-agent `teleport` resumes seamlessly against the copy.
 
-        The rows are copied at the database level — a bulk `INSERT` off a `SELECT` of
-        the source rows, keyed to fresh, order-preserving ids — so nothing round-trips
-        through Python message objects. The trailing deferred `ModelResponse` (the
-        pending `teleport` call) is copied like any other row, so the resume stays
-        valid. Fails fast if `target` already holds messages: copying onto an existing
-        history would splice two unrelated conversations."""
+        Every message is copied as a fresh transmuter — a new id, keyed to the new
+        run and the target — and the run is added the way every recorded run is,
+        so the trailing deferred `ModelResponse` (the pending `teleport` call) comes
+        along like any other message and the resume stays valid. Fails fast if
+        `target` already holds messages: copying onto an existing history would
+        splice two unrelated conversations.
+
+        `carry_external_id` moves the resumable external-runtime handle from `source`
+        to `target` in the same commit, so a driven external session continues in
+        the new place — and the handle keeps naming exactly one conversation. The
+        move matters even when the mirror history is empty: the runtime holds its
+        own transcript, and the handle is what resumes it."""
         if target.messages:
             raise ValueError(
                 f"fork target {target.id} already holds "
                 f"{len(target.messages)} messages; refusing to splice histories"
             )
-        source_ids = [message.id for message in source.messages]
-        if not source_ids:
+        messages = list(source.messages)
+        carry_handle = carry_external_id and source.external_id is not None
+        if not messages and not carry_handle:
             return None
 
-        run_id = str(uuid7())
-        async with async_session() as session:
-            rows = (
-                (
-                    await session.execute(
-                        select(*select(ModelMessage).selected_columns)
-                        .where(ModelMessage["id"].in_(source_ids))
-                        .order_by(ModelMessage["id"])
+        forked_run: AgentRun | None = None
+        if messages:
+            run_id = str(uuid7())
+            forked_run = AgentRun(
+                id=run_id,
+                conversation_id=target.id,
+                name="fork",
+                started_at=messages[0].timestamp,
+                # New uuid7 ids minted in source order stay monotonic, so the copies
+                # keep their ordering under the id-ordered messages relation.
+                messages=RelationCollection(
+                    replace(
+                        message,
+                        id=uuid7(),
+                        run_id=run_id,
+                        conversation_id=str(target.id),
                     )
-                )
-                .mappings()
-                .all()
+                    for message in messages
+                ),
             )
-            if not rows:
-                return None
-            # New uuid7 ids generated in source order stay monotonic, so the copied
-            # rows keep their ordering under the id-ordered messages relation.
-            cloned = [
-                {
-                    **row,
-                    "id": uuid7(),
-                    "run_id": run_id,
-                    "conversation_id": str(target.id),
-                }
-                for row in rows
-            ]
-            await session.execute(
-                insert(AgentRun).values(
-                    id=run_id,
-                    conversation_id=target.id,
-                    name="fork",
-                    started_at=rows[0]["timestamp"],
-                )
-            )
-            await session.execute(insert(ModelMessage), cloned)
+        # Only the new run is added, never the cached conversations themselves: the
+        # same reasoning as `persist_run`, and the handle moves by mutating the two
+        # conversations as this session loads them.
+        async with async_session() as session:
+            if forked_run is not None:
+                session.add(forked_run)
+            if carry_handle:
+                moving_source = await session.get(Conversation, source.id)
+                moving_target = await session.get(Conversation, target.id)
+                if moving_source is None or moving_target is None:
+                    raise ValueError(
+                        "fork can only carry a handle between persisted conversations"
+                    )
+                moving_target.external_id = moving_source.external_id
+                moving_source.external_id = None
             await session.commit()
-
-            forked_run = await session.get(AgentRun, run_id)
             refreshed = await session.get(Conversation, target.id)
             if refreshed is not None:
                 await refreshed.runs
                 await refreshed.messages
+        if carry_handle:
+            # The cached transmuter mirrors the committed move; `refreshed` carries
+            # the target's new handle the same way.
+            source.external_id = None
         if refreshed is not None:
             self.cache_conversation(refreshed)
         return forked_run

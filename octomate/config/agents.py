@@ -198,9 +198,23 @@ class ToolOutputConfig(BaseModel):
         )
 
 
-class InklingConfig(BaseModel):
-    # Present so all four agents read the same way: declared and enabled, or absent.
-    enabled: bool = True
+class AgentConfig(BaseModel):
+    """What every agent tentacle's config block declares, whichever runtime it
+    drives: the agent reads the same way everywhere — declared and enabled, or
+    absent — and carries its own half of the gateway switch."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether to register the tentacle when its config block exists.",
+    )
+    gateway: bool = Field(
+        default=True,
+        description="Whether this agent's driven turns offer the gateway spells. Off, "
+        "no channel connection can switch them on for it.",
+    )
+
+
+class InklingConfig(AgentConfig):
     models: list[ModelConfig] = Field(min_length=1)
 
     request_limit: int = Field(
@@ -248,7 +262,7 @@ class ClaudeSSHConfig(BaseModel):
     claude_bin: str = "claude"
 
 
-class ClaudeCodeConfig(BaseModel):
+class ClaudeCodeConfig(AgentConfig):
     """Claude Agent SDK runner, registered as the `claude` agent tentacle.
 
     Opt-in: `agents.claude` is null by default, so the agent is absent unless a
@@ -272,6 +286,13 @@ class ClaudeCodeConfig(BaseModel):
         description="Per-model claims (ability/efforts). A model with no claim "
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned).",
+    )
+    native_gateway: bool = Field(
+        default=True,
+        description="Whether anonymous claude-native sessions may cast the served "
+        "gateway spells over `/gateway/mcp`. The bearer still authenticates every "
+        "call; this is the runtime's own switch, matched against the "
+        "X-Octomate-Client header a static install writes.",
     )
     permission_mode: ClaudePermissionMode = Field(
         default="default",
@@ -326,7 +347,7 @@ class ClaudeCodeConfig(BaseModel):
         return ssh
 
 
-class CodexConfig(BaseModel):
+class CodexConfig(AgentConfig):
     """OpenAI Codex SDK runner, registered as the `codex` agent tentacle.
 
     Opt-in: `agents.codex` is null by default, so the agent is absent unless a
@@ -355,6 +376,13 @@ class CodexConfig(BaseModel):
         description="Per-model claims (ability/efforts). A model with no claim "
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned).",
+    )
+    native_gateway: bool = Field(
+        default=True,
+        description="Whether anonymous codex-native sessions may cast the served "
+        "gateway spells over `/gateway/mcp`. The bearer still authenticates every "
+        "call; this is the runtime's own switch, matched against the "
+        "X-Octomate-Client header a static install writes.",
     )
     permission_mode: CodexPermissionMode = Field(
         default="user_review",
@@ -431,7 +459,7 @@ class CodexConfig(BaseModel):
     )
 
 
-class DeepseekConfig(BaseModel):
+class DeepseekConfig(AgentConfig):
     """DeepSeek Harness runner, registered as the `deepseek` agent tentacle.
 
     Opt-in: `agents.deepseek` is null by default, so the agent is absent unless a
@@ -444,10 +472,6 @@ class DeepseekConfig(BaseModel):
     `external_id` and prompted again for later turns.
     """
 
-    enabled: bool = Field(
-        default=True,
-        description="Whether to register the deepseek tentacle when the config block exists.",
-    )
     host: Literal["127.0.0.1", "localhost"] = Field(
         default="127.0.0.1",
         description=(
@@ -513,6 +537,13 @@ class DeepseekConfig(BaseModel):
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned). DeepSeek's efforts collapse to off/high/max, "
         "so claims should offer `[low, medium, high, xhigh]` at most.",
+    )
+    native_gateway: bool = Field(
+        default=True,
+        description="Whether anonymous deepseek-native sessions may cast the served "
+        "gateway spells over `/gateway/mcp`. The bearer still authenticates every "
+        "call; this is the runtime's own switch, matched against the "
+        "X-Octomate-Client header a static install writes.",
     )
     efforts: dict[ThinkingEffort, str] = Field(
         default_factory=lambda: {

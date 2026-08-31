@@ -29,12 +29,12 @@ from octomate.schemas.thread import (
     ThreadKey,
     ThreadMessageDirection,
 )
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import deepseek_logfire
 from octomate.tentacles.agents.deepseek.adapter import (
     DeepseekRunAccumulator,
     deepseek_metadata,
 )
-from octomate.tentacles.agents.deepseek.ingest import NATIVE_USER
 from octomate.tentacles.agents.deepseek.wire import (
     HistoryEntry,
     SessionEvent,
@@ -153,6 +153,9 @@ class TailState:
     transcript_path: Path
     cwd: str
     stop_event: asyncio.Event
+    # The verified bearer's own profile — who every ledger row this stream
+    # writes is attributed to.
+    sender: UserProfile
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)
     floor: int = -1
@@ -194,14 +197,14 @@ class DeepseekEventTailer:
         self.sessions: dict[str, TailState] = {}
 
     async def attach_remote(
-        self, session_id: str, transcript_path: Path, cwd: str
+        self, session_id: str, transcript_path: Path, cwd: str, sender: UserProfile
     ) -> tuple[TailState, dict[str, int]]:
         """Register a streamed session and answer where it resumes: the seq
         after the committed floor, recomputed from the durable runs — the
         client holds no cursor of its own. A lingering registration (its
         client died without a close) is replaced; the dead route keeps feeding
         the state it attached, and its commits are idempotent."""
-        state = TailState(session_id, transcript_path, cwd, asyncio.Event())
+        state = TailState(session_id, transcript_path, cwd, asyncio.Event(), sender)
         thread = await self.session_thread(session_id, cwd)
         state.conversation = await self.conversation_manager.ensure(
             thread.id, agent_tentacle_id=DEEPSEEK_NATIVE_ID
@@ -426,8 +429,8 @@ class DeepseekEventTailer:
                         message_id=run.id,
                         chat_id=state.session_id,
                         chat_type="thread",
-                        user_id=NATIVE_USER.channel_user_id,
-                        sender=NATIVE_USER,
+                        user_id=state.sender.channel_user_id,
+                        sender=state.sender,
                         segments=[TextSegment(data={"text": turn.prompt_text})],
                     ),
                     happened_at=request.timestamp,
@@ -451,7 +454,7 @@ class DeepseekEventTailer:
                     thread,
                     agent_tentacle_id=DEEPSEEK_NATIVE_ID,
                     segments=[MarkdownSegment(data={"text": answer})],
-                    sender=NATIVE_USER,
+                    sender=state.sender,
                     platform_message_id=run.id,
                     happened_at=answered.timestamp if answered is not None else None,
                 )

@@ -39,6 +39,11 @@ dependencies = [
     "openai-codex>=0.1.0b3",
     "typer>=0.25.1",
     "email-validator",
+    # The gateway's own MCP server (`octomate.mcp.gateway`) and, in time, the
+    # streamable-HTTP app it is served as. The client half already arrives with
+    # pydantic-ai; the slim distribution is the same package without the CLI's
+    # dependencies.
+    "fastmcp-slim[server]>=3.4",
 ]
 
 [build-system]

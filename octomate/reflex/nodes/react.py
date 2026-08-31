@@ -5,7 +5,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass
 
-from pydantic_ai import AgentRunResult, AgentRunResultEvent
+from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
@@ -20,9 +20,9 @@ from octomate.reflex.state import (
     ReflexResult,
     ReflexState,
 )
-from octomate.reflex.suspender import HumanReviewSuspender
+from octomate.reflex.suspender import HumanReviewSuspender, TeleportRequest
 from octomate.schemas.segments import MarkdownSegment
-from octomate.schemas.triage import SchemeDecision, SummonDecision
+from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channels.base import ChannelOutput
 from octomate.tentacles.channels.feelers.output import split_reply
@@ -35,6 +35,9 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     resume_batch_id: uuid.UUID | None = None
     # Set by Teleport to resume the same agent against the forked history.
     teleport_results: DeferredToolResults | None = None
+    # Set by Teleport instead of `teleport_results` when the teleport was reported
+    # as a decision (no pending call to resolve): the resumed run opens from this.
+    continuation_prompt: str | None = None
 
     @reflex_logfire.instrument("reflex.react", extract_args=False)
     async def run(
@@ -127,31 +130,22 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             for route in ctx.deps.available_routes[target.channel_id]
             if route.agent_id != agent.id
         ]
-        gate = GatewayCapability(
-            # Every channel's, not just this one's: a spell that crosses lands where
-            # another channel's config decides who runs, so the gate has to be able
-            # to offer — and check against — that channel's routes too.
-            channel_routes=ctx.deps.available_routes,
-            current_agent_id=agent.id,
-            # Every channel, not just this one: the gate reads `surfaces` off the
-            # address's own channel to know whether `scheme` can land, and asks the
-            # same of the others when it works out where else this person is.
-            channels=ctx.deps.channels,
-            users=ctx.deps.thread_manager.users,
+        capabilities: list[AgentCapability[None]] = []
+        gateway_session = await ctx.deps.gateway_session(
+            agent,
             user_profile=state.user_profile,
-            # The accomplice spells need to actually run one; without
-            # a thread there is nowhere for a child conversation to live, and
-            # the gate then simply does not offer them.
-            agents=ctx.deps.agents,
-            conversations=ctx.deps.conversation_manager,
             thread_id=thread_id,
             conversation_address=target_address,
         )
-        user_capabilities = (
-            await agent.user_capabilities(state.user_profile)
-            if state.user_profile is not None
-            else []
-        )
+        if gateway_session is not None:
+            capabilities.append(
+                GatewayCapability(
+                    session=gateway_session,
+                    conversations=ctx.deps.conversation_manager,
+                )
+            )
+        if state.user_profile is not None:
+            capabilities.extend(await agent.user_capabilities(state.user_profile))
 
         deferred_results = self.teleport_results
         if self.resume_batch_id is not None:
@@ -159,6 +153,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             deferred_results = batch.build_results()
         if deferred_results is not None:
             user_prompt: str | Sequence[UserContent] | None = None
+        elif self.continuation_prompt is not None:
+            user_prompt = self.continuation_prompt
         else:
             user_prompt = decision.summon or str(state.user_prompt or "")
 
@@ -176,14 +172,21 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             emit_on_stream=target_channel.config.stream.enabled,
         )
 
-        with reflex_logfire.span(
-            "react",
-            channel_id=target_address.channel_tentacle_id,
-            agent_id=agent.id,
-            conversation_address=str(target_address),
-            streaming=target_channel.config.stream.enabled,
-            resume_batch_id=str(self.resume_batch_id) if self.resume_batch_id else None,
-        ) as span:
+        # Registered before anything is presented: a second turn racing this
+        # conversation is refused here, loudly, not after it has started streaming.
+        with (
+            ctx.deps.gateway.driving(gateway_session),
+            reflex_logfire.span(
+                "react",
+                channel_id=target_address.channel_tentacle_id,
+                agent_id=agent.id,
+                conversation_address=str(target_address),
+                streaming=target_channel.config.stream.enabled,
+                resume_batch_id=str(self.resume_batch_id)
+                if self.resume_batch_id
+                else None,
+            ) as span,
+        ):
             stream_results: list[AgentRunResult[ChannelOutput]] = []
             reply_thread_message_ids: list[uuid.UUID] = []
             assistant_replies_bound = False
@@ -203,7 +206,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         effort=decision.effort,
                         deferred_tool_results=deferred_results,
                         deferred_suspender=suspender,
-                        capabilities=[gate, *user_capabilities],
+                        capabilities=capabilities,
                     ) as stream:
                         async for event in stream:
                             if isinstance(event, AgentRunResultEvent):
@@ -310,7 +313,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     effort=decision.effort,
                     deferred_tool_results=deferred_results,
                     deferred_suspender=suspender,
-                    capabilities=[gate, *user_capabilities],
+                    capabilities=capabilities,
                 )
                 run_output: ChannelOutput = run_result.output
                 if isinstance(run_output, str):
@@ -403,31 +406,48 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     )
                 )
 
-            gate_decision = gate.decision
-            if isinstance(gate_decision, SchemeDecision):
-                span.set_attribute("react.action", gate_decision.action)
+            gateway_decision = gateway_session.decision if gateway_session else None
+            if isinstance(gateway_decision, SchemeDecision):
+                span.set_attribute("react.action", gateway_decision.action)
                 reflex_logfire.info(
                     "react -> scheme into the asker's dm",
-                    destination=str(gate_decision.destination),
+                    destination=str(gateway_decision.destination),
                 )
                 return Scheme(
-                    request=gate_decision,
+                    request=gateway_decision,
                     origin=target,
                     agent_id=agent.id,
                 )
-            if gate_decision is not None:
-                state.decision = gate_decision
+            if isinstance(gateway_decision, TeleportDecision):
+                # Recorded, not deferred: a runtime that cannot be suspended
+                # mid-run reported the move and finished its turn; the graph
+                # performs it now, exactly as it resolves a deferral.
+                span.set_attribute("react.action", gateway_decision.action)
+                reflex_logfire.info(
+                    "react -> teleport reported as a decision",
+                    crossing=str(gateway_decision.crossing),
+                )
+                return Teleport(
+                    request=TeleportRequest(
+                        hint=gateway_decision.hint,
+                        crossing=gateway_decision.crossing,
+                    ),
+                    origin=target,
+                    agent_id=agent.id,
+                )
+            if isinstance(gateway_decision, SummonDecision):
+                state.decision = gateway_decision
                 state.target = target
                 state.claim_handoff = True
                 state.handoff_from_agent_tentacle_id = agent.id
                 state.run_name = "summon"
-                span.set_attribute("react.action", gate_decision.action)
-                span.set_attribute("react.next_agent_id", gate_decision.agent_id)
+                span.set_attribute("react.action", gateway_decision.action)
+                span.set_attribute("react.next_agent_id", gateway_decision.agent_id)
                 reflex_logfire.info(
                     "react -> {action} agent={agent_id}",
-                    action=gate_decision.action,
-                    agent_id=gate_decision.agent_id,
-                    reason=gate_decision.reason,
+                    action=gateway_decision.action,
+                    agent_id=gateway_decision.agent_id,
+                    reason=gateway_decision.reason,
                 )
                 return Handoff()
 

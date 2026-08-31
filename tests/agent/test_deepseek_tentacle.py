@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 import pytest
-from pydantic import HttpUrl, SecretStr
+from pydantic import HttpUrl
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import PartStartEvent
@@ -47,6 +47,7 @@ from octomate.tentacles.agents.deepseek.wire import (
 from octomate.tentacles.channels.base import ChannelTentacle
 from octomate.types.json import JsonObject, JsonValue
 from tests.support.agents import DEEPSEEK_MODELS
+from tests.support.config import registered
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -290,7 +291,6 @@ def _tentacle(
         "deepseek",
         octomate or Octomate(conversations=conversations),
         config=config or DeepseekConfig(models=set(DEEPSEEK_MODELS)),
-        hook_secret=SecretStr("the-hook-secret"),
     )
 
 
@@ -320,6 +320,7 @@ def interaction_octomate(
     conversations: FakeConversationManager | None = None,
 ) -> Octomate:
     return Octomate(
+        config=registered("the-hook-secret"),
         conversations=conversations or FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
         channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),

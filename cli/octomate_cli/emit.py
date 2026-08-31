@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-HOOK_SECRET_ENV = "OCTOMATE__HOOK_SECRET"
+SECRET_ENV = "OCTOMATE__SECRET"
 OCTOMATE_URL_ENV = "OCTOMATE_URL"
 DRIVEN_ENV = "OCTOMATE_CODEX_DRIVEN"
 CODEX_HOOK_PATH = "/hooks/codex"
@@ -86,7 +86,7 @@ def main(url: str, secret: str | None) -> int:
 
     if not secret:
         print(
-            f"octomate: no hook credential — {HOOK_SECRET_ENV} is unset and the "
+            f"octomate: no credential — {SECRET_ENV} is unset and the "
             "client config holds none, so this session is not being ingested. "
             "Run `octomate configure`.",
             file=sys.stderr,
@@ -143,7 +143,7 @@ if __name__ == "__main__":
         )
         status = 1
     else:
-        status = main(url, resolved("hook_secret", HOOK_SECRET_ENV, tables))
+        status = main(url, resolved("secret", SECRET_ENV, tables))
     if path is None or path == CODEX_HOOK_PATH:
         # Codex reads stdout as the hook's decision; an empty object decides nothing,
         # which is what an observer should do. A Claude hook's stdout is injected into

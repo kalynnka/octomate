@@ -3,15 +3,19 @@ from __future__ import annotations
 import uuid
 
 from arcanus.base import TransmuterProxiedMixin
+from pydantic import SecretStr
 from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base
+from octomate.models.base import Base, SecretString
 
 
 class User(Base, TransmuterProxiedMixin):
     __tablename__ = "users"
+    # Named, not `unique=True`: the metadata has no naming convention, and an
+    # unnamed constraint cannot be dropped by a downgrade.
+    __table_args__ = (UniqueConstraint("secret", name="uq_users_secret"),)
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
     username: Mapped[str] = mapped_column(
@@ -30,6 +34,18 @@ class User(Base, TransmuterProxiedMixin):
         String,
         nullable=True,
         comment="A shorter, casual name for this human.",
+    )
+    secret: Mapped[SecretStr | None] = mapped_column(
+        SecretString,
+        nullable=True,
+        comment=(
+            "This human's own bearer credential, reconciled from `users.<name>."
+            "secret` — what the served MCP endpoints and hook routers "
+            "authenticate. Unique, so a bearer names exactly one user; NULL for "
+            "a user registered only to link accounts. Stored plaintext by the "
+            "same posture as the YAML that seeds it, `SecretStr` above the "
+            "column."
+        ),
     )
 
     profiles: Mapped[list[UserProfile]] = relationship(

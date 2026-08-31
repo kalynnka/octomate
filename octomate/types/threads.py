@@ -21,6 +21,10 @@ DEEPSEEK_NATIVE_ID = "deepseek-native"
 NATIVE_TENTACLE_IDS: frozenset[str] = frozenset(
     {CLAUDE_NATIVE_ID, CODEX_NATIVE_ID, DEEPSEEK_NATIVE_ID}
 )
+# The user_id a native handoff's *source* address carries — runtime attribution
+# for "where this came from". Never a person: a native session's ledger rows are
+# attributed to the verified bearer's own profile (`channel_user_id` = username).
+NATIVE_CHANNEL_USER_ID = "native"
 
 ThreadMessageDirection = Literal["inbound", "outbound"]
 ChannelActorKind = Literal["human", "agent", "bot", "system"]

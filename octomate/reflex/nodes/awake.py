@@ -13,7 +13,12 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.awakes import AwakeSignal, DeferredActionBatchResponse
+from octomate.schemas.awakes import (
+    AwakeSignal,
+    DeferredActionBatchResponse,
+    GatewayHandoffSignal,
+)
+from octomate.schemas.triage import SchemeDecision
 from octomate.telemetry import reflex_logfire
 
 
@@ -25,9 +30,36 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> Route | ResumeDeferred | End[ReflexGraphResult]:
+    ) -> Route | ResumeDeferred | Handoff | Scheme | End[ReflexGraphResult]:
         if isinstance(self.signal, DeferredActionBatchResponse):
             return ResumeDeferred(awake=self.signal)
+
+        if isinstance(self.signal, GatewayHandoffSignal):
+            # A native session's spell, already validated at the gateway: enter
+            # the graph where React's post-run consumption would have, with the
+            # native pseudo-channel — which nobody serves, so no lookup — as the
+            # source.
+            source = self.signal.source
+            if source is None:
+                raise ValueError("a gateway handoff signal needs its source address")
+            source_target = ResponseTarget(
+                channel_id=source.channel_tentacle_id, address=source
+            )
+            ctx.state.source_target = source_target
+            ctx.state.user_profile = self.signal.user_profile
+            decision = self.signal.decision
+            if isinstance(decision, SchemeDecision):
+                return Scheme(
+                    request=decision,
+                    origin=source_target,
+                    agent_id=self.signal.agent_id,
+                )
+            ctx.state.decision = decision
+            ctx.state.target = source_target
+            ctx.state.run_name = "summon"
+            ctx.state.claim_handoff = True
+            ctx.state.handoff_from_agent_tentacle_id = self.signal.agent_id
+            return Handoff()
 
         if not self.signal:
             reflex_logfire.info("awake short-circuit: empty signal")
@@ -69,3 +101,11 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 )
             )
         return Route()
+
+
+# `Handoff` and `Scheme` share an import cycle with `react`, which closes it at its
+# own bottom — so they only exist once `react` has run. The `route` import above
+# already pulls `react` in, and importing them here, after it, is what `react`
+# itself does for the same reason.
+from octomate.reflex.nodes.handoff import Handoff  # noqa: E402
+from octomate.reflex.nodes.scheme import Scheme  # noqa: E402

@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
-from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -27,6 +26,7 @@ from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
@@ -44,6 +44,8 @@ from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_sc
 from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, RecordingClaudeClient
 from tests.support.managers import a_project, a_registry
 
+SENDER = UserProfile(channel_user_id="lu", name="lu")
+
 CLAUDE_SESSION = "sess-cwd"
 CODEX_SESSION = "codex-cwd"
 CODEX_TURN = "codex-turn-cwd"
@@ -52,7 +54,6 @@ ELSEWHERE = "/repo/docs"
 ADDRESS = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
 )
-HOOK_SECRET = SecretStr("test-hook-secret")
 
 
 @pytest.fixture(autouse=True)
@@ -143,7 +144,8 @@ async def claude_hook(octomate: Octomate, cwd: str) -> None:
                 "prompt": "hi",
                 "prompt_id": "p1",
             }
-        )
+        ),
+        SENDER,
     )
 
 
@@ -170,7 +172,7 @@ async def test_a_claude_hook_with_no_cwd_records_none() -> None:
 async def stream_transcript(tailer: ClaudeTranscriptTailer, transcript: Path) -> None:
     """Stream one transcript file the way production reaches it: attach and feed its
     framed lines — the server never opens the file itself."""
-    state, _ = await tailer.attach_remote(CLAUDE_SESSION, transcript)
+    state, _ = await tailer.attach_remote(CLAUDE_SESSION, transcript, SENDER)
     offset = 0
     for raw in transcript.read_bytes().split(b"\n")[:-1]:
         end = offset + len(raw) + 1
@@ -252,7 +254,8 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
                 "prompt_id": "p1",
                 "transcript_path": str(transcript),
             }
-        )
+        ),
+        SENDER,
     )
     [sketch] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
     assert sketch.cwd is None
@@ -324,7 +327,8 @@ async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> 
                 "prompt": "hi",
                 "turn_id": CODEX_TURN,
             }
-        )
+        ),
+        SENDER,
     )
 
     [sketch] = await runs_of(octomate, CODEX_NATIVE_ID, CODEX_SESSION)
@@ -395,7 +399,6 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
         "claude",
         octomate,
         config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
-        hook_secret=HOOK_SECRET,
     )
 
     async with tentacle.run_stream_events(
@@ -423,7 +426,6 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
         "codex",
         octomate,
         config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
-        hook_secret=HOOK_SECRET,
     )
 
     async with tentacle:

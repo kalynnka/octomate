@@ -9,12 +9,17 @@ from pydantic import JsonValue
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
+from octomate.config.users import UserConfig
 from octomate.database import async_session
+from octomate.managers.user import UserManager
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
+
+SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "sess-1"
 SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "thread", SESSION_ID)
@@ -48,19 +53,20 @@ async def test_a_hooks_transcript_path_is_never_followed() -> None:
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
     ingest = ClaudeHookIngest(octomate, tailer)
 
-    await ingest.handle(hook("UserPromptSubmit", "p1", prompt="hi"))
+    await ingest.handle(hook("UserPromptSubmit", "p1", prompt="hi"), SENDER)
 
     assert tailer.sessions == {}
     assert await ledger(octomate) == [("inbound", "p1", "hi")]
 
 
 async def submit(ingest: ClaudeHookIngest, prompt_id: str, prompt: str) -> None:
-    await ingest.handle(hook("UserPromptSubmit", prompt_id, prompt=prompt))
+    await ingest.handle(hook("UserPromptSubmit", prompt_id, prompt=prompt), SENDER)
 
 
 async def stop(ingest: ClaudeHookIngest, prompt_id: str, answer: str) -> None:
     await ingest.handle(
-        hook("Stop", prompt_id, stop_hook_active=False, last_assistant_message=answer)
+        hook("Stop", prompt_id, stop_hook_active=False, last_assistant_message=answer),
+        SENDER,
     )
 
 
@@ -180,7 +186,7 @@ async def test_a_session_octomate_drives_is_answered_but_not_recorded() -> None:
     with ingest.driving(SESSION_ID):
         await submit(ingest, "p1", "hello")
         await stop(ingest, "p1", "hi")
-        await ingest.handle(hook("SessionEnd", reason="other"))
+        await ingest.handle(hook("SessionEnd", reason="other"), SENDER)
 
     assert await ledger(octomate) == []  # no chat log
     assert await sketched(octomate) == []  # no run
@@ -274,8 +280,8 @@ async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
         ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
     )
 
-    await ingest.handle(hook("UserPromptSubmit", "p1", prompt=""))
-    await ingest.handle(hook("Stop", "p1", last_assistant_message=""))
+    await ingest.handle(hook("UserPromptSubmit", "p1", prompt=""), SENDER)
+    await ingest.handle(hook("Stop", "p1", last_assistant_message=""), SENDER)
 
     assert await ledger(octomate) == []
 
@@ -295,7 +301,8 @@ async def test_session_locks_self_clean_and_session_end_finalizes() -> None:
     await ingest.handle(
         ClaudeHookInput.model_validate(
             {"hook_event_name": "SessionEnd", "session_id": SESSION_ID, "reason": "x"}
-        )
+        ),
+        SENDER,
     )
     assert len(ingest.locks.by_session) == 0
 
@@ -308,9 +315,11 @@ async def test_unhandled_events_are_ignored() -> None:
     )
 
     await ingest.handle(
-        hook("PreToolUse", "p1", tool_name="Bash", tool_input={"command": "ls"})
+        hook("PreToolUse", "p1", tool_name="Bash", tool_input={"command": "ls"}), SENDER
     )
-    await ingest.handle(hook("MessageDisplay", "p1", delta="thinking...", final=False))
+    await ingest.handle(
+        hook("MessageDisplay", "p1", delta="thinking...", final=False), SENDER
+    )
 
     assert await ledger(octomate) == []
 
@@ -335,3 +344,31 @@ async def test_a_live_turn_is_dated_when_it_happened() -> None:
     stamps = [message.happened_at for message in thread.messages]
     assert len(stamps) == 2
     assert all(stamp is not None and before <= stamp <= after for stamp in stamps)
+
+
+async def test_the_ledger_row_belongs_to_the_bearers_user() -> None:
+    """The principal is the point: an ingested prompt's sender profile is owned
+    by the user whose token authenticated the hook, so two humans' terminals
+    write distinguishable history."""
+    octomate = Octomate(
+        users=UserManager({"lu": UserConfig.model_validate({"secret": "lu-token"})})
+    )
+    await octomate.users.reconcile()
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
+    bearer = await octomate.users.native_profile(CLAUDE_NATIVE_ID, "lu")
+    assert bearer is not None
+
+    await ingest.handle(hook("UserPromptSubmit", "p1", prompt="hi"), bearer)
+
+    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    [row] = thread.messages
+    assert row.user_id == "lu"
+    profile = await octomate.users.profile(CLAUDE_NATIVE_ID, "lu")
+    assert profile is not None
+    assert row.sender_id == profile.id
+    owner = await octomate.users.owner(profile)
+    assert owner is not None
+    assert owner.username == "lu"

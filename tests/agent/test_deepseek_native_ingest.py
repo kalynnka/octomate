@@ -13,10 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import DEEPSEEK_NATIVE_ID, ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.agents.deepseek.ingest import DeepseekHookIngest
 from octomate.tentacles.agents.deepseek.tailer import DeepseekEventTailer, TailState
 from octomate.types.json import JsonObject, JsonValue
+
+SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "session-native-0001"
 BASE_TIME_MS = 1_786_899_000_000
@@ -119,7 +122,7 @@ async def stream_events(
 ) -> dict[str, int]:
     """One connection's life as the route drives it: attach, feed, detach —
     returning the welcome offsets the attach answered."""
-    state, offsets = await tailer.attach_remote(SESSION_ID, LOG_LABEL, cwd)
+    state, offsets = await tailer.attach_remote(SESSION_ID, LOG_LABEL, cwd, SENDER)
     await feed_events(tailer, state, events)
     tailer.detach_remote(state)
     return offsets
@@ -215,7 +218,9 @@ async def test_a_reconnect_resumes_past_the_committed_floor() -> None:
 
     # The next connect is told to resume at the seq after the committed turn;
     # re-feeding the same turn regardless commits nothing new.
-    state, offsets = await tailer.attach_remote(SESSION_ID, LOG_LABEL, "/work/repo")
+    state, offsets = await tailer.attach_remote(
+        SESSION_ID, LOG_LABEL, "/work/repo", SENDER
+    )
     assert offsets == {SESSION_FILE: 4}
     await feed_events(
         tailer,
@@ -362,7 +367,7 @@ async def test_a_stop_waits_for_the_stopped_turn_then_asks_the_drain() -> None:
     to commit before relaying the finalize."""
     octomate = Octomate()
     ingest, tailer = wired(octomate)
-    state, _ = await tailer.attach_remote(SESSION_ID, LOG_LABEL, "/work/repo")
+    state, _ = await tailer.attach_remote(SESSION_ID, LOG_LABEL, "/work/repo", SENDER)
     events = turn_events(1, 0, "stopping", "stopped")
     await feed_events(tailer, state, events[:-1])
 

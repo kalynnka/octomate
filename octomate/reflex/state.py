@@ -22,6 +22,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.gateway import GatewayManager, GatewaySession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
@@ -110,17 +111,17 @@ class ReflexState:
 @dataclass
 class ReflexDeps:
     channels: dict[str, ChannelTentacle]
-    # No default: a deps object must carry the host's ledger manager, never a
-    # private one with its own identity registry.
+    # No defaults for the managers: a deps object must carry the host's own — the
+    # ledger, the conversations, the deferred actions, the gateway's live-session
+    # registry — never private ones with their own identity or state.
     thread_manager: ThreadManager
     # For the bookkeeping a finished turn owes and the agent has no part in:
     # leaving the thread's workspace somewhere losing the directory cannot cost it.
     workspaces: WorkspaceManager
+    conversation_manager: ConversationManager
+    action_manager: DeferredActionManager
+    gateway: GatewayManager
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
-    conversation_manager: ConversationManager = field(
-        default_factory=ConversationManager
-    )
-    action_manager: DeferredActionManager = field(default_factory=DeferredActionManager)
 
     @overload
     def channel(self, target: ResponseTarget) -> ChannelTentacle: ...
@@ -149,21 +150,54 @@ class ReflexDeps:
         ]
 
     @cached_property
+    def gateway_agents(self) -> frozenset[str]:
+        """The agents whose driven turns offer the gateway spells: each agent's own
+        flag, settled at startup and read once. A turn of any other agent builds no
+        session, so external callers find nothing live for it."""
+        return frozenset(id for id, agent in self.agents.items() if agent.gateway)
+
+    async def gateway_session(
+        self,
+        agent: AgentTentacle,
+        *,
+        user_profile: UserProfile | None,
+        thread_id: uuid.UUID | None,
+        conversation_address: ChannelAddress,
+    ) -> GatewaySession | None:
+        """One turn's gateway for `agent`, or None for an agent whose flag is off.
+
+        Built from the host's own registries, every channel's and not just this
+        one's: a spell that crosses lands where another channel's config decides who
+        runs, so the gateway offers — and checks against — that channel's routes,
+        and reads `surfaces` off it to know whether `scheme` can land. The agents
+        are what the accomplice spells run; without a thread there is nowhere for
+        a child conversation to live, and the gateway then does not offer them.
+        """
+        if agent.id not in self.gateway_agents:
+            return None
+        session = GatewaySession(
+            channel_routes=self.available_routes,
+            current_agent_id=agent.id,
+            channels=self.channels,
+            users=self.thread_manager.users,
+            user_profile=user_profile,
+            agents=self.agents,
+            thread_id=thread_id,
+            conversation_address=conversation_address,
+        )
+        if thread_id is not None:
+            # The same (thread, agent) key the run resolves internally, so an
+            # external runtime's tool call finds this turn's session by the
+            # conversation it already knows.
+            conversation = await self.conversation_manager.ensure(
+                thread_id, agent_tentacle_id=agent.id
+            )
+            session.conversation_id = conversation.id
+        return session
+
+    @cached_property
     def available_routes(self) -> dict[str, list[AgentRoute]]:
-        available: dict[str, list[AgentRoute]] = {}
-        for channel_id in self.channels:
-            # A channel exposes agents, and each agent manages its own
-            # routes (from its claims). The channel's (agent, model) entries
-            # only pick its entry/default models — they do not bound the routes.
-            available[channel_id] = [
-                route
-                for agent_id in dict.fromkeys(
-                    agent_config.agent
-                    for agent_config in self.agent_configs(channel_id)
-                )
-                for route in self.agent(agent_id).routes
-            ]
-        return available
+        return self.gateway.available_routes(self.channels, self.agents)
 
     def resolve_agent(
         self,

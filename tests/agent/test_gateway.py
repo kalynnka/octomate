@@ -7,23 +7,22 @@ from pydantic import ValidationError
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.settings import ThinkingEffort
+from uuid_utils.compat import uuid7
 
-from octomate.capabilities.gateway import (
-    SCHEME_TOOL_NAME,
-    SCRY_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
-    GatewayCapability,
-    PrivateBlocker,
-)
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.config import AgentModelConfig, ChannelConfig
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.users import UserConfig
+from octomate.managers.gateway import GatewayManager, GatewaySession, PrivateBlocker
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.triage import (
     HERE_TARGET,
+    SCHEME_TOOL_NAME,
+    SCRY_TOOL_NAME,
+    SUMMON_TOOL_NAME,
+    TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     AgentRoute,
     ChannelTarget,
@@ -85,17 +84,19 @@ def _capability(
     passed. `test_reflex_graph` covers how the real channels reach each shape."""
     chat_type, shared, thread_id = SHAPES[shape]
     capability = GatewayCapability(
-        channel_routes={"im": [CLAUDE_ROUTE, INKLING_ROUTE]},
-        current_agent_id="inkling",
-        channels={"im": channel or FakeChannelTentacle()},
-        conversation_address=ChannelAddress(
-            channel_tentacle_id="im",
-            chat_type=chat_type,
-            chat_id="room",
-            channel_thread_id=thread_id,
-            user_id=user_id,
-            shared=shared,
-        ),
+        session=GatewaySession(
+            channel_routes={"im": [CLAUDE_ROUTE, INKLING_ROUTE]},
+            current_agent_id="inkling",
+            channels={"im": channel or FakeChannelTentacle()},
+            conversation_address=ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type=chat_type,
+                chat_id="room",
+                channel_thread_id=thread_id,
+                user_id=user_id,
+                shared=shared,
+            ),
+        )
     )
     return capability
 
@@ -317,22 +318,24 @@ async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
     move to — reading the type alone would offer `scheme` a surface beside the one
     it is already in, under whatever agent owns that."""
     capability = GatewayCapability(
-        channel_routes={},
-        current_agent_id="inkling",
-        channels={"im": FakeChannelTentacle()},
-        conversation_address=ChannelAddress(
-            channel_tentacle_id="im",
-            chat_type="thread",
-            chat_id="room",
-            user_id="alice",
-            channel_thread_id="t-1",
-            shared=shared,
-        ),
+        session=GatewaySession(
+            channel_routes={},
+            current_agent_id="inkling",
+            channels={"im": FakeChannelTentacle()},
+            conversation_address=ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type="thread",
+                chat_id="room",
+                user_id="alice",
+                channel_thread_id="t-1",
+                shared=shared,
+            ),
+        )
     )
 
-    assert capability.private_blocked_by == blocked_by
+    assert capability.session.private_blocked_by == blocked_by
     # A thread pins an owner either way, so taking one over in place is always fine.
-    assert capability.allow_here is True
+    assert capability.session.allow_here is True
 
 
 async def test_summon_here_refused_when_disallowed() -> None:
@@ -500,15 +503,16 @@ async def _crossable(
     )
     await users.reconcile()
     capability = _capability(shape)
-    capability.users = users
-    capability.user_profile = await users.ensure_profile(
+    session = capability.session
+    session.users = users
+    session.user_profile = await users.ensure_profile(
         "im", UserProfile(channel_user_id="alice")
     )
-    capability.channel_routes = {
-        **capability.channel_routes,
+    session.channel_routes = {
+        **session.channel_routes,
         "far": list(far_routes),
     }
-    capability.channels = {
+    session.channels = {
         "im": FakeChannelTentacle(),
         "far": far_channel
         or FakeChannelTentacle(
@@ -522,7 +526,7 @@ async def _crossable(
             ),
         ),
     }
-    capability.agents = {
+    session.agents = {
         route.agent_id: FakeAgent(id=route.agent_id) for route in far_routes
     }
     return capability
@@ -549,7 +553,7 @@ async def test_summon_crosses_to_a_sub_thread_of_their_dms_elsewhere(
         summon="Please investigate the failing test.",
     )
 
-    assert capability.decision is not None
+    assert isinstance(capability.decision, SummonDecision)
     landing = capability.decision.destination
     assert isinstance(landing, CrossingLanding)
     assert landing.address.channel_tentacle_id == "far"
@@ -574,7 +578,7 @@ async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
-    assert await capability.crossing_destinations() == []
+    assert await capability.session.crossing_destinations() == []
     with pytest.raises(ModelRetry, match="No destination 'far'"):
         await summon(
             FAKE_CONTEXT,
@@ -602,8 +606,8 @@ async def test_summon_across_names_the_agents_the_far_channel_runs(
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
     # `codex` is on no route here, and `scry` says where it is instead.
-    assert only_far not in capability.other_routes
-    assert [one.routes for one in await capability.crossing_destinations()] == [
+    assert only_far not in capability.session.other_routes
+    assert [one.routes for one in await capability.session.crossing_destinations()] == [
         (only_far,)
     ]
 
@@ -640,10 +644,10 @@ async def test_teleport_crosses_only_out_of_a_conversation_nobody_else_reads(
     under this person's name alone — so the crossing is not offered at all, while
     the group's own sub-thread still is."""
     shared = await _crossable("shared_main", far_routes=(INKLING_ROUTE,))
-    assert await shared.teleport_handles() == ["thread"]
+    assert await shared.session.teleport_handles() == ["thread"]
 
     private = await _crossable("private_main", far_routes=(INKLING_ROUTE,))
-    assert await private.teleport_handles() == ["thread", "far"]
+    assert await private.session.teleport_handles() == ["thread", "far"]
 
 
 async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(
@@ -814,3 +818,70 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
         ),
         brief="Finish the migration write-up for this user.",
     )
+
+
+def _registered_session() -> GatewaySession:
+    session = GatewaySession(channel_routes={}, current_agent_id="inkling")
+    session.conversation_id = uuid7()
+    return session
+
+
+def test_the_manager_finds_a_session_by_its_conversation_while_registered() -> None:
+    manager = GatewayManager()
+    session = _registered_session()
+    assert session.conversation_id is not None
+
+    manager.register(session)
+    assert manager.get(session.conversation_id) is session
+    manager.unregister(session)
+    assert manager.get(session.conversation_id) is None
+
+
+def test_a_session_without_a_conversation_cannot_be_registered() -> None:
+    with pytest.raises(ValueError, match="conversation id"):
+        GatewayManager().register(
+            GatewaySession(channel_routes={}, current_agent_id="inkling")
+        )
+
+
+def test_a_second_turn_on_a_live_conversation_is_refused_not_queued() -> None:
+    # Nothing serialises two turns of one conversation, so the registry does the
+    # one thing it can: the first arrival holds the conversation, a second is
+    # refused outright, and the slot frees only when the holder's turn ends.
+    manager = GatewayManager()
+    first = _registered_session()
+    second = GatewaySession(channel_routes={}, current_agent_id="inkling")
+    second.conversation_id = first.conversation_id
+    assert first.conversation_id is not None
+
+    manager.register(first)
+    with pytest.raises(RuntimeError, match="already has a turn at the gateway"):
+        manager.register(second)
+    assert manager.get(first.conversation_id) is first
+    # A refused session owns nothing, so its exit evicts nobody.
+    manager.unregister(second)
+    assert manager.get(first.conversation_id) is first
+
+    manager.unregister(first)
+    manager.register(second)
+    assert manager.get(first.conversation_id) is second
+
+
+def test_driving_registers_the_session_for_exactly_its_span() -> None:
+    manager = GatewayManager()
+    session = _registered_session()
+    assert session.conversation_id is not None
+
+    with manager.driving(session):
+        assert manager.get(session.conversation_id) is session
+    assert manager.get(session.conversation_id) is None
+
+
+def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
+    # A disabled connection builds no session, and a run with no thread has no
+    # conversation id — neither registers, and neither breaks the span.
+    manager = GatewayManager()
+    with manager.driving(None):
+        assert manager.sessions == {}
+    with manager.driving(GatewaySession(channel_routes={}, current_agent_id="i")):
+        assert manager.sessions == {}

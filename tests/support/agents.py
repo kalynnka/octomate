@@ -50,10 +50,6 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.gateway import (
-    SCHEME_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_DEFER_KIND,
-    TELEPORT_TOOL_NAME,
     GatewayCapability,
 )
 from octomate.capabilities.harness.agent import Agent
@@ -69,6 +65,10 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     DIRECT_TARGET,
     HERE_TARGET,
+    SCHEME_TOOL_NAME,
+    SUMMON_TOOL_NAME,
+    TELEPORT_DEFER_KIND,
+    TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     ChannelTarget,
     Claim,
@@ -168,7 +168,7 @@ def scheme_target(
         for capability in capabilities or []
         if isinstance(capability, GatewayCapability)
     )
-    here = gate.conversation_address
+    here = gate.session.conversation_address
     far = decision.destination.channel_tentacle_id
     if here is not None and far == here.channel_tentacle_id:
         return DIRECT_TARGET
@@ -225,6 +225,10 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # the resumed run (deferred results present) falls through to `reception_output`.
     reception_teleport: str | None = None
     reception_teleport_destination: str = "thread"
+    # When set, the first reception run records a teleport decision directly on the
+    # mounted gateway's session — the way a non-deferring external runtime's MCP tool
+    # does — and ends its turn normally; the resumed run gets `reception_output`.
+    reception_recorded_teleport: str | None = None
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
     allow_reception_run: bool = False
     models: dict[AgentRouteModelName, Model | str] = field(
@@ -236,6 +240,9 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             "opusplan[1m]": "fake-model",
         }
     )
+    # The agent's side of the gateway switch, as a real tentacle reads it off its
+    # config block.
+    gateway: bool = True
     # An unclaimed model is not routable, so the fake claims every model it
     # ships by default; pass claims={} to fake an agent that advertises nothing.
     claims: dict[AgentRouteModelName, Claim] = field(
@@ -293,6 +300,22 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         )
         if not self.allow_reception_run:
             raise AssertionError("reception should use run_stream_events")
+        recorded_teleport = self.reception_recorded_teleport
+        if recorded_teleport is not None and deferred_tool_results is None:
+            # Consumed on first use, or the resumed run would teleport forever.
+            self.reception_recorded_teleport = None
+            gateway = next(
+                (
+                    capability
+                    for capability in capabilities or []
+                    if isinstance(capability, GatewayCapability)
+                ),
+                None,
+            )
+            if gateway is None:
+                raise AssertionError("a recorded teleport requires a mounted gateway")
+            await gateway.session.teleport(hint=recorded_teleport)
+            return AgentRunResult(self.reception_output)
         if self.reception_teleport is not None and deferred_tool_results is None:
             output: FakeRunOutput = _teleport_requests(
                 self.reception_teleport, self.reception_teleport_destination

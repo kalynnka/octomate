@@ -725,3 +725,84 @@ def test_a_posture_must_be_its_own_agents(
             agent_tentacle_id=agent_tentacle_id,
             permission_mode=permission_mode,  # pyright: ignore[reportArgumentType]
         )
+
+
+async def _carry_pair(
+    tag: str,
+) -> tuple[ConversationManager, uuid.UUID, uuid.UUID, Conversation, Conversation]:
+    """A source conversation holding one recorded run with a resumable handle, and
+    a fresh target beside it."""
+    service = ConversationManager()
+    source_thread = await a_thread(f"{tag}-source")
+    target_thread = await a_thread(f"{tag}-target")
+    source = await service.ensure(source_thread, agent_tentacle_id="claude")
+    run_id = f"run-{tag}"
+    await service.record_agent_run(
+        source,
+        run_id=run_id,
+        messages=[
+            RawModelRequest(
+                parts=[UserPromptPart(content="hi")],
+                run_id=run_id,
+                timestamp=datetime.now(UTC),
+            )
+        ],
+        external_id="sess-1",
+    )
+    source = await service.ensure(source_thread, agent_tentacle_id="claude")
+    target = await service.ensure(target_thread, agent_tentacle_id="claude")
+    return service, source_thread, target_thread, source, target
+
+
+async def test_fork_carries_the_external_handle_when_asked() -> None:
+    service, source_thread, target_thread, source, target = await _carry_pair("carry")
+
+    assert await service.fork(source, target, carry_external_id=True) is not None
+    assert source.external_id is None
+
+    cold = ConversationManager()
+    moved = await cold.ensure(target_thread, agent_tentacle_id="claude")
+    assert moved.external_id == "sess-1"
+    left = await cold.ensure(source_thread, agent_tentacle_id="claude")
+    assert left.external_id is None
+
+
+async def test_fork_leaves_the_external_handle_by_default() -> None:
+    service, source_thread, target_thread, source, target = await _carry_pair("keep")
+
+    assert await service.fork(source, target) is not None
+
+    cold = ConversationManager()
+    assert (
+        await cold.ensure(source_thread, agent_tentacle_id="claude")
+    ).external_id == "sess-1"
+    assert (
+        await cold.ensure(target_thread, agent_tentacle_id="claude")
+    ).external_id is None
+
+
+async def test_fork_carries_the_handle_even_with_nothing_to_copy() -> None:
+    # The runtime holds its own transcript; the handle is what resumes it, so the
+    # move matters even when there is no mirror history to fork.
+    service = ConversationManager()
+    source_thread = await a_thread("carry-empty-source")
+    target_thread = await a_thread("carry-empty-target")
+    source = await service.ensure(source_thread, agent_tentacle_id="claude")
+    async with async_session() as session:
+        row = await session.get(Conversation, source.id)
+        assert row is not None
+        row.external_id = "sess-2"
+        await session.commit()
+    service = ConversationManager()
+    source = await service.ensure(source_thread, agent_tentacle_id="claude")
+    target = await service.ensure(target_thread, agent_tentacle_id="claude")
+
+    assert await service.fork(source, target, carry_external_id=True) is None
+
+    cold = ConversationManager()
+    assert (
+        await cold.ensure(target_thread, agent_tentacle_id="claude")
+    ).external_id == "sess-2"
+    assert (
+        await cold.ensure(source_thread, agent_tentacle_id="claude")
+    ).external_id is None

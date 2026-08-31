@@ -10,11 +10,19 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
+import tomlkit
 import typer
+from tomlkit.items import Table
 
-from octomate_cli.config import OCTOMATE_URL_ENV, resolved_url
-from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_hook_secret
+from octomate_cli.config import OCTOMATE_URL_ENV, SECRET_ENV, resolved_url
+from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
 from octomate_cli.jsontypes import JsonObject
+from octomate_cli.mcp import (
+    CLIENT_HEADER,
+    CODEX_NATIVE_CLIENT,
+    GATEWAY_SERVER_KEY,
+    gateway_url,
+)
 
 # Bound so a wedged or slow Octomate can never freeze someone's Codex session.
 HOOK_TIMEOUT = 10
@@ -187,7 +195,7 @@ def install(
     )
     typer.echo(f"  stream: {stream} (via {LAUNCH_SCRIPT.name})")
     typer.echo("Open /hooks in Codex and trust the new command hooks.")
-    announce_hook_secret()
+    announce_secret()
 
 
 @hooks_typer.command("uninstall")
@@ -280,3 +288,111 @@ def tail(
         spool=spool_path(session),
         agent_path=agent_path,
     )
+
+
+mcp_typer = typer.Typer(
+    help="Manage the gateway MCP entry for native Codex sessions.",
+    no_args_is_help=True,
+)
+codex_typer.add_typer(mcp_typer, name="mcp")
+
+McpConfigOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--config-file",
+        help="Explicit config.toml path; defaults to ~/.codex/config.toml.",
+    ),
+]
+
+
+def mcp_config_file(path: Path | None) -> Path:
+    return path if path is not None else Path.home() / ".codex" / "config.toml"
+
+
+def load_toml(path: Path) -> tomlkit.TOMLDocument:
+    """The whole document, comments and all — tomlkit's round-trip is what keeps
+    the operator's file theirs."""
+    return tomlkit.parse(path.read_text()) if path.exists() else tomlkit.document()
+
+
+@mcp_typer.command("install")
+def mcp_install(
+    url: Annotated[
+        str | None,
+        typer.Option(
+            help="Octomate's base URL (http://host:port) to write; defaults to "
+            f"${OCTOMATE_URL_ENV}, then cli.toml."
+        ),
+    ] = None,
+    config_file: McpConfigOption = None,
+) -> None:
+    """Point native Codex sessions at the served gateway.
+
+    Writes the `mcp_servers.gateway` table — the gateway's URL, the credential
+    as a `bearer_token_env_var` reference, and the runtime attribution header —
+    preserving the operator's comments and every other table. Codex resolves the
+    variable from each session's environment, so the secret must be exported in
+    the shell profile. A driven turn's per-run overrides shadow this entry by
+    name, its conversation header winning over the client header.
+    """
+    target = gateway_url(url)
+    path = mcp_config_file(config_file)
+    document = load_toml(path)
+    servers = document.get("mcp_servers")
+    if servers is None:
+        servers = tomlkit.table(is_super_table=True)
+        document["mcp_servers"] = servers
+    if not isinstance(servers, Table):
+        raise typer.BadParameter(f"{path} has a non-table 'mcp_servers' section")
+    entry = tomlkit.table()
+    entry["url"] = target
+    entry["bearer_token_env_var"] = SECRET_ENV
+    headers = tomlkit.inline_table()
+    headers[CLIENT_HEADER] = CODEX_NATIVE_CLIENT
+    entry["http_headers"] = headers
+    servers[GATEWAY_SERVER_KEY] = entry
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(tomlkit.dumps(document))
+    typer.echo(f"Installed the gateway MCP entry → {target}")
+    typer.echo(f"  file:   {path}")
+    typer.echo(f"  client: {CODEX_NATIVE_CLIENT}")
+    typer.echo(
+        f"  auth:   ${{{SECRET_ENV}}} from each session's environment — export "
+        "it in your shell profile"
+    )
+    announce_secret()
+
+
+@mcp_typer.command("uninstall")
+def mcp_uninstall(config_file: McpConfigOption = None) -> None:
+    """Remove the gateway MCP entry, leaving the operator's comments and every
+    other server."""
+    path = mcp_config_file(config_file)
+    document = load_toml(path)
+    servers = document.get("mcp_servers")
+    if not isinstance(servers, Table) or GATEWAY_SERVER_KEY not in servers:
+        typer.echo(f"No gateway MCP entry in {path}")
+        raise typer.Exit()
+    del servers[GATEWAY_SERVER_KEY]
+    if len(servers) == 0:
+        del document["mcp_servers"]
+    path.write_text(tomlkit.dumps(document))
+    typer.echo(f"Removed the gateway MCP entry from {path}")
+
+
+@mcp_typer.command("show")
+def mcp_show(config_file: McpConfigOption = None) -> None:
+    """Show the gateway MCP entry. Nothing to mask: the entry names an
+    environment variable rather than holding the credential."""
+    path = mcp_config_file(config_file)
+    servers = load_toml(path).get("mcp_servers")
+    entry = servers.get(GATEWAY_SERVER_KEY) if isinstance(servers, Table) else None
+    if not isinstance(entry, Table):
+        typer.echo(f"No gateway MCP entry in {path}")
+        raise typer.Exit()
+    headers = entry.get("http_headers")
+    client = headers.get(CLIENT_HEADER) if isinstance(headers, dict) else None
+    typer.echo(f"Gateway MCP entry in {path}:")
+    typer.echo(f"  url:    {entry.get('url')}")
+    typer.echo(f"  auth:   ${{{entry.get('bearer_token_env_var')}}}")
+    typer.echo(f"  client: {client}")

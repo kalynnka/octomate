@@ -28,9 +28,9 @@ from octomate.schemas.thread import (
     ThreadMessage,
     ThreadMessageDirection,
 )
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.agents.claude.ingest import NATIVE_USER
 from octomate.tentacles.agents.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptLine,
@@ -143,6 +143,9 @@ class TailState:
     send_stream: MemoryObjectSendStream[StreamEvents[str]]
     receive_stream: MemoryObjectReceiveStream[StreamEvents[str]]
     stop_event: asyncio.Event
+    # The verified bearer's own profile — who every ledger row this stream
+    # writes is attributed to.
+    sender: UserProfile
     offset: int = 0
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
@@ -205,7 +208,11 @@ class ClaudeTranscriptTailer:
         self.sessions: dict[str, TailState] = {}
 
     def new_state(
-        self, session_id: str, transcript_path: Path, offset: int = 0
+        self,
+        session_id: str,
+        transcript_path: Path,
+        sender: UserProfile,
+        offset: int = 0,
     ) -> TailState:
         send_stream, receive_stream = anyio.create_memory_object_stream[
             StreamEvents[str]
@@ -216,6 +223,7 @@ class ClaudeTranscriptTailer:
             send_stream=send_stream,
             receive_stream=receive_stream,
             stop_event=asyncio.Event(),
+            sender=sender,
             offset=offset,
         )
 
@@ -273,7 +281,7 @@ class ClaudeTranscriptTailer:
         self.sessions.clear()
 
     async def attach_remote(
-        self, session_id: str, transcript_path: Path
+        self, session_id: str, transcript_path: Path, sender: UserProfile
     ) -> tuple[TailState, dict[str, int]]:
         """Register a streamed session and answer where each of its files resumes.
 
@@ -284,7 +292,7 @@ class ClaudeTranscriptTailer:
         replaced; the dead route feeds the state object it attached, and its commits
         are idempotent.
         """
-        state = self.new_state(session_id, transcript_path)
+        state = self.new_state(session_id, transcript_path, sender)
         await self.prepare(state)
 
         conversation = state.conversation
@@ -564,6 +572,7 @@ class ClaudeTranscriptTailer:
                     run,
                     turn.prompt_text,
                     turn.accumulator.result_text,
+                    state.sender,
                 )
                 logger.info(
                     "session %s: turn %s synced — %d messages, bytes %d-%d",
@@ -780,7 +789,12 @@ class ClaudeTranscriptTailer:
             await self.close_subagent_turn(state, tail)
 
     async def bind_ledger(
-        self, session_id: str, run: ExternalAgentRun, prompt_text: str, answer: str
+        self,
+        session_id: str,
+        run: ExternalAgentRun,
+        prompt_text: str,
+        answer: str,
+        sender: UserProfile,
     ) -> None:
         """Cross-reference the human ledger (inbound prompt / outbound answer, keyed by
         `prompt_id = run.id`) to this run. Rows the hooks already wrote live are reused;
@@ -809,8 +823,8 @@ class ClaudeTranscriptTailer:
                         message_id=run.id,
                         chat_id=session_id,
                         chat_type="thread",
-                        user_id=NATIVE_USER.channel_user_id,
-                        sender=NATIVE_USER,
+                        user_id=sender.channel_user_id,
+                        sender=sender,
                         segments=[TextSegment(data={"text": prompt_text})],
                     ),
                     happened_at=prompt_request.timestamp,
@@ -840,7 +854,7 @@ class ClaudeTranscriptTailer:
                     thread,
                     agent_tentacle_id=CLAUDE_NATIVE_ID,
                     segments=[MarkdownSegment(data={"text": answer})],
-                    sender=NATIVE_USER,
+                    sender=sender,
                     platform_message_id=run.id,
                     happened_at=answered.timestamp if answered is not None else None,
                 )

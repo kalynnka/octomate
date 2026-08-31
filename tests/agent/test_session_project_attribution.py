@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.thread import ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
@@ -32,6 +33,8 @@ from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIng
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
 from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.support.managers import a_project, a_registry
+
+SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +62,8 @@ async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -
                 "prompt": "hi",
                 "prompt_id": "p1",
             }
-        )
+        ),
+        SENDER,
     )
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
@@ -81,7 +85,8 @@ async def codex_session(octomate: Octomate, session_id: str, cwd: Path | str) ->
                 "prompt": "hi",
                 "turn_id": "t1",
             }
-        )
+        ),
+        SENDER,
     )
     thread = await octomate.thread_manager.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
@@ -275,7 +280,8 @@ async def end_session(octomate: Octomate, session_id: str, cwd: Path | str) -> N
                 "session_id": session_id,
                 "cwd": str(cwd),
             }
-        )
+        ),
+        SENDER,
     )
 
 

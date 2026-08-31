@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.managers.gateway import GatewaySession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtData,
@@ -56,8 +57,7 @@ def test_split_reply_takes_first_reply_anywhere_and_strips_all() -> None:
 
 async def test_send_tool_accepts_reply_and_mention() -> None:
     capability = GatewayCapability(
-        channel_routes={},
-        current_agent_id="inkling",
+        session=GatewaySession(channel_routes={}, current_agent_id="inkling")
     )
     assert capability.toolset is not None
     send = capability.toolset.tools["send"].function
