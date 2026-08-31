@@ -87,6 +87,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.project import Project
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
@@ -98,7 +99,7 @@ from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.agents.claude.transport import SSHTransport
-from octomate.tentacles.agents.hooks import hook_guard
+from octomate.tentacles.agents.hooks import hook_guard, hook_sender
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 from octomate.types.permissions import ClaudePermissionMode, is_claude_mode
@@ -260,35 +261,47 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     def hook_router(self) -> APIRouter:
         """The routes behind `routers()`; cached so they are built once. The guard
         covers the websocket too: FastAPI runs router dependencies at the handshake,
-        so a bad bearer is denied with the same 401 before any socket opens."""
-        router = APIRouter(
-            tags=["claude"],
-            dependencies=[Depends(hook_guard(self.octomate.bearers, self.id))],
-        )
+        so a bad bearer is denied with the same 401 before any socket opens. Each
+        route takes `hook_sender` — the verified bearer resolved to their own
+        profile, on the guard's single per-request check — as the ledger's
+        principal."""
+        verifier = hook_guard(self.octomate.bearers, self.id)
+        resolve_sender = hook_sender(self.octomate.users, CLAUDE_NATIVE_ID, verifier)
+        router = APIRouter(tags=["claude"], dependencies=[Depends(verifier)])
 
         @router.post(
             "/hooks/claude",
             summary="Claude Code hook pipe — streams a native session's human ledger in",
         )
-        async def receive_hook(event: ClaudeHookInput) -> JSONResponse:
-            await self.session_ingest.handle(event)
+        async def receive_hook(
+            event: ClaudeHookInput,
+            # `param: T = Depends(dep)` is FastAPI's own dependency contract;
+            # ruff's B008 exemption misses it when T is a custom class (it is
+            # fine with `str`), so the rule bends rather than the checked type.
+            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
+        ) -> JSONResponse:
+            await self.session_ingest.handle(event, sender)
             # Claude Code reads the JSON body as the hook's decision; an empty object
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
 
         @router.websocket("/hooks/claude/stream")
-        async def stream(websocket: WebSocket) -> None:
-            await self.stream_session(websocket)
+        async def stream(
+            websocket: WebSocket,
+            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
+        ) -> None:
+            await self.stream_session(websocket, sender)
 
         return router
 
-    async def stream_session(self, websocket: WebSocket) -> None:
+    async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
         """One remote tail's connection, up to its attach: take the hello and refuse
         what cannot stream — a stale protocol loudly (the session still degrades to
         hooks-only ingest), and a session this tentacle is driving itself, whose
         transcript ingested here would write the conversation a second time
-        (`ClaudeHookIngest.driving`). Authentication already happened: the router's
-        `hook_guard` dependency denied a bad bearer at the handshake."""
+        (`ClaudeHookIngest.driving`). Authentication already happened at the
+        handshake, and `sender` is the verified bearer's own profile — whose
+        ledger this stream writes."""
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -316,9 +329,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             return
         # Its own materia context: a stream outlives any request, like a follow loop.
         with sqlalchemy_materia():
-            await self.stream_attached(websocket, hello)
+            await self.stream_attached(websocket, hello, sender)
 
-    async def stream_attached(self, websocket: WebSocket, hello: StreamHello) -> None:
+    async def stream_attached(
+        self, websocket: WebSocket, hello: StreamHello, sender: UserProfile
+    ) -> None:
         """The attached half of a stream connection: register the session, answer
         resume offsets, then feed each framed line through the tailer's assembly until
         `eof` (commit the trailing turns) or a drop (leave them for the next connect).
@@ -344,7 +359,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             project=project,
         )
         state, offsets = await self.session_tailer.attach_remote(
-            hello.session_id, Path(hello.transcript_path)
+            hello.session_id, Path(hello.transcript_path), sender
         )
         logger.info(
             "session %s: remote tail connected (octomate %s)",

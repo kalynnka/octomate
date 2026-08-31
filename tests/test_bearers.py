@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.base import Octomate
 from octomate.config.users import UserConfig
+from octomate.managers.user import UserManager
 from octomate.mcp.base import KnownBearers
-from octomate.tentacles.agents.hooks import hook_guard
+from octomate.tentacles.agents.hooks import hook_guard, hook_sender
 from tests.support.config import registered
 
 
@@ -54,10 +56,12 @@ def test_octomate_builds_bearers_from_its_config() -> None:
     assert Octomate().bearers.users == {}
 
 
-async def test_hook_guard_admits_every_known_bearer() -> None:
+async def test_hook_guard_yields_the_bearers_owner() -> None:
+    """The dependency's value is the ledger's principal: whose token
+    authenticated is who the request's rows are attributed to."""
     verify = hook_guard(a_registry(), "claude")
 
-    await verify("Bearer lu-token")
+    assert await verify("Bearer lu-token") == "lu"
 
 
 async def test_hook_guard_rejects_everything_else() -> None:
@@ -72,3 +76,17 @@ async def test_hook_guard_rejects_everything_else() -> None:
 def test_hook_guard_demands_a_registered_user() -> None:
     with pytest.raises(RuntimeError, match="no registered user carries a secret"):
         hook_guard(KnownBearers({}), "claude")
+
+
+async def test_hook_sender_demands_a_registered_username(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """The dependency trusts the guard and says so when that trust breaks: a
+    verified username the registry never reconciled is a wiring bug worth an
+    error, never a row written to nobody."""
+    resolve = hook_sender(
+        UserManager(), "claude-native", hook_guard(a_registry(), "claude")
+    )
+
+    with pytest.raises(RuntimeError, match="registry holds no such user"):
+        await resolve("lu")

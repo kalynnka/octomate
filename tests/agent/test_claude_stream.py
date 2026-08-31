@@ -6,6 +6,8 @@ without `eof` leaves its open turns for the next connect to re-stream."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig
+from octomate.managers.user import UserManager
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer, TailState
 from octomate.types.json import JsonObject
@@ -45,6 +49,8 @@ from tests.agent.test_claude_tailer import (
 )
 from tests.support.agents import CLAUDE_MODELS
 from tests.support.config import registered
+
+SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SECRET = SecretStr("the-hook-secret")
 AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
@@ -90,7 +96,7 @@ def remote_tailer() -> tuple[Octomate, ClaudeTranscriptTailer]:
 async def test_remote_feed_assembles_the_same_runs_as_a_local_tail() -> None:
     octomate, tailer = remote_tailer()
 
-    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     assert offsets == {SESSION_FILE: 0}
     assert SESSION_ID in tailer.sessions  # so hooks route the drains here
     await feed(tailer, state, frames(TURN_ONE + TURN_TWO))
@@ -110,12 +116,12 @@ async def test_remote_feed_assembles_the_same_runs_as_a_local_tail() -> None:
 async def test_a_reconnect_is_told_to_resume_from_the_committed_runs() -> None:
     octomate, tailer = remote_tailer()
 
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed(tailer, state, frames(TURN_ONE))
     await tailer.finish_remote(state)
     (p1,) = await runs_of(octomate)
 
-    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     assert offsets[SESSION_FILE] == p1.end_offset
     await feed(tailer, state, frames(TURN_TWO, start=p1.end_offset or 0))
     await tailer.finish_remote(state)
@@ -131,12 +137,12 @@ async def test_a_drop_without_eof_leaves_open_turns_for_the_next_connect() -> No
     run covers, stranding the rest of the turn where no recovery could reach it."""
     octomate, tailer = remote_tailer()
 
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed(tailer, state, frames(TURN_ONE))  # open turn: no closing prompt yet
     tailer.detach_remote(state)
 
     assert await runs_of(octomate) == []
-    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     assert offsets == {SESSION_FILE: 0}  # nothing committed: re-stream from the top
     await feed(tailer, state, frames(TURN_ONE + TURN_TWO))
     await tailer.finish_remote(state)
@@ -148,7 +154,7 @@ async def test_finalize_relays_through_stop_event_and_waits_for_the_drain() -> N
     sends the client `finalize` on it — and `finalize` returns once `finish_remote`
     has committed, not after its timeout."""
     octomate, tailer = remote_tailer()
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed(tailer, state, frames(TURN_ONE))
 
     finalizing = asyncio.create_task(tailer.finalize(SESSION_ID))
@@ -165,7 +171,7 @@ async def test_a_stop_drains_the_remote_tail_and_commits_the_stopped_turn() -> N
     `stop_event` the route's relay watches, and the `eof` answering the relayed
     `finalize` commits the stopped turn — the next prompt no longer gates it."""
     octomate, tailer = remote_tailer()
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed(tailer, state, frames(TURN_ONE))  # open turn: no closing prompt yet
 
     await tailer.stop_turn(SESSION_ID, "p1")
@@ -184,7 +190,7 @@ async def test_a_prompt_queued_into_the_drain_stays_open_for_the_next_connect() 
     turn may commit: a partial next turn committed here would hold its id against the
     complete version forever."""
     octomate, tailer = remote_tailer()
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed(tailer, state, frames(TURN_ONE))
     await tailer.stop_turn(SESSION_ID, "p1")
 
@@ -195,14 +201,14 @@ async def test_a_prompt_queued_into_the_drain_stays_open_for_the_next_connect() 
     (p1,) = await runs_of(octomate)  # p1 closed on its own boundary; p2 not committed
     assert p1.id == "p1"
 
-    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     assert offsets[SESSION_FILE] == p1.end_offset  # p2's line re-streams whole
     tailer.detach_remote(state)
 
 
 async def test_subagent_lines_stream_into_child_runs() -> None:
     octomate, tailer = remote_tailer()
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
 
     # The parent turn spawns the child (its tool-result names the agent id), then the
     # child's own file streams under its agent id.
@@ -216,7 +222,7 @@ async def test_subagent_lines_stream_into_child_runs() -> None:
     assert child.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"
 
     # A reconnect is told where the child's file resumes too.
-    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     assert offsets[AGENT_ID] == child.end_offset
     tailer.detach_remote(state)
 
@@ -226,9 +232,9 @@ async def test_a_new_attach_replaces_a_lingering_registration() -> None:
     connect replaces it, and the dead route's detach must not evict the
     replacement."""
     _, tailer = remote_tailer()
-    stale, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    stale, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
 
-    fresh, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    fresh, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     assert tailer.sessions[SESSION_ID] is fresh
     tailer.detach_remote(stale)
     assert tailer.sessions[SESSION_ID] is fresh
@@ -237,13 +243,22 @@ async def test_a_new_attach_replaces_a_lingering_registration() -> None:
 
 
 def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
-    octomate = Octomate(config=registered(SECRET.get_secret_value()))
+    config = registered(SECRET.get_secret_value())
+    octomate = Octomate(config=config, users=UserManager(config.users))
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
         config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
     )
-    app = FastAPI()
+
+    # Entering the client runs the lifespan: the registered user gets their
+    # registry row, the way the real app reconciles before serving.
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await octomate.users.reconcile()
+        yield
+
+    app = FastAPI(lifespan=lifespan)
     for router in tentacle.routers():
         app.include_router(router)
     return TestClient(app), tentacle
@@ -346,7 +361,10 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
 
 def test_a_stale_protocol_is_refused_loudly() -> None:
     client, _ = stream_client()
-    with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+    with (
+        client,
+        client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket,
+    ):
         websocket.send_text(hello_json(protocol=99))
         with pytest.raises(WebSocketDisconnect) as disconnect:
             websocket.receive_text()
@@ -358,7 +376,7 @@ def test_a_driven_session_is_refused() -> None:
     """Octomate records the sessions it drives itself; streaming their transcripts
     would write those conversations a second time."""
     client, tentacle = stream_client()
-    with tentacle.session_ingest.driving(SESSION_ID):
+    with client, tentacle.session_ingest.driving(SESSION_ID):
         with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             with pytest.raises(WebSocketDisconnect) as disconnect:
@@ -371,7 +389,10 @@ def test_an_offset_gap_closes_for_resync() -> None:
     """A gap means frames were lost; the close makes the client reconnect and re-ask
     where to resume, instead of the server assembling a mis-framed turn."""
     client, _ = stream_client()
-    with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+    with (
+        client,
+        client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket,
+    ):
         websocket.send_text(hello_json())
         websocket.receive_text()  # welcome
         websocket.send_text(StreamLine(start=5, end=20, line="{}").model_dump_json())

@@ -11,6 +11,7 @@ from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers.user import UserManager
 from octomate.schemas.user import User, UserProfile
+from octomate.types.threads import CLAUDE_NATIVE_ID
 
 
 @pytest.fixture(autouse=True)
@@ -480,3 +481,47 @@ async def test_linked_profiles_are_empty_for_a_visitor(
     visitor = await manager.ensure_profile("slack", UserProfile(channel_user_id="U9"))
 
     assert await manager.linked_profiles(visitor) == []
+
+
+async def test_ensure_profile_keeps_a_verified_owner() -> None:
+    """A channel observation never carries `user_id`; the native ingest's
+    transient anchor does, and that verified ownership persists — the row is
+    created owned, and re-anchored by a later write."""
+    manager = UserManager(config({"lu": {"secret": "lu-token"}}))
+    await manager.reconcile()
+    anchor = await manager.native_profile(CLAUDE_NATIVE_ID, "lu")
+    assert anchor is not None
+
+    stored = await manager.ensure_profile(CLAUDE_NATIVE_ID, anchor)
+
+    assert stored.user_id == anchor.user_id
+    owner = await manager.owner(stored)
+    assert owner is not None
+    assert owner.username == "lu"
+
+    rewritten = await manager.ensure_profile(CLAUDE_NATIVE_ID, anchor)
+    assert rewritten.user_id == anchor.user_id
+
+
+async def test_reconcile_keeps_native_ownership_anchored_on_the_username() -> None:
+    """YAML cannot declare a native pseudo-channel profile, so reconcile must not
+    demote one to a visitor: its ownership re-anchors on the username row it
+    stands on — and survives deregistration, because the retained user row is
+    what keeps history attributed."""
+    manager = UserManager(config({"lu": {"secret": "lu-token"}}))
+    await manager.reconcile()
+    anchor = await manager.native_profile(CLAUDE_NATIVE_ID, "lu")
+    assert anchor is not None
+    await manager.ensure_profile(CLAUDE_NATIVE_ID, anchor)
+
+    again = UserManager(config({"lu": {"secret": "lu-token"}}))
+    await again.reconcile()
+    kept = await find_profile(CLAUDE_NATIVE_ID, "lu")
+    assert kept is not None
+    assert kept.user_id == anchor.user_id
+
+    deregistered = UserManager()
+    await deregistered.reconcile()
+    still = await find_profile(CLAUDE_NATIVE_ID, "lu")
+    assert still is not None
+    assert still.user_id == anchor.user_id

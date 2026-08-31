@@ -9,6 +9,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.schemas.user import User, UserProfile
+from octomate.types.threads import NATIVE_TENTACLE_IDS
 
 PROFILE_FIELDS = {"name", "nickname", "gender", "age", "title"}
 
@@ -154,7 +155,10 @@ class UserManager:
 
         First sight creates an ownerless visitor profile. YAML reconciliation
         may already have seeded and attached the profile; observations refresh
-        only its channel-owned display fields and never change ownership.
+        only its channel-owned display fields and never change ownership. An
+        `observed.user_id` is the one exception: no channel ever sets it —
+        only a verified bearer's transient anchor (`native_profile`) carries
+        one — so an identity that arrives owned stays owned.
         """
         async with self.ensure_lock, async_session() as session:
             profile = await session.one_or_none(
@@ -168,12 +172,15 @@ class UserManager:
                 profile = UserProfile(
                     channel_tentacle_id=channel_tentacle_id,
                     channel_user_id=observed.channel_user_id,
+                    user_id=observed.user_id,
                     **observed.model_dump(include=PROFILE_FIELDS),
                 )
                 session.add(profile)
             else:
                 for name in PROFILE_FIELDS:
                     setattr(profile, name, getattr(observed, name))
+                if observed.user_id is not None:
+                    profile.user_id = observed.user_id
 
             owner = await profile.user
             await session.commit()
@@ -188,7 +195,10 @@ class UserManager:
         The YAML key is the user's stable username. Users absent from YAML are
         retained for future registration sources, while their undeclared profiles
         become visitors. Config profile details seed an unseen account but never
-        overwrite an observed row.
+        overwrite an observed row. Native pseudo-channel profiles are the one
+        exception to YAML's authority: their ownership came from a verified
+        bearer at ingest, so it is re-anchored on the username row and drops
+        only when that user leaves the registry.
         """
         declared: dict[tuple[str, str], str] = {}
         for username, user_config in self.config.items():
@@ -239,8 +249,16 @@ class UserManager:
             }
 
             for key, profile in profiles_by_key.items():
-                username = declared.get(key)
-                if username is None:
+                channel_id, channel_user_id = key
+                if channel_id in NATIVE_TENTACLE_IDS:
+                    # A native profile's owner is its verified bearer, written at
+                    # ingest — YAML cannot declare it (`validate_user_links`
+                    # refuses pseudo-channels), so ownership follows the username
+                    # row it stands on rather than the declarations.
+                    username = channel_user_id
+                else:
+                    username = declared.get(key)
+                if username is None or username not in users_by_username:
                     profile.user_id = None
                     profile.user.value = None
                     continue

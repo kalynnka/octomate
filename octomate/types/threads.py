@@ -21,10 +21,9 @@ DEEPSEEK_NATIVE_ID = "deepseek-native"
 NATIVE_TENTACLE_IDS: frozenset[str] = frozenset(
     {CLAUDE_NATIVE_ID, CODEX_NATIVE_ID, DEEPSEEK_NATIVE_ID}
 )
-# The one channel_user_id a native client's profile carries: every terminal of a
-# runtime is the same anonymous operator, so a deployment's YAML claims it once —
-# `profiles: {claude-native: {channel_user_id: native}}` — and the served gateway
-# looks the same key up.
+# The user_id a native handoff's *source* address carries — runtime attribution
+# for "where this came from". Never a person: a native session's ledger rows are
+# attributed to the verified bearer's own profile (`channel_user_id` = username).
 NATIVE_CHANNEL_USER_ID = "native"
 
 ThreadMessageDirection = Literal["inbound", "outbound"]

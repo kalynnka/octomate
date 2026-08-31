@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from octomate.schemas.thread import DEEPSEEK_NATIVE_ID, ThreadKey
-from octomate.schemas.user import UserProfile
 from octomate.telemetry import deepseek_logfire
 from octomate.tentacles.agents.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.agents.locks import SessionLocks
@@ -17,14 +16,10 @@ from octomate.tentacles.agents.locks import SessionLocks
 if TYPE_CHECKING:
     from octomate import Octomate
 
-    # Runtime dependency runs the other way (the tailer imports this module's
-    # NATIVE_USER); the injected instance only needs its type here.
+    # The injected instance only needs its type here.
     from octomate.tentacles.agents.deepseek.tailer import DeepseekEventTailer
 
 logger = logging.getLogger(__name__)
-
-# A native session carries no platform identity for whoever is typing.
-NATIVE_USER = UserProfile(channel_user_id="native", name="native")
 
 
 class DeepseekHookIngest:

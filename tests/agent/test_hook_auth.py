@@ -5,6 +5,9 @@ read back."""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig, CodexConfig, DeepseekConfig
+from octomate.managers.user import UserManager
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.codex import CodexTentacle
 from octomate.tentacles.agents.deepseek import DeepseekTentacle
@@ -32,7 +36,8 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 
 def client_for(path: str) -> TestClient:
-    octomate = Octomate(config=registered(SECRET.get_secret_value()))
+    config = registered(SECRET.get_secret_value())
+    octomate = Octomate(config=config, users=UserManager(config.users))
     if path == CLAUDE_HOOK_PATH:
         tentacle = ClaudeCodeTentacle(
             "claude",
@@ -51,7 +56,16 @@ def client_for(path: str) -> TestClient:
             octomate,
             config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
         )
-    app = FastAPI()
+
+    # Entering the client runs the lifespan: the registered user gets their
+    # registry row, the way the real app reconciles before serving — the hook
+    # handlers resolve the verified bearer's own profile against it.
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await octomate.users.reconcile()
+        yield
+
+    app = FastAPI(lifespan=lifespan)
     for router in tentacle.routers():
         app.include_router(router)
     return TestClient(app)
@@ -77,11 +91,12 @@ def test_an_unauthenticated_hook_is_refused(path: str, headers: dict[str, str]) 
     "path", [CLAUDE_HOOK_PATH, CODEX_HOOK_PATH, DEEPSEEK_HOOK_PATH]
 )
 def test_the_configured_secret_is_accepted(path: str) -> None:
-    response = client_for(path).post(
-        path,
-        json=EVENT,
-        headers={"Authorization": f"Bearer {SECRET.get_secret_value()}"},
-    )
+    with client_for(path) as client:
+        response = client.post(
+            path,
+            json=EVENT,
+            headers={"Authorization": f"Bearer {SECRET.get_secret_value()}"},
+        )
     assert response.status_code == 200
 
 

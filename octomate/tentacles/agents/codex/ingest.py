@@ -32,7 +32,6 @@ if TYPE_CHECKING:
     from octomate import Octomate
     from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
 
-NATIVE_USER = UserProfile(channel_user_id="native", name="native")
 logger = logging.getLogger(__name__)
 
 
@@ -68,7 +67,10 @@ class CodexHookIngest:
         "codex.hook {event.hook_event_name} [{event.session_id}]",
         extract_args=["event"],
     )
-    async def handle(self, event: CodexHookInput) -> None:
+    async def handle(self, event: CodexHookInput, sender: UserProfile) -> None:
+        """`sender` is the verified bearer's own profile (the route's
+        `hook_sender` dependency) — the person every ledger row this event
+        writes is attributed to."""
         if event.octomate_driven or event.session_id in self.driven:
             logger.debug("session %s: ignored driven Codex hook", event.session_id)
             return
@@ -82,13 +84,13 @@ class CodexHookIngest:
         if event.agent_id is not None:
             return
         if event.hook_event_name == "Stop":
-            await self.on_stop(event)
+            await self.on_stop(event, sender)
             return
         if event.hook_event_name in {"SessionStart", "UserPromptSubmit"}:
             async with self.locks.hold(event.session_id):
                 await self.start_session(event)
                 if event.hook_event_name == "UserPromptSubmit" and event.prompt:
-                    await self.record_prompt(event, event.prompt)
+                    await self.record_prompt(event, event.prompt, sender)
                     await self.sketch_run(event)
                     logger.info(
                         "session %s: turn %s asked",
@@ -96,10 +98,10 @@ class CodexHookIngest:
                         event.turn_id,
                     )
 
-    async def on_stop(self, event: CodexHookInput) -> None:
+    async def on_stop(self, event: CodexHookInput, sender: UserProfile) -> None:
         async with self.locks.hold(event.session_id):
             if event.last_assistant_message:
-                await self.record_answer(event, event.last_assistant_message)
+                await self.record_answer(event, event.last_assistant_message, sender)
                 await self.sketch_run(event)
                 logger.info(
                     "session %s: turn %s answered",
@@ -158,7 +160,9 @@ class CodexHookIngest:
             project=project,
         )
 
-    async def record_prompt(self, event: CodexHookInput, prompt: str) -> None:
+    async def record_prompt(
+        self, event: CodexHookInput, prompt: str, sender: UserProfile
+    ) -> None:
         thread = await self.session_thread(event)
         if event.turn_id and self.already_recorded(thread, event.turn_id, "inbound"):
             return
@@ -168,13 +172,15 @@ class CodexHookIngest:
                 message_id=event.turn_id or "",
                 chat_id=event.session_id,
                 chat_type="thread",
-                user_id=NATIVE_USER.channel_user_id,
-                sender=NATIVE_USER,
+                user_id=sender.channel_user_id,
+                sender=sender,
                 segments=[TextSegment(data={"text": prompt})],
             )
         )
 
-    async def record_answer(self, event: CodexHookInput, answer: str) -> None:
+    async def record_answer(
+        self, event: CodexHookInput, answer: str, sender: UserProfile
+    ) -> None:
         thread = await self.session_thread(event)
         if event.turn_id and self.already_recorded(thread, event.turn_id, "outbound"):
             return
@@ -182,7 +188,7 @@ class CodexHookIngest:
             thread,
             agent_tentacle_id=CODEX_NATIVE_ID,
             segments=[MarkdownSegment(data={"text": answer})],
-            sender=NATIVE_USER,
+            sender=sender,
             platform_message_id=event.turn_id or "",
         )
 

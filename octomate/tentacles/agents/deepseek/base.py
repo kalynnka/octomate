@@ -63,6 +63,8 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.thread import DEEPSEEK_NATIVE_ID
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import deepseek_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agents.deepseek.adapter import (
@@ -87,7 +89,7 @@ from octomate.tentacles.agents.deepseek.wire import (
     SessionPromptValue,
     StreamErrorFrame,
 )
-from octomate.tentacles.agents.hooks import hook_guard
+from octomate.tentacles.agents.hooks import hook_guard, hook_sender
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject, JsonValue
 from octomate.types.permissions import DeepseekPermissionMode, is_deepseek_mode
@@ -228,27 +230,36 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         The guard covers the websocket too: FastAPI runs router dependencies
         at the handshake, so a bad bearer is denied with the same 401 before
         any socket opens."""
-        router = APIRouter(
-            tags=["deepseek"],
-            dependencies=[Depends(hook_guard(self.octomate.bearers, self.id))],
-        )
+        verifier = hook_guard(self.octomate.bearers, self.id)
+        resolve_sender = hook_sender(self.octomate.users, DEEPSEEK_NATIVE_ID, verifier)
+        router = APIRouter(tags=["deepseek"], dependencies=[Depends(verifier)])
 
         @router.post("/hooks/deepseek", summary="dsh native-session hook pipe")
         async def receive_hook(event: DeepseekHookInput) -> JSONResponse:
+            # No principal needed: dsh's hook dialect writes no ledger rows —
+            # every durable row is the stream's, attributed at its handshake.
             await self.session_ingest.handle(event)
             return JSONResponse({})
 
         @router.websocket("/hooks/deepseek/stream")
-        async def stream(websocket: WebSocket) -> None:
-            await self.stream_session(websocket)
+        async def stream(
+            websocket: WebSocket,
+            # `param: T = Depends(dep)` is FastAPI's own dependency contract;
+            # ruff's B008 exemption misses it when T is a custom class (it is
+            # fine with `str`), so the rule bends rather than the checked type.
+            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
+        ) -> None:
+            await self.stream_session(websocket, sender)
 
         return router
 
-    async def stream_session(self, websocket: WebSocket) -> None:
+    async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
         """One remote tail's connection, up to its attach: take the hello and
         refuse what cannot stream — a stale protocol loudly, and a session this
         tentacle is driving itself, whose events ingested here would write the
-        conversation a second time (`DeepseekHookIngest.driving`)."""
+        conversation a second time (`DeepseekHookIngest.driving`). `sender` is
+        the verified bearer's own profile, resolved at the handshake — whose
+        ledger this stream writes."""
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -272,9 +283,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             return
         # Its own materia context: a stream outlives any request.
         with sqlalchemy_materia():
-            await self.stream_attached(websocket, hello)
+            await self.stream_attached(websocket, hello, sender)
 
-    async def stream_attached(self, websocket: WebSocket, hello: StreamHello) -> None:
+    async def stream_attached(
+        self, websocket: WebSocket, hello: StreamHello, sender: UserProfile
+    ) -> None:
         """The attached half of a stream connection: register the session,
         answer the resume seq, then feed each framed entry through the
         tailer's assembly. Offsets are event seqs (`end` is `seq + 1`), and
@@ -285,7 +298,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         stopped turn is durable or its wait ran out), and the relayed
         `finalize` asks the client for its final drain and `eof`."""
         state, offsets = await self.session_tailer.attach_remote(
-            hello.session_id, Path(hello.transcript_path), hello.cwd
+            hello.session_id, Path(hello.transcript_path), hello.cwd, sender
         )
         logger.info(
             "session %s: remote tail connected (octomate %s)",

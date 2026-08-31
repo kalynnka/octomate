@@ -35,9 +35,9 @@ from octomate.schemas.thread import (
     ThreadKey,
     ThreadMessageDirection,
 )
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agents.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
-from octomate.tentacles.agents.codex.ingest import NATIVE_USER
 from octomate.tentacles.agents.codex.transcript import (
     CODEX_HOME_DIRS,
     RolloutLine,
@@ -114,6 +114,9 @@ class TailState:
     session_id: str
     transcript_path: Path
     stop_event: asyncio.Event
+    # The verified bearer's own profile — who every ledger row this stream
+    # writes is attributed to.
+    sender: UserProfile
     offset: int = 0
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)
@@ -186,7 +189,12 @@ class CodexTranscriptTailer:
         self.sessions.clear()
 
     async def attach_remote(
-        self, session_id: str, transcript_path: Path, *, local_client: bool = False
+        self,
+        session_id: str,
+        transcript_path: Path,
+        sender: UserProfile,
+        *,
+        local_client: bool = False,
     ) -> tuple[TailState, dict[str, int]]:
         """Register a streamed session — its rollout lives on the client machine
         that streams it (`octomate codex tail`) — and answer where its files resume.
@@ -204,7 +212,7 @@ class CodexTranscriptTailer:
         idempotent. `local_client` marks a loopback peer, whose workspace roots name
         directories on this machine and so register as projects.
         """
-        state = TailState(session_id, transcript_path, asyncio.Event())
+        state = TailState(session_id, transcript_path, asyncio.Event(), sender)
         state.local_client = local_client
         state.conversation = await self.ensure_session(session_id)
         state.recorded = assembled(state.conversation)
@@ -601,7 +609,9 @@ class CodexTranscriptTailer:
                 state.recorded.add(turn.turn_id)
                 if turn.turn_id == state.drain_turn:
                     state.drain_ready.set()
-                await self.bind_ledger(state.session_id, run, turn.prompt, turn.answer)
+                await self.bind_ledger(
+                    state.session_id, run, turn.prompt, turn.answer, state.sender
+                )
                 logger.info(
                     "session %s: turn %s synced — %d messages, bytes %d-%d",
                     state.session_id,
@@ -612,7 +622,12 @@ class CodexTranscriptTailer:
                 )
 
     async def bind_ledger(
-        self, session_id: str, run: ExternalAgentRun, prompt: str, answer: str
+        self,
+        session_id: str,
+        run: ExternalAgentRun,
+        prompt: str,
+        answer: str,
+        sender: UserProfile,
     ) -> None:
         thread = await self.thread_manager.ensure(
             ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
@@ -633,8 +648,8 @@ class CodexTranscriptTailer:
                         message_id=run.id,
                         chat_id=session_id,
                         chat_type="thread",
-                        user_id=NATIVE_USER.channel_user_id,
-                        sender=NATIVE_USER,
+                        user_id=sender.channel_user_id,
+                        sender=sender,
                         segments=[TextSegment(data={"text": prompt})],
                     ),
                     happened_at=request.timestamp,
@@ -662,7 +677,7 @@ class CodexTranscriptTailer:
                     thread,
                     agent_tentacle_id=CODEX_NATIVE_ID,
                     segments=[MarkdownSegment(data={"text": answer})],
-                    sender=NATIVE_USER,
+                    sender=sender,
                     platform_message_id=run.id,
                     happened_at=answered.timestamp if answered is not None else None,
                 )
