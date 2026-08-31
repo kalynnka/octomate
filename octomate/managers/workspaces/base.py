@@ -24,6 +24,7 @@ from octomate.managers.workspaces.mirrors import (
 )
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
+from octomate.telemetry import workspace_logfire
 
 logger = logging.getLogger(__name__)
 
@@ -362,22 +363,40 @@ class WorkspaceManager:
         nothing ever resumes into one, so a fork that died half-made is thrown away
         here rather than mistaken for a tree.
         """
-        async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
-            holders = self.chatting.get(workspace.thread_id, 0)
-            if holders == 0 and workspace.path.exists():
-                await asyncio.to_thread(shutil.rmtree, workspace.path)
-            self.chatting[workspace.thread_id] = holders + 1
+        # `holders` is the count after this run joined, and the number to read a
+        # chat workspace's life by: it is what a `discard` has to bring back to
+        # zero, so a tree still on disk long after its run is one whose claim and
+        # discard did not pair.
+        with workspace_logfire.span(
+            "workspace.claim", thread_id=str(workspace.thread_id)
+        ) as span:
+            async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
+                holders = self.chatting.get(workspace.thread_id, 0)
+                if holders == 0 and workspace.path.exists():
+                    # What a run killed before it could discard left behind.
+                    span.set_attribute("abandoned_tree", True)
+                    await asyncio.to_thread(shutil.rmtree, workspace.path)
+                self.chatting[workspace.thread_id] = holders + 1
+                span.set_attribute("holders", holders + 1)
 
     async def discard(self, workspace: ChatWorkspace) -> None:
         """Give this tree back to the disk, once no run is still in it."""
-        async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
-            holders = self.chatting.get(workspace.thread_id, 0) - 1
-            if holders > 0:
-                self.chatting[workspace.thread_id] = holders
-                return
-            self.chatting.pop(workspace.thread_id, None)
-            if workspace.path.is_dir():
-                await asyncio.to_thread(shutil.rmtree, workspace.path)
+        with workspace_logfire.span(
+            "workspace.discard", thread_id=str(workspace.thread_id)
+        ) as span:
+            async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
+                holders = self.chatting.get(workspace.thread_id, 0) - 1
+                span.set_attribute("holders", max(holders, 0))
+                if holders > 0:
+                    # An overlapping run of the same conversation is still in this
+                    # tree, so the tree stays and its life is that run's to end.
+                    span.set_attribute("removed", False)
+                    self.chatting[workspace.thread_id] = holders
+                    return
+                self.chatting.pop(workspace.thread_id, None)
+                span.set_attribute("removed", workspace.path.is_dir())
+                if workspace.path.is_dir():
+                    await asyncio.to_thread(shutil.rmtree, workspace.path)
 
     async def detect(self) -> str | None:
         """The `cp` flag that forks without copying bytes on this host, or None
@@ -445,36 +464,52 @@ class WorkspaceManager:
         builds its own out of the store the mirror already warmed.
         """
         path = workspace.path
-        async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
-            if path.is_dir():
-                return path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            flag = await self.detect()
-            # Hidden, and named after the thread, so it is never mistaken for a
-            # workspace and the next fork of this thread reclaims whatever a
-            # killed one left — the case the cleanup below cannot reach.
-            staging = path.with_name(f".{workspace.thread_id}.forking")
-            if staging.exists():
-                shutil.rmtree(staging)
-            try:
-                if flag is not None:
-                    await copy(mirror, staging, flag)
-                else:
-                    await run_git("clone", str(mirror), str(staging))
-                await self.inherit_remotes(mirror, staging)
-                await self.discard_octomate_refs(staging)
-                await self.checkout(workspace.thread_id, mirror, staging, ref)
-                await install(staging)
-                staging.rename(path)
-                # `cp -a` preserves the mirror's timestamps and a rename does not
-                # refresh them, so without this a fork inherits an mtime that can
-                # already be past the idle window — a workspace made seconds ago,
-                # born ready for the sweep.
-                os.utime(path)
-            except BaseException:
-                shutil.rmtree(staging, ignore_errors=True)
-                raise
-        return path
+        # Outside the lock, so a turn waiting on another turn's fork is time this
+        # span accounts for. From the far end the wait and a slow fork look the
+        # same, and they want opposite fixes.
+        with workspace_logfire.span(
+            "workspace.materialize",
+            thread_id=str(workspace.thread_id),
+            kind=type(workspace).__name__,
+            path=str(path),
+        ) as span:
+            async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
+                if path.is_dir():
+                    # Where every turn after a thread's first arrives. Saying so is
+                    # what leaves the forks findable among them.
+                    span.set_attribute("forked", False)
+                    return path
+                span.set_attribute("forked", True)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                flag = await self.detect()
+                # The one thing about a fork that another host would do differently,
+                # so a trace of one says it before anything else.
+                span.set_attribute("mechanism", f"cp -a {flag}" if flag else "clone")
+                # Hidden, and named after the thread, so it is never mistaken for a
+                # workspace and the next fork of this thread reclaims whatever a
+                # killed one left — the case the cleanup below cannot reach.
+                staging = path.with_name(f".{workspace.thread_id}.forking")
+                if staging.exists():
+                    shutil.rmtree(staging)
+                try:
+                    if flag is not None:
+                        await copy(mirror, staging, flag)
+                    else:
+                        await run_git("clone", str(mirror), str(staging))
+                    await self.inherit_remotes(mirror, staging)
+                    await self.discard_octomate_refs(staging)
+                    await self.checkout(workspace.thread_id, mirror, staging, ref)
+                    await install(staging)
+                    staging.rename(path)
+                    # `cp -a` preserves the mirror's timestamps and a rename does not
+                    # refresh them, so without this a fork inherits an mtime that can
+                    # already be past the idle window — a workspace made seconds ago,
+                    # born ready for the sweep.
+                    os.utime(path)
+                except BaseException:
+                    shutil.rmtree(staging, ignore_errors=True)
+                    raise
+            return path
 
     async def inherit_remotes(self, mirror: Path, workspace: Path) -> None:
         """Give the fork the mirror's own `origin`, or no remote where the mirror
@@ -552,37 +587,51 @@ class WorkspaceManager:
         starting point competes with that.
         """
         saved = thread_ref(thread_id)
-        if not await run_git("ls-remote", str(mirror), saved):
-            branch = f"octomate/thread-{thread_id}"
-            if ref is None:
-                await run_git("checkout", "-b", branch, cwd=workspace)
+        # The fork's two endings, and the only place that knows which this is: a
+        # thread starting, or one coming back to work a sweep reclaimed the tree
+        # of. `resumed` is what separates them in a trace, and the snapshot it
+        # came back from is what makes the tree it landed on checkable.
+        with workspace_logfire.span(
+            "workspace.checkout", thread_id=str(thread_id), ref=ref
+        ) as span:
+            if not await run_git("ls-remote", str(mirror), saved):
+                span.set_attribute("resumed", False)
+                branch = f"octomate/thread-{thread_id}"
+                if ref is None:
+                    await run_git("checkout", "-b", branch, cwd=workspace)
+                    return
+                # Fetched from the mirror rather than named directly: a clone's
+                # remote-tracking refs are removed with the `origin` `inherit_remotes`
+                # replaces, so the only commit a fork is certain to resolve is the one
+                # it was left on. A ref the mirror does not have fails here, which is
+                # what the caller has to be able to report.
+                await run_git("fetch", str(mirror), ref, cwd=workspace)
+                await run_git("checkout", "-b", branch, "FETCH_HEAD", cwd=workspace)
                 return
-            # Fetched from the mirror rather than named directly: a clone's
-            # remote-tracking refs are removed with the `origin` `inherit_remotes`
-            # replaces, so the only commit a fork is certain to resolve is the one
-            # it was left on. A ref the mirror does not have fails here, which is
-            # what the caller has to be able to report.
-            await run_git("fetch", str(mirror), ref, cwd=workspace)
-            await run_git("checkout", "-b", branch, "FETCH_HEAD", cwd=workspace)
-            return
-        # Every fork arrives without it, whichever way it was made, so this is how
-        # the workspace comes to have it at all.
-        await run_git("fetch", str(mirror), f"+{saved}:{saved}", cwd=workspace)
-        subject = await run_git("show", "-s", "--format=%s", saved, cwd=workspace)
-        branch = subject.strip().removeprefix(SNAPSHOT_PREFIX)
-        head = (
-            ("--detach", f"{saved}^")
-            if branch == "HEAD"
-            else ("-B", branch, f"{saved}^")
-        )
-        await run_git("checkout", *head, cwd=workspace)
-        await run_git("read-tree", "-u", "--reset", saved, cwd=workspace)
-        await run_git("reset", cwd=workspace)
-        # A restored workspace is the mirror's snapshot by construction, and says
-        # so: the ref that records it was local to the workspace this one replaces,
-        # and without this a resume that never reached its next save would look
-        # like unsaved work forever, which is a workspace that cannot be reclaimed.
-        await run_git("update-ref", SAVED_REF, saved, cwd=workspace)
+            span.set_attribute("resumed", True)
+            # Every fork arrives without it, whichever way it was made, so this is how
+            # the workspace comes to have it at all.
+            await run_git("fetch", str(mirror), f"+{saved}:{saved}", cwd=workspace)
+            subject = await run_git("show", "-s", "--format=%s", saved, cwd=workspace)
+            branch = subject.strip().removeprefix(SNAPSHOT_PREFIX)
+            span.set_attribute("branch", branch)
+            span.set_attribute(
+                "snapshot",
+                (await run_git("rev-parse", saved, cwd=workspace)).strip(),
+            )
+            head = (
+                ("--detach", f"{saved}^")
+                if branch == "HEAD"
+                else ("-B", branch, f"{saved}^")
+            )
+            await run_git("checkout", *head, cwd=workspace)
+            await run_git("read-tree", "-u", "--reset", saved, cwd=workspace)
+            await run_git("reset", cwd=workspace)
+            # A restored workspace is the mirror's snapshot by construction, and says
+            # so: the ref that records it was local to the workspace this one replaces,
+            # and without this a resume that never reached its next save would look
+            # like unsaved work forever, which is a workspace that cannot be reclaimed.
+            await run_git("update-ref", SAVED_REF, saved, cwd=workspace)
 
     async def snapshot(self, path: Path) -> str:
         """A commit holding this workspace exactly as it stands — staged, unstaged
@@ -647,30 +696,39 @@ class WorkspaceManager:
         already answered; failing it now would report a delivered answer as an
         error, and the next turn saves the same work again.
         """
-        project = await self.projects.of(thread)
-        path = self.path(thread.id)
-        if project is None or not path.is_dir():
-            return
-        try:
-            async with self.locks.setdefault(thread.id, asyncio.Lock()):
-                snapshot = await self.snapshot(path)
-                await run_git(
-                    "push",
-                    "--force",
-                    str(self.mirrors.path(project)),
-                    f"{snapshot}:{thread_ref(thread.id)}",
-                    cwd=path,
+        # The turn's work leaving the workspace. Until this succeeds the fork is
+        # the only copy, so `saved` — which is what the sweep reads — is the
+        # attribute to look at when a workspace nobody can reclaim turns up.
+        with workspace_logfire.span(
+            "workspace.save", thread_id=str(thread.id), saved=False
+        ) as span:
+            project = await self.projects.of(thread)
+            path = self.path(thread.id)
+            span.set_attribute("project", project.name if project else None)
+            if project is None or not path.is_dir():
+                return
+            try:
+                async with self.locks.setdefault(thread.id, asyncio.Lock()):
+                    snapshot = await self.snapshot(path)
+                    await run_git(
+                        "push",
+                        "--force",
+                        str(self.mirrors.path(project)),
+                        f"{snapshot}:{thread_ref(thread.id)}",
+                        cwd=path,
+                    )
+                    # Only now, and only here: this is what tells the sweep that
+                    # letting this workspace go costs a resume rather than the work.
+                    await run_git("update-ref", SAVED_REF, snapshot, cwd=path)
+                span.set_attribute("snapshot", snapshot)
+                span.set_attribute("saved", True)
+            except (GitCommandError, OSError):
+                logger.exception(
+                    "the workspace for thread %s could not be saved; its work is only "
+                    "in %s until a later turn saves it",
+                    thread.id,
+                    path,
                 )
-                # Only now, and only here: this is what tells the sweep that letting
-                # this workspace go costs a resume rather than the work.
-                await run_git("update-ref", SAVED_REF, snapshot, cwd=path)
-        except (GitCommandError, OSError):
-            logger.exception(
-                "the workspace for thread %s could not be saved; its work is only "
-                "in %s until a later turn saves it",
-                thread.id,
-                path,
-            )
 
     async def saved(self, path: Path) -> bool:
         """Whether the mirror already holds everything in this workspace: the same
@@ -708,31 +766,41 @@ class WorkspaceManager:
         almost by definition.
         """
         released: list[uuid.UUID] = []
-        if not self.workspaces_dir.is_dir():
+        # Three counts, because "why is that workspace still there" has three
+        # answers and the disk cannot tell them apart: nothing has been idle long
+        # enough, or something is idle and holding work the mirror never got.
+        kept_busy = kept_unsaved = 0
+        with workspace_logfire.span("workspace.prune", idle=idle) as span:
+            if not self.workspaces_dir.is_dir():
+                return released
+            for path in sorted(self.workspaces_dir.iterdir()):
+                try:
+                    thread_id = uuid.UUID(path.name)
+                except ValueError:
+                    # A staging directory, a probe, or `chat/`: none of them is a
+                    # workspace this may reclaim. A chat workspace is its run's to
+                    # throw away, and is not kept anywhere the sweep could restore it
+                    # from.
+                    continue
+                if time.time() - path.stat().st_mtime < idle:
+                    kept_busy += 1
+                    continue
+                if not await self.saved(path):
+                    kept_unsaved += 1
+                    logger.warning(
+                        "the workspace for thread %s is idle but holds work the "
+                        "mirror does not have; keeping it",
+                        thread_id,
+                    )
+                    continue
+                await self.release(thread_id)
+                released.append(thread_id)
+            span.set_attribute("released", len(released))
+            span.set_attribute("kept_busy", kept_busy)
+            span.set_attribute("kept_unsaved", kept_unsaved)
+            if released:
+                logger.info("released %d idle workspace(s)", len(released))
             return released
-        for path in sorted(self.workspaces_dir.iterdir()):
-            try:
-                thread_id = uuid.UUID(path.name)
-            except ValueError:
-                # A staging directory, a probe, or `chat/`: none of them is a
-                # workspace this may reclaim. A chat workspace is its run's to
-                # throw away, and is not kept anywhere the sweep could restore it
-                # from.
-                continue
-            if time.time() - path.stat().st_mtime < idle:
-                continue
-            if not await self.saved(path):
-                logger.warning(
-                    "the workspace for thread %s is idle but holds work the mirror "
-                    "does not have; keeping it",
-                    thread_id,
-                )
-                continue
-            await self.release(thread_id)
-            released.append(thread_id)
-        if released:
-            logger.info("released %d idle workspace(s)", len(released))
-        return released
 
     async def sweep(self) -> None:
         """Prune on the interval, for as long as the host runs.
@@ -758,6 +826,15 @@ class WorkspaceManager:
         a thread, off the loop: a released tree is as big as the project.
         """
         path = self.path(thread_id)
-        async with self.locks.setdefault(thread_id, asyncio.Lock()):
-            if path.is_dir():
-                await asyncio.to_thread(shutil.rmtree, path)
+        # The end of a tree, and the span a resume is read against: a `materialize`
+        # with `resumed` true is this one's other half, however long after.
+        with workspace_logfire.span(
+            "workspace.release", thread_id=str(thread_id)
+        ) as span:
+            async with self.locks.setdefault(thread_id, asyncio.Lock()):
+                # False where a thread never had one, or a sweep and a caller both
+                # reached for the same tree — neither is a failure, and both would
+                # otherwise read as one released workspace too many.
+                span.set_attribute("removed", path.is_dir())
+                if path.is_dir():
+                    await asyncio.to_thread(shutil.rmtree, path)

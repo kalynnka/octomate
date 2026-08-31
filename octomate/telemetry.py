@@ -18,6 +18,7 @@ octomate_logfire = logfire.with_settings(custom_scope_suffix="octomate")
 reflex_logfire = logfire.with_settings(custom_scope_suffix="reflex")
 deferred_logfire = logfire.with_settings(custom_scope_suffix="deferred")
 react_logfire = logfire.with_settings(custom_scope_suffix="react")
+workspace_logfire = logfire.with_settings(custom_scope_suffix="workspace")
 
 # Channels: the shared plumbing every channel runs through, then the per-platform ones.
 channel_logfire = logfire.with_settings(custom_scope_suffix="channel")
