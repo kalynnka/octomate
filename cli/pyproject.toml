@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-octomate = "octomate_cli.cli:app"
+octomate = "octomate_cli.main:app"
 
 [build-system]
 requires = ["hatchling"]

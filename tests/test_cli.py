@@ -12,7 +12,7 @@ import pytest
 import yaml
 from octomate_cli import mcp as cli_mcp
 from octomate_cli.claude import claude_typer
-from octomate_cli.cli import app
+from octomate_cli.main import app
 from octomate_cli.codex import codex_typer
 from octomate_cli.config import resolved_secret, resolved_url, user_config_path
 from octomate_cli.deepseek import deepseek_typer
