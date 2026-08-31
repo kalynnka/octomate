@@ -208,13 +208,13 @@ Claude Code sessions you already run.
 ```bash
 uv sync
 uv run alembic upgrade head
-mkdir -p .octomate
+mkdir -p .octomate/config
 ```
 
 Declare one agent — that is the whole config:
 
 ```bash
-cat > .octomate/agents.yaml <<'YAML'
+cat > .octomate/config/agents.yaml <<'YAML'
 agents:
   claude:
     models: [opus, sonnet]
@@ -235,7 +235,7 @@ and the `users:` entry is what tells the server whose that credential is.
 ```bash
 eval "$(octomate secret)"     # this shell
 octomate secret >> ~/.zshrc   # and every later one (zsh)
-cat > .octomate/users.yaml <<YAML
+cat > .octomate/config/users.yaml <<YAML
 users:
   you:
     secret: "${OCTOMATE__SECRET}"
@@ -265,7 +265,7 @@ Create a Slack app with Socket Mode on, then declare the channel — structure i
 config home, secrets in `.env`:
 
 ```bash
-cat > .octomate/channels.yaml <<'YAML'
+cat > .octomate/config/channels.yaml <<'YAML'
 channels:
   slack:
     type: slack
@@ -320,20 +320,25 @@ filesystem.
 
 A deployment is a **config home**: one directory, one flat YAML per subsystem. Each
 file's top-level keys are config field names, so changing a channel touches
-`channels.yaml` and nothing else.
+`channels.yaml` and nothing else. The `config/` subdirectory is what separates the
+server's files from the rest of `.octomate/` — the database and the client's
+`cli.toml` live beside it, not in it.
 
 ```
 .octomate/
-  octomate.yaml        host, port, mcp_path, db_url
-  agents.yaml          claude, codex, deepseek, inkling
-  channels.yaml        slack, lark, napcat, trunkline
-  users.yaml           registered humans and their per-channel ids
-  projects.yaml        code locations an agent may run in
-  providers.yaml       LLM credentials
-  integrations.yaml    per-user OAuth connectors
-  mcp.yaml             vendor MCP servers on one operator token
-  observability.yaml   logging, logfire
-  oauth.yaml           the key that encrypts stored tokens
+  octomate.db            the deployment's data
+  cli.toml               the client's own config — not the server's
+  config/
+    octomate.yaml        host, port, mcp_path, db_url
+    agents.yaml          claude, codex, deepseek, inkling
+    channels.yaml        slack, lark, napcat, trunkline
+    users.yaml           registered humans and their per-channel ids
+    projects.yaml        code locations an agent may run in
+    providers.yaml       LLM credentials
+    integrations.yaml    per-user OAuth connectors
+    mcp.yaml             vendor MCP servers on one operator token
+    observability.yaml   logging, logfire
+    oauth.yaml           the key that encrypts stored tokens
 ```
 
 The home is **chosen, not merged** — the first of these that applies:
@@ -341,8 +346,8 @@ The home is **chosen, not merged** — the first of these that applies:
 | | Where | When |
 |---|---|---|
 | 1 | `$OCTOMATE_HOME` | Set. Used as given, even if empty |
-| 2 | `./.octomate/` | It holds at least one of the files above |
-| 3 | `~/.octomate/` | Otherwise — one deployment for the machine |
+| 2 | `./.octomate/config/` | It holds at least one of the files above |
+| 3 | `~/.octomate/config/` | Otherwise — one deployment for the machine |
 
 Beneath whichever wins sit the packaged defaults in `octomate/config/defaults/`,
 layered per top-level key: a home that declares `channels:` replaces the default

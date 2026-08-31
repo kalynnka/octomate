@@ -25,8 +25,7 @@ from typing import Annotated
 
 import typer
 
-# How a client carries the credential. The server's config reads the same variable,
-# so one export serves both halves on the machine that runs them both.
+# How a client carries the credential in its environment, overriding the config files.
 SECRET_ENV = "OCTOMATE__SECRET"
 
 # Where Octomate is, as a base URL (`http://host:port`) the hook scripts resolve when
@@ -95,7 +94,7 @@ def configure(
     secret: Annotated[
         str | None,
         typer.Option(
-            help="Octomate's credential. Omitted, the one already resolving is kept, "
+            help="Your own credential. Omitted, the one already resolving is kept, "
             "and one is generated when nothing resolves anywhere."
         ),
     ] = None,
@@ -143,8 +142,8 @@ def configure(
     typer.echo(f"  secret: {'generated' if generated else 'kept'}")
     if generated:
         typer.secho(
-            f"\nThe server must hold the same credential — its octomate.yaml "
-            f"`secret`, or {SECRET_ENV} in its environment:\n"
+            f"\nRegistration makes this credential yours: hand it to the server's "
+            f"admin to register.\n"
             f"  {secret}",
             fg=typer.colors.YELLOW,
             err=True,

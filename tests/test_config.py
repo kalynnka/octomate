@@ -72,16 +72,18 @@ def test_an_explicit_home_wins_over_discovery(
 def test_a_home_is_discovered_only_when_it_holds_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Absent `OCTOMATE_HOME`, the project's `./.octomate/` is preferred over the
-    machine's `~/.octomate/` — but only once it holds config. Every checkout has a
-    `./.octomate/` for the database and `cli.toml` alone, and one carrying neither
-    must not shadow the machine's deployment."""
-    user_home = tmp_path / "home" / ".octomate"
+    """Absent `OCTOMATE_HOME`, the project's `./.octomate/config/` is preferred over
+    the machine's `~/.octomate/config/` — but only once it holds config. Every
+    checkout has a `./.octomate/` for the database and `cli.toml`, and neither of
+    those must make it shadow the machine's deployment."""
+    user_home = tmp_path / "home" / ".octomate" / "config"
     user_home.mkdir(parents=True)
     (user_home / "octomate.yaml").write_text("port: 9001\n")
-    project_home = tmp_path / "project" / ".octomate"
+    project_home = tmp_path / "project" / ".octomate" / "config"
     project_home.mkdir(parents=True)
-    (project_home / "cli.toml").write_text('url = "http://127.0.0.1:8000"\n')
+    (tmp_path / "project" / ".octomate" / "cli.toml").write_text(
+        'url = "http://127.0.0.1:8000"\n'
+    )
 
     monkeypatch.delenv("OCTOMATE_HOME")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))

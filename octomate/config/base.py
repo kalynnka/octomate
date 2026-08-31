@@ -7,10 +7,11 @@ add up to one settings payload with no wrapper key and no section to traverse.
 
 The home is chosen, never merged. `$OCTOMATE_HOME` wins outright and is obeyed even
 when empty — that is what makes the test suite's isolation total. Absent it, the
-project's own `./.octomate/` is preferred over the machine's `~/.octomate/`, but only
-if it actually holds config: `./.octomate/` exists in every checkout for the database
-and `cli.toml` alone, and a directory that carries neither must not shadow the
-machine's deployment.
+project's own `./.octomate/config/` is preferred over the machine's
+`~/.octomate/config/`, but only if it actually holds config. The `config/`
+subdirectory is what marks the server's files as such: `.octomate/` itself belongs
+to the database and the client's `cli.toml`, which are not deployment config and
+must not make a directory look like one.
 
 The packaged defaults under `defaults/` are the floor beneath whichever home wins.
 They are layered per top-level key and wholesale — a home that declares `agents:`
@@ -81,7 +82,10 @@ def config_home() -> Path:
     from_env = os.environ.get(OCTOMATE_HOME_ENV)
     if from_env:
         return Path(from_env).expanduser()
-    candidates = (Path.cwd() / ".octomate", Path.home() / ".octomate")
+    candidates = (
+        Path.cwd() / ".octomate" / "config",
+        Path.home() / ".octomate" / "config",
+    )
     for candidate in candidates:
         if any((candidate / name).is_file() for name in CONFIG_FILES):
             return candidate

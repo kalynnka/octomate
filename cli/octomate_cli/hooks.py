@@ -42,7 +42,7 @@ def announce_secret() -> None:
 
 
 def secret() -> None:
-    """Print Octomate's credential as a shell export line, generating one if unset.
+    """Print your own credential as a shell export line, generating one if unset.
 
     Prints what the client itself resolves — the environment, then the config file —
     and hands over the line, leaving the placing to you: `eval "$(octomate secret)"`.
@@ -74,14 +74,7 @@ def secret() -> None:
             "",
             f"  [cyan]octomate configure --secret [green]{token}[/][/]",
             "",
-            "And give the server the same, in whichever you keep secrets in:",
-            "",
-            "  [dim]octomate.yaml[/]",
-            "    octomate:",
-            f"      secret: [green]{token}[/]",
-            "",
-            "  [dim].env[/]",
-            f"    {SECRET_ENV}=[green]{token}[/]",
+            "And have the server's admin register it as yours.",
             "",
             *body,
         ]
