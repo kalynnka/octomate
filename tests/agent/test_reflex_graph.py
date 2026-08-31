@@ -4,6 +4,7 @@ agent/channel/managers. End-to-end behavior lives in test_dispatch.py."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -15,11 +16,12 @@ from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
-from octomate.capabilities.gateway import SCRY_TOOL_NAME, GatewayCapability
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.config.users import UserConfig
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.gateway import GatewayManager
 from octomate.managers.user import UserManager
 from octomate.reflex import (
     DeferredResult,
@@ -36,13 +38,18 @@ from octomate.reflex.graph import (
     Route,
     build_reflex_graph,
 )
-from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
+from octomate.schemas.awakes import (
+    DeferredActionBatchResponse,
+    GatewayHandoffSignal,
+    UserMessageSignal,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import (
+    SCRY_TOOL_NAME,
     AgentRoute,
     Claim,
     CrossingLanding,
@@ -54,6 +61,7 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channels.base import ChannelSurfaces
 from octomate.tentacles.channels.feelers.output import TimelineState
+from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, RecordingInk
 from tests.support.managers import (
@@ -163,6 +171,7 @@ def _deps(
     channels: dict[str, FakeChannelTentacle],
     agent: FakeAgent,
     action_manager: FakeActionManager | None = None,
+    gateway: GatewayManager | None = None,
 ) -> ReflexDeps:
     return ReflexDeps(
         channels=dict(channels),
@@ -172,6 +181,7 @@ def _deps(
         action_manager=cast(
             DeferredActionManager, action_manager or FakeActionManager()
         ),
+        gateway=gateway or GatewayManager(),
     )
 
 
@@ -217,6 +227,7 @@ def _summon_deps(
     far: FakeChannelTentacle | None = None,
 ) -> ReflexDeps:
     return ReflexDeps(
+        gateway=GatewayManager(),
         channels={"im": im} if far is None else {"im": im, "far": far},
         agents={entry.id: entry, second.id: second},
         conversation_manager=FakeConversationManager(),
@@ -259,6 +270,7 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
     )
     other = FakeAgent(id="other", claims={"test": Claim(ability="fake agent")})
     deps = ReflexDeps(
+        gateway=GatewayManager(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -307,6 +319,7 @@ def test_available_routes_are_the_exposed_agents_own_routes() -> None:
     )
     third = FakeAgent(id="third", claims={})
     deps = ReflexDeps(
+        gateway=GatewayManager(),
         channels={"chan1": channel},
         agents={"other": other, "second": second, "third": third},
         conversation_manager=FakeConversationManager(),
@@ -336,6 +349,7 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
     )
     other = FakeAgent(id="other")
     deps = ReflexDeps(
+        gateway=GatewayManager(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -465,10 +479,121 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
 
     gate = _recorded_gate_capability(agent.turns[0])
     assert gate.commissioning
-    assert gate.thread_id == thread.id
-    assert gate.conversation_address == address
+    assert gate.session.thread_id == thread.id
+    assert gate.session.conversation_address == address
     assert gate.toolset is not None
     assert "commission" in gate.toolset.tools
+
+
+async def test_react_keys_the_gateway_session_by_the_turns_conversation() -> None:
+    """React ensures the same (thread, agent) conversation the run resolves, so an
+    external runtime's tool call finds this turn's session by the conversation id
+    it already knows — and nothing stays registered once the turn ends."""
+    address = _key()
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    registry = GatewayManager()
+    thread = _thread(address)
+    target = _source_target(address)
+
+    await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=_deps(
+            conversations=conversations,
+            channels={"im": im},
+            agent=agent,
+            gateway=registry,
+        ),
+    )
+
+    gate = _recorded_gate_capability(agent.turns[0])
+    conversation = await conversations.ensure(thread.id, agent_tentacle_id="other")
+    assert gate.session.conversation_id == conversation.id
+    assert registry.sessions == {}
+
+
+@dataclass
+class SlowAgent(FakeAgent):
+    """A fake that takes its time, so two turns of one conversation can overlap."""
+
+    delay: float = 0.1
+
+    # Only delays; every argument passes through to the fake untouched.
+    async def run(self, *args: object, **kwargs: object):  # pyright: ignore[reportIncompatibleMethodOverride]
+        await asyncio.sleep(self.delay)
+        return await super().run(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+
+async def test_a_second_turn_racing_a_live_conversation_fails_before_it_starts() -> (
+    None
+):
+    """Nothing serialises two turns of one conversation, so the registry refuses
+    the second at the door: the first arrival keeps its session, the second run
+    raises before anything is presented, and the slot frees when the first ends."""
+    address = _key()
+    agent = SlowAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    registry = GatewayManager()
+    thread = _thread(address)
+    target = _source_target(address)
+
+    def turn() -> ReflexState:
+        return ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        )
+
+    deps = _deps(
+        conversations=conversations,
+        channels={"im": im},
+        agent=agent,
+        gateway=registry,
+    )
+    first, second = await asyncio.gather(
+        _run(React(), state=turn(), deps=deps),
+        _run(React(), state=turn(), deps=deps),
+        return_exceptions=True,
+    )
+
+    assert not isinstance(first, BaseException)
+    assert isinstance(second, RuntimeError)
+    assert "already has a turn at the gateway" in str(second)
+    # Only the first arrival ever ran, and nothing outlives its turn.
+    assert len(agent.turns) == 1
+    assert registry.sessions == {}
+
+
+async def test_an_agent_with_gateway_off_mounts_none_on_any_channel() -> None:
+    """Availability is the agent's own: with its flag off, no turn of it on any
+    channel mounts a gateway capability."""
+    address = _key()
+    agent = FakeAgent(
+        id="other", allow_reception_run=True, reception_output="done", gateway=False
+    )
+    conversations = FakeConversationManager()
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    target = _source_target(address)
+
+    await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    assert not [
+        capability
+        for capability in agent.turns[0].capabilities
+        if isinstance(capability, GatewayCapability)
+    ]
 
 
 async def test_react_passes_the_decision_effort_to_the_run() -> None:
@@ -524,7 +649,7 @@ async def test_reception_allow_here_false_on_group_main() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert _recorded_gate_capability(agent.turns[0]).allow_here is False
+    assert _recorded_gate_capability(agent.turns[0]).session.allow_here is False
 
 
 async def test_reception_summons_another_agent_into_sub_thread() -> None:
@@ -552,6 +677,7 @@ async def test_reception_summons_another_agent_into_sub_thread() -> None:
         React(),
         state=ReflexState(source_target=target, target=target, decision=_summon()),
         deps=ReflexDeps(
+            gateway=GatewayManager(),
             channels={"im": im},
             agents={"other": entry, "second": second},
             conversation_manager=conversations,
@@ -643,23 +769,25 @@ async def _gate_for(
 async def test_scheme_is_reachable_only_from_a_group_with_an_asker() -> None:
     # The reason travels with the refusal, so the model is told which of the three
     # walls it hit. None of it reaches the tool schema — see test_gateway.
-    assert (await _gate_for(_group_key())).private_blocked_by is None
-    assert (await _gate_for(_group_key("in-thread"))).private_blocked_by is None
+    assert (await _gate_for(_group_key())).session.private_blocked_by is None
+    assert (await _gate_for(_group_key("in-thread"))).session.private_blocked_by is None
 
     # Already one-to-one with this person, thread inside it or not.
-    assert (await _gate_for(_key())).private_blocked_by == "already_private"
+    assert (await _gate_for(_key())).session.private_blocked_by == "already_private"
     private = await _gate_for(_private_key("assistant"))
-    assert private.private_blocked_by == "already_private"
+    assert private.session.private_blocked_by == "already_private"
 
     # Nobody in particular asked (a scheduled or awake run).
     anonymous = replace(_group_key(), user_id="")
-    assert (await _gate_for(anonymous)).private_blocked_by == "no_user"
+    assert (await _gate_for(anonymous)).session.private_blocked_by == "no_user"
 
     class NoDmChannel(FakeChannelTentacle):
         surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
 
     without = NoDmChannel(config=_two_reception_config(stream=False))
-    assert (await _gate_for(_group_key(), without)).private_blocked_by == "no_surface"
+    assert (
+        await _gate_for(_group_key(), without)
+    ).session.private_blocked_by == "no_surface"
 
 
 async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
@@ -1096,6 +1224,86 @@ async def test_a_crossing_stays_put_when_the_far_dm_never_opens(
     assert second.turns == []
 
 
+async def test_a_native_summon_signal_crosses_and_hands_off(
+    in_memory_engine: None,
+) -> None:
+    """Awake meets a native session's summon where React meets a driven one's: the
+    crossing opens on the far channel, the handoff row says from=claude-native,
+    and the brief is the far agent's prompt. The source is the native
+    pseudo-channel nobody serves, which the crossing never needs to look up."""
+    users = UserManager(
+        {
+            "luhui": UserConfig.model_validate(
+                {
+                    "profiles": {
+                        CLAUDE_NATIVE_ID: {"channel_user_id": "native"},
+                        "far": {"channel_user_id": "ou_alice"},
+                    }
+                }
+            )
+        }
+    )
+    await users.reconcile()
+    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    far = FakeChannelTentacle(
+        id="far",
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=[AgentModelConfig(agent="second", model="test")],
+        ),
+    )
+    deps = ReflexDeps(
+        channels={"far": far},
+        agents={"second": second},
+        conversation_manager=FakeConversationManager(),
+        thread_manager=FakeThreadManager(users=users),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
+        gateway=GatewayManager(),
+    )
+    signal = GatewayHandoffSignal(
+        decision=SummonDecision(
+            action="summon",
+            agent_id="second",
+            model="test",
+            destination=CrossingLanding(
+                address=ChannelAddress(
+                    channel_tentacle_id="far",
+                    chat_type="dm",
+                    chat_id="",
+                    user_id="ou_alice",
+                )
+            ),
+            reason="needs work",
+            hint="Working on it",
+            summon="Please take this up over here.",
+        ),
+        agent_id=CLAUDE_NATIVE_ID,
+        user_profile=await users.profile(CLAUDE_NATIVE_ID, "native"),
+        source=ChannelAddress(
+            channel_tentacle_id=CLAUDE_NATIVE_ID,
+            chat_type="dm",
+            chat_id="",
+            user_id="native",
+        ),
+    )
+
+    result = await _run(Awake(signal=signal), state=ReflexState(), deps=deps)
+
+    assert not isinstance(result, DeferredResult)
+    assert far.opened_dms == ["ou_alice"]
+    landed = second.turns[0].address
+    assert landed.channel_tentacle_id == "far"
+    assert landed.channel_thread_id == "hint-thread"
+    assert second.turns[0].prompt == "Please take this up over here."
+    threads = deps.thread_manager
+    assert isinstance(threads, FakeThreadManager)
+    [handoff] = threads.handoffs
+    assert handoff.from_agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert handoff.to_agent_tentacle_id == "second"
+    assert handoff.brief == "Please take this up over here."
+
+
 async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
     in_memory_engine: None,
 ) -> None:
@@ -1177,6 +1385,41 @@ async def test_a_teleport_crossing_that_never_opens_resolves_in_place() -> None:
     assert not isinstance(result, DeferredResult)
     assert entry.turns[-1].address == address
     assert far.sub_threads == []
+
+
+async def test_a_recorded_teleport_moves_the_turn_after_it_ends() -> None:
+    """A runtime that cannot be suspended mid-run reports a teleport as a decision;
+    the graph performs the same move it makes for a deferral, and the resumed run
+    opens from the hint rather than from a resolved call."""
+    address = _key()
+    entry = FakeAgent(
+        id="other",
+        reception_recorded_teleport="carrying on in a thread",
+        reception_output="continued",
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="unused")
+    im = _channel(stream=False)
+    target = _source_target(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
+        deps=_summon_deps(im, entry, second),
+    )
+
+    assert not isinstance(result, DeferredResult)
+    assert len(entry.turns) == 2
+    resumed = entry.turns[-1]
+    # No pending call to resolve — the hint is the resumed run's opening prompt.
+    assert resumed.deferred_results is None
+    assert resumed.prompt == "carrying on in a thread"
+    assert resumed.address.channel_thread_id == "hint-thread"
 
 
 async def test_reception_returns_deferred_result_on_human_question() -> None:

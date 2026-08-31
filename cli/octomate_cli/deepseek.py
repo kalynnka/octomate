@@ -30,8 +30,15 @@ from typing import Annotated
 import typer
 
 from octomate_cli.config import OCTOMATE_URL_ENV, resolved_url
-from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_hook_secret
+from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
 from octomate_cli.jsontypes import JsonObject
+from octomate_cli.mcp import (
+    CLIENT_HEADER,
+    DEEPSEEK_NATIVE_CLIENT,
+    GATEWAY_SERVER_KEY,
+    gateway_secret,
+    gateway_url,
+)
 
 # Bound so a wedged or slow Octomate can never freeze someone's dsh session —
 # both registered events sit on blocking seams (pre-step and turn-stopping).
@@ -179,18 +186,19 @@ def patch_block(config_path: Path) -> str:
     )
 
 
-def without_block(text: str) -> str:
-    """The patch file's text with our marker block removed, everything else
-    kept byte-for-byte."""
+def without_block(text: str, begin: str = MARK_BEGIN, end: str = MARK_END) -> str:
+    """The patch file's text with one marker block removed, everything else
+    kept byte-for-byte. Defaults to the hooks block's markers; the gateway
+    block passes its own."""
     lines = text.splitlines(keepends=True)
     kept: list[str] = []
     inside = False
     for line in lines:
         stripped = line.strip()
-        if stripped == MARK_BEGIN:
+        if stripped == begin:
             inside = True
             continue
-        if stripped == MARK_END:
+        if stripped == end:
             inside = False
             continue
         if not inside:
@@ -198,7 +206,9 @@ def without_block(text: str) -> str:
     return "".join(kept)
 
 
-def patch_text_with_block(text: str, block: str) -> str:
+def patch_text_with_block(
+    text: str, block: str, begin: str = MARK_BEGIN, end: str = MARK_END
+) -> str:
     """The patch file's text with our block installed exactly once.
 
     The file is a top-level YAML array. dsh's default is a lone `[]` flow
@@ -206,7 +216,7 @@ def patch_text_with_block(text: str, block: str) -> str:
     the block. A file already carrying block-sequence entries gets the block
     appended; a re-install replaces the existing block in place.
     """
-    remainder = without_block(text)
+    remainder = without_block(text, begin, end)
     lines = remainder.splitlines(keepends=True)
     for index, line in enumerate(lines):
         if line.strip() == "[]":
@@ -216,11 +226,13 @@ def patch_text_with_block(text: str, block: str) -> str:
     return remainder + block
 
 
-def patch_text_without_block(text: str) -> str:
+def patch_text_without_block(
+    text: str, begin: str = MARK_BEGIN, end: str = MARK_END
+) -> str:
     """The uninstall splice: the block removed, and the empty-array document
     restored when nothing else remains — a comments-only file parses as null,
     not the empty entry list the loader expects."""
-    remainder = without_block(text)
+    remainder = without_block(text, begin, end)
     if any(
         line.strip() and not line.strip().startswith("#")
         for line in remainder.splitlines()
@@ -318,7 +330,7 @@ def install(
     )
     typer.echo(f"  stream: {stream} (via {LAUNCH_SCRIPT.name})")
     typer.echo("Restart dsh (the web daemon included) to load the bridge.")
-    announce_hook_secret()
+    announce_secret()
 
 
 @hooks_typer.command("uninstall")
@@ -396,3 +408,123 @@ def tail(
         cwd=cwd,
         dsh_url=dsh_url,
     )
+
+
+mcp_typer = typer.Typer(
+    help="Manage the gateway MCP row for native dsh sessions.", no_args_is_help=True
+)
+deepseek_typer.add_typer(mcp_typer, name="mcp")
+
+# The MCP client bridge the gateway row mounts — part of dsh's own module
+# closure, unlike the hooks bridge, so no --bridge link step.
+MCP_CLIENT_PACKAGE = "@deepseek-ai/dsh-mcp-client"
+
+# The gateway row's id and markers: what a re-install overwrites and an
+# uninstall removes, without ever touching the hooks block above.
+GATEWAY_ROW_ID = "octomate-gateway"
+GATEWAY_MARK_BEGIN = "# >>> octomate deepseek gateway >>>"
+GATEWAY_MARK_END = "# <<< octomate deepseek gateway <<<"
+
+
+def gateway_patch_block(url: str, secret: str) -> str:
+    """The marker-delimited row mounting dsh's MCP client on the served gateway —
+    `serverName: gateway`, so the model sees `mcp__gateway__<spell>`, the same
+    names Claude and Codex read. Header values are JSON-quoted, which YAML reads
+    as flow scalars: the credential is hand-written and need not be YAML-safe."""
+    return (
+        f"{GATEWAY_MARK_BEGIN}\n"
+        f"- insert:\n"
+        f"    - id: {GATEWAY_ROW_ID}\n"
+        f"      name: '{MCP_CLIENT_PACKAGE}'\n"
+        f"      config:\n"
+        f"        serverName: {GATEWAY_SERVER_KEY}\n"
+        f"        transport: streamable-http\n"
+        f"        url: {json.dumps(url)}\n"
+        f"        headers:\n"
+        f"          Authorization: {json.dumps(f'Bearer {secret}')}\n"
+        f"          {CLIENT_HEADER}: {DEEPSEEK_NATIVE_CLIENT}\n"
+        f"{GATEWAY_MARK_END}\n"
+    )
+
+
+@mcp_typer.command("install")
+def mcp_install(
+    url: Annotated[
+        str | None,
+        typer.Option(
+            help="Octomate's base URL (http://host:port) to write; defaults to "
+            f"${OCTOMATE_URL_ENV}, then cli.toml."
+        ),
+    ] = None,
+    home: DshHomeOption = None,
+) -> None:
+    """Point native dsh sessions at the served gateway.
+
+    Writes a marker-delimited row in $DSH_HOME/cordis.patch.yml mounting
+    `@deepseek-ai/dsh-mcp-client` on the served gateway, the credential and the
+    runtime attribution embedded — resolved once, now: the file holds the
+    literal credential, and rotating it means re-running install. Re-running
+    replaces the row in place; restart dsh processes for the change to take.
+    """
+    target = gateway_url(url)
+    secret = gateway_secret()
+    patch = patch_file(dsh_home(home))
+    text = patch.read_text() if patch.exists() else "[]\n"
+    patch.parent.mkdir(parents=True, exist_ok=True)
+    patch.write_text(
+        patch_text_with_block(
+            text,
+            gateway_patch_block(target, secret),
+            GATEWAY_MARK_BEGIN,
+            GATEWAY_MARK_END,
+        )
+    )
+    typer.echo(f"Installed the gateway MCP row → {target}")
+    typer.echo(f"  patch:  {patch} (row id {GATEWAY_ROW_ID!r})")
+    typer.echo(f"  client: {DEEPSEEK_NATIVE_CLIENT}")
+    typer.echo(
+        "  auth:   embedded — the file holds the literal credential; rotation "
+        "means re-running install"
+    )
+    typer.echo("Restart dsh (the web daemon included) to load the row.")
+
+
+@mcp_typer.command("uninstall")
+def mcp_uninstall(home: DshHomeOption = None) -> None:
+    """Remove the gateway MCP row, leaving the hooks row and everything else in
+    the patch file untouched."""
+    patch = patch_file(dsh_home(home))
+    if not patch.exists():
+        typer.echo(f"No gateway MCP row in {patch}")
+        raise typer.Exit()
+    patch.write_text(
+        patch_text_without_block(
+            patch.read_text(), GATEWAY_MARK_BEGIN, GATEWAY_MARK_END
+        )
+    )
+    typer.echo(f"Removed the gateway MCP row from {patch}")
+
+
+@mcp_typer.command("show")
+def mcp_show(home: DshHomeOption = None) -> None:
+    """Show the gateway MCP row, credential masked."""
+    patch = patch_file(dsh_home(home))
+    text = patch.read_text() if patch.exists() else ""
+    lines = text.splitlines()
+    if GATEWAY_MARK_BEGIN not in (line.strip() for line in lines):
+        typer.echo(f"No gateway MCP row in {patch}")
+        raise typer.Exit()
+    typer.echo(f"Gateway MCP row in {patch}:")
+    inside = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == GATEWAY_MARK_BEGIN:
+            inside = True
+            continue
+        if stripped == GATEWAY_MARK_END:
+            break
+        if inside:
+            if stripped.startswith("Authorization:"):
+                indent = line[: len(line) - len(line.lstrip())]
+                line = f'{indent}Authorization: "Bearer ***"'
+            typer.echo(f"  {line}")

@@ -52,7 +52,6 @@ def test_the_suite_never_reads_the_developers_config() -> None:
 
     live = OctomateConfig()
     assert live.users == {}
-    assert live.hook_secret is None
 
 
 def test_an_explicit_home_wins_over_discovery(
@@ -73,16 +72,18 @@ def test_an_explicit_home_wins_over_discovery(
 def test_a_home_is_discovered_only_when_it_holds_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Absent `OCTOMATE_HOME`, the project's `./.octomate/` is preferred over the
-    machine's `~/.octomate/` — but only once it holds config. Every checkout has a
-    `./.octomate/` for the database and `cli.toml` alone, and one carrying neither
-    must not shadow the machine's deployment."""
-    user_home = tmp_path / "home" / ".octomate"
+    """Absent `OCTOMATE_HOME`, the project's `./.octomate/config/` is preferred over
+    the machine's `~/.octomate/config/` — but only once it holds config. Every
+    checkout has a `./.octomate/` for the database and `cli.toml`, and neither of
+    those must make it shadow the machine's deployment."""
+    user_home = tmp_path / "home" / ".octomate" / "config"
     user_home.mkdir(parents=True)
     (user_home / "octomate.yaml").write_text("port: 9001\n")
-    project_home = tmp_path / "project" / ".octomate"
+    project_home = tmp_path / "project" / ".octomate" / "config"
     project_home.mkdir(parents=True)
-    (project_home / "cli.toml").write_text('url = "http://127.0.0.1:8000"\n')
+    (tmp_path / "project" / ".octomate" / "cli.toml").write_text(
+        'url = "http://127.0.0.1:8000"\n'
+    )
 
     monkeypatch.delenv("OCTOMATE_HOME")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -1002,6 +1003,39 @@ def test_user_links_must_reference_configured_channel() -> None:
     error = exc_info.value.errors()[0]
     assert error["loc"] == ("users", "luhui", "profiles", "matrix")
     assert error["msg"] == "'matrix' does not match a configured channel"
+
+
+def test_user_links_refuse_a_native_pseudo_channel() -> None:
+    # The OCTO-62 claim retired: a native session is registered by the user's
+    # own `secret`, so a pseudo-channel link has no claimed row left to seed and
+    # is as unresolvable as any typo — declared runtime or not.
+    with pytest.raises(
+        ValidationError, match="'claude-native' does not match a configured channel"
+    ):
+        OctomateConfig.model_validate(
+            {
+                "agents": {"claude": {"models": ["opus"]}},
+                "users": {
+                    "luhui": {
+                        "profiles": {"claude-native": {"channel_user_id": "native"}}
+                    }
+                },
+            }
+        )
+
+
+def test_distinct_user_secrets_validate() -> None:
+    config = OctomateConfig.model_validate(
+        {"users": {"lu": {"secret": "lu-token"}, "hui": {"secret": "hui-token"}}}
+    )
+
+    lu_secret = config.users["lu"].secret
+    assert lu_secret is not None
+    assert lu_secret.get_secret_value() == "lu-token"
+    # A user with no secret stays valid: registration is opt-in per user.
+    assert OctomateConfig.model_validate({"users": {"lu": {}}}).users["lu"].secret is (
+        None
+    )
 
 
 def test_user_profile_config_rejects_the_old_user_id_field() -> None:

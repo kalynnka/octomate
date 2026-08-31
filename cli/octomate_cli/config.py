@@ -25,9 +25,8 @@ from typing import Annotated
 
 import typer
 
-# How a client carries the credential. The server's config reads the same variable,
-# so one export serves both halves on the machine that runs them both.
-HOOK_SECRET_ENV = "OCTOMATE__HOOK_SECRET"
+# How a client carries the credential in its environment, overriding the config files.
+SECRET_ENV = "OCTOMATE__SECRET"
 
 # Where Octomate is, as a base URL (`http://host:port`) the hook scripts resolve when
 # a hook fires — so switching servers is an environment switch, not a re-install. An
@@ -84,7 +83,7 @@ def resolved_url() -> str | None:
 
 
 def resolved_secret() -> str | None:
-    return resolved("hook_secret", HOOK_SECRET_ENV)
+    return resolved("secret", SECRET_ENV)
 
 
 def configure(
@@ -95,8 +94,8 @@ def configure(
     secret: Annotated[
         str | None,
         typer.Option(
-            help="Hook credential. Omitted, the one already resolving is kept, and "
-            "one is generated when nothing resolves anywhere."
+            help="Your own credential. Omitted, the one already resolving is kept, "
+            "and one is generated when nothing resolves anywhere."
         ),
     ] = None,
     scope: Annotated[
@@ -123,7 +122,7 @@ def configure(
         if secret is None:
             secret = secrets.token_urlsafe(32)
             generated = True
-    current["hook_secret"] = secret
+    current["secret"] = secret
 
     # json.dumps output is a valid TOML basic string: the escapes JSON emits are the
     # subset TOML shares, so no hand-rolled quoting and no extra dependency.
@@ -143,8 +142,8 @@ def configure(
     typer.echo(f"  secret: {'generated' if generated else 'kept'}")
     if generated:
         typer.secho(
-            f"\nThe server must hold the same credential — its octomate.yaml "
-            f"`hook_secret`, or {HOOK_SECRET_ENV} in its environment:\n"
+            f"\nRegistration makes this credential yours: hand it to the server's "
+            f"admin to register.\n"
             f"  {secret}",
             fg=typer.colors.YELLOW,
             err=True,

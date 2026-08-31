@@ -21,6 +21,13 @@ SETTINGS_CLASSES: Final[tuple[type[BaseSettings], ...]] = (
 )
 
 
+def registered(secret: str) -> OctomateConfig:
+    """A deployment where one user carries `secret` — the smallest config an
+    authenticated surface accepts, since every configured credential names a
+    person and the hook routers refuse to mount for nobody."""
+    return OctomateConfig.model_validate({"users": {"lu": {"secret": secret}}})
+
+
 @contextmanager
 def without_dotenv() -> Generator[None]:
     """Drop the `.env` source for the duration.

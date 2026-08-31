@@ -68,6 +68,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import CodexConfig
+from octomate.mcp.gateway import CONVERSATION_HEADER, GATEWAY_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
@@ -77,6 +78,7 @@ from octomate.schemas.conversation import (
 from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
 from octomate.tentacles.agents.codex.adapter import (
@@ -90,7 +92,7 @@ from octomate.tentacles.agents.codex.hooks import (
 )
 from octomate.tentacles.agents.codex.ingest import CodexHookIngest
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
-from octomate.tentacles.agents.hooks import hook_guard
+from octomate.tentacles.agents.hooks import hook_guard, hook_sender
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode, is_codex_mode
@@ -149,6 +151,15 @@ CODEX_PERMISSION_PLANS: dict[CodexPermissionMode, CodexPermissionPlan] = {
 }
 
 
+# How a driven turn's Codex process is told to reach the gateway MCP server: the
+# launch config names these variables, and `new_client` fills them per conversation,
+# so the identity the header asserts is the launch config's and never the model's.
+# The token is the kicking user's own secret — the turn speaks as the human it
+# represents, and a kicker carrying none gets no wiring at all.
+GATEWAY_TOKEN_ENV = "OCTOMATE_GATEWAY_TOKEN"
+GATEWAY_CONVERSATION_ENV = "OCTOMATE_GATEWAY_CONVERSATION"
+
+
 @dataclass
 class PooledCodexClient:
     client: AsyncCodex
@@ -158,6 +169,10 @@ class PooledCodexClient:
     last_used: float = 0.0
     # Active runs holding this client; a client with `in_use > 0` is never evicted.
     in_use: int = 0
+    # The kicker's bearer this client's gateway wiring was launched with — None for
+    # no wiring. A turn wanting otherwise evicts and rebuilds, since launch config
+    # is fixed at process start.
+    gateway_bearer: SecretStr | None = None
 
 
 class CodexClientPool:
@@ -174,7 +189,7 @@ class CodexClientPool:
     def __init__(
         self,
         *,
-        build: Callable[[uuid.UUID], AsyncCodex],
+        build: Callable[[uuid.UUID, SecretStr | None], AsyncCodex],
         max_clients: int | None,
         idle_ttl: float | None,
     ) -> None:
@@ -184,14 +199,28 @@ class CodexClientPool:
         self.clients: OrderedDict[uuid.UUID, PooledCodexClient] = OrderedDict()
         self.lock = asyncio.Lock()
 
-    async def acquire(self, conversation_id: uuid.UUID) -> PooledCodexClient:
+    async def acquire(
+        self, conversation_id: uuid.UUID, *, gateway_bearer: SecretStr | None = None
+    ) -> PooledCodexClient:
         async with self.lock:
             await self.evict_idle()
             pooled = self.clients.get(conversation_id)
+            if pooled is not None and pooled.gateway_bearer != gateway_bearer:
+                # Launch config is fixed at process start, so a turn whose gateway
+                # wiring disagrees gets a fresh process; the Codex thread itself
+                # survives, resumed from the conversation's external id.
+                if pooled.in_use:
+                    raise RuntimeError(
+                        f"conversation {conversation_id} has a live turn on a Codex "
+                        "client whose gateway wiring disagrees with this turn's"
+                    )
+                del self.clients[conversation_id]
+                await self.close(pooled)
+                pooled = None
             if pooled is None:
-                client = self.build(conversation_id)
+                client = self.build(conversation_id, gateway_bearer)
                 await client.__aenter__()
-                pooled = PooledCodexClient(client=client)
+                pooled = PooledCodexClient(client=client, gateway_bearer=gateway_bearer)
                 self.clients[conversation_id] = pooled
             self.clients.move_to_end(conversation_id)
             pooled.in_use += 1
@@ -267,8 +296,6 @@ class CodexTentacle(AgentTentacle[str, None]):
     """
 
     config: CodexConfig = field(init=False)
-    # Bearer credential its hook router requires of native sessions.
-    hook_secret: SecretStr = field(init=False, repr=False)
     pool: CodexClientPool | None = field(default=None, init=False, repr=False)
     live_turns: dict[uuid.UUID, AsyncTurnHandle] = field(
         default_factory=dict, init=False
@@ -301,12 +328,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: CodexConfig,
-        hook_secret: SecretStr,
         description: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.config = config
-        self.hook_secret = hook_secret
         self.description = description or self.description
         self.pool = None
         self.live_turns = {}
@@ -318,6 +343,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.claims = {  # noqa: C416
             model: claim for model, claim in config.claims.items()
         }
+        self.gateway = config.gateway
         self.models = {model: model for model in config.models}
         self.session_locks = SessionLocks()
         self.session_tailer = CodexTranscriptTailer(
@@ -342,29 +368,41 @@ class CodexTentacle(AgentTentacle[str, None]):
         (`octomate codex tail`) — the server never reads a rollout from disk, this
         machine's sessions included. The guard covers the websocket too: FastAPI
         runs router dependencies at the handshake, so a bad bearer is denied with
-        the same 401 before any socket opens."""
-        router = APIRouter(
-            tags=["codex"], dependencies=[Depends(hook_guard(self.hook_secret))]
-        )
+        the same 401 before any socket opens. Each route takes `hook_sender` — the
+        verified bearer resolved to their own profile, on the guard's single
+        per-request check — as the ledger's principal."""
+        verifier = hook_guard(self.octomate.bearers, self.id)
+        resolve_sender = hook_sender(self.octomate.users, CODEX_NATIVE_ID, verifier)
+        router = APIRouter(tags=["codex"], dependencies=[Depends(verifier)])
 
         @router.post("/hooks/codex", summary="Codex native-session hook pipe")
-        async def receive_hook(event: CodexHookInput) -> JSONResponse:
-            await self.session_ingest.handle(event)
+        async def receive_hook(
+            event: CodexHookInput,
+            # `param: T = Depends(dep)` is FastAPI's own dependency contract;
+            # ruff's B008 exemption misses it when T is a custom class (it is
+            # fine with `str`), so the rule bends rather than the checked type.
+            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
+        ) -> JSONResponse:
+            await self.session_ingest.handle(event, sender)
             return JSONResponse({})
 
         @router.websocket("/hooks/codex/stream")
-        async def stream(websocket: WebSocket) -> None:
-            await self.stream_session(websocket)
+        async def stream(
+            websocket: WebSocket,
+            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
+        ) -> None:
+            await self.stream_session(websocket, sender)
 
         return router
 
-    async def stream_session(self, websocket: WebSocket) -> None:
+    async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
         """One remote tail's connection, up to its attach: take the hello and refuse
         what cannot stream — a stale protocol loudly (the session still degrades to
         hooks-only ingest), and a session this tentacle is driving itself, whose
         rollout ingested here would write the conversation a second time
-        (`CodexHookIngest.driving`). Authentication already happened: the router's
-        `hook_guard` dependency denied a bad bearer at the handshake."""
+        (`CodexHookIngest.driving`). Authentication already happened at the
+        handshake, and `sender` is the verified bearer's own profile — whose
+        ledger this stream writes."""
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -388,9 +426,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             return
         # Its own materia context: a stream outlives any request, like a follow loop.
         with sqlalchemy_materia():
-            await self.stream_attached(websocket, hello)
+            await self.stream_attached(websocket, hello, sender)
 
-    async def stream_attached(self, websocket: WebSocket, hello: StreamHello) -> None:
+    async def stream_attached(
+        self, websocket: WebSocket, hello: StreamHello, sender: UserProfile
+    ) -> None:
         """The attached half of a stream connection: register the session, answer
         resume offsets, then feed each framed line through the tailer's assembly.
         Codex turns close on their own `task_complete`/`turn_aborted` lines, so
@@ -422,6 +462,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         state, offsets = await self.session_tailer.attach_remote(
             hello.session_id,
             Path(hello.transcript_path),
+            sender,
             local_client=local_client,
         )
         logger.info(
@@ -495,11 +536,40 @@ class CodexTentacle(AgentTentacle[str, None]):
         # Only the pool is tentacle-wide shared state; each conversation's Codex
         # client is built here, entered/exited through the SDK's async context, and
         # reused or evicted by the pool.
-        def new_client(conversation_id: uuid.UUID) -> AsyncCodex:
-            runtime = replace(
-                self.config.runtime,
-                env={**(self.config.runtime.env or {}), DRIVEN_ENV: "1"},
-            )
+        def new_client(
+            conversation_id: uuid.UUID, gateway_bearer: SecretStr | None
+        ) -> AsyncCodex:
+            env = {**(self.config.runtime.env or {}), DRIVEN_ENV: "1"}
+            overrides = self.config.runtime.config_overrides
+            if gateway_bearer is not None:
+                # The turn's session is at the gateway, so the launch config wires
+                # the process to the served MCP endpoint and asserts the turn's own
+                # conversation id — the model never chooses the header. The url is
+                # the deployment config's port and path over loopback: the bind is
+                # uvicorn's rather than the app's, and the app-server is a child
+                # of the host being served.
+                deployment = self.octomate.config
+                if deployment is None:
+                    raise RuntimeError(
+                        "this turn's gateway session is registered, but the host "
+                        "cannot name the served MCP endpoint to wire it to: "
+                        "Octomate.config must be set"
+                    )
+                env[GATEWAY_TOKEN_ENV] = gateway_bearer.get_secret_value()
+                env[GATEWAY_CONVERSATION_ENV] = str(conversation_id)
+                url = (
+                    f"http://127.0.0.1:{deployment.port}"
+                    f"/{GATEWAY_SERVER_NAME}{deployment.mcp_path}"
+                )
+                overrides = (
+                    *overrides,
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.url={url}",
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.bearer_token_env_var="
+                    f"{GATEWAY_TOKEN_ENV}",
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.env_http_headers="
+                    f'{{"{CONVERSATION_HEADER}" = "{GATEWAY_CONVERSATION_ENV}"}}',
+                )
+            runtime = replace(self.config.runtime, env=env, config_overrides=overrides)
             client = AsyncCodex(config=runtime)
 
             # One client per conversation, so bind the approval handler to this
@@ -985,7 +1055,20 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_name=run_name or "codex",
             conversation_address=str(conversation_address),
         ):
-            pooled = await self.pool.acquire(conversation.id)
+            # Registered by the react node for exactly the turns whose connection
+            # has the gateway; an accomplice's or a stray conversation is not there.
+            # The wiring carries the kicker's own credential, so a turn whose
+            # kicker is unregistered or carries no secret launches clean, with
+            # the spells withheld.
+            session = self.octomate.gateway.get(conversation.id)
+            gateway_bearer = (
+                await self.octomate.users.secret_of(session.user_profile)
+                if session is not None
+                else None
+            )
+            pooled = await self.pool.acquire(
+                conversation.id, gateway_bearer=gateway_bearer
+            )
             try:
                 codex_thread = pooled.thread
                 if codex_thread is None:

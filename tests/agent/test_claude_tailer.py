@@ -24,12 +24,15 @@ from octomate.database import async_session
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import MessageBinding, ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.claude import tailer as tailer_mod
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer, TailState
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
+
+SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "sess-tail"
 SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "thread", SESSION_ID)
@@ -169,7 +172,7 @@ async def stream_in(
 ) -> TailState:
     """One clean stream round: attach, feed the session's lines (and a child's, keyed
     by agent id), then the drain's `eof` — `finish_remote` commits and detaches."""
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed_records(tailer, state, records)
     if sub is not None:
         await feed_records(tailer, state, sub, agent_id=AGENT_ID)
@@ -270,7 +273,7 @@ async def test_the_posture_a_session_runs_under_is_read_off_its_transcript() -> 
     await stream_in(tailer, opening)
     assert await posture() == "plan"
 
-    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed_records(
         tailer, state, [switched, unmodelled], start=offsets[tailer_mod.SESSION_FILE]
     )
@@ -304,7 +307,7 @@ async def test_no_consumer_still_records_every_run() -> None:
 async def test_malformed_line_does_not_stall_ingest() -> None:
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
 
     # Splice a garbage (unparseable) line in right after turn one's prompt — the
     # client ships every framed line, parseable or not.
@@ -361,17 +364,22 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger() -> None:
 
     # The hooks write each turn's human ledger as it happens…
     await ingest.handle(
-        hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files")
+        hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files"),
+        SENDER,
     )
-    await ingest.handle(hook_event("Stop", "p1", last_assistant_message="Done."))
     await ingest.handle(
-        hook_event("UserPromptSubmit", "p2", CLIENT_PATH, prompt="now commit")
+        hook_event("Stop", "p1", last_assistant_message="Done."), SENDER
     )
-    await ingest.handle(hook_event("Stop", "p2", last_assistant_message="Committed."))
+    await ingest.handle(
+        hook_event("UserPromptSubmit", "p2", CLIENT_PATH, prompt="now commit"), SENDER
+    )
+    await ingest.handle(
+        hook_event("Stop", "p2", last_assistant_message="Committed."), SENDER
+    )
     # …and the stream is what lands the full timeline.
     await stream_in(tailer, TURN_ONE + TURN_TWO)
     await ingest.handle(
-        hook_event("SessionEnd", transcript=CLIENT_PATH, reason="other")
+        hook_event("SessionEnd", transcript=CLIENT_PATH, reason="other"), SENDER
     )
 
     # Both turns recorded as external runs.
@@ -401,9 +409,12 @@ async def test_the_tailer_supersedes_the_hooks_sketch_of_a_turn() -> None:
     ingest, tailer = wired(octomate)
 
     await ingest.handle(
-        hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files")
+        hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files"),
+        SENDER,
     )
-    await ingest.handle(hook_event("Stop", "p1", last_assistant_message="Done."))
+    await ingest.handle(
+        hook_event("Stop", "p1", last_assistant_message="Done."), SENDER
+    )
 
     # In flight: the prompt and the answer, and no byte range — the mark of a sketch.
     [sketch] = await runs_of(octomate)
@@ -437,7 +448,7 @@ async def test_a_commit_that_cannot_be_made_propagates_rather_than_skips() -> No
     tailer = ClaudeTranscriptTailer(
         octomate.conversations, octomate.thread_manager, locks
     )
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     offset = await feed_records(tailer, state, TURN_ONE)
 
     async with locks.hold(SESSION_ID):  # a wedged holder the commit can't get past
@@ -460,7 +471,7 @@ async def test_a_commit_that_cannot_be_made_propagates_rather_than_skips() -> No
 async def test_shutdown_drops_every_registration() -> None:
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
-    await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
 
     await tailer.shutdown()
 
@@ -547,8 +558,10 @@ async def test_the_commit_reuses_live_ledger_rows() -> None:
 
     # The hooks already wrote p1's ledger; the commit binds those rows, not duplicates.
     ingest = ClaudeHookIngest(octomate, tailer)
-    await ingest.record_prompt(hook("p1", prompt="list the files"), "list the files")
-    await ingest.record_answer(hook("p1"), "Done.")
+    await ingest.record_prompt(
+        hook("p1", prompt="list the files"), "list the files", SENDER
+    )
+    await ingest.record_answer(hook("p1"), "Done.", SENDER)
 
     await stream_in(tailer, TURN_ONE + TURN_TWO)
 
@@ -569,7 +582,7 @@ async def test_session_end_with_no_stream_is_a_noop() -> None:
     ingest, tailer = wired(octomate)
 
     await ingest.handle(
-        hook_event("SessionEnd", transcript=CLIENT_PATH, reason="other")
+        hook_event("SessionEnd", transcript=CLIENT_PATH, reason="other"), SENDER
     )
 
     assert await runs_of(octomate) == []
@@ -607,9 +620,12 @@ async def test_commit_redates_the_hooks_ledger_to_the_transcript_clock() -> None
     ingest, tailer = wired(octomate)
 
     await ingest.handle(
-        hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files")
+        hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files"),
+        SENDER,
     )
-    await ingest.handle(hook_event("Stop", "p1", last_assistant_message="Done."))
+    await ingest.handle(
+        hook_event("Stop", "p1", last_assistant_message="Done."), SENDER
+    )
     await stream_in(tailer, TURN_ONE)
 
     (p1,) = await runs_of(octomate)
@@ -827,7 +843,7 @@ async def test_subagent_stop_commits_the_child_run_without_waiting() -> None:
     attached and the parent's own turn is still open."""
     octomate = Octomate()
     ingest, tailer = wired(octomate)
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     # Parent turn p1 is still in flight: prompt + spawn, no closing prompt after.
     await feed_records(tailer, state, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
     await feed_records(tailer, state, SUB_TURN_ONE, agent_id=AGENT_ID)
@@ -837,10 +853,11 @@ async def test_subagent_stop_commits_the_child_run_without_waiting() -> None:
             "SubagentStart",
             transcript_path=str(CLIENT_PATH),
             prompt="audit the repo",
-        )
+        ),
+        SENDER,
     )
     await ingest.handle(
-        subagent_hook("SubagentStop", last_assistant_message="two findings")
+        subagent_hook("SubagentStop", last_assistant_message="two findings"), SENDER
     )
 
     [child_run] = await subagent_runs_of(octomate)
@@ -867,7 +884,8 @@ async def test_subagent_start_sketches_the_child_run_when_keyed() -> None:
             transcript_path=str(CLIENT_PATH),
             prompt_id="p1",
             prompt="audit the repo",
-        )
+        ),
+        SENDER,
     )
     after = datetime.now(UTC)
 
@@ -881,11 +899,11 @@ async def test_subagent_start_sketches_the_child_run_when_keyed() -> None:
 
     # The child's lines stream in and the subagent stops: the full timeline replaces
     # the sketch as the same run, now final.
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed_records(tailer, state, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
     await feed_records(tailer, state, SUB_TURN_ONE, agent_id=AGENT_ID)
     await ingest.handle(
-        subagent_hook("SubagentStop", last_assistant_message="two findings")
+        subagent_hook("SubagentStop", last_assistant_message="two findings"), SENDER
     )
     [child_run] = await subagent_runs_of(octomate)
     assert child_run.id == f"{AGENT_ID}:p1"
@@ -910,7 +928,8 @@ async def test_an_event_carrying_agent_id_never_touches_the_parent_turn() -> Non
                 "prompt": "child noise",
                 "agent_id": AGENT_ID,
             }
-        )
+        ),
+        SENDER,
     )
     await ingest.handle(
         ClaudeHookInput.model_validate(
@@ -921,7 +940,8 @@ async def test_an_event_carrying_agent_id_never_touches_the_parent_turn() -> Non
                 "last_assistant_message": "child answer",
                 "agent_id": AGENT_ID,
             }
-        )
+        ),
+        SENDER,
     )
 
     thread = await octomate.thread_manager.ensure(SESSION_KEY)
@@ -937,7 +957,7 @@ async def test_a_driven_sessions_subagent_hooks_are_suppressed() -> None:
     ingest, tailer = wired(octomate)
     with ingest.driving(SESSION_ID):
         await ingest.handle(
-            subagent_hook("SubagentStart", prompt_id="p1", prompt="child work")
+            subagent_hook("SubagentStart", prompt_id="p1", prompt="child work"), SENDER
         )
     assert await subagent_runs_of(octomate) == []
     assert tailer.sessions == {}
@@ -955,7 +975,8 @@ async def test_subagent_stop_with_no_stream_is_a_noop() -> None:
             "SubagentStop",
             transcript_path=str(CLIENT_PATH),
             last_assistant_message="two findings",
-        )
+        ),
+        SENDER,
     )
 
     assert await subagent_runs_of(octomate) == []
@@ -969,7 +990,7 @@ async def test_subagent_stop_waits_for_the_answer_line_to_land() -> None:
     permanently missing its own conclusion."""
     octomate = Octomate()
     ingest, tailer = wired(octomate)
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed_records(tailer, state, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
     # Everything except the final answer line has streamed when the hook fires.
     fed = await feed_records(tailer, state, SUB_TURN_ONE[:-1], agent_id=AGENT_ID)
@@ -982,7 +1003,7 @@ async def test_subagent_stop_waits_for_the_answer_line_to_land() -> None:
 
     writer = asyncio.ensure_future(late_writer())
     await ingest.handle(
-        subagent_hook("SubagentStop", last_assistant_message="two findings")
+        subagent_hook("SubagentStop", last_assistant_message="two findings"), SENDER
     )
     await writer
 
@@ -1003,12 +1024,13 @@ async def test_subagent_stop_never_hangs_on_an_answer_that_never_lands(
     monkeypatch.setattr(tailer_mod, "SUBAGENT_SETTLE_TIMEOUT", 0.3)
     octomate = Octomate()
     ingest, tailer = wired(octomate)
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed_records(tailer, state, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
     await feed_records(tailer, state, SUB_TURN_ONE[:-1], agent_id=AGENT_ID)
 
     await ingest.handle(
-        subagent_hook("SubagentStop", last_assistant_message="words never written")
+        subagent_hook("SubagentStop", last_assistant_message="words never written"),
+        SENDER,
     )
 
     # Bounded: it committed what actually streamed rather than waiting forever.
@@ -1023,7 +1045,7 @@ async def test_a_diverging_announced_answer_settles_on_quiescence() -> None:
     cost a couple of poll beats, not the full timeout — and never the commit."""
     octomate = Octomate()
     ingest, tailer = wired(octomate)
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     await feed_records(tailer, state, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
     await feed_records(tailer, state, SUB_TURN_ONE, agent_id=AGENT_ID)  # complete
 
@@ -1031,7 +1053,8 @@ async def test_a_diverging_announced_answer_settles_on_quiescence() -> None:
     await ingest.handle(
         subagent_hook(
             "SubagentStop", last_assistant_message="two findings… [truncated]"
-        )
+        ),
+        SENDER,
     )
     elapsed = monotonic() - started
 

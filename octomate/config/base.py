@@ -7,10 +7,11 @@ add up to one settings payload with no wrapper key and no section to traverse.
 
 The home is chosen, never merged. `$OCTOMATE_HOME` wins outright and is obeyed even
 when empty — that is what makes the test suite's isolation total. Absent it, the
-project's own `./.octomate/` is preferred over the machine's `~/.octomate/`, but only
-if it actually holds config: `./.octomate/` exists in every checkout for the database
-and `cli.toml` alone, and a directory that carries neither must not shadow the
-machine's deployment.
+project's own `./.octomate/config/` is preferred over the machine's
+`~/.octomate/config/`, but only if it actually holds config. The `config/`
+subdirectory is what marks the server's files as such: `.octomate/` itself belongs
+to the database and the client's `cli.toml`, which are not deployment config and
+must not make a directory look like one.
 
 The packaged defaults under `defaults/` are the floor beneath whichever home wins.
 They are layered per top-level key and wholesale — a home that declares `agents:`
@@ -28,7 +29,6 @@ from typing import Annotated, Self
 from pydantic import (
     Field,
     IPvAnyAddress,
-    SecretStr,
     ValidationError,
     ValidatorFunctionWrapHandler,
     field_validator,
@@ -55,7 +55,7 @@ from octomate.schemas.project import Project
 OCTOMATE_HOME_ENV = "OCTOMATE_HOME"
 
 # One file per subsystem, in the order they are read. `octomate.yaml` carries the
-# host's own settings (host, port, hook_secret, db_url) and comes first so a later
+# host's own settings (host, port, mcp_path, db_url) and comes first so a later
 # file cannot be shadowed by it.
 CONFIG_FILES: tuple[str, ...] = (
     "octomate.yaml",
@@ -82,7 +82,10 @@ def config_home() -> Path:
     from_env = os.environ.get(OCTOMATE_HOME_ENV)
     if from_env:
         return Path(from_env).expanduser()
-    candidates = (Path.cwd() / ".octomate", Path.home() / ".octomate")
+    candidates = (
+        Path.cwd() / ".octomate" / "config",
+        Path.home() / ".octomate" / "config",
+    )
     for candidate in candidates:
         if any((candidate / name).is_file() for name in CONFIG_FILES):
             return candidate
@@ -115,17 +118,13 @@ class OctomateConfig(BaseSettings):
     host: IPvAnyAddress = IPv4Address("127.0.0.1")
     port: Annotated[int, Field(ge=1, le=65535)] = 8000
 
-    hook_secret: Annotated[
-        SecretStr | None,
+    mcp_path: Annotated[
+        str,
         Field(
-            description="Bearer credential the Claude/Codex hook routers require. "
-            "Required whenever one of those agents is configured, since serving a hook "
-            "router unauthenticated would let anything that can reach the port write a "
-            "session's prompts and answers into thread history. Set it in the "
-            "environment (OCTOMATE__HOOK_SECRET) and the installed hooks will reference "
-            "the same variable."
+            description="The MCP endpoint under each served server's mount: the "
+            "gateway answers at `/gateway` followed by this path."
         ),
-    ] = None
+    ] = "/mcp"
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
@@ -261,7 +260,12 @@ class OctomateConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_user_links(self) -> Self:
         """A typo'd channel id in a user's links must fail the boot, not
-        silently produce a link no channel will ever resolve."""
+        silently produce a link no channel will ever resolve.
+
+        The native pseudo-channels are not admissible either: a native session
+        is registered by the user's own `secret`, which anchors it on a
+        transient profile — no claimed row exists for a link to seed, so a
+        pseudo-channel link is as unresolvable as any typo."""
         errors: list[InitErrorDetails] = [
             InitErrorDetails(
                 type=PydanticCustomError(

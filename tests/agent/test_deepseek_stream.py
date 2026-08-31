@@ -7,6 +7,8 @@ seqs, not bytes, because the client reads its dsh gateway rather than a file."""
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi import FastAPI
@@ -29,6 +31,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from octomate import Octomate
 from octomate.config.agents import DeepseekConfig
+from octomate.managers.user import UserManager
 from octomate.tentacles.agents.deepseek import DeepseekTentacle
 from octomate.types.json import JsonObject
 from tests.agent.test_deepseek_native_ingest import (
@@ -37,6 +40,7 @@ from tests.agent.test_deepseek_native_ingest import (
     turn_events,
 )
 from tests.support.agents import DEEPSEEK_MODELS
+from tests.support.config import registered
 
 SECRET = SecretStr("the-hook-secret")
 AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
@@ -48,14 +52,22 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 
 def stream_client() -> tuple[TestClient, DeepseekTentacle]:
-    octomate = Octomate()
+    config = registered(SECRET.get_secret_value())
+    octomate = Octomate(config=config, users=UserManager(config.users))
     tentacle = DeepseekTentacle(
         "deepseek",
         octomate,
         config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
-        hook_secret=SECRET,
     )
-    app = FastAPI()
+
+    # Entering the client runs the lifespan: the registered user gets their
+    # registry row, the way the real app reconciles before serving.
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await octomate.users.reconcile()
+        yield
+
+    app = FastAPI(lifespan=lifespan)
     for router in tentacle.routers():
         app.include_router(router)
     return TestClient(app), tentacle
@@ -141,7 +153,10 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
 
 def test_a_stale_protocol_is_refused_loudly() -> None:
     client, _ = stream_client()
-    with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
+    with (
+        client,
+        client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket,
+    ):
         websocket.send_text(hello_json(protocol=99))
         with pytest.raises(WebSocketDisconnect) as disconnect:
             websocket.receive_text()
@@ -153,7 +168,7 @@ def test_a_driven_session_is_refused() -> None:
     """Octomate records the sessions it drives itself; streaming their events
     would write those conversations a second time."""
     client, tentacle = stream_client()
-    with tentacle.session_ingest.driving(SESSION_ID):
+    with client, tentacle.session_ingest.driving(SESSION_ID):
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             with pytest.raises(WebSocketDisconnect) as disconnect:
@@ -166,7 +181,10 @@ def test_a_seq_gap_closes_for_resync() -> None:
     """A gap means entries were lost; the close makes the client reconnect and
     re-ask where to resume, instead of the server assembling a mis-framed turn."""
     client, _ = stream_client()
-    with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
+    with (
+        client,
+        client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket,
+    ):
         websocket.send_text(hello_json())
         websocket.receive_text()  # welcome
         websocket.send_text(StreamLine(start=5, end=6, line="{}").model_dump_json())
@@ -180,7 +198,10 @@ def test_a_labeled_line_is_refused() -> None:
     """A dsh session streams as one event sequence; a line keyed to a sibling
     file is another agent's protocol."""
     client, _ = stream_client()
-    with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
+    with (
+        client,
+        client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket,
+    ):
         websocket.send_text(hello_json())
         websocket.receive_text()  # welcome
         websocket.send_text(

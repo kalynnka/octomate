@@ -11,16 +11,23 @@ from functools import lru_cache
 from typing import TypeVar
 
 from fastapi import APIRouter, FastAPI, Request, Response
+from fastmcp import FastMCP
+from fastmcp.dependencies import Depends
+from fastmcp.server.http import StarletteWithLifespan
 from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
 
+from octomate.config.base import OctomateConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.gateway import GatewayManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.mcp.base import KnownBearers
+from octomate.mcp.gateway import gateway_mcp, served_session
 from octomate.oauth.routes import oauth_router
 from octomate.reflex import (
     Awake,
@@ -31,6 +38,7 @@ from octomate.reflex import (
 from octomate.schemas.awakes import (
     AwakeSignal,
     DeferredActionBatchResponse,
+    GatewayHandoffSignal,
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
@@ -105,11 +113,25 @@ class Octomate:
     )
     users: UserManager = field(default_factory=UserManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
+    gateway: GatewayManager = field(default_factory=GatewayManager)
+    # The MCP endpoint under each served server's mount: `/<name>` + `mcp_path`.
+    mcp_path: str = "/mcp"
+    # The deployment config the host was built from. What a tentacle reads for
+    # serving facts the app object itself does not model — above all the uvicorn
+    # bind port, which only the config knows.
+    config: OctomateConfig | None = None
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
     routers: list[APIRouter] = field(default_factory=list)
+    # Fire-and-forget graph turns (`kick_soon`), held strongly until they settle.
+    background: set[asyncio.Task[None]] = field(default_factory=set, init=False)
+    # Every credential this deployment accepts — the registered users' own secrets,
+    # nothing else. One registry shared by the MCP verifier and the hook guards;
+    # with no user registered it rejects every bearer, and whether that should
+    # refuse a boot is the hook routers' own mounting question.
+    bearers: KnownBearers = field(init=False)
 
     def __post_init__(self, oauth_encryption_key: SecretStr | None) -> None:
         # Every ledger row references its sender's registry profile, so the
@@ -118,6 +140,9 @@ class Octomate:
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=oauth_encryption_key,
+        )
+        self.bearers = KnownBearers(
+            self.config.users if self.config is not None else {}
         )
 
     def connect(self, tentacle: TentacleT) -> TentacleT:
@@ -175,6 +200,9 @@ class Octomate:
                 address = signal.address
                 span.set_attribute("channel_id", address.channel_tentacle_id)
                 span.set_attribute("conversation_address", str(address))
+            elif isinstance(signal, GatewayHandoffSignal):
+                span.set_attribute("agent_id", signal.agent_id)
+                span.set_attribute("action", signal.decision.action)
             elif isinstance(signal, DeferredActionBatchResponse):
                 span.set_attribute("batch_id", str(signal.batch_id))
                 # Deliver the response to a live Claude run blocked on this batch
@@ -199,10 +227,52 @@ class Octomate:
                         conversation_manager=self.conversations,
                         thread_manager=self.thread_manager,
                         action_manager=self.deferred_actions,
+                        gateway=self.gateway,
                     ),
                 )
 
+    def kick_soon(self, signal: AwakeSignal) -> None:
+        """`kick` as its own task, for a caller that must answer now — a served
+        native spell whose handoff is a whole agent turn it cannot wait out."""
+        task = asyncio.create_task(self.kick(signal))
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
+
+    def mcp_servers(self) -> list[FastMCP]:
+        """The MCP servers Octomate serves, one per tool family.
+
+        Separate servers rather than one with namespaces: a runtime that defers MCP
+        tools behind a search does so per server, with the server's own instructions
+        as the family's card, and only a root server's instructions ever reach a
+        client. Each is served at `/<name>/mcp` behind the deployment's known
+        bearers, and resolves the identity a call runs against from the request
+        itself.
+        """
+        return [
+            gateway_mcp(
+                Depends(served_session(self)),
+                self.thread_manager,
+                kick=self.kick_soon,
+            )
+        ]
+
     def app(self, *, title: str = "Octomate") -> FastAPI:
+        # The MCP servers are always served, never open: the gateway's spells send
+        # to real channels and hand conversations to other agents, so every call
+        # authenticates against the registered users' own secrets — which locks
+        # the endpoints outright until a user is registered. One verifier for the
+        # whole group — the same credentials, and the same principals, as the
+        # hook routers.
+        mcp_apps: dict[str, StarletteWithLifespan] = {}
+        verifier = self.bearers
+        for server in self.mcp_servers():
+            server.auth = verifier
+            # Stateless: identity is per call, from the request, so there is
+            # nothing for the transport to keep between calls.
+            mcp_apps[server.name] = server.http_app(
+                path=self.mcp_path, stateless_http=True
+            )
+
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             with sqlalchemy_materia():
@@ -220,9 +290,16 @@ class Octomate:
                 # shutdown closes them first — nothing ingests into agents whose
                 # sessions are already torn down.
                 async with (
+                    # Starlette runs no lifespan for a mounted app, and the MCP
+                    # transport's task group lives in that lifespan; an endpoint
+                    # answers only inside it. Outermost, so the servers are up
+                    # before any tentacle starts and down after the last stops.
+                    AsyncExitStack() as mcp_stack,
                     AsyncExitStack() as agent_stack,
                     AsyncExitStack() as channel_stack,
                 ):
+                    for mcp_app in mcp_apps.values():
+                        await mcp_stack.enter_async_context(mcp_app.lifespan(mcp_app))
 
                     async def start(stack: AsyncExitStack, tentacle: Tentacle) -> None:
                         # Isolate + time-bound each start so one slow or hung
@@ -294,5 +371,11 @@ class Octomate:
 
         for router in self.routers:
             app.include_router(router)
+
+        # Mounted apps rather than routers: the MCP transport speaks all three
+        # methods on one path, reads and writes the stream itself, and carries
+        # its own bearer check.
+        for name, mcp_app in mcp_apps.items():
+            app.mount(f"/{name}", mcp_app, name=name)
 
         return app

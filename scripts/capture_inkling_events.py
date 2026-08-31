@@ -43,8 +43,6 @@ from pydantic_ai.toolsets import AbstractToolset
 from octomate.base import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.gateway import (
-    COMMISSION_TOOL_NAME,
-    SCHEME_TOOL_NAME,
     GatewayCapability,
 )
 from octomate.capabilities.harness.agent import Agent
@@ -58,7 +56,12 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import ImageSegment, MessageSegment
-from octomate.schemas.triage import AgentRoute, Claim
+from octomate.schemas.triage import (
+    COMMISSION_TOOL_NAME,
+    SCHEME_TOOL_NAME,
+    AgentRoute,
+    Claim,
+)
 from octomate.tentacles.agents.base import AgentTentacle
 from octomate.tentacles.agents.inkling import build_mcp_toolsets
 from octomate.tentacles.agents.inkling.base import (

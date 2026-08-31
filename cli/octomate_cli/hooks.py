@@ -1,7 +1,6 @@
-"""`octomate hooks ...` — the credential native-session hooks authenticate with.
-
-Owned at the agent level rather than by either tentacle: every agent's hook router
-authenticates against the same secret.
+"""What every agent's hook installer shares: the credential the hooks carry — the
+user's own secret from their `users:` entry, which `octomate secret` hands to a
+shell — and the scripts the installed hooks run.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
-from octomate_cli.config import HOOK_SECRET_ENV, resolved_secret, user_config_path
+from octomate_cli.config import SECRET_ENV, resolved_secret, user_config_path
 
 # Everything for a person, so stdout stays the bare export line `eval` and `>>` consume.
 console = Console(stderr=True)
@@ -28,18 +27,13 @@ EMIT_SCRIPT = Path(__file__).with_name("emit.py")
 # detached. Run by absolute path for the same reason.
 LAUNCH_SCRIPT = Path(__file__).with_name("launch.py")
 
-hooks_typer = typer.Typer(
-    help="Manage the credential native-session hooks authenticate with.",
-    no_args_is_help=True,
-)
 
-
-def announce_hook_secret() -> None:
+def announce_secret() -> None:
     """Warn when hooks were just installed against a credential that resolves to
     nothing: the install reports success, and every turn after it 401s."""
     if resolved_secret() is None:
         typer.secho(
-            f"\nNo hook credential found — {HOOK_SECRET_ENV} is unset and neither "
+            f"\nNo credential found — {SECRET_ENV} is unset and neither "
             f"./.octomate/cli.toml nor {user_config_path()} holds one. Run "
             "`octomate configure`, or every hook will be refused.",
             fg=typer.colors.YELLOW,
@@ -47,14 +41,13 @@ def announce_hook_secret() -> None:
         )
 
 
-@hooks_typer.command("secret")
 def secret() -> None:
-    """Print the hook credential as a shell export line, generating one if unset.
+    """Print your own credential as a shell export line, generating one if unset.
 
     Prints what the client itself resolves — the environment, then the config file —
-    and hands over the line, leaving the placing to you: `eval "$(octomate hooks
-    secret)"`. For a durable home that survives GUI launches, prefer `octomate
-    configure`, which writes the config file instead.
+    and hands over the line, leaving the placing to you: `eval "$(octomate secret)"`.
+    For a durable home that survives GUI launches, prefer `octomate configure`, which
+    writes the config file instead.
 
     A resolving secret is printed as-is, never rotated — re-running is what someone
     does when hooks already work. A generated one exists nowhere yet, and stderr says
@@ -67,7 +60,7 @@ def secret() -> None:
     body = [
         "The line below sets [bold]this shell[/]. To keep it:",
         "",
-        "  [cyan]octomate hooks secret >> ~/.zshrc[/]  [dim](or ~/.zshenv)[/]",
+        "  [cyan]octomate secret >> ~/.zshrc[/]  [dim](or ~/.zshenv)[/]",
         "",
         "[dim]An environment is captured at process start — restart shells, and VSCode, "
         "before their sessions carry it.[/]",
@@ -81,27 +74,20 @@ def secret() -> None:
             "",
             f"  [cyan]octomate configure --secret [green]{token}[/][/]",
             "",
-            "And give the server the same, in whichever you keep secrets in:",
-            "",
-            "  [dim]octomate.yaml[/]",
-            "    octomate:",
-            f"      hook_secret: [green]{token}[/]",
-            "",
-            "  [dim].env[/]",
-            f"    {HOOK_SECRET_ENV}=[green]{token}[/]",
+            "And have the server's admin register it as yours.",
             "",
             *body,
         ]
     console.print(
         Panel(
             "\n".join(body),
-            title="[bold]hook credential[/]"
+            title="[bold]credential[/]"
             if configured is not None
-            else "[bold yellow]new hook credential[/]",
+            else "[bold yellow]new credential[/]",
             border_style="cyan" if configured is not None else "yellow",
             padding=(1, 2),
         )
     )
     # Quoted because a shell parses this line: a hand-written secret can hold spaces or
     # `$`, which unquoted would export some *other* value and 401 later.
-    typer.echo(f"export {HOOK_SECRET_ENV}={shlex.quote(token)}")
+    typer.echo(f"export {SECRET_ENV}={shlex.quote(token)}")

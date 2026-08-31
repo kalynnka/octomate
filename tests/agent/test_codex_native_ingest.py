@@ -10,11 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.codex.hooks import CodexHookInput
 from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer, TailState
 from octomate.tentacles.agents.codex.transcript import rollout_line_adapter
 from octomate.tentacles.agents.locks import SessionLocks
+
+SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "codex-session"
 TURN_ID = "codex-turn"
@@ -127,7 +130,7 @@ async def stream_rollout(
     """Stream one rollout file the way production reaches it: attach, feed its framed
     lines, detach — the server never opens the file itself."""
     state, _ = await tailer.attach_remote(
-        session_id, rollout, local_client=local_client
+        session_id, rollout, SENDER, local_client=local_client
     )
     offset = 0
     for raw in rollout.read_bytes().split(b"\n")[:-1]:
@@ -153,7 +156,8 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
     await ingest.handle(
         CodexHookInput.model_validate(
             {**common, "hook_event_name": "UserPromptSubmit", "prompt": "inspect it"}
-        )
+        ),
+        SENDER,
     )
     await ingest.handle(
         CodexHookInput.model_validate(
@@ -162,7 +166,8 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
                 "hook_event_name": "Stop",
                 "last_assistant_message": "done",
             }
-        )
+        ),
+        SENDER,
     )
 
     conversation = await octomate.conversations.ensure(
@@ -209,7 +214,8 @@ async def test_a_session_start_hook_never_tails_the_claimed_path(
             hook_event_name="SessionStart",
             session_id=SESSION_ID,
             transcript_path=tmp_path / "rollout.jsonl",
-        )
+        ),
+        SENDER,
     )
     assert tailer.sessions == {}
 
@@ -224,7 +230,8 @@ async def test_driven_session_hooks_are_ignored() -> None:
                 session_id=SESSION_ID,
                 turn_id=TURN_ID,
                 prompt="do not ingest",
-            )
+            ),
+            SENDER,
         )
 
     thread = await octomate.thread_manager.ensure(
@@ -243,7 +250,8 @@ async def test_marked_session_start_is_ignored_before_the_sdk_returns_its_id() -
             hook_event_name="SessionStart",
             session_id=SESSION_ID,
             octomate_driven=True,
-        )
+        ),
+        SENDER,
     )
 
     assert octomate.thread_manager.threads == {}
@@ -335,7 +343,7 @@ def subagent_activity(
 async def streamed_runs(records: list[dict[str, object]]):
     octomate = Octomate()
     _, tailer = wired(octomate)
-    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL)
+    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL, SENDER)
     await feed_records(tailer, state, records)
     tailer.detach_remote(state)
     thread = await octomate.thread_manager.ensure(
@@ -432,12 +440,14 @@ async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
     await ingest.handle(
         CodexHookInput.model_validate(
             {**common, "hook_event_name": "UserPromptSubmit", "prompt": "inspect it"}
-        )
+        ),
+        SENDER,
     )
     await ingest.handle(
         CodexHookInput.model_validate(
             {**common, "hook_event_name": "Stop", "last_assistant_message": "done"}
-        )
+        ),
+        SENDER,
     )
 
     after = datetime.now(UTC)
@@ -453,7 +463,7 @@ async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
 async def test_thread_spawn_rollout_tree_records_resumed_child_runs() -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
-    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL)
+    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL, SENDER)
 
     await feed_records(
         tailer,
@@ -528,7 +538,7 @@ async def test_child_turn_links_activity_that_arrives_after_it_starts() -> None:
     child_key = f"rollout-child-{CHILD_THREAD_ID}.jsonl"
     octomate = Octomate()
     _, tailer = wired(octomate)
-    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL)
+    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL, SENDER)
 
     parent_offset = await feed_records(
         tailer,
@@ -587,7 +597,7 @@ async def test_child_turn_links_activity_that_arrives_after_it_starts() -> None:
 async def test_guardian_rollout_is_not_ingested_as_a_subagent() -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
-    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL)
+    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL, SENDER)
 
     await feed_records(tailer, state, [parent_metadata()])
     await feed_records(

@@ -33,14 +33,10 @@ from octomate.tentacles.agents.locks import SessionLocks
 if TYPE_CHECKING:
     from octomate import Octomate
 
-    # Runtime dependency runs the other way (the tailer imports this module's
-    # NATIVE_USER); the injected instance only needs its type here.
+    # The injected instance only needs its type here.
     from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
 
 logger = logging.getLogger(__name__)
-
-# A native session carries no platform identity for whoever is typing.
-NATIVE_USER = UserProfile(channel_user_id="native", name="native")
 
 
 class ClaudeHookIngest:
@@ -103,7 +99,10 @@ class ClaudeHookIngest:
             if self.driven[session_id] <= 0:
                 del self.driven[session_id]
 
-    async def handle(self, event: ClaudeHookInput) -> None:
+    async def handle(self, event: ClaudeHookInput, sender: UserProfile) -> None:
+        """`sender` is the verified bearer's own profile (the route's
+        `hook_sender` dependency) — the person every ledger row this event
+        writes is attributed to."""
         if event.session_id in self.driven:
             # A subagent's events carry the *parent's* session id, so a driven
             # session's subagents are suppressed by the same claim.
@@ -120,20 +119,22 @@ class ClaudeHookIngest:
                 # sketch the parent run with the child's answer.
                 return
             case "UserPromptSubmit":
-                await self.on_user_prompt_submit(event)
+                await self.on_user_prompt_submit(event, sender)
             case "Stop":
-                await self.on_stop(event)
+                await self.on_stop(event, sender)
             case "SessionEnd":
                 await self.on_session_end(event)
 
     @claude_logfire.instrument(
         "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
     )
-    async def on_user_prompt_submit(self, event: ClaudeHookInput) -> None:
+    async def on_user_prompt_submit(
+        self, event: ClaudeHookInput, sender: UserProfile
+    ) -> None:
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
             if event.prompt:
-                await self.record_prompt(event, event.prompt)
+                await self.record_prompt(event, event.prompt, sender)
                 await self.sketch_run(event)
                 logger.info(
                     "session %s: turn %s asked", event.session_id, event.prompt_id
@@ -142,10 +143,10 @@ class ClaudeHookIngest:
     @claude_logfire.instrument(
         "claude.hook Stop [{event.session_id}]", extract_args=["event"]
     )
-    async def on_stop(self, event: ClaudeHookInput) -> None:
+    async def on_stop(self, event: ClaudeHookInput, sender: UserProfile) -> None:
         async with self.locks.hold(event.session_id):
             if event.last_assistant_message:
-                await self.record_answer(event, event.last_assistant_message)
+                await self.record_answer(event, event.last_assistant_message, sender)
                 await self.sketch_run(event)
                 logger.info(
                     "session %s: turn %s answered", event.session_id, event.prompt_id
@@ -274,7 +275,9 @@ class ClaudeHookIngest:
             project=project,
         )
 
-    async def record_prompt(self, event: ClaudeHookInput, prompt: str) -> None:
+    async def record_prompt(
+        self, event: ClaudeHookInput, prompt: str, sender: UserProfile
+    ) -> None:
         thread = await self.session_thread(event)
         if event.prompt_id and self.already_recorded(
             thread, event.prompt_id, "inbound"
@@ -286,8 +289,8 @@ class ClaudeHookIngest:
                 message_id=event.prompt_id or "",
                 chat_id=event.session_id,
                 chat_type="thread",
-                user_id=NATIVE_USER.channel_user_id,
-                sender=NATIVE_USER,
+                user_id=sender.channel_user_id,
+                sender=sender,
                 segments=[TextSegment(data={"text": prompt})],
             )
         )
@@ -354,7 +357,9 @@ class ClaudeHookIngest:
             None,
         )
 
-    async def record_answer(self, event: ClaudeHookInput, answer: str) -> None:
+    async def record_answer(
+        self, event: ClaudeHookInput, answer: str, sender: UserProfile
+    ) -> None:
         thread = await self.session_thread(event)
         if event.prompt_id and self.already_recorded(
             thread, event.prompt_id, "outbound"
@@ -364,7 +369,7 @@ class ClaudeHookIngest:
             thread,
             agent_tentacle_id=CLAUDE_NATIVE_ID,
             segments=[MarkdownSegment(data={"text": answer})],
-            sender=NATIVE_USER,
+            sender=sender,
             platform_message_id=event.prompt_id or "",
         )
 

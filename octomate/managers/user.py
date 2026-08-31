@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 
+from pydantic import SecretStr
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.schemas.user import User, UserProfile
+from octomate.types.threads import NATIVE_TENTACLE_IDS
 
 PROFILE_FIELDS = {"name", "nickname", "gender", "age", "title"}
 
@@ -84,6 +86,51 @@ class UserManager:
             if other.channel_tentacle_id != profile.channel_tentacle_id
         ]
 
+    async def secret_of(self, profile: UserProfile | None) -> SecretStr | None:
+        """The bearer credential `profile`'s registered owner carries on their
+        registry row, or None — for no profile, a visitor, or an owner whose
+        row holds no secret.
+
+        What a driven turn's gateway wiring resolves: the turn speaks with its
+        kicker's own credential or not at all, since every configured credential
+        names a person and the host holds none of its own."""
+        if profile is None:
+            return None
+        user = await self.owner(profile)
+        return user.secret if user is not None else None
+
+    async def native_profile(self, runtime: str, username: str) -> UserProfile | None:
+        """A transient anchor for `username`'s native session on `runtime`'s
+        pseudo-channel, or None for a username the registry never reconciled.
+
+        Never persisted: a native session's identity comes from its verified
+        bearer, not from a claimed row, so the profile exists only to give the
+        linked-profile walk its starting point — owned like a stored profile,
+        and standing on a channel id no channel ever resolves.
+        """
+        user = next(
+            (cached for cached in self.users.values() if cached.username == username),
+            None,
+        )
+        if user is None:
+            async with async_session() as session:
+                user = await session.one_or_none(
+                    User, expressions=[User["username"] == username]
+                )
+            if user is None:
+                return None
+            self.cache_user(user)
+        # `user_id` alone carries the ownership: `owner()` resolves it through the
+        # cache, and assigning the relation itself would backpopulate
+        # `user.profiles` — a lazy load the detached cached instance cannot do.
+        return UserProfile(
+            channel_tentacle_id=runtime,
+            channel_user_id=username,
+            user_id=user.id,
+            name=user.name,
+            nickname=user.nickname,
+        )
+
     async def profile(
         self, channel_tentacle_id: str, channel_user_id: str
     ) -> UserProfile | None:
@@ -108,7 +155,10 @@ class UserManager:
 
         First sight creates an ownerless visitor profile. YAML reconciliation
         may already have seeded and attached the profile; observations refresh
-        only its channel-owned display fields and never change ownership.
+        only its channel-owned display fields and never change ownership. An
+        `observed.user_id` is the one exception: no channel ever sets it —
+        only a verified bearer's transient anchor (`native_profile`) carries
+        one — so an identity that arrives owned stays owned.
         """
         async with self.ensure_lock, async_session() as session:
             profile = await session.one_or_none(
@@ -122,12 +172,15 @@ class UserManager:
                 profile = UserProfile(
                     channel_tentacle_id=channel_tentacle_id,
                     channel_user_id=observed.channel_user_id,
+                    user_id=observed.user_id,
                     **observed.model_dump(include=PROFILE_FIELDS),
                 )
                 session.add(profile)
             else:
                 for name in PROFILE_FIELDS:
                     setattr(profile, name, getattr(observed, name))
+                if observed.user_id is not None:
+                    profile.user_id = observed.user_id
 
             owner = await profile.user
             await session.commit()
@@ -142,7 +195,10 @@ class UserManager:
         The YAML key is the user's stable username. Users absent from YAML are
         retained for future registration sources, while their undeclared profiles
         become visitors. Config profile details seed an unseen account but never
-        overwrite an observed row.
+        overwrite an observed row. Native pseudo-channel profiles are the one
+        exception to YAML's authority: their ownership came from a verified
+        bearer at ingest, so it is re-anchored on the username row and drops
+        only when that user leaves the registry.
         """
         declared: dict[tuple[str, str], str] = {}
         for username, user_config in self.config.items():
@@ -161,18 +217,24 @@ class UserManager:
 
             for username, user_config in self.config.items():
                 name = user_config.name or username
+                # The row is the credential's home — the unique column is what
+                # makes a bearer name exactly one user, tripping the boot here
+                # when two entries share a value.
+                secret = user_config.secret
                 user = users_by_username.get(username)
                 if user is None:
                     user = User(
                         username=username,
                         name=name,
                         nickname=user_config.nickname,
+                        secret=secret,
                     )
                     session.add(user)
                     users_by_username[username] = user
                 else:
                     user.name = name
                     user.nickname = user_config.nickname
+                    user.secret = secret
 
             linked_profiles = list(
                 await session.list(
@@ -187,8 +249,16 @@ class UserManager:
             }
 
             for key, profile in profiles_by_key.items():
-                username = declared.get(key)
-                if username is None:
+                channel_id, channel_user_id = key
+                if channel_id in NATIVE_TENTACLE_IDS:
+                    # A native profile's owner is its verified bearer, written at
+                    # ingest — YAML cannot declare it (`validate_user_links`
+                    # refuses pseudo-channels), so ownership follows the username
+                    # row it stands on rather than the declarations.
+                    username = channel_user_id
+                else:
+                    username = declared.get(key)
+                if username is None or username not in users_by_username:
                     profile.user_id = None
                     profile.user.value = None
                     continue

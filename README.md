@@ -208,13 +208,13 @@ Claude Code sessions you already run.
 ```bash
 uv sync
 uv run alembic upgrade head
-mkdir -p .octomate
+mkdir -p .octomate/config
 ```
 
 Declare one agent — that is the whole config:
 
 ```bash
-cat > .octomate/agents.yaml <<'YAML'
+cat > .octomate/config/agents.yaml <<'YAML'
 agents:
   claude:
     models: [opus, sonnet]
@@ -226,17 +226,24 @@ agents:
 YAML
 ```
 
-A configured `claude` serves a hook router, and that router authenticates — so it needs
-a credential before it will boot. Order matters here: the first call generates one and
-exports it, the second sees it resolve and appends the *same* line.
+A configured `claude` serves a hook router, and that router authenticates — so someone
+must be registered before it will boot: every configured credential names a person.
+Register yourself with a secret of your own. Order matters here: the first call
+generates one and exports it, the second sees it resolve and appends the *same* line,
+and the `users:` entry is what tells the server whose that credential is.
 
 ```bash
-eval "$(octomate hooks secret)"     # this shell
-octomate hooks secret >> ~/.zshrc   # and every later one (zsh)
+eval "$(octomate secret)"     # this shell
+octomate secret >> ~/.zshrc   # and every later one (zsh)
+cat > .octomate/config/users.yaml <<YAML
+users:
+  you:
+    secret: "${OCTOMATE__SECRET}"
+YAML
 ```
 
-The secret stays in the environment, never in the config home — the server and the
-hooks both read `OCTOMATE__HOOK_SECRET` from there.
+Your machines read `OCTOMATE__SECRET` from the environment; the server reads your
+`users:` entry and knows every session bearing it is yours.
 
 Then serve it and point Claude Code at it:
 
@@ -258,7 +265,7 @@ Create a Slack app with Socket Mode on, then declare the channel — structure i
 config home, secrets in `.env`:
 
 ```bash
-cat > .octomate/channels.yaml <<'YAML'
+cat > .octomate/config/channels.yaml <<'YAML'
 channels:
   slack:
     type: slack
@@ -313,20 +320,25 @@ filesystem.
 
 A deployment is a **config home**: one directory, one flat YAML per subsystem. Each
 file's top-level keys are config field names, so changing a channel touches
-`channels.yaml` and nothing else.
+`channels.yaml` and nothing else. The `config/` subdirectory is what separates the
+server's files from the rest of `.octomate/` — the database and the client's
+`cli.toml` live beside it, not in it.
 
 ```
 .octomate/
-  octomate.yaml        host, port, hook_secret, db_url
-  agents.yaml          claude, codex, deepseek, inkling
-  channels.yaml        slack, lark, napcat, trunkline
-  users.yaml           registered humans and their per-channel ids
-  projects.yaml        code locations an agent may run in
-  providers.yaml       LLM credentials
-  integrations.yaml    per-user OAuth connectors
-  mcp.yaml             vendor MCP servers on one operator token
-  observability.yaml   logging, logfire
-  oauth.yaml           the key that encrypts stored tokens
+  octomate.db            the deployment's data
+  cli.toml               the client's own config — not the server's
+  config/
+    octomate.yaml        host, port, mcp_path, db_url
+    agents.yaml          claude, codex, deepseek, inkling
+    channels.yaml        slack, lark, napcat, trunkline
+    users.yaml           registered humans and their per-channel ids
+    projects.yaml        code locations an agent may run in
+    providers.yaml       LLM credentials
+    integrations.yaml    per-user OAuth connectors
+    mcp.yaml             vendor MCP servers on one operator token
+    observability.yaml   logging, logfire
+    oauth.yaml           the key that encrypts stored tokens
 ```
 
 The home is **chosen, not merged** — the first of these that applies:
@@ -334,8 +346,8 @@ The home is **chosen, not merged** — the first of these that applies:
 | | Where | When |
 |---|---|---|
 | 1 | `$OCTOMATE_HOME` | Set. Used as given, even if empty |
-| 2 | `./.octomate/` | It holds at least one of the files above |
-| 3 | `~/.octomate/` | Otherwise — one deployment for the machine |
+| 2 | `./.octomate/config/` | It holds at least one of the files above |
+| 3 | `~/.octomate/config/` | Otherwise — one deployment for the machine |
 
 Beneath whichever wins sit the packaged defaults in `octomate/config/defaults/`,
 layered per top-level key: a home that declares `channels:` replaces the default
@@ -357,21 +369,42 @@ environment both override it, using `OCTOMATE__` with `__` as the nested delimit
 
 ### Native session hooks
 
-Configuring `agents.claude`, `agents.codex` or `agents.deepseek` serves that agent's hook router (`/hooks/claude`, `/hooks/codex`, `/hooks/deepseek`) for native sessions to POST their prompts and answers into. Those routes write straight into thread history, which agents read back, so they authenticate — Octomate refuses to boot without a credential.
+Configuring `agents.claude`, `agents.codex` or `agents.deepseek` serves that agent's hook router (`/hooks/claude`, `/hooks/codex`, `/hooks/deepseek`) for native sessions to POST their prompts and answers into. Those routes write straight into thread history, which agents read back, so they authenticate — and every configured credential names a person: each registered user carries their own secret in their `users:` entry, and Octomate refuses to boot a hook router while nobody is registered to reach it.
 
-Set the credential up, then point your clients at it:
+```yaml
+users:
+  lu:
+    secret: "..."                            # their own bearer — one secret, one user
+    profiles:
+      slack: {channel_user_id: U0123ABCD}    # where their gateway spells can reach
+```
+
+Each user sets their credential up on their machine, then points their clients at it:
 
 ```bash
-eval "$(octomate hooks secret)"                  # this shell
-octomate hooks secret >> ~/.zshrc                # and every later one (zsh)
+eval "$(octomate secret)"                        # this shell
+octomate secret >> ~/.zshrc                      # and every later one (zsh)
 octomate claude hooks install                    # merges handlers into ~/.claude/settings.json
 octomate codex hooks install                     # merges handlers into ~/.codex/hooks.json
 octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hooks.json + a patch row
 ```
 
-`hooks secret` prints one line — `export OCTOMATE__HOOK_SECRET=…` — and writes nothing; where your login environment comes from is yours to know. Sessions only ever read the **environment**, and they are separate processes that never see your config home, so that line is the bridge, and it has to reach whatever launches them.
+`octomate secret` prints one line — `export OCTOMATE__SECRET=…` — and writes nothing; where your login environment comes from is yours to know, and the printed value is what belongs in that user's `users:` entry. Sessions only ever read the **environment**, and they are separate processes that never see your config home, so that line is the bridge, and it has to reach whatever launches them.
 
 `~/.zshrc` covers interactive zsh, which is what VSCode resolves the environment from; use `~/.zshenv` instead if you want non-interactive shells to have it too, and on another shell put the line wherever that shell would find it. Either way an environment is captured when a process starts: shells already open keep the one they had, and a GUI client (VSCode, the desktop app) grabs it when *it* launches — so restart them before expecting the hooks to carry the secret.
+
+Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying its bearer plus a static `X-Octomate-Client` header written at install time. The client header is attribution (which runtime); the bearer is identity (which human): a native session bearing a user's secret speaks for that person, and its spells light up on *their* linked accounts. Driven turns answer to the same rule — every run represents the human who kicked it, so a driven Codex turn's loopback call carries the kicker's own secret and nobody else's credential can drive it, while a turn kicked by an unregistered user simply runs without the spells. Rotation or revocation is only ever the admin editing the YAML. The trust statement, plainly: a user's secret holds the hook pipe's ledger writes plus the gateway's outbound sends and handoffs, under that user's name. Same trust domain (the operator's machines), same mitigations (per-user secrets, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags.
+
+Point the runtimes' native sessions at it with the `mcp` commands — static MCP client config, written once:
+
+```bash
+octomate claude mcp install    # this project's mcpServers.gateway in ~/.claude.json
+                               # (--scope user: every project; --scope project: ./.mcp.json)
+octomate codex mcp install     # [mcp_servers.gateway] in ~/.codex/config.toml
+octomate deepseek mcp install  # a dsh-mcp-client row in $DSH_HOME/cordis.patch.yml
+```
+
+Unlike the hooks — whose scripts resolve the address and credential from the environment when each hook fires — a static entry is read by the runtime itself, so `mcp install` resolves both once and writes them into the file: the file holds the literal credential, and rotating it means re-running install. (Codex differs: its entry names `OCTOMATE__SECRET` as a `bearer_token_env_var`, resolved from each session's environment, so the secret must be exported in the shell profile.)
 
 ---
 

@@ -1,4 +1,4 @@
-"""Gate capability: an agent's routing spellbook.
+"""Gateway capability: an agent's routing spellbook.
 
 Five spells decide where a turn goes and who handles it. Each is opaque on its own,
 so the instruction opens with plain words for what they actually do:
@@ -16,15 +16,21 @@ so the instruction opens with plain words for what they actually do:
   asking user's direct messages. It lives here rather than in its own capability
   because naming somewhere other than "here" is a routing decision, and this is
   where the channel registry and the run's own address already are.
+
+The policy itself — what each spell may name, and the decision it records — lives on
+`octomate.managers.gateway.GatewaySession`; this capability is Inkling's translation
+of it into pydantic-ai: refusals become `ModelRetry`, a teleport becomes a deferral,
+and a send rides the run event stream. The accomplice spells stay wholly here — they
+spawn pydantic-ai runs, which no other runtime's gateway offers.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterable, Iterable
-from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Literal, cast
+from collections.abc import AsyncIterable, Callable, Iterable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, cast
 
 from pydantic_ai import AgentStreamEvent, CallDeferred, RunContext
 from pydantic_ai.capabilities import AbstractCapability
@@ -39,75 +45,52 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.managers.gateway import GatewayRefusal, GatewaySession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
+    COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
+    GATEWAY_TOOLSET_ID,
     HERE_TARGET,
+    SCHEME_TOOL_NAME,
+    SCRY_TOOL_NAME,
+    SUMMON_TOOL_NAME,
+    TELEPORT_DEFER_KIND,
+    TELEPORT_TOOL_NAME,
     THREAD_TARGET,
-    AgentRoute,
-    ChannelTarget,
-    CrossingLanding,
-    Destination,
-    HereLanding,
-    SchemeDecision,
+    WHISPER_TOOL_NAME,
+    GatewayDecision,
     SchemeTarget,
     Scrying,
     SendTarget,
-    SummonDecision,
-    SummonLanding,
     SummonTarget,
     TeleportTarget,
-    ThreadLanding,
-    ThreadTarget,
 )
 
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from octomate.managers.conversation import ConversationManager
-    from octomate.managers.user import UserManager
-    from octomate.schemas.user import UserProfile
     from octomate.tentacles.agents.base import AgentTentacle
 
-    # Runtime import would cycle: `channel.base` reaches this module through
-    # `feelers.output`, which skips the accomplice spells' timeline rows by name.
-    from octomate.tentacles.channels.base import ChannelTentacle
-
-SCRY_TOOL_NAME = "scry"
-SUMMON_TOOL_NAME = "summon"
-TELEPORT_TOOL_NAME = "teleport"
-SCHEME_TOOL_NAME = "scheme"
-COMMISSION_TOOL_NAME = "commission"
-WHISPER_TOOL_NAME = "whisper"
 # A commission holds the parent's live tool call open while the accomplice runs, so the
 # wait must not be unbounded (`approval_timeout` is the precedent). Seconds.
 COMMISSION_TIMEOUT = 900.0
-# Why `scheme` has nowhere to land, and the sentence each reason refuses with.
-PrivateBlocker = Literal["no_surface", "already_private", "no_user"]
-PRIVATE_REFUSALS: dict[PrivateBlocker, str] = {
-    "no_surface": "This channel has no direct messages.",
-    "already_private": (
-        "This conversation is already that user's direct messages, so there is "
-        "nowhere to move it to."
-    ),
-    "no_user": "This run has no single user whose direct messages could be opened.",
-}
-# The `teleport` deferral's declared metadata kind. The suspender and dispatch graph
-# classify the deferral by this kind rather than the tool name, so `gate` (which emits
-# it) and `reflex` (which resolves it) agree on one value without matching on the name.
-TELEPORT_DEFER_KIND = "teleport"
-GATE_TOOLSET_ID = "gate"
 
-GATE_INSTRUCTION = """\
-## Gate — decide where this conversation goes and who handles it
+# The instruction prose, templated only where a spell is named: each runtime's
+# adapter renders the same contract under its own tool naming (`scry` for Inkling,
+# `mcp__gateway__scry` for an MCP runtime). Everything else — argument names, the
+# `here`/`thread`/`dm` handles — is the shared vocabulary and stays literal.
+GATEWAY_INSTRUCTION_TEMPLATE = """\
+## Gateway — decide where this conversation goes and who handles it
 
 These tools route the conversation. Default to handling it yourself: if you can answer
 well or do the work, do it and call none of them. Routing is the exception — reach for a
 tool only when one of the signals below clearly fires.
 
-### `summon` — hand off to another agent
+### `{summon}` — hand off to another agent
 Summon transfers the conversation to a specialist who takes over this turn *and its
 follow-ups*: a real, sticky handoff, so the bar is high. Summon only when:
 - The request needs a capability you lack — e.g. running or editing code in a real
@@ -120,26 +103,26 @@ Do NOT summon when:
 - You are only mildly unsure — ask the user a clarifying question instead.
 - No route clearly fits — handle it yourself or ask; never summon on a guess.
 
-When one fires, call `scry` first to see the agents and what each is for. Every route
+When one fires, call `{scry}` first to see the agents and what each is for. Every route
 carries a claim: its ability (what that agent+model is for) and the effort levels it
 accepts — pick the route whose ability covers the work. Set `effort` only when the
 user explicitly asked for a level; otherwise leave it unset so the agent's own default
-applies. Then `summon` — copying its `agent_id` and `model` exactly from that route,
+applies. Then `{summon}` — copying its `agent_id` and `model` exactly from that route,
 and writing a self-contained brief since the other agent may not see this chat.
 Choose `destination`: `here` hands over this same conversation; `thread` opens a new
-sub-thread of the current chat; a channel id from `scry` opens one in that person's
+sub-thread of the current chat; a channel id from `{scry}` opens one in that person's
 direct messages on that channel, for work that belongs where they actually do it.
 You yourself are not a valid summon target.
 
-### `teleport` — relocate yourself
+### `{teleport}` — relocate yourself
 Move this conversation into a new sub-thread that *you* keep handling, carrying
 everything said so far. Use it for multi-step or long-running work that deserves its
 own thread but that you are the right one to do — no other agent involved.
 `destination` is `thread`, a sub-thread of the current chat, unless you name a channel
-id from `scry` to carry it into their direct messages there — offered only from a
+id from `{scry}` to carry it into their direct messages there — offered only from a
 conversation nobody else can read, since everything said here travels with you.
 
-### `scheme` — take it to the user privately
+### `{scheme}` — take it to the user privately
 Continue one-to-one with the person who asked, in their direct messages: for work that
 is theirs alone, or that does not belong in front of the group. Whoever already handles
 their direct messages picks it up, so write `brief` self-contained — it may not be you,
@@ -160,9 +143,9 @@ what you can do unaided; if something is under-specified or unapprovable, state 
 assumption or the blocker in your report and proceed.
 """
 
-SEND_INSTRUCTION = """\
+SEND_INSTRUCTION_TEMPLATE = """\
 
-### `send` — deliver something now, without ending your turn
+### `{send}` — deliver something now, without ending your turn
 For a progress update, an intermediate result, or an image/file you produced along
 the way. Anything sent this way is already delivered: your final reply continues from
 there — summarize or extend it, never restate it. If everything worth saying went out
@@ -171,13 +154,30 @@ already, close with a short wrap-up rather than re-sending it.
 `destination` is `here` by default. `dm` delivers to the person who asked, privately —
 for something that is *for them*, like a summary sent over; say in your reply that you
 sent it. `dm` hands nothing over: you keep this conversation and nobody picks the work
-up there, so use `scheme` when the work itself should continue privately. Asking for
+up there, so use `{scheme}` when the work itself should continue privately. Asking for
 `dm` while already in that person's direct messages is fine — it lands here.
 
 To thread onto a specific message in a busy chat, lead with a reply segment whose id
 is that message's `#msg:<id>` handle — it must be the first segment. To ping someone,
 use an `at` segment with their user id.
 """
+
+
+def gateway_instructions(tool_name: Callable[[str], str]) -> str:
+    """The gateway's routing instruction, each spell rendered by the caller's own tool
+    naming — the identity for Inkling, `mcp__gateway__…` for an MCP runtime — so every
+    agent reads one contract under the names it can actually call."""
+    names = {
+        "scry": tool_name(SCRY_TOOL_NAME),
+        "summon": tool_name(SUMMON_TOOL_NAME),
+        "teleport": tool_name(TELEPORT_TOOL_NAME),
+        "scheme": tool_name(SCHEME_TOOL_NAME),
+        "send": tool_name(SEND_TOOL_NAME),
+    }
+    return GATEWAY_INSTRUCTION_TEMPLATE.format(
+        **names
+    ) + SEND_INSTRUCTION_TEMPLATE.format(**names)
+
 
 COMMISSION_INSTRUCTION = """\
 
@@ -198,55 +198,26 @@ refine or extend that work instead of commissioning a new accomplice.
 
 @dataclass
 class GatewayCapability(AbstractCapability[None]):
-    # What each channel can route to, keyed by channel id — not one list, because a
-    # spell that crosses lands on a channel with its own idea of who runs there.
-    # This run's own channel answers `routes`; the rest answer a crossing.
-    channel_routes: dict[str, list[AgentRoute]]
-    current_agent_id: str
-    # Every connected channel, so `surfaces` can be read for any of them and not
-    # just this run's own — what a cross-channel move needs.
-    channels: dict[str, ChannelTentacle] = field(default_factory=dict)
-    # The identity registry and the run's own profile: together they say where else
-    # this person is reachable. Both None on a gate built only to route locally.
-    users: UserManager | None = None
-    user_profile: UserProfile | None = None
-    # What running an accomplice takes. All None on a gate built only to route,
-    # which then does not offer the accomplice spells at all.
-    agents: dict[str, AgentTentacle] | None = None
+    # The turn's policy and decision slot, shared with the graph that acts on it.
+    session: GatewaySession
+    # What running an accomplice takes, beyond the session's own deps. None on a
+    # gateway built only to route, which then does not offer the accomplice spells.
     conversations: ConversationManager | None = None
-    thread_id: uuid.UUID | None = None
-    # Where this run lives; also what `allow_here` and `private_blocked_by` read.
-    conversation_address: ChannelAddress | None = None
     commission_timeout: float = COMMISSION_TIMEOUT
     commissioning: bool = field(default=False, init=False)
-    decision: SummonDecision | SchemeDecision | None = field(default=None, init=False)
-    # Every route on this run's own channel but the current agent's own — the info
-    # shared with the agent to decide where to go, and what a spell landing here
-    # validates a chosen route against. A crossing validates against its own.
-    other_routes: list[AgentRoute] = field(init=False, repr=False)
-    # `destinations` is computed once per gate, and a gate lasts one turn. Held here
-    # rather than recomputed because resolving it reaches the identity registry.
-    computed_destinations: list[Destination] | None = field(
-        default=None, init=False, repr=False
-    )
     toolset: FunctionToolset[None] | None = field(default=None, init=False, repr=False)
 
+    @property
+    def decision(self) -> GatewayDecision | None:
+        return self.session.decision
+
     def __post_init__(self) -> None:
-        address = self.conversation_address
-        here = (
-            self.channel_routes.get(address.channel_tentacle_id, [])
-            if address is not None
-            else []
-        )
-        self.other_routes = [
-            route for route in here if route.agent_id != self.current_agent_id
-        ]
         # Nothing built from runtime state may reach a tool definition: they are a
         # provider prompt-cache breakpoint (`anthropic_cache_tool_definitions`) at the
         # front of the prefix, so a schema that varies forks it into variants that never
         # warm each other. Hence plain `str` routes, validated by `claimed_route`
         # against the list `scry` returns — a tool *result*, after the breakpoint.
-        toolset: FunctionToolset[None] = FunctionToolset(id=GATE_TOOLSET_ID)
+        toolset: FunctionToolset[None] = FunctionToolset(id=GATEWAY_TOOLSET_ID)
         toolset.tool(name=SCRY_TOOL_NAME)(self.scry)
         toolset.tool(name=SUMMON_TOOL_NAME, retries=2)(self.summon)
         # `retries` to match its siblings: teleport refuses a surface with no
@@ -255,12 +226,12 @@ class GatewayCapability(AbstractCapability[None]):
         toolset.tool(name=SCHEME_TOOL_NAME, retries=2)(self.scheme)
         toolset.tool(name=SEND_TOOL_NAME, retries=2)(self.send)
         if (
-            self.agents is not None
+            self.session.agents is not None
             and self.conversations is not None
-            and self.thread_id is not None
-            and self.conversation_address is not None
+            and self.session.thread_id is not None
+            and self.session.conversation_address is not None
         ):
-            self.commissioning = True
+            self.commissioning = self.session.commissioning = True
             toolset.tool(name=COMMISSION_TOOL_NAME, retries=2)(self.commission)
             toolset.tool(name=WHISPER_TOOL_NAME, retries=2)(self.whisper)
         self.toolset = toolset
@@ -274,301 +245,20 @@ class GatewayCapability(AbstractCapability[None]):
         offers the spells when all four are set, so a miss here is a
         construction bug, not a model mistake."""
         if (
-            self.agents is None
+            self.session.agents is None
             or self.conversations is None
-            or self.thread_id is None
-            or self.conversation_address is None
+            or self.session.thread_id is None
+            or self.session.conversation_address is None
         ):
             raise RuntimeError(
                 "the accomplice spells need agents, conversations, a thread and an address"
             )
         return (
-            self.agents,
+            self.session.agents,
             self.conversations,
-            self.thread_id,
-            self.conversation_address,
+            self.session.thread_id,
+            self.session.conversation_address,
         )
-
-    @property
-    def allow_here(self) -> bool:
-        """Whether `summon here` may hand this conversation over in place.
-
-        False on a group's main channel, where pinning an owner would route every
-        gated-in message, from any user, to one agent."""
-        address = self.conversation_address
-        if address is None:
-            return True
-        return address.chat_type != "group"
-
-    @property
-    def allow_sub_thread(self) -> bool:
-        """Whether a new sub-thread can be opened from this run's own surface.
-
-        False inside one: every channel that has threads routes them `flat_thread`,
-        so a thread is the last one there is. False too where the platform opens
-        none at all. Both spells that target a sub-thread ask this, and both refuse
-        rather than landing somewhere they did not name.
-
-        True for a gate with no surface to judge by, as `allow_here` is: refusing
-        what it cannot see would block a spell the graph resolves correctly anyway.
-        """
-        address = self.conversation_address
-        if address is None:
-            return True
-        if address.channel_thread_id:
-            return False
-        channel = self.channels.get(address.channel_tentacle_id)
-        return channel is None or channel.surfaces.sub_thread
-
-    @property
-    def private_blocked_by(self) -> PrivateBlocker | None:
-        """Why `scheme` has nowhere to land from this run, or None when it does.
-
-        A gate that knows no channels can reach no direct messages."""
-        address = self.conversation_address
-        if address is None:
-            return "no_user"
-        channel = self.channels.get(address.channel_tentacle_id)
-        if channel is None or not channel.surfaces.direct_message:
-            return "no_surface"
-        # Read the surface, not the type: a Slack assistant pane and a Lark p2p topic
-        # are threads that only one person can read, and moving them to "their direct
-        # messages" would land beside where they already are, under another owner.
-        if not address.shared:
-            return "already_private"
-        if not address.user_id:
-            return "no_user"
-        return None
-
-    @property
-    def built_in_destinations(self) -> list[Destination]:
-        """The places every run has: this chat, and its direct messages. Each is
-        offered only where it can actually be reached.
-
-        A sub-thread is not among them. `summon` names one through its own
-        `destination` literal, and the spells that resolve a handle — `scheme` and
-        `send` — deliver to a person, so every place they can name is somewhere
-        private."""
-        address = self.conversation_address
-        if address is None:
-            return []
-        built_in: list[Destination] = []
-        if self.allow_here:
-            built_in.append(
-                Destination(
-                    handle=HERE_TARGET.handle,
-                    label="this conversation",
-                    address=address,
-                )
-            )
-        if self.private_blocked_by is None:
-            built_in.append(
-                Destination(
-                    handle=DIRECT_TARGET.handle,
-                    label="their direct messages here",
-                    address=replace(
-                        address,
-                        chat_type="dm",
-                        chat_id="",
-                        channel_thread_id=None,
-                        shared=False,
-                    ),
-                )
-            )
-        return built_in
-
-    async def destinations(self) -> list[Destination]:
-        """Every place this run can name, the built-in ones first.
-
-        One list, so a spell never has its own idea of what a place is — and `scry`
-        shows it whole. Computed on first use and kept: most turns never route, so
-        the registry is not touched at all unless a spell is actually cast.
-        """
-        if self.computed_destinations is None:
-            self.computed_destinations = (
-                self.built_in_destinations + await self.linked_destinations()
-            )
-        return self.computed_destinations
-
-    async def linked_destinations(self) -> list[Destination]:
-        """Their direct messages on other channels they are registered on.
-
-        Only channels that are connected, have direct messages, and serve an agent —
-        a place nobody could answer from is not somewhere this can go. Each carries
-        the routes *it* runs, because a handoff sent there is resolved against that
-        channel's config, not against the one the request came from.
-        """
-        if self.users is None or self.user_profile is None:
-            return []
-        linked: list[Destination] = []
-        for other in await self.users.linked_profiles(self.user_profile):
-            channel = self.channels.get(other.channel_tentacle_id)
-            if channel is None or not channel.surfaces.direct_message:
-                continue
-            if not [
-                served
-                for served in channel.config.agents
-                if self.agents is None or served.agent in self.agents
-            ]:
-                continue
-            linked.append(
-                Destination(
-                    handle=other.channel_tentacle_id,
-                    label=f"their direct messages on {channel.name}",
-                    address=ChannelAddress(
-                        channel_tentacle_id=other.channel_tentacle_id,
-                        chat_type="dm",
-                        chat_id="",
-                        user_id=other.channel_user_id,
-                    ),
-                    routes=tuple(
-                        self.channel_routes.get(other.channel_tentacle_id, [])
-                    ),
-                )
-            )
-        return linked
-
-    async def crossing_destinations(self) -> list[Destination]:
-        """The other channels this person is on that a turn can be *moved* to.
-
-        `summon` and `teleport` land in a sub-thread wherever they go, so a channel
-        that opens none is not somewhere they can be sent — while `scheme`, which
-        lands in the direct messages themselves, still reaches it. A channel running
-        nothing this run could name is out for the same reason: the turn would arrive
-        with nobody to take it. Both crossing spells ask this; neither may cross to
-        the channel it is already on.
-        """
-        address = self.conversation_address
-        if address is None:
-            return []
-        crossing: list[Destination] = []
-        for one in await self.destinations():
-            if one.address.channel_tentacle_id == address.channel_tentacle_id:
-                continue
-            channel = self.channels.get(one.address.channel_tentacle_id)
-            if channel is not None and channel.surfaces.sub_thread and one.routes:
-                crossing.append(one)
-        return crossing
-
-    async def summon_handles(self) -> list[str]:
-        """Every handle `summon` can actually land on from here, in the order the
-        model should prefer them: this surface, a sub-thread of it, then anywhere
-        else the asker is. Empty means the spell has nowhere to go at all, which is
-        what each refusal below says when it has nothing to offer instead."""
-        handles = [HERE_TARGET.handle] if self.allow_here else []
-        if self.allow_sub_thread:
-            handles.append(THREAD_TARGET.handle)
-        return handles + [one.handle for one in await self.crossing_destinations()]
-
-    async def teleport_handles(self) -> list[str]:
-        """Every handle `teleport` can land on. `here` is not among them at any
-        surface — a teleport that stayed put would be the agent simply carrying on.
-
-        A shared surface can only reach its own sub-thread. Everything said here
-        comes with a teleport, and on a crossing that would republish what other
-        people said into somewhere private on another platform, under this person's
-        name alone. A private conversation is already all theirs to move.
-        """
-        handles = [THREAD_TARGET.handle] if self.allow_sub_thread else []
-        address = self.conversation_address
-        if address is not None and address.shared:
-            return handles
-        return handles + [one.handle for one in await self.crossing_destinations()]
-
-    def no_landing(self, handle: str, handles: list[str], *, spell: str) -> str:
-        """Why `handle` is nowhere `spell` can land, and what is instead.
-
-        A refused reserved word is told which wall it hit, because the wall is what
-        stops the model trying the same door again; an unrecognised one just gets
-        the list. An empty list is the dead end — there is no "instead" to offer,
-        so the sentence says to answer it in place rather than name a way out.
-        """
-        if handle == HERE_TARGET.handle:
-            why = "Cannot take over a group's main channel in place. "
-        elif handle == THREAD_TARGET.handle:
-            why = (
-                "No sub-thread to open here: this conversation is already a thread, "
-                "or the channel opens none. "
-            )
-        else:
-            why = (
-                f"No destination {handle!r}: not a channel this person is on that "
-                "opens sub-threads. "
-            )
-        if not handles:
-            fallback = (
-                f", or `{COMMISSION_TOOL_NAME}` an agent to work it in the background."
-                if self.commissioning
-                else "."
-            )
-            return f"{why}`{spell}` has nowhere left to land, so answer it{fallback}"
-        return f"{why}Use one of these instead, copied exactly: {', '.join(handles)}."
-
-    async def destination(self, handle: str, *, spell: str) -> Destination:
-        """The place `handle` names, or a `ModelRetry` listing what it could have
-        named. The model never names an address — this is where one comes from."""
-        places = await self.destinations()
-        found = next((one for one in places if one.handle == handle), None)
-        if found is not None:
-            return found
-        available = "\n".join(str(one) for one in places) or "- (none)"
-        # A built-in that is missing was withheld for a reason, and the reason is
-        # what teaches the model something: say which wall it hit rather than
-        # implying the place does not exist.
-        why = ""
-        if (
-            handle == DIRECT_TARGET.handle
-            and (blocker := self.private_blocked_by) is not None
-        ):
-            why = f"{PRIVATE_REFUSALS[blocker]} "
-        elif handle == HERE_TARGET.handle and not self.allow_here:
-            why = "Cannot take over a group's main channel in place. "
-        raise ModelRetry(
-            f"{why}No such destination {handle!r} for {spell}. Copy one of these "
-            f"exactly:\n{available}"
-        )
-
-    def claimed_route(
-        self,
-        agent_id: str,
-        model: str,
-        effort: ThinkingEffort | None,
-        *,
-        spell: str,
-        offered: list[AgentRoute] | None = None,
-    ) -> AgentRoute:
-        """The offered route for (agent_id, model), with the requested effort
-        validated against its claim — the shared gatekeeping of `summon` and
-        `commission`. Both arrive as free strings, so this is where an unrouteable
-        pair is caught; callers build from the returned route, never from the args.
-
-        `offered` is the list to check against, defaulting to this channel's. A
-        summon that crosses passes the far channel's, since that is who will be
-        asked to run it."""
-        offered = self.other_routes if offered is None else offered
-        route = next(
-            (
-                route
-                for route in offered
-                if route.agent_id == agent_id and str(route.model) == model
-            ),
-            None,
-        )
-        if route is None:
-            available = "\n".join(str(route) for route in offered) or "- (none)"
-            raise ModelRetry(
-                f"Invalid {spell} route (agent_id={agent_id!r}, "
-                f"model={model!r}). Copy an agent_id and model exactly "
-                f"from one of these routes:\n{available}"
-            )
-        if effort is not None and effort not in route.claim.efforts:
-            raise ModelRetry(
-                f"Route (agent_id={agent_id!r}, model={model!r}) does "
-                f"not accept effort {effort!r}; it claims "
-                f"{'/'.join(route.claim.efforts)}. Pick one of those, or omit "
-                f"effort."
-            )
-        return route
 
     async def run_accomplice(
         self,
@@ -636,7 +326,7 @@ class GatewayCapability(AbstractCapability[None]):
         """Reveal what this conversation can reach: the Octomate agent tentacles
         that can be summoned or commissioned, and anywhere other than here that the
         person you are answering can be reached privately."""
-        return Scrying(routes=self.other_routes, destinations=await self.destinations())
+        return await self.session.scry()
 
     async def summon(
         self,
@@ -670,45 +360,18 @@ class GatewayCapability(AbstractCapability[None]):
                 route's claim offers. Set it only when the user explicitly asked
                 for a level; omitted, the agent's own default applies.
         """
-        handles = await self.summon_handles()
-        if destination.handle not in handles:
-            raise ModelRetry(
-                self.no_landing(destination.handle, handles, spell="summon")
+        try:
+            return await self.session.summon(
+                agent_id=agent_id,
+                model=model,
+                destination=destination,
+                hint=hint,
+                reason=reason,
+                summon=summon,
+                effort=effort,
             )
-        if agent_id == self.current_agent_id:
-            raise ModelRetry(
-                f"Cannot summon yourself {self.current_agent_id!r}. "
-                f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
-            )
-        landing: SummonLanding = HereLanding()
-        # Against the routes of the channel it lands on: an agent is summonable
-        # where it is configured, so crossing to another one both widens what can be
-        # named and narrows it to what runs there.
-        offered: list[AgentRoute] | None = None
-        if isinstance(destination, ThreadTarget):
-            landing = ThreadLanding()
-        elif isinstance(destination, ChannelTarget):
-            where = await self.destination(destination.handle, spell="summon")
-            landing = CrossingLanding(address=where.address)
-            offered = [
-                route
-                for route in where.routes
-                if route.agent_id != self.current_agent_id
-            ]
-        route = self.claimed_route(
-            agent_id, model, effort, spell="summon", offered=offered
-        )
-        self.decision = SummonDecision(
-            action="summon",
-            agent_id=route.agent_id,
-            model=route.model,
-            destination=landing,
-            effort=effort,
-            hint=hint,
-            reason=reason,
-            summon=summon,
-        )
-        return f"Summoning {route.agent_id} ({route.model}) → {destination.handle}."
+        except GatewayRefusal as refusal:
+            raise ModelRetry(str(refusal)) from refusal
 
     async def teleport(
         self,
@@ -726,25 +389,11 @@ class GatewayCapability(AbstractCapability[None]):
                 only out of a conversation nobody else can read — everything said
                 here goes with you, and it is not all yours to move.
         """
-        handles = await self.teleport_handles()
-        if destination.handle not in handles:
-            raise ModelRetry(
-                self.no_landing(destination.handle, handles, spell="teleport")
-            )
-        crossing = (
-            await self.destination(destination.handle, spell="teleport")
-            if isinstance(destination, ChannelTarget)
-            else None
-        )
-        if crossing is not None and not any(
-            route.agent_id == self.current_agent_id for route in crossing.routes
-        ):
-            channel = self.channels[crossing.address.channel_tentacle_id]
-            raise ModelRetry(
-                f"{channel.name} does not run you ({self.current_agent_id}), and a "
-                f"teleport takes you with it. Carry on here, or `{SUMMON_TOOL_NAME}` "
-                "an agent it does run."
-            )
+        try:
+            decision = await self.session.teleport(hint=hint, destination=destination)
+        except GatewayRefusal as refusal:
+            raise ModelRetry(str(refusal)) from refusal
+        crossing = decision.crossing
         # Two plain strings rather than the resolved address: the far end is always
         # somebody's direct messages, which is exactly what `open_dm` takes, and
         # metadata rides through the deferral untyped either way.
@@ -780,11 +429,12 @@ class GatewayCapability(AbstractCapability[None]):
             destination: Whose direct messages — this channel's by default, or a
                 channel from `scry` to continue where they already are.
         """
-        where = await self.destination(destination.handle, spell="scheme")
-        self.decision = SchemeDecision(
-            hint=hint, brief=brief, destination=where.address
-        )
-        return f"Taking this to {where.label}."
+        try:
+            return await self.session.scheme(
+                hint=hint, brief=brief, destination=destination
+            )
+        except GatewayRefusal as refusal:
+            raise ModelRetry(str(refusal)) from refusal
 
     async def send(
         self,
@@ -801,18 +451,10 @@ class GatewayCapability(AbstractCapability[None]):
             destination: Where to deliver it, this conversation by default. Say in
                 your reply when you sent it somewhere other than here.
         """
-        # Being in their direct messages already stops a `scheme` — nowhere to move
-        # the conversation to — but never a send: that *is* where it was asked to go,
-        # so it lands here rather than being refused.
-        already_there = (
-            destination.handle == DIRECT_TARGET.handle
-            and self.private_blocked_by == "already_private"
-        )
-        address = (
-            None
-            if destination.handle == HERE_TARGET.handle or already_there
-            else (await self.destination(destination.handle, spell="send")).address
-        )
+        try:
+            address = await self.session.resolve_send(destination)
+        except GatewayRefusal as refusal:
+            raise ModelRetry(str(refusal)) from refusal
         return ToolReturn(
             return_value="sent",
             metadata=[MessageSentEvent(segments=segments, destination=address)],
@@ -847,12 +489,17 @@ class GatewayCapability(AbstractCapability[None]):
         agents, conversations, thread_id, _ = self.commission_deps()
         if not name.strip():
             raise ModelRetry("Give the accomplice a short, mnemonic name.")
-        if agent_id == self.current_agent_id:
+        if agent_id == self.session.current_agent_id:
             raise ModelRetry(
-                f"Cannot commission yourself {self.current_agent_id!r}. "
+                f"Cannot commission yourself {self.session.current_agent_id!r}. "
                 f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
             )
-        route = self.claimed_route(agent_id, model, effort, spell="commission")
+        try:
+            route = self.session.claimed_route(
+                agent_id, model, effort, spell="commission"
+            )
+        except GatewayRefusal as refusal:
+            raise ModelRetry(str(refusal)) from refusal
         run_model = agents[agent_id].models.get(route.model)
         if run_model is None:
             raise ModelRetry(
@@ -928,9 +575,10 @@ class GatewayCapability(AbstractCapability[None]):
         )
 
     def get_instructions(self) -> str:
+        instructions = gateway_instructions(lambda name: name)
         if self.commissioning:
-            return GATE_INSTRUCTION + SEND_INSTRUCTION + COMMISSION_INSTRUCTION
-        return GATE_INSTRUCTION + SEND_INSTRUCTION
+            return instructions + COMMISSION_INSTRUCTION
+        return instructions
 
     async def wrap_run_event_stream(
         self,
