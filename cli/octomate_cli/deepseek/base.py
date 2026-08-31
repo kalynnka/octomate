@@ -401,7 +401,7 @@ def tail(
         url = stream_url_for(base.rstrip("/") + DEEPSEEK_HOOK_PATH)
     if dsh_url is None:
         dsh_url = os.environ.get(DSH_URL_ENV) or DEFAULT_DSH_URL
-    from octomate_cli.deepseek_tail import main  # websockets; only when tailing
+    from octomate_cli.deepseek.tail import main  # websockets; only when tailing
 
     main(
         session_id=session,

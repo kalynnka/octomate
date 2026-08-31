@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -664,6 +666,27 @@ def test_deepseek_install_without_a_bridge_link_warns(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "--bridge" in result.output
+
+
+def test_reaching_the_deepseek_commands_costs_no_websocket_stack() -> None:
+    """Why `deepseek` is a package: the tail speaks websockets and the installers
+    never do, so `base` defers that import into the one command that tails and the
+    package re-exports `base` alone. A convenience re-export of `tail` in
+    `__init__` would undo it silently — nothing about an install would look
+    slower, and every `octomate deepseek hooks install` would pay for it.
+
+    A subprocess because `sys.modules` is process-global: this suite has imported
+    websockets long before this runs.
+    """
+    probe = (
+        "import sys; import octomate_cli.deepseek as ds;"
+        "print(ds.DEEPSEEK_HOOK_PATH, 'websockets' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+
+    assert result.stdout.strip() == "/hooks/deepseek False"
 
 
 def gateway_ready(monkeypatch: pytest.MonkeyPatch) -> None:
