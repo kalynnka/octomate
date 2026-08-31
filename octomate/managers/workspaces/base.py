@@ -48,9 +48,11 @@ SNAPSHOT_PREFIX = "octomate: "
 def thread_ref(thread_id: uuid.UUID) -> str:
     """Where a thread's work is kept in its project's mirror.
 
-    Outside `refs/heads/`, so the mirror does not grow a branch per thread, an
-    ordinary clone of it carries none of them, and `git branch` in a fresh
-    workspace shows the project's branches rather than everyone's threads.
+    Outside `refs/heads/`, so the mirror does not grow a branch per thread and
+    `git branch` in a fresh workspace shows the project's branches rather than
+    everyone's threads. That a fork holds none of them at all is
+    `discard_octomate_refs`' doing and not this namespace's — a copied fork brings
+    across whatever the mirror has.
     """
     return f"refs/octomate/threads/{thread_id}"
 
@@ -460,6 +462,7 @@ class WorkspaceManager:
                 else:
                     await run_git("clone", str(mirror), str(staging))
                 await self.inherit_remotes(mirror, staging)
+                await self.discard_octomate_refs(staging)
                 await self.checkout(workspace.thread_id, mirror, staging, ref)
                 await install(staging)
                 staging.rename(path)
@@ -498,6 +501,29 @@ class WorkspaceManager:
             return
         url = await run_git("remote", "get-url", "origin", cwd=mirror)
         await run_git("remote", "add", "origin", url.strip(), cwd=workspace)
+
+    async def discard_octomate_refs(self, workspace: Path) -> None:
+        """Take Octomate's own refs out of a fresh fork, however it was made.
+
+        `git clone` asks for `refs/heads/*` and tags, so a cloned fork never had
+        them. `cp` does not know what git is: it brings `.git` across whole, and
+        with it every other thread's `refs/octomate/threads/*` — their snapshots
+        sitting in a workspace that was never told about them, out of `git branch`
+        but not out of `git log --all`. Which of the two a host does is `detect`'s
+        answer about its filesystem, and what one thread can read of another is not
+        something the filesystem gets to decide.
+
+        The whole namespace rather than the foreign entries: a mirror that somehow
+        carried a `refs/octomate/saved` would hand a fresh fork a workspace that
+        reads as already saved, which the sweep answers by reclaiming work that was
+        never pushed. Dropping this thread's own along with the rest costs nothing —
+        the mirror is where it lives, and `checkout` fetches it back next.
+        """
+        listing = await run_git(
+            "for-each-ref", "--format=%(refname)", "refs/octomate/", cwd=workspace
+        )
+        for ref in listing.split():
+            await run_git("update-ref", "-d", ref, cwd=workspace)
 
     async def checkout(
         self,
@@ -539,8 +565,8 @@ class WorkspaceManager:
             await run_git("fetch", str(mirror), ref, cwd=workspace)
             await run_git("checkout", "-b", branch, "FETCH_HEAD", cwd=workspace)
             return
-        # A copied fork carries the mirror's refs already and a cloned one does not,
-        # so both fetch: one to be sure it is current, the other to have it at all.
+        # Every fork arrives without it, whichever way it was made, so this is how
+        # the workspace comes to have it at all.
         await run_git("fetch", str(mirror), f"+{saved}:{saved}", cwd=workspace)
         subject = await run_git("show", "-s", "--format=%s", saved, cwd=workspace)
         branch = subject.strip().removeprefix(SNAPSHOT_PREFIX)

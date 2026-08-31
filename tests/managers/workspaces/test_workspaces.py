@@ -9,8 +9,9 @@ thread's branch, whose commits reach nothing outside it.
 
 What makes it disposable is that every turn is snapshotted and pushed to the
 mirror as the thread's own ref, so a workspace that goes away costs a resume
-rather than the work — which is also the half a copied fork and a cloned one
-disagree about, since a copy carries the mirror's refs and a clone fetches none.
+rather than the work — and that ref namespace is where the two mechanisms would
+otherwise disagree, a copy bringing the mirror's refs across where a clone asks
+for none of them. Both forks are emptied of it, so both arrive the same way.
 
 A snapshot is not a commit on the agent's branch, and the tests below are mostly
 about the difference: the repository comes back as the agent left it, history and
@@ -602,6 +603,30 @@ async def test_another_threads_work_is_no_branch_of_this_ones(
     branches = await run_git("branch", "--format=%(refname:short)", cwd=second)
     assert sorted(branches.split()) == sorted([f"octomate/thread-{other.id}", "main"])
     assert not (second / "mine.md").exists()
+
+
+async def test_another_threads_snapshot_is_no_ref_of_this_ones(
+    manager: WorkspaceManager,
+) -> None:
+    """`git branch` was never where this could leak, and the test above is not the
+    whole of it. A copied fork brings the mirror's `.git` across whole — other
+    threads' snapshot refs with it, reachable by `git log --all` — where a cloned
+    one asks for `refs/heads/*` and gets none of them. Left alone, what one thread
+    could read of another's unreviewed work came down to the host's filesystem.
+    """
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    one = await a_bound_thread(manager)
+    other = await a_bound_thread(manager)
+    first = await manager.materialize(a_workspace(manager, one.id), mirror)
+    await a_turn(first, {"secret.md": "one"})
+    await manager.save(one)
+
+    second = await manager.materialize(a_workspace(manager, other.id), mirror)
+
+    refs = await run_git("for-each-ref", "--format=%(refname)", "refs/", cwd=second)
+    assert [ref for ref in refs.split() if ref.startswith("refs/octomate/")] == []
+    reachable = await run_git("log", "--all", "--format=%s", cwd=second)
+    assert f"octomate/thread-{one.id}" not in reachable
 
 
 async def test_snapshots_carry_the_machine_identity(
