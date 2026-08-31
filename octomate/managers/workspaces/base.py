@@ -15,13 +15,13 @@ from typing import Self, overload
 
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
-from octomate.managers.dependencies import install
-from octomate.managers.mirrors import (
+from octomate.managers.project import ProjectManager
+from octomate.managers.workspaces.dependencies import install
+from octomate.managers.workspaces.mirrors import (
     GitCommandError,
     MirrorManager,
     run_git,
 )
-from octomate.managers.project import ProjectManager
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 

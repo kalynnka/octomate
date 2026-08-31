@@ -37,20 +37,20 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.mirrors import GitIdentity, MirrorsConfig
 from octomate.config.workspaces import WorkspacesConfig
-from octomate.managers import workspaces
-from octomate.managers.dependencies import install
-from octomate.managers.mirrors import (
-    GitCommandError,
-    MirrorManager,
-    run_git,
-)
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import (
+from octomate.managers.workspaces import base as workspaces
+from octomate.managers.workspaces.base import (
     ChatWorkspace,
     CopyError,
     ProjectWorkspace,
     WorkspaceManager,
+)
+from octomate.managers.workspaces.dependencies import install
+from octomate.managers.workspaces.mirrors import (
+    GitCommandError,
+    MirrorManager,
+    run_git,
 )
 from octomate.schemas.thread import Thread, ThreadKey
 from tests.support.dependencies import Probe, probing, runs

@@ -15,8 +15,8 @@ from typing import ClassVar
 
 import pytest
 
-from octomate.managers import dependencies
-from octomate.managers.dependencies import MANAGERS, PackageManager
+from octomate.managers.workspaces import dependencies
+from octomate.managers.workspaces.dependencies import MANAGERS, PackageManager
 
 # One successful step of an install, and one that fails with something to log.
 RAN = ("sh", "-c", "echo ran >> ran.txt")

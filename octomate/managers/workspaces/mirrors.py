@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from octomate.config.mirrors import MirrorsConfig
-from octomate.managers.dependencies import install
+from octomate.managers.workspaces.dependencies import install
 from octomate.schemas.project import Project, RemoteUpstream
 
 logger = logging.getLogger(__name__)

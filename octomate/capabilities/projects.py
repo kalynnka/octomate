@@ -30,8 +30,8 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from octomate.capabilities.history import thread_id
 from octomate.managers import ConversationManager, ThreadManager
-from octomate.managers.mirrors import run_git
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.user import UserProfile
 
 PROJECT_INSTRUCTIONS = """\

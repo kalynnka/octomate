@@ -30,8 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
 from octomate.config.workspaces import WorkspacesConfig
-from octomate.managers.mirrors import run_git
-from octomate.managers.workspaces import WorkspaceManager, thread_ref
+from octomate.managers.workspaces import WorkspaceManager
+from octomate.managers.workspaces.base import thread_ref
+from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle

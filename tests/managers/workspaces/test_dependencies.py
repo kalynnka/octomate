@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from octomate.managers.dependencies import (
+from octomate.managers.workspaces.dependencies import (
     STAMP,
     UV,
     Npm,

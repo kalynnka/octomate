@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from octomate.config.mirrors import GitIdentity, MirrorsConfig
-from octomate.managers.mirrors import (
+from octomate.managers.workspaces.mirrors import (
     GitCommandError,
     MirrorManager,
     run_git,

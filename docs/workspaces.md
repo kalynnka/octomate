@@ -11,6 +11,12 @@ shared by every thread that resolves to that project. This document replaces tha
 with a workspace per thread, and says where one comes from, who may have one, and
 when it goes away.
 
+The code is `octomate/managers/workspaces/`, three modules in the order the story
+runs: `mirrors` keeps one pristine checkout per project, `dependencies` installs
+into a tree without caring where the tree came from, and `base` forks a mirror
+into the workspace a thread runs in and decides what becomes of it. Each knows
+only the layer below it.
+
 ## Layout
 
 Everything lives under `.octomate/`, which is already gitignored.

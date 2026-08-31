@@ -22,8 +22,8 @@ from octomate.config.mirrors import MirrorsConfig
 from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
-from octomate.managers.mirrors import MirrorManager, run_git
-from octomate.managers.workspaces import WorkspaceManager
+from octomate.managers.workspaces import MirrorManager, WorkspaceManager
+from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import UserProfile
 from tests.support.managers import a_project, a_registry
