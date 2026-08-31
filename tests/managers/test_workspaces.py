@@ -38,7 +38,12 @@ from uuid_utils.compat import uuid7
 from octomate.config.mirrors import GitIdentity, MirrorsConfig
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.managers import workspaces
-from octomate.managers.mirrors import GitCommandError, MirrorManager, run_git
+from octomate.managers.dependencies import install
+from octomate.managers.mirrors import (
+    GitCommandError,
+    MirrorManager,
+    run_git,
+)
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import (
@@ -48,6 +53,7 @@ from octomate.managers.workspaces import (
     WorkspaceManager,
 )
 from octomate.schemas.thread import Thread, ThreadKey
+from tests.support.dependencies import Probe, probing, runs
 from tests.support.managers import a_project, a_registry
 
 # For commits the tests make in their mirrors — nothing in this unit commits, so
@@ -753,6 +759,22 @@ async def test_a_fork_of_a_folder_project_has_no_remote(
     workspace = await manager.materialize(a_workspace(manager, uuid7()), mirror)
 
     assert await run_git("remote", cwd=workspace) == ""
+
+
+async def test_a_fork_arrives_installed_however_it_was_made(
+    manager: WorkspaceManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One install either way is the whole of it: a copy inherits the mirror's
+    # installed trees along with the stamp saying so, and does not install again;
+    # a clone carries no untracked file, so it installs for the first time out of
+    # the store the mirror already warmed.
+    probing(monkeypatch)
+    mirror = await a_project_mirror(manager, {Probe.lockfile: "one"})
+    await install(mirror)
+
+    workspace = await manager.materialize(a_workspace(manager, uuid7()), mirror)
+
+    assert runs(workspace) == 1
 
 
 async def test_a_thread_in_no_project_forks_an_empty_workspace(

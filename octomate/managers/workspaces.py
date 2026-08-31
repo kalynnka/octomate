@@ -15,7 +15,12 @@ from typing import Self, overload
 
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
-from octomate.managers.mirrors import GitCommandError, MirrorManager, run_git
+from octomate.managers.dependencies import install
+from octomate.managers.mirrors import (
+    GitCommandError,
+    MirrorManager,
+    run_git,
+)
 from octomate.managers.project import ProjectManager
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
@@ -431,6 +436,11 @@ class WorkspaceManager:
         there" mean "the workspace is there", here and for a caller that asks the
         same question. A fork that merely fails is removed the same way, before the
         error travels on.
+
+        It is installed before it is moved into place, so a workspace is ready to
+        run the moment it exists. A copy inherits the mirror's installed trees and
+        that costs nothing; a clone carries no untracked file, so an ext4 host
+        builds its own out of the store the mirror already warmed.
         """
         path = workspace.path
         async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
@@ -451,6 +461,7 @@ class WorkspaceManager:
                     await run_git("clone", str(mirror), str(staging))
                 await self.inherit_remotes(mirror, staging)
                 await self.checkout(workspace.thread_id, mirror, staging, ref)
+                await install(staging)
                 staging.rename(path)
                 # `cp -a` preserves the mirror's timestamps and a rename does not
                 # refresh them, so without this a fork inherits an mtime that can

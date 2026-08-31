@@ -3,8 +3,8 @@
 Records what OCTO-42's discussion settled and what it did not. The mirror
 (OCTO-46), the fork (OCTO-47), running a project thread in it (OCTO-48), and the
 lifecycle below — per-turn save, pruning, resume (OCTO-51) — are built, as are
-the bind capability (OCTO-52) and the chat workspace (OCTO-50). Dependency reuse
-is still ahead.
+the bind capability (OCTO-52), the chat workspace (OCTO-50) and dependency reuse
+(OCTO-49).
 
 A run currently happens in `project.root` — one directory on the Octomate host,
 shared by every thread that resolves to that project. This document replaces that
@@ -101,18 +101,49 @@ caches at their default paths and not isolating them from the workspace.
 in the mirror means `cp -c` hands each fork a ready-to-run tree at zero disk and
 zero time — better than the setup script the hosted products re-run per task.
 
-`node_modules` copies cleanly. **A Python `.venv` does not, so a copied workspace
-re-runs `uv sync`.** The reason matters more than the rule, because the failure it
-avoids is silent: console scripts carry an absolute shebang naming the venv that
-created them, so a copied `.venv/bin/<tool>` keeps running the *mirror's*
-interpreter and importing the *mirror's* site-packages. Nothing errors — the
-workspace simply is not the environment in use. Re-syncing is cheap precisely
-because of the shared cache: it links from the store rather than downloading.
-(`uv venv --relocatable` would make the copy safe instead, but it has to be set
-when the venv is created and re-syncing costs little enough not to bother.)
+`node_modules` copies cleanly. **A Python `.venv` copies only if it was created
+`--relocatable`, so the mirror's is.** An ordinary uv venv writes an absolute
+interpreter path into every console script, so a copied `.venv/bin/<tool>` keeps
+running the *mirror's* interpreter and importing the *mirror's* site-packages.
+Nothing errors — the workspace simply is not the environment in use.
 
-A warm mirror also constrains sync: it must never `git clean`, and a lockfile
-change has to trigger a reinstall in the mirror.
+This draft answered that with "a copied workspace re-runs `uv sync`", which does
+not work: the copy already satisfies the lockfile, so uv does nothing and the
+absolute shebangs stay (measured against uv 0.8.13 — `uv sync` returned in 46 ms
+and changed nothing). `uv venv --relocatable` is the answer instead. Its scripts
+resolve the interpreter beside themselves, uv records the choice in `pyvenv.cfg`
+and later syncs keep it, and a copied venv then reports the fork's own
+`sys.prefix` and imports the fork's own site-packages. So the install for a uv
+tree is two commands, `uv venv --relocatable` then `uv sync`, and a fork inherits
+a working environment rather than rebuilding one.
+
+**Where each ecosystem's knowledge lives.** A `PackageManager` per manager — uv,
+pnpm, npm — claiming a tree by its lockfile and owning the commands that follow.
+They differ in more than the binary's name, which is why this is a hierarchy and
+not a table: uv needs two commands and a flag to produce an environment that
+survives being copied, where the node managers need one and would be broken by
+the `ci` their own documentation recommends. What is common — whether to install
+at all, and what to record afterwards — sits above them and is the same for all.
+
+**When an install runs.** The tree records the lockfile it was last installed
+from, in `.git/octomate-installed`. A mirror installs when that moves, which is
+the only time it needs to — the freshness window starts at zero, so every fork
+syncs, and installing on each would rebuild an environment nothing had changed.
+The fork then makes the same call, and the stamp's location answers it: `cp -a`
+brings the stamp along with the trees it describes, so a copied fork does
+nothing, while `git clone` builds a fresh `.git` carrying no untracked file, so
+an ext4 host installs its own out of the store the mirror warmed. A fork checked
+out on a ref whose lockfile differs installs either way.
+
+An install that fails is logged and the tree is handed over uninstalled. It is a
+working checkout regardless and whatever runs there installs for itself, the way
+every run did before this existed; a host without `pnpm` should lose its
+dependencies, not its workspace.
+
+A warm mirror also constrains sync: it must never `git clean`. It does not —
+`commit_folder` stages the folder through a scratch index and finishes with
+`reset --hard`, which deletes what is tracked-but-gone and leaves untracked state
+where it is.
 
 ## Who gets one
 
@@ -277,8 +308,8 @@ disk decision rather than a data-loss decision.
   uncommitted work reads as uncommitted. Modifications, deletions, untracked files
   and a detached HEAD all make the round trip. What does not is the staged/unstaged
   split, since one tree cannot hold both, and `.gitignore`d files — a rebuilt
-  workspace has no `.venv`. Reconciling the history that comes back is the agent's
-  job, not Octomate's.
+  workspace's `.venv` is the one the fork installs, not the one the turn was using.
+  Reconciling the history that comes back is the agent's job, not Octomate's.
 - **Pruning** happens on an idle timer. Being wrong costs a slow resume, never
   lost work, so the heuristic does not need to be good. A thread with a pending
   `DeferredAction` is known to be alive and is a reasonable last choice to evict,
@@ -401,9 +432,9 @@ default ref is the mirror's `origin/HEAD`. Storing either creates a second copy 
 something already knowable.
 
 Still undecided here: what `extra_roots` means once a project is one mirror —
-whether a sibling tree is forked too, or is only ever recognition. And how a
-workspace learns its install command; detecting `uv.lock` or `pnpm-lock.yaml`
-covers the cases that exist, and a field can wait until one does not.
+whether a sibling tree is forked too, or is only ever recognition. How a workspace
+learns its install command is settled: the lockfile says, and a field waits until
+a project turns up that needs one.
 
 ## Open
 

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from octomate.config.mirrors import MirrorsConfig
+from octomate.managers.dependencies import install
 from octomate.schemas.project import Project, RemoteUpstream
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,11 @@ class MirrorManager:
         failing the caller — work continues on what the machine already has, and
         the stale stamp is not renewed, so the next sync tries again. A mirror
         that cannot be created is a hard failure: there is nothing to fall back to.
+
+        A mirror whose tree just changed is installed as well, which is what makes
+        forking it cheap: the machine's package store is warm and the installed
+        trees themselves are copied. Not on the window's short path, and not on the
+        stale one — nothing moved there, so there is nothing to install.
         """
         # Asked before `create`, which is where the waiting happens: a mirror this
         # call had to make is one nothing can be behind, so it is not fetched again
@@ -112,6 +118,7 @@ class MirrorManager:
         async with self.locks.setdefault(project.name, asyncio.Lock()):
             if missing:
                 self.synced[project.name] = time.monotonic()
+                await install(path)
                 return path
             last = self.synced.get(project.name)
             window = self.config.freshness_window
@@ -123,6 +130,7 @@ class MirrorManager:
                 logger.warning("mirror for %s is stale: %s", project.name, error)
                 return path
             self.synced[project.name] = time.monotonic()
+            await install(path)
         return path
 
     async def create(self, project: Project | None = None) -> Path:

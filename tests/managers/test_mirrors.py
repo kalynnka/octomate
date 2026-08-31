@@ -19,8 +19,13 @@ from pathlib import Path
 import pytest
 
 from octomate.config.mirrors import GitIdentity, MirrorsConfig
-from octomate.managers.mirrors import GitCommandError, MirrorManager, run_git
+from octomate.managers.mirrors import (
+    GitCommandError,
+    MirrorManager,
+    run_git,
+)
 from octomate.schemas.project import DirectoryUpstream, Project, RemoteUpstream
+from tests.support.dependencies import Probe, probing, runs
 from tests.support.managers import a_project
 
 # For commits the *tests* make in their upstream repos — a person's, distinct from
@@ -260,6 +265,53 @@ async def test_a_fresh_mirror_is_not_resynced_within_the_window(
 
     assert not (mirror / "late.md").exists()
     assert await commit_count(mirror) == 1
+
+
+async def test_a_synced_mirror_installs_its_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Which is what makes forking one cheap: the machine's package store is warm
+    # and the installed trees themselves are what a fork copies.
+    probing(monkeypatch)
+    folder = a_folder(tmp_path / "docs", {Probe.lockfile: "one"})
+    manager = a_mirror_manager(tmp_path)
+
+    mirror = await manager.sync(a_project(folder))
+
+    assert runs(mirror) == 1
+
+
+async def test_a_mirror_whose_lockfile_stood_still_is_not_installed_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The freshness window starts at zero, so every fork syncs; installing on
+    # every one of those would rebuild an environment nothing has changed.
+    probing(monkeypatch)
+    folder = a_folder(tmp_path / "docs", {Probe.lockfile: "one"})
+    manager = a_mirror_manager(tmp_path)
+    project = a_project(folder)
+    await manager.sync(project)
+
+    (folder / "notes.md").write_text("unrelated")
+    mirror = await manager.sync(project)
+
+    assert (mirror / "notes.md").read_text() == "unrelated"
+    assert runs(mirror) == 1
+
+
+async def test_a_moved_lockfile_installs_the_mirror_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    probing(monkeypatch)
+    folder = a_folder(tmp_path / "docs", {Probe.lockfile: "one"})
+    manager = a_mirror_manager(tmp_path)
+    project = a_project(folder)
+    await manager.sync(project)
+
+    (folder / Probe.lockfile).write_text("two")
+    mirror = await manager.sync(project)
+
+    assert runs(mirror) == 2
 
 
 async def test_two_syncs_of_one_mirror_serialize(tmp_path: Path) -> None:
