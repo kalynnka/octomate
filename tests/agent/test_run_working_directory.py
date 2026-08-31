@@ -22,8 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.project import Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import UserProfile
@@ -42,7 +42,7 @@ from octomate.types.json import JsonObject
 from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
 from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, RecordingClaudeClient
-from tests.support.managers import a_registry
+from tests.support.managers import a_project, a_registry
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -315,9 +315,7 @@ def codex_rollout(cwd: str) -> list[JsonObject]:
 
 async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> None:
     octomate = Octomate()
-    tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects
-    )
+    tailer = CodexTranscriptTailer(octomate.conversations, octomate.thread_manager)
     ingest = CodexHookIngest(octomate, tailer)
 
     await ingest.handle(
@@ -340,9 +338,7 @@ async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> 
 async def codex_rollout_run(octomate: Octomate, rollout: Path) -> AgentRun:
     """Stream one rollout the way production reaches it: a tail attaches and feeds
     the file's framed lines, and the turn commits off its own `task_complete`."""
-    tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects
-    )
+    tailer = CodexTranscriptTailer(octomate.conversations, octomate.thread_manager)
     await stream_rollout(tailer, CODEX_SESSION, rollout)
     [run] = await runs_of(octomate, CODEX_NATIVE_ID, CODEX_SESSION)
     return run
@@ -395,12 +391,14 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
 ) -> None:
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     thread = await a_thread(octomate, "inky")
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), cwd="/configured"),
+        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
     )
 
     async with tentacle.run_stream_events(
@@ -411,11 +409,13 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
 
     options: ClaudeAgentOptions | None = RecordingClaudeClient.last_options
     assert options is not None
-    assert options.cwd == str(inky)
+    workspace = octomate.workspaces.path(thread.id)
+    assert options.cwd == str(workspace)
     [run] = await driven_runs(octomate, thread, "claude")
     # The same directory the run was launched in, so a driven run answers "where did
-    # this run" exactly as a native one does.
-    assert run.cwd == inky
+    # this run" exactly as a native one does — the thread's workspace since OCTO-48,
+    # which is what makes the answer specific enough to go back to.
+    assert run.cwd == workspace
 
 
 @pytest.mark.usefixtures("_fake_runtimes")
@@ -425,9 +425,7 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(
-            models=set(CODEX_MODELS), permission_mode="deny_all", cwd="/configured"
-        ),
+        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
     )
 
     async with tentacle:
@@ -437,7 +435,8 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
             async for _event in stream:
                 pass
 
-    # No project declared, so dispatch stays where it is configured — and that is
-    # what the run records.
+    # No project declared, so the run happens in the workspace forked for it rather
+    # than the configured directory — and that is what the run records, even though
+    # the run's end is what throws it away.
     [run] = await driven_runs(octomate, thread, "codex")
-    assert run.cwd == Path("/configured")
+    assert run.cwd == octomate.workspaces.open(thread.id, None).path

@@ -24,6 +24,7 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, GatewaySession
 from octomate.managers.thread import ThreadManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread
 from octomate.schemas.triage import (
@@ -114,6 +115,9 @@ class ReflexDeps:
     # ledger, the conversations, the deferred actions, the gateway's live-session
     # registry — never private ones with their own identity or state.
     thread_manager: ThreadManager
+    # For the bookkeeping a finished turn owes and the agent has no part in:
+    # leaving the thread's workspace somewhere losing the directory cannot cost it.
+    workspaces: WorkspaceManager
     conversation_manager: ConversationManager
     action_manager: DeferredActionManager
     gateway: GatewayManager

@@ -228,21 +228,21 @@ YAML
 
 A configured `claude` serves a hook router, and that router authenticates — so someone
 must be registered before it will boot: every configured credential names a person.
-Register yourself with a secret of your own. Order matters here: the first call
-generates one and exports it, the second sees it resolve and appends the *same* line,
-and the `users:` entry is what tells the server whose that credential is.
+Register yourself with a secret of your own. `configure` generates one, writes it
+where every client on this machine resolves it, and prints it once — that printed
+value is what goes in the `users:` entry telling the server whose credential it is.
+Here you are both people, so both halves are yours to do.
 
 ```bash
-eval "$(octomate secret)"     # this shell
-octomate secret >> ~/.zshrc   # and every later one (zsh)
-cat > .octomate/config/users.yaml <<YAML
+octomate configure --url http://127.0.0.1:8000   # ~/.config/octomate/cli.toml
+cat > .octomate/config/users.yaml <<'YAML'
 users:
   you:
-    secret: "${OCTOMATE__SECRET}"
+    secret: "<the credential configure printed>"
 YAML
 ```
 
-Your machines read `OCTOMATE__SECRET` from the environment; the server reads your
+Your clients read that credential from their config file; the server reads your
 `users:` entry and knows every session bearing it is yours.
 
 Then serve it and point Claude Code at it:
@@ -379,19 +379,25 @@ users:
       slack: {channel_user_id: U0123ABCD}    # where their gateway spells can reach
 ```
 
-Each user sets their credential up on their machine, then points their clients at it:
+Setting a person up is three steps on their own machine, in this order — mint, register, install:
 
 ```bash
-eval "$(octomate secret)"                        # this shell
-octomate secret >> ~/.zshrc                      # and every later one (zsh)
+# 1. mint it, and read what it prints
+octomate configure --url http://<host>:<port>    # ~/.config/octomate/cli.toml, mode 600
+
+# 2. hand that value to the deployment's admin, who adds it as your users: entry
+
+# 3. point your runtimes at it, once there is something to resolve
 octomate claude hooks install                    # merges handlers into ~/.claude/settings.json
+octomate claude mcp install                      # this project's mcpServers.gateway
 octomate codex hooks install                     # merges handlers into ~/.codex/hooks.json
+octomate codex mcp install                       # [mcp_servers.gateway] in ~/.codex/config.toml
 octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hooks.json + a patch row
 ```
 
-`octomate secret` prints one line — `export OCTOMATE__SECRET=…` — and writes nothing; where your login environment comes from is yours to know, and the printed value is what belongs in that user's `users:` entry. Sessions only ever read the **environment**, and they are separate processes that never see your config home, so that line is the bridge, and it has to reach whatever launches them.
+`octomate configure` writes the address and the credential to a file every client on the machine resolves — a hook, a `tail`, an `mcp install` — and prints a generated one once, in a panel saying what to do with it. The order matters: the installs write down whatever resolves *at install time*, so a credential that does not exist yet gets you entries that only 401, and moving one means re-running them.
 
-`~/.zshrc` covers interactive zsh, which is what VSCode resolves the environment from; use `~/.zshenv` instead if you want non-interactive shells to have it too, and on another shell put the line wherever that shell would find it. Either way an environment is captured when a process starts: shells already open keep the one they had, and a GUI client (VSCode, the desktop app) grabs it when *it* launches — so restart them before expecting the hooks to carry the secret.
+A file, not an exported variable, and that is a security property rather than a convenience. An environment is inherited: everything a shell starts carries what it holds, this deployment's own Codex app-servers included, and a driven turn must speak as the human who kicked it and nobody else. `$OCTOMATE_CLI_SECRET` and `$OCTOMATE_CLI_URL` still resolve ahead of the files, for a container or a CI step with no home to write into. `OCTOMATE_CLI_` rather than the server's `OCTOMATE__` prefix, so nothing about a client credential reads as deployment config.
 
 Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying its bearer plus a static `X-Octomate-Client` header written at install time. The client header is attribution (which runtime); the bearer is identity (which human): a native session bearing a user's secret speaks for that person, and its spells light up on *their* linked accounts. Driven turns answer to the same rule — every run represents the human who kicked it, so a driven Codex turn's loopback call carries the kicker's own secret and nobody else's credential can drive it, while a turn kicked by an unregistered user simply runs without the spells. Rotation or revocation is only ever the admin editing the YAML. The trust statement, plainly: a user's secret holds the hook pipe's ledger writes plus the gateway's outbound sends and handoffs, under that user's name. Same trust domain (the operator's machines), same mitigations (per-user secrets, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags.
 
@@ -404,7 +410,7 @@ octomate codex mcp install     # [mcp_servers.gateway] in ~/.codex/config.toml
 octomate deepseek mcp install  # a dsh-mcp-client row in $DSH_HOME/cordis.patch.yml
 ```
 
-Unlike the hooks — whose scripts resolve the address and credential from the environment when each hook fires — a static entry is read by the runtime itself, so `mcp install` resolves both once and writes them into the file: the file holds the literal credential, and rotating it means re-running install. (Codex differs: its entry names `OCTOMATE__SECRET` as a `bearer_token_env_var`, resolved from each session's environment, so the secret must be exported in the shell profile.)
+Unlike the hooks — whose scripts resolve the address and credential each time one fires — a static entry is read by the runtime itself, so `mcp install` resolves both once and writes them into the file. All three embed the literal credential, and rotating it means re-running install. None of them names an environment variable: a driven Codex app-server is a child of the host and reads `~/.codex/config.toml` itself, so an entry resolving a variable would hand every driven turn whichever credential that host's environment happened to carry. A driven turn pins `mcp_servers.gateway` for the length of its process instead — wired to its kicker, or switched off.
 
 ---
 

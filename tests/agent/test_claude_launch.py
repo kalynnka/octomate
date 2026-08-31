@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from octomate_cli import launch as launch_module
 from octomate_cli.claude import CLAUDE_HOOK_PATH
-from octomate_cli.config import OCTOMATE_URL_ENV, project_config_path, user_config_path
+from octomate_cli.config import CLISettings, project_config_path, user_config_path
 from octomate_cli.hooks import LAUNCH_SCRIPT
 from octomate_cli.launch import OCTOMATE_URL_ENV as LAUNCH_URL_ENV
 
@@ -45,7 +45,7 @@ def launch(
         input=json.dumps(payload),
         capture_output=True,
         text=True,
-        # Controlled: the suite may run in a shell that exports OCTOMATE_URL itself,
+        # Controlled: the suite may run in a shell that exports OCTOMATE_CLI_URL itself,
         # and these tests are about what the script resolves, not what leaks in. HOME
         # and cwd pinned to nowhere so the developer's real cli.toml never steers a
         # test in either scope.
@@ -141,13 +141,13 @@ def test_an_event_naming_no_transcript_spawns_nothing(tmp_path: Path) -> None:
 
 def test_the_stream_url_derives_from_the_environment(tmp_path: Path) -> None:
     """The installed command carries only `--path`; the stream address comes from
-    OCTOMATE_URL when the hook fires — `https` base, `wss` stream — so the launcher
+    OCTOMATE_CLI_URL when the hook fires — `https` base, `wss` stream — so the launcher
     follows the same environment switch the forwarding hooks do."""
     binary, args_file = recorder(tmp_path)
     result = launch(
         ["--path", CLAUDE_HOOK_PATH, "--octomate", str(binary)],
         EVENT,
-        env={OCTOMATE_URL_ENV: "https://minidock.example:8443"},
+        env={CLISettings.env("url"): "https://minidock.example:8443"},
     )
 
     assert result.returncode == 0
@@ -161,7 +161,7 @@ def test_the_stream_url_derives_from_the_environment(tmp_path: Path) -> None:
 
 
 def test_without_a_target_nothing_spawns_and_nothing_is_said(tmp_path: Path) -> None:
-    """No pin and no OCTOMATE_URL: the emit hook on the same event already complained
+    """No pin and no OCTOMATE_CLI_URL: the emit hook on the same event already complained
     on stderr, and a tail with no server to call would only retry into the void."""
     binary, args_file = recorder(tmp_path)
     result = launch(["--path", CLAUDE_HOOK_PATH, "--octomate", str(binary)], EVENT)
@@ -202,7 +202,7 @@ def test_its_duplicated_names_still_match_the_canonical_ones(
 ) -> None:
     """launch.py repeats the variable name and the config path as literals because it
     must not import the package; this is what stops the copies drifting."""
-    assert LAUNCH_URL_ENV == OCTOMATE_URL_ENV
+    assert LAUNCH_URL_ENV == CLISettings.env("url")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
     assert launch_module.config_files() == (project_config_path(), user_config_path())

@@ -11,9 +11,9 @@ session, so the hook that knows hands it the path (the tail spools it and exits 
 one already holds the session).
 
 The stream address is pinned only when the install pinned `--url`; otherwise it is
-derived when the hook fires, from `OCTOMATE_URL` or the client config file — the same
-resolution the forwarding hooks follow. With none of them, nothing spawns and nothing
-is said: the emit hook on the same event already complained on stderr.
+derived when the hook fires, from `OCTOMATE_CLI_URL` or the client config file — the
+same resolution the forwarding hooks follow. With none of them, nothing spawns and
+nothing is said: the emit hook on the same event already complained on stderr.
 
 Run by absolute path, never as `python -m octomate...`, and imports nothing from
 octomate: `octomate/__init__.py` builds `Octomate`, which costs ~1.9s to import, and
@@ -35,7 +35,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-OCTOMATE_URL_ENV = "OCTOMATE_URL"
+OCTOMATE_URL_ENV = "OCTOMATE_CLI_URL"
 
 USAGE = (
     "usage: launch.py [--url <stream-url>] [--path <hook-path>] "

@@ -5,7 +5,7 @@ import colorsys
 import logging
 import zlib
 from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import InitVar, dataclass, field
 from functools import lru_cache
 from typing import TypeVar
@@ -26,6 +26,7 @@ from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import gateway_mcp, served_session
 from octomate.oauth.routes import oauth_router
@@ -112,7 +113,7 @@ class Octomate:
         default_factory=DeferredActionManager
     )
     users: UserManager = field(default_factory=UserManager)
-    projects: ProjectManager = field(default_factory=ProjectManager)
+    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
     gateway: GatewayManager = field(default_factory=GatewayManager)
     # The MCP endpoint under each served server's mount: `/<name>` + `mcp_path`.
     mcp_path: str = "/mcp"
@@ -144,6 +145,19 @@ class Octomate:
         self.bearers = KnownBearers(
             self.config.users if self.config is not None else {}
         )
+
+    @property
+    def projects(self) -> ProjectManager:
+        """The project registry. Kept by the workspace manager, which is the one
+        thing that cannot work without it, and reached here because most of what
+        asks — session attribution, the console, dispatch — wants the registry
+        rather than anything to do with workspaces."""
+        return self.workspaces.projects
+
+    @property
+    def mirrors(self) -> MirrorManager:
+        """Every project's mirror, kept beside the registry for the same reason."""
+        return self.workspaces.mirrors
 
     def connect(self, tentacle: TentacleT) -> TentacleT:
         if isinstance(tentacle, ChannelTentacle):
@@ -222,6 +236,7 @@ class Octomate:
                     inputs=Awake(signal=signal),
                     state=ReflexState(),
                     deps=ReflexDeps(
+                        workspaces=self.workspaces,
                         agents=self.agents,
                         channels=self.channels,
                         conversation_manager=self.conversations,
@@ -284,6 +299,10 @@ class Octomate:
                 # the resolution index, so a declared project resolves before
                 # anything is running that could ask.
                 await self.projects.reconcile()
+                # How a workspace is forked is the filesystem's answer, not a
+                # setting: probed here so the log says which mechanism this host
+                # got, once, before anything asks for a workspace.
+                await self.workspaces.detect()
                 # Each tentacle is an async context manager owning its own
                 # long-lived resources (agents: warm MCP sessions; channels:
                 # the inbound receive loop). Channels live on the inner stack so
@@ -338,6 +357,15 @@ class Octomate:
                     # binds. `start` already isolates and time-bounds each entry,
                     # so this task settles on its own and never raises.
                     starting = asyncio.create_task(start_all())
+                    # Mirrors in the background too: a first clone takes as long
+                    # as the repository is big, and serving must not wait on it.
+                    # `reconcile` isolates per-project failures itself.
+                    mirroring = asyncio.create_task(
+                        self.mirrors.reconcile(self.projects.list())
+                    )
+                    # Reclaiming disk is maintenance: it runs for as long as
+                    # the host does, and stops when the host stops.
+                    sweeping = asyncio.create_task(self.workspaces.sweep())
                     try:
                         yield
                     finally:
@@ -347,6 +375,14 @@ class Octomate:
                         # onto it. `start` bounds each entry, so this wait is
                         # bounded too; on a normal shutdown it is a no-op.
                         await starting
+                        # Cancelled rather than awaited: a mirror sync is not
+                        # bounded the way `start` is, and creation cleans up
+                        # after a cancellation, so shutdown stays prompt.
+                        mirroring.cancel()
+                        sweeping.cancel()
+                        with suppress(asyncio.CancelledError):
+                            await mirroring
+                            await sweeping
 
         app = FastAPI(title=title, docs_url="/docs", redoc_url=None, lifespan=lifespan)
         app.state.octomate = self

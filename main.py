@@ -10,6 +10,7 @@ from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
 from octomate.managers.project import ProjectManager
 from octomate.managers.user import UserManager
+from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.codex import CodexTentacle
@@ -72,7 +73,11 @@ def create_app() -> FastAPI:
     octomate = Octomate(
         config=config,
         users=UserManager(config.users),
-        projects=ProjectManager(config.projects),
+        workspaces=WorkspaceManager(
+            projects=ProjectManager(config.projects),
+            mirrors=MirrorManager(config=config.mirrors),
+            config=config.workspaces,
+        ),
         oauth_encryption_key=config.oauth.encryption_key,
         mcp_path=config.mcp_path,
     )

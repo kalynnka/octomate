@@ -151,6 +151,13 @@ CODEX_PERMISSION_PLANS: dict[CodexPermissionMode, CodexPermissionPlan] = {
 }
 
 
+# `workspace_write` ships `networkAccess: false`, so every driven Codex turn has run
+# without a network. Octomate is a relay: a run that cannot reach the registry, the
+# API or the remote it is working against is broken rather than safer, and the other
+# runtimes have never been closed this way. The app-server resolves the preset against
+# its own config, so this opens the network without widening what a command may write.
+NETWORK_ACCESS = "sandbox_workspace_write.network_access=true"
+
 # How a driven turn's Codex process is told to reach the gateway MCP server: the
 # launch config names these variables, and `new_client` fills them per conversation,
 # so the identity the header asserts is the launch config's and never the model's.
@@ -349,7 +356,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.session_tailer = CodexTranscriptTailer(
             self.octomate.conversations,
             self.octomate.thread_manager,
-            self.octomate.projects,
             self.session_locks,
         )
         self.session_ingest = CodexHookIngest(
@@ -452,9 +458,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         local_client = client is not None and client.host in {"127.0.0.1", "::1"}
         project = None
         if local_client and hello.cwd:
-            project = await self.octomate.projects.ensure(
-                Path(hello.cwd), origin="codex"
-            )
+            holder = self.octomate.projects.resolve(Path(hello.cwd))
+            project = self.octomate.projects.get(holder) if holder is not None else None
         await self.octomate.thread_manager.ensure(
             ThreadKey(CODEX_NATIVE_ID, "thread", hello.session_id),
             project=project,
@@ -463,7 +468,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             hello.session_id,
             Path(hello.transcript_path),
             sender,
-            local_client=local_client,
         )
         logger.info(
             "session %s: remote tail connected (octomate %s)",
@@ -540,8 +544,23 @@ class CodexTentacle(AgentTentacle[str, None]):
             conversation_id: uuid.UUID, gateway_bearer: SecretStr | None
         ) -> AsyncCodex:
             env = {**(self.config.runtime.env or {}), DRIVEN_ENV: "1"}
-            overrides = self.config.runtime.config_overrides
-            if gateway_bearer is not None:
+            # First, so an operator who sets the key themselves still wins: later
+            # `--config` arguments are the ones Codex keeps.
+            overrides = (NETWORK_ACCESS, *self.config.runtime.config_overrides)
+            # Either way the launch config says what `mcp_servers.gateway` is for
+            # this process, because `~/.codex/config.toml` may already hold one:
+            # the operator's own native entry, carrying the credential of whoever
+            # ran `octomate codex mcp install` there. An app-server is a child of
+            # this host and reads that file, so a turn that named nothing would
+            # inherit a stranger's identity — every spell it cast would land on
+            # their linked accounts. A turn speaks as its kicker or it does not
+            # speak at all.
+            if gateway_bearer is None:
+                overrides = (
+                    *overrides,
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.enabled=false",
+                )
+            else:
                 # The turn's session is at the gateway, so the launch config wires
                 # the process to the served MCP endpoint and asserts the turn's own
                 # conversation id — the model never chooses the header. The url is
@@ -563,9 +582,14 @@ class CodexTentacle(AgentTentacle[str, None]):
                 )
                 overrides = (
                     *overrides,
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.enabled=true",
                     f"mcp_servers.{GATEWAY_SERVER_NAME}.url={url}",
                     f"mcp_servers.{GATEWAY_SERVER_NAME}.bearer_token_env_var="
                     f"{GATEWAY_TOKEN_ENV}",
+                    # Emptied rather than left alone: the native entry's own
+                    # `Authorization` lives here, and it would outrank the bearer
+                    # this turn just named.
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.http_headers={{}}",
                     f"mcp_servers.{GATEWAY_SERVER_NAME}.env_http_headers="
                     f'{{"{CONVERSATION_HEADER}" = "{GATEWAY_CONVERSATION_ENV}"}}',
                 )
@@ -1020,10 +1044,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         if not interactive and permission_mode == "user_review":
             permission_mode = "deny_all"
         plan = CODEX_PERMISSION_PLANS[permission_mode]
-        # The other axis, and the operator's rather than the conversation's: what a
-        # command may touch when nobody is asked. Fixed for the run, so a posture
-        # never rewrites what the whole thread reaches.
-        sandbox = Sandbox[self.config.sandbox]
         personality = (
             Personality(self.config.personality)
             if self.config.personality is not None
@@ -1043,10 +1063,19 @@ class CodexTentacle(AgentTentacle[str, None]):
         else:
             summary = ReasoningSummary(ReasoningSummaryValue(self.config.summary))
 
-        # The thread's project root, or the configured directory when it is in none.
-        # `sandbox="workspace_write"` scopes writes to it, so for Codex the directory
-        # is the whole of running inside a project.
-        run_cwd = await self.run_cwd(conversation.thread_id, self.config.cwd)
+        # The run's own workspace: a fork of the project's mirror, or of the empty
+        # repository when the thread is in none. `sandbox="workspace_write"` scopes
+        # writes to it, so for Codex the directory is the whole of running inside a
+        # project — and the workspace is what makes that boundary this run's rather
+        # than everyone's checkout.
+        project = await self.run_project(conversation.thread_id)
+        workspace = self.octomate.workspaces.open(conversation.thread_id, project)
+        run_cwd = str(workspace.path)
+        # The other axis, and the operator's rather than the conversation's: what a
+        # command may touch when nobody is asked. Fixed for the run, so a posture
+        # never rewrites what the whole thread reaches. One answer for every thread
+        # now that every thread has a workspace of its own to be scoped to.
+        sandbox = Sandbox[self.config.sandbox]
 
         codex_thread_id: str | None = None
         with codex_logfire.span(
@@ -1055,87 +1084,95 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_name=run_name or "codex",
             conversation_address=str(conversation_address),
         ):
-            # Registered by the react node for exactly the turns whose connection
-            # has the gateway; an accomplice's or a stray conversation is not there.
-            # The wiring carries the kicker's own credential, so a turn whose
-            # kicker is unregistered or carries no secret launches clean, with
-            # the spells withheld.
-            session = self.octomate.gateway.get(conversation.id)
-            gateway_bearer = (
-                await self.octomate.users.secret_of(session.user_profile)
-                if session is not None
-                else None
-            )
-            pooled = await self.pool.acquire(
-                conversation.id, gateway_bearer=gateway_bearer
-            )
-            try:
-                codex_thread = pooled.thread
-                if codex_thread is None:
-                    if conversation.external_id:
-                        codex_thread = await self.resume_codex_thread(
-                            pooled.client,
-                            thread_id=conversation.external_id,
-                            plan=plan,
-                            base_instructions=self.config.base_instructions,
-                            cwd=run_cwd,
-                            developer_instructions=developer_instructions,
-                            model=sdk_model,
-                            model_provider=self.config.model_provider,
-                            personality=personality,
-                            sandbox=sandbox,
-                        )
-                    else:
-                        codex_thread = await self.start_codex_thread(
-                            pooled.client,
-                            plan=plan,
-                            base_instructions=self.config.base_instructions,
-                            cwd=run_cwd,
-                            developer_instructions=developer_instructions,
-                            ephemeral=self.config.ephemeral,
-                            model=sdk_model,
-                            model_provider=self.config.model_provider,
-                            personality=personality,
-                            sandbox=sandbox,
-                        )
-                    pooled.thread = codex_thread
-                codex_thread_id = codex_thread.id
-                self.bridge_contexts[conversation.id] = CodexBridgeContext(
-                    loop=asyncio.get_running_loop(),
-                    conversation=conversation,
-                    conversation_address=conversation_address,
-                    run_name=run_name,
-                    session_allowed=set(conversation.allowed_tools),
+            # Entered here so the tree exists before a turn is dispatched into it,
+            # and a chat thread's is thrown away when the run leaves — after the
+            # client is back in the pool, which is why the pool sits inside it.
+            async with workspace:
+                # Registered by the react node for exactly the turns whose connection
+                # has the gateway; an accomplice's or a stray conversation is not
+                # there. The wiring carries the kicker's own credential, so a turn
+                # whose kicker is unregistered or carries no secret launches clean,
+                # with the spells withheld.
+                session = self.octomate.gateway.get(conversation.id)
+                gateway_bearer = (
+                    await self.octomate.users.secret_of(session.user_profile)
+                    if session is not None
+                    else None
+                )
+                pooled = await self.pool.acquire(
+                    conversation.id, gateway_bearer=gateway_bearer
                 )
                 try:
-                    with self.session_ingest.driving(codex_thread.id):
-                        turn = await codex_thread.turn(
-                            prompt_text,
-                            approval_mode=plan.sdk_mode,
-                            cwd=run_cwd,
-                            effort=turn_effort,
-                            model=sdk_model,
-                            output_schema=output_schema,
-                            personality=personality,
-                            sandbox=sandbox,
-                            summary=summary,
-                        )
-                        previous = self.live_turns.get(conversation.id)
-                        self.live_turns[conversation.id] = turn
-                        if previous is not None and previous is not turn:
-                            with contextlib.suppress(Exception):
-                                await previous.interrupt()
-                        try:
-                            async for notification in turn.stream():
-                                for event in accumulator.consume(notification):
-                                    yield event
-                        finally:
-                            if self.live_turns.get(conversation.id) is turn:
-                                self.live_turns.pop(conversation.id, None)
+                    codex_thread = pooled.thread
+                    if codex_thread is None:
+                        if conversation.external_id:
+                            codex_thread = await self.resume_codex_thread(
+                                pooled.client,
+                                thread_id=conversation.external_id,
+                                plan=plan,
+                                base_instructions=self.config.base_instructions,
+                                cwd=run_cwd,
+                                developer_instructions=developer_instructions,
+                                model=sdk_model,
+                                model_provider=self.config.model_provider,
+                                personality=personality,
+                                sandbox=sandbox,
+                            )
+                        else:
+                            codex_thread = await self.start_codex_thread(
+                                pooled.client,
+                                plan=plan,
+                                base_instructions=self.config.base_instructions,
+                                cwd=run_cwd,
+                                developer_instructions=developer_instructions,
+                                ephemeral=self.config.ephemeral,
+                                model=sdk_model,
+                                model_provider=self.config.model_provider,
+                                personality=personality,
+                                sandbox=sandbox,
+                            )
+                        pooled.thread = codex_thread
+                    codex_thread_id = codex_thread.id
+                    self.bridge_contexts[conversation.id] = CodexBridgeContext(
+                        loop=asyncio.get_running_loop(),
+                        conversation=conversation,
+                        conversation_address=conversation_address,
+                        run_name=run_name,
+                        session_allowed=set(conversation.allowed_tools),
+                    )
+                    try:
+                        with self.session_ingest.driving(codex_thread.id):
+                            # No `sandbox=` here. The thread already carries the
+                            # mode, and a turn's is sent as a whole policy built
+                            # from the SDK's defaults — which would stamp
+                            # `networkAccess: false` back over what the config
+                            # resolved, and narrow the writable roots with it.
+                            turn = await codex_thread.turn(
+                                prompt_text,
+                                approval_mode=plan.sdk_mode,
+                                cwd=run_cwd,
+                                effort=turn_effort,
+                                model=sdk_model,
+                                output_schema=output_schema,
+                                personality=personality,
+                                summary=summary,
+                            )
+                            previous = self.live_turns.get(conversation.id)
+                            self.live_turns[conversation.id] = turn
+                            if previous is not None and previous is not turn:
+                                with contextlib.suppress(Exception):
+                                    await previous.interrupt()
+                            try:
+                                async for notification in turn.stream():
+                                    for event in accumulator.consume(notification):
+                                        yield event
+                            finally:
+                                if self.live_turns.get(conversation.id) is turn:
+                                    self.live_turns.pop(conversation.id, None)
+                    finally:
+                        self.bridge_contexts.pop(conversation.id, None)
                 finally:
-                    self.bridge_contexts.pop(conversation.id, None)
-            finally:
-                await self.pool.release(conversation.id)
+                    await self.pool.release(conversation.id)
 
         run_id = str(uuid7())
         recorded_run = await self.octomate.conversations.record_agent_run(

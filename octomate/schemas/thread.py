@@ -175,14 +175,15 @@ class Thread(BaseTransmuter):
     )
     project_id: uuid.UUID | None = Field(
         default=None,
-        frozen=True,
         description=(
             "The declared project this thread's work is in; None is unattributed, "
-            "which is what a directory no project claims produces. Frozen, because "
-            "its root is where every conversation in the thread runs: an external "
-            "session's history is full of absolute paths, so a thread that changed "
-            "project would resume its sessions somewhere they do not fit. Declaring "
-            "a project later attributes new threads rather than rewriting old ones."
+            "which is what a chat thread and a directory no project claims both "
+            "produce. Set once — when the row is created, or later by "
+            "`ThreadManager.bind` for a thread that had none — and never moved "
+            "after that: an external session's history is full of absolute paths, "
+            "so a thread that changed project would resume its sessions somewhere "
+            "they do not fit. Not frozen, because settable once from None is a rule "
+            "the manager can state and a field cannot."
         ),
     )
     source_cursor_message_id: uuid.UUID | None = None

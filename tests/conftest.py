@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
+from octomate_cli.config import cli_settings
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 import octomate.database as database
@@ -41,6 +43,38 @@ def isolated_config() -> Iterator[None]:
         patch.setenv(OCTOMATE_HOME_ENV, str(ISOLATED_HOME))
         with without_dotenv():
             yield
+
+
+@pytest.fixture(autouse=True)
+def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test writes into the developer's checkout.
+
+    Octomate keeps derived state under `.octomate/` relative to its working
+    directory — a project's mirror, a thread's workspace — so a suite left in the repo
+    syncs a test's throwaway project into the operator's own mirror and forks into
+    their workspaces. Per test rather than per session, so two tests declaring a
+    project of one name cannot land on one mirror either.
+
+    Nothing the suite reads depends on where the working directory is: paths resolve
+    from `__file__` or a `tmp_path`, and the config home comes from `OCTOMATE_HOME`
+    above. The live suites under tests/trigger opt back out, since discovering this
+    machine's own config home means probing the checkout.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def fresh_cli_settings() -> Iterator[None]:
+    """The client config is one object per process, and a process is one command or
+    one hook. This suite is the exception — it plays hundreds, each with its own
+    environment, home and working directory — so the cache is dropped between them.
+
+    Cleared after as well as before: a test that resolved the config leaves an object
+    built from its own `tmp_path`, and the next one to read it must not inherit that.
+    """
+    cli_settings.cache_clear()
+    yield
+    cli_settings.cache_clear()
 
 
 @pytest.fixture

@@ -43,6 +43,7 @@ from octomate.config.integrations import (
     LinearMcpConfig,
 )
 from octomate.config.mcp import McpConfig, McpIntegrationConfig, McpServerConfig
+from octomate.config.mirrors import GitIdentity, MirrorsConfig
 from octomate.config.models import (
     AnthropicModelSettings,
     BedrockModelSettings,
@@ -63,6 +64,7 @@ from octomate.config.providers import (
     VertexProviderConfig,
 )
 from octomate.config.users import UserConfig
+from octomate.config.workspaces import WorkspacesConfig
 
 # Grouped by subsystem behind the section comments below, which say more than
 # alphabetical order would; sorting this would strand each comment on the wrong name.
@@ -113,6 +115,10 @@ __all__ = [  # noqa: RUF022
     "LinearMcpConfig",
     # users
     "UserConfig",
+    # mirrors
+    "GitIdentity",
+    "MirrorsConfig",
+    "WorkspacesConfig",
     # channels
     "AgentModelConfig",
     "ChannelConfig",

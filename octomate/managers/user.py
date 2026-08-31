@@ -6,7 +6,7 @@ import uuid
 from pydantic import SecretStr
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from octomate.config.users import UserConfig
+from octomate.config.users import UsersConfig
 from octomate.database import async_session
 from octomate.schemas.user import User, UserProfile
 from octomate.types.threads import NATIVE_TENTACLE_IDS
@@ -25,8 +25,8 @@ class UserManager:
     to remain a small registry and are all cached for profile-to-owner lookup.
     """
 
-    def __init__(self, config: dict[str, UserConfig] | None = None) -> None:
-        self.config = config or {}
+    def __init__(self, config: UsersConfig | None = None) -> None:
+        self.config = config if config is not None else UsersConfig()
         self.users: dict[uuid.UUID, User] = {}
         self.ensure_lock = asyncio.Lock()
 

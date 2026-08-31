@@ -20,9 +20,7 @@ from octomate_cli import emit as emit_module
 from octomate_cli.codex import CODEX_HOOK_PATH as CANONICAL_CODEX_HOOK_PATH
 from octomate_cli.codex import EMIT_SCRIPT
 from octomate_cli.codex import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
-from octomate_cli.config import OCTOMATE_URL_ENV as CANONICAL_OCTOMATE_URL_ENV
-from octomate_cli.config import SECRET_ENV as CANONICAL_SECRET_ENV
-from octomate_cli.config import project_config_path, user_config_path
+from octomate_cli.config import CLISettings, project_config_path, user_config_path
 from octomate_cli.emit import (
     CODEX_HOOK_PATH,
     DRIVEN_ENV,
@@ -84,7 +82,7 @@ def emit(
 
 
 def base_of(url: str) -> str:
-    """The server base a session's OCTOMATE_URL would carry, from the fixture's URL."""
+    """The server base a session's OCTOMATE_CLI_URL would carry, from the fixture's URL."""
     return url.removesuffix(CODEX_HOOK_PATH)
 
 
@@ -149,7 +147,7 @@ def test_the_target_resolves_from_the_environment_at_fire_time(
     router: tuple[str, Received],
 ) -> None:
     """The installed command carries only `--path`; the server's address comes from
-    OCTOMATE_URL when the hook fires, so switching servers is an environment switch."""
+    OCTOMATE_CLI_URL when the hook fires, so switching servers is an environment switch."""
     url, received = router
     result = emit(
         ["--path", CODEX_HOOK_PATH],
@@ -174,7 +172,7 @@ def test_a_pinned_url_wins_over_the_environment(router: tuple[str, Received]) ->
 
 
 def test_without_a_target_nothing_is_posted_and_the_turn_survives() -> None:
-    """No pin and no OCTOMATE_URL: say so on stderr and stay out of the way — a fresh
+    """No pin and no OCTOMATE_CLI_URL: say so on stderr and stay out of the way — a fresh
     machine without the environment set must not lose its session to ingest."""
     result = emit(["--path", CODEX_HOOK_PATH], {SECRET_ENV: SECRET})
 
@@ -268,12 +266,47 @@ def test_its_duplicated_names_still_match_the_canonical_ones() -> None:
     """emit.py repeats these as literals because it must not import the package (see
     below). Duplication across a boundary that cannot be crossed is the price; this is
     what stops it drifting — rename one and this fails rather than a session silently
-    going unauthenticated or un-ingested."""
-    assert SECRET_ENV == CANONICAL_SECRET_ENV
+    going unauthenticated or un-ingested.
+
+    Held against `CLISettings` itself rather than a constant beside it, so renaming a
+    *field* — which is what decides the variable — is caught here too.
+    """
+    assert SECRET_ENV == CLISettings.env("secret")
+    assert OCTOMATE_URL_ENV == CLISettings.env("url")
     assert DRIVEN_ENV == CANONICAL_DRIVEN_ENV
     assert HOOK_TIMEOUT == CANONICAL_HOOK_TIMEOUT
-    assert OCTOMATE_URL_ENV == CANONICAL_OCTOMATE_URL_ENV
     assert CODEX_HOOK_PATH == CANONICAL_CODEX_HOOK_PATH
+
+
+def test_the_script_and_the_settings_class_agree_on_which_file_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the duplication, and the half a rename would not catch: both
+    must agree on which cli.toml wins. The script walks its files and takes the first
+    hit, project scope first; the settings class hands pydantic one source whose
+    *later* file wins, so it lists them the other way round. Two opposite spellings of
+    one answer, and a reversal would quietly point a session at the wrong server.
+    """
+    monkeypatch.delenv(SECRET_ENV, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    for path, value in (
+        (user_config_path(), "from-the-user-file"),
+        (project_config_path(), "from-the-project-file"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'secret = "{value}"\n')
+
+    from_the_script = emit_module.resolved(
+        "secret",
+        SECRET_ENV,
+        [emit_module.file_config(path) for path in emit_module.config_files()],
+    )
+
+    assert from_the_script == "from-the-project-file"
+    assert CLISettings().secret == from_the_script
 
 
 def test_the_script_never_imports_the_octomate_package() -> None:

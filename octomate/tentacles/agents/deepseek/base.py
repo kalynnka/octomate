@@ -775,7 +775,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             if is_deepseek_mode(conversation.permission_mode)
             else self.config.permission_mode
         )
-        run_cwd = await self.run_cwd(conversation.thread_id, self.config.cwd)
+        project = await self.run_project(conversation.thread_id)
+        workspace = self.octomate.workspaces.open(conversation.thread_id, project)
+        run_cwd = str(workspace.path)
 
         with deepseek_logfire.span(
             "DeepseekTentacle {agent_id} {run_name} [{conversation_address}]",
@@ -783,7 +785,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             run_name=run_name or "deepseek",
             conversation_address=str(conversation_address),
         ):
-            async with self.conversation_locks.hold(str(conversation.id)):
+            # Entered first so it leaves last: the tree exists before dsh is given
+            # it as a cwd, and a chat thread's is only thrown away once the turn
+            # using it is finished with it.
+            async with (
+                workspace,
+                self.conversation_locks.hold(str(conversation.id)),
+            ):
                 session_id = conversation.external_id
                 if not session_id:
                     create_payload: JsonObject = {"cwd": run_cwd}

@@ -57,7 +57,6 @@
   #
   # claude:
   #   enabled: true
-  #   cwd: .
   #   models: [opus, sonnet, haiku]   # opus => Opus 4.8
   #   claims:
   #     opus:
@@ -74,7 +73,7 @@
   #   # default | acceptEdits | plan | bypassPermissions | dontAsk | auto
   #   permission_mode: default
   #   max_turns: ~
-  #   approval_timeout: ~   # seconds to wait for a human approval; ~ = forever
+  #   approval_timeout: 3600   # seconds before a card expires; ~ = forever
   #   ssh: ~                # remote runs are disabled: a run happens in its
   #                         # thread's project root, and that is a local path the
   #                         # remote host has nothing to match. Setting a block is
@@ -85,7 +84,6 @@
   #
   # codex:
   #   enabled: true
-  #   cwd: .
   #   runtime:
   #     # codex_bin: /opt/bin/codex
   #     config_overrides: []
@@ -107,9 +105,11 @@
   #   # Who answers when the agent asks to step past the sandbox:
   #   # user_review | auto_review | deny_all
   #   permission_mode: user_review
-  #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
+  #   approval_timeout: 3600     # seconds before a card expires; ~ = forever
   #   # What a command may touch when nobody is asked. Fixed for a run, and
   #   # deliberately not part of the posture, so switching one never widens it.
+  #   # A driven run under workspace_write is given the network; read_only has no
+  #   # config key to open it with, so it closes the network too.
   #   sandbox: workspace_write   # read_only | workspace_write | full_access
   #   effort: ~                  # none | minimal | low | medium | high | xhigh
   #   summary: ~                 # auto | concise | detailed | none
@@ -128,7 +128,6 @@
   #   executable: dsh            # on PATH, or an absolute path to a built dsh
   #   extra_args: []             # appended after `web --host ... --port ... --no-open`
   #   dsh_home: ~/.dsh           # DSH_HOME for a started child
-  #   cwd: .
   #   provider: deepseek-official
   #   models: [deepseek-v4-pro, deepseek-v4-flash]
   #   claims:
@@ -145,5 +144,5 @@
   #   # workspace-write | danger-full-access
   #   permission_mode: workspace-write
   #   agent_preset: ~            # session.create agentPreset; ~ = dsh's default
-  #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
+  #   approval_timeout: 3600     # seconds before a card expires; ~ = forever
   #   ready_timeout: 60          # seconds to wait for the `dsh web:` banner

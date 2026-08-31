@@ -46,10 +46,13 @@ from octomate.config.agents import AgentsConfig
 from octomate.config.channels import ChannelConfigVariant
 from octomate.config.integrations import IntegrationConfig
 from octomate.config.mcp import McpServerConfig
+from octomate.config.mirrors import MirrorsConfig
 from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
+from octomate.config.projects import ProjectsConfig
 from octomate.config.providers import ProvidersConfig
-from octomate.config.users import UserConfig
+from octomate.config.users import UsersConfig
+from octomate.config.workspaces import WorkspacesConfig
 from octomate.schemas.project import Project
 
 OCTOMATE_HOME_ENV = "OCTOMATE_HOME"
@@ -157,21 +160,29 @@ class OctomateConfig(BaseSettings):
         ),
     )
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
-    users: dict[str, UserConfig] = Field(
-        default_factory=dict,
+    users: UsersConfig = Field(
+        default_factory=UsersConfig,
         description=(
             "Registered cross-channel users keyed by stable username; profiles are "
             "reconciled into the registry at startup."
         ),
     )
-    projects: dict[str, Project.Create] = Field(
-        default_factory=dict,
+    projects: ProjectsConfig = Field(
+        default_factory=ProjectsConfig,
         description=(
             "Declared code locations keyed by project name, reconciled into the "
             "registry at startup. Declaring one is the operator vouching for its "
             "contents, which reach an agent as instructions. Unrelated to "
             "`~/.claude/projects/`, which is transcript storage."
         ),
+    )
+    mirrors: MirrorsConfig = Field(
+        default_factory=MirrorsConfig,
+        description="How the declared projects' mirrors are synced.",
+    )
+    workspaces: WorkspacesConfig = Field(
+        default_factory=WorkspacesConfig,
+        description="When a thread's workspace is reclaimed.",
     )
 
     @field_validator("projects", mode="wrap")

@@ -15,7 +15,8 @@
 # hook routers and the served MCP endpoints authenticate against those, and a hook
 # router refuses to boot while no user carries one, since serving it unauthenticated
 # would let anything that can reach the port write a session's prompts and answers
-# into thread history. `octomate secret` mints a value to hand a user.
+# into thread history. The value comes from the user: they run `octomate configure`
+# on their own machine and hand you what it printed.
 
 # The MCP endpoint under each served server's mount — the gateway answers at
 # /gateway/mcp by default.

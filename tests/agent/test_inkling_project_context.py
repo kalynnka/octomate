@@ -31,14 +31,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.harness.agent import Agent
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.project import Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.agents.inkling import InklingTentacle
 from octomate.tentacles.agents.inkling.base import InklingOutput
 from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
-from tests.support.managers import a_registry
+from tests.support.managers import a_project, a_registry
 
 ADDRESS = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
@@ -112,7 +112,9 @@ async def test_a_run_in_a_project_carries_that_project_s_instructions(
     tmp_path: Path,
 ) -> None:
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     scripted = Scripted()
 
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
@@ -124,7 +126,9 @@ async def test_a_run_in_a_project_can_act_in_it(tmp_path: Path) -> None:
     # The filesystem and shell stay native: a nested approval inside run_code cannot
     # suspend into Inkling's human-review loop, while a native call can.
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     scripted = Scripted()
 
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
@@ -148,7 +152,9 @@ async def test_a_run_in_a_project_can_act_in_it(tmp_path: Path) -> None:
 
 async def test_project_file_calls_defer_for_user_approval(tmp_path: Path) -> None:
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     thread = await a_thread(octomate, "chat", "inky")
 
     async def request_file(
@@ -194,13 +200,14 @@ async def test_outside_every_project_there_is_nothing_to_act_with(
     assert scripted.tools[-1] == []
 
 
-def test_every_project_capability_is_rooted_at_the_project(tmp_path: Path) -> None:
+def test_every_capability_is_rooted_at_the_workspace(tmp_path: Path) -> None:
     # One root and no other: a capability pointed anywhere else is a way out of the
-    # project, and `extra_roots` would be a second place to write.
-    project = Project(root=tmp_path / "inky")
+    # workspace — the project's own checkout included, and `extra_roots` would be a
+    # second place to write.
+    workspace = tmp_path / "workspaces" / "t1"
     tentacle = InklingTentacle("inkling", Octomate(), agent=Scripted().agent())
 
-    repo_context, files, shell = tentacle.project_capabilities(project)
+    repo_context, files, shell = tentacle.workspace_capabilities(workspace)
 
     assert isinstance(repo_context, RepoContext)
     assert isinstance(files, Toolset)
@@ -209,10 +216,10 @@ def test_every_project_capability_is_rooted_at_the_project(tmp_path: Path) -> No
     assert isinstance(shell, Toolset)
     assert isinstance(shell.toolset, ApprovalRequiredToolset)
     assert isinstance(shell.toolset.wrapped, ShellToolset)
-    assert repo_context.workspace_dir == project.root
+    assert repo_context.workspace_dir == workspace
     assert repo_context.home_dir is None
-    assert vars(files.toolset.wrapped)["_root"] == project.root
-    assert vars(shell.toolset.wrapped)["_initial_cwd"] == project.root
+    assert vars(files.toolset.wrapped)["_root"] == workspace
+    assert vars(shell.toolset.wrapped)["_initial_cwd"] == workspace
     # The repo's own instructions reach the model, and the model has a shell — the
     # provider keys this process runs on are not the project's to spend.
     assert "ANTHROPIC_*" in vars(shell.toolset.wrapped)["_denied_env_patterns"]
@@ -236,7 +243,9 @@ async def test_two_projects_never_see_each_other_s_instructions(
     inky = a_repo(tmp_path / "inky", "inky is the checkout this instance runs from.")
     kraken = a_repo(tmp_path / "kraken", "kraken is the second checkout.")
     octomate = Octomate(
-        projects=await a_registry(Project(root=inky), Project(root=kraken))
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(inky), a_project(kraken))
+        )
     )
     scripted = Scripted()
 
@@ -255,7 +264,9 @@ async def test_nothing_above_the_project_root_is_loaded(tmp_path: Path) -> None:
     # `~/.claude/CLAUDE.md` is what that rule is really protecting.
     (tmp_path / "AGENTS.md").write_text("the operator's private rules")
     inky = a_repo(tmp_path / "inky", "inky's own rules")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     scripted = Scripted()
 
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
@@ -270,9 +281,11 @@ async def test_a_disabled_project_reaches_no_run(tmp_path: Path) -> None:
     # project stays enabled so the registry is not simply empty.
     inky = a_repo(tmp_path / "inky", "Never commit without asking.")
     octomate = Octomate(
-        projects=await a_registry(
-            Project(root=inky, enabled=False),
-            Project(root=a_repo(tmp_path / "kraken", "kraken's rules")),
+        workspaces=WorkspaceManager(
+            projects=await a_registry(
+                a_project(inky, enabled=False),
+                a_project(a_repo(tmp_path / "kraken", "kraken's rules")),
+            )
         )
     )
     scripted = Scripted()
@@ -285,15 +298,17 @@ async def test_a_disabled_project_reaches_no_run(tmp_path: Path) -> None:
     assert run.cwd is None
 
 
-async def test_a_run_in_a_project_records_its_root(tmp_path: Path) -> None:
+async def test_a_run_in_a_project_records_its_workspace(tmp_path: Path) -> None:
     inky = a_repo(tmp_path / "inky", "inky's own rules")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
     thread = await a_thread(octomate, "chat", "inky")
 
     await inkling_run(octomate, thread, Scripted())
 
     [run] = await runs_of(octomate, thread)
-    assert run.cwd == inky
+    assert run.cwd == octomate.workspaces.path(thread.id)
 
 
 async def test_a_run_outside_every_project_records_no_directory() -> None:

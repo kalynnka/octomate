@@ -17,7 +17,7 @@ The column is `SecretString` in the model — `SecretStr` above, text in the col
 whose impl is what renders here, exactly as `PathString` columns render `String`.
 
 Revision ID: 72af5e4bed47
-Revises: 02823d5dcce5
+Revises: 9f541202305d
 Create Date: 2026-08-31 01:06:24.711766
 
 """
@@ -29,7 +29,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "72af5e4bed47"
-down_revision: str | Sequence[str] | None = "02823d5dcce5"
+down_revision: str | Sequence[str] | None = "9f541202305d"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

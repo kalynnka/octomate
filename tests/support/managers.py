@@ -27,13 +27,14 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
 )
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
-from octomate.schemas.project import Project
+from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import (
@@ -50,10 +51,28 @@ from octomate.types.deferred import DeferredBatchStatus
 from octomate.types.permissions import AgentPermissionMode
 
 
+def a_project(
+    root: Path,
+    *,
+    name: str = "",
+    extra_roots: list[Path] | None = None,
+    enabled: bool = True,
+) -> Project:
+    """A project mirrored from its own root — the upstream a test that is not about
+    upstreams means, since `Project` requires one to be named."""
+    return Project(
+        root=root,
+        name=name,
+        extra_roots=extra_roots or [],
+        enabled=enabled,
+        upstream=DirectoryUpstream(path=root),
+    )
+
+
 async def a_registry(*projects: Project) -> ProjectManager:
-    """A loaded registry holding `projects` — the rows a native session or a direct
-    registration would have left. Nothing declares a project any more, so a test that
-    wants one persists it and loads the registry over it."""
+    """A loaded registry holding `projects` — the rows reconciling a declared block
+    would have left. A test that wants a project persists it and loads the registry
+    over it."""
     if projects:
         async with async_session() as session:
             for project in projects:
@@ -445,3 +464,20 @@ class FakeActionManager:
         completed: bool = False,
     ) -> None:
         self.marked.append((batch_id, status, completed))
+
+
+class RecordingWorkspaceManager(WorkspaceManager):
+    """A workspace manager that records the threads a finished turn asked it to
+    save, instead of saving them.
+
+    Recorded rather than done: a graph test has no mirror to push to, and what the
+    graph has to get right is that the turn asks at all. Whether the save then
+    works is the workspace unit's to prove.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.saved: list[uuid.UUID] = []
+
+    async def save(self, thread: Thread) -> None:
+        self.saved.append(thread.id)

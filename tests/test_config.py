@@ -29,7 +29,7 @@ from octomate.config import (
 from octomate.config.base import CONFIG_FILES, DEFAULTS_DIR, config_home
 from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
-from octomate.schemas.project import Project
+from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.triage import Claim
 from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, DEEPSEEK_MODELS
 from tests.support.config import ISOLATED_HOME
@@ -250,13 +250,20 @@ def test_claude_code_config_validates_model_names() -> None:
         ClaudeCodeConfig.model_validate({"models": {"missing"}})
 
 
-def test_claude_code_config_refuses_a_remote_host() -> None:
-    # Remote runs are off while a run's directory is its thread's project root: the
-    # root is a local path, and the host on the other end has nothing to match it.
-    with pytest.raises(ValidationError, match="remote runs are disabled"):
-        ClaudeCodeConfig(
+def test_claude_code_config_warns_a_remote_host_is_not_honoured(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Remote runs are off while a run's directory is its thread's workspace, and
+    # nothing can make one on the host at the other end. The block is kept as
+    # written — the transport that would have read it is what is parked.
+    with caplog.at_level("WARNING"):
+        config = ClaudeCodeConfig(
             models=set(CLAUDE_MODELS), ssh=ClaudeSSHConfig(host="user@box")
         )
+
+    assert config.ssh is not None
+    assert "user@box" in caplog.text
+    assert "stays local" in caplog.text
 
 
 def test_claude_code_config_accepts_documented_model_aliases() -> None:
@@ -1099,6 +1106,7 @@ def test_projects_validate_as_projects(
                     "root": "~/Projects/inky",
                     "extra_roots": ["~/Library/Code"],
                     "description": "Octomate itself.",
+                    "upstream": {"kind": "directory", "path": "~/Projects/inky"},
                 }
             }
         }
@@ -1108,7 +1116,46 @@ def test_projects_validate_as_projects(
     project = Project.shell(declared)
     assert project.root == tmp_path / "Projects" / "inky"
     assert project.extra_roots == [tmp_path / "Library" / "Code"]
-    assert project.origin == "declared"
+    assert project.upstream == DirectoryUpstream(path=tmp_path / "Projects" / "inky")
+
+
+def test_a_mirrors_block_validates() -> None:
+    config = OctomateConfig.model_validate(
+        {
+            "mirrors": {
+                "freshness_window": 300,
+                "identity": {"name": "Lu Hui", "email": "lu@example.com"},
+            }
+        }
+    )
+
+    assert config.mirrors.freshness_window == 300
+    assert config.mirrors.identity.name == "Lu Hui"
+
+
+def test_a_workspaces_block_validates() -> None:
+    config = OctomateConfig.model_validate(
+        {"workspaces": {"idle_window": 3600, "sweep_interval": 600}}
+    )
+
+    assert config.workspaces.idle_window == 3600
+    assert config.workspaces.sweep_interval == 600
+
+
+def test_a_workspaces_block_defaults_to_a_day_and_an_hour() -> None:
+    config = OctomateConfig()
+
+    assert config.workspaces.idle_window == 24 * 60 * 60
+    assert config.workspaces.sweep_interval == 60 * 60
+
+
+def test_a_sweep_that_never_runs_is_refused() -> None:
+    # A zero interval is a busy loop and a zero window reclaims a workspace the
+    # moment a turn ends, which is the fork paid for on every single turn.
+    with pytest.raises(ValidationError):
+        OctomateConfig.model_validate({"workspaces": {"sweep_interval": 0}})
+    with pytest.raises(ValidationError):
+        OctomateConfig.model_validate({"workspaces": {"idle_window": 0}})
 
 
 def test_a_project_without_a_root_is_refused() -> None:

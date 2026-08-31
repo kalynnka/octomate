@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -24,6 +25,8 @@ from octomate.types.permissions import (
 # than a home directory — a root like that matches nothing and quietly stops a session
 # being ingested.
 ConfigPath: TypeAlias = Annotated[Path, AfterValidator(Path.expanduser)]
+
+logger = logging.getLogger(__name__)
 
 ClaudeCodeModelName: TypeAlias = Literal[
     "best",
@@ -270,7 +273,10 @@ class ClaudeCodeConfig(AgentConfig):
     refused while remote runs are disabled.
     """
 
-    cwd: str = "."
+    enabled: bool = Field(
+        default=True,
+        description="Whether to register the Claude tentacle when the config block exists.",
+    )
     models: set[ClaudeCodeModelName] = Field(
         min_length=1,
         description="Claude Code model route labels this agent exposes to channels.",
@@ -299,29 +305,46 @@ class ClaudeCodeConfig(AgentConfig):
     ssh: ClaudeSSHConfig | None = Field(
         default=None,
         description=(
-            "Remote host to run `claude` on. Disabled: a run belongs to the project "
-            "its thread is in, and a project root is a local path the host on the "
-            "other end has nothing to match, so a remote run would silently land "
-            "somewhere else. `SSHTransport` is kept as it is; `refuse_remote_runs` "
-            "is what to drop when a remote run can say where it is."
+            "Remote host to run `claude` on. Disabled, and no longer wired: a "
+            "run happens in its thread's workspace, and there is nothing that "
+            "makes a workspace on another machine. The tentacle hands the SDK "
+            "no transport at all now; `SSHTransport` is kept as it stands, but "
+            "nothing constructs it. Re-enabling is three things rather than "
+            "one — somewhere remote to fork a workspace into, a directory on "
+            "`ClaudeSSHConfig` to name it, and the transport wired back in. "
+            "Setting it is warned about rather than refused: with the transport "
+            "parked the block reaches nothing, so failing a start over it would "
+            "cost more than it saves."
         ),
     )
     approval_timeout: float | None = Field(
-        default=None,
+        default=3600.0,
         description=(
             "Seconds to wait for a human approval/answer before the card expires "
-            "and the pending tool is denied (so the live run unblocks). None waits "
-            "indefinitely."
+            "and the pending tool is denied (so the live run unblocks). An hour by "
+            "default, because not answering is the ordinary case rather than the "
+            "exotic one, and an unbounded wait leaves the thread unusable for good. "
+            "None waits indefinitely."
         ),
     )
 
     @field_validator("ssh")
     @classmethod
-    def refuse_remote_runs(cls, ssh: ClaudeSSHConfig | None) -> ClaudeSSHConfig | None:
+    def warn_remote_runs_are_off(
+        cls, ssh: ClaudeSSHConfig | None
+    ) -> ClaudeSSHConfig | None:
+        """Say that a configured remote host is not honoured, and keep it as written.
+
+        This refused the whole config while the tentacle still built an SSH
+        transport, since a block that would have been obeyed had to be stopped
+        loudly. The transport is parked now and the block reaches nothing, so the
+        value is left as the operator wrote it and only the effect is reported.
+        """
         if ssh is not None:
-            raise ValueError(
-                "remote runs are disabled: a run happens in its thread's project "
-                "root, which is a local path the remote host has nothing to match"
+            logger.warning(
+                "agents.claude.ssh is not honoured and the run stays local: a run "
+                "happens in its thread's workspace, and nothing makes one on %s",
+                ssh.host,
             )
         return ssh
 
@@ -336,12 +359,9 @@ class CodexConfig(AgentConfig):
     per-run overrides before calling the SDK.
     """
 
-    cwd: str = Field(
-        default=".",
-        description=(
-            "Default working directory for Codex thread_start, thread_resume, "
-            "and turn calls."
-        ),
+    enabled: bool = Field(
+        default=True,
+        description="Whether to register the Codex tentacle when the config block exists.",
     )
     runtime: CodexSdkConfig = Field(
         default_factory=CodexSdkConfig,
@@ -378,10 +398,12 @@ class CodexConfig(AgentConfig):
     sandbox: CodexSandbox = Field(
         default="workspace_write",
         description=(
-            "SDK filesystem sandbox preset for Codex threads and turns: what a command "
-            "may touch when nobody is asked. The operator's, and fixed for a run — "
+            "SDK filesystem sandbox preset for a Codex thread: what a command may "
+            "touch when nobody is asked. The operator's, and fixed for a run — "
             "deliberately not folded into `permission_mode`, so a conversation's "
-            "approval posture never rewrites what the whole thread reaches."
+            "approval posture never rewrites what the whole thread reaches. A driven "
+            "run under `workspace_write` is given the network; `read_only` has no "
+            "config key to open it with, so choosing it closes the network too."
         ),
     )
     base_instructions: str | None = Field(
@@ -415,10 +437,13 @@ class CodexConfig(AgentConfig):
         description="Default reasoning summary setting for Codex turns.",
     )
     approval_timeout: float | None = Field(
-        default=None,
+        default=3600.0,
         description=(
             "Seconds to wait for a human Codex approval/answer before the card "
-            "expires and the SDK request is denied. None waits indefinitely."
+            "expires and the SDK request is denied. An hour by default, because not "
+            "answering is the ordinary case rather than the exotic one, and an "
+            "unbounded wait leaves the thread unusable for good. None waits "
+            "indefinitely."
         ),
     )
     max_clients: int | None = Field(
@@ -500,13 +525,6 @@ class DeepseekConfig(AgentConfig):
             "whatever home it was started with."
         ),
     )
-    cwd: str = Field(
-        default=".",
-        description=(
-            "Default working directory for a new dsh session whose thread is in "
-            "no project. A session's cwd is fixed at creation."
-        ),
-    )
     provider: str = Field(
         default="deepseek-official",
         description=(
@@ -562,11 +580,13 @@ class DeepseekConfig(AgentConfig):
         ),
     )
     approval_timeout: float | None = Field(
-        default=None,
+        default=3600.0,
         description=(
             "Seconds to wait for a human approval/answer before the card expires "
-            "and the dsh request is answered `cancelled` (so the turn unblocks). "
-            "None waits indefinitely."
+            "and the dsh request is answered `cancelled` (so the turn unblocks). An "
+            "hour by default, because not answering is the ordinary case rather than "
+            "the exotic one, and an unbounded wait leaves the thread unusable for "
+            "good. None waits indefinitely."
         ),
     )
     ready_timeout: float = Field(

@@ -58,6 +58,7 @@ def build_inkling(
 
     from octomate.capabilities.ask import AskCapability
     from octomate.capabilities.history import HistoryCapability
+    from octomate.capabilities.projects import ProjectCapability
     from octomate.capabilities.todos import TodoCapability
     from octomate.capabilities.tools import ToolFailureCapability
     from octomate.integrations import build_integration
@@ -82,6 +83,18 @@ def build_inkling(
             id="history",
             description="Search and page this thread's chat ledger and this "
             "conversation's model ledger.",
+            defer_loading=True,
+        ),
+        # User-scoped, so a visitor is never offered it: binding decides where a
+        # thread's work happens and whose code an agent reads. Dropped again for a
+        # run that already has a workspace — see `run_stream_events`.
+        ProjectCapability(
+            octomate.workspaces,
+            octomate.thread_manager,
+            octomate.conversations,
+            id="projects",
+            description="Say which project this thread is about, so its work "
+            "happens in that project's code, and is kept.",
             defer_loading=True,
         ),
     ]

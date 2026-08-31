@@ -14,12 +14,14 @@ from openai_codex.client import ApprovalHandler
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
+    Config,
     ItemCompletedNotification,
     MessagePhase,
     Personality,
     ReasoningEffort,
     ReasoningSummary,
     ReasoningSummaryValue,
+    SandboxWorkspaceWrite,
     ThreadItem,
     Turn,
     TurnCompletedNotification,
@@ -448,6 +450,8 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     assert thread_call.kind == "start"
     assert thread_call.model == "gpt-5.3-codex"
     assert thread_call.approval_mode == ApprovalMode.deny_all
+    # The configured preset, in a chat thread as in any other: the run has a
+    # workspace of its own for it to be scoped to.
     assert thread_call.sandbox == Sandbox.workspace_write
 
     [recorded] = conversations.runs
@@ -495,7 +499,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
     reset_fake_codex(text_script("done", thread_id="prev-thread"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        external_id="prev-thread"
+        thread_id=_THREAD, external_id="prev-thread"
     )
     runtime = CodexSdkConfig(
         client_name="octomate-test", env={"EXISTING_RUNTIME_VALUE": "kept"}
@@ -504,7 +508,6 @@ async def test_run_resumes_prior_thread_and_applies_config(
         conversations,
         config=CodexConfig(
             models=set(CODEX_MODELS),
-            cwd="/repo",
             runtime=runtime,
             permission_mode="auto_review",
             base_instructions="base",
@@ -535,7 +538,8 @@ async def test_run_resumes_prior_thread_and_applies_config(
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "resume"
     assert thread_call.thread_id == "prev-thread"
-    assert thread_call.cwd == "/repo"
+    # The configured `cwd` is not where a projectless thread lands any more.
+    assert thread_call.cwd == str(tentacle.octomate.workspaces.open(_THREAD, None).path)
     assert thread_call.approval_mode == ApprovalMode.auto_review
     assert thread_call.base_instructions == "base"
     assert thread_call.developer_instructions == "dev"
@@ -546,7 +550,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert thread_call.sandbox == Sandbox.workspace_write
 
     [turn_call] = FakeCodex.turn_calls
-    assert turn_call.cwd == "/repo"
+    assert turn_call.cwd == str(tentacle.octomate.workspaces.open(_THREAD, None).path)
     assert turn_call.effort == ReasoningEffort.xhigh
     assert turn_call.summary == ReasoningSummary(ReasoningSummaryValue.detailed)
 
@@ -959,6 +963,78 @@ async def test_the_sandbox_is_the_operators_and_no_posture_moves_it(
     assert thread_call.sandbox == Sandbox.read_only
 
 
+async def test_a_driven_run_opens_the_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`workspace_write` ships `networkAccess: false`, which leaves a coding agent
+    with no registry, no API and no remote. Two things have to hold for the network
+    to be open, so both are asserted here: the app-server is told to resolve the
+    preset with it on, and the turn sends no policy of its own to stamp it back off.
+    """
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+    assert FakeCodex.last_config is not None
+    assert FakeCodex.last_config.config_overrides == (
+        codex_base.NETWORK_ACCESS,
+        "mcp_servers.gateway.enabled=false",
+    )
+    [turn_call] = FakeCodex.turn_calls
+    assert turn_call.sandbox is None
+    # And the write scope is untouched: the thread still carries the preset.
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.sandbox == Sandbox.workspace_write
+
+
+async def test_an_operators_own_network_answer_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex keeps the last `--config` it is handed, so a deployment that has said
+    something about the key itself has to be the one that lands."""
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    operator = "sandbox_workspace_write.network_access=false"
+    tentacle = _tentacle(
+        FakeConversationManager(),
+        config=CodexConfig(
+            models=set(CODEX_MODELS),
+            permission_mode="deny_all",
+            runtime=CodexSdkConfig(config_overrides=(operator,)),
+        ),
+    )
+
+    async with tentacle:
+        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+    assert FakeCodex.last_config is not None
+    assert FakeCodex.last_config.config_overrides == (
+        codex_base.NETWORK_ACCESS,
+        operator,
+        "mcp_servers.gateway.enabled=false",
+    )
+
+
+def test_the_network_override_names_a_key_the_sdk_still_has() -> None:
+    """The override is a config string, so nothing type-checks it and a renamed key
+    would fail silently in the safe-looking direction — the network simply staying
+    shut. The SDK ships the config schema it is a path into, so the key is pinned
+    against that here rather than left to a live run to disprove."""
+    key, _, value = codex_base.NETWORK_ACCESS.partition("=")
+    table, _, field = key.rpartition(".")
+
+    assert table in Config.model_fields
+    assert Config.model_fields[table].annotation == SandboxWorkspaceWrite | None
+    assert field in SandboxWorkspaceWrite.model_fields
+    assert SandboxWorkspaceWrite.model_fields[field].annotation == bool | None
+    # Off by default is the whole reason this exists.
+    assert SandboxWorkspaceWrite.model_fields[field].default is False
+    assert value == "true"
+
+
 async def test_a_claude_posture_on_a_codex_conversation_falls_back_to_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1065,8 +1141,12 @@ async def test_a_registered_gateway_session_wires_the_launch_config(
     assert config.env[codex_base.GATEWAY_CONVERSATION_ENV] == str(conversation.id)
     assert config.env[codex_base.DRIVEN_ENV] == "1"
     assert config.config_overrides == (
+        codex_base.NETWORK_ACCESS,
+        "mcp_servers.gateway.enabled=true",
         "mcp_servers.gateway.url=http://127.0.0.1:8123/gateway/mcp",
         "mcp_servers.gateway.bearer_token_env_var=OCTOMATE_GATEWAY_TOKEN",
+        # The native entry's own Authorization would outrank the bearer above.
+        "mcp_servers.gateway.http_headers={}",
         "mcp_servers.gateway.env_http_headers="
         '{"X-Octomate-Conversation" = "OCTOMATE_GATEWAY_CONVERSATION"}',
     )
@@ -1075,6 +1155,9 @@ async def test_a_registered_gateway_session_wires_the_launch_config(
 async def test_a_turn_without_a_gateway_session_launches_clean(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Clean means the server is turned off, not merely left unmentioned: the
+    # operator's `~/.codex/config.toml` may hold a native gateway entry with
+    # their own credential in it, and an app-server is a child of this host.
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     tentacle = _tentacle(FakeConversationManager())
@@ -1084,7 +1167,10 @@ async def test_a_turn_without_a_gateway_session_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == ()
+    assert config.config_overrides == (
+        codex_base.NETWORK_ACCESS,
+        "mcp_servers.gateway.enabled=false",
+    )
     assert codex_base.GATEWAY_TOKEN_ENV not in (config.env or {})
 
 
@@ -1122,7 +1208,10 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == ()
+    assert config.config_overrides == (
+        codex_base.NETWORK_ACCESS,
+        "mcp_servers.gateway.enabled=false",
+    )
     assert codex_base.GATEWAY_TOKEN_ENV not in (config.env or {})
 
 

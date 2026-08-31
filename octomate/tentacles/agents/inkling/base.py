@@ -6,6 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Self, TypeAlias, get_args, overload
 
 from pydantic_ai import (
@@ -52,10 +53,10 @@ from octomate.capabilities.harness.react import (
     StartTurn,
     iter_react_graph_events,
 )
+from octomate.capabilities.projects import ProjectCapability
 from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
@@ -253,27 +254,30 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         )
         return [capability for capability in bound if capability is not None]
 
-    def project_capabilities(self, project: Project) -> list[AgentCapability[None]]:
-        """What a run gets for working in `project`: its instructions, and the tools
-        to act in it. A run in no project gets none of these and is a conversation.
+    def workspace_capabilities(self, workspace: Path) -> list[AgentCapability[None]]:
+        """What a run gets for working in `workspace`: the project's instructions, as
+        that fork carries them, and the tools to act in it. A run in no project gets
+        none of these and is a conversation.
 
-        Every one is rooted at `project.root`, and nothing widens that. `extra_roots`
-        are left out — a settings tree is not where a repo keeps its `AGENTS.md`, and
-        a second root is a second place to write. `RepoContext`'s walk-up stays off
-        (`home_dir=None`), so an ancestor's instructions never load; the operator's own
-        `~/.claude/CLAUDE.md` is what that protects.
+        Every one is rooted at the workspace, and nothing widens that: the project's
+        own root is the person's checkout, and a run reaches it only through what its
+        thread commits. `extra_roots` are left out too — a settings tree is not where
+        a repo keeps its `AGENTS.md`, and a second root is a second place to write.
+        `RepoContext`'s walk-up stays off (`home_dir=None`), so an ancestor's
+        instructions never load; the operator's own `~/.claude/CLAUDE.md` is what
+        that protects.
         """
         return [
-            RepoContext[None](workspace_dir=project.root),
+            RepoContext[None](workspace_dir=workspace),
             Toolset(
                 ApprovalRequiredToolset(
-                    wrapped=FileSystem[None](root_dir=project.root).get_toolset()
+                    wrapped=FileSystem[None](root_dir=workspace).get_toolset()
                 )
             ),
             Toolset(
                 ApprovalRequiredToolset(
                     wrapped=Shell[None](
-                        cwd=project.root,
+                        cwd=workspace,
                         # A repo's own `AGENTS.md` reaches this agent as instructions,
                         # and now those instructions have a shell. The provider keys
                         # this process runs on are not the project's to spend.
@@ -730,12 +734,28 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # Which deferrals this run answers itself is `InklingDeferrals`' decision, made
         # again at each one; all the run contributes is whether a human exists at all.
         # Which capability set to mount is likewise the entrypoints' decision, so
-        # `capabilities` arrives here holding it. The run's project is the one thing
-        # added below: it comes off the thread rather than the caller, so every
-        # entrypoint would otherwise have to resolve it identically.
+        # `capabilities` arrives here holding it. The run's workspace is the one thing
+        # added below: its project comes off the thread rather than the caller, so
+        # every entrypoint would otherwise have to resolve it identically.
         project = await self.run_project(thread_id)
-        if project is not None:
-            capabilities.extend(self.project_capabilities(project))
+        # Forked rather than entered: inkling runs in this process, so the tree is
+        # somewhere its file tools are rooted rather than somewhere a subprocess is
+        # started, and a project's workspace has no ending for a run to scope.
+        workspace = (
+            await self.octomate.workspaces.open(thread_id, project).prepare()
+            if project is not None
+            else None
+        )
+        if workspace is not None:
+            # A thread binds once, so the tools for choosing one are noise on a run
+            # that already has a workspace, and their instructions — which open by
+            # saying this conversation is in no project — would be untrue.
+            capabilities = [
+                capability
+                for capability in capabilities
+                if not isinstance(capability, ProjectCapability)
+            ]
+            capabilities.extend(self.workspace_capabilities(workspace))
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
@@ -749,9 +769,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             suspender=deferred_suspender,
             output_type=react_output_type,
             run_name=resolved_run_name,
-            # Where this run happened, for the run to record: its project's root, or
-            # nothing, since inkling has no configured directory to fall back to.
-            cwd=project.root if project is not None else None,
+            # Where this run happened, for the run to record: the thread's workspace,
+            # or nothing, since inkling has no configured directory to fall back to.
+            cwd=workspace,
             model=model,
             instructions=instructions,
             model_settings=model_settings,

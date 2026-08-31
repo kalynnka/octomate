@@ -44,6 +44,29 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
     ) -> Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+        """React, and leave the turn's workspace in the mirror however it ends.
+
+        In a `finally` because a turn that raised still did whatever it did on
+        disk. The files an agent wrote before its provider dropped the connection
+        are work, and until this runs the workspace is the only copy of them —
+        which also means the sweep can never reclaim that workspace, since it
+        refuses anything the mirror has not seen. A failed turn on a thread nobody
+        resumes would otherwise hold its disk for good.
+
+        A cancelled turn is the one case this does not cover: the save's first
+        await raises straight back out, so its work stays in the workspace and the
+        sweep keeps it, which is the safe direction.
+        """
+        try:
+            return await self.react(ctx)
+        finally:
+            if ctx.state.thread is not None:
+                await ctx.deps.workspaces.save(ctx.state.thread)
+
+    async def react(
+        self,
+        ctx: GraphRunContext[ReflexState, ReflexDeps],
+    ) -> Handoff | Teleport | Scheme | End[ReflexGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target

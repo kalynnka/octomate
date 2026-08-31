@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, TypeAlias
 
 from pydantic import BaseModel, Field, SecretStr, ValidateAs
 
@@ -49,9 +49,15 @@ class UserConfig(BaseModel):
             "gateway resolves them from: a native session bearing it speaks "
             "for this user. Every configured credential names a person; the "
             "secret lives on the user's registry row, whose unique column "
-            "refuses a shared one at reconciliation. Handing it out is "
-            "registration: the user runs `octomate "
-            "configure --secret` with it, then `octomate <agent> mcp install`, "
-            "and exports it as OCTOMATE__SECRET for the installed hooks."
+            "refuses a shared one at reconciliation. The value comes the other "
+            "way: `octomate configure` mints it on the user's own machine and "
+            "writes it to their client config, and registration is an admin "
+            "copying what it printed into this field."
         ),
     )
+
+
+# The `users:` block: registered profiles keyed by stable username. A bare mapping
+# for the same reason the projects block is one — `UserConfig` is the shape, and
+# naming the block keeps the registry and the config agreeing on its empty default.
+UsersConfig: TypeAlias = dict[str, UserConfig]

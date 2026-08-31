@@ -117,7 +117,7 @@ async def feed(
 def remote_tailer() -> tuple[Octomate, CodexTranscriptTailer]:
     octomate = Octomate()
     return octomate, CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects
+        octomate.conversations, octomate.thread_manager
     )
 
 

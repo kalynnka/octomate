@@ -37,9 +37,10 @@ def hook_guard(
     if not bearers.users:
         raise RuntimeError(
             f"no registered user carries a secret, but agents.{agent} serves a hook "
-            "router that authenticates against them. Add one under `users.<name>."
-            "secret` (`octomate secret` mints one), hand it to that human, and have "
-            f"them re-run `octomate {agent} hooks install`."
+            "router that authenticates against them. Have the human run `octomate "
+            "configure` on their own machine, put what it prints under "
+            f"`users.<name>.secret`, and have them run `octomate {agent} hooks "
+            "install`."
         )
 
     async def verify(

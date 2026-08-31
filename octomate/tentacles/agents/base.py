@@ -5,7 +5,6 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from functools import cached_property
-from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, TypeAlias, TypeVar, overload
 
@@ -117,16 +116,13 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         return []
 
     async def run_project(self, thread_id: uuid.UUID) -> Project | None:
-        """The registered project a run in this thread is in, or None when it is in
-        none.
+        """The project a run in this thread is in, or None when it is in none.
 
         The thread is where a project is bound, and every conversation belongs to
-        one, so this is the whole of "which project is this work in" — asked of the
-        thread each run rather than copied onto the conversation.
-
-        A thread naming a project the registry no longer carries is in none, and so is
-        one whose project is disabled: the row is retained either way, but a project
-        that is not registered — or whose root disk has lost — has no root to offer.
+        one, so this is the whole of "which project is this run in" — asked of the
+        thread each run rather than copied onto the conversation. Reading the
+        thread is what this adds; judging what it names is the registry's, and is
+        `ProjectManager.of`.
         """
         if not self.octomate.projects.roots:
             # Nothing registered: no thread can be in a project, so a run is what it
@@ -135,31 +131,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         thread = await self.octomate.thread_manager.get(thread_id)
         if thread is None:
             raise ValueError(f"unknown thread {thread_id}")
-        attributed = await thread.project
-        if attributed is None:
-            return None
-        # Through the registry rather than off the row, which is retained when the
-        # project stops being registered.
-        project = self.octomate.projects.get(attributed.name)
-        return project if project is not None and project.enabled else None
-
-    async def run_cwd(self, thread_id: uuid.UUID, agent_cwd: str) -> str:
-        """The directory a run in this thread happens in: its project's root, or
-        `agent_cwd` when the thread is in no project.
-
-        `agent_cwd` is the agent's own configured directory, and is where a thread in
-        no project runs — which is every thread until a project claims one, and what
-        keeps dispatch exactly where it has always been.
-
-        Always absolute, because the run records this: an agent's `cwd` defaults to
-        `"."`, which hangs off wherever Octomate was started and names nothing once the
-        process is gone. Symlinks are left alone, exactly as a project root leaves
-        them — the registry resolves both sides when it compares.
-        """
-        project = await self.run_project(thread_id)
-        if project is None:
-            return str(Path(agent_cwd).absolute())
-        return str(project.root)
+        return await self.octomate.projects.of(thread)
 
     @overload
     async def run(

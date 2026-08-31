@@ -1,7 +1,8 @@
 """OCTO-38 — a thread row says which surface it is, and only work can carry a project.
 
 `Thread.kind` records the surface when the row is created; `ThreadManager.ensure`
-refuses a project for a DM or a group chat rather than dropping it.
+refuses a project for a DM or a group chat rather than dropping it, and OCTO-52's
+`bind` refuses them the same way through the door that opens later.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.managers import ThreadManager, UserManager
 from octomate.schemas.project import Project
@@ -20,7 +22,7 @@ from octomate.schemas.thread import (
     Thread,
     ThreadKey,
 )
-from tests.support.managers import a_registry
+from tests.support.managers import a_project, a_registry
 
 SLACK_DM = ThreadKey("slack", "dm", "D1")
 SLACK_CHANNEL = ThreadKey("slack", "group", "C1")
@@ -40,7 +42,7 @@ async def inky(tmp_path: Path) -> Project:
     `threads.project_id` is a real foreign key."""
     root = tmp_path / "inky"
     root.mkdir(parents=True, exist_ok=True)
-    manager = await a_registry(Project(root=root))
+    manager = await a_registry(a_project(root))
     project = manager.get("inky")
     assert project is not None
     return project
@@ -157,3 +159,45 @@ async def test_a_native_thread_keeps_the_attribution_octo_31_gives_it(
     codex = await manager.ensure(CODEX_SESSION, project=project)
 
     assert [claude.project_id, codex.project_id] == [project.id, project.id]
+
+
+async def test_a_chat_thread_binds_to_the_project_it_had_none_of(
+    tmp_path: Path,
+) -> None:
+    # OCTO-52: the attribution a chat thread has no way to be given at creation,
+    # arriving on the turn someone says what the thread is about.
+    manager = ThreadManager(users=UserManager())
+    project = await inky(tmp_path)
+    thread = await manager.ensure(SLACK_THREAD)
+    assert thread.project_id is None
+
+    bound = await manager.bind(thread.id, project)
+
+    assert bound.project_id == project.id
+    attributed = await bound.project
+    assert attributed is not None
+    assert attributed.name == "inky"
+    # `ensure` hands channels the cached copy, so a binding the cache missed would
+    # be one every later turn in the thread still ran without.
+    assert (await manager.ensure(SLACK_THREAD)).project_id == project.id
+
+
+async def test_a_dm_cannot_be_bound_either(tmp_path: Path) -> None:
+    # `ensure` refuses a DM a project at creation; binding is the other door into
+    # the same room, and a DM outlives every project in it either way.
+    manager = ThreadManager(users=UserManager())
+    project = await inky(tmp_path)
+    dm = await manager.ensure(SLACK_DM)
+
+    with pytest.raises(ValueError, match="is a dm and cannot be attributed"):
+        await manager.bind(dm.id, project)
+
+
+async def test_binding_a_thread_that_does_not_exist_is_refused(
+    tmp_path: Path,
+) -> None:
+    manager = ThreadManager(users=UserManager())
+    project = await inky(tmp_path)
+
+    with pytest.raises(ValueError, match="no thread"):
+        await manager.bind(uuid7(), project)

@@ -3,11 +3,9 @@
 Both ingests resolve the hook's own `cwd` through the registry when they create the
 session's thread, so sessions started in several repos stop being anonymous siblings.
 
-Only Codex registers what it finds. Its workspace is a set of directories a session may
-work in — which is what a project is here — while Claude's `~/.claude/projects/<slug>`
-is a context store keyed by directory and says nothing about a tree being worked in. So
-a Claude session is filed under a project that already holds its directory and registers
-none; where it ran is recorded on the run either way.
+Neither runtime registers what it finds (OCTO-45): every project is declared, so a
+session running where no project claims is filed under none — where it ran is recorded
+on the run either way.
 
 The project is an attribute of the thread, never part of its key: nothing about thread
 identity changes, and no existing row is revisited.
@@ -20,24 +18,21 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.schemas.project import Project
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
-from octomate.tentacles.agents.codex import tailer as codex_tailer
-from octomate.tentacles.agents.codex import transcript as codex_transcript
 from octomate.tentacles.agents.codex.hooks import CodexHookInput
 from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
 from tests.agent.test_codex_native_ingest import stream_rollout
-from tests.support.managers import a_registry
+from tests.support.managers import a_project, a_registry
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -79,9 +74,7 @@ async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -
 
 async def codex_session(octomate: Octomate, session_id: str, cwd: Path | str) -> str:
     """Ingest one native Codex turn, and answer with its thread's project."""
-    tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects
-    )
+    tailer = CodexTranscriptTailer(octomate.conversations, octomate.thread_manager)
     ingest = CodexHookIngest(octomate, tailer)
     await ingest.handle(
         CodexHookInput.model_validate(
@@ -109,7 +102,9 @@ async def test_two_sessions_in_two_repos_carry_different_projects(
     # is the whole input.
     inky, kraken = repo(tmp_path / "inky"), repo(tmp_path / "kraken")
     octomate = Octomate(
-        projects=await a_registry(Project(root=inky), Project(root=kraken))
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(inky), a_project(kraken))
+        )
     )
 
     assert await claude_session(octomate, "sess-inky", inky / "octomate") == "inky"
@@ -124,29 +119,29 @@ async def test_a_claude_session_outside_every_project_registers_nothing(
     # The thread stays unfiled and the run still records where it ran.
     elsewhere = repo(tmp_path / "elsewhere")
     octomate = Octomate(
-        projects=await a_registry(Project(root=repo(tmp_path / "inky")))
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(repo(tmp_path / "inky")))
+        )
     )
 
     assert await claude_session(octomate, "sess-elsewhere", elsewhere) == ""
     assert [project.name for project in octomate.projects.list()] == ["inky"]
 
 
-async def test_a_codex_session_where_no_project_is_declared_registers_one(
+async def test_a_codex_session_outside_every_project_registers_nothing(
     tmp_path: Path,
 ) -> None:
-    # A Codex workspace is the directories a session may work in — the same thing a
-    # project is here — so a directory nobody had written down is not anonymous.
+    # OCTO-45: every project is declared, so a directory nobody wrote down stays
+    # unregistered — the thread is unfiled, and the run still records where it ran.
     elsewhere = repo(tmp_path / "elsewhere")
     octomate = Octomate(
-        projects=await a_registry(Project(root=repo(tmp_path / "inky")))
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(repo(tmp_path / "inky")))
+        )
     )
 
-    assert await codex_session(octomate, "sess-elsewhere", elsewhere) == "elsewhere"
-
-    registered = octomate.projects.get("elsewhere")
-    assert registered is not None
-    assert registered.root == elsewhere
-    assert registered.origin == "codex"
+    assert await codex_session(octomate, "sess-elsewhere", elsewhere) == ""
+    assert [project.name for project in octomate.projects.list()] == ["inky"]
 
 
 async def test_a_session_below_a_declared_root_does_not_register_a_second_project(
@@ -155,7 +150,9 @@ async def test_a_session_below_a_declared_root_does_not_register_a_second_projec
     # The run is simply below its project's root, which is where runs are allowed to
     # be; every package becoming its own project is the failure here.
     inky = repo(tmp_path / "inky")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
 
     assert await claude_session(octomate, "sess-deep", inky / "octomate") == "inky"
     assert [project.name for project in octomate.projects.list()] == ["inky"]
@@ -164,26 +161,29 @@ async def test_a_session_below_a_declared_root_does_not_register_a_second_projec
 async def test_a_hook_carrying_no_cwd_is_unattributed(tmp_path: Path) -> None:
     # `Path("")` is the process's own directory, so an unguarded resolve would
     # attribute every session to whatever project Octomate was started in.
-    octomate = Octomate(projects=await a_registry(Project(root=Path.cwd())))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(Path.cwd())))
+    )
 
     assert await claude_session(octomate, "sess-no-cwd", "") == ""
 
 
-async def test_a_claude_session_joins_the_project_a_codex_session_registered(
+async def test_both_runtimes_file_under_the_same_declared_project(
     tmp_path: Path,
 ) -> None:
-    # Both sessions are in the same directory, so both are in the same project — Codex
-    # registered it and Claude found it. One registry, whichever runtime got there
-    # first. The thread binding is frozen, and here it never needed to change.
+    # Both sessions are in the same directory, so both are in the same project — one
+    # registry, whichever runtime asks. The thread binding is frozen, and here it
+    # never needed to change.
     inky = repo(tmp_path / "inky")
-    octomate = Octomate(projects=await a_registry())
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
 
     first = await codex_session(octomate, "sess-codex", inky)
     second = await claude_session(octomate, "sess-claude", inky / "octomate")
 
     assert first == "inky"
     assert second == "inky"
-    assert [project.name for project in octomate.projects.list()] == ["inky"]
     octomate.thread_manager.threads.clear()
     reloaded = await octomate.thread_manager.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-claude")
@@ -195,31 +195,38 @@ async def test_a_claude_session_joins_the_project_a_codex_session_registered(
 
 async def test_a_codex_session_is_attributed_the_same_way(tmp_path: Path) -> None:
     inky = repo(tmp_path / "inky")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
 
     assert await codex_session(octomate, "codex-inky", inky / "app") == "inky"
-    assert (
-        await codex_session(octomate, "codex-out", repo(tmp_path / "elsewhere"))
-        == "elsewhere"
-    )
-    registered = octomate.projects.get("elsewhere")
-    assert registered is not None
-    assert registered.origin == "codex"
+    assert await codex_session(octomate, "codex-out", repo(tmp_path / "out")) == ""
+    assert [project.name for project in octomate.projects.list()] == ["inky"]
 
 
 async def test_a_thread_cannot_be_re_attributed(tmp_path: Path) -> None:
-    # The root a thread names is where every conversation in it runs, and an
+    # The workspace a thread names is where every conversation in it runs, and an
     # external session's history is full of absolute paths: a thread that changed
     # project would resume its sessions into a tree they were never written for.
+    # The rule is the manager's rather than the field's, because `project_id` has
+    # to be settable once for a chat thread to become a working one, and `frozen`
+    # cannot say once.
     inky = repo(tmp_path / "inky")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    kraken = repo(tmp_path / "kraken")
+    octomate = Octomate(
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(inky), a_project(kraken))
+        )
+    )
     thread = await octomate.thread_manager.ensure(
         ThreadKey("im", "thread", "chat", "t1"),
         project=octomate.projects.get("inky"),
     )
+    kraken_project = octomate.projects.get("kraken")
+    assert kraken_project is not None
 
-    with pytest.raises(ValidationError):
-        thread.project_id = None
+    with pytest.raises(ValueError, match="binds once"):
+        await octomate.thread_manager.bind(thread.id, kraken_project)
 
 
 async def test_a_thread_cannot_name_a_project_that_is_not_there(
@@ -227,8 +234,12 @@ async def test_a_thread_cannot_name_a_project_that_is_not_there(
 ) -> None:
     # Attribution is a reference into the registry, not a label: foreign keys are
     # enforced, so a thread cannot claim a project with no row.
-    octomate = Octomate(projects=await a_registry(Project(root=repo(tmp_path / "x"))))
-    unregistered = Project(root=repo(tmp_path / "ghost"))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(
+            projects=await a_registry(a_project(repo(tmp_path / "x")))
+        )
+    )
+    unregistered = a_project(repo(tmp_path / "ghost"))
 
     with pytest.raises(IntegrityError):
         await octomate.thread_manager.ensure(
@@ -240,7 +251,9 @@ async def test_attribution_does_not_touch_thread_identity(tmp_path: Path) -> Non
     # The project is an attribute, never part of the key — a session stays keyed
     # by its id, so re-binding one could never strand its history.
     inky = repo(tmp_path / "inky")
-    octomate = Octomate(projects=await a_registry(Project(root=inky)))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
 
     await claude_session(octomate, "sess-keyed", inky)
     thread = await octomate.thread_manager.ensure(
@@ -285,10 +298,12 @@ async def test_a_session_ending_before_any_hook_is_still_filed(
     tmp_path: Path,
 ) -> None:
     # `SessionEnd` carries a cwd like every other hook, and this is the last moment it
-    # can be used: the hook creates the thread, and a thread's project is frozen at
-    # creation, so one born unfiled would stay unfiled.
+    # can be used: the hook creates the thread, and a native session never binds
+    # one afterwards, so one born unfiled would stay unfiled.
     inky = repo(tmp_path / "inky")
-    octomate = Octomate(projects=await a_registry(Project(root=inky, origin="codex")))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
 
     await end_session(octomate, "sess-recovered", inky / "octomate")
 
@@ -301,7 +316,9 @@ async def test_a_session_ending_outside_every_project_is_filed_nowhere(
     # Filing, not registering: the same rule the per-turn hooks follow. A directory no
     # project holds leaves the thread unfiled, and the run still records where it ran.
     inky = repo(tmp_path / "inky")
-    octomate = Octomate(projects=await a_registry(Project(root=inky, origin="codex")))
+    octomate = Octomate(
+        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
+    )
 
     await end_session(octomate, "sess-elsewhere", repo(tmp_path / "elsewhere"))
 
@@ -336,43 +353,20 @@ def codex_rollout(path: Path, cwd: Path, workspace_roots: Sequence[Path]) -> Non
 
 
 async def tail_rollout(octomate: Octomate, rollout: Path) -> None:
-    """Stream one rollout the way production reaches it: a loopback tail attaches
-    and feeds the file's framed lines — workspace roots register only for such a
-    local client, whose directories are this machine's."""
-    tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects
-    )
-    await stream_rollout(tailer, "codex-ws", rollout, local_client=True)
+    """Stream one rollout the way production reaches it: a tail attaches and feeds
+    the file's framed lines."""
+    tailer = CodexTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    await stream_rollout(tailer, "codex-ws", rollout)
 
 
-async def test_every_workspace_root_becomes_its_own_project(tmp_path: Path) -> None:
-    # A Codex workspace is often several repos at once. They are sibling projects, not
-    # extra roots of the one the session sits in: folding them together would make a
-    # cwd in kraken resolve to inky, and let a run bound to inky write into it.
+async def test_workspace_roots_register_nothing(tmp_path: Path) -> None:
+    # A turn's workspace names the directories a session may work in; naming is not
+    # declaring (OCTO-45), so tailing it grows no registry.
     inky, kraken = repo(tmp_path / "inky"), repo(tmp_path / "kraken")
     rollout = tmp_path / "rollout.jsonl"
     codex_rollout(rollout, inky, [inky, kraken])
-    octomate = Octomate(projects=await a_registry())
+    octomate = Octomate(workspaces=WorkspaceManager(projects=await a_registry()))
 
     await tail_rollout(octomate, rollout)
 
-    assert {project.name for project in octomate.projects.list()} == {"inky", "kraken"}
-    assert octomate.projects.resolve(kraken / "src") == "kraken"
-
-
-async def test_a_workspace_root_inside_codex_own_tree_is_not_a_project(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Codex puts a per-session visualization cache under its home into the workspace.
-    # A runtime's own storage is never a project.
-    monkeypatch.setattr(codex_transcript, "CODEX_HOME_DIRS", (tmp_path / ".codex",))
-    monkeypatch.setattr(codex_tailer, "CODEX_HOME_DIRS", (tmp_path / ".codex",))
-    inky = repo(tmp_path / "inky")
-    cache = repo(tmp_path / ".codex" / "visualizations" / "2026" / "08" / "09")
-    rollout = tmp_path / "rollout.jsonl"
-    codex_rollout(rollout, inky, [inky, cache])
-    octomate = Octomate(projects=await a_registry())
-
-    await tail_rollout(octomate, rollout)
-
-    assert {project.name for project in octomate.projects.list()} == {"inky"}
+    assert octomate.projects.list() == []
