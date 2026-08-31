@@ -979,7 +979,10 @@ async def test_a_driven_run_opens_the_network(
         await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
 
     assert FakeCodex.last_config is not None
-    assert FakeCodex.last_config.config_overrides == (codex_base.NETWORK_ACCESS,)
+    assert FakeCodex.last_config.config_overrides == (
+        codex_base.NETWORK_ACCESS,
+        "mcp_servers.gateway.enabled=false",
+    )
     [turn_call] = FakeCodex.turn_calls
     assert turn_call.sandbox is None
     # And the write scope is untouched: the thread still carries the preset.
@@ -1011,6 +1014,7 @@ async def test_an_operators_own_network_answer_wins(
     assert FakeCodex.last_config.config_overrides == (
         codex_base.NETWORK_ACCESS,
         operator,
+        "mcp_servers.gateway.enabled=false",
     )
 
 
@@ -1138,8 +1142,11 @@ async def test_a_registered_gateway_session_wires_the_launch_config(
     assert config.env[codex_base.DRIVEN_ENV] == "1"
     assert config.config_overrides == (
         codex_base.NETWORK_ACCESS,
+        "mcp_servers.gateway.enabled=true",
         "mcp_servers.gateway.url=http://127.0.0.1:8123/gateway/mcp",
         "mcp_servers.gateway.bearer_token_env_var=OCTOMATE_GATEWAY_TOKEN",
+        # The native entry's own Authorization would outrank the bearer above.
+        "mcp_servers.gateway.http_headers={}",
         "mcp_servers.gateway.env_http_headers="
         '{"X-Octomate-Conversation" = "OCTOMATE_GATEWAY_CONVERSATION"}',
     )
@@ -1148,6 +1155,9 @@ async def test_a_registered_gateway_session_wires_the_launch_config(
 async def test_a_turn_without_a_gateway_session_launches_clean(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Clean means the server is turned off, not merely left unmentioned: the
+    # operator's `~/.codex/config.toml` may hold a native gateway entry with
+    # their own credential in it, and an app-server is a child of this host.
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     tentacle = _tentacle(FakeConversationManager())
@@ -1157,7 +1167,10 @@ async def test_a_turn_without_a_gateway_session_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == (codex_base.NETWORK_ACCESS,)
+    assert config.config_overrides == (
+        codex_base.NETWORK_ACCESS,
+        "mcp_servers.gateway.enabled=false",
+    )
     assert codex_base.GATEWAY_TOKEN_ENV not in (config.env or {})
 
 
@@ -1195,7 +1208,10 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == (codex_base.NETWORK_ACCESS,)
+    assert config.config_overrides == (
+        codex_base.NETWORK_ACCESS,
+        "mcp_servers.gateway.enabled=false",
+    )
     assert codex_base.GATEWAY_TOKEN_ENV not in (config.env or {})
 
 

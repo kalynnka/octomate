@@ -547,7 +547,20 @@ class CodexTentacle(AgentTentacle[str, None]):
             # First, so an operator who sets the key themselves still wins: later
             # `--config` arguments are the ones Codex keeps.
             overrides = (NETWORK_ACCESS, *self.config.runtime.config_overrides)
-            if gateway_bearer is not None:
+            # Either way the launch config says what `mcp_servers.gateway` is for
+            # this process, because `~/.codex/config.toml` may already hold one:
+            # the operator's own native entry, carrying the credential of whoever
+            # ran `octomate codex mcp install` there. An app-server is a child of
+            # this host and reads that file, so a turn that named nothing would
+            # inherit a stranger's identity — every spell it cast would land on
+            # their linked accounts. A turn speaks as its kicker or it does not
+            # speak at all.
+            if gateway_bearer is None:
+                overrides = (
+                    *overrides,
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.enabled=false",
+                )
+            else:
                 # The turn's session is at the gateway, so the launch config wires
                 # the process to the served MCP endpoint and asserts the turn's own
                 # conversation id — the model never chooses the header. The url is
@@ -569,9 +582,14 @@ class CodexTentacle(AgentTentacle[str, None]):
                 )
                 overrides = (
                     *overrides,
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.enabled=true",
                     f"mcp_servers.{GATEWAY_SERVER_NAME}.url={url}",
                     f"mcp_servers.{GATEWAY_SERVER_NAME}.bearer_token_env_var="
                     f"{GATEWAY_TOKEN_ENV}",
+                    # Emptied rather than left alone: the native entry's own
+                    # `Authorization` lives here, and it would outrank the bearer
+                    # this turn just named.
+                    f"mcp_servers.{GATEWAY_SERVER_NAME}.http_headers={{}}",
                     f"mcp_servers.{GATEWAY_SERVER_NAME}.env_http_headers="
                     f'{{"{CONVERSATION_HEADER}" = "{GATEWAY_CONVERSATION_ENV}"}}',
                 )

@@ -944,12 +944,13 @@ def test_mcp_install_refuses_without_an_address(
 def test_mcp_install_refuses_without_the_credential_it_would_embed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Claude's and dsh's entries hold the literal credential; without one the
-    written entry would only 401, so the install refuses instead."""
+    """Every entry holds the literal credential; without one the written entry
+    would only 401, so the install refuses instead."""
     monkeypatch.setenv("OCTOMATE_URL", "http://127.0.0.1:9999")
     monkeypatch.delenv("OCTOMATE__SECRET", raising=False)
     invocations = [
         (claude_typer, ["mcp", "install", "--file", str(tmp_path / "c.json")]),
+        (codex_typer, ["mcp", "install", "--config-file", str(tmp_path / "c.toml")]),
         (deepseek_typer, ["mcp", "install", "--home", str(tmp_path)]),
     ]
     for typer_app, args in invocations:
@@ -957,23 +958,6 @@ def test_mcp_install_refuses_without_the_credential_it_would_embed(
         assert result.exit_code != 0
         assert "no credential resolves" in result.output
     assert list(tmp_path.iterdir()) == []
-
-
-def test_codex_mcp_install_needs_no_credential_but_says_where_it_lives(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Codex's entry names the environment variable rather than embedding the
-    value, so a missing credential gets the hooks' warning, not a refusal."""
-    monkeypatch.setenv("OCTOMATE_URL", "http://127.0.0.1:9999")
-    monkeypatch.delenv("OCTOMATE__SECRET", raising=False)
-    path = tmp_path / "config.toml"
-
-    result = runner.invoke(codex_typer, ["mcp", "install", "--config-file", str(path)])
-
-    assert result.exit_code == 0, result.output
-    assert "octomate configure" in result.output  # the missing-credential warning
-    table = tomllib.loads(path.read_text())
-    assert table["mcp_servers"]["gateway"]["bearer_token_env_var"] == "OCTOMATE__SECRET"
 
 
 def test_codex_mcp_install_preserves_comments_and_foreign_tables(
@@ -991,14 +975,15 @@ def test_codex_mcp_install_preserves_comments_and_foreign_tables(
 
     text = path.read_text()
     assert "# the operator wrote this" in text
-    assert "the-secret" not in text  # the credential never lands in this file
     table = tomllib.loads(text)
     assert table["model"] == "gpt-5.5"
     assert table["mcp_servers"]["logfire"] == {"url": "https://logfire.dev/mcp"}
     assert table["mcp_servers"]["gateway"] == {
         "url": "http://127.0.0.1:9999/gateway/mcp",
-        "bearer_token_env_var": "OCTOMATE__SECRET",
-        "http_headers": {"X-Octomate-Client": "codex-native"},
+        "http_headers": {
+            "Authorization": "Bearer the-secret",
+            "X-Octomate-Client": "codex-native",
+        },
     }
 
 
@@ -1036,6 +1021,20 @@ def test_codex_mcp_reinstall_and_uninstall_leave_the_operators_file(
     table = tomllib.loads(text)
     assert "gateway" not in table["mcp_servers"]
     assert table["mcp_servers"]["logfire"] == {"url": "https://l/mcp"}
+
+
+def test_codex_mcp_show_masks_the_embedded_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway_ready(monkeypatch)
+    path = tmp_path / "config.toml"
+    runner.invoke(codex_typer, ["mcp", "install", "--config-file", str(path)])
+
+    result = runner.invoke(codex_typer, ["mcp", "show", "--config-file", str(path)])
+
+    assert result.exit_code == 0
+    assert "http://127.0.0.1:9999/gateway/mcp" in result.output
+    assert "the-secret" not in result.output
 
 
 def test_codex_mcp_uninstall_drops_an_emptied_section(

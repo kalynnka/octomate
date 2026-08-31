@@ -14,13 +14,14 @@ import tomlkit
 import typer
 from tomlkit.items import Table
 
-from octomate_cli.config import OCTOMATE_URL_ENV, SECRET_ENV, resolved_url
+from octomate_cli.config import OCTOMATE_URL_ENV, resolved_url
 from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
 from octomate_cli.jsontypes import JsonObject
 from octomate_cli.mcp import (
     CLIENT_HEADER,
     CODEX_NATIVE_CLIENT,
     GATEWAY_SERVER_KEY,
+    gateway_secret,
     gateway_url,
 )
 
@@ -328,14 +329,17 @@ def mcp_install(
 ) -> None:
     """Point native Codex sessions at the served gateway.
 
-    Writes the `mcp_servers.gateway` table — the gateway's URL, the credential
-    as a `bearer_token_env_var` reference, and the runtime attribution header —
-    preserving the operator's comments and every other table. Codex resolves the
-    variable from each session's environment, so the secret must be exported in
-    the shell profile. A driven turn's per-run overrides shadow this entry by
-    name, its conversation header winning over the client header.
+    Writes the `mcp_servers.gateway` table — the gateway's URL, the bearer, and
+    the runtime attribution header — preserving the operator's comments and every
+    other table. The credential is embedded, as it is for the other runtimes:
+    naming an environment variable instead would put one person's bearer in every
+    process launched from that shell, this deployment's Codex app-servers
+    included, where each turn's own kicker is the only identity a spell may run
+    as. Rotating means re-running install. A driven turn pins this entry by name
+    for the length of its process, so nothing here reaches it.
     """
     target = gateway_url(url)
+    secret = gateway_secret()
     path = mcp_config_file(config_file)
     document = load_toml(path)
     servers = document.get("mcp_servers")
@@ -346,8 +350,8 @@ def mcp_install(
         raise typer.BadParameter(f"{path} has a non-table 'mcp_servers' section")
     entry = tomlkit.table()
     entry["url"] = target
-    entry["bearer_token_env_var"] = SECRET_ENV
     headers = tomlkit.inline_table()
+    headers["Authorization"] = f"Bearer {secret}"
     headers[CLIENT_HEADER] = CODEX_NATIVE_CLIENT
     entry["http_headers"] = headers
     servers[GATEWAY_SERVER_KEY] = entry
@@ -357,10 +361,9 @@ def mcp_install(
     typer.echo(f"  file:   {path}")
     typer.echo(f"  client: {CODEX_NATIVE_CLIENT}")
     typer.echo(
-        f"  auth:   ${{{SECRET_ENV}}} from each session's environment — export "
-        "it in your shell profile"
+        "  auth:   embedded — the file holds the literal credential; rotation "
+        "means re-running install"
     )
-    announce_secret()
 
 
 @mcp_typer.command("uninstall")
@@ -382,8 +385,7 @@ def mcp_uninstall(config_file: McpConfigOption = None) -> None:
 
 @mcp_typer.command("show")
 def mcp_show(config_file: McpConfigOption = None) -> None:
-    """Show the gateway MCP entry. Nothing to mask: the entry names an
-    environment variable rather than holding the credential."""
+    """Show the gateway MCP entry, credential masked."""
     path = mcp_config_file(config_file)
     servers = load_toml(path).get("mcp_servers")
     entry = servers.get(GATEWAY_SERVER_KEY) if isinstance(servers, Table) else None
@@ -394,5 +396,5 @@ def mcp_show(config_file: McpConfigOption = None) -> None:
     client = headers.get(CLIENT_HEADER) if isinstance(headers, dict) else None
     typer.echo(f"Gateway MCP entry in {path}:")
     typer.echo(f"  url:    {entry.get('url')}")
-    typer.echo(f"  auth:   ${{{entry.get('bearer_token_env_var')}}}")
     typer.echo(f"  client: {client}")
+    typer.echo("  auth:   Bearer ***")
