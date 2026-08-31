@@ -73,7 +73,7 @@
   #   # default | acceptEdits | plan | bypassPermissions | dontAsk | auto
   #   permission_mode: default
   #   max_turns: ~
-  #   approval_timeout: ~   # seconds to wait for a human approval; ~ = forever
+  #   approval_timeout: 3600   # seconds before a card expires; ~ = forever
   #   ssh: ~                # remote runs are disabled: a run happens in its
   #                         # thread's project root, and that is a local path the
   #                         # remote host has nothing to match. Setting a block is
@@ -105,7 +105,7 @@
   #   # Who answers when the agent asks to step past the sandbox:
   #   # user_review | auto_review | deny_all
   #   permission_mode: user_review
-  #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
+  #   approval_timeout: 3600     # seconds before a card expires; ~ = forever
   #   # What a command may touch when nobody is asked. Fixed for a run, and
   #   # deliberately not part of the posture, so switching one never widens it.
   #   # A driven run under workspace_write is given the network; read_only has no
@@ -144,5 +144,5 @@
   #   # workspace-write | danger-full-access
   #   permission_mode: workspace-write
   #   agent_preset: ~            # session.create agentPreset; ~ = dsh's default
-  #   approval_timeout: ~        # seconds to wait for human approval; ~ = forever
+  #   approval_timeout: 3600     # seconds before a card expires; ~ = forever
   #   ready_timeout: 60          # seconds to wait for the `dsh web:` banner

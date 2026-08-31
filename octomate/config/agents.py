@@ -318,11 +318,13 @@ class ClaudeCodeConfig(AgentConfig):
         ),
     )
     approval_timeout: float | None = Field(
-        default=None,
+        default=3600.0,
         description=(
             "Seconds to wait for a human approval/answer before the card expires "
-            "and the pending tool is denied (so the live run unblocks). None waits "
-            "indefinitely."
+            "and the pending tool is denied (so the live run unblocks). An hour by "
+            "default, because not answering is the ordinary case rather than the "
+            "exotic one, and an unbounded wait leaves the thread unusable for good. "
+            "None waits indefinitely."
         ),
     )
 
@@ -435,10 +437,13 @@ class CodexConfig(AgentConfig):
         description="Default reasoning summary setting for Codex turns.",
     )
     approval_timeout: float | None = Field(
-        default=None,
+        default=3600.0,
         description=(
             "Seconds to wait for a human Codex approval/answer before the card "
-            "expires and the SDK request is denied. None waits indefinitely."
+            "expires and the SDK request is denied. An hour by default, because not "
+            "answering is the ordinary case rather than the exotic one, and an "
+            "unbounded wait leaves the thread unusable for good. None waits "
+            "indefinitely."
         ),
     )
     max_clients: int | None = Field(
@@ -575,11 +580,13 @@ class DeepseekConfig(AgentConfig):
         ),
     )
     approval_timeout: float | None = Field(
-        default=None,
+        default=3600.0,
         description=(
             "Seconds to wait for a human approval/answer before the card expires "
-            "and the dsh request is answered `cancelled` (so the turn unblocks). "
-            "None waits indefinitely."
+            "and the dsh request is answered `cancelled` (so the turn unblocks). An "
+            "hour by default, because not answering is the ordinary case rather than "
+            "the exotic one, and an unbounded wait leaves the thread unusable for "
+            "good. None waits indefinitely."
         ),
     )
     ready_timeout: float = Field(
