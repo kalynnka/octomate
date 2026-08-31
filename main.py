@@ -8,10 +8,9 @@ from fastapi import FastAPI
 from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
-from octomate.managers.mirrors import MirrorManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import WorkspaceManager
+from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.codex import CodexTentacle
