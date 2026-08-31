@@ -17,9 +17,8 @@ from typing import Annotated, Literal
 import typer
 
 from octomate_cli.config import (
-    OCTOMATE_URL_ENV,
-    SECRET_ENV,
-    resolved_url,
+    CLISettings,
+    cli_settings,
 )
 from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
 from octomate_cli.jsontypes import JsonObject, JsonValue
@@ -103,7 +102,7 @@ def settings_file(scope: Scope, settings: Path | None) -> Path:
 def claude_emit_handler(url: str | None) -> JsonObject:
     """One forwarding `command` hook: `emit.py` carries the event body from stdin to
     the hook router, reading the credential — and, unless `url` pins one, the router's
-    address (`OCTOMATE_URL`) — from the environment at fire time. A command rather
+    address (`OCTOMATE_CLI_URL`) — from the environment at fire time. A command rather
     than a native `http` handler so the settings file stays free of hosts and
     credentials both: the same install serves whichever server the environment names.
     Synchronous either way, which is what guarantees delivery before a short-lived
@@ -131,7 +130,7 @@ def claude_launch_handler(hook_url: str | None) -> JsonObject:
     on this machine, and the stream needs a local process. The command pins this
     installer's own interpreter and octomate script by absolute path, so it works from
     whatever shell Claude runs hooks in; the stream address is pinned only when the
-    install pinned `--url`, and otherwise resolved from `OCTOMATE_URL` at fire time,
+    install pinned `--url`, and otherwise resolved from `OCTOMATE_CLI_URL` at fire time,
     like the credential always is."""
     command = [
         sys.executable,
@@ -202,7 +201,7 @@ def install(
         str | None,
         typer.Option(
             help="Full hook URL to pin. Without it, hooks resolve "
-            f"${OCTOMATE_URL_ENV} from each session's environment at fire time."
+            f"${CLISettings.env('url')} from each session's environment at fire time."
         ),
     ] = None,
     scope: ScopeOption = Scope.user,
@@ -242,15 +241,19 @@ def install(
             del hooks[event]
     write_settings(path, document)
 
-    target = url if url is not None else f"${OCTOMATE_URL_ENV} at fire time"
+    target = url if url is not None else f"${CLISettings.env('url')} at fire time"
     typer.echo(f"Installed Octomate hooks → {target}")
     typer.echo(f"  events:   {', '.join(HANDLED_HOOK_EVENTS)}")
     stream = (
-        stream_url_for(url) if url is not None else f"derived from ${OCTOMATE_URL_ENV}"
+        stream_url_for(url)
+        if url is not None
+        else f"derived from ${CLISettings.env('url')}"
     )
     typer.echo(f"  stream:   {stream} (via {LAUNCH_SCRIPT.name})")
     typer.echo(f"  settings: {path}")
-    typer.echo(f"  auth:     Bearer ${{{SECRET_ENV}}} from the environment")
+    typer.echo(
+        f"  auth:     Bearer ${{{CLISettings.env('secret')}}} from the environment"
+    )
     announce_secret()
 
 
@@ -314,7 +317,7 @@ def tail(
         str | None,
         typer.Option(
             help="Octomate stream URL (ws://<host>:<port>/hooks/claude/stream); "
-            f"defaults to one derived from ${OCTOMATE_URL_ENV}."
+            f"defaults to one derived from ${CLISettings.env('url')}."
         ),
     ] = None,
     cwd: Annotated[
@@ -332,10 +335,10 @@ def tail(
     environment, like every hook client does.
     """
     if url is None:
-        base = resolved_url()
+        base = cli_settings().url
         if base is None:
             raise typer.BadParameter(
-                f"no --url given, {OCTOMATE_URL_ENV} is unset, and no cli.toml "
+                f"no --url given, {CLISettings.env('url')} is unset, and no cli.toml "
                 "names a url — one of them must say where Octomate is"
             )
         url = stream_url_for(base.rstrip("/") + CLAUDE_HOOK_PATH)
@@ -393,7 +396,7 @@ def mcp_install(
         str | None,
         typer.Option(
             help="Octomate's base URL (http://host:port) to write; defaults to "
-            f"${OCTOMATE_URL_ENV}, then cli.toml."
+            f"${CLISettings.env('url')}, then cli.toml."
         ),
     ] = None,
     scope: McpScopeOption = McpScope.local,

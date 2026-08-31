@@ -231,6 +231,7 @@ must be registered before it will boot: every configured credential names a pers
 Register yourself with a secret of your own. `configure` generates one, writes it
 where every client on this machine resolves it, and prints it once — that printed
 value is what goes in the `users:` entry telling the server whose credential it is.
+Here you are both people, so both halves are yours to do.
 
 ```bash
 octomate configure --url http://127.0.0.1:8000   # ~/.config/octomate/cli.toml
@@ -378,18 +379,25 @@ users:
       slack: {channel_user_id: U0123ABCD}    # where their gateway spells can reach
 ```
 
-Each user sets their credential up on their machine, then points their clients at it:
+Setting a person up is three steps on their own machine, in this order — mint, register, install:
 
 ```bash
+# 1. mint it, and read what it prints
 octomate configure --url http://<host>:<port>    # ~/.config/octomate/cli.toml, mode 600
+
+# 2. hand that value to the deployment's admin, who adds it as your users: entry
+
+# 3. point your runtimes at it, once there is something to resolve
 octomate claude hooks install                    # merges handlers into ~/.claude/settings.json
+octomate claude mcp install                      # this project's mcpServers.gateway
 octomate codex hooks install                     # merges handlers into ~/.codex/hooks.json
+octomate codex mcp install                       # [mcp_servers.gateway] in ~/.codex/config.toml
 octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hooks.json + a patch row
 ```
 
-`octomate configure` writes the address and the credential to a file every client on the machine resolves — a hook, a `tail`, an `mcp install` — and prints a generated one once, which is the value that belongs in that user's `users:` entry. A file rather than an exported variable, because a variable is inherited: everything launched from that shell would carry it, this deployment's own Codex app-servers included, and a driven turn must speak as the human who kicked it and nobody else. `OCTOMATE__SECRET` still overrides the file where a one-off wants it to, but nothing needs it, and nothing here tells you to export it.
+`octomate configure` writes the address and the credential to a file every client on the machine resolves — a hook, a `tail`, an `mcp install` — and prints a generated one once, in a panel saying what to do with it. The order matters: the installs write down whatever resolves *at install time*, so a credential that does not exist yet gets you entries that only 401, and moving one means re-running them.
 
-`octomate secret` prints the same value as a shell export line for the cases that genuinely want one — a container, a CI step. It writes nothing.
+A file, not an exported variable, and that is a security property rather than a convenience. An environment is inherited: everything a shell starts carries what it holds, this deployment's own Codex app-servers included, and a driven turn must speak as the human who kicked it and nobody else. `$OCTOMATE_CLI_SECRET` and `$OCTOMATE_CLI_URL` still resolve ahead of the files, for a container or a CI step with no home to write into. `OCTOMATE_CLI_` rather than the server's `OCTOMATE__` prefix, so nothing about a client credential reads as deployment config.
 
 Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying its bearer plus a static `X-Octomate-Client` header written at install time. The client header is attribution (which runtime); the bearer is identity (which human): a native session bearing a user's secret speaks for that person, and its spells light up on *their* linked accounts. Driven turns answer to the same rule — every run represents the human who kicked it, so a driven Codex turn's loopback call carries the kicker's own secret and nobody else's credential can drive it, while a turn kicked by an unregistered user simply runs without the spells. Rotation or revocation is only ever the admin editing the YAML. The trust statement, plainly: a user's secret holds the hook pipe's ledger writes plus the gateway's outbound sends and handoffs, under that user's name. Same trust domain (the operator's machines), same mitigations (per-user secrets, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags.
 

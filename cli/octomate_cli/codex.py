@@ -14,7 +14,7 @@ import tomlkit
 import typer
 from tomlkit.items import Table
 
-from octomate_cli.config import OCTOMATE_URL_ENV, resolved_url
+from octomate_cli.config import CLISettings, cli_settings
 from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
 from octomate_cli.jsontypes import JsonObject
 from octomate_cli.mcp import (
@@ -112,7 +112,7 @@ def codex_launch_handler(hook_url: str | None) -> JsonObject:
     nothing on this machine, and the stream needs a local process. The command pins
     this installer's own interpreter and octomate script by absolute path, so it
     works from whatever shell Codex runs hooks in; the stream address is pinned only
-    when the install pinned `--url`, and otherwise resolved from `OCTOMATE_URL` at
+    when the install pinned `--url`, and otherwise resolved from `OCTOMATE_CLI_URL` at
     fire time, like the credential always is."""
     command = [
         sys.executable,
@@ -135,7 +135,7 @@ def install(
         str | None,
         typer.Option(
             help="Full hook URL to pin. Without it, hooks resolve "
-            f"${OCTOMATE_URL_ENV} from each session's environment at fire time."
+            f"${CLISettings.env('url')} from each session's environment at fire time."
         ),
     ] = None,
     scope: Annotated[Scope, typer.Option()] = Scope.user,
@@ -187,12 +187,14 @@ def install(
             installed.append(launcher_group)
         hooks[event] = installed
     write(target, document)
-    hook_target = url if url is not None else f"${OCTOMATE_URL_ENV} at fire time"
+    hook_target = url if url is not None else f"${CLISettings.env('url')} at fire time"
     typer.echo(f"Installed Octomate Codex hooks in {target} → {hook_target}")
     typer.echo(f"  events: {', '.join(HANDLED_HOOK_EVENTS)}")
     typer.echo(f"  emit:   {EMIT_SCRIPT}")
     stream = (
-        stream_url_for(url) if url is not None else f"derived from ${OCTOMATE_URL_ENV}"
+        stream_url_for(url)
+        if url is not None
+        else f"derived from ${CLISettings.env('url')}"
     )
     typer.echo(f"  stream: {stream} (via {LAUNCH_SCRIPT.name})")
     typer.echo("Open /hooks in Codex and trust the new command hooks.")
@@ -247,7 +249,7 @@ def tail(
         str | None,
         typer.Option(
             help="Octomate stream URL (ws://<host>:<port>/hooks/codex/stream); "
-            f"defaults to one derived from ${OCTOMATE_URL_ENV}."
+            f"defaults to one derived from ${CLISettings.env('url')}."
         ),
     ] = None,
     cwd: Annotated[
@@ -272,10 +274,10 @@ def tail(
     environment, like every hook client does.
     """
     if url is None:
-        base = resolved_url()
+        base = cli_settings().url
         if base is None:
             raise typer.BadParameter(
-                f"no --url given, {OCTOMATE_URL_ENV} is unset, and no cli.toml "
+                f"no --url given, {CLISettings.env('url')} is unset, and no cli.toml "
                 "names a url — one of them must say where Octomate is"
             )
         url = stream_url_for(base.rstrip("/") + CODEX_HOOK_PATH)
@@ -322,7 +324,7 @@ def mcp_install(
         str | None,
         typer.Option(
             help="Octomate's base URL (http://host:port) to write; defaults to "
-            f"${OCTOMATE_URL_ENV}, then cli.toml."
+            f"${CLISettings.env('url')}, then cli.toml."
         ),
     ] = None,
     config_file: McpConfigOption = None,

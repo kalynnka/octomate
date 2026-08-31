@@ -1747,6 +1747,7 @@ version = "0.0.1"
 source = { editable = "cli" }
 dependencies = [
     { name = "pydantic" },
+    { name = "pydantic-settings" },
     { name = "rich" },
     { name = "tomlkit" },
     { name = "typer" },
@@ -1757,6 +1758,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic", specifier = ">=2.12.5" },
+    { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "rich", specifier = ">=13" },
     { name = "tomlkit", specifier = ">=0.13.2" },
     { name = "typer", specifier = ">=0.25.1" },

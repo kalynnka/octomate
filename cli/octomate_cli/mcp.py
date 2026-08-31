@@ -16,10 +16,8 @@ from __future__ import annotations
 import typer
 
 from octomate_cli.config import (
-    OCTOMATE_URL_ENV,
-    SECRET_ENV,
-    resolved_secret,
-    resolved_url,
+    CLISettings,
+    cli_settings,
 )
 
 # The served gateway's endpoint under the base URL: the server mounts each MCP
@@ -43,10 +41,10 @@ def gateway_url(url: str | None) -> str:
     """The full `/gateway/mcp` URL an install writes, from the pinned base or the
     client's own resolution — refused when nothing names an address, since a
     static entry pointing nowhere would fail every session's tool listing."""
-    base = url if url is not None else resolved_url()
+    base = url if url is not None else cli_settings().url
     if base is None:
         raise typer.BadParameter(
-            f"no --url given, {OCTOMATE_URL_ENV} is unset, and no cli.toml names "
+            f"no --url given, {CLISettings.env('url')} is unset, and no cli.toml names "
             "a url — a static MCP entry needs a concrete address; run "
             "`octomate configure --url http://<host>:<port>`"
         )
@@ -56,11 +54,11 @@ def gateway_url(url: str | None) -> str:
 def gateway_secret() -> str:
     """The credential an install embeds in the entry's Authorization header —
     refused when nothing resolves, since the entry would 401 on every call."""
-    secret = resolved_secret()
+    secret = cli_settings().secret
     if secret is None:
         raise typer.BadParameter(
-            f"no credential resolves — {SECRET_ENV} is unset and no cli.toml "
-            "holds one; run `octomate configure` first. The entry embeds the "
+            f"no credential resolves — {CLISettings.env('secret')} is unset and no "
+            "cli.toml holds one; run `octomate configure` first. The entry embeds the "
             "literal credential, so installing without one would only 401."
         )
     return secret

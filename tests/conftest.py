@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+from octomate_cli.config import cli_settings
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 import octomate.database as database
@@ -60,6 +61,20 @@ def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     machine's own config home means probing the checkout.
     """
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def fresh_cli_settings() -> Iterator[None]:
+    """The client config is one object per process, and a process is one command or
+    one hook. This suite is the exception — it plays hundreds, each with its own
+    environment, home and working directory — so the cache is dropped between them.
+
+    Cleared after as well as before: a test that resolved the config leaves an object
+    built from its own `tmp_path`, and the next one to read it must not inherit that.
+    """
+    cli_settings.cache_clear()
+    yield
+    cli_settings.cache_clear()
 
 
 @pytest.fixture

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -12,11 +11,11 @@ import pytest
 import yaml
 from octomate_cli import mcp as cli_mcp
 from octomate_cli.claude import claude_typer
-from octomate_cli.main import app
 from octomate_cli.codex import codex_typer
-from octomate_cli.config import resolved_secret, resolved_url, user_config_path
+from octomate_cli.config import CLISettings, user_config_path
 from octomate_cli.deepseek import deepseek_typer
 from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT
+from octomate_cli.main import app
 from typer.testing import CliRunner
 
 from octomate.config.base import OctomateConfig
@@ -95,7 +94,7 @@ def test_the_installed_handler_carries_neither_credential_nor_host(
     """A settings file is a document people commit and share; the credential and,
     without a pinned `--url`, the server's address are both environment — the emit
     script resolves them when each hook fires, so the same install serves whichever
-    server `OCTOMATE_URL` names."""
+    server `OCTOMATE_CLI_URL` names."""
     path = tmp_path / "settings.json"
     runner.invoke(claude_typer, ["hooks", "install", "--settings", str(path)])
 
@@ -105,7 +104,7 @@ def test_the_installed_handler_carries_neither_credential_nor_host(
     assert handler["type"] == "command"
     assert "--path /hooks/claude" in handler["command"]
     assert "--url" not in handler["command"]
-    assert "OCTOMATE__SECRET" not in json.dumps(read(path))
+    assert "OCTOMATE_CLI_SECRET" not in json.dumps(read(path))
 
 
 def test_install_retires_an_event_octomate_no_longer_registers(tmp_path: Path) -> None:
@@ -354,10 +353,10 @@ def test_the_environment_beats_the_file(monkeypatch: pytest.MonkeyPatch) -> None
     runner.invoke(
         app, ["configure", "--url", "http://file:1", "--secret", "file-secret"]
     )
-    monkeypatch.setenv("OCTOMATE_URL", "http://env:2")
+    monkeypatch.setenv("OCTOMATE_CLI_URL", "http://env:2")
 
-    assert resolved_url() == "http://env:2"
-    assert resolved_secret() == "file-secret"
+    assert CLISettings().url == "http://env:2"
+    assert CLISettings().secret == "file-secret"
 
 
 def test_configure_project_scope_writes_beside_the_session(
@@ -376,6 +375,56 @@ def test_configure_project_scope_writes_beside_the_session(
     assert table["url"] == "http://debug:1"
 
 
+def test_a_generated_credential_comes_with_what_to_do_about_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Minting is the first of three steps and the only one this command does, so it
+    has to hand over the other two: the value an admin needs, and the installs that
+    come after it exists — they write down whatever resolves at install time."""
+    configured(monkeypatch, None)
+
+    result = runner.invoke(app, ["configure", "--url", "http://minidock.local:8000"])
+
+    assert result.exit_code == 0
+    secret = tomllib.loads(user_config_path().read_text())["secret"]
+    assert secret in result.output
+    assert "users:" in result.output  # where it goes, on the server
+    assert "hooks install" in result.output
+    assert "mcp install" in result.output
+
+
+def test_a_credential_already_written_is_never_rotated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-running is what someone does to repoint the url, or after an install moved.
+    Minting a second credential there would strand the `users:` entry registered
+    against the first, and every entry still carrying it."""
+    configured(monkeypatch, None)
+    runner.invoke(app, ["configure", "--url", "http://minidock.local:8000"])
+    minted = tomllib.loads(user_config_path().read_text())["secret"]
+
+    result = runner.invoke(app, ["configure", "--url", "http://elsewhere:8000"])
+
+    table = tomllib.loads(user_config_path().read_text())
+    assert table["secret"] == minted
+    assert table["url"] == "http://elsewhere:8000"
+    # And the registration panel is not shown again: it is already registered, and
+    # reprinting a live credential every run is not a thing to do.
+    assert minted not in result.output
+
+
+def test_the_guidance_stays_out_of_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """stdout is the file report a caller might read; the panel is decoration for a
+    person, so it goes to stderr and takes its styling with it."""
+    configured(monkeypatch, None)
+
+    result = runner.invoke(app, ["configure", "--url", "http://minidock.local:8000"])
+
+    assert result.stdout.startswith(f"Wrote {user_config_path()}")
+    assert "register" not in result.stdout
+    assert "\x1b[" not in result.stdout
+
+
 def test_the_project_file_beats_the_user_file_per_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -388,15 +437,15 @@ def test_the_project_file_beats_the_user_file_per_key(
     (Path.cwd() / ".octomate").mkdir()
     (Path.cwd() / ".octomate" / "cli.toml").write_text('url = "http://project:2"\n')
 
-    assert resolved_url() == "http://project:2"
-    assert resolved_secret() == "user-secret"
+    assert CLISettings().url == "http://project:2"
+    assert CLISettings().secret == "user-secret"
 
 
 def test_codex_install_without_url_leaves_the_target_to_the_environment(
     tmp_path: Path,
 ) -> None:
     """No pinned host: the emit command carries only the hook path, and the script
-    resolves $OCTOMATE_URL when each hook fires — switching servers is an environment
+    resolves $OCTOMATE_CLI_URL when each hook fires — switching servers is an environment
     switch, not a re-install."""
     path = tmp_path / "hooks.json"
     result = runner.invoke(codex_typer, ["hooks", "install", "--hooks-file", str(path)])
@@ -418,121 +467,9 @@ def configured(monkeypatch: pytest.MonkeyPatch, secret: str | None) -> None:
     """Pin what the client resolves, rather than reading the ambient environment:
     whoever runs the suite has a secret of their own by now, and it must not
     decide these. (The config-file source is already isolated per test.)"""
-    monkeypatch.delenv("OCTOMATE__SECRET", raising=False)
+    monkeypatch.delenv("OCTOMATE_CLI_SECRET", raising=False)
     if secret is not None:
-        monkeypatch.setenv("OCTOMATE__SECRET", secret)
-
-
-def test_secret_hands_a_configured_credential_to_the_shell(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Prints whatever the client already resolves — here the environment — as an
-    eval'able line, so nobody copies a secret around by hand.
-    """
-    configured(monkeypatch, "from-the-env")
-
-    result = runner.invoke(app, ["secret"])
-
-    assert result.exit_code == 0
-    assert result.stdout.strip() == "export OCTOMATE__SECRET=from-the-env"
-
-
-def test_a_configured_secret_is_never_rotated(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Re-running is what someone does when hooks already work; handing back a new value
-    would strand Octomate and every client still carrying the old one."""
-    configured(monkeypatch, "already-configured")
-
-    first = runner.invoke(app, ["secret"])
-    second = runner.invoke(app, ["secret"])
-
-    assert first.stdout == second.stdout
-    assert "already-configured" in first.stdout
-
-
-def test_secret_generates_one_when_none_is_configured(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The line still comes out, so `eval` works the first time too — but the value
-    exists nowhere yet, and only the operator can decide where it lives, so nothing is
-    written and stderr says what is left to do."""
-    monkeypatch.chdir(tmp_path)
-    configured(monkeypatch, None)
-
-    result = runner.invoke(app, ["secret"])
-
-    assert result.exit_code == 0
-    assert result.stdout.startswith("export OCTOMATE__SECRET=")
-    assert list(tmp_path.iterdir()) == []  # nothing placed
-
-
-def test_the_pretty_guidance_stays_out_of_stdout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The panel is rendered to stderr on purpose. stdout is consumed by `eval` and
-    `>>`, so a single stray glyph of decoration there would land in someone's shell
-    profile — or be eval'd."""
-    configured(monkeypatch, "from-the-env")
-
-    result = runner.invoke(app, ["secret"])
-
-    assert result.stdout == "export OCTOMATE__SECRET=from-the-env\n"
-    assert "\x1b[" not in result.stdout  # nor any styling
-
-
-def test_secret_writes_nothing_and_leaves_placing_to_the_operator(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Where an environment comes from is the operator's to know — not every shell is
-    zsh, and a startup file is not this command's to edit. It hands over a line."""
-    monkeypatch.chdir(tmp_path)
-    configured(monkeypatch, "from-the-env")
-
-    result = runner.invoke(app, ["secret"])
-
-    assert result.exit_code == 0
-    assert result.stdout.strip() == "export OCTOMATE__SECRET=from-the-env"
-    assert list(tmp_path.iterdir()) == []  # nothing written, anywhere
-
-
-def test_a_redirected_line_survives_a_round_trip_through_the_shell(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`octomate secret >> ~/.zshenv` is the suggestion, so what matters is the
-    value a shell reads back out of such a file — quoting and all."""
-    configured(monkeypatch, "has spaces & $dollars")
-    profile = tmp_path / ".zshenv"
-
-    result = runner.invoke(app, ["secret"])
-    profile.write_text(result.stdout)  # what the operator's `>>` would put there
-
-    sourced = subprocess.run(
-        [f'. "{profile}"; printf %s "${{OCTOMATE__SECRET}}"'],
-        shell=True,
-        capture_output=True,
-        text=True,
-    )
-    assert sourced.stdout == "has spaces & $dollars"
-
-
-def test_secret_quotes_a_credential_that_is_not_shell_safe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The line is made to be eval'd, and a hand-written secret need not be shell-safe."""
-    configured(monkeypatch, "has spaces & $dollars")
-
-    result = runner.invoke(app, ["secret"])
-
-    assert result.stdout.strip() == ("export OCTOMATE__SECRET='has spaces & $dollars'")
-    # And eval'ing it really does reproduce the secret, quoting and all.
-    assert (
-        subprocess.run(
-            [f'{result.stdout.strip()}; printf %s "${{OCTOMATE__SECRET}}"'],
-            shell=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        == "has spaces & $dollars"
-    )
+        monkeypatch.setenv("OCTOMATE_CLI_SECRET", secret)
 
 
 def test_installing_without_a_resolving_secret_says_so(
@@ -732,8 +669,8 @@ def test_deepseek_install_without_a_bridge_link_warns(tmp_path: Path) -> None:
 def gateway_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     """An address and a credential resolving from the environment — the way a
     machine that ran `octomate configure` looks to an installer."""
-    monkeypatch.setenv("OCTOMATE_URL", "http://127.0.0.1:9999")
-    monkeypatch.setenv("OCTOMATE__SECRET", "the-secret")
+    monkeypatch.setenv("OCTOMATE_CLI_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("OCTOMATE_CLI_SECRET", "the-secret")
 
 
 def test_claude_mcp_install_writes_the_entry_beside_everything_else(
@@ -927,8 +864,8 @@ def test_mcp_install_refuses_without_an_address(
 ) -> None:
     """A static entry pointing nowhere would fail every session's tool listing,
     so — unlike the hooks, which resolve at fire time — the install refuses."""
-    monkeypatch.delenv("OCTOMATE_URL", raising=False)
-    monkeypatch.setenv("OCTOMATE__SECRET", "the-secret")
+    monkeypatch.delenv("OCTOMATE_CLI_URL", raising=False)
+    monkeypatch.setenv("OCTOMATE_CLI_SECRET", "the-secret")
     invocations = [
         (claude_typer, ["mcp", "install", "--file", str(tmp_path / "c.json")]),
         (codex_typer, ["mcp", "install", "--config-file", str(tmp_path / "c.toml")]),
@@ -946,8 +883,8 @@ def test_mcp_install_refuses_without_the_credential_it_would_embed(
 ) -> None:
     """Every entry holds the literal credential; without one the written entry
     would only 401, so the install refuses instead."""
-    monkeypatch.setenv("OCTOMATE_URL", "http://127.0.0.1:9999")
-    monkeypatch.delenv("OCTOMATE__SECRET", raising=False)
+    monkeypatch.setenv("OCTOMATE_CLI_URL", "http://127.0.0.1:9999")
+    monkeypatch.delenv("OCTOMATE_CLI_SECRET", raising=False)
     invocations = [
         (claude_typer, ["mcp", "install", "--file", str(tmp_path / "c.json")]),
         (codex_typer, ["mcp", "install", "--config-file", str(tmp_path / "c.toml")]),

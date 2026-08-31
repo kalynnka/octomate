@@ -3,7 +3,7 @@
 Both agents' installers write `command` hooks that run this script — Codex because it
 has no `http` hook handler at all, Claude so the settings file stays free of hosts and
 credentials: with no `--url` pinned, the router's address is resolved when the hook
-fires, from `OCTOMATE_URL` or the client config file, and switching servers is an
+fires, from `OCTOMATE_CLI_URL` or the client config file, and switching servers is an
 environment switch, not a re-install. The transport is HTTP either way: this only
 carries stdin to the router at `<base>{--path}`.
 
@@ -31,8 +31,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-SECRET_ENV = "OCTOMATE__SECRET"
-OCTOMATE_URL_ENV = "OCTOMATE_URL"
+SECRET_ENV = "OCTOMATE_CLI_SECRET"
+OCTOMATE_URL_ENV = "OCTOMATE_CLI_URL"
 DRIVEN_ENV = "OCTOMATE_CODEX_DRIVEN"
 CODEX_HOOK_PATH = "/hooks/codex"
 HOOK_TIMEOUT = 10

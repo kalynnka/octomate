@@ -12,7 +12,8 @@
 #     name: Your Name         # what the agent calls them; defaults to the key
 #     nickname: You           # a shorter, casual name
 #     secret: ...             # their own bearer — hooks and the served gateway
-#                             # authenticate it; `octomate secret` mints one
+#                             # authenticate it. They run `octomate configure` on
+#                             # their machine and hand you what it printed.
 #     profiles:
 #       slack:
 #         channel_user_id: U01234567
