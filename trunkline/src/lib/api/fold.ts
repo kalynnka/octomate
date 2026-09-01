@@ -227,6 +227,9 @@ export function replayRun(
       switch (part.part_kind) {
         case 'thinking':
           // No duration survives the row, and a made-up one would be a claim.
+          // `content` is routinely empty: a Claude transcript signs each thinking
+          // block and writes no text with it, so a replayed one has nothing to
+          // show and the card says so rather than opening on a blank quote.
           push({ kind: 'think', dur: '', text: part.content, thinking: false })
           break
         case 'tool-call':

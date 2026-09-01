@@ -258,6 +258,10 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
   // An explicit toggle is remembered by uid and outlives the transition.
   const open = useConsole((s) => s.open[item.uid] ?? item.thinking)
   const { toggleCardOpen } = useConsole((s) => s.actions)
+  // A tailed runtime signs its thinking and keeps the text, so a replayed block
+  // arrives empty. That is worth saying on the row itself — the alternative is a
+  // card that opens on nothing and reads as a relay that dropped it.
+  const recorded = item.text.trim().length > 0
   return (
     <div
       id={`pm-${item.uid}`}
@@ -269,12 +273,26 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />
         <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Thinking</span>
         <span style={{ flex: 1 }} />
-        <span style={{ ...metaLine, color: 'var(--fg-3)' }}>{item.dur}</span>
+        <span style={{ ...metaLine, color: 'var(--fg-3)' }}>
+          {recorded || item.thinking ? item.dur : 'not recorded'}
+        </span>
       </div>
       <Fold open={open}>
         <div style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 12px' }}>
           <div style={{ borderLeft: '2px solid var(--line-divider)', padding: '6px 14px' }}>
-            <p style={{ margin: 0, ...serif(13), lineHeight: 1.65, color: 'var(--fg-2)', fontStyle: 'italic' }}>{item.text}</p>
+            <p
+              style={{
+                margin: 0,
+                ...serif(13),
+                lineHeight: 1.65,
+                color: recorded ? 'var(--fg-2)' : 'var(--fg-3)',
+                fontStyle: 'italic',
+              }}
+            >
+              {recorded
+                ? item.text
+                : 'The runtime signed this block and wrote no text with it — the reasoning never reached the transcript, so there was nothing to tail.'}
+            </p>
           </div>
         </div>
       </Fold>
