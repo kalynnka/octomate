@@ -3,6 +3,8 @@ name = "octomate"
 version = "0.0.1"
 description = "Add your description here"
 readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     # The server imports one module from it — `octomate_cli.stream`, the wire
