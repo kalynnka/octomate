@@ -211,15 +211,19 @@ destroys the first workspace's contents, and it keeps a thread's history honest 
 what a thread is about does not change underneath the record of what it did. A
 different project is a different thread.
 
-**It takes effect on the next turn, not this one.** A run's working directory and
-sandbox policy are fixed when the process spawns, so a workspace created mid-turn
-cannot become the current run's cwd. The tool's result has to say so plainly, or
-the model will try to use a path its own process cannot reach — and go on working
-in the empty tree it started in, whose contents this run is the last to see.
+**It takes effect by ending the turn.** A run's working directory and sandbox
+policy are fixed when the process spawns, so a workspace created mid-turn cannot
+become the current run's cwd — and a model told to wait would go on working in
+the empty tree it started in, whose contents this run is the last to see. So
+`bind` is a deferral: Inkling's run ends on it the way it ends on a `teleport`,
+and a driven Claude or Codex turn is interrupted the moment the session records
+the bind and ends as the same deferral. The graph resolves it at once and resumes
+the agent on the same conversation — now in the project's workspace, the call
+answered by a line saying so — and the model carries on where it left off.
 
 This is also the path by which a chat thread becomes a project thread: someone
-says what they want worked on, `bind` binds it, and the following turn
-starts in the project's code, in a workspace whose work is kept.
+says what they want worked on, `bind` binds it, and the resumed run starts in
+the project's code, in a workspace whose work is kept.
 
 **Every driven runtime can call it.** `bind` and the `projects` facet of `scry`
 are gateway spells (OCTO-68): Inkling mounts them as a capability, a driven

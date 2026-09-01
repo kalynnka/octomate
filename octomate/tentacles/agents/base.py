@@ -15,6 +15,7 @@ from pydantic_ai import (
     AgentRunResult,
     AgentSpec,
     RunUsage,
+    ToolDenied,
     UsageLimits,
 )
 from pydantic_ai.agent.abstract import (
@@ -114,6 +115,25 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     ) -> list[AgentCapability[AgentDepsT]]:
         """Build capabilities whose credentials belong to this run's user."""
         return []
+
+    def resumed_prompt(self, results: DeferredToolResults) -> str:
+        """What a resumed run opens with, for a runtime that takes no tool result
+        back: what the graph resolved the deferral with, spoken as its next prompt
+        — the sentence of a deferral the graph performed itself, or a person's
+        answers and verdicts on a batch they came back to."""
+        spoken: list[str] = []
+        for value in results.calls.values():
+            spoken.append(
+                "\n".join(str(one) for one in value)
+                if isinstance(value, list)
+                else str(value)
+            )
+        for verdict in results.approvals.values():
+            if isinstance(verdict, ToolDenied):
+                spoken.append(f"Denied: {verdict.message}")
+            else:
+                spoken.append("Approved." if verdict else "Denied.")
+        return "\n\n".join(spoken)
 
     async def run_project(self, thread_id: uuid.UUID) -> Project | None:
         """The project a run in this thread is in, or None when it is in none.

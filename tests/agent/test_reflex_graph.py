@@ -1955,3 +1955,44 @@ async def test_send_falls_back_to_here_when_the_platform_will_not_open() -> None
 
     assert im.opened_dms == ["alice"]
     assert all(chat_id == "team" for chat_id, *_ in im.sent)
+
+
+async def test_a_bind_ends_the_run_and_resumes_it_in_the_workspace() -> None:
+    # One entry for every runtime: the run ends on the bind deferral, and the graph
+    # resumes the same agent in place with the call answered — the resumed run is
+    # the one that starts in the project's workspace.
+    address = _key()
+    agent = FakeAgent(
+        id="other",
+        reception_bind="inky",
+        reception_output="carried on",
+        allow_reception_run=True,
+    )
+    im = _channel(stream=False)
+    threads = FakeThreadManager()
+    thread = await threads.ensure(address)
+    deps = _deps(
+        conversations=FakeConversationManager(), channels={"im": im}, agent=agent
+    )
+    deps.thread_manager = threads
+    target = _source_target(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=deps,
+    )
+
+    assert not isinstance(result, DeferredResult)
+    first, resumed = agent.turns
+    assert first.deferred_results is None
+    assert resumed.deferred_results is not None
+    assert resumed.deferred_results.calls["call_bind"] == (
+        "This thread is about 'inky' now, and you are in its workspace. Carry on "
+        "where you left off."
+    )
+    assert resumed.address == address
+    assert result.result is not None
+    assert result.result.output == "carried on"

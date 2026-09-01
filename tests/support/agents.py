@@ -70,6 +70,7 @@ from octomate.schemas.triage import (
     TELEPORT_DEFER_KIND,
     TELEPORT_TOOL_NAME,
     THREAD_TARGET,
+    BindDecision,
     ChannelTarget,
     Claim,
     CrossingLanding,
@@ -108,6 +109,13 @@ CODEX_MODELS: frozenset[CodexModelName] = frozenset(
 DEEPSEEK_MODELS: frozenset[DeepseekModelName] = frozenset(
     {"deepseek-v4-flash", "deepseek-v4-pro"}
 )
+
+
+def _bind_requests(project: str) -> DeferredToolRequests:
+    """A reception run's `bind` deferral — the suspender skips it and the graph
+    resumes the same agent in place, in the workspace the bind made. On the resumed
+    run (deferred results present) the fake answers normally."""
+    return BindDecision(project=project).deferral("call_bind")
 
 
 def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRequests:
@@ -225,6 +233,9 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # the resumed run (deferred results present) falls through to `reception_output`.
     reception_teleport: str | None = None
     reception_teleport_destination: str = "thread"
+    # When set, the first reception run emits a `bind` deferral for this project;
+    # the resumed run (deferred results present) falls through to `reception_output`.
+    reception_bind: str | None = None
     # When set, the first reception run records a teleport decision directly on the
     # mounted gateway's session — the way a non-deferring external runtime's MCP tool
     # does — and ends its turn normally; the resumed run gets `reception_output`.
@@ -320,6 +331,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             output: FakeRunOutput = _teleport_requests(
                 self.reception_teleport, self.reception_teleport_destination
             )
+        elif self.reception_bind is not None and deferred_tool_results is None:
+            output = _bind_requests(self.reception_bind)
         else:
             output = self.reception_output
         scheme_decision = self.reception_scheme
@@ -452,6 +465,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         output: ChannelOutput | DeferredToolRequests
         if self.reception_teleport is not None and deferred_tool_results is None:
             output = _teleport_requests(self.reception_teleport)
+        elif self.reception_bind is not None and deferred_tool_results is None:
+            output = _bind_requests(self.reception_bind)
         else:
             output = self.reception_output
         if isinstance(output, DeferredToolRequests):

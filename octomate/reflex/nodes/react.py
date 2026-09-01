@@ -20,7 +20,7 @@ from octomate.reflex.state import (
     ReflexResult,
     ReflexState,
 )
-from octomate.reflex.suspender import HumanReviewSuspender, TeleportRequest
+from octomate.reflex.suspender import ReflexSuspender, TeleportRequest
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
 from octomate.telemetry import reflex_logfire
@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     resume_batch_id: uuid.UUID | None = None
-    # Set by Teleport to resume the same agent against the forked history.
-    teleport_results: DeferredToolResults | None = None
+    # Set by Teleport to resume the same agent against the forked history, and by
+    # React itself after a bind, to resume it in the workspace the bind made.
+    resume_results: DeferredToolResults | None = None
     # Set by Teleport instead of `teleport_results` when the teleport was reported
     # as a decision (no pending call to resolve): the resumed run opens from this.
     continuation_prompt: str | None = None
@@ -43,7 +44,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
         """React, and leave the turn's workspace in the mirror however it ends.
 
         In a `finally` because a turn that raised still did whatever it did on
@@ -66,7 +67,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def react(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target
@@ -147,7 +148,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if state.user_profile is not None:
             capabilities.extend(await agent.user_capabilities(state.user_profile))
 
-        deferred_results = self.teleport_results
+        deferred_results = self.resume_results
         if self.resume_batch_id is not None:
             batch = await ctx.deps.action_manager.get_batch(self.resume_batch_id)
             deferred_results = batch.build_results()
@@ -158,7 +159,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         else:
             user_prompt = decision.summon or str(state.user_prompt or "")
 
-        suspender = HumanReviewSuspender(
+        suspender = ReflexSuspender(
             channel=target_channel,
             action_manager=ctx.deps.action_manager,
             conversation_manager=ctx.deps.conversation_manager,
@@ -395,6 +396,28 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 if suspender.teleport is not None:
                     return Teleport(
                         request=suspender.teleport, origin=target, agent_id=agent.id
+                    )
+                if suspender.bind is not None:
+                    # Bound mid-run: the run ended so the next one starts in the
+                    # project's workspace, and the call resolves into it. The
+                    # state's thread predates the bind; the turn-end save reads the
+                    # project off it, so it is read again.
+                    if state.thread is not None:
+                        bound = await ctx.deps.thread_manager.get(state.thread.id)
+                        if bound is None:
+                            raise RuntimeError(f"thread {state.thread.id} vanished")
+                        state.thread = bound
+                    span.set_attribute("react.action", "bind")
+                    return React(
+                        resume_results=DeferredToolResults(
+                            calls={
+                                suspender.bind.tool_call_id: (
+                                    f"This thread is about {suspender.bind.project!r} "
+                                    "now, and you are in its workspace. Carry on where "
+                                    "you left off."
+                                )
+                            }
+                        )
                     )
                 return End(
                     DeferredResult(

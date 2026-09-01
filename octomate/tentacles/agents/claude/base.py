@@ -86,6 +86,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
+from octomate.schemas.triage import BindDecision
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
@@ -120,7 +121,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     context across turns. Output is the run's final text (`str`); pydantic-ai
     run options that don't map onto Claude (custom output_type, toolsets,
     capabilities, ...) are ignored — except a `GatewayCapability`, which mounts
-    the gateway as the turn's in-process MCP server.
+    the gateway as the turn's in-process MCP server. A `bind` cast through it
+    ends the turn as the deferral the graph resumes in the project's workspace,
+    and a resumed run opens from what the graph resolved that deferral with.
     """
 
     config: ClaudeCodeConfig = field(init=False)
@@ -456,6 +459,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
@@ -474,6 +479,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 thread_id,
                 agent_tentacle_id=self.id,
             )
+        if deferred_tool_results is not None:
+            # A resumed run. The CLI takes no tool result back, so the graph's
+            # resolution of the deferral is this turn's prompt, ledgered as one.
+            user_prompt = self.resumed_prompt(deferred_tool_results)
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
         # Tools the user already granted "allow for session" on this conversation
@@ -766,9 +775,20 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     with contextlib.suppress(Exception):
                         await previous.interrupt()
                 await client.query(prompt_text)
+                interrupted = False
                 async for message in client.receive_response():
                     for event in accumulator.consume(message):
                         yield event
+                    if (
+                        not interrupted
+                        and gateway_session is not None
+                        and isinstance(gateway_session.decision, BindDecision)
+                    ):
+                        # Bound mid-run: from here the process works in a tree that
+                        # is thrown away, so the turn ends now — as the deferral the
+                        # graph resumes in the project's workspace, below.
+                        interrupted = True
+                        await client.interrupt()
             run_id = str(uuid7())
             recorded_run = await self.octomate.conversations.record_agent_run(
                 conversation,
@@ -809,6 +829,26 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     source_thread,
                     source_message_ids[-1],
                 )
+            bound = gateway_session.decision if gateway_session is not None else None
+            if isinstance(bound, BindDecision):
+                if deferred_suspender is None:
+                    raise RuntimeError(
+                        "a bind mid-run needs a suspender to resume the turn through"
+                    )
+                requests = bound.deferral(str(uuid7()))
+                await deferred_suspender.suspend(requests)
+                # The deferral rides the str-typed stream as a structured result does.
+                yield AgentRunResultEvent(
+                    cast(
+                        "AgentRunResult[str]",
+                        accumulator.build_deferred_result(
+                            requests,
+                            run_id=run_id,
+                            conversation_id=str(conversation.id),
+                        ),
+                    )
+                )
+                return
             if output_adapter is not None and accumulator.structured_output is not None:
                 # The model instance rides the str-typed event stream; `run`
                 # restores the declared output type at its boundary.
@@ -939,6 +979,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             interactive=interactive,
             instructions=instructions,
             capabilities=capabilities,
+            deferred_tool_results=deferred_tool_results,
+            deferred_suspender=deferred_suspender,
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
@@ -1056,5 +1098,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 interactive=interactive,
                 instructions=instructions,
                 capabilities=capabilities,
+                deferred_tool_results=deferred_tool_results,
+                deferred_suspender=deferred_suspender,
             )
         )

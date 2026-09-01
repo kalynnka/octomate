@@ -53,6 +53,7 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
+    BIND_DEFER_KIND,
     BIND_TOOL_NAME,
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
@@ -178,11 +179,11 @@ A thread about no project runs in a throwaway tree: you may write there, and not
 you write is kept. Binding it to a project is what makes its work kept, in that
 project's code. `{scry}` with `reveal="projects"` shows what this deployment can work
 on; name one, and `ref` — a branch, tag or commit — only when the default branch is
-the wrong place to start. It applies from your **next** turn: this run's working
-directory was fixed when its process started, so say what you will do once it
-applies and let the person answer. A thread binds once; if this one is already about
-a project the tool says so — a different project is a different thread, so ask them
-to start one.
+the wrong place to start. Binding ends this turn and re-awakes you in the project's
+workspace with your context intact, so bind before you start work, not after —
+anything written in the throwaway tree before the bind is gone. A thread binds once;
+if this one is already about a project the tool says so — a different project is a
+different thread, so ask them to start one.
 """
 
 
@@ -504,7 +505,8 @@ class GatewayCapability(AbstractCapability[None]):
         self, ctx: RunContext[None], project: str, ref: str | None = None
     ) -> str:
         """Say that this thread is about the project `project`, and fork its
-        workspace. Applies from the next turn.
+        workspace. This turn ends on it, and you are re-awoken in that workspace
+        with your context intact.
 
         Args:
             project: The project's name, copied exactly from `scry`
@@ -513,9 +515,13 @@ class GatewayCapability(AbstractCapability[None]):
                 project's default branch.
         """
         try:
-            return await self.session.bind(project=project, ref=ref)
+            await self.session.bind(project=project, ref=ref)
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal
+        # Bound; now the run ends, because this one's tools are rooted in the tree
+        # that is thrown away. The graph resolves the call at once and resumes the
+        # run in the project's workspace.
+        raise CallDeferred(metadata={"kind": BIND_DEFER_KIND, "project": project})
 
     async def commission(
         self,

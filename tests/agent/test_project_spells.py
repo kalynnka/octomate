@@ -19,7 +19,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
-from pydantic_ai import RunContext
+from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -33,7 +33,7 @@ from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.mcp.gateway import gateway_mcp
 from octomate.schemas.thread import Thread, ThreadKey
-from octomate.schemas.triage import ProjectSummary
+from octomate.schemas.triage import BindDecision, ProjectSummary
 from octomate.schemas.user import UserProfile
 from tests.support.managers import FakeThreadManager, a_project, a_registry
 
@@ -71,7 +71,9 @@ async def a_registered_profile() -> tuple[UserManager, UserProfile]:
     return users, profile
 
 
-async def a_harness(tmp_path: Path, *, registered: bool = True) -> Harness:
+async def a_harness(
+    tmp_path: Path, *, registered: bool = True, key: ThreadKey = CHAT
+) -> Harness:
     """The spells over real collaborators: the registry is what makes a name a
     project, and the mirror is what a ref has to resolve against. The session is
     one driven turn's, speaking for a registered user unless told otherwise."""
@@ -87,7 +89,7 @@ async def a_harness(tmp_path: Path, *, registered: bool = True) -> Harness:
     )
     users, profile = await a_registered_profile()
     threads = ThreadManager(users=users)
-    thread = await threads.ensure(CHAT)
+    thread = await threads.ensure(key)
     session = GatewaySession(
         channel_routes={},
         current_agent_id="inkling",
@@ -124,16 +126,16 @@ async def test_a_registered_user_scries_the_enabled_projects(tmp_path: Path) -> 
     ]
 
 
-async def test_binding_forks_the_workspace_and_says_it_is_next_turn(
-    tmp_path: Path,
-) -> None:
+async def test_binding_forks_the_workspace_and_ends_the_turn(tmp_path: Path) -> None:
     harness = await a_harness(tmp_path)
 
     answer = await harness.session.bind(project="inky")
 
     assert "inky" in answer
-    # The whole point of the tool result: this run cannot use what it just made.
-    assert "next turn" in answer
+    # The whole point of the tool result: this run cannot use what it just made,
+    # so it ends — recorded as the decision a runtime is interrupted on.
+    assert "turn ends here" in answer
+    assert harness.session.decision == BindDecision(project="inky")
     bound = await harness.threads.get(harness.thread.id)
     assert bound is not None
     attributed = await bound.project
@@ -184,6 +186,22 @@ async def test_a_ref_that_does_not_resolve_leaves_the_thread_free(
     rebound = await harness.threads.get(harness.thread.id)
     assert rebound is not None
     assert rebound.project_id == project.id
+
+
+async def test_only_a_thread_binds_and_a_dm_is_told_to_teleport_first(
+    tmp_path: Path,
+) -> None:
+    # Refused before the mirror is even synced: a DM or a group outlives every
+    # project in it, and the way out is a sub-thread — which `teleport` opens.
+    harness = await a_harness(tmp_path, key=ThreadKey("im", "dm", "u1"))
+
+    with pytest.raises(GatewayRefusal, match="`teleport` into a sub-thread first"):
+        await harness.session.bind(project="inky")
+
+    project = harness.workspaces.projects.get("inky")
+    assert project is not None
+    assert not harness.workspaces.mirrors.path(project).exists()
+    assert harness.workspaces.existing(harness.thread.id) is None
 
 
 async def test_a_thread_binds_once(tmp_path: Path) -> None:
@@ -241,3 +259,18 @@ async def test_an_mcp_runtime_reads_the_list_and_hears_a_refusal_as_a_tool_error
             await client.call_tool("bind", {"project": "kraken"})
 
     assert listed.data == "- inky"
+
+
+async def test_inkling_defers_the_bind_for_the_graph_to_resume(tmp_path: Path) -> None:
+    # The bind is done before the deferral is raised: the thread is bound and the
+    # workspace forked, and the run ends so the next one starts in it.
+    harness = await a_harness(tmp_path)
+    capability = GatewayCapability(session=harness.session)
+
+    with pytest.raises(CallDeferred) as deferred:
+        await capability.bind(FAKE_CONTEXT, "inky")
+
+    assert deferred.value.metadata == {"kind": "bind", "project": "inky"}
+    bound = await harness.threads.get(harness.thread.id)
+    assert bound is not None
+    assert bound.project_id is not None

@@ -10,6 +10,7 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
+    BIND_DEFER_KIND,
     TELEPORT_DEFER_KIND,
     CrossingLanding,
     ResponseTargetMode,
@@ -39,12 +40,27 @@ class TeleportRequest:
     crossing: CrossingLanding | None = None
 
 
+@dataclass(frozen=True)
+class BindRequest:
+    """A bind for the graph to resume from: the run that cast it has ended, so the
+    next one starts in the project's workspace, and the pending call resolves into
+    it. One shape for every runtime — Inkling deferred the call itself; a runtime
+    that cannot be suspended was interrupted on the recorded decision and ended
+    its turn as the same deferral."""
+
+    tool_call_id: str
+    project: str
+
+
 @dataclass
-class HumanReviewSuspender:
-    """`DeferredSuspender` that persists a batch and presents it via the
-    channel for human review, then leaves the run suspended. Triage builds it
-    with the right run context; react invokes it (via `ResolveDeferred`) when an
-    agent run yields `DeferredToolRequests` and no in-process resolver is set.
+class ReflexSuspender:
+    """The reflex graph's `DeferredSuspender`: every deferral a run ends on comes
+    through here once, and each kind goes where it is resolved — a `teleport` or
+    a `bind` to the graph, which performs it and resumes the agent; anything else
+    to a human, persisted as a batch and presented on the channel. React builds
+    it with the run's context; Inkling reaches it through `ResolveDeferred`, a
+    runtime a tool result cannot suspend through the `deferred_suspender` its run
+    was handed.
     """
 
     channel: ChannelTentacle
@@ -62,6 +78,9 @@ class HumanReviewSuspender:
     # Set when a run deferred a `teleport` (classified by metadata kind); the dispatch
     # graph reads this to route to its Teleport node instead of persisting a batch.
     teleport: TeleportRequest | None = field(default=None, init=False)
+    # Set when a run deferred a `bind`: resolved by the graph too — the same agent,
+    # resumed in place, in the workspace the bind made.
+    bind: BindRequest | None = field(default=None, init=False)
 
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         # `teleport` declares kind="teleport" in its CallDeferred metadata — the graph
@@ -69,6 +88,12 @@ class HumanReviewSuspender:
         # a tool name), stash it typed, and let run1 end so it bubbles to the dispatch.
         for call in requests.calls:
             meta = requests.metadata.get(call.tool_call_id, {})
+            if meta.get("kind") == BIND_DEFER_KIND:
+                self.bind = BindRequest(
+                    tool_call_id=call.tool_call_id,
+                    project=str(meta.get("project") or ""),
+                )
+                return None
             if meta.get("kind") == TELEPORT_DEFER_KIND:
                 # The gate names the far channel and the account on it as two plain
                 # strings; the address is built back here, at the boundary, so the

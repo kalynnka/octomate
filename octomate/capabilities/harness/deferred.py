@@ -9,7 +9,7 @@ Two complementary hooks (keep both):
 Which of the two a deferral gets is `ResolverChoice`'s answer, and the loop asks it
 anew every time round rather than once per run.
 
-The concrete, channel-coupled suspender (`HumanReviewSuspender`) lives in the
+The concrete, channel-coupled suspender (`ReflexSuspender`) lives in the
 triage layer (`octomate.reflex.suspender`) so the harness never imports
 channels.
 """

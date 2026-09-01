@@ -73,7 +73,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if self.request.tool_call_id is not None:
             # An Inkling deferral: the pending call resolves into the resumed run.
             next = React(
-                teleport_results=DeferredToolResults(
+                resume_results=DeferredToolResults(
                     calls={
                         self.request.tool_call_id: "Continuing the conversation here."
                     }

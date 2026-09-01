@@ -1,6 +1,6 @@
 """Unit tests for the human-in-the-loop deferred suspender.
 
-`HumanReviewSuspender` is the policy react invokes (via `ResolveDeferred`) when an
+`ReflexSuspender` is the policy react invokes (via `ResolveDeferred`) when an
 agent run yields `DeferredToolRequests` and no in-process resolver is configured:
 it persists a batch + presents it through the channel, then records the batch id
 so the caller can report the suspended run.
@@ -16,7 +16,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
-from octomate.reflex.suspender import HumanReviewSuspender
+from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -69,7 +69,7 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
         summon="needs input",
     )
 
-    suspender = HumanReviewSuspender(
+    suspender = ReflexSuspender(
         channel=channel,
         action_manager=cast(DeferredActionManager, action_manager),
         conversation_manager=conversations,
@@ -112,7 +112,7 @@ async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() 
     batch = FakePresentedBatch(questions=[question], approvals=[approval])
     channel = FakeChannelTentacle()
 
-    suspender = HumanReviewSuspender(
+    suspender = ReflexSuspender(
         channel=channel,
         action_manager=cast(
             DeferredActionManager, FakeActionManager(presented_batch=batch)

@@ -21,6 +21,7 @@ from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
@@ -259,6 +260,13 @@ class FakeThreadManager(ThreadManager):
             self.threads_by_key[key] = thread
         return thread
 
+    async def get(
+        self, thread_id: uuid.UUID, *, with_messages: bool = True
+    ) -> Thread | None:
+        return next(
+            (one for one in self.threads_by_key.values() if one.id == thread_id), None
+        )
+
     async def record_handoff(
         self,
         thread_or_address: Thread | ChannelAddress | ThreadKey,
@@ -481,3 +489,14 @@ class RecordingWorkspaceManager(WorkspaceManager):
 
     async def save(self, thread: Thread) -> None:
         self.saved.append(thread.id)
+
+
+@dataclass
+class RecordingSuspender:
+    """A `DeferredSuspender` that keeps what it was handed and presents nothing."""
+
+    suspended: list[DeferredToolRequests] = field(default_factory=list)
+
+    async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
+        self.suspended.append(requests)
+        return None

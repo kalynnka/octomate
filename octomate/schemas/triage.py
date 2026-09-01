@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, NamedTuple, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.settings import ThinkingEffort
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config.agents import AgentRouteModelName, Claim
 from octomate.schemas.conversation import ChannelAddress
@@ -41,6 +43,9 @@ ScryFacet = Literal["routes", "destinations", "projects"]
 # emits it) and `reflex` (which resolves it) agree on one value without matching on
 # the name.
 TELEPORT_DEFER_KIND = "teleport"
+# Likewise the `bind` deferral's kind: the graph resolves it at once and resumes
+# the same agent in the project's workspace.
+BIND_DEFER_KIND = "bind"
 
 
 class AgentRouteKey(NamedTuple):
@@ -261,9 +266,36 @@ class TeleportDecision(BaseModel):
     )
 
 
+class BindDecision(BaseModel):
+    """The thread was bound to a project mid-run, and the run has to end for it to
+    take: a process's cwd is fixed at spawn. Inkling defers the call; a runtime a
+    tool result cannot suspend is interrupted on this and ends its turn as the same
+    deferral, which the graph resolves at once and resumes in the workspace.
+    """
+
+    action: Literal["bind"] = "bind"
+    project: str
+    ref: str | None = None
+
+    def deferral(self, tool_call_id: str) -> DeferredToolRequests:
+        """This bind as the deferral the graph resumes — what an interrupted
+        runtime's turn ends with, shaped as Inkling's own `CallDeferred` is."""
+        return DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    tool_name=BIND_TOOL_NAME,
+                    args={"project": self.project, "ref": self.ref},
+                    tool_call_id=tool_call_id,
+                )
+            ],
+            metadata={tool_call_id: {"kind": BIND_DEFER_KIND, "project": self.project}},
+        )
+
+
 # Every decision a gateway can record for the graph to act on after the turn.
 GatewayDecision: TypeAlias = Annotated[
-    SummonDecision | SchemeDecision | TeleportDecision, Field(discriminator="action")
+    SummonDecision | SchemeDecision | TeleportDecision | BindDecision,
+    Field(discriminator="action"),
 ]
 
 

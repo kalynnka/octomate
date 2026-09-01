@@ -22,6 +22,7 @@ from octomate.managers.thread import BindRefusal
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.thread import ATTRIBUTABLE_KINDS
 from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
@@ -29,8 +30,10 @@ from octomate.schemas.triage import (
     SCHEME_TOOL_NAME,
     SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
+    TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     AgentRoute,
+    BindDecision,
     ChannelTarget,
     CrossingLanding,
     Destination,
@@ -492,7 +495,14 @@ class GatewaySession:
         instructions), so it takes a registered user; a native session is refused,
         its work being wherever its terminal is. The ref is checked before the bind
         because a thread binds once: a ref that does not resolve must leave the
-        thread free to ask again for the branch that was meant.
+        thread free to ask again for the branch that was meant. Only a thread binds
+        — a DM or a group chat outlives every project in it — and that is refused
+        first, before a mirror is synced for nothing.
+
+        Recorded as the turn's decision, because a process's cwd is fixed at spawn:
+        the run has to end for the binding to take, and the graph resumes it in the
+        workspace — Inkling by deferring the call, a runtime a tool result cannot
+        suspend by being interrupted on the decision.
         """
         if self.native:
             raise GatewayRefusal(
@@ -512,6 +522,15 @@ class GatewaySession:
             raise RuntimeError(
                 "a bind needs the thread this turn is in, and the managers a gateway "
                 "built to bind carries"
+            )
+        thread = await self.threads.get(self.thread_id)
+        if thread is None:
+            raise RuntimeError(f"thread {self.thread_id} vanished")
+        if thread.kind not in ATTRIBUTABLE_KINDS:
+            raise GatewayRefusal(
+                f"This conversation is a {thread.kind}, and a DM or a group chat "
+                "outlives every project in it — only a thread binds. "
+                f"`{TELEPORT_TOOL_NAME}` into a sub-thread first, and bind there."
             )
         registered = self.workspaces.projects.get(project)
         if registered is None or not registered.enabled:
@@ -535,12 +554,10 @@ class GatewaySession:
         await self.workspaces.materialize(
             self.workspaces.open(self.thread_id, registered), mirror, ref
         )
-        start = f" starting from {ref!r}" if ref is not None else ""
+        self.decision = BindDecision(project=registered.name, ref=ref)
         return (
-            f"This thread is about {registered.name!r} now, and its workspace is "
-            f"ready{start}. It applies from your next turn — this run is still in "
-            f"the empty one it started in, and nothing you write there is kept. "
-            f"Tell the person what you will do, and wait for them."
+            f"This thread is about {registered.name!r} now. This turn ends here — "
+            "you continue in its workspace, with your context intact."
         )
 
     async def summon(

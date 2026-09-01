@@ -10,16 +10,16 @@ from octomate.reflex.graph import (
     SummonDecision,
     reflex_graph,
 )
-from octomate.reflex.suspender import HumanReviewSuspender
+from octomate.reflex.suspender import ReflexSuspender
 
 __all__ = [
     "Awake",
     "DeferredResult",
-    "HumanReviewSuspender",
     "ReflexDeps",
     "ReflexGraphResult",
     "ReflexResult",
     "ReflexState",
+    "ReflexSuspender",
     "ResponseTarget",
     "ResponseTargetMode",
     "SummonDecision",
