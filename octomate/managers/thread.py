@@ -273,15 +273,25 @@ class ThreadManager:
     async def store_message(self, message: ThreadMessage, thread: Thread) -> None:
         """Persist a ledger row and re-sync the cached thread from the database.
 
+        The row is touched, not only appended to. `updated_at` fires on an update
+        of the thread and writing to its ledger is not one, so a session being
+        tailed right now would keep the timestamp it was created with and sink, in
+        a listing ordered by it, under threads nothing has ever said a word in.
+
         A thread nobody has named takes its name from this row when a person wrote
         it. The listing carries no messages, so the first thing said is the only
         name a row has until a runtime grabs one of its own (`rename`).
         """
         async with async_session() as session:
             session.add(message)
-            if message.direction == "inbound" and message.actor_kind == "human":
-                row = await session.get(Thread, thread.id)
-                if row is not None and row.title is None:
+            row = await session.get(Thread, thread.id)
+            if row is not None:
+                row.updated_at = datetime.now(UTC)
+                if (
+                    row.title is None
+                    and message.direction == "inbound"
+                    and message.actor_kind == "human"
+                ):
                     row.title = thread_title(message.message_text)
             await session.commit()
             reloaded = await session.get(Thread, thread.id)
