@@ -1013,7 +1013,7 @@ def test_user_links_must_reference_configured_channel() -> None:
 
 
 def test_user_links_refuse_a_native_pseudo_channel() -> None:
-    # The OCTO-62 claim retired: a native session is registered by the user's
+    # The runtime claim retired: a native session is registered by the user's
     # own `secret`, so a pseudo-channel link has no claimed row left to seed and
     # is as unresolvable as any typo — declared runtime or not.
     with pytest.raises(

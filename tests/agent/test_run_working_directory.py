@@ -1,4 +1,4 @@
-"""OCTO-30 — every run records the directory it ran in.
+"""Every run records the directory it ran in.
 
 `AgentRun.cwd` is written by all three writers: the hooks' live sketch, the tailer's
 turn rebuilt from the transcript, and Octomate-driven dispatch. The data was already
@@ -413,7 +413,7 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
     assert options.cwd == str(workspace)
     [run] = await driven_runs(octomate, thread, "claude")
     # The same directory the run was launched in, so a driven run answers "where did
-    # this run" exactly as a native one does — the thread's workspace since OCTO-48,
+    # this run" exactly as a native one does — the thread's workspace,
     # which is what makes the answer specific enough to go back to.
     assert run.cwd == workspace
 

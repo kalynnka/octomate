@@ -1,4 +1,4 @@
-"""OCTO-37 — inkling works inside its thread's project.
+"""Inkling works inside its thread's project.
 
 Claude and Codex each discover `AGENTS.md`/`CLAUDE.md` natively, from the directory
 they dispatch into. Inkling has no directory at all, so which repo it is answering

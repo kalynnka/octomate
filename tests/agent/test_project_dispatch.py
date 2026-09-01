@@ -1,15 +1,15 @@
-"""OCTO-32, OCTO-48 — a thread's project decides where both agents run.
+"""A thread's project decides where both agents run.
 
 The thread is the only place a project is declared: every conversation belongs to
 one, so a run asks its thread rather than carrying a copy. With nothing declared, a
 run still gets a workspace — a fork of the empty repository, thrown away when the
 run ends — so the directory is never Octomate's own.
 
-Where a declared thread lands moved in OCTO-48: not the project's root — the
+Where a declared thread lands is not the project's root — the
 person's own checkout, shared by everyone — but this thread's fork of it, at
 `.octomate/workspaces/<thread_id>`. The project still decides which fork.
 
-And what the turn did there does not stay there: OCTO-51 leaves it on the
+And what the turn did there does not stay there: the turn-end save leaves it on the
 thread's ref in the mirror, so the fork is a cache rather than the only copy.
 """
 
@@ -136,7 +136,7 @@ def test_a_composed_workspace_manager_is_the_one_the_host_uses() -> None:
 
 
 async def test_with_nothing_declared_claude_runs_in_a_workspace_of_its_own() -> None:
-    # OCTO-50: never Octomate's own directory, which is where a run with nothing
+    # Never Octomate's own directory, which is where a run with nothing
     # set lands — on a server, the one holding the database and the config secrets.
     # A fork of the empty repository instead, which this run may write in.
     octomate = Octomate(conversations=FakeConversationManager())
@@ -406,7 +406,7 @@ async def test_a_finished_turn_leaves_its_work_on_the_threads_ref(
 async def test_a_thread_pruned_between_turns_picks_up_where_it_left_off(
     tmp_path: Path,
 ) -> None:
-    # OCTO-51 end to end, through the path a real turn takes: the first turn forks
+    # The lifecycle end to end, through the path a real turn takes: the first turn forks
     # and leaves work, the sweep reclaims the disk, and the next turn finds the
     # same directory with the same tree in it. What a person sees is a thread that
     # carried on; what the disk saw in between is nothing at all.

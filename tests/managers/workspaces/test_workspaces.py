@@ -1,4 +1,4 @@
-"""OCTO-47, OCTO-51, OCTO-52 — a thread's workspace is a fork of its project's
+"""A thread's workspace is a fork of its project's
 mirror, and a disposable one.
 
 Every test here runs twice, once per mechanism: the copy-on-write fork where the
@@ -805,7 +805,7 @@ async def test_a_fork_arrives_installed_however_it_was_made(
 async def test_a_thread_in_no_project_forks_an_empty_workspace(
     manager: WorkspaceManager, tmp_path: Path
 ) -> None:
-    # OCTO-50: a workspace like any other, through the same `materialize` — forked
+    # A workspace like any other, through the same `materialize` — forked
     # from the blank mirror rather than a project's, and landing on the thread's own
     # branch exactly as a project fork does. A repository, not a directory: the run
     # may write in it, and what a run does with git works because HEAD resolves.
@@ -1043,7 +1043,7 @@ async def test_the_sweep_prunes_on_its_interval(
 async def test_a_named_ref_is_where_the_workspace_starts(
     manager: WorkspaceManager,
 ) -> None:
-    # OCTO-52: the default branch is the wrong answer often enough — continuing
+    # The default branch is the wrong answer often enough — continuing
     # someone's feature branch, reproducing against a tag, working from a PR head.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     await run_git("checkout", "-b", "feat/theirs", cwd=mirror)
