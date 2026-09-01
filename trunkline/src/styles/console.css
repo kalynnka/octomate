@@ -138,6 +138,16 @@ html[data-theme='dark'] {
   background: transparent;
 }
 
+/* The rail scrolls and so does every channel inside it, so their bars land side
+   by side in a column too narrow for one. Both keep the scrolling and give up
+   the bar; the rows moving under the cursor is what says where the reader is. */
+.trk-quiet-scroll {
+  scrollbar-width: none;
+}
+.trk-quiet-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 /* ----------------------------------------------------------------------------
    Hover utilities — the comp authored these as style-hover attributes; each
    class below reproduces one recurring hover treatment.

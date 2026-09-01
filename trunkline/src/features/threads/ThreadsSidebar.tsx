@@ -306,6 +306,7 @@ export function ThreadsSidebar() {
           </span>
         </span>
         <div
+          className="trk-quiet-scroll"
           style={{
             display: sbFold ? 'none' : 'block',
             flex: 1,
@@ -423,6 +424,7 @@ export function ThreadsSidebar() {
                       a hundred threads still leaves the ones below it reachable —
                       and gives out its rows a page at a time as one scrolls it. */}
                   <div
+                    className="trk-quiet-scroll"
                     style={{ maxHeight: 300, overflowY: 'auto' }}
                     onScroll={(e) => {
                       const el = e.currentTarget
