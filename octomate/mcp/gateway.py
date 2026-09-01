@@ -34,6 +34,7 @@ from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     DIRECT_TARGET,
+    DISPEL_TOOL_NAME,
     HERE_TARGET,
     SCHEME_TOOL_NAME,
     SCRY_TOOL_NAME,
@@ -70,6 +71,7 @@ GATEWAY_SPELLS: tuple[str, ...] = (
     TELEPORT_TOOL_NAME,
     SCHEME_TOOL_NAME,
     SEND_TOOL_NAME,
+    DISPEL_TOOL_NAME,
 )
 
 # The routing contract under the tools' bare names, which is how a runtime that
@@ -384,5 +386,12 @@ def gateway_mcp(
             sender=channel.self_profile,
         )
         return notice
+
+    @mcp.tool(
+        name=DISPEL_TOOL_NAME, description=capability_contract(GatewayCapability.dispel)
+    )
+    @spoken
+    async def dispel(session: GatewaySession = current) -> str:
+        return await session.dispel()
 
     return mcp

@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import time
 import uuid
 from contextlib import suppress
@@ -703,6 +704,47 @@ async def test_a_workspace_the_mirror_already_has_is_pruned(
     # And what it held is still the thread's, waiting in the mirror.
     ref = workspaces.thread_ref(thread.id)
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
+
+
+async def test_a_dispelled_workspace_is_saved_and_then_released(
+    manager: WorkspaceManager, tmp_path: Path
+) -> None:
+    # The turn's own work goes to the mirror before the tree goes: a dispel is
+    # asked for mid-turn, before the save the turn's end would have done.
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    thread = await a_bound_thread(manager)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
+    await a_turn(workspace, {"work.md": "done"})
+
+    assert await manager.dispel(thread)
+
+    assert not workspace.exists()
+    ref = workspaces.thread_ref(thread.id)
+    assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
+
+
+async def test_a_dispel_whose_save_did_not_take_keeps_the_workspace(
+    manager: WorkspaceManager, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The sweep's rule, unbent by being asked: nothing releases work the mirror
+    # has not seen.
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    thread = await a_bound_thread(manager)
+    workspace = await manager.materialize(a_workspace(manager, thread.id), mirror)
+    await a_turn(workspace, {"unsaved.md": "never pushed"})
+    shutil.rmtree(mirror)
+
+    with caplog.at_level(logging.WARNING):
+        assert not await manager.dispel(thread)
+
+    assert (workspace / "unsaved.md").exists()
+    assert "does not have" in caplog.text
+
+
+async def test_dispelling_a_thread_with_no_workspace_is_no_work(
+    manager: WorkspaceManager,
+) -> None:
+    assert not await manager.dispel(await a_bound_thread(manager))
 
 
 async def test_a_workspace_in_use_is_left_alone(

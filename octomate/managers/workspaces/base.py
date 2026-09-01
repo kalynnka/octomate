@@ -256,7 +256,8 @@ class WorkspaceManager:
 
     The whole lifecycle is here. A turn asks `open` for the workspace its thread
     runs in and enters it, which is what forks the tree and what ends it; the turn
-    itself owes one more thing, `save`, which the graph does after the run. Those
+    itself owes one more thing, `save`, which the graph does after the run — or
+    `dispel`, once the agent has said the thread's work is done. Those
     need the registry to say which project a thread is in and the mirrors to say
     where that project's is, which is why this holds both — which fork a thread gets
     is exactly what the registry says about it, so knowing what binds one is not a
@@ -815,6 +816,34 @@ class WorkspaceManager:
                 await self.prune(self.config.idle_window)
             except Exception:
                 logger.exception("the workspace sweep failed")
+
+    async def dispel(self, thread: Thread) -> bool:
+        """Release this thread's workspace on its agent's word that the work in it
+        is done — the one release that is asked for rather than swept up — and
+        answer whether it went.
+
+        Saved first, and released only when the save took: the sweep's rule, that
+        a workspace holding work the mirror has not seen is never thrown away,
+        does not bend for being asked. So what this costs is what a prune costs,
+        a fork on the thread's next turn with the ref laid back over it.
+        """
+        with workspace_logfire.span(
+            "workspace.dispel", thread_id=str(thread.id), released=False
+        ) as span:
+            await self.save(thread)
+            path = self.path(thread.id)
+            if not path.is_dir():
+                return False
+            if not await self.saved(path):
+                logger.warning(
+                    "the workspace for thread %s was dispelled but holds work the "
+                    "mirror does not have; keeping it",
+                    thread.id,
+                )
+                return False
+            await self.release(thread.id)
+            span.set_attribute("released", True)
+            return True
 
     async def release(self, thread_id: uuid.UUID) -> None:
         """Give this thread's workspace back to the disk, or nothing when it is

@@ -28,6 +28,8 @@ from octomate.managers.gateway import GatewayManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
+from octomate.managers.workspaces.base import thread_ref
+from octomate.managers.workspaces.mirrors import run_git
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
@@ -1964,6 +1966,64 @@ async def test_send_falls_back_to_here_when_the_platform_will_not_open() -> None
 
     assert im.opened_dms == ["alice"]
     assert all(chat_id == "team" for chat_id, *_ in im.sent)
+
+
+async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
+    in_memory_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    # Cast mid-run and performed after it: the turn's work reaches the mirror,
+    # then the tree goes, and the thread is left where a later turn resumes it.
+    root = tmp_path / "inky"
+    root.mkdir()
+    (root / "readme.md").write_text("hello")
+    workspaces = WorkspaceManager(
+        projects=await a_registry(a_project(root)),
+        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
+        workspaces_dir=tmp_path / "workspaces",
+    )
+    project = workspaces.projects.get("inky")
+    assert project is not None
+    threads = ThreadManager(users=UserManager())
+    address = ChannelAddress(
+        channel_tentacle_id="im",
+        chat_type="thread",
+        chat_id="c",
+        channel_thread_id="t1",
+        user_id="alice",
+    )
+    thread = await threads.ensure(address, project=project)
+    async with workspaces.open(thread.id, project) as workspace:
+        (workspace.path / "work.md").write_text("done")
+    agent = FakeAgent(
+        id="other",
+        reception_dispel=True,
+        reception_output="all done",
+        allow_reception_run=True,
+    )
+    im = _channel(stream=False)
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": im},
+        agent=agent,
+        workspaces=workspaces,
+    )
+    deps.thread_manager = threads
+    target = _source_target(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=deps,
+    )
+
+    assert not isinstance(result, DeferredResult)
+    assert workspaces.existing(thread.id) is None
+    mirror = workspaces.mirrors.path(project)
+    assert await run_git("show", f"{thread_ref(thread.id)}:work.md", cwd=mirror) == (
+        "done"
+    )
 
 
 async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(

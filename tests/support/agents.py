@@ -65,6 +65,7 @@ from octomate.config.agents import (
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.triage import (
     DIRECT_TARGET,
+    DISPEL_TOOL_NAME,
     HERE_TARGET,
     SCHEME_TOOL_NAME,
     SUMMON_TOOL_NAME,
@@ -238,6 +239,9 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # its turn as the same deferral, the way that runtime's tentacle does once
     # interrupted on it; the resumed run gets `reception_output`.
     reception_recorded_teleport: str | None = None
+    # When set, the reception run casts `dispel` through the mounted gateway, the
+    # way a model does mid-run, and carries on to `reception_output`.
+    reception_dispel: bool = False
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
     allow_reception_run: bool = False
     models: dict[AgentRouteModelName, Model | str] = field(
@@ -341,6 +345,10 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             )
         else:
             output = self.reception_output
+        if self.reception_dispel:
+            await _gate_tool(capabilities, DISPEL_TOOL_NAME)(
+                cast(RunContext[None], None)
+            )
         scheme_decision = self.reception_scheme
         if scheme_decision is not None:
             # Cast once, like a model would: the receiving run in the DM must not

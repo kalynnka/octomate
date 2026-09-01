@@ -228,12 +228,22 @@ says what they want worked on, a `teleport` with the project binds it, and the
 resumed run starts in
 the project's code, in a workspace whose work is kept.
 
-**Every driven runtime can call it.** `teleport` with a `project`, and the
-`projects` facet of `scry`, are gateway spells: Inkling mounts them as a capability, a driven
+**The agent may also give the workspace back.** A project thread's tree is kept
+between turns and swept only once it has sat idle, so a thread whose work is
+finished — merged, delivered, dropped — holds disk it has no claim on. `dispel`
+is the agent saying so: the gateway records it, and when the turn ends the graph
+saves the turn as always and then releases the tree, under the sweep's own rule
+that a workspace holding work the mirror has not seen is kept. Nothing is lost —
+a later message on the thread forks it afresh and lays the ref back over it —
+and nothing is pulled out from under a run still in it, which is why the release
+waits for the turn rather than happening in the call.
+
+**Every driven runtime can call it.** `teleport` with a `project`, `dispel`, and
+the `projects` facet of `scry` are gateway spells: Inkling mounts them as a capability, a driven
 Claude turn as its in-process MCP server, a driven Codex turn over the served
-`/gateway/mcp`. A native session may scry the projects but not teleport — its work
-is wherever its terminal is, and there is no tree to fork for it (a native
-teleport, still to come, is the door for that). dsh mounts no gateway on a driven
+`/gateway/mcp`. A native session may scry the projects but neither teleport nor
+dispel — its work is wherever its terminal is, and there is no tree to fork for
+it (a native teleport, still to come, is the door for that). dsh mounts no gateway on a driven
 turn, so a chat thread
 there still has a workspace it may write to, whose work is thrown away, and no
 way to say what it is about: `dsh web` is one daemon serving every thread, with
@@ -330,6 +340,8 @@ disk decision rather than a data-loss decision.
   lost work, so the heuristic does not need to be good. A thread with a pending
   `DeferredAction` is known to be alive and is a reasonable last choice to evict,
   but that only orders eviction — it never blocks it.
+- **Dispelling** is the same release on the agent's word instead of the timer:
+  saved first, and kept if the save did not take.
 - The chat workspace is never pruned. It is empty.
 
 ## Mirror sync

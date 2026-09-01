@@ -119,14 +119,18 @@ class GatewaySession:
     # here or sub-thread to land on, every destination is a crossing, and a summon
     # or scheme is kicked as its own turn instead of being read after this one.
     native: bool = False
-    # What `bind` and the `projects` facet work with: the ledger a binding is written
-    # to, and the registry and forks. Both None on a gateway built only to route.
+    # What the project spells work with — a `teleport` that binds, `dispel`, the
+    # `projects` facet: the ledger a binding is written to and read from, and the
+    # registry and forks. Both None on a gateway built only to route.
     threads: ThreadManager | None = None
     workspaces: WorkspaceManager | None = None
     # Whether the mounted gateway offers the accomplice spells; `no_landing` names
     # `commission` as the fallback only when it is actually on offer.
     commissioning: bool = field(default=False, init=False)
     decision: GatewayDecision | None = field(default=None, init=False)
+    # Whether `dispel` was cast: the thread's workspace goes when the turn ends,
+    # the graph's doing once the run is out of it.
+    dispelling: bool = field(default=False, init=False)
     # Every route on this run's own channel but the current agent's own — the info
     # shared with the agent to decide where to go, and what a spell landing here
     # validates a chosen route against. A crossing validates against its own.
@@ -660,6 +664,42 @@ class GatewaySession:
         )
         self.decision = decision
         return decision
+
+    async def dispel(self) -> str:
+        """Record that this thread's workspace may go: its agent has said the work
+        in it is done. Validated here, where a refusal reaches the model; the
+        release is the graph's, once the turn ends and its work is saved, so no
+        tree is pulled out from under a run still in it.
+
+        No registered user is needed, unlike a binding: what a release costs is a
+        fork on the next turn, never work. A thread about no project has nothing
+        to release — its tree goes with the turn — and a native session runs in a
+        directory of its own that Octomate never forked."""
+        if self.native:
+            raise GatewayRefusal(
+                "This session lives in your terminal, in a directory of its own — "
+                "Octomate forked nothing for it, and has nothing to release."
+            )
+        if self.thread_id is None or self.threads is None:
+            raise RuntimeError(
+                "a dispel needs the thread this turn is in, and the ledger it is "
+                "read from"
+            )
+        thread = await self.threads.get(self.thread_id)
+        if thread is None:
+            raise RuntimeError(f"thread {self.thread_id} vanished")
+        if await thread.project is None:
+            raise GatewayRefusal(
+                "This thread is about no project, and its tree is thrown away when "
+                "this turn ends — there is nothing to release."
+            )
+        self.dispelling = True
+        return (
+            "Releasing this thread's workspace when this turn ends, once its work is "
+            "saved to the project's mirror. Nothing is lost — a later message here "
+            "forks it afresh from there — but finish up now: your working directory "
+            "goes with it."
+        )
 
     async def scheme(
         self,

@@ -384,6 +384,18 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     reply_thread_message_ids,
                     run_id=run_result.run_id,
                 )
+            if (
+                gateway_session is not None
+                and gateway_session.dispelling
+                and state.thread is not None
+            ):
+                # The agent said this thread's work is done: its tree goes now
+                # that the run is out of it, saved first and kept if that failed.
+                result = await ctx.deps.workspaces.dispel(state.thread)
+                span.set_attribute(
+                    "react.dispelled",
+                    result,
+                )
             if isinstance(output, DeferredToolRequests):
                 # `teleport` is resolved by the graph (fork + resume), not a human. The
                 # suspender classified it by its declared metadata kind and stashed it,

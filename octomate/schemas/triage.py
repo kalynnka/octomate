@@ -29,6 +29,7 @@ SCRY_TOOL_NAME = "scry"
 SUMMON_TOOL_NAME = "summon"
 TELEPORT_TOOL_NAME = "teleport"
 SCHEME_TOOL_NAME = "scheme"
+DISPEL_TOOL_NAME = "dispel"
 COMMISSION_TOOL_NAME = "commission"
 WHISPER_TOOL_NAME = "whisper"
 # What one `scry` reveals. One facet per call, because each spell needs exactly one —
