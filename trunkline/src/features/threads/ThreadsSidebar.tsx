@@ -3,6 +3,7 @@
  * the channel/thread tree, and the index footer. Ported from the comp's
  * "SIDEBAR: THREADS × CHANNELS" aside.
  */
+import { useState } from 'react'
 import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
 import { TriStripe } from '@/components/TriStripe'
@@ -13,6 +14,9 @@ import { channelMeta } from '@/lib/api/live'
 import type { ThreadTone } from '@/lib/api/types'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { useConsole } from '@/state/console'
+
+// How many of a channel's threads are rendered before the rail asks for more.
+const THREAD_PAGE = 12
 
 const toneColor: Record<ThreadTone, string> = {
   active: 'var(--color-accent)',
@@ -65,6 +69,19 @@ export function ThreadsSidebar() {
     toggleControl,
   } = useConsole((s) => s.actions)
   const dragStart = useRailDrag('sb', 'trk-sb-panel', 170, 420)
+  // Per channel, how many rows are on show. Local because it is a property of
+  // this rail's scrolling and nothing else reads it.
+  const [shown, setShown] = useState<Record<string, number>>({})
+  // Scrolling to the end of a channel asks for its next page, and so does the
+  // row that says how many are left — a page short enough not to overflow its
+  // own box would otherwise have no way to ask.
+  const reveal = (channelId: string, total: number) =>
+    setShown((seen) => {
+      const at = seen[channelId] ?? THREAD_PAGE
+      // The same object when there is nothing to add: a new one re-renders, and
+      // re-rendering fires the scroll handler again.
+      return at >= total ? seen : { ...seen, [channelId]: at + THREAD_PAGE }
+    })
 
   const orderedCh = [...channels].sort((a, b) => {
     const pa = chPins.indexOf(a.id)
@@ -403,9 +420,17 @@ export function ThreadsSidebar() {
                     </span>
                   )}
                   {/* Each channel scrolls under its own header, so a channel with
-                      a hundred threads still leaves the ones below it reachable. */}
-                  <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-                  {rows.map((t) => (
+                      a hundred threads still leaves the ones below it reachable —
+                      and gives out its rows a page at a time as one scrolls it. */}
+                  <div
+                    style={{ maxHeight: 300, overflowY: 'auto' }}
+                    onScroll={(e) => {
+                      const el = e.currentTarget
+                      if (el.scrollHeight - el.scrollTop - el.clientHeight > 40) return
+                      reveal(c.id, rows.length)
+                    }}
+                  >
+                  {rows.slice(0, shown[c.id] ?? THREAD_PAGE).map((t) => (
                     <div
                       key={t.id}
                       onClick={t.pick}
@@ -469,6 +494,15 @@ export function ThreadsSidebar() {
                       </div>
                     </div>
                   ))}
+                  {rows.length > (shown[c.id] ?? THREAD_PAGE) && (
+                    <div
+                      onClick={() => reveal(c.id, rows.length)}
+                      className="hov-wash"
+                      style={{ padding: '6px 14px 8px 30px', ...label(7.5, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}
+                    >
+                      ↓ {rows.length - (shown[c.id] ?? THREAD_PAGE)} more
+                    </div>
+                  )}
                   </div>
                 </Fold>
               </div>
