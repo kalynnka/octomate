@@ -45,6 +45,23 @@ class BindRefusal(ValueError):
     still, so nothing that never told the two apart changes."""
 
 
+# What a listing can show of an opening line before it stops reading as a name.
+TITLE_MAX = 72
+
+
+def thread_title(text: str | None) -> str | None:
+    """A name for a thread, out of one line of what was said in it.
+
+    Whitespace is folded because a directive arrives with its own newlines and a
+    listing has one line to give it. A message with nothing in it names nothing,
+    and the row goes on falling back to its surface.
+    """
+    line = " ".join((text or "").split())
+    if not line:
+        return None
+    return line if len(line) <= TITLE_MAX else f"{line[:TITLE_MAX].rstrip()}…"
+
+
 class ThreadManager:
     """Owns durable thread chat ledger persistence.
 
@@ -116,6 +133,27 @@ class ThreadManager:
             await thread.project
             await session.commit()
 
+        self.cache_thread(thread)
+        return thread
+
+    async def rename(self, thread: Thread, title: str) -> Thread:
+        """Give the thread the name the runtime running it grabbed for itself.
+
+        Unlike the opening line `store_message` falls back to, this is a name for
+        the work rather than for how it was asked for, so it overwrites — and goes
+        on overwriting, because the runtime revises it as the session goes on. A
+        name with nothing in it is not one, and leaves the thread as it was.
+        """
+        named = thread_title(title)
+        if named is None or thread.title == named:
+            return thread
+        async with async_session() as session:
+            stored = await session.get(Thread, thread.id)
+            if stored is None:
+                raise ValueError(f"unknown thread {thread.id}")
+            stored.title = named
+            await session.commit()
+        thread.title = named
         self.cache_thread(thread)
         return thread
 
@@ -233,9 +271,28 @@ class ThreadManager:
             self.threads.popitem(last=False)
 
     async def store_message(self, message: ThreadMessage, thread: Thread) -> None:
-        """Persist a ledger row and re-sync the cached thread from the database."""
+        """Persist a ledger row and re-sync the cached thread from the database.
+
+        The row is touched, not only appended to. `updated_at` fires on an update
+        of the thread and writing to its ledger is not one, so a session being
+        tailed right now would keep the timestamp it was created with and sink, in
+        a listing ordered by it, under threads nothing has ever said a word in.
+
+        A thread nobody has named takes its name from this row when a person wrote
+        it. The listing carries no messages, so the first thing said is the only
+        name a row has until a runtime grabs one of its own (`rename`).
+        """
         async with async_session() as session:
             session.add(message)
+            row = await session.get(Thread, thread.id)
+            if row is not None:
+                row.updated_at = datetime.now(UTC)
+                if (
+                    row.title is None
+                    and message.direction == "inbound"
+                    and message.actor_kind == "human"
+                ):
+                    row.title = thread_title(message.message_text)
             await session.commit()
             reloaded = await session.get(Thread, thread.id)
             if reloaded is not None:

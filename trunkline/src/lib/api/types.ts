@@ -46,6 +46,8 @@ export type SessionTone = 'accent' | 'gold' | 'sage' | 'teal' | 'ghost'
 export interface SessionInfo {
   n: string
   id: string
+  /** the runtime's own name for this session; absent for one that names none */
+  name?: string
   /** the conversation row this session is — what a posture switch is written to */
   conversationId: string
   route: string
@@ -159,7 +161,9 @@ export type LedgerItem =
       uid: string
       title: string
       desc: string
-      /** e.g. "gh.create_issue · scope repo · approval resumes RUN_0521" */
+      /** the tool the approval is for — "Edit", "Bash" */
+      tool: string
+      /** e.g. "Edit · approval resumes the run" */
       meta: string
       state: 'waiting' | 'approved' | 'dismissed'
       resolvedT?: string
@@ -173,7 +177,9 @@ export type LedgerItem =
       title: string
       body: string
       options: AskOption[]
-      /** e.g. "relay.ask · scope thread · answer resumes RUN_0521" */
+      /** the tool that asked */
+      tool: string
+      /** e.g. "ask_human · answer resumes the run" */
       meta: string
       state: 'waiting' | 'answered'
       answer?: string
@@ -314,9 +320,19 @@ export interface ThreadDetail {
   artifacts?: ArtifactRef[]
   docs?: Record<string, ReviewDoc>
   comments?: ReviewComment[]
-  /** context meter baseline, in kilotokens of 200k */
+  /** what this thread has cost, summed over every response its runs recorded */
+  usage: ThreadUsage
+  /** the context the last turn ran with, in kilotokens; 0 when none reported one */
   ctxK: number
-  usage: { chip: string; tok: string }
+}
+
+export interface ThreadUsage {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  /** share of the read tokens that came from cache, 0–1; null when nothing was read */
+  cacheRate: number | null
 }
 
 /* ---------------------------------------------------------------------------

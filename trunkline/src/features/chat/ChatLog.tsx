@@ -41,6 +41,7 @@ export function ChatLog() {
           flex: 1,
           minHeight: 0,
           overflowY: 'auto',
+          overflowX: 'hidden',
         } as CSSProperties
       }
     >

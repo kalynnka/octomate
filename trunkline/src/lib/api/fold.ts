@@ -39,6 +39,7 @@ export function batchFeelers(
         sum: choice,
         desc: '',
       })),
+      tool: q.tool_name,
       meta: `${q.tool_name} · answer resumes the run`,
       state: 'waiting',
       batchId,
@@ -50,6 +51,7 @@ export function batchFeelers(
       kind: 'approval',
       title: a.args.title || 'Permission required',
       desc: a.args.description || JSON.stringify(a.args.args ?? {}),
+      tool: a.args.tool_name,
       meta: `${a.args.tool_name} · approval resumes the run`,
       state: 'waiting',
       batchId,
@@ -225,6 +227,9 @@ export function replayRun(
       switch (part.part_kind) {
         case 'thinking':
           // No duration survives the row, and a made-up one would be a claim.
+          // `content` is routinely empty: a Claude transcript signs each thinking
+          // block and writes no text with it, so a replayed one has nothing to
+          // show and the card says so rather than opening on a blank quote.
           push({ kind: 'think', dur: '', text: part.content, thinking: false })
           break
         case 'tool-call':

@@ -140,6 +140,18 @@ class Thread(Base, TransmuterProxiedMixin):
         ),
     )
 
+    title: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment=(
+            "What this thread goes by in a listing. Taken from the first thing a "
+            "person said in it, and replaced by a name the runtime grabbed for "
+            "itself — a Claude session's own ai-title, which is about the work "
+            "rather than about its opening line. NULL until the thread has been "
+            "spoken in, and a listing then falls back to the surface."
+        ),
+    )
+
     project_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,
         ForeignKey("projects.id", ondelete="SET NULL"),

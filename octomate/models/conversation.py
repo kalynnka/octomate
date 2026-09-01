@@ -74,7 +74,16 @@ class Conversation(Base, TransmuterProxiedMixin):
         ),
     )
 
-    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    name: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment=(
+            "What this session goes by, as the runtime running it named it — a "
+            "Claude session's own ai-title, revised as the session goes on. NULL "
+            "for a runtime that names nothing of its own, which is every driven "
+            "session, and a reader then falls back to the thread's name."
+        ),
+    )
     status: Mapped[str] = mapped_column(String, nullable=False, default="active")
     permission_mode: Mapped[AgentPermissionMode | None] = mapped_column(
         String,

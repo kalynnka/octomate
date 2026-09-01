@@ -173,6 +173,15 @@ class Thread(BaseTransmuter):
         default=None,
         description=("The platform's own thread id; None unless `kind` is `thread`."),
     )
+    title: str | None = Field(
+        default=None,
+        description=(
+            "What this thread goes by in a listing. Taken from the first thing a "
+            "person said in it, and replaced by a name the runtime grabbed for "
+            "itself — a Claude session's own ai-title. None until the thread has "
+            "been spoken in, and a listing then falls back to the surface."
+        ),
+    )
     project_id: uuid.UUID | None = Field(
         default=None,
         description=(
