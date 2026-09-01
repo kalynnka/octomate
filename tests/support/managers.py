@@ -106,7 +106,7 @@ class FakeConversation:
     subagent_id: str = ""
     parent_conversation_id: uuid.UUID | None = None
     agent_tentacle_id: str = ""
-    runs: list[str] = field(default_factory=list)
+    runs: list[AgentRun] = field(default_factory=list)
     permission_mode: AgentPermissionMode | None = None
     allowed_tools: list[str] = field(default_factory=list)
 
@@ -186,7 +186,9 @@ class FakeConversationManager(ConversationManager):
     ) -> AgentRun | None:
         fake = cast(FakeConversation, conversation)
         self.runs.append((fake, f"{name}:{run_id}", list(messages)))
-        fake.runs.append(run_id)
+        fake.runs.append(
+            AgentRun(id=run_id, conversation_id=fake.id, name=name, cwd=cwd)
+        )
         fake.messages.extend(messages)
         if external_id is not None:
             fake.external_id = external_id

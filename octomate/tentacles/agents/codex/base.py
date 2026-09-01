@@ -78,7 +78,7 @@ from octomate.schemas.conversation import (
 from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
-from octomate.schemas.triage import BindDecision
+from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
@@ -300,9 +300,9 @@ class CodexTentacle(AgentTentacle[str, None]):
     app-server process), created on first use and reused across the thread's turns;
     the tentacle itself only owns the pool. The notification stream is translated
     into the same pydantic-ai event and message projections that channel feelers
-    already render for other agents. A `bind` cast over the served gateway ends
-    the turn as the deferral the graph resumes in the project's workspace, and a
-    resumed run opens from what the graph resolved that deferral with.
+    already render for other agents. A `teleport` cast over the served gateway
+    interrupts the turn, which ends as the deferral the graph performs and resumes
+    the agent from, and a resumed run opens from what the graph resolved it with.
     """
 
     config: CodexConfig = field(init=False)
@@ -1179,12 +1179,14 @@ class CodexTentacle(AgentTentacle[str, None]):
                                     if (
                                         not interrupted
                                         and session is not None
-                                        and isinstance(session.decision, BindDecision)
+                                        and isinstance(
+                                            session.decision, TeleportDecision
+                                        )
                                     ):
-                                        # Bound mid-run: from here the process works
-                                        # in a tree that is thrown away, so the turn
-                                        # ends now — as the deferral the graph resumes
-                                        # in the project's workspace, below.
+                                        # Moving mid-run: the move is the graph's to
+                                        # perform, and this process is still where
+                                        # it was, so the turn ends now — as the
+                                        # deferral the graph performs and resumes from.
                                         interrupted = True
                                         await turn.interrupt()
                             finally:
@@ -1237,13 +1239,13 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
         if accumulator.turn_status == TurnStatus.failed:
             raise AgentRunError(accumulator.turn_error or "Codex turn failed")
-        bound = session.decision if session is not None else None
-        if isinstance(bound, BindDecision):
+        moving = session.decision if session is not None else None
+        if isinstance(moving, TeleportDecision):
             if deferred_suspender is None:
                 raise RuntimeError(
-                    "a bind mid-run needs a suspender to resume the turn through"
+                    "a teleport mid-run needs a suspender to end the turn through"
                 )
-            requests = bound.deferral(str(uuid7()))
+            requests = moving.deferral(str(uuid7()))
             await deferred_suspender.suspend(requests)
             # The deferral rides the str-typed stream as a structured result does.
             yield AgentRunResultEvent(

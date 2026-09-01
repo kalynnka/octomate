@@ -440,10 +440,10 @@ async def test_teleport_refused_where_no_sub_thread_can_be_opened(
 
 def test_each_spell_declares_only_the_places_it_goes() -> None:
     """The schema is the refusal for a place a spell never goes, so the body never
-    has to be. `here` is where a summon hands over and a send delivers, but a
-    teleport that stayed put would just be the agent carrying on; `dm` is what a
-    scheme means, and a summon into someone's direct messages is a scheme by
-    another name."""
+    has to be. `here` is where a summon hands over and a send delivers, and where
+    a teleport stays put only to bind a project — the body refuses it without one;
+    `dm` is what a scheme means, and a summon into someone's direct messages is a
+    scheme by another name."""
     capability = _capability()
     assert capability.toolset is not None
 
@@ -452,7 +452,11 @@ def test_each_spell_declares_only_the_places_it_goes() -> None:
         "here",
         "thread",
     ]
-    assert _destination_kinds(capability, TELEPORT_TOOL_NAME) == ["channel", "thread"]
+    assert _destination_kinds(capability, TELEPORT_TOOL_NAME) == [
+        "channel",
+        "here",
+        "thread",
+    ]
     assert _destination_kinds(capability, SCHEME_TOOL_NAME) == ["channel", "dm"]
     assert _destination_kinds(capability, SEND_TOOL_NAME) == ["channel", "dm", "here"]
 
@@ -696,6 +700,9 @@ async def test_teleport_defers_a_crossing_with_the_far_account_named(
         "hint": "carrying on",
         "channel": "far",
         "user": "ou_alice",
+        "here": False,
+        "project": "",
+        "ref": "",
     }
 
 

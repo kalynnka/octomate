@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar, Literal, cast
 
@@ -36,7 +37,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import GatewaySession
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import BindDecision, SummonDecision
+from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
@@ -610,9 +611,9 @@ async def test_without_the_gateway_no_server_and_no_instruction(
 
 
 class BindingClaudeClient(FakeClaudeClient):
-    """A client whose run casts `bind` — the session records the decision the way
-    the in-process tool does — and whose stream then waits to be interrupted, as
-    the real CLI does."""
+    """A client whose run casts `teleport` into a project — the session records
+    the decision the way the in-process tool does — and whose stream then waits to
+    be interrupted, as the real CLI does."""
 
     session: ClassVar[GatewaySession | None] = None
     instances: ClassVar[list[BindingClaudeClient]] = []
@@ -632,13 +633,21 @@ class BindingClaudeClient(FakeClaudeClient):
             content=[
                 TextBlock(text="binding"),
                 ToolUseBlock(
-                    id="t1", name="mcp__gateway__bind", input={"project": "inky"}
+                    id="t1",
+                    name="mcp__gateway__teleport",
+                    input={
+                        "hint": "into inky",
+                        "destination": {"kind": "here"},
+                        "project": "inky",
+                    },
                 ),
             ],
             model="m",
         )
         assert BindingClaudeClient.session is not None
-        BindingClaudeClient.session.decision = BindDecision(project="inky")
+        BindingClaudeClient.session.decision = TeleportDecision(
+            hint="into inky", here=True, project="inky"
+        )
         yield UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="bound")])
         await self.released.wait()
         yield ResultMessage(
@@ -652,7 +661,7 @@ class BindingClaudeClient(FakeClaudeClient):
         )
 
 
-async def test_a_bind_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
+async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", BindingClaudeClient)
@@ -681,8 +690,10 @@ async def test_a_bind_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
     output = events[-1].result.output
     assert isinstance(output, DeferredToolRequests)
     [call] = output.calls
-    assert call.tool_name == "bind"
-    assert output.metadata[call.tool_call_id] == {"kind": "bind", "project": "inky"}
+    assert call.tool_name == "teleport"
+    assert output.metadata[call.tool_call_id]["kind"] == "teleport"
+    assert output.metadata[call.tool_call_id]["project"] == "inky"
+    assert output.metadata[call.tool_call_id]["here"] is True
     # Suspended through the one entry the graph resumes from, and recorded as far
     # as it got.
     assert suspender.suspended == [output]
@@ -728,3 +739,29 @@ def test_a_resumed_prompt_speaks_answers_and_verdicts() -> None:
     assert prompt == (
         "yes, the second one\nand merge it\n\nDenied: not that directory\n\nApproved."
     )
+
+
+async def test_relocating_a_conversation_moves_its_session_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Claude resumes a session only from the cwd it ran in. The graph says when
+    # (a teleport landed somewhere else); this is how — by session id, since a
+    # moved teleport forks the conversation and the directory it came from is not
+    # on record. Nothing to move before a session exists.
+    relocated: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        claude_base,
+        "relocate_session",
+        lambda session_id, *, cwd: relocated.append((session_id, cwd)),
+    )
+    tentacle = _tentacle(FakeConversationManager())
+
+    await tentacle.relocate(
+        cast(claude_base.Conversation, FakeConversation(external_id="prev-sess")),
+        cwd=Path("/workspaces/t1"),
+    )
+    await tentacle.relocate(
+        cast(claude_base.Conversation, FakeConversation()), cwd=Path("/workspaces/t1")
+    )
+
+    assert relocated == [("prev-sess", Path("/workspaces/t1"))]

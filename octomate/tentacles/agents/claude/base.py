@@ -86,7 +86,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
-from octomate.schemas.triage import BindDecision
+from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
@@ -98,6 +98,7 @@ from octomate.tentacles.agents.claude.gateway import (
 from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
 from octomate.tentacles.agents.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
+from octomate.tentacles.agents.claude.transcript import relocate_session
 from octomate.tentacles.agents.hooks import hook_guard, hook_sender
 from octomate.tentacles.agents.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -121,9 +122,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     context across turns. Output is the run's final text (`str`); pydantic-ai
     run options that don't map onto Claude (custom output_type, toolsets,
     capabilities, ...) are ignored — except a `GatewayCapability`, which mounts
-    the gateway as the turn's in-process MCP server. A `bind` cast through it
-    ends the turn as the deferral the graph resumes in the project's workspace,
-    and a resumed run opens from what the graph resolved that deferral with.
+    the gateway as the turn's in-process MCP server. A `teleport` cast through
+    it interrupts the turn, which ends as the deferral the graph performs and
+    resumes the agent from — in a sub-thread, a crossing, or a project's
+    workspace — and a resumed run opens from what the graph resolved it with.
     """
 
     config: ClaudeCodeConfig = field(init=False)
@@ -269,8 +271,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         if hello.session_id in self.session_ingest.driven:
             # A live claim only — the counter is in-memory, so a session resumed
             # natively after a restart is not caught; its ingest then lands in its
-            # own native thread rather than colliding with the driven runs. The
-            # durable guard is OCTO-40.
+            # own native thread rather than colliding with the driven runs. A
+            # durable guard is still to come.
             await websocket.close(code=1008, reason="octomate drives this session")
             return
         # Its own materia context: a stream outlives any request, like a follow loop.
@@ -376,6 +378,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     await websocket.close()
             else:
                 self.session_tailer.detach_remote(state)
+
+    async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
+        """Claude files a session under the cwd it ran in and resumes it only from
+        there, so the transcript goes where the next run will look for it. A
+        conversation with no session yet has nothing to move."""
+        if conversation.external_id is None:
+            return
+        relocate_session(conversation.external_id, cwd=cwd)
 
     async def _await_human(
         self,
@@ -720,6 +730,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # Native Claude clients hide sdk-py transcripts from history. Tag these
             # user-routed sessions like CLI runs so they stay visible there too.
             env={"CLAUDE_CODE_ENTRYPOINT": "cli"},
+            # The CLI's stderr is the only place it says why it exited: the SDK's
+            # `ProcessError` carries the exit code and "check stderr", nothing else.
+            stderr=lambda line: logger.warning(
+                "session %s: claude stderr: %s", session_id, line.rstrip()
+            ),
         )
         if isinstance(user_prompt, str):
             prompt_text = user_prompt
@@ -782,11 +797,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     if (
                         not interrupted
                         and gateway_session is not None
-                        and isinstance(gateway_session.decision, BindDecision)
+                        and isinstance(gateway_session.decision, TeleportDecision)
                     ):
-                        # Bound mid-run: from here the process works in a tree that
-                        # is thrown away, so the turn ends now — as the deferral the
-                        # graph resumes in the project's workspace, below.
+                        # Moving mid-run: the move is the graph's to perform, and
+                        # this process is still where it was, so the turn ends now
+                        # — as the deferral the graph performs and resumes from.
                         interrupted = True
                         await client.interrupt()
             run_id = str(uuid7())
@@ -829,13 +844,13 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     source_thread,
                     source_message_ids[-1],
                 )
-            bound = gateway_session.decision if gateway_session is not None else None
-            if isinstance(bound, BindDecision):
+            moving = gateway_session.decision if gateway_session is not None else None
+            if isinstance(moving, TeleportDecision):
                 if deferred_suspender is None:
                     raise RuntimeError(
-                        "a bind mid-run needs a suspender to resume the turn through"
+                        "a teleport mid-run needs a suspender to end the turn through"
                     )
-                requests = bound.deferral(str(uuid7()))
+                requests = moving.deferral(str(uuid7()))
                 await deferred_suspender.suspend(requests)
                 # The deferral rides the str-typed stream as a structured result does.
                 yield AgentRunResultEvent(

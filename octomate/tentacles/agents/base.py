@@ -5,6 +5,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from functools import cached_property
+from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, ClassVar, TypeAlias, TypeVar, overload
 
@@ -34,7 +35,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from octomate.capabilities.harness.react import ReactEventStream
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
@@ -134,6 +135,18 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             else:
                 spoken.append("Approved." if verdict else "Denied.")
         return "\n\n".join(spoken)
+
+    async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
+        """Relocate the runtime session behind `conversation` to `cwd`, where its next
+        run resumes. The graph's call, made once a teleport has settled where the
+        agent lands; the tentacle only knows how to move one.
+
+        Nothing to move for a runtime that resumes a session from anywhere. Claude
+        files one under the directory it ran in, and every teleport changes that
+        directory — a new thread's workspace, or the project's — so a driven Claude
+        session needs this on each. A native session's transcript is on its own
+        machine, so a native teleport has nothing here to move: bringing it over is
+        a rebuild from the ledger, still to come, and this is where it lands."""
 
     async def run_project(self, thread_id: uuid.UUID) -> Project | None:
         """The project a run in this thread is in, or None when it is in none.

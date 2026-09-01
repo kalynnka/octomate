@@ -7,7 +7,9 @@ opaque on its own, so the instruction opens with plain words for what they actua
 - `summon`: hand the conversation to another agent (a handoff — they take over from a
   brief). The graph reads the recorded decision after the run.
 - `teleport`: continue the same agent in a new place (a sub-thread), carrying the
-  history forward. Deferred, so the graph can fork the history and resume.
+  history forward. Deferred, so the graph can fork the history and resume. With a
+  `project`, the place is that project's workspace — the door out of a throwaway
+  tree into one whose work is kept — and `here` stays in this thread to bind it.
 - `commission`: draw another agent into working a self-contained task in the background
   and return its report — an ordinary awaited tool call, never a deferral; the caller
   keeps the conversation and the user sees none of it.
@@ -16,9 +18,6 @@ opaque on its own, so the instruction opens with plain words for what they actua
   asking user's direct messages. It lives here rather than in its own capability
   because naming somewhere other than "here" is a routing decision, and this is
   where the channel registry and the run's own address already are.
-- `bind`: say which project this thread is about — the door out of a throwaway
-  workspace into one whose work is kept. Where a thread's work happens is as much
-  the gateway's question as who does it, and it rides the same identity.
 
 The policy itself — what each spell may name, and the decision it records — lives on
 `octomate.managers.gateway.GatewaySession`; this capability is Inkling's translation
@@ -53,8 +52,6 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
-    BIND_DEFER_KIND,
-    BIND_TOOL_NAME,
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
     GATEWAY_TOOLSET_ID,
@@ -62,7 +59,6 @@ from octomate.schemas.triage import (
     SCHEME_TOOL_NAME,
     SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
-    TELEPORT_DEFER_KIND,
     TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     WHISPER_TOOL_NAME,
@@ -132,6 +128,13 @@ id from `{scry}` (`reveal="destinations"`) to carry it into their direct message
 there — offered only from a conversation nobody else can read, since everything said
 here travels with you.
 
+To work on a project, add `project` (from `{scry}` with `reveal="projects"`), and
+`ref` — a branch, tag or commit — only when the default branch is the wrong place to
+start: the thread you land in is bound to it and you resume in its workspace, where
+work is kept. A thread about no project runs in a throwaway tree, so do this before
+you start work, not after. From inside a thread, `destination="here"` binds this
+one; a thread binds once, and a different project is a different thread.
+
 ### `{scheme}` — take it to the user privately
 Continue one-to-one with the person who asked, in their direct messages: for work that
 is theirs alone, or that does not belong in front of the group. Whoever already handles
@@ -172,20 +175,6 @@ is that message's `#msg:<id>` handle — it must be the first segment. To ping s
 use an `at` segment with their user id.
 """
 
-BIND_INSTRUCTION_TEMPLATE = """\
-
-### `{bind}` — say which project this thread is about
-A thread about no project runs in a throwaway tree: you may write there, and nothing
-you write is kept. Binding it to a project is what makes its work kept, in that
-project's code. `{scry}` with `reveal="projects"` shows what this deployment can work
-on; name one, and `ref` — a branch, tag or commit — only when the default branch is
-the wrong place to start. Binding ends this turn and re-awakes you in the project's
-workspace with your context intact, so bind before you start work, not after —
-anything written in the throwaway tree before the bind is gone. A thread binds once;
-if this one is already about a project the tool says so — a different project is a
-different thread, so ask them to start one.
-"""
-
 
 def gateway_instructions(tool_name: Callable[[str], str]) -> str:
     """The gateway's routing instruction, each spell rendered by the caller's own tool
@@ -197,13 +186,10 @@ def gateway_instructions(tool_name: Callable[[str], str]) -> str:
         "teleport": tool_name(TELEPORT_TOOL_NAME),
         "scheme": tool_name(SCHEME_TOOL_NAME),
         "send": tool_name(SEND_TOOL_NAME),
-        "bind": tool_name(BIND_TOOL_NAME),
     }
-    return (
-        GATEWAY_INSTRUCTION_TEMPLATE.format(**names)
-        + SEND_INSTRUCTION_TEMPLATE.format(**names)
-        + BIND_INSTRUCTION_TEMPLATE.format(**names)
-    )
+    return GATEWAY_INSTRUCTION_TEMPLATE.format(
+        **names
+    ) + SEND_INSTRUCTION_TEMPLATE.format(**names)
 
 
 COMMISSION_INSTRUCTION = """\
@@ -252,7 +238,6 @@ class GatewayCapability(AbstractCapability[None]):
         toolset.tool(name=TELEPORT_TOOL_NAME, retries=2)(self.teleport)
         toolset.tool(name=SCHEME_TOOL_NAME, retries=2)(self.scheme)
         toolset.tool(name=SEND_TOOL_NAME, retries=2)(self.send)
-        toolset.tool(name=BIND_TOOL_NAME, retries=2)(self.bind)
         if (
             self.session.agents is not None
             and self.conversations is not None
@@ -360,7 +345,7 @@ class GatewayCapability(AbstractCapability[None]):
                 commissioned from here. `destinations` — anywhere other than here
                 that the person you are answering can be reached privately, each
                 with the agents that run there. `projects` — the projects this
-                deployment can work on, for `bind`.
+                deployment can work on, for `teleport`.
         """
         try:
             return await self.session.scry(reveal)
@@ -418,33 +403,36 @@ class GatewayCapability(AbstractCapability[None]):
         ctx: RunContext[None],
         hint: str,
         destination: TeleportTarget = THREAD_TARGET,
+        project: str | None = None,
+        ref: str | None = None,
     ) -> str:
-        """Continue this conversation yourself in a new sub-thread; everything said
-        so far comes with you.
+        """Continue this conversation yourself somewhere else; everything said so
+        far comes with you. This turn ends on it, and you are re-awoken there with
+        your context intact.
 
         Args:
             hint: The short, user-facing thread-starter message.
             destination: Where to carry it, a sub-thread of this chat by default. A
                 channel takes it into their direct messages there, and is offered
                 only out of a conversation nobody else can read — everything said
-                here goes with you, and it is not all yours to move.
+                here goes with you, and it is not all yours to move. `here` stays
+                in this thread, and only to bind it to a `project`.
+            project: A project's name, copied exactly from `scry`
+                (`reveal="projects"`): the thread you land in is bound to it, and
+                you resume in its workspace, where work is kept.
+            ref: The branch, tag or commit that workspace starts from; omit it for
+                the project's default branch.
         """
         try:
-            decision = await self.session.teleport(hint=hint, destination=destination)
+            decision = await self.session.teleport(
+                hint=hint, destination=destination, project=project, ref=ref
+            )
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal
-        crossing = decision.crossing
-        # Two plain strings rather than the resolved address: the far end is always
+        # Plain values rather than the resolved landing: the far end is always
         # somebody's direct messages, which is exactly what `open_dm` takes, and
         # metadata rides through the deferral untyped either way.
-        raise CallDeferred(
-            metadata={
-                "kind": TELEPORT_DEFER_KIND,
-                "hint": hint,
-                "channel": crossing.address.channel_tentacle_id if crossing else "",
-                "user": crossing.address.user_id if crossing else "",
-            }
-        )
+        raise CallDeferred(metadata=decision.metadata())
 
     async def scheme(
         self,
@@ -500,28 +488,6 @@ class GatewayCapability(AbstractCapability[None]):
             return_value="sent",
             metadata=[MessageSentEvent(segments=segments, destination=address)],
         )
-
-    async def bind(
-        self, ctx: RunContext[None], project: str, ref: str | None = None
-    ) -> str:
-        """Say that this thread is about the project `project`, and fork its
-        workspace. This turn ends on it, and you are re-awoken in that workspace
-        with your context intact.
-
-        Args:
-            project: The project's name, copied exactly from `scry`
-                (`reveal="projects"`).
-            ref: The branch, tag or commit to start from; omit it for the
-                project's default branch.
-        """
-        try:
-            await self.session.bind(project=project, ref=ref)
-        except GatewayRefusal as refusal:
-            raise ModelRetry(str(refusal)) from refusal
-        # Bound; now the run ends, because this one's tools are rooted in the tree
-        # that is thrown away. The graph resolves the call at once and resumes the
-        # run in the project's workspace.
-        raise CallDeferred(metadata={"kind": BIND_DEFER_KIND, "project": project})
 
     async def commission(
         self,

@@ -31,10 +31,9 @@ TELEPORT_TOOL_NAME = "teleport"
 SCHEME_TOOL_NAME = "scheme"
 COMMISSION_TOOL_NAME = "commission"
 WHISPER_TOOL_NAME = "whisper"
-BIND_TOOL_NAME = "bind"
 # What one `scry` reveals. One facet per call, because each spell needs exactly one —
 # a route for `summon`, a place for anything that lands somewhere, a project for
-# `bind` — and the routes alone run long enough that showing everything every time
+# `teleport` — and the routes alone run long enough that showing everything every time
 # buried the line the caller came for. A tool result is the only place a per-user
 # list can reach the model without forking a cached prompt segment.
 ScryFacet = Literal["routes", "destinations", "projects"]
@@ -43,9 +42,6 @@ ScryFacet = Literal["routes", "destinations", "projects"]
 # emits it) and `reflex` (which resolves it) agree on one value without matching on
 # the name.
 TELEPORT_DEFER_KIND = "teleport"
-# Likewise the `bind` deferral's kind: the graph resolves it at once and resumes
-# the same agent in the project's workspace.
-BIND_DEFER_KIND = "bind"
 
 
 class AgentRouteKey(NamedTuple):
@@ -117,14 +113,15 @@ class ChannelTarget(SpellTarget):
 
 
 # One union per spell, naming exactly the places that spell can go. They differ:
-# `here` is where a summon hands over and a send delivers, but a teleport that
-# stayed put would just be the agent carrying on; `dm` is where a scheme lands,
-# and a summon into someone's direct messages is a scheme by another name.
+# `here` is where a summon hands over and a send delivers, and where a teleport
+# stays put only to bind this thread to a project — otherwise it would just be the
+# agent carrying on; `dm` is where a scheme lands, and a summon into someone's
+# direct messages is a scheme by another name.
 SummonTarget: TypeAlias = Annotated[
     HereTarget | ThreadTarget | ChannelTarget, Field(discriminator="kind")
 ]
 TeleportTarget: TypeAlias = Annotated[
-    ThreadTarget | ChannelTarget, Field(discriminator="kind")
+    HereTarget | ThreadTarget | ChannelTarget, Field(discriminator="kind")
 ]
 SchemeTarget: TypeAlias = Annotated[
     DirectTarget | ChannelTarget, Field(discriminator="kind")
@@ -250,11 +247,12 @@ class SchemeDecision(BaseModel):
 
 
 class TeleportDecision(BaseModel):
-    """The same agent continues in a new sub-thread; Reflex performs the move.
-
-    Inkling never records one — its teleport rides a deferral so the graph can fork
-    mid-run — but a runtime that cannot be suspended by a tool result reports the
-    same intent this way, and the graph forks after its turn ends instead.
+    """The same agent continues somewhere else, its history with it; Reflex
+    performs the move. A run ends on it — Inkling by deferring the call, a runtime
+    a tool result cannot suspend by being interrupted on the recorded decision and
+    ending its turn as the same deferral — and the graph resumes the agent in the
+    new place: a sub-thread, a crossing, or this very thread when the move is only
+    into a project's workspace.
     """
 
     action: Literal["teleport"] = "teleport"
@@ -264,38 +262,54 @@ class TeleportDecision(BaseModel):
         description="The far channel's direct messages when the teleport crosses, "
         "resolved by the gateway; None keeps it a sub-thread of the current chat.",
     )
+    here: bool = Field(
+        default=False,
+        description="Stay in this thread, opening nothing. Only a teleport that "
+        "binds a project stays put — otherwise it would be the agent carrying on.",
+    )
+    project: str | None = Field(
+        default=None,
+        description="The project the thread landed in is bound to, and whose "
+        "workspace the agent resumes in; None carries the conversation only.",
+    )
+    ref: str | None = Field(
+        default=None,
+        description="The branch, tag or commit that workspace starts from; None "
+        "for the project's default branch.",
+    )
 
-
-class BindDecision(BaseModel):
-    """The thread was bound to a project mid-run, and the run has to end for it to
-    take: a process's cwd is fixed at spawn. Inkling defers the call; a runtime a
-    tool result cannot suspend is interrupted on this and ends its turn as the same
-    deferral, which the graph resolves at once and resumes in the workspace.
-    """
-
-    action: Literal["bind"] = "bind"
-    project: str
-    ref: str | None = None
+    def metadata(self) -> dict[str, str | bool]:
+        """What the deferral carries, as plain values: enough for the graph to
+        rebuild this decision at its boundary."""
+        crossing = self.crossing
+        return {
+            "kind": TELEPORT_DEFER_KIND,
+            "hint": self.hint,
+            "channel": crossing.address.channel_tentacle_id if crossing else "",
+            "user": crossing.address.user_id if crossing else "",
+            "here": self.here,
+            "project": self.project or "",
+            "ref": self.ref or "",
+        }
 
     def deferral(self, tool_call_id: str) -> DeferredToolRequests:
-        """This bind as the deferral the graph resumes — what an interrupted
+        """This move as the deferral the graph performs — what an interrupted
         runtime's turn ends with, shaped as Inkling's own `CallDeferred` is."""
         return DeferredToolRequests(
             calls=[
                 ToolCallPart(
-                    tool_name=BIND_TOOL_NAME,
-                    args={"project": self.project, "ref": self.ref},
+                    tool_name=TELEPORT_TOOL_NAME,
+                    args={"hint": self.hint, "project": self.project, "ref": self.ref},
                     tool_call_id=tool_call_id,
                 )
             ],
-            metadata={tool_call_id: {"kind": BIND_DEFER_KIND, "project": self.project}},
+            metadata={tool_call_id: self.metadata()},
         )
 
 
 # Every decision a gateway can record for the graph to act on after the turn.
 GatewayDecision: TypeAlias = Annotated[
-    SummonDecision | SchemeDecision | TeleportDecision | BindDecision,
-    Field(discriminator="action"),
+    SummonDecision | SchemeDecision | TeleportDecision, Field(discriminator="action")
 ]
 
 

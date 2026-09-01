@@ -1,10 +1,9 @@
 # Thread Workspaces
 
-Records what OCTO-42's discussion settled and what it did not. The mirror
-(OCTO-46), the fork (OCTO-47), running a project thread in it (OCTO-48), and the
-lifecycle below — per-turn save, pruning, resume (OCTO-51) — are built, as are
-the bind spell (OCTO-52), the chat workspace (OCTO-50) and dependency reuse
-(OCTO-49).
+Records what the workspace discussion settled and what it did not. The mirror,
+the fork, running a project thread in it, and the lifecycle below — per-turn
+save, pruning, resume — are built, as are teleporting into a project, the chat
+workspace and dependency reuse.
 
 A run currently happens in `project.root` — one directory on the Octomate host,
 shared by every thread that resolves to that project. This document replaces that
@@ -191,8 +190,8 @@ its inputs are genuine judgment calls, and both belong to whoever is asking:
 default branch is the obvious answer and the wrong one often enough — continuing
 someone's feature branch, reproducing against a tag, working from a PR head.
 
-So this is a gateway spell, `bind`, the agent calls with typed arguments, while
-Octomate keeps everything that is policy:
+So this is the gateway's `teleport` with a `project`, which the agent calls with
+typed arguments, while Octomate keeps everything that is policy:
 
 | The agent supplies | Octomate decides                                |
 | ------------------ | ----------------------------------------------- |
@@ -215,22 +214,27 @@ different project is a different thread.
 policy are fixed when the process spawns, so a workspace created mid-turn cannot
 become the current run's cwd — and a model told to wait would go on working in
 the empty tree it started in, whose contents this run is the last to see. So
-`bind` is a deferral: Inkling's run ends on it the way it ends on a `teleport`,
+binding is a `teleport` with a `project`: Inkling's run ends on the deferral,
 and a driven Claude or Codex turn is interrupted the moment the session records
-the bind and ends as the same deferral. The graph resolves it at once and resumes
+the decision and ends as the same deferral. The graph resolves it at once and resumes
 the agent on the same conversation — now in the project's workspace, the call
 answered by a line saying so — and the model carries on where it left off.
+Claude files a session's transcript under the cwd it ran in and resumes only
+from there, so the graph has the tentacle carry the transcript to the workspace's
+own project dir before the run resumes.
 
 This is also the path by which a chat thread becomes a project thread: someone
-says what they want worked on, `bind` binds it, and the resumed run starts in
+says what they want worked on, a `teleport` with the project binds it, and the
+resumed run starts in
 the project's code, in a workspace whose work is kept.
 
-**Every driven runtime can call it.** `bind` and the `projects` facet of `scry`
-are gateway spells (OCTO-68): Inkling mounts them as a capability, a driven
+**Every driven runtime can call it.** `teleport` with a `project`, and the
+`projects` facet of `scry`, are gateway spells: Inkling mounts them as a capability, a driven
 Claude turn as its in-process MCP server, a driven Codex turn over the served
-`/gateway/mcp`. A native session may scry the projects but not bind — its work
-is wherever its terminal is, and there is no tree to fork for it (OCTO-71 is
-the door for that). dsh mounts no gateway on a driven turn, so a chat thread
+`/gateway/mcp`. A native session may scry the projects but not teleport — its work
+is wherever its terminal is, and there is no tree to fork for it (a native
+teleport, still to come, is the door for that). dsh mounts no gateway on a driven
+turn, so a chat thread
 there still has a workspace it may write to, whose work is thrown away, and no
 way to say what it is about: `dsh web` is one daemon serving every thread, with
 no per-thread process to attach a tool to.
@@ -404,6 +408,7 @@ different behavior, so they are variants:
 class RemoteUpstream(BaseModel):
     kind: Literal["remote"] = "remote"
     url: str
+
 
 class DirectoryUpstream(BaseModel):
     kind: Literal["directory"] = "directory"

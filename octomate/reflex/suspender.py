@@ -10,7 +10,6 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
-    BIND_DEFER_KIND,
     TELEPORT_DEFER_KIND,
     CrossingLanding,
     ResponseTargetMode,
@@ -23,40 +22,33 @@ from octomate.tentacles.channels.base import ChannelTentacle
 
 @dataclass(frozen=True)
 class TeleportRequest:
-    """A teleport for the graph to perform: fork the history and resume the agent
-    in the new place. Reached two ways — an Inkling run defers the `teleport` call
-    mid-run (classified out of its `DeferredToolRequests` by metadata kind), while
-    a runtime that cannot be suspended records a `TeleportDecision` its turn's end
-    converts into one of these."""
+    """A teleport for the graph to perform: carry the history and resume the agent
+    in the new place. One shape for every runtime — an Inkling run defers the
+    `teleport` call itself; a runtime a tool result cannot suspend is interrupted
+    on the recorded decision and ends its turn as the same deferral — classified
+    out of the run's `DeferredToolRequests` by metadata kind."""
 
     hint: str
-    # The deferred call to resolve into the resumed run. None for a
-    # decision-reported teleport, which has no pending call — the resumed run
-    # opens from the hint instead.
-    tool_call_id: str | None = None
+    # The deferred call to resolve into the resumed run.
+    tool_call_id: str
     # Where it goes, when that is not a sub-thread of the chat it is already in. The
     # gateway refused a channel this agent does not run and one that opens no
     # sub-thread, so the node has a place to open and no fallback to choose.
     crossing: CrossingLanding | None = None
-
-
-@dataclass(frozen=True)
-class BindRequest:
-    """A bind for the graph to resume from: the run that cast it has ended, so the
-    next one starts in the project's workspace, and the pending call resolves into
-    it. One shape for every runtime — Inkling deferred the call itself; a runtime
-    that cannot be suspended was interrupted on the recorded decision and ended
-    its turn as the same deferral."""
-
-    tool_call_id: str
-    project: str
+    # Stay in this thread, opening nothing: the move is into a project's workspace
+    # and this thread is what gets bound. Refused by the gateway without a project.
+    here: bool = False
+    # The project the thread landed in is bound to, and the ref its workspace starts
+    # from; None carries the conversation only.
+    project: str | None = None
+    ref: str | None = None
 
 
 @dataclass
 class ReflexSuspender:
     """The reflex graph's `DeferredSuspender`: every deferral a run ends on comes
-    through here once, and each kind goes where it is resolved — a `teleport` or
-    a `bind` to the graph, which performs it and resumes the agent; anything else
+    through here once, and each kind goes where it is resolved — a `teleport` to
+    the graph, which performs it and resumes the agent; anything else
     to a human, persisted as a batch and presented on the channel. React builds
     it with the run's context; Inkling reaches it through `ResolveDeferred`, a
     runtime a tool result cannot suspend through the `deferred_suspender` its run
@@ -78,9 +70,6 @@ class ReflexSuspender:
     # Set when a run deferred a `teleport` (classified by metadata kind); the dispatch
     # graph reads this to route to its Teleport node instead of persisting a batch.
     teleport: TeleportRequest | None = field(default=None, init=False)
-    # Set when a run deferred a `bind`: resolved by the graph too — the same agent,
-    # resumed in place, in the workspace the bind made.
-    bind: BindRequest | None = field(default=None, init=False)
 
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         # `teleport` declares kind="teleport" in its CallDeferred metadata — the graph
@@ -88,12 +77,6 @@ class ReflexSuspender:
         # a tool name), stash it typed, and let run1 end so it bubbles to the dispatch.
         for call in requests.calls:
             meta = requests.metadata.get(call.tool_call_id, {})
-            if meta.get("kind") == BIND_DEFER_KIND:
-                self.bind = BindRequest(
-                    tool_call_id=call.tool_call_id,
-                    project=str(meta.get("project") or ""),
-                )
-                return None
             if meta.get("kind") == TELEPORT_DEFER_KIND:
                 # The gate names the far channel and the account on it as two plain
                 # strings; the address is built back here, at the boundary, so the
@@ -102,6 +85,9 @@ class ReflexSuspender:
                 self.teleport = TeleportRequest(
                     tool_call_id=call.tool_call_id,
                     hint=str(meta.get("hint") or ""),
+                    here=bool(meta.get("here")),
+                    project=str(meta.get("project") or "") or None,
+                    ref=str(meta.get("ref") or "") or None,
                     crossing=CrossingLanding(
                         address=ChannelAddress(
                             channel_tentacle_id=far,

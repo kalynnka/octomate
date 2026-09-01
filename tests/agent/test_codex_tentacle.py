@@ -48,7 +48,7 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.schemas.triage import BindDecision
+from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.agents.codex import CodexTentacle
 from octomate.tentacles.agents.codex import base as codex_base
@@ -1283,9 +1283,9 @@ async def test_a_registered_gateway_without_a_served_endpoint_refuses(
 
 
 class BindingFakeTurn(FakeTurn):
-    """A turn whose stream casts `bind` after its first notification — the session
-    records the decision the way the served tool does — and then runs out, as an
-    interrupted app-server turn does."""
+    """A turn whose stream casts `teleport` into a project after its first
+    notification — the session records the decision the way the served tool does
+    — and then runs out, as an interrupted app-server turn does."""
 
     session: ClassVar[GatewaySession | None] = None
 
@@ -1293,7 +1293,9 @@ class BindingFakeTurn(FakeTurn):
         first, *rest = FakeCodex.script
         yield first
         assert BindingFakeTurn.session is not None
-        BindingFakeTurn.session.decision = BindDecision(project="inky")
+        BindingFakeTurn.session.decision = TeleportDecision(
+            hint="into inky", here=True, project="inky"
+        )
         for event in rest:
             yield event
 
@@ -1317,7 +1319,7 @@ class BindingFakeThread(FakeThread):
         return turn
 
 
-async def test_a_bind_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
+async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
@@ -1379,8 +1381,9 @@ async def test_a_bind_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     output = events[-1].result.output
     assert isinstance(output, DeferredToolRequests)
     [call] = output.calls
-    assert call.tool_name == "bind"
-    assert output.metadata[call.tool_call_id] == {"kind": "bind", "project": "inky"}
+    assert call.tool_name == "teleport"
+    assert output.metadata[call.tool_call_id]["kind"] == "teleport"
+    assert output.metadata[call.tool_call_id]["project"] == "inky"
     # Suspended through the one entry the graph resumes from.
     assert suspender.suspended == [output]
 

@@ -20,9 +20,9 @@ from octomate.reflex.state import (
     ReflexResult,
     ReflexState,
 )
-from octomate.reflex.suspender import ReflexSuspender, TeleportRequest
+from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.segments import MarkdownSegment
-from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
+from octomate.schemas.triage import SchemeDecision, SummonDecision
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channels.base import ChannelOutput
 from octomate.tentacles.channels.feelers.output import split_reply
@@ -33,12 +33,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     resume_batch_id: uuid.UUID | None = None
-    # Set by Teleport to resume the same agent against the forked history, and by
-    # React itself after a bind, to resume it in the workspace the bind made.
+    # Set by Teleport to resume the same agent where it landed, with its pending
+    # call resolved — against the forked history, or in place.
     resume_results: DeferredToolResults | None = None
-    # Set by Teleport instead of `teleport_results` when the teleport was reported
-    # as a decision (no pending call to resolve): the resumed run opens from this.
-    continuation_prompt: str | None = None
 
     @reflex_logfire.instrument("reflex.react", extract_args=False)
     async def run(
@@ -154,8 +151,6 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             deferred_results = batch.build_results()
         if deferred_results is not None:
             user_prompt: str | Sequence[UserContent] | None = None
-        elif self.continuation_prompt is not None:
-            user_prompt = self.continuation_prompt
         else:
             user_prompt = decision.summon or str(state.user_prompt or "")
 
@@ -397,28 +392,6 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     return Teleport(
                         request=suspender.teleport, origin=target, agent_id=agent.id
                     )
-                if suspender.bind is not None:
-                    # Bound mid-run: the run ended so the next one starts in the
-                    # project's workspace, and the call resolves into it. The
-                    # state's thread predates the bind; the turn-end save reads the
-                    # project off it, so it is read again.
-                    if state.thread is not None:
-                        bound = await ctx.deps.thread_manager.get(state.thread.id)
-                        if bound is None:
-                            raise RuntimeError(f"thread {state.thread.id} vanished")
-                        state.thread = bound
-                    span.set_attribute("react.action", "bind")
-                    return React(
-                        resume_results=DeferredToolResults(
-                            calls={
-                                suspender.bind.tool_call_id: (
-                                    f"This thread is about {suspender.bind.project!r} "
-                                    "now, and you are in its workspace. Carry on where "
-                                    "you left off."
-                                )
-                            }
-                        )
-                    )
                 return End(
                     DeferredResult(
                         requests=output,
@@ -438,23 +411,6 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 )
                 return Scheme(
                     request=gateway_decision,
-                    origin=target,
-                    agent_id=agent.id,
-                )
-            if isinstance(gateway_decision, TeleportDecision):
-                # Recorded, not deferred: a runtime that cannot be suspended
-                # mid-run reported the move and finished its turn; the graph
-                # performs it now, exactly as it resolves a deferral.
-                span.set_attribute("react.action", gateway_decision.action)
-                reflex_logfire.info(
-                    "react -> teleport reported as a decision",
-                    crossing=str(gateway_decision.crossing),
-                )
-                return Teleport(
-                    request=TeleportRequest(
-                        hint=gateway_decision.hint,
-                        crossing=gateway_decision.crossing,
-                    ),
                     origin=target,
                     agent_id=agent.id,
                 )
