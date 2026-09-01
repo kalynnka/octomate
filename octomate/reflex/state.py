@@ -184,6 +184,8 @@ class ReflexDeps:
             agents=self.agents,
             thread_id=thread_id,
             conversation_address=conversation_address,
+            threads=self.thread_manager,
+            workspaces=self.workspaces,
         )
         if thread_id is not None:
             # The same (thread, agent) key the run resolves internally, so an

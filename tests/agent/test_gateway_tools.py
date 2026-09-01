@@ -115,7 +115,7 @@ async def a_native_call(
     return server, session, channel, threads, kicks
 
 
-async def test_the_server_offers_exactly_the_five_shared_spells() -> None:
+async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
     # The accomplice spells are deliberately absent: external runtimes bring
     # their own subagent systems.
     server, _session, _channel, _threads = a_turn()
@@ -128,6 +128,7 @@ async def test_the_server_offers_exactly_the_five_shared_spells() -> None:
         "teleport",
         "scheme",
         "send",
+        "dispel",
     ]
     # What an adapter pre-allows is this same list, named statically.
     assert list(GATEWAY_SPELLS) == [tool.name for tool in tools]
@@ -141,6 +142,7 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
         "teleport": GatewayCapability.teleport,
         "scheme": GatewayCapability.scheme,
         "send": GatewayCapability.send,
+        "dispel": GatewayCapability.dispel,
     }
 
     tools = {tool.name: tool for tool in await server.list_tools()}
@@ -160,7 +162,7 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     assert gateway_instructions(lambda name: name) == inkling
 
     mcp = gateway_instructions(lambda name: f"mcp__gateway__{name}")
-    for name in ("scry", "summon", "teleport", "scheme", "send"):
+    for name in ("scry", "summon", "teleport", "scheme", "send", "dispel"):
         assert f"`mcp__gateway__{name}`" in mcp
     assert "{" not in mcp
     assert "commission" not in mcp
@@ -277,13 +279,13 @@ async def test_a_native_session_scries_only_crossings(
     server, session, _channel, _threads, _kicks = await a_native_call()
 
     async with Client(server) as client:
-        result = await client.call_tool("scry", {})
+        routes = await client.call_tool("scry", {"reveal": "routes"})
+        places = await client.call_tool("scry", {"reveal": "destinations"})
 
-    assert result.data == str(await session.scry())
     # No conversation of its own: nothing to route to here, and neither built-in
     # landing exists — everywhere it can go is the linked account's crossing.
-    assert "Agents you can route to here:\n- (none)" in result.data
-    assert "their direct messages on" in result.data
+    assert routes.data == "- (none)"
+    assert "their direct messages on" in places.data
     assert await session.summon_handles() == ["im"]
 
 
@@ -293,14 +295,14 @@ async def test_a_native_session_with_no_linked_accounts_scries_nowhere(
     server, session, _channel, _threads, kicks = await a_native_call(linked=False)
 
     async with Client(server) as client:
-        result = await client.call_tool("scry", {})
+        result = await client.call_tool("scry", {"reveal": "destinations"})
         with pytest.raises(ToolError) as refusal:
             await client.call_tool("summon", SUMMON_ARGUMENTS)
 
     # Registered, so the session knows who it speaks for — but the user has no
     # account anywhere a destination could light up.
     assert session.user_profile is not None
-    assert result.data.count("- (none)") == 2
+    assert result.data == "- (none)"
     # The truthful dead end: no linked account, so nowhere left to land.
     assert "`summon` has nowhere left to land, so answer it." in str(refusal.value)
     assert kicks == []
@@ -335,7 +337,7 @@ async def test_a_native_send_here_is_refused(
 
     assert str(refusal.value) == (
         "This session has no conversation of its own to land a send on — "
-        "name a destination from `scry`."
+        'name a destination from `scry` (`reveal="destinations"`).'
     )
     assert threads.outbounds == []
 

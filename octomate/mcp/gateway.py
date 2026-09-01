@@ -34,6 +34,7 @@ from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     DIRECT_TARGET,
+    DISPEL_TOOL_NAME,
     HERE_TARGET,
     SCHEME_TOOL_NAME,
     SCRY_TOOL_NAME,
@@ -41,6 +42,7 @@ from octomate.schemas.triage import (
     TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     SchemeTarget,
+    ScryFacet,
     SendTarget,
     SummonTarget,
     TeleportTarget,
@@ -69,6 +71,7 @@ GATEWAY_SPELLS: tuple[str, ...] = (
     TELEPORT_TOOL_NAME,
     SCHEME_TOOL_NAME,
     SEND_TOOL_NAME,
+    DISPEL_TOOL_NAME,
 )
 
 # The routing contract under the tools' bare names, which is how a runtime that
@@ -77,10 +80,11 @@ GATEWAY_SPELLS: tuple[str, ...] = (
 # own instructions as the namespace's card.
 GATEWAY_SERVER_INSTRUCTIONS = gateway_instructions(lambda name: name)
 
-# What a runtime that cannot be suspended mid-run is told: the decision is recorded,
-# the graph moves the conversation once its turn ends — so close out, not carry on.
+# What a runtime a tool result cannot suspend is told: the decision is recorded, its
+# turn is interrupted on it, and the graph performs the move and resumes it there.
 TELEPORT_RECORDED = (
-    "Teleporting — wrap up your reply; the move happens after this turn."
+    "Teleporting — this turn ends here; you continue over there, with your context "
+    "intact."
 )
 
 # The header a served call names its turn's conversation with. It comes from a
@@ -239,6 +243,8 @@ async def native_session(
         user_profile=profile,
         agents=octomate.agents,
         native=True,
+        threads=octomate.thread_manager,
+        workspaces=octomate.workspaces,
     )
 
 
@@ -262,8 +268,9 @@ def gateway_mcp(
         name=SCRY_TOOL_NAME, description=capability_contract(GatewayCapability.scry)
     )
     @spoken
-    async def scry(session: GatewaySession = current) -> str:
-        return str(await session.scry())
+    async def scry(reveal: ScryFacet, session: GatewaySession = current) -> str:
+        # Lines, never the list: FastMCP renders an empty list as no content at all.
+        return "\n".join(str(one) for one in await session.scry(reveal)) or "- (none)"
 
     @mcp.tool(
         name=SUMMON_TOOL_NAME, description=capability_contract(GatewayCapability.summon)
@@ -304,9 +311,13 @@ def gateway_mcp(
     async def teleport(
         hint: str,
         destination: TeleportTarget = THREAD_TARGET,
+        project: str | None = None,
+        ref: str | None = None,
         session: GatewaySession = current,
     ) -> str:
-        await session.teleport(hint=hint, destination=destination)
+        await session.teleport(
+            hint=hint, destination=destination, project=project, ref=ref
+        )
         return TELEPORT_RECORDED
 
     @mcp.tool(
@@ -345,7 +356,7 @@ def gateway_mcp(
         if target is None:
             raise GatewayRefusal(
                 "This session has no conversation of its own to land a send on — "
-                f"name a destination from `{SCRY_TOOL_NAME}`."
+                f'name a destination from `{SCRY_TOOL_NAME}` (`reveal="destinations"`).'
             )
         notice = "sent"
         if address is not None:
@@ -375,5 +386,12 @@ def gateway_mcp(
             sender=channel.self_profile,
         )
         return notice
+
+    @mcp.tool(
+        name=DISPEL_TOOL_NAME, description=capability_contract(GatewayCapability.dispel)
+    )
+    @spoken
+    async def dispel(session: GatewaySession = current) -> str:
+        return await session.dispel()
 
     return mcp

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import logging
+import os
+import re
+import shutil
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Literal
 
 from anthropic.types import Message as AnthropicMessage
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from octomate.types.json import JsonObject
+
+logger = logging.getLogger(__name__)
 
 
 class TranscriptSchema(BaseModel):
@@ -183,3 +190,44 @@ def prompt_text(message: TranscriptUserMessage) -> str:
             if isinstance(text, str):
                 texts.append(text)
     return "\n".join(texts)
+
+
+def transcripts_dir(cwd: Path) -> Path:
+    """Where Claude Code files the sessions run in `cwd`: under its config dir,
+    a directory named by the cwd with every character outside `[A-Za-z0-9]`
+    replaced by `-`, holding `<session id>.jsonl` and the session's subagents
+    under `<session id>/`."""
+    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    return home / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+
+
+def relocate_session(session_id: str, *, cwd: Path) -> None:
+    """Carry a Claude session to the cwd it will resume in.
+
+    Claude files a session under the cwd it ran in and resumes it only from there
+    — from anywhere else the CLI exits with "No conversation found". A thread that
+    teleported into a project's workspace resumes in another directory, so its
+    transcript, and its subagents beside it, move to that directory's own dir
+    first. A session with no transcript anywhere cannot be resumed, and says so.
+
+    TODO: rebuild the transcript from the conversation's own ledger
+    instead of moving a local file, so a native session — whose transcript is on
+    its own machine — can be carried too; and validate the rebuilt bytes against
+    the original, since Claude's prompt cache survives only a transcript that
+    replays exactly the messages it was built from.
+    """
+    target = transcripts_dir(cwd)
+    projects = target.parent
+    found = list(projects.glob(f"*/{session_id}.jsonl"))
+    if len(found) != 1:
+        raise FileNotFoundError(
+            f"session {session_id} has {len(found)} transcripts under {projects}; "
+            "it can be resumed from exactly one"
+        )
+    [transcript] = found
+    source = transcript.parent
+    logger.info("session %s: carrying its transcript to %s", session_id, target)
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.move(transcript, target / transcript.name)
+    if (source / session_id).is_dir():
+        shutil.move(source / session_id, target / session_id)

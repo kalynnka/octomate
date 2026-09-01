@@ -1,13 +1,17 @@
 """Gateway capability: an agent's routing spellbook.
 
-Five spells decide where a turn goes and who handles it. Each is opaque on its own,
-so the instruction opens with plain words for what they actually do:
+The spells decide where a turn goes, who handles it, and what it is about. Each is
+opaque on its own, so the instruction opens with plain words for what they actually do:
 
 - `scry`: reveal the other agents this one can hand off to or put to work.
 - `summon`: hand the conversation to another agent (a handoff — they take over from a
   brief). The graph reads the recorded decision after the run.
 - `teleport`: continue the same agent in a new place (a sub-thread), carrying the
-  history forward. Deferred, so the graph can fork the history and resume.
+  history forward. Deferred, so the graph can fork the history and resume. With a
+  `project`, the place is that project's workspace — the door out of a throwaway
+  tree into one whose work is kept — and `here` stays in this thread to bind it.
+- `dispel`: give a project thread's workspace back once the work in it is done.
+  Recorded, and performed by the graph when the turn ends and its work is saved.
 - `commission`: draw another agent into working a self-contained task in the background
   and return its report — an ordinary awaited tool call, never a deferral; the caller
   keeps the conversation and the user sees none of it.
@@ -52,18 +56,21 @@ from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
+    DISPEL_TOOL_NAME,
     GATEWAY_TOOLSET_ID,
     HERE_TARGET,
     SCHEME_TOOL_NAME,
     SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
-    TELEPORT_DEFER_KIND,
     TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     WHISPER_TOOL_NAME,
+    AgentRoute,
+    Destination,
     GatewayDecision,
+    ProjectSummary,
     SchemeTarget,
-    Scrying,
+    ScryFacet,
     SendTarget,
     SummonTarget,
     TeleportTarget,
@@ -103,24 +110,33 @@ Do NOT summon when:
 - You are only mildly unsure — ask the user a clarifying question instead.
 - No route clearly fits — handle it yourself or ask; never summon on a guess.
 
-When one fires, call `{scry}` first to see the agents and what each is for. Every route
-carries a claim: its ability (what that agent+model is for) and the effort levels it
-accepts — pick the route whose ability covers the work. Set `effort` only when the
-user explicitly asked for a level; otherwise leave it unset so the agent's own default
-applies. Then `{summon}` — copying its `agent_id` and `model` exactly from that route,
-and writing a self-contained brief since the other agent may not see this chat.
-Choose `destination`: `here` hands over this same conversation; `thread` opens a new
-sub-thread of the current chat; a channel id from `{scry}` opens one in that person's
-direct messages on that channel, for work that belongs where they actually do it.
-You yourself are not a valid summon target.
+When one fires, call `{scry}` with `reveal="routes"` first to see the agents and what
+each is for. Every route carries a claim: its ability (what that agent+model is for)
+and the effort levels it accepts — pick the route whose ability covers the work. Set
+`effort` only when the user explicitly asked for a level; otherwise leave it unset so
+the agent's own default applies. Then `{summon}` — copying its `agent_id` and `model`
+exactly from that route, and writing a self-contained brief since the other agent may
+not see this chat. Choose `destination`: `here` hands over this same conversation;
+`thread` opens a new sub-thread of the current chat; a channel id from `{scry}` with
+`reveal="destinations"` opens one in that person's direct messages on that channel,
+for work that belongs where they actually do it. You yourself are not a valid summon
+target.
 
 ### `{teleport}` — relocate yourself
 Move this conversation into a new sub-thread that *you* keep handling, carrying
 everything said so far. Use it for multi-step or long-running work that deserves its
 own thread but that you are the right one to do — no other agent involved.
 `destination` is `thread`, a sub-thread of the current chat, unless you name a channel
-id from `{scry}` to carry it into their direct messages there — offered only from a
-conversation nobody else can read, since everything said here travels with you.
+id from `{scry}` (`reveal="destinations"`) to carry it into their direct messages
+there — offered only from a conversation nobody else can read, since everything said
+here travels with you.
+
+To work on a project, add `project` (from `{scry}` with `reveal="projects"`), and
+`ref` — a branch, tag or commit — only when the default branch is the wrong place to
+start: the thread you land in is bound to it and you resume in its workspace, where
+work is kept. A thread about no project runs in a throwaway tree, so do this before
+you start work, not after. From inside a thread, `destination="here"` binds this
+one; a thread binds once, and a different project is a different thread.
 
 ### `{scheme}` — take it to the user privately
 Continue one-to-one with the person who asked, in their direct messages: for work that
@@ -130,6 +146,15 @@ and they cannot see this chat. `hint` opens the conversation over there and is t
 first thing they read; nothing is posted here, so close out your own reply by saying
 the work is moving, not what it is. Only from a group, on a platform that has direct
 messages; the tool says so when it does not apply.
+
+### `{dispel}` — give the workspace back when the work is done
+A thread about a project keeps its workspace between turns, which is what makes its
+next turn a resume. When the work is finished for good — merged, delivered, or
+dropped — say so with `{dispel}`: the tree is released when this turn ends, after
+this turn's work is saved to the project's mirror, and a later message here forks it
+afresh from there, so nothing is lost but the disk. Not for a pause — a thread
+waiting on someone keeps its tree, and idle ones are swept on their own. Wrap up in
+the same turn; your working directory goes with it.
 """
 
 # The framing every accomplice run carries, passed by the gateway at the
@@ -173,6 +198,7 @@ def gateway_instructions(tool_name: Callable[[str], str]) -> str:
         "teleport": tool_name(TELEPORT_TOOL_NAME),
         "scheme": tool_name(SCHEME_TOOL_NAME),
         "send": tool_name(SEND_TOOL_NAME),
+        "dispel": tool_name(DISPEL_TOOL_NAME),
     }
     return GATEWAY_INSTRUCTION_TEMPLATE.format(
         **names
@@ -225,6 +251,7 @@ class GatewayCapability(AbstractCapability[None]):
         toolset.tool(name=TELEPORT_TOOL_NAME, retries=2)(self.teleport)
         toolset.tool(name=SCHEME_TOOL_NAME, retries=2)(self.scheme)
         toolset.tool(name=SEND_TOOL_NAME, retries=2)(self.send)
+        toolset.tool(name=DISPEL_TOOL_NAME, retries=2)(self.dispel)
         if (
             self.session.agents is not None
             and self.conversations is not None
@@ -322,11 +349,22 @@ class GatewayCapability(AbstractCapability[None]):
             return "\n\n".join(str(part) for part in output)
         return str(output)
 
-    async def scry(self, ctx: RunContext[None]) -> Scrying:
-        """Reveal what this conversation can reach: the Octomate agent tentacles
-        that can be summoned or commissioned, and anywhere other than here that the
-        person you are answering can be reached privately."""
-        return await self.session.scry()
+    async def scry(
+        self, ctx: RunContext[None], reveal: ScryFacet
+    ) -> list[AgentRoute] | list[Destination] | list[ProjectSummary]:
+        """Reveal one facet of what this conversation can reach.
+
+        Args:
+            reveal: `routes` — the Octomate agent tentacles that can be summoned or
+                commissioned from here. `destinations` — anywhere other than here
+                that the person you are answering can be reached privately, each
+                with the agents that run there. `projects` — the projects this
+                deployment can work on, for `teleport`.
+        """
+        try:
+            return await self.session.scry(reveal)
+        except GatewayRefusal as refusal:
+            raise ModelRetry(str(refusal)) from refusal
 
     async def summon(
         self,
@@ -342,9 +380,10 @@ class GatewayCapability(AbstractCapability[None]):
         """Hand this conversation to another Octomate agent, who takes it over.
 
         Args:
-            agent_id: The target agent, copied exactly from a `scry` route — from
-                that destination's own routes when you name a channel, since which
-                agents run where is each channel's own business.
+            agent_id: The target agent, copied exactly from a `scry` route
+                (`reveal="routes"`) — from that destination's own routes when you
+                name a channel, since which agents run where is each channel's own
+                business.
             model: That route's model, copied exactly.
             destination: Where the other agent picks it up. A channel opens a
                 sub-thread of that person's direct messages there.
@@ -378,33 +417,36 @@ class GatewayCapability(AbstractCapability[None]):
         ctx: RunContext[None],
         hint: str,
         destination: TeleportTarget = THREAD_TARGET,
+        project: str | None = None,
+        ref: str | None = None,
     ) -> str:
-        """Continue this conversation yourself in a new sub-thread; everything said
-        so far comes with you.
+        """Continue this conversation yourself somewhere else; everything said so
+        far comes with you. This turn ends on it, and you are re-awoken there with
+        your context intact.
 
         Args:
             hint: The short, user-facing thread-starter message.
             destination: Where to carry it, a sub-thread of this chat by default. A
                 channel takes it into their direct messages there, and is offered
                 only out of a conversation nobody else can read — everything said
-                here goes with you, and it is not all yours to move.
+                here goes with you, and it is not all yours to move. `here` stays
+                in this thread, and only to bind it to a `project`.
+            project: A project's name, copied exactly from `scry`
+                (`reveal="projects"`): the thread you land in is bound to it, and
+                you resume in its workspace, where work is kept.
+            ref: The branch, tag or commit that workspace starts from; omit it for
+                the project's default branch.
         """
         try:
-            decision = await self.session.teleport(hint=hint, destination=destination)
+            decision = await self.session.teleport(
+                hint=hint, destination=destination, project=project, ref=ref
+            )
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal
-        crossing = decision.crossing
-        # Two plain strings rather than the resolved address: the far end is always
+        # Plain values rather than the resolved landing: the far end is always
         # somebody's direct messages, which is exactly what `open_dm` takes, and
         # metadata rides through the deferral untyped either way.
-        raise CallDeferred(
-            metadata={
-                "kind": TELEPORT_DEFER_KIND,
-                "hint": hint,
-                "channel": crossing.address.channel_tentacle_id if crossing else "",
-                "user": crossing.address.user_id if crossing else "",
-            }
-        )
+        raise CallDeferred(metadata=decision.metadata())
 
     async def scheme(
         self,
@@ -427,7 +469,8 @@ class GatewayCapability(AbstractCapability[None]):
                 cannot see this conversation, so give the goal, the relevant context and
                 decisions, what's been tried, and what a finished result looks like.
             destination: Whose direct messages — this channel's by default, or a
-                channel from `scry` to continue where they already are.
+                channel from `scry` (`reveal="destinations"`) to continue where
+                they already are.
         """
         try:
             return await self.session.scheme(
@@ -459,6 +502,19 @@ class GatewayCapability(AbstractCapability[None]):
             return_value="sent",
             metadata=[MessageSentEvent(segments=segments, destination=address)],
         )
+
+    async def dispel(self, ctx: RunContext[None]) -> str:
+        """Give this thread's workspace back, now that the work in it is done —
+        merged, delivered, or dropped for good, not paused. It is released when
+        this turn ends, after this turn's work is saved to the project's mirror,
+        so nothing is lost: a later message on this thread forks it afresh from
+        there. Only the disk goes, and it goes now rather than after the idle
+        window the sweep would otherwise wait out.
+        """
+        try:
+            return await self.session.dispel()
+        except GatewayRefusal as refusal:
+            raise ModelRetry(str(refusal)) from refusal
 
     async def commission(
         self,
@@ -492,7 +548,7 @@ class GatewayCapability(AbstractCapability[None]):
         if agent_id == self.session.current_agent_id:
             raise ModelRetry(
                 f"Cannot commission yourself {self.session.current_agent_id!r}. "
-                f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
+                f'Call `{SCRY_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
             )
         try:
             route = self.session.claimed_route(
@@ -504,7 +560,7 @@ class GatewayCapability(AbstractCapability[None]):
         if run_model is None:
             raise ModelRetry(
                 f"Agent {agent_id!r} does not serve model {model!r}. "
-                f"Call `{SCRY_TOOL_NAME}` and copy a route exactly."
+                f'Call `{SCRY_TOOL_NAME}` with `reveal="routes"` and copy a route exactly.'
             )
         # The calling run's own conversation is the parent — the react
         # graph put its id on the RunContext. No id means the gate is

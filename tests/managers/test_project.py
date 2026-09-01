@@ -74,7 +74,7 @@ async def test_the_root_itself_resolves(tmp_path: Path) -> None:
 
 
 async def test_resolving_registers_nothing(tmp_path: Path) -> None:
-    # OCTO-45: sessions stopped registering projects, so resolution is a pure read —
+    # Sessions stopped registering projects, so resolution is a pure read —
     # a miss mints no project, and a hit does not duplicate one.
     manager = await a_registry(a_project(directory(tmp_path / "inky")))
 

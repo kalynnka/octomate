@@ -33,6 +33,7 @@ from openai_codex.models import Notification, NotificationPayload
 from pydantic import BaseModel, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartStartEvent
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
@@ -47,6 +48,7 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
+from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.agents.codex import CodexTentacle
 from octomate.tentacles.agents.codex import base as codex_base
@@ -59,6 +61,7 @@ from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
     FakePresentedBatch,
+    RecordingSuspender,
 )
 
 KEY = ChannelAddress(
@@ -1277,3 +1280,141 @@ async def test_a_registered_gateway_without_a_served_endpoint_refuses(
     async with tentacle:
         with pytest.raises(RuntimeError, match="cannot name the served MCP endpoint"):
             await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+
+
+class BindingFakeTurn(FakeTurn):
+    """A turn whose stream casts `teleport` into a project after its first
+    notification — the session records the decision the way the served tool does
+    — and then runs out, as an interrupted app-server turn does."""
+
+    session: ClassVar[GatewaySession | None] = None
+
+    async def stream(self) -> AsyncIterator[Notification]:
+        first, *rest = FakeCodex.script
+        yield first
+        assert BindingFakeTurn.session is not None
+        BindingFakeTurn.session.decision = TeleportDecision(
+            hint="into inky", here=True, project="inky"
+        )
+        for event in rest:
+            yield event
+
+
+class BindingFakeThread(FakeThread):
+    async def turn(
+        self,
+        input: str,
+        *,
+        approval_mode: ApprovalMode | None = None,
+        cwd: str | None = None,
+        effort: ReasoningEffort | None = None,
+        model: str | None = None,
+        output_schema: JsonObject | None = None,
+        personality: Personality | None = None,
+        sandbox: Sandbox | None = None,
+        summary: ReasoningSummary | None = None,
+    ) -> BindingFakeTurn:
+        turn = BindingFakeTurn()
+        FakeCodex.turns.append(turn)
+        return turn
+
+
+async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("working"))
+    conversations = FakeConversationManager()
+    octomate = Octomate(
+        conversations=conversations,
+        config=OctomateConfig(port=8123, mcp_path="/mcp"),
+    )
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
+    session = GatewaySession(
+        channel_routes={},
+        current_agent_id="codex",
+        conversation_id=conversation.id,
+        user_profile=a_kicker(octomate),
+    )
+    octomate.gateway.register(session)
+    BindingFakeTurn.session = session
+
+    async def start_binding_thread(
+        self: CodexTentacle,
+        client: codex_base.AsyncCodex,
+        *,
+        plan: codex_base.CodexPermissionPlan,
+        base_instructions: str | None,
+        cwd: str | None,
+        developer_instructions: str | None,
+        ephemeral: bool | None,
+        model: str | None,
+        model_provider: str | None,
+        personality: Personality | None,
+        sandbox: Sandbox,
+    ) -> BindingFakeThread:
+        return BindingFakeThread("thread-new")
+
+    monkeypatch.setattr(CodexTentacle, "start_codex_thread", start_binding_thread)
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+    )
+    suspender = RecordingSuspender()
+
+    events = []
+    async with tentacle:
+        async with tentacle.run_stream_events(
+            "work on inky",
+            conversation_address=KEY,
+            thread_id=_THREAD,
+            run_name="react",
+            deferred_suspender=suspender,
+        ) as stream:
+            async for event in stream:
+                events.append(event)
+
+    [turn] = FakeCodex.turns
+    assert turn.interrupted
+    assert isinstance(events[-1], AgentRunResultEvent)
+    output = events[-1].result.output
+    assert isinstance(output, DeferredToolRequests)
+    [call] = output.calls
+    assert call.tool_name == "teleport"
+    assert output.metadata[call.tool_call_id]["kind"] == "teleport"
+    assert output.metadata[call.tool_call_id]["project"] == "inky"
+    # Suspended through the one entry the graph resumes from.
+    assert suspender.suspended == [output]
+
+
+async def test_a_resumed_turn_opens_from_what_the_graph_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "codex", "")] = FakeConversation(
+        external_id="thread-prev"
+    )
+    tentacle = _tentacle(conversations)
+    results = DeferredToolResults(
+        calls={"call_bind": "This thread is about 'inky' now. Carry on."}
+    )
+
+    async with tentacle:
+        result = await tentacle.run(
+            None,
+            conversation_address=KEY,
+            thread_id=_THREAD,
+            deferred_tool_results=results,
+        )
+
+    assert result.output == "done"
+    # The app-server takes no tool result back: the resolution is its next prompt,
+    # on the thread it already has.
+    [turn_call] = FakeCodex.turn_calls
+    assert turn_call.prompt == "This thread is about 'inky' now. Carry on."
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.kind == "resume"
+    assert thread_call.thread_id == "thread-prev"

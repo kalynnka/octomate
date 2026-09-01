@@ -78,6 +78,7 @@ from octomate.schemas.conversation import (
 from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
+from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.agents.base import AgentSpecInput, AgentTentacle
@@ -299,7 +300,9 @@ class CodexTentacle(AgentTentacle[str, None]):
     app-server process), created on first use and reused across the thread's turns;
     the tentacle itself only owns the pool. The notification stream is translated
     into the same pydantic-ai event and message projections that channel feelers
-    already render for other agents.
+    already render for other agents. A `teleport` cast over the served gateway
+    interrupts the turn, which ends as the deferral the graph performs and resumes
+    the agent from, and a resumed run opens from what the graph resolved it with.
     """
 
     config: CodexConfig = field(init=False)
@@ -958,6 +961,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
@@ -986,6 +991,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                 thread_id,
                 agent_tentacle_id=self.id,
             )
+        if deferred_tool_results is not None:
+            # A resumed run. The app-server takes no tool result back, so the graph's
+            # resolution of the deferral is this turn's prompt, ledgered as one.
+            user_prompt = self.resumed_prompt(deferred_tool_results)
         accumulator = CodexRunAccumulator()
         accumulator.begin(user_prompt)
 
@@ -1162,10 +1171,24 @@ class CodexTentacle(AgentTentacle[str, None]):
                             if previous is not None and previous is not turn:
                                 with contextlib.suppress(Exception):
                                     await previous.interrupt()
+                            interrupted = False
                             try:
                                 async for notification in turn.stream():
                                     for event in accumulator.consume(notification):
                                         yield event
+                                    if (
+                                        not interrupted
+                                        and session is not None
+                                        and isinstance(
+                                            session.decision, TeleportDecision
+                                        )
+                                    ):
+                                        # Moving mid-run: the move is the graph's to
+                                        # perform, and this process is still where
+                                        # it was, so the turn ends now — as the
+                                        # deferral the graph performs and resumes from.
+                                        interrupted = True
+                                        await turn.interrupt()
                             finally:
                                 if self.live_turns.get(conversation.id) is turn:
                                     self.live_turns.pop(conversation.id, None)
@@ -1216,6 +1239,24 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
         if accumulator.turn_status == TurnStatus.failed:
             raise AgentRunError(accumulator.turn_error or "Codex turn failed")
+        moving = session.decision if session is not None else None
+        if isinstance(moving, TeleportDecision):
+            if deferred_suspender is None:
+                raise RuntimeError(
+                    "a teleport mid-run needs a suspender to end the turn through"
+                )
+            requests = moving.deferral(str(uuid7()))
+            await deferred_suspender.suspend(requests)
+            # The deferral rides the str-typed stream as a structured result does.
+            yield AgentRunResultEvent(
+                cast(
+                    "AgentRunResult[str]",
+                    accumulator.build_deferred_result(
+                        requests, run_id=run_id, conversation_id=str(conversation.id)
+                    ),
+                )
+            )
+            return
         if output_adapter is not None:
             structured = accumulator.build_structured_result(
                 output_adapter,
@@ -1340,6 +1381,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             interactive=interactive,
             instructions=instructions,
             capabilities=capabilities,
+            deferred_tool_results=deferred_tool_results,
+            deferred_suspender=deferred_suspender,
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
@@ -1455,5 +1498,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 interactive=interactive,
                 instructions=instructions,
                 capabilities=capabilities,
+                deferred_tool_results=deferred_tool_results,
+                deferred_suspender=deferred_suspender,
             )
         )

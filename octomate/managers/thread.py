@@ -39,6 +39,12 @@ def message_text_from_segments(segments: list[MessageSegment]) -> str | None:
     return "\n".join(parts)
 
 
+class BindRefusal(ValueError):
+    """A bind refused by policy — a thread that is not work, or one already bound —
+    carrying the sentence a model may be told and correct from. A `ValueError`
+    still, so nothing that never told the two apart changes."""
+
+
 class ThreadManager:
     """Owns durable thread chat ledger persistence.
 
@@ -125,7 +131,8 @@ class ThreadManager:
         different thread.
 
         A DM and a group chat are refused for the reason `ATTRIBUTABLE_KINDS`
-        gives: they outlive every project in them.
+        gives: they outlive every project in them. Both refusals are `BindRefusal`;
+        a thread that does not exist is a plain `ValueError`, a wiring bug.
 
         No workspace is made here. A run's working directory is fixed when its
         process spawns, so this takes effect on the thread's next turn and the
@@ -136,14 +143,14 @@ class ThreadManager:
             if thread is None:
                 raise ValueError(f"no thread {thread_id} to bind")
             if thread.kind not in ATTRIBUTABLE_KINDS:
-                raise ValueError(
+                raise BindRefusal(
                     f"{thread.key} is a {thread.kind} and cannot be attributed to "
                     f"project {project.name!r}: only a thread or a native_thread "
                     f"is work."
                 )
             current = await thread.project
             if current is not None:
-                raise ValueError(
+                raise BindRefusal(
                     f"{thread.key} is already about {current.name!r} and a thread "
                     f"binds once; work on {project.name!r} in its own thread."
                 )

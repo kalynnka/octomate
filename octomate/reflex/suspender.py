@@ -22,29 +22,37 @@ from octomate.tentacles.channels.base import ChannelTentacle
 
 @dataclass(frozen=True)
 class TeleportRequest:
-    """A teleport for the graph to perform: fork the history and resume the agent
-    in the new place. Reached two ways — an Inkling run defers the `teleport` call
-    mid-run (classified out of its `DeferredToolRequests` by metadata kind), while
-    a runtime that cannot be suspended records a `TeleportDecision` its turn's end
-    converts into one of these."""
+    """A teleport for the graph to perform: carry the history and resume the agent
+    in the new place. One shape for every runtime — an Inkling run defers the
+    `teleport` call itself; a runtime a tool result cannot suspend is interrupted
+    on the recorded decision and ends its turn as the same deferral — classified
+    out of the run's `DeferredToolRequests` by metadata kind."""
 
     hint: str
-    # The deferred call to resolve into the resumed run. None for a
-    # decision-reported teleport, which has no pending call — the resumed run
-    # opens from the hint instead.
-    tool_call_id: str | None = None
+    # The deferred call to resolve into the resumed run.
+    tool_call_id: str
     # Where it goes, when that is not a sub-thread of the chat it is already in. The
     # gateway refused a channel this agent does not run and one that opens no
     # sub-thread, so the node has a place to open and no fallback to choose.
     crossing: CrossingLanding | None = None
+    # Stay in this thread, opening nothing: the move is into a project's workspace
+    # and this thread is what gets bound. Refused by the gateway without a project.
+    here: bool = False
+    # The project the thread landed in is bound to, and the ref its workspace starts
+    # from; None carries the conversation only.
+    project: str | None = None
+    ref: str | None = None
 
 
 @dataclass
-class HumanReviewSuspender:
-    """`DeferredSuspender` that persists a batch and presents it via the
-    channel for human review, then leaves the run suspended. Triage builds it
-    with the right run context; react invokes it (via `ResolveDeferred`) when an
-    agent run yields `DeferredToolRequests` and no in-process resolver is set.
+class ReflexSuspender:
+    """The reflex graph's `DeferredSuspender`: every deferral a run ends on comes
+    through here once, and each kind goes where it is resolved — a `teleport` to
+    the graph, which performs it and resumes the agent; anything else
+    to a human, persisted as a batch and presented on the channel. React builds
+    it with the run's context; Inkling reaches it through `ResolveDeferred`, a
+    runtime a tool result cannot suspend through the `deferred_suspender` its run
+    was handed.
     """
 
     channel: ChannelTentacle
@@ -77,6 +85,9 @@ class HumanReviewSuspender:
                 self.teleport = TeleportRequest(
                     tool_call_id=call.tool_call_id,
                     hint=str(meta.get("hint") or ""),
+                    here=bool(meta.get("here")),
+                    project=str(meta.get("project") or "") or None,
+                    ref=str(meta.get("ref") or "") or None,
                     crossing=CrossingLanding(
                         address=ChannelAddress(
                             channel_tentacle_id=far,

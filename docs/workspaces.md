@@ -1,10 +1,9 @@
 # Thread Workspaces
 
-Records what OCTO-42's discussion settled and what it did not. The mirror
-(OCTO-46), the fork (OCTO-47), running a project thread in it (OCTO-48), and the
-lifecycle below — per-turn save, pruning, resume (OCTO-51) — are built, as are
-the bind capability (OCTO-52), the chat workspace (OCTO-50) and dependency reuse
-(OCTO-49).
+Records what the workspace discussion settled and what it did not. The mirror,
+the fork, running a project thread in it, and the lifecycle below — per-turn
+save, pruning, resume — are built, as are teleporting into a project, the chat
+workspace and dependency reuse.
 
 A run currently happens in `project.root` — one directory on the Octomate host,
 shared by every thread that resolves to that project. This document replaces that
@@ -191,8 +190,8 @@ its inputs are genuine judgment calls, and both belong to whoever is asking:
 default branch is the obvious answer and the wrong one often enough — continuing
 someone's feature branch, reproducing against a tag, working from a PR head.
 
-So this is a capability the agent calls with typed arguments, while Octomate keeps
-everything that is policy:
+So this is the gateway's `teleport` with a `project`, which the agent calls with
+typed arguments, while Octomate keeps everything that is policy:
 
 | The agent supplies | Octomate decides                                |
 | ------------------ | ----------------------------------------------- |
@@ -211,23 +210,44 @@ destroys the first workspace's contents, and it keeps a thread's history honest 
 what a thread is about does not change underneath the record of what it did. A
 different project is a different thread.
 
-**It takes effect on the next turn, not this one.** A run's working directory and
-sandbox policy are fixed when the process spawns, so a workspace created mid-turn
-cannot become the current run's cwd. The tool's result has to say so plainly, or
-the model will try to use a path its own process cannot reach — and go on working
-in the empty tree it started in, whose contents this run is the last to see.
+**It takes effect by ending the turn.** A run's working directory and sandbox
+policy are fixed when the process spawns, so a workspace created mid-turn cannot
+become the current run's cwd — and a model told to wait would go on working in
+the empty tree it started in, whose contents this run is the last to see. So
+binding is a `teleport` with a `project`: Inkling's run ends on the deferral,
+and a driven Claude or Codex turn is interrupted the moment the session records
+the decision and ends as the same deferral. The graph resolves it at once and resumes
+the agent on the same conversation — now in the project's workspace, the call
+answered by a line saying so — and the model carries on where it left off.
+Claude files a session's transcript under the cwd it ran in and resumes only
+from there, so the graph has the tentacle carry the transcript to the workspace's
+own project dir before the run resumes.
 
 This is also the path by which a chat thread becomes a project thread: someone
-says what they want worked on, the capability binds it, and the following turn
-starts in the project's code, in a workspace whose work is kept.
+says what they want worked on, a `teleport` with the project binds it, and the
+resumed run starts in
+the project's code, in a workspace whose work is kept.
 
-**Only Inkling can call it today.** The capability is a pydantic-ai toolset, and
-the three CLI runtimes ignore capabilities — Claude's own docstring says so. A
-chat thread on Claude, Codex or dsh therefore has a workspace it may write to,
-whose work is thrown away, and no way to say what it is about. Claude can be
-reached in process with an SDK MCP server; Codex only by hosting the two tools
-out of process; dsh not at all, because `dsh web` is one daemon serving every
-thread and there is no per-thread process to attach a tool to (OCTO-68).
+**The agent may also give the workspace back.** A project thread's tree is kept
+between turns and swept only once it has sat idle, so a thread whose work is
+finished — merged, delivered, dropped — holds disk it has no claim on. `dispel`
+is the agent saying so: the gateway records it, and when the turn ends the graph
+saves the turn as always and then releases the tree, under the sweep's own rule
+that a workspace holding work the mirror has not seen is kept. Nothing is lost —
+a later message on the thread forks it afresh and lays the ref back over it —
+and nothing is pulled out from under a run still in it, which is why the release
+waits for the turn rather than happening in the call.
+
+**Every driven runtime can call it.** `teleport` with a `project`, `dispel`, and
+the `projects` facet of `scry` are gateway spells: Inkling mounts them as a capability, a driven
+Claude turn as its in-process MCP server, a driven Codex turn over the served
+`/gateway/mcp`. A native session may scry the projects but neither teleport nor
+dispel — its work is wherever its terminal is, and there is no tree to fork for
+it (a native teleport, still to come, is the door for that). dsh mounts no gateway on a driven
+turn, so a chat thread
+there still has a workspace it may write to, whose work is thrown away, and no
+way to say what it is about: `dsh web` is one daemon serving every thread, with
+no per-thread process to attach a tool to.
 
 ## The chat workspace
 
@@ -320,6 +340,8 @@ disk decision rather than a data-loss decision.
   lost work, so the heuristic does not need to be good. A thread with a pending
   `DeferredAction` is known to be alive and is a reasonable last choice to evict,
   but that only orders eviction — it never blocks it.
+- **Dispelling** is the same release on the agent's word instead of the timer:
+  saved first, and kept if the save did not take.
 - The chat workspace is never pruned. It is empty.
 
 ## Mirror sync
@@ -398,6 +420,7 @@ different behavior, so they are variants:
 class RemoteUpstream(BaseModel):
     kind: Literal["remote"] = "remote"
     url: str
+
 
 class DirectoryUpstream(BaseModel):
     kind: Literal["directory"] = "directory"

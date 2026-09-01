@@ -21,6 +21,7 @@ from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
@@ -105,7 +106,7 @@ class FakeConversation:
     subagent_id: str = ""
     parent_conversation_id: uuid.UUID | None = None
     agent_tentacle_id: str = ""
-    runs: list[str] = field(default_factory=list)
+    runs: list[AgentRun] = field(default_factory=list)
     permission_mode: AgentPermissionMode | None = None
     allowed_tools: list[str] = field(default_factory=list)
 
@@ -185,7 +186,9 @@ class FakeConversationManager(ConversationManager):
     ) -> AgentRun | None:
         fake = cast(FakeConversation, conversation)
         self.runs.append((fake, f"{name}:{run_id}", list(messages)))
-        fake.runs.append(run_id)
+        fake.runs.append(
+            AgentRun(id=run_id, conversation_id=fake.id, name=name, cwd=cwd)
+        )
         fake.messages.extend(messages)
         if external_id is not None:
             fake.external_id = external_id
@@ -258,6 +261,13 @@ class FakeThreadManager(ThreadManager):
             )
             self.threads_by_key[key] = thread
         return thread
+
+    async def get(
+        self, thread_id: uuid.UUID, *, with_messages: bool = True
+    ) -> Thread | None:
+        return next(
+            (one for one in self.threads_by_key.values() if one.id == thread_id), None
+        )
 
     async def record_handoff(
         self,
@@ -481,3 +491,14 @@ class RecordingWorkspaceManager(WorkspaceManager):
 
     async def save(self, thread: Thread) -> None:
         self.saved.append(thread.id)
+
+
+@dataclass
+class RecordingSuspender:
+    """A `DeferredSuspender` that keeps what it was handed and presents nothing."""
+
+    suspended: list[DeferredToolRequests] = field(default_factory=list)
+
+    async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
+        self.suspended.append(requests)
+        return None
