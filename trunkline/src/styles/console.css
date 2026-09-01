@@ -371,6 +371,11 @@ html[data-theme='dark'] {
   display: flex;
   flex-direction: column;
   row-gap: 14px;
+  min-width: 0;
+}
+#trk-chatlog pre,
+#trk-chatlog code {
+  overflow-wrap: anywhere;
 }
 @media (max-height: 640px) {
   #trk-chatlog {

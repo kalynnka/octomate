@@ -402,6 +402,9 @@ export function ThreadsSidebar() {
                       + new thread
                     </span>
                   )}
+                  {/* Each channel scrolls under its own header, so a channel with
+                      a hundred threads still leaves the ones below it reachable. */}
+                  <div style={{ maxHeight: 300, overflowY: 'auto' }}>
                   {rows.map((t) => (
                     <div
                       key={t.id}
@@ -466,6 +469,7 @@ export function ThreadsSidebar() {
                       </div>
                     </div>
                   ))}
+                  </div>
                 </Fold>
               </div>
             )
