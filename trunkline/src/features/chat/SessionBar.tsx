@@ -5,6 +5,13 @@ import { mono } from '@/components/text'
 
 const vline = <i style={{ width: 1, height: 12, background: 'var(--trk-vline)', flexShrink: 0 }} />
 
+/** Token counts run to nine figures; the bar has room for four. */
+function count(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+  return String(n)
+}
+
 /** Live ledger clock — a functional status readout, ticking once a second. */
 function useClock() {
   const [now, setNow] = useState(() => new Date())
@@ -34,13 +41,22 @@ export function SessionBar() {
   // The channel list is the connected tentacles only, so a native channel is
   // not in it; its display name is the same table the sidebar reads.
   const routeChip = `${channelMeta(selChannel).label.toLowerCase()}/${detail?.key ?? selThreadId}`
-  // A thread that has not run yet is on nothing. For one that has, no read
-  // reports its usage or context size (see README's gap list), so the slots
-  // hold an em dash rather than a number nothing measured.
+  // A thread that has not run yet is on nothing; one that has carries the
+  // provider's own numbers, summed off the runs.
   const fresh = ntOn && !ntStarted
-  const ctxK = fresh ? 0 : null
-  const ctxW = ctxK === null ? '0%' : `${Math.round((ctxK / 200) * 100)}%`
-  const usageChip = fresh ? 'Σ in 0 · cache 0 (—) · out 0' : '—'
+  const use = fresh ? null : detail?.usage
+  const rate = use?.cacheRate == null ? '—' : `${Math.round(use.cacheRate * 100)}%`
+  const usageChip = use
+    ? `Σ in ${count(use.input)} · cache ${count(use.cacheRead)} (${rate}) · out ${count(use.output)}`
+    : fresh
+      ? 'Σ in 0 · cache 0 (—) · out 0'
+      : '—'
+  const ctxK = fresh ? 0 : detail?.ctxK
+  // The relay does not report the window a run had, and a run does not record
+  // its model. A turn carrying more than 200k was not on a 200k model, and the
+  // only larger one is 1M — so the reading picks between the two it can be.
+  const window = ctxK !== undefined && ctxK > 200 ? 1000 : 200
+  const ctxW = ctxK === undefined ? '0%' : `${Math.min(100, Math.round((ctxK / window) * 100))}%`
   const msgChip = `${detail?.msgCount ?? 0} msg`
 
   const chip = (title: string, children: React.ReactNode, extra?: React.CSSProperties) => (
@@ -111,7 +127,7 @@ export function SessionBar() {
             >
               <i style={{ width: ctxW, background: 'var(--color-ghost)' }} />
             </i>
-            {ctxK === null ? '—' : `${ctxK}k`}/200k
+            {ctxK === undefined ? '—' : `${count(ctxK * 1000)}`}/{window === 1000 ? '1M' : '200k'}
           </>
         ))}
         {vline}

@@ -320,6 +320,19 @@ export interface ThreadDetail {
   artifacts?: ArtifactRef[]
   docs?: Record<string, ReviewDoc>
   comments?: ReviewComment[]
+  /** what this thread has cost, summed over every response its runs recorded */
+  usage: ThreadUsage
+  /** the context the last turn ran with, in kilotokens; 0 when none reported one */
+  ctxK: number
+}
+
+export interface ThreadUsage {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  /** share of the read tokens that came from cache, 0–1; null when nothing was read */
+  cacheRate: number | null
 }
 
 /* ---------------------------------------------------------------------------

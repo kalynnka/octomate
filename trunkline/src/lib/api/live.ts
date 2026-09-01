@@ -20,6 +20,7 @@ import type {
   SessionInfo,
   ThreadDetail,
   ThreadSummary,
+  ThreadUsage,
 } from './types'
 
 /**
@@ -375,6 +376,34 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? lastCwd.slice(root.length + 1)
         : lastCwd
 
+  // What the thread cost, and what its last turn was carrying. Both come off the
+  // model messages the runs already hold for the replay — the provider's own
+  // numbers, summed here because nothing else reports them.
+  const usage: ThreadUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cacheRate: null,
+  }
+  let context = 0
+  for (const run of runs) {
+    for (const message of run.messages ?? []) {
+      if (message.kind !== 'response' || !message.usage) continue
+      const { input_tokens, output_tokens, cache_read_tokens, cache_write_tokens } =
+        message.usage
+      usage.input += input_tokens ?? 0
+      usage.output += output_tokens ?? 0
+      usage.cacheRead += cache_read_tokens ?? 0
+      usage.cacheWrite += cache_write_tokens ?? 0
+      // The last turn's own input is the context it ran with. Summing them would
+      // add every turn's context together, which is not a window.
+      context = (input_tokens ?? 0) + (cache_read_tokens ?? 0) + (cache_write_tokens ?? 0)
+    }
+  }
+  const read = usage.input + usage.cacheRead + usage.cacheWrite
+  usage.cacheRate = read > 0 ? usage.cacheRead / read : null
+
   const { agent } = activeRoute(thread.handoffs)
   return {
     key: thread.channel_thread_id || threadTag(thread.id),
@@ -403,5 +432,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     msgCount: messages.length,
     sessions: liveSessions(thread.handoffs, own, anchors),
     ledger,
+    usage,
+    ctxK: Math.round(context / 1000),
   }
 }

@@ -92,9 +92,23 @@ export type ModelRequestPart =
 /** One persisted model message. This is the agent's own turn history, recorded
  *  under the run: the only place a finished thread's thinking and tool calls
  *  survive, since the chat ledger holds what was said and nothing else. */
+/** What one exchange cost, as the provider reported it. Absent on a message
+ *  whose source reported none. */
+export interface ApiUsage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_tokens?: number
+  cache_write_tokens?: number
+}
+
 export type ApiModelMessage =
   | { kind: 'request'; parts: ModelRequestPart[]; timestamp: string | null }
-  | { kind: 'response'; parts: ModelResponsePart[]; timestamp: string }
+  | {
+      kind: 'response'
+      parts: ModelResponsePart[]
+      timestamp: string
+      usage?: ApiUsage | null
+    }
 
 export interface TextPartDelta {
   part_delta_kind: 'text'
