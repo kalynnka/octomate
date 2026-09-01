@@ -46,6 +46,8 @@ export type SessionTone = 'accent' | 'gold' | 'sage' | 'teal' | 'ghost'
 export interface SessionInfo {
   n: string
   id: string
+  /** the runtime's own name for this session; absent for one that names none */
+  name?: string
   /** the conversation row this session is — what a posture switch is written to */
   conversationId: string
   route: string

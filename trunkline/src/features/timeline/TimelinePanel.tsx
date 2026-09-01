@@ -376,7 +376,9 @@ export function TimelinePanel() {
                       flexShrink: 0,
                     }}
                   />
-                  <span style={{ ...mono(10, 700), color: 'var(--color-accent)', flexShrink: 0 }}>{ses.id}</span>
+                  <span style={{ ...mono(10, 700), color: 'var(--color-accent)', flexShrink: 0 }}>
+                    {ses.name ?? ses.id}
+                  </span>
                   <span style={{ ...mono(8.5), color: 'var(--fg-2)', flex: 1, minWidth: 0, ...ellipsis }}>
                     {ses.route}
                   </span>

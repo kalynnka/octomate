@@ -380,6 +380,9 @@ export interface ApiThread {
   channel_tentacle_id: string
   /** the platform's own thread id; for trunkline threads, the directive key */
   channel_thread_id: string | null
+  /** what the thread goes by: the runtime's own name for the session, else the
+   *  line the thread opened with. Null until anything has been said in it */
+  title: string | null
   /** the project this thread's work is in; read it with /threads/{id}/project */
   project_id: string | null
   status: 'active' | 'closed'

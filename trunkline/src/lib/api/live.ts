@@ -120,14 +120,14 @@ function activeRoute(handoffs: ApiHandoff[]): {
 }
 
 /**
- * What a thread goes by in the sidebar. The relay serves threads without their
- * messages — the ledger is its own request — so there is no first line to name
- * a thread after until it is opened, and the surface it lives on is the honest
- * stand-in: the platform thread key, or the chat when the surface is not a
- * thread (a DM, a native session's own id).
+ * What a thread goes by in the sidebar. The row carries a name — the runtime's
+ * own where it grabbed one, else the line the thread opened with — and falls
+ * back to the surface it lives on for a thread nothing has been said in: the
+ * platform thread key, or the chat when the surface is not a thread (a DM, a
+ * native session's own id).
  */
 function threadLabel(t: ApiThread): string {
-  return t.channel_thread_id || t.chat_id || threadTag(t.id)
+  return t.title || t.channel_thread_id || t.chat_id || threadTag(t.id)
 }
 
 export function liveThreadSummary(t: ApiThread): ThreadSummary {
@@ -214,6 +214,7 @@ function liveSessions(
       return {
         n: `S${index + 1}`,
         id: sessionTag(conversation.id),
+        name: conversation.name ?? undefined,
         conversationId: conversation.id,
         route: handoff
           ? routeLabel(handoff.to_agent_tentacle_id, handoff.to_model)

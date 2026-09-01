@@ -29,7 +29,7 @@ export function SessionBar() {
       ? 'session live'
       : 'no session yet'
     : lastSes
-      ? `${lastSes.id}${lastSes.status ? ` · ${lastSes.status}` : ''}`
+      ? `${lastSes.name ?? lastSes.id}${lastSes.status ? ` · ${lastSes.status}` : ''}`
       : '—'
   // The channel list is the connected tentacles only, so a native channel is
   // not in it; its display name is the same table the sidebar reads.
