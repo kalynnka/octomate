@@ -472,3 +472,11 @@ The codebase keeps an octopus metaphor, and these are the words it uses:
 | **Ink** 🖊️ | per-channel client | What actually sends, edits and uploads on the platform. |
 | **Spill** 💧 | `SpillStore` | Where an oversized tool return goes, so it is read back on demand instead of re-sent every turn. |
 | **Awake** 🌊 | `AwakeSignal` | What arrives: a message, or a batch of answered actions coming back. |
+
+## License
+
+Copyright © 2026 Lu Hui.
+
+Octomate is free software under the [GNU Affero General Public License v3.0](LICENSE):
+use it, change it, and run it as you like. If you offer a modified version to others over
+a network, the AGPL asks you to offer them its source too.
