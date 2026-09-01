@@ -433,11 +433,12 @@ async def test_reception_mounts_gate_capability() -> None:
     gate = _recorded_gate_capability(agent.turns[0])
     assert gate.toolset is not None
     scry = gate.toolset.tools[SCRY_TOOL_NAME].function
-    scrying = await scry(FAKE_CONTEXT)
-    assert scrying.routes == []
+    routes = await scry(FAKE_CONTEXT, "routes")
+    places = await scry(FAKE_CONTEXT, "destinations")
+    assert routes == []
     # One list for every spell: this run is a DM, so `dm` is not among them — it is
     # already where it would go — and nothing links this asker to another channel.
-    assert [one.handle for one in scrying.destinations] == ["here"]
+    assert [one.handle for one in places] == ["here"]
 
 
 async def test_non_stream_reception_presents_only_the_final_output() -> None:

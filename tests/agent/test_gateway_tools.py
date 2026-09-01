@@ -277,13 +277,13 @@ async def test_a_native_session_scries_only_crossings(
     server, session, _channel, _threads, _kicks = await a_native_call()
 
     async with Client(server) as client:
-        result = await client.call_tool("scry", {})
+        routes = await client.call_tool("scry", {"reveal": "routes"})
+        places = await client.call_tool("scry", {"reveal": "destinations"})
 
-    assert result.data == str(await session.scry())
     # No conversation of its own: nothing to route to here, and neither built-in
     # landing exists — everywhere it can go is the linked account's crossing.
-    assert "Agents you can route to here:\n- (none)" in result.data
-    assert "their direct messages on" in result.data
+    assert routes.data == "- (none)"
+    assert "their direct messages on" in places.data
     assert await session.summon_handles() == ["im"]
 
 
@@ -293,14 +293,14 @@ async def test_a_native_session_with_no_linked_accounts_scries_nowhere(
     server, session, _channel, _threads, kicks = await a_native_call(linked=False)
 
     async with Client(server) as client:
-        result = await client.call_tool("scry", {})
+        result = await client.call_tool("scry", {"reveal": "destinations"})
         with pytest.raises(ToolError) as refusal:
             await client.call_tool("summon", SUMMON_ARGUMENTS)
 
     # Registered, so the session knows who it speaks for — but the user has no
     # account anywhere a destination could light up.
     assert session.user_profile is not None
-    assert result.data.count("- (none)") == 2
+    assert result.data == "- (none)"
     # The truthful dead end: no linked account, so nowhere left to land.
     assert "`summon` has nowhere left to land, so answer it." in str(refusal.value)
     assert kicks == []
@@ -335,7 +335,7 @@ async def test_a_native_send_here_is_refused(
 
     assert str(refusal.value) == (
         "This session has no conversation of its own to land a send on — "
-        "name a destination from `scry`."
+        'name a destination from `scry` (`reveal="destinations"`).'
     )
     assert threads.outbounds == []
 

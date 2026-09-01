@@ -61,9 +61,11 @@ from octomate.schemas.triage import (
     TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     WHISPER_TOOL_NAME,
+    AgentRoute,
+    Destination,
     GatewayDecision,
     SchemeTarget,
-    Scrying,
+    ScryFacet,
     SendTarget,
     SummonTarget,
     TeleportTarget,
@@ -103,24 +105,26 @@ Do NOT summon when:
 - You are only mildly unsure — ask the user a clarifying question instead.
 - No route clearly fits — handle it yourself or ask; never summon on a guess.
 
-When one fires, call `{scry}` first to see the agents and what each is for. Every route
-carries a claim: its ability (what that agent+model is for) and the effort levels it
-accepts — pick the route whose ability covers the work. Set `effort` only when the
-user explicitly asked for a level; otherwise leave it unset so the agent's own default
-applies. Then `{summon}` — copying its `agent_id` and `model` exactly from that route,
-and writing a self-contained brief since the other agent may not see this chat.
-Choose `destination`: `here` hands over this same conversation; `thread` opens a new
-sub-thread of the current chat; a channel id from `{scry}` opens one in that person's
-direct messages on that channel, for work that belongs where they actually do it.
-You yourself are not a valid summon target.
+When one fires, call `{scry}` with `reveal="routes"` first to see the agents and what
+each is for. Every route carries a claim: its ability (what that agent+model is for)
+and the effort levels it accepts — pick the route whose ability covers the work. Set
+`effort` only when the user explicitly asked for a level; otherwise leave it unset so
+the agent's own default applies. Then `{summon}` — copying its `agent_id` and `model`
+exactly from that route, and writing a self-contained brief since the other agent may
+not see this chat. Choose `destination`: `here` hands over this same conversation;
+`thread` opens a new sub-thread of the current chat; a channel id from `{scry}` with
+`reveal="destinations"` opens one in that person's direct messages on that channel,
+for work that belongs where they actually do it. You yourself are not a valid summon
+target.
 
 ### `{teleport}` — relocate yourself
 Move this conversation into a new sub-thread that *you* keep handling, carrying
 everything said so far. Use it for multi-step or long-running work that deserves its
 own thread but that you are the right one to do — no other agent involved.
 `destination` is `thread`, a sub-thread of the current chat, unless you name a channel
-id from `{scry}` to carry it into their direct messages there — offered only from a
-conversation nobody else can read, since everything said here travels with you.
+id from `{scry}` (`reveal="destinations"`) to carry it into their direct messages
+there — offered only from a conversation nobody else can read, since everything said
+here travels with you.
 
 ### `{scheme}` — take it to the user privately
 Continue one-to-one with the person who asked, in their direct messages: for work that
@@ -322,11 +326,18 @@ class GatewayCapability(AbstractCapability[None]):
             return "\n\n".join(str(part) for part in output)
         return str(output)
 
-    async def scry(self, ctx: RunContext[None]) -> Scrying:
-        """Reveal what this conversation can reach: the Octomate agent tentacles
-        that can be summoned or commissioned, and anywhere other than here that the
-        person you are answering can be reached privately."""
-        return await self.session.scry()
+    async def scry(
+        self, ctx: RunContext[None], reveal: ScryFacet
+    ) -> list[AgentRoute] | list[Destination]:
+        """Reveal one facet of what this conversation can reach.
+
+        Args:
+            reveal: `routes` — the Octomate agent tentacles that can be summoned or
+                commissioned from here. `destinations` — anywhere other than here
+                that the person you are answering can be reached privately, each
+                with the agents that run there.
+        """
+        return await self.session.scry(reveal)
 
     async def summon(
         self,
@@ -342,9 +353,10 @@ class GatewayCapability(AbstractCapability[None]):
         """Hand this conversation to another Octomate agent, who takes it over.
 
         Args:
-            agent_id: The target agent, copied exactly from a `scry` route — from
-                that destination's own routes when you name a channel, since which
-                agents run where is each channel's own business.
+            agent_id: The target agent, copied exactly from a `scry` route
+                (`reveal="routes"`) — from that destination's own routes when you
+                name a channel, since which agents run where is each channel's own
+                business.
             model: That route's model, copied exactly.
             destination: Where the other agent picks it up. A channel opens a
                 sub-thread of that person's direct messages there.
@@ -427,7 +439,8 @@ class GatewayCapability(AbstractCapability[None]):
                 cannot see this conversation, so give the goal, the relevant context and
                 decisions, what's been tried, and what a finished result looks like.
             destination: Whose direct messages — this channel's by default, or a
-                channel from `scry` to continue where they already are.
+                channel from `scry` (`reveal="destinations"`) to continue where
+                they already are.
         """
         try:
             return await self.session.scheme(
@@ -492,7 +505,7 @@ class GatewayCapability(AbstractCapability[None]):
         if agent_id == self.session.current_agent_id:
             raise ModelRetry(
                 f"Cannot commission yourself {self.session.current_agent_id!r}. "
-                f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
+                f'Call `{SCRY_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
             )
         try:
             route = self.session.claimed_route(
@@ -504,7 +517,7 @@ class GatewayCapability(AbstractCapability[None]):
         if run_model is None:
             raise ModelRetry(
                 f"Agent {agent_id!r} does not serve model {model!r}. "
-                f"Call `{SCRY_TOOL_NAME}` and copy a route exactly."
+                f'Call `{SCRY_TOOL_NAME}` with `reveal="routes"` and copy a route exactly.'
             )
         # The calling run's own conversation is the parent — the react
         # graph put its id on the RunContext. No id means the gate is

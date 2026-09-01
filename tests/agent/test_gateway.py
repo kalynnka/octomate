@@ -207,9 +207,10 @@ async def test_scry_tool_returns_other_routes() -> None:
     assert capability.toolset is not None
     scry = capability.toolset.tools[SCRY_TOOL_NAME].function
 
-    scrying = await scry(FAKE_CONTEXT)
+    routes = await scry(FAKE_CONTEXT, "routes")
+    places = await scry(FAKE_CONTEXT, "destinations")
 
-    assert scrying.routes == [
+    assert routes == [
         AgentRoute(
             agent_id="claude",
             model="opus",
@@ -220,7 +221,18 @@ async def test_scry_tool_returns_other_routes() -> None:
     # asker is registered. A sub-thread is not among them: `summon` names one
     # through its own literal, and a resolved handle is always somewhere a person
     # can be delivered to.
-    assert [one.handle for one in scrying.destinations] == ["here", "dm"]
+    assert [one.handle for one in places] == ["here", "dm"]
+
+
+async def test_scry_computes_only_the_facet_it_was_asked_for() -> None:
+    capability = _capability("shared_thread")
+    assert capability.toolset is not None
+    scry = capability.toolset.tools[SCRY_TOOL_NAME].function
+
+    await scry(FAKE_CONTEXT, "routes")
+
+    # The registry was never reached for the facet nobody asked for.
+    assert capability.session.computed_destinations is None
 
 
 async def test_summon_capability_rejects_self_summon() -> None:

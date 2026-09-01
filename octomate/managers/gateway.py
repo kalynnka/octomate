@@ -16,7 +16,7 @@ import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, overload
 
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
@@ -36,7 +36,7 @@ from octomate.schemas.triage import (
     HereLanding,
     SchemeDecision,
     SchemeTarget,
-    Scrying,
+    ScryFacet,
     SendTarget,
     SummonDecision,
     SummonLanding,
@@ -431,9 +431,21 @@ class GatewaySession:
             )
         return route
 
-    async def scry(self) -> Scrying:
-        """What this conversation can reach: the routes here, and everywhere else."""
-        return Scrying(routes=self.other_routes, destinations=await self.destinations())
+    @overload
+    async def scry(self, reveal: Literal["routes"]) -> list[AgentRoute]: ...
+
+    @overload
+    async def scry(self, reveal: Literal["destinations"]) -> list[Destination]: ...
+
+    async def scry(self, reveal: ScryFacet) -> list[AgentRoute] | list[Destination]:
+        """One facet of what this conversation can reach: the routes here, or every
+        place it can go. Only the asked facet is computed — the places reach the
+        identity registry."""
+        match reveal:
+            case "routes":
+                return self.other_routes
+            case "destinations":
+                return await self.destinations()
 
     async def summon(
         self,
@@ -456,7 +468,7 @@ class GatewaySession:
         if agent_id == self.current_agent_id:
             raise GatewayRefusal(
                 f"Cannot summon yourself {self.current_agent_id!r}. "
-                f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
+                f'Call `{SCRY_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
             )
         landing: SummonLanding = HereLanding()
         # Against the routes of the channel it lands on: an agent is summonable

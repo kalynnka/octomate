@@ -29,6 +29,12 @@ TELEPORT_TOOL_NAME = "teleport"
 SCHEME_TOOL_NAME = "scheme"
 COMMISSION_TOOL_NAME = "commission"
 WHISPER_TOOL_NAME = "whisper"
+# What one `scry` reveals. One facet per call, because each spell needs exactly one —
+# a route for `summon`, a place for anything that lands somewhere — and the routes
+# alone run long enough that showing everything every time buried the line the caller
+# came for. A tool result is the only place a per-user list can reach the model
+# without forking a cached prompt segment.
+ScryFacet = Literal["routes", "destinations"]
 # The `teleport` deferral's declared metadata kind. The suspender and dispatch graph
 # classify the deferral by this kind rather than the tool name, so the gateway (which
 # emits it) and `reflex` (which resolves it) agree on one value without matching on
@@ -149,8 +155,8 @@ class Destination:
     address: ChannelAddress
     # Who can take a handoff there, when that is not the same list as here: which
     # agents serve a channel is that channel's own config, so a place on another one
-    # answers with its own. Empty for this run's own surface, whose routes `Scrying`
-    # already carries whole, and for a place only `send` and `scheme` can reach.
+    # answers with its own. Empty for this run's own surface, whose routes `scry`
+    # already lists whole, and for a place only `send` and `scheme` can reach.
     routes: tuple[AgentRoute, ...] = ()
 
     def __str__(self) -> str:
@@ -258,31 +264,6 @@ class TeleportDecision(BaseModel):
 GatewayDecision: TypeAlias = Annotated[
     SummonDecision | SchemeDecision | TeleportDecision, Field(discriminator="action")
 ]
-
-
-@dataclass(frozen=True)
-class Scrying:
-    """What `scry` reveals: who can take this on, and where else the asker is.
-
-    One tool result rather than two tools, because both answer the same question —
-    where can this conversation go — and a tool result is the only place a per-user
-    list can reach the model without forking a cached prompt segment.
-    """
-
-    # Who can take this on where the conversation already is. A place on another
-    # channel runs its own agents and lists them under itself.
-    routes: list[AgentRoute]
-    # Every place a spell can name, this conversation included — not only the remote
-    # ones. `GatewayCapability.linked_destinations` is the remote half; this is all.
-    destinations: list[Destination]
-
-    def __str__(self) -> str:
-        routes = "\n".join(str(route) for route in self.routes) or "- (none)"
-        places = "\n".join(str(one) for one in self.destinations) or "- (none)"
-        return (
-            f"Agents you can route to here:\n{routes}\n\n"
-            f"Where you can put this:\n{places}"
-        )
 
 
 @dataclass(frozen=True)

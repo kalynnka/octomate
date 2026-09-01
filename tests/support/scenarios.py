@@ -635,7 +635,7 @@ def subagent_run() -> ChannelScript:
         FunctionToolCallEvent(
             ToolCallPart(
                 tool_name="scry",
-                args={},
+                args={"reveal": "routes"},
                 tool_call_id="call_scry_subagents",
             )
         ),

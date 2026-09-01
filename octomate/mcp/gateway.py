@@ -41,6 +41,7 @@ from octomate.schemas.triage import (
     TELEPORT_TOOL_NAME,
     THREAD_TARGET,
     SchemeTarget,
+    ScryFacet,
     SendTarget,
     SummonTarget,
     TeleportTarget,
@@ -262,8 +263,9 @@ def gateway_mcp(
         name=SCRY_TOOL_NAME, description=capability_contract(GatewayCapability.scry)
     )
     @spoken
-    async def scry(session: GatewaySession = current) -> str:
-        return str(await session.scry())
+    async def scry(reveal: ScryFacet, session: GatewaySession = current) -> str:
+        # Lines, never the list: FastMCP renders an empty list as no content at all.
+        return "\n".join(str(one) for one in await session.scry(reveal)) or "- (none)"
 
     @mcp.tool(
         name=SUMMON_TOOL_NAME, description=capability_contract(GatewayCapability.summon)
@@ -345,7 +347,7 @@ def gateway_mcp(
         if target is None:
             raise GatewayRefusal(
                 "This session has no conversation of its own to land a send on — "
-                f"name a destination from `{SCRY_TOOL_NAME}`."
+                f'name a destination from `{SCRY_TOOL_NAME}` (`reveal="destinations"`).'
             )
         notice = "sent"
         if address is not None:
