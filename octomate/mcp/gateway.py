@@ -33,6 +33,7 @@ from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
+    BIND_TOOL_NAME,
     DIRECT_TARGET,
     HERE_TARGET,
     SCHEME_TOOL_NAME,
@@ -70,6 +71,7 @@ GATEWAY_SPELLS: tuple[str, ...] = (
     TELEPORT_TOOL_NAME,
     SCHEME_TOOL_NAME,
     SEND_TOOL_NAME,
+    BIND_TOOL_NAME,
 )
 
 # The routing contract under the tools' bare names, which is how a runtime that
@@ -240,6 +242,8 @@ async def native_session(
         user_profile=profile,
         agents=octomate.agents,
         native=True,
+        threads=octomate.thread_manager,
+        workspaces=octomate.workspaces,
     )
 
 
@@ -377,5 +381,14 @@ def gateway_mcp(
             sender=channel.self_profile,
         )
         return notice
+
+    @mcp.tool(
+        name=BIND_TOOL_NAME, description=capability_contract(GatewayCapability.bind)
+    )
+    @spoken
+    async def bind(
+        project: str, ref: str | None = None, session: GatewaySession = current
+    ) -> str:
+        return await session.bind(project=project, ref=ref)
 
     return mcp

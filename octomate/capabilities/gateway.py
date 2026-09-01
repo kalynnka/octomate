@@ -1,7 +1,7 @@
 """Gateway capability: an agent's routing spellbook.
 
-Five spells decide where a turn goes and who handles it. Each is opaque on its own,
-so the instruction opens with plain words for what they actually do:
+The spells decide where a turn goes, who handles it, and what it is about. Each is
+opaque on its own, so the instruction opens with plain words for what they actually do:
 
 - `scry`: reveal the other agents this one can hand off to or put to work.
 - `summon`: hand the conversation to another agent (a handoff — they take over from a
@@ -16,6 +16,9 @@ so the instruction opens with plain words for what they actually do:
   asking user's direct messages. It lives here rather than in its own capability
   because naming somewhere other than "here" is a routing decision, and this is
   where the channel registry and the run's own address already are.
+- `bind`: say which project this thread is about — the door out of a throwaway
+  workspace into one whose work is kept. Where a thread's work happens is as much
+  the gateway's question as who does it, and it rides the same identity.
 
 The policy itself — what each spell may name, and the decision it records — lives on
 `octomate.managers.gateway.GatewaySession`; this capability is Inkling's translation
@@ -50,6 +53,7 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
+    BIND_TOOL_NAME,
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
     GATEWAY_TOOLSET_ID,
@@ -64,6 +68,7 @@ from octomate.schemas.triage import (
     AgentRoute,
     Destination,
     GatewayDecision,
+    ProjectSummary,
     SchemeTarget,
     ScryFacet,
     SendTarget,
@@ -166,6 +171,20 @@ is that message's `#msg:<id>` handle — it must be the first segment. To ping s
 use an `at` segment with their user id.
 """
 
+BIND_INSTRUCTION_TEMPLATE = """\
+
+### `{bind}` — say which project this thread is about
+A thread about no project runs in a throwaway tree: you may write there, and nothing
+you write is kept. Binding it to a project is what makes its work kept, in that
+project's code. `{scry}` with `reveal="projects"` shows what this deployment can work
+on; name one, and `ref` — a branch, tag or commit — only when the default branch is
+the wrong place to start. It applies from your **next** turn: this run's working
+directory was fixed when its process started, so say what you will do once it
+applies and let the person answer. A thread binds once; if this one is already about
+a project the tool says so — a different project is a different thread, so ask them
+to start one.
+"""
+
 
 def gateway_instructions(tool_name: Callable[[str], str]) -> str:
     """The gateway's routing instruction, each spell rendered by the caller's own tool
@@ -177,10 +196,13 @@ def gateway_instructions(tool_name: Callable[[str], str]) -> str:
         "teleport": tool_name(TELEPORT_TOOL_NAME),
         "scheme": tool_name(SCHEME_TOOL_NAME),
         "send": tool_name(SEND_TOOL_NAME),
+        "bind": tool_name(BIND_TOOL_NAME),
     }
-    return GATEWAY_INSTRUCTION_TEMPLATE.format(
-        **names
-    ) + SEND_INSTRUCTION_TEMPLATE.format(**names)
+    return (
+        GATEWAY_INSTRUCTION_TEMPLATE.format(**names)
+        + SEND_INSTRUCTION_TEMPLATE.format(**names)
+        + BIND_INSTRUCTION_TEMPLATE.format(**names)
+    )
 
 
 COMMISSION_INSTRUCTION = """\
@@ -229,6 +251,7 @@ class GatewayCapability(AbstractCapability[None]):
         toolset.tool(name=TELEPORT_TOOL_NAME, retries=2)(self.teleport)
         toolset.tool(name=SCHEME_TOOL_NAME, retries=2)(self.scheme)
         toolset.tool(name=SEND_TOOL_NAME, retries=2)(self.send)
+        toolset.tool(name=BIND_TOOL_NAME, retries=2)(self.bind)
         if (
             self.session.agents is not None
             and self.conversations is not None
@@ -328,16 +351,20 @@ class GatewayCapability(AbstractCapability[None]):
 
     async def scry(
         self, ctx: RunContext[None], reveal: ScryFacet
-    ) -> list[AgentRoute] | list[Destination]:
+    ) -> list[AgentRoute] | list[Destination] | list[ProjectSummary]:
         """Reveal one facet of what this conversation can reach.
 
         Args:
             reveal: `routes` — the Octomate agent tentacles that can be summoned or
                 commissioned from here. `destinations` — anywhere other than here
                 that the person you are answering can be reached privately, each
-                with the agents that run there.
+                with the agents that run there. `projects` — the projects this
+                deployment can work on, for `bind`.
         """
-        return await self.session.scry(reveal)
+        try:
+            return await self.session.scry(reveal)
+        except GatewayRefusal as refusal:
+            raise ModelRetry(str(refusal)) from refusal
 
     async def summon(
         self,
@@ -472,6 +499,23 @@ class GatewayCapability(AbstractCapability[None]):
             return_value="sent",
             metadata=[MessageSentEvent(segments=segments, destination=address)],
         )
+
+    async def bind(
+        self, ctx: RunContext[None], project: str, ref: str | None = None
+    ) -> str:
+        """Say that this thread is about the project `project`, and fork its
+        workspace. Applies from the next turn.
+
+        Args:
+            project: The project's name, copied exactly from `scry`
+                (`reveal="projects"`).
+            ref: The branch, tag or commit to start from; omit it for the
+                project's default branch.
+        """
+        try:
+            return await self.session.bind(project=project, ref=ref)
+        except GatewayRefusal as refusal:
+            raise ModelRetry(str(refusal)) from refusal
 
     async def commission(
         self,

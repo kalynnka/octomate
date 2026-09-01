@@ -85,7 +85,7 @@ async def test_the_server_config_is_the_sdk_in_process_shape() -> None:
 
 
 def test_the_instruction_names_the_tools_the_claude_way() -> None:
-    for name in ("scry", "summon", "teleport", "scheme", "send"):
+    for name in ("scry", "summon", "teleport", "scheme", "send", "bind"):
         assert f"`mcp__gateway__{name}`" in GATEWAY_MCP_INSTRUCTION
     assert "{" not in GATEWAY_MCP_INSTRUCTION
     assert "commission" not in GATEWAY_MCP_INSTRUCTION

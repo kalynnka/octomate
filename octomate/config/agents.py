@@ -209,8 +209,9 @@ class AgentConfig(BaseModel):
     )
     gateway: bool = Field(
         default=True,
-        description="Whether this agent's driven turns offer the gateway spells. Off, "
-        "no channel connection can switch them on for it.",
+        description="Whether this agent's driven turns offer the gateway spells — "
+        "routing, and binding a thread to a project. Off, no channel connection can "
+        "switch them on for it.",
     )
 
 

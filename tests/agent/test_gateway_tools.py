@@ -115,7 +115,7 @@ async def a_native_call(
     return server, session, channel, threads, kicks
 
 
-async def test_the_server_offers_exactly_the_five_shared_spells() -> None:
+async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
     # The accomplice spells are deliberately absent: external runtimes bring
     # their own subagent systems.
     server, _session, _channel, _threads = a_turn()
@@ -128,6 +128,7 @@ async def test_the_server_offers_exactly_the_five_shared_spells() -> None:
         "teleport",
         "scheme",
         "send",
+        "bind",
     ]
     # What an adapter pre-allows is this same list, named statically.
     assert list(GATEWAY_SPELLS) == [tool.name for tool in tools]
@@ -141,6 +142,7 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
         "teleport": GatewayCapability.teleport,
         "scheme": GatewayCapability.scheme,
         "send": GatewayCapability.send,
+        "bind": GatewayCapability.bind,
     }
 
     tools = {tool.name: tool for tool in await server.list_tools()}
@@ -160,7 +162,7 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     assert gateway_instructions(lambda name: name) == inkling
 
     mcp = gateway_instructions(lambda name: f"mcp__gateway__{name}")
-    for name in ("scry", "summon", "teleport", "scheme", "send"):
+    for name in ("scry", "summon", "teleport", "scheme", "send", "bind"):
         assert f"`mcp__gateway__{name}`" in mcp
     assert "{" not in mcp
     assert "commission" not in mcp

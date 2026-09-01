@@ -3,7 +3,7 @@
 Records what OCTO-42's discussion settled and what it did not. The mirror
 (OCTO-46), the fork (OCTO-47), running a project thread in it (OCTO-48), and the
 lifecycle below — per-turn save, pruning, resume (OCTO-51) — are built, as are
-the bind capability (OCTO-52), the chat workspace (OCTO-50) and dependency reuse
+the bind spell (OCTO-52), the chat workspace (OCTO-50) and dependency reuse
 (OCTO-49).
 
 A run currently happens in `project.root` — one directory on the Octomate host,
@@ -191,8 +191,8 @@ its inputs are genuine judgment calls, and both belong to whoever is asking:
 default branch is the obvious answer and the wrong one often enough — continuing
 someone's feature branch, reproducing against a tag, working from a PR head.
 
-So this is a capability the agent calls with typed arguments, while Octomate keeps
-everything that is policy:
+So this is a gateway spell, `bind`, the agent calls with typed arguments, while
+Octomate keeps everything that is policy:
 
 | The agent supplies | Octomate decides                                |
 | ------------------ | ----------------------------------------------- |
@@ -218,16 +218,18 @@ the model will try to use a path its own process cannot reach — and go on work
 in the empty tree it started in, whose contents this run is the last to see.
 
 This is also the path by which a chat thread becomes a project thread: someone
-says what they want worked on, the capability binds it, and the following turn
+says what they want worked on, `bind` binds it, and the following turn
 starts in the project's code, in a workspace whose work is kept.
 
-**Only Inkling can call it today.** The capability is a pydantic-ai toolset, and
-the three CLI runtimes ignore capabilities — Claude's own docstring says so. A
-chat thread on Claude, Codex or dsh therefore has a workspace it may write to,
-whose work is thrown away, and no way to say what it is about. Claude can be
-reached in process with an SDK MCP server; Codex only by hosting the two tools
-out of process; dsh not at all, because `dsh web` is one daemon serving every
-thread and there is no per-thread process to attach a tool to (OCTO-68).
+**Every driven runtime can call it.** `bind` and the `projects` facet of `scry`
+are gateway spells (OCTO-68): Inkling mounts them as a capability, a driven
+Claude turn as its in-process MCP server, a driven Codex turn over the served
+`/gateway/mcp`. A native session may scry the projects but not bind — its work
+is wherever its terminal is, and there is no tree to fork for it (OCTO-71 is
+the door for that). dsh mounts no gateway on a driven turn, so a chat thread
+there still has a workspace it may write to, whose work is thrown away, and no
+way to say what it is about: `dsh web` is one daemon serving every thread, with
+no per-thread process to attach a tool to.
 
 ## The chat workspace
 

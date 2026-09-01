@@ -29,12 +29,13 @@ TELEPORT_TOOL_NAME = "teleport"
 SCHEME_TOOL_NAME = "scheme"
 COMMISSION_TOOL_NAME = "commission"
 WHISPER_TOOL_NAME = "whisper"
+BIND_TOOL_NAME = "bind"
 # What one `scry` reveals. One facet per call, because each spell needs exactly one —
-# a route for `summon`, a place for anything that lands somewhere — and the routes
-# alone run long enough that showing everything every time buried the line the caller
-# came for. A tool result is the only place a per-user list can reach the model
-# without forking a cached prompt segment.
-ScryFacet = Literal["routes", "destinations"]
+# a route for `summon`, a place for anything that lands somewhere, a project for
+# `bind` — and the routes alone run long enough that showing everything every time
+# buried the line the caller came for. A tool result is the only place a per-user
+# list can reach the model without forking a cached prompt segment.
+ScryFacet = Literal["routes", "destinations", "projects"]
 # The `teleport` deferral's declared metadata kind. The suspender and dispatch graph
 # classify the deferral by this kind rather than the tool name, so the gateway (which
 # emits it) and `reflex` (which resolves it) agree on one value without matching on
@@ -282,3 +283,18 @@ class AgentRoute:
 
     def __str__(self) -> str:
         return f"- agent_id={self.agent_id}, model={self.model!r}: {self.claim}"
+
+
+@dataclass(frozen=True)
+class ProjectSummary:
+    """One registered project, as a model choosing between them needs it."""
+
+    # Deliberately not the root: which absolute path a project is on the server is
+    # the operator's business, and naming it in a chat thread is how it leaks.
+    name: str
+    description: str | None
+
+    def __str__(self) -> str:
+        if self.description is None:
+            return f"- {self.name}"
+        return f"- {self.name}: {self.description}"

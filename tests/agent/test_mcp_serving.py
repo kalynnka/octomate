@@ -177,7 +177,7 @@ async def test_every_server_refuses_an_unauthenticated_call(
     assert response.headers["www-authenticate"].startswith("Bearer")
 
 
-async def test_a_user_secret_opens_the_gateway_and_its_five_spells() -> None:
+async def test_a_user_secret_opens_the_gateway_and_its_six_spells() -> None:
     async with served(a_driven_deployment()) as (octomate, app):
         async with over(octomate, app, DRIVEN_BEARER) as client:
             tools = await client.list_tools()

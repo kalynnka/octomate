@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
 
+from octomate.managers.thread import BindRefusal
+from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
@@ -34,6 +36,7 @@ from octomate.schemas.triage import (
     Destination,
     GatewayDecision,
     HereLanding,
+    ProjectSummary,
     SchemeDecision,
     SchemeTarget,
     ScryFacet,
@@ -51,7 +54,9 @@ from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 if TYPE_CHECKING:
     from pydantic_ai.settings import ThinkingEffort
 
+    from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
+    from octomate.managers.workspaces import WorkspaceManager
     from octomate.schemas.user import UserProfile
     from octomate.tentacles.agents.base import AgentTentacle
     from octomate.tentacles.channels.base import ChannelTentacle
@@ -113,6 +118,10 @@ class GatewaySession:
     # here or sub-thread to land on, every destination is a crossing, and a summon
     # or scheme is kicked as its own turn instead of being read after this one.
     native: bool = False
+    # What `bind` and the `projects` facet work with: the ledger a binding is written
+    # to, and the registry and forks. Both None on a gateway built only to route.
+    threads: ThreadManager | None = None
+    workspaces: WorkspaceManager | None = None
     # Whether the mounted gateway offers the accomplice spells; `no_landing` names
     # `commission` as the fallback only when it is actually on offer.
     commissioning: bool = field(default=False, init=False)
@@ -437,15 +446,102 @@ class GatewaySession:
     @overload
     async def scry(self, reveal: Literal["destinations"]) -> list[Destination]: ...
 
-    async def scry(self, reveal: ScryFacet) -> list[AgentRoute] | list[Destination]:
-        """One facet of what this conversation can reach: the routes here, or every
-        place it can go. Only the asked facet is computed — the places reach the
-        identity registry."""
+    @overload
+    async def scry(self, reveal: Literal["projects"]) -> list[ProjectSummary]: ...
+
+    async def scry(
+        self, reveal: ScryFacet
+    ) -> list[AgentRoute] | list[Destination] | list[ProjectSummary]:
+        """One facet of what this conversation can reach: the routes here, every
+        place it can go, or the projects it can be about. Only the asked facet is
+        computed — the places reach the identity registry."""
         match reveal:
             case "routes":
                 return self.other_routes
             case "destinations":
                 return await self.destinations()
+            case "projects":
+                return await self.projects()
+
+    async def projects(self) -> list[ProjectSummary]:
+        """The projects this deployment can work on — a registered user's to see,
+        being theirs to bind; a visitor is refused rather than shown nothing."""
+        if (
+            self.users is None
+            or self.user_profile is None
+            or await self.users.owner(self.user_profile) is None
+        ):
+            raise GatewayRefusal(
+                "This session speaks for no registered user, and the projects are a "
+                "registered user's to see."
+            )
+        if self.workspaces is None:
+            raise RuntimeError("the project facet needs the workspace manager")
+        return [
+            ProjectSummary(name=project.name, description=project.description)
+            for project in self.workspaces.projects.list()
+            if project.enabled
+        ]
+
+    async def bind(self, *, project: str, ref: str | None = None) -> str:
+        """Say that this thread is about `project`, and fork its workspace.
+
+        The model judges two things — the project, and the ref to start from; the
+        path, the mechanism, who may bind and the lifecycle are Octomate's. Binding
+        is a trust act (a project's own `AGENTS.md` reaches the agent as
+        instructions), so it takes a registered user; a native session is refused,
+        its work being wherever its terminal is. The ref is checked before the bind
+        because a thread binds once: a ref that does not resolve must leave the
+        thread free to ask again for the branch that was meant.
+        """
+        if self.native:
+            raise GatewayRefusal(
+                "This session lives in your terminal, and its work is wherever that "
+                "is — Octomate cannot fork a project workspace for it."
+            )
+        if (
+            self.users is None
+            or self.user_profile is None
+            or await self.users.owner(self.user_profile) is None
+        ):
+            raise GatewayRefusal(
+                "This session speaks for no registered user, and binding a thread to "
+                "a project is a registered user's act."
+            )
+        if self.thread_id is None or self.threads is None or self.workspaces is None:
+            raise RuntimeError(
+                "a bind needs the thread this turn is in, and the managers a gateway "
+                "built to bind carries"
+            )
+        registered = self.workspaces.projects.get(project)
+        if registered is None or not registered.enabled:
+            available = sorted(
+                other.name for other in self.workspaces.projects.list() if other.enabled
+            )
+            raise GatewayRefusal(
+                f"No project called {project!r} is registered here. "
+                f"Available: {', '.join(available) or 'none'}."
+            )
+        mirror = await self.workspaces.mirrors.sync(registered)
+        if ref is not None and not await run_git("ls-remote", str(mirror), ref):
+            raise GatewayRefusal(
+                f"{registered.name!r} has no {ref!r} to start from. Name a branch, "
+                f"tag or commit its mirror has, or omit it for the default branch."
+            )
+        try:
+            await self.threads.bind(self.thread_id, registered)
+        except BindRefusal as refusal:
+            raise GatewayRefusal(str(refusal)) from refusal
+        await self.workspaces.materialize(
+            self.workspaces.open(self.thread_id, registered), mirror, ref
+        )
+        start = f" starting from {ref!r}" if ref is not None else ""
+        return (
+            f"This thread is about {registered.name!r} now, and its workspace is "
+            f"ready{start}. It applies from your next turn — this run is still in "
+            f"the empty one it started in, and nothing you write there is kept. "
+            f"Tell the person what you will do, and wait for them."
+        )
 
     async def summon(
         self,
