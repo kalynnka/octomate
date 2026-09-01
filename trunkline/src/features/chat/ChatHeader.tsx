@@ -142,6 +142,11 @@ export function ChatHeader() {
           <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--line-divider)', ...statusNote, color: 'var(--fg-3)' }}>
             Continue this thread in…
           </div>
+          {(surfaces ?? []).length === 0 && (
+            <div style={{ padding: '10px 12px', ...mono(9), color: 'var(--fg-3)', lineHeight: 1.6 }}>
+              no other surface is wired yet
+            </div>
+          )}
           {(surfaces ?? []).map((sf) => {
             const here = sf.id === surface
             return (

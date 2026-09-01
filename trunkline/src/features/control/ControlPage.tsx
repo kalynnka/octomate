@@ -105,6 +105,11 @@ export function ControlPage() {
             boxShadow: 'var(--shadow-soft)',
           }}
         >
+          {!data && (
+            <div style={{ padding: '26px 16px', textAlign: 'center', ...statusNote, color: 'var(--fg-3)' }}>
+              // no read serves this page yet
+            </div>
+          )}
           {data && mgmtSec === 'agents' && (
             <div
               className="lt-entry"

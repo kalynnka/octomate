@@ -135,10 +135,10 @@ function eventOf(item: LedgerItem, agent?: string): Omit<TlEvent, 'uid'> | null 
         resolved: item.state !== 'waiting',
         sub:
           item.state === 'waiting'
-            ? 'write feeler · waiting on kalynnka'
+            ? `${item.tool} · waiting on kalynnka`
             : item.state === 'approved'
-              ? 'approved by kalynnka — dispatched'
-              : 'dismissed by kalynnka — dropped',
+              ? `approved by kalynnka — ${item.tool} dispatched`
+              : `dismissed by kalynnka — ${item.tool} dropped`,
         t: item.resolvedT ?? '',
         tgt,
       }
@@ -209,7 +209,7 @@ export function TimelinePanel() {
       ? [
           {
             n: '01',
-            id: 'SES-0533',
+            id: '',
             conversationId: '',
             route: `${ntAgent} · ${ntModel}`,
             agent: ntAgent,

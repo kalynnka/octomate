@@ -159,7 +159,9 @@ export type LedgerItem =
       uid: string
       title: string
       desc: string
-      /** e.g. "gh.create_issue · scope repo · approval resumes RUN_0521" */
+      /** the tool the approval is for — "Edit", "Bash" */
+      tool: string
+      /** e.g. "Edit · approval resumes the run" */
       meta: string
       state: 'waiting' | 'approved' | 'dismissed'
       resolvedT?: string
@@ -173,7 +175,9 @@ export type LedgerItem =
       title: string
       body: string
       options: AskOption[]
-      /** e.g. "relay.ask · scope thread · answer resumes RUN_0521" */
+      /** the tool that asked */
+      tool: string
+      /** e.g. "ask_human · answer resumes the run" */
       meta: string
       state: 'waiting' | 'answered'
       answer?: string
@@ -314,9 +318,6 @@ export interface ThreadDetail {
   artifacts?: ArtifactRef[]
   docs?: Record<string, ReviewDoc>
   comments?: ReviewComment[]
-  /** context meter baseline, in kilotokens of 200k */
-  ctxK: number
-  usage: { chip: string; tok: string }
 }
 
 /* ---------------------------------------------------------------------------

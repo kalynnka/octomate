@@ -127,7 +127,7 @@ function activeRoute(handoffs: ApiHandoff[]): {
  * thread (a DM, a native session's own id).
  */
 function threadLabel(t: ApiThread): string {
-  return t.channel_thread_id || t.chat_id || `#${t.id.slice(0, 6)}`
+  return t.channel_thread_id || t.chat_id || threadTag(t.id)
 }
 
 export function liveThreadSummary(t: ApiThread): ThreadSummary {
@@ -145,7 +145,7 @@ export function liveThreadSummary(t: ApiThread): ThreadSummary {
       agent === null && channel.native
         ? `${channel.label.toLowerCase()} · native`
         : routeLabel(agent, model),
-    tag: `#${t.id.slice(0, 6)}`,
+    tag: threadTag(t.id),
   }
 }
 
@@ -158,6 +158,12 @@ export function groupLiveThreads(
     ;(grouped[t.channel_tentacle_id] ??= []).push(liveThreadSummary(t))
   }
   return grouped
+}
+
+/** The 6-hex chip a thread goes by, off the tail of the row id — the head of a
+ *  uuid7 is a clock, so every thread of the same few hours shares it. */
+function threadTag(threadId: string): string {
+  return `#${threadId.replaceAll('-', '').slice(-6)}`
 }
 
 /** The 4-hex chip a session goes by, off the tail of the conversation it is. */
@@ -219,7 +225,7 @@ function liveSessions(
         reason: ingested
           ? `${turns} turn${turns === 1 ? '' : 's'} tailed from the session's own transcript`
           : handoff?.reason || 'route claimed',
-        status: ingested ? 'ingested' : '',
+        status: ingested ? 'ingested' : conversation.status,
         tone: ingested ? 'teal' : index === 0 ? 'accent' : 'gold',
         anchor: anchors.get(conversation.id),
       }
@@ -368,9 +374,9 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? lastCwd.slice(root.length + 1)
         : lastCwd
 
-  const { agent, model } = activeRoute(thread.handoffs)
+  const { agent } = activeRoute(thread.handoffs)
   return {
-    key: thread.channel_thread_id || `#${thread.id.slice(0, 6)}`,
+    key: thread.channel_thread_id || threadTag(thread.id),
     live: true,
     channel: thread.channel_tentacle_id,
     project:
@@ -396,10 +402,5 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     msgCount: messages.length,
     sessions: liveSessions(thread.handoffs, own, anchors),
     ledger,
-    ctxK: 8,
-    usage: {
-      chip: routeLabel(agent, model),
-      tok: `${messages.length} msg`,
-    },
   }
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useConsole } from '@/state/console'
-import { useChannels } from '@/lib/api/hooks'
+import { channelMeta } from '@/lib/api/live'
 import { mono } from '@/components/text'
 
 const vline = <i style={{ width: 1, height: 12, background: 'var(--trk-vline)', flexShrink: 0 }} />
@@ -12,38 +12,36 @@ function useClock() {
     const t = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(t)
   }, [])
-  return `${now.toLocaleTimeString('en-GB', { hour12: false })}Z`
+  return now.toLocaleTimeString('en-GB', { hour12: false })
 }
 
 export function SessionBar() {
   const detail = useConsole((s) => s.detail)
   const selChannel = useConsole((s) => s.selChannel)
   const selThreadId = useConsole((s) => s.selThreadId)
-  const ctxBump = useConsole((s) => s.ctxBump)
   const ntOn = useConsole((s) => s.ntOn)
   const ntStarted = useConsole((s) => s.ntStarted)
-  const { data: channels } = useChannels()
   const clock = useClock()
 
   const lastSes = detail?.sessions[detail.sessions.length - 1]
   const sesChip = ntOn
     ? ntStarted
-      ? 'SES-0533 · active'
+      ? 'session live'
       : 'no session yet'
     : lastSes
-      ? `${lastSes.id} · ${lastSes.status}`
+      ? `${lastSes.id}${lastSes.status ? ` · ${lastSes.status}` : ''}`
       : '—'
-  const routeChip = `${channels?.find((c) => c.id === selChannel)?.label.toLowerCase() ?? 'trunkline'}/${detail?.key ?? selThreadId}`
-  const base = ntOn ? 0 : (detail?.ctxK ?? 82)
-  const k = Math.min(196, base + ctxBump)
-  const ctxW = `${Math.round((k / 200) * 100)}%`
-  const usageChip = ntOn
-    ? ntStarted
-      ? 'Σ in 312 · cache 0 (0%) · out 84'
-      : 'Σ in 0 · cache 0 (—) · out 0'
-    : (detail?.usage.chip ?? '')
-  const tokChip = ntOn ? (ntStarted ? '312↑ 84↓' : '0↑ 0↓') : (detail?.usage.tok ?? '')
-  const tokOn = !(ntOn && !ntStarted)
+  // The channel list is the connected tentacles only, so a native channel is
+  // not in it; its display name is the same table the sidebar reads.
+  const routeChip = `${channelMeta(selChannel).label.toLowerCase()}/${detail?.key ?? selThreadId}`
+  // A thread that has not run yet is on nothing. For one that has, no read
+  // reports its usage or context size (see README's gap list), so the slots
+  // hold an em dash rather than a number nothing measured.
+  const fresh = ntOn && !ntStarted
+  const ctxK = fresh ? 0 : null
+  const ctxW = ctxK === null ? '0%' : `${Math.round((ctxK / 200) * 100)}%`
+  const usageChip = fresh ? 'Σ in 0 · cache 0 (—) · out 0' : '—'
+  const msgChip = `${detail?.msgCount ?? 0} msg`
 
   const chip = (title: string, children: React.ReactNode, extra?: React.CSSProperties) => (
     <span
@@ -113,15 +111,11 @@ export function SessionBar() {
             >
               <i style={{ width: ctxW, background: 'var(--color-ghost)' }} />
             </i>
-            {k}k/200k
+            {ctxK === null ? '—' : `${ctxK}k`}/200k
           </>
         ))}
-        {tokOn && (
-          <>
-            {vline}
-            {chip('tokens, last run', tokChip)}
-          </>
-        )}
+        {vline}
+        {chip('messages in this thread', msgChip)}
       </span>
     </div>
   )

@@ -21,7 +21,10 @@ const toneColor: Record<ThreadTone, string> = {
 }
 
 interface ThreadRow {
+  /** the row's own id — unique, and what React keys on */
   id: string
+  /** the short chip shown under the title */
+  tag: string
   title: string
   stColor: string
   agent: string
@@ -313,6 +316,7 @@ export function ThreadsSidebar() {
                 ? [
                     {
                       id: ntStarted ? selThreadId : 'THR-NEW',
+                      tag: ntStarted ? selThreadId : 'THR-NEW',
                       title: ntTitle || 'untitled — new thread',
                       stColor: 'var(--color-gold)',
                       agent: `${ntAgent} · ${ntModel}`,
@@ -321,7 +325,8 @@ export function ThreadsSidebar() {
                   ]
                 : []),
               ...ths.map((t) => ({
-                id: t.tag ?? t.id,
+                id: t.id,
+                tag: t.tag ?? t.id,
                 title: t.title,
                 stColor: toneColor[t.tone],
                 agent: t.agentLabel,
@@ -453,7 +458,7 @@ export function ThreadsSidebar() {
                         }}
                       >
                         <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                          {t.id}
+                          {t.tag}
                         </span>
                         <span style={{ ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>
                           {t.agent}
