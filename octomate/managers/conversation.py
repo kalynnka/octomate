@@ -451,6 +451,26 @@ class ConversationManager:
         self.cache_conversation(conversation)
         return conversation
 
+    async def set_name(self, conversation: Conversation, name: str) -> Conversation:
+        """Store the name the runtime running this session grabbed for itself.
+
+        Only a runtime that names its own sessions has one to store, and it revises
+        it as the session goes on, so this overwrites. A name with nothing in it is
+        not one, and leaves the conversation as it was.
+        """
+        named = name.strip()
+        if not named or conversation.name == named:
+            return conversation
+        async with async_session() as session:
+            stored = await session.get(Conversation, conversation.id)
+            if stored is None:
+                raise ValueError(f"unknown conversation {conversation.id}")
+            stored.name = named
+            await session.commit()
+        conversation.name = named
+        self.cache_conversation(conversation)
+        return conversation
+
     async def grant_session_tool(
         self,
         conversation: Conversation,
