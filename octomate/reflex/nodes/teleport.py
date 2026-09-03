@@ -9,6 +9,7 @@ from pydantic_graph import BaseNode, GraphRunContext
 from octomate.reflex.crossing import open_crossing
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
+    PendingHandoff,
     ReflexDeps,
     ReflexGraphResult,
     ReflexState,
@@ -89,7 +90,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # Stay put: the current conversation already holds the trailing teleport
             # deferral, so just resolve it and resume in place — nothing to fork.
             state.target = origin
-            state.claim_handoff = False
+            state.handoff = None
             return next
 
         # Move: fork the origin conversation into the new sub-thread, claim it for the
@@ -108,6 +109,5 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         )
         state.thread = new_thread
         state.target = new_target
-        state.claim_handoff = True
-        state.handoff_from_agent_tentacle_id = self.agent_id
+        state.handoff = PendingHandoff(source_agent_tentacle_id=self.agent_id)
         return next
