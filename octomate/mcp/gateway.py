@@ -18,11 +18,12 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Annotated, ParamSpec, TypeVar
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token, get_http_headers
+from pydantic import Field
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import GatewayCapability
@@ -260,7 +261,7 @@ def mount_gateway(
         destination: SummonTarget,
         hint: str,
         reason: str,
-        summon: str,
+        summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
         session: GatewaySession = current,
     ) -> str:
@@ -300,7 +301,7 @@ def mount_gateway(
     @spoken
     async def scheme(
         hint: str,
-        brief: str,
+        brief: Annotated[str, Field(max_length=8_000)],
         destination: SchemeTarget = DIRECT_TARGET,
         session: GatewaySession = current,
     ) -> str:

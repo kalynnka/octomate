@@ -195,6 +195,9 @@ def test_gate_instruction_explains_each_spell_in_plain_words() -> None:
     assert "`summon`" in instructions
     assert "`teleport`" in instructions
     assert "route the conversation" in instructions
+    # Inkling's own handoff guidance: reference by handle rather than repeat.
+    assert "### Writing a brief" in instructions
+    assert "`#msg:<id>`" in instructions
     # No concrete route details leak into the shared instruction block.
     assert "agent_id=claude" not in instructions
     assert "coding work" not in instructions
@@ -885,3 +888,77 @@ def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
         assert manager.sessions == {}
     with manager.driving(GatewaySession(channel_routes={}, current_agent_id="i")):
         assert manager.sessions == {}
+
+
+async def test_summon_refuses_a_brief_over_the_cap() -> None:
+    """Refused, never trimmed, and before the spell runs: the cap is the tool's own
+    argument schema, which the model sees and pydantic-ai validates by, so nothing
+    is recorded until the brief fits. The session's signature holds the same line
+    for a caller that is not a tool."""
+    capability = _capability()
+    assert capability.toolset is not None
+    tool = capability.toolset.tools[SUMMON_TOOL_NAME]
+    over = "Please investigate the failing test. " * 300
+
+    assert (
+        tool.function_schema.json_schema["properties"]["summon"]["maxLength"] == 8_000
+    )
+    with pytest.raises(ValidationError, match="at most 8000 characters"):
+        tool.function_schema.validator.validate_python(
+            {
+                "agent_id": "claude",
+                "model": "opus",
+                "destination": {"kind": "thread"},
+                "reason": "needs coding",
+                "hint": "Working on it",
+                "summon": over,
+            }
+        )
+    with pytest.raises(ValidationError, match="at most 8000 characters"):
+        await tool.function(
+            FAKE_CONTEXT,
+            agent_id="claude",
+            model="opus",
+            destination=THREAD_TARGET,
+            reason="needs coding",
+            hint="Working on it",
+            summon=over,
+        )
+
+    assert capability.decision is None
+
+
+async def test_scheme_refuses_a_brief_over_the_cap() -> None:
+    capability = _capability()
+    assert capability.toolset is not None
+    tool = capability.toolset.tools[SCHEME_TOOL_NAME]
+    over = "Finish the migration write-up for this user. " * 300
+
+    assert tool.function_schema.json_schema["properties"]["brief"]["maxLength"] == 8_000
+    with pytest.raises(ValidationError, match="at most 8000 characters"):
+        tool.function_schema.validator.validate_python(
+            {"hint": "Picking this up with you here.", "brief": over}
+        )
+    with pytest.raises(ValidationError, match="at most 8000 characters"):
+        await tool.function(
+            FAKE_CONTEXT, hint="Picking this up with you here.", brief=over
+        )
+
+    assert capability.decision is None
+
+
+def test_a_decision_carries_no_brief_over_the_cap() -> None:
+    """The cap is the decision's own field, so one built anywhere else — a scheme
+    re-cast as a summon — holds the same line the spells do."""
+    fields = {
+        "action": "summon",
+        "agent_id": "claude",
+        "model": "opus",
+        "reason": "needs coding",
+        "hint": "Working on it",
+        "summon": "x" * 8_000,
+    }
+
+    assert len(SummonDecision.model_validate(fields).summon) == 8_000
+    with pytest.raises(ValidationError, match="at most 8000 characters"):
+        SummonDecision.model_validate({**fields, "summon": "x" * 8_001})

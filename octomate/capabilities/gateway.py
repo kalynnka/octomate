@@ -30,8 +30,9 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterable, Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
+from pydantic import Field
 from pydantic_ai import AgentStreamEvent, CallDeferred, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelRetry
@@ -130,6 +131,21 @@ and they cannot see this chat. `hint` opens the conversation over there and is t
 first thing they read; nothing is posted here, so close out your own reply by saying
 the work is moving, not what it is. Only from a group, on a platform that has direct
 messages; the tool says so when it does not apply.
+"""
+
+# Inkling's handoff guidance, appended for Inkling alone: the other runtimes bring
+# their own handoff skills, and the contract every runtime shares is the docstring.
+HANDOFF_INSTRUCTION = """
+
+### Writing a brief
+A `summon` or `scheme` brief is the receiver's whole opening prompt, and it is
+budgeted. Say, in this order and only where it changes what they do next: the goal
+in the user's own words; the constraints they set; the decisions made and why; what
+is done; what was tried and failed, so it is not tried again; what is left, first
+item first; and what a finished result looks like. Leave the rest to the ledger:
+the receiver reads every thread this person has spoken in, so cite a message by
+its `#msg:<id>` handle and name what to search for instead of repeating it. Do
+not restate the project — the workspace's own instructions carry that.
 """
 
 # The framing every accomplice run carries, passed by the gateway at the
@@ -336,7 +352,7 @@ class GatewayCapability(AbstractCapability[None]):
         destination: SummonTarget,
         hint: str,
         reason: str,
-        summon: str,
+        summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
     ) -> str:
         """Hand this conversation to another Octomate agent, who takes it over.
@@ -355,7 +371,12 @@ class GatewayCapability(AbstractCapability[None]):
             summon: The self-contained brief the other agent starts from. It becomes
                 their opening prompt and they cannot see this conversation, so give
                 the goal, the relevant context and decisions, what's been tried, and
-                what a finished result looks like.
+                what a finished result looks like. Write it the way your own handoff
+                skill or convention says, if you have one. Reference rather than
+                repeat: the receiver reads every thread this person has spoken in,
+                so cite a message by its `#msg:<id>` handle and say what to search
+                for instead of pasting it. A brief over the size budget is
+                refused, never trimmed.
             effort: How hard the agent should think, from the effort levels the
                 route's claim offers. Set it only when the user explicitly asked
                 for a level; omitted, the agent's own default applies.
@@ -410,7 +431,7 @@ class GatewayCapability(AbstractCapability[None]):
         self,
         ctx: RunContext[None],
         hint: str,
-        brief: str,
+        brief: Annotated[str, Field(max_length=8_000)],
         destination: SchemeTarget = DIRECT_TARGET,
     ) -> str:
         """Continue this with the user one-to-one, in their direct messages.
@@ -425,7 +446,11 @@ class GatewayCapability(AbstractCapability[None]):
                 being picked up — not the brief, which is written for whoever answers.
             brief: The self-contained brief whoever answers there starts from. They
                 cannot see this conversation, so give the goal, the relevant context and
-                decisions, what's been tried, and what a finished result looks like.
+                decisions, what's been tried, and what a finished result looks like —
+                written the way your own handoff skill says, if you have one, citing
+                this conversation by `#msg:<id>` handle rather than repeating it: the
+                receiver reads every thread this person has spoken in. A brief over
+                the size budget is refused, never trimmed.
             destination: Whose direct messages — this channel's by default, or a
                 channel from `scry` to continue where they already are.
         """
@@ -575,7 +600,7 @@ class GatewayCapability(AbstractCapability[None]):
         )
 
     def get_instructions(self) -> str:
-        instructions = gateway_instructions(lambda name: name)
+        instructions = gateway_instructions(lambda name: name) + HANDOFF_INSTRUCTION
         if self.commissioning:
             return instructions + COMMISSION_INSTRUCTION
         return instructions

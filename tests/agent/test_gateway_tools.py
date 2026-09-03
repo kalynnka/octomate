@@ -166,13 +166,17 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
 def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     session = GatewaySession(channel_routes={}, current_agent_id="inkling")
     inkling = GatewayCapability(session=session).get_instructions()
-    assert gateway_instructions(lambda name: name) == inkling
+    assert inkling.startswith(gateway_instructions(lambda name: name))
+    # Inkling has no skill loader, so its handoff guidance rides here.
+    assert "### Writing a brief" in inkling
 
     mcp = gateway_instructions(lambda name: f"mcp__gateway__{name}")
     for name in ("scry", "summon", "teleport", "scheme", "send"):
         assert f"`mcp__gateway__{name}`" in mcp
     assert "{" not in mcp
     assert "commission" not in mcp
+    # The other runtimes bring their own handoff skills.
+    assert "Writing a brief" not in mcp
 
 
 async def test_schemas_carry_no_runtime_state() -> None:
@@ -229,6 +233,20 @@ async def test_arguments_are_validated_before_policy_runs() -> None:
         with pytest.raises(ToolError, match="destination"):
             await client.call_tool(
                 "summon", {**SUMMON_ARGUMENTS, "destination": {"kind": "everywhere"}}
+            )
+
+    assert session.decision is None
+
+
+async def test_a_brief_over_the_cap_is_refused_before_policy_runs() -> None:
+    server, session, _channel, _threads = a_turn()
+
+    async with Client(server) as client:
+        # The cap is the tool's own schema, so the server refuses the brief as it
+        # does any other bad argument, before the spell runs.
+        with pytest.raises(ToolError, match="at most 8000 characters"):
+            await client.call_tool(
+                "summon", {**SUMMON_ARGUMENTS, "summon": "x" * 8_001}
             )
 
     assert session.decision is None
