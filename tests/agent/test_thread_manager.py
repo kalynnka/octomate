@@ -181,7 +181,7 @@ async def test_sender_line_leaves_an_undeclared_sender_as_a_visitor() -> None:
     assert "user:" not in str(stranger)
 
 
-async def test_record_handoff_syncs_active_owner_cache() -> None:
+async def test_record_handoff_updates_the_active_owner() -> None:
     manager = ThreadManager(users=UserManager())
     thread = await manager.ensure(address())
 

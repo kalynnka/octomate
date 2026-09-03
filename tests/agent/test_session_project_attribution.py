@@ -184,7 +184,6 @@ async def test_both_runtimes_file_under_the_same_declared_project(
 
     assert first == "inky"
     assert second == "inky"
-    octomate.thread_manager.threads.clear()
     reloaded = await octomate.thread_manager.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-claude")
     )
