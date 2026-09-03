@@ -888,7 +888,7 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
     )
 
     [handoff] = threads.handoffs
-    assert handoff.from_agent_tentacle_id == "other"
+    assert handoff.source_agent_tentacle_id == "other"
     assert handoff.source_conversation_id == source.id
     assert handoff.source_run_id == "run-1"
     assert handoff.source_model_message_id == earlier.id
@@ -1472,7 +1472,7 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
     threads = deps.thread_manager
     assert isinstance(threads, FakeThreadManager)
     [handoff] = threads.handoffs
-    assert handoff.from_agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert handoff.source_agent_tentacle_id == CLAUDE_NATIVE_ID
     assert handoff.to_agent_tentacle_id == "second"
     assert handoff.brief == "Please take this up over here."
 

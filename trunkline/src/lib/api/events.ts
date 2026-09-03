@@ -357,7 +357,7 @@ export interface ApiRoute {
 export interface ApiHandoff {
   id: string
   thread_id: string
-  from_agent_tentacle_id: string | null
+  source_agent_tentacle_id: string | null
   to_agent_tentacle_id: string
   to_model: string | null
   reason: string

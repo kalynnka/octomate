@@ -307,8 +307,14 @@ class Handoff(Base, TransmuterProxiedMixin):
         index=True,
     )
 
-    from_agent_tentacle_id: Mapped[str | None] = mapped_column(
-        String, nullable=True, index=True
+    source_agent_tentacle_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        index=True,
+        comment=(
+            "The agent whose turn decided this handoff. NULL when a route claimed "
+            "the thread itself and nobody handed it over."
+        ),
     )
     source_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid,

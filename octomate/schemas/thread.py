@@ -144,7 +144,7 @@ class Handoff(BaseTransmuter):
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     thread_id: uuid.UUID
-    from_agent_tentacle_id: str | None = None
+    source_agent_tentacle_id: str | None = None
     to_agent_tentacle_id: str
     to_model: AgentRouteModelName | None = None
     reason: str = ""

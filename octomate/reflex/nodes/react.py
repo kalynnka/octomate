@@ -116,7 +116,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             ):
                 await ctx.deps.thread_manager.record_handoff(
                     state.thread,
-                    from_agent_tentacle_id=claim.source_agent_tentacle_id,
+                    source_agent_tentacle_id=claim.source_agent_tentacle_id,
                     to_agent_tentacle_id=agent.id,
                     to_model=target_model,
                     reason=decision.reason,

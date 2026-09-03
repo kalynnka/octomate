@@ -359,7 +359,7 @@ class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
         )
         await self.octomate.thread_manager.record_handoff(
             thread,
-            from_agent_tentacle_id=thread.active_agent_tentacle_id,
+            source_agent_tentacle_id=thread.active_agent_tentacle_id,
             to_agent_tentacle_id=chosen.agent,
             to_model=chosen.model,
             reason="dev UI route selection",

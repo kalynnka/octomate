@@ -193,7 +193,7 @@ async def test_record_handoff_syncs_active_owner_cache() -> None:
     )
     await manager.record_handoff(
         thread,
-        from_agent_tentacle_id="inkling",
+        source_agent_tentacle_id="inkling",
         to_agent_tentacle_id="claude",
         to_model="sonnet",
         reason="Needs code work.",
