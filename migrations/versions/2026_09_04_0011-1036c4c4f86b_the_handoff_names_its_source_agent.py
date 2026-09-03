@@ -11,7 +11,7 @@ old one dropped — in two batch passes, because SQLite recreates the table for 
 and the copy has to land between them. Downgrade walks the same three steps back.
 
 Revision ID: 1036c4c4f86b
-Revises: 72af5e4bed47
+Revises: bdb96422fcdc
 Create Date: 2026-09-04 00:11:08.105883
 
 """
@@ -23,7 +23,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "1036c4c4f86b"
-down_revision: str | Sequence[str] | None = "72af5e4bed47"
+down_revision: str | Sequence[str] | None = "bdb96422fcdc"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
