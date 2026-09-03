@@ -134,7 +134,8 @@ messages; the tool says so when it does not apply.
 """
 
 # Inkling's handoff guidance, appended for Inkling alone: the other runtimes bring
-# their own handoff skills, and the contract every runtime shares is the docstring.
+# their own — a skill, a plugin, a harness's instructions — and the contract every
+# runtime shares is the docstring, which tells them to follow what they carry.
 HANDOFF_INSTRUCTION = """
 
 ### Writing a brief
@@ -371,12 +372,12 @@ class GatewayCapability(AbstractCapability[None]):
             summon: The self-contained brief the other agent starts from. It becomes
                 their opening prompt and they cannot see this conversation, so give
                 the goal, the relevant context and decisions, what's been tried, and
-                what a finished result looks like. Write it the way your own handoff
-                skill or convention says, if you have one. Reference rather than
-                repeat: the receiver reads every thread this person has spoken in,
-                so cite a message by its `#msg:<id>` handle and say what to search
-                for instead of pasting it. A brief over the size budget is
-                refused, never trimmed.
+                what a finished result looks like. If anything you carry says how to
+                hand off — a handoff skill, a plugin, your own harness's instructions
+                — follow it; this is the floor. Reference rather than repeat: the
+                receiver reads every thread this person has spoken in, so cite a
+                message by its `#msg:<id>` handle and say what to search for instead
+                of pasting it. A brief over the size budget is refused, never trimmed.
             effort: How hard the agent should think, from the effort levels the
                 route's claim offers. Set it only when the user explicitly asked
                 for a level; omitted, the agent's own default applies.
@@ -446,11 +447,13 @@ class GatewayCapability(AbstractCapability[None]):
                 being picked up — not the brief, which is written for whoever answers.
             brief: The self-contained brief whoever answers there starts from. They
                 cannot see this conversation, so give the goal, the relevant context and
-                decisions, what's been tried, and what a finished result looks like —
-                written the way your own handoff skill says, if you have one, citing
-                this conversation by `#msg:<id>` handle rather than repeating it: the
-                receiver reads every thread this person has spoken in. A brief over
-                the size budget is refused, never trimmed.
+                decisions, what's been tried, and what a finished result looks like. If
+                anything you carry says how to hand off — a handoff skill, a plugin,
+                your own harness's instructions — follow it; this is the floor.
+                Reference rather than repeat: the receiver reads every thread this
+                person has spoken in, so cite a message by its `#msg:<id>` handle and
+                say what to search for instead of pasting it. A brief over the size
+                budget is refused, never trimmed.
             destination: Whose direct messages — this channel's by default, or a
                 channel from `scry` to continue where they already are.
         """
