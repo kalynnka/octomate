@@ -177,8 +177,8 @@ async def test_a_chat_thread_binds_to_the_project_it_had_none_of(
     attributed = await bound.project
     assert attributed is not None
     assert attributed.name == "inky"
-    # `ensure` hands channels the cached copy, so a binding the cache missed would
-    # be one every later turn in the thread still ran without.
+    # `ensure` re-reads the row, so every later turn in the thread runs with the
+    # binding.
     assert (await manager.ensure(SLACK_THREAD)).project_id == project.id
 
 

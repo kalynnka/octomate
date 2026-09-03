@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -14,7 +15,12 @@ from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import MessageBinding, ThreadKey, ThreadMessage
+from octomate.schemas.thread import (
+    MessageBinding,
+    Thread,
+    ThreadKey,
+    ThreadMessage,
+)
 from octomate.schemas.user import UserProfile
 
 
@@ -60,6 +66,27 @@ async def test_ensure_thread_ignores_sender_user_id() -> None:
 
     assert alice_thread.id == bob_thread.id == fresh_thread.id
     assert [message.user_id for message in fresh_thread.messages] == ["alice", "bob"]
+
+
+async def test_concurrent_first_sightings_of_one_key_insert_once() -> None:
+    """The bug this manager was missing a guard for: two coroutines that miss
+    together both insert, and the loser trips the threads UNIQUE constraint —
+    which escapes into `follow`'s handler and strands the rest of the session.
+    A session's follow task preparing while a hook pokes it does exactly this,
+    and so do two people replying at once in a chat with no thread row yet."""
+    manager = ThreadManager(users=UserManager())
+    key = ThreadKey(
+        channel_tentacle_id="slack",
+        chat_type="thread",
+        chat_id="C123",
+        channel_thread_id="1.5",
+    )
+
+    threads = await asyncio.gather(*(manager.ensure(key) for _ in range(4)))
+
+    assert len({thread.id for thread in threads}) == 1
+    async with async_session() as session:
+        assert await session.count(Thread) == 1
 
 
 async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> None:
@@ -181,7 +208,7 @@ async def test_sender_line_leaves_an_undeclared_sender_as_a_visitor() -> None:
     assert "user:" not in str(stranger)
 
 
-async def test_record_handoff_syncs_active_owner_cache() -> None:
+async def test_record_handoff_updates_the_active_owner() -> None:
     manager = ThreadManager(users=UserManager())
     thread = await manager.ensure(address())
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections import OrderedDict
 from datetime import UTC, datetime
 
 from arcanus.materia.sqlalchemy import noload, selectinload
@@ -63,18 +63,20 @@ def thread_title(text: str | None) -> str | None:
 
 
 class ThreadManager:
-    """Owns durable thread chat ledger persistence.
+    """Owns durable thread chat ledger persistence."""
 
-    The cache mirrors `ConversationManager`: the database is the source of truth,
-    and write methods keep the cached `Thread` coherent after commits.
-    """
-
-    def __init__(self, *, users: UserManager, cache_size: int = 256) -> None:
+    def __init__(self, *, users: UserManager) -> None:
         # Every ledger row references its sender's registry profile — the host
         # constructs this manager around its one identity registry.
         self.users = users
-        self.cache_size = cache_size
-        self.threads: OrderedDict[ThreadKey, Thread] = OrderedDict()
+        # Serializes first sightings, as `ConversationManager` does for its own
+        # rows: two concurrent ensures of one key — a session's follow task
+        # preparing while a hook pokes it, two people replying at once in a chat
+        # with no thread row yet — must not both insert. Under the lock the loser
+        # re-reads the row the winner committed instead of raising a UNIQUE
+        # violation, which here escapes into `follow`'s handler and strands every
+        # later turn of the session.
+        self.ensure_lock = asyncio.Lock()
 
     async def ensure(
         self,
@@ -102,12 +104,9 @@ class ThreadManager:
                 f"{key} is a {key.kind} and cannot be attributed to project "
                 f"{project.name!r}: only a thread or a native_thread is work."
             )
-        cached = self.threads.get(key)
-        if cached is not None:
-            self.threads.move_to_end(key)
-            return cached
-
-        async with async_session() as session:
+        # The lock spans the read, the insert and the commit: a loser that woke
+        # after the winner's read but before its commit would still find nothing.
+        async with self.ensure_lock, async_session() as session:
             thread = await session.one_or_none(
                 Thread,
                 expressions=[
@@ -132,8 +131,6 @@ class ThreadManager:
             await thread.handoffs
             await thread.project
             await session.commit()
-
-        self.cache_thread(thread)
         return thread
 
     async def rename(self, thread: Thread, title: str) -> Thread:
@@ -154,7 +151,6 @@ class ThreadManager:
             stored.title = named
             await session.commit()
         thread.title = named
-        self.cache_thread(thread)
         return thread
 
     async def bind(self, thread_id: uuid.UUID, project: Project) -> Thread:
@@ -197,8 +193,7 @@ class ThreadManager:
 
         # Read the thread back rather than returning the row that changed. `project`
         # is eagerly loaded, so the copy that set the id is still holding the answer
-        # it was loaded with — and `ensure` hands the cached copy to every later turn
-        # in the thread, which is exactly the run this binding is for.
+        # it was loaded with.
         bound = await self.get(thread_id)
         if bound is None:
             raise ValueError(f"thread {thread_id} vanished while binding")
@@ -213,9 +208,7 @@ class ThreadManager:
         `with_messages=False` is for a reader that wants the row and not its
         ledger, and suppresses the load rather than dropping it afterwards —
         `noload` is the difference between not fetching a thread's messages and
-        fetching them to throw away. It skips the cache with them, because a
-        cached thread whose `messages` is empty is indistinguishable from one
-        nobody has ever spoken in, and `ensure` hands that copy to channels.
+        fetching them to throw away.
 
         Either way the model ledger stays behind: it hangs off a message, and
         `related_model_messages` is how a caller asks for it — dragging it here
@@ -230,9 +223,6 @@ class ThreadManager:
             thread = await session.get(Thread, thread_id, options=options)
             if thread is None:
                 return None
-
-        if with_messages:
-            self.cache_thread(thread)
         return thread
 
     async def list_threads(
@@ -264,14 +254,8 @@ class ThreadManager:
             )
         return list(rows)
 
-    def cache_thread(self, thread: Thread) -> None:
-        self.threads[thread.key] = thread
-        self.threads.move_to_end(thread.key)
-        while len(self.threads) > self.cache_size:
-            self.threads.popitem(last=False)
-
     async def store_message(self, message: ThreadMessage, thread: Thread) -> None:
-        """Persist a ledger row and re-sync the cached thread from the database.
+        """Persist a ledger row.
 
         The row is touched, not only appended to. `updated_at` fires on an update
         of the thread and writing to its ledger is not one, so a session being
@@ -294,11 +278,6 @@ class ThreadManager:
                 ):
                     row.title = thread_title(message.message_text)
             await session.commit()
-            reloaded = await session.get(Thread, thread.id)
-            if reloaded is not None:
-                await reloaded.messages
-                await reloaded.handoffs
-                self.cache_thread(reloaded)
 
     async def record_inbound(
         self,
@@ -431,11 +410,11 @@ class ThreadManager:
         trigger_message_id: uuid.UUID,
         active_agent_id: str,
     ) -> list[ThreadMessage]:
-        cached = await self.ensure(thread.key)
+        fresh = await self.ensure(thread.key)
 
         async with async_session() as session:
             expressions = [
-                ThreadMessage["thread_id"] == cached.id,
+                ThreadMessage["thread_id"] == fresh.id,
                 ThreadMessage["id"] <= trigger_message_id,
                 or_(
                     ThreadMessage["actor_kind"] != "agent",
@@ -443,10 +422,8 @@ class ThreadManager:
                     ThreadMessage["agent_tentacle_id"].is_(None),
                 ),
             ]
-            if cached.source_cursor_message_id is not None:
-                expressions.append(
-                    ThreadMessage["id"] > cached.source_cursor_message_id
-                )
+            if fresh.source_cursor_message_id is not None:
+                expressions.append(ThreadMessage["id"] > fresh.source_cursor_message_id)
             rows = await session.list(
                 ThreadMessage,
                 limit=None,
@@ -467,7 +444,6 @@ class ThreadManager:
             stored.source_cursor_message_id = message_id
             await session.commit()
         thread.source_cursor_message_id = message_id
-        self.cache_thread(thread)
         return thread
 
     async def record_handoff(
@@ -506,7 +482,6 @@ class ThreadManager:
             session.add(handoff)
             await session.commit()
         thread.handoffs.append(handoff)
-        self.cache_thread(thread)
         return handoff
 
     async def bind_messages(

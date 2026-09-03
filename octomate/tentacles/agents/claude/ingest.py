@@ -164,7 +164,7 @@ class ClaudeHookIngest:
         # The thread first: for a session whose earlier hooks never arrived this is
         # the last event carrying a cwd, and a thread's project is frozen at creation
         # — a backfill tail attaching later would create it unfiled. Already-created
-        # sessions get a cache hit.
+        # sessions resolve to their existing row.
         await self.session_thread(event)
         # Finalize outside any lock: it awaits the stream's drain commits, which take
         # the session lock — holding it here would deadlock.
