@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections import OrderedDict
 from datetime import UTC, datetime
 
 from arcanus.materia.sqlalchemy import noload, selectinload
@@ -39,19 +39,44 @@ def message_text_from_segments(segments: list[MessageSegment]) -> str | None:
     return "\n".join(parts)
 
 
-class ThreadManager:
-    """Owns durable thread chat ledger persistence.
+class BindRefusal(ValueError):
+    """A bind refused by policy — a thread that is not work, or one already bound —
+    carrying the sentence a model may be told and correct from. A `ValueError`
+    still, so nothing that never told the two apart changes."""
 
-    The cache mirrors `ConversationManager`: the database is the source of truth,
-    and write methods keep the cached `Thread` coherent after commits.
+
+# What a listing can show of an opening line before it stops reading as a name.
+TITLE_MAX = 72
+
+
+def thread_title(text: str | None) -> str | None:
+    """A name for a thread, out of one line of what was said in it.
+
+    Whitespace is folded because a directive arrives with its own newlines and a
+    listing has one line to give it. A message with nothing in it names nothing,
+    and the row goes on falling back to its surface.
     """
+    line = " ".join((text or "").split())
+    if not line:
+        return None
+    return line if len(line) <= TITLE_MAX else f"{line[:TITLE_MAX].rstrip()}…"
 
-    def __init__(self, *, users: UserManager, cache_size: int = 256) -> None:
+
+class ThreadManager:
+    """Owns durable thread chat ledger persistence."""
+
+    def __init__(self, *, users: UserManager) -> None:
         # Every ledger row references its sender's registry profile — the host
         # constructs this manager around its one identity registry.
         self.users = users
-        self.cache_size = cache_size
-        self.threads: OrderedDict[ThreadKey, Thread] = OrderedDict()
+        # Serializes first sightings, as `ConversationManager` does for its own
+        # rows: two concurrent ensures of one key — a session's follow task
+        # preparing while a hook pokes it, two people replying at once in a chat
+        # with no thread row yet — must not both insert. Under the lock the loser
+        # re-reads the row the winner committed instead of raising a UNIQUE
+        # violation, which here escapes into `follow`'s handler and strands every
+        # later turn of the session.
+        self.ensure_lock = asyncio.Lock()
 
     async def ensure(
         self,
@@ -79,12 +104,9 @@ class ThreadManager:
                 f"{key} is a {key.kind} and cannot be attributed to project "
                 f"{project.name!r}: only a thread or a native_thread is work."
             )
-        cached = self.threads.get(key)
-        if cached is not None:
-            self.threads.move_to_end(key)
-            return cached
-
-        async with async_session() as session:
+        # The lock spans the read, the insert and the commit: a loser that woke
+        # after the winner's read but before its commit would still find nothing.
+        async with self.ensure_lock, async_session() as session:
             thread = await session.one_or_none(
                 Thread,
                 expressions=[
@@ -109,8 +131,26 @@ class ThreadManager:
             await thread.handoffs
             await thread.project
             await session.commit()
+        return thread
 
-        self.cache_thread(thread)
+    async def rename(self, thread: Thread, title: str) -> Thread:
+        """Give the thread the name the runtime running it grabbed for itself.
+
+        Unlike the opening line `store_message` falls back to, this is a name for
+        the work rather than for how it was asked for, so it overwrites — and goes
+        on overwriting, because the runtime revises it as the session goes on. A
+        name with nothing in it is not one, and leaves the thread as it was.
+        """
+        named = thread_title(title)
+        if named is None or thread.title == named:
+            return thread
+        async with async_session() as session:
+            stored = await session.get(Thread, thread.id)
+            if stored is None:
+                raise ValueError(f"unknown thread {thread.id}")
+            stored.title = named
+            await session.commit()
+        thread.title = named
         return thread
 
     async def bind(self, thread_id: uuid.UUID, project: Project) -> Thread:
@@ -125,7 +165,8 @@ class ThreadManager:
         different thread.
 
         A DM and a group chat are refused for the reason `ATTRIBUTABLE_KINDS`
-        gives: they outlive every project in them.
+        gives: they outlive every project in them. Both refusals are `BindRefusal`;
+        a thread that does not exist is a plain `ValueError`, a wiring bug.
 
         No workspace is made here. A run's working directory is fixed when its
         process spawns, so this takes effect on the thread's next turn and the
@@ -136,14 +177,14 @@ class ThreadManager:
             if thread is None:
                 raise ValueError(f"no thread {thread_id} to bind")
             if thread.kind not in ATTRIBUTABLE_KINDS:
-                raise ValueError(
+                raise BindRefusal(
                     f"{thread.key} is a {thread.kind} and cannot be attributed to "
                     f"project {project.name!r}: only a thread or a native_thread "
                     f"is work."
                 )
             current = await thread.project
             if current is not None:
-                raise ValueError(
+                raise BindRefusal(
                     f"{thread.key} is already about {current.name!r} and a thread "
                     f"binds once; work on {project.name!r} in its own thread."
                 )
@@ -152,8 +193,7 @@ class ThreadManager:
 
         # Read the thread back rather than returning the row that changed. `project`
         # is eagerly loaded, so the copy that set the id is still holding the answer
-        # it was loaded with — and `ensure` hands the cached copy to every later turn
-        # in the thread, which is exactly the run this binding is for.
+        # it was loaded with.
         bound = await self.get(thread_id)
         if bound is None:
             raise ValueError(f"thread {thread_id} vanished while binding")
@@ -168,9 +208,7 @@ class ThreadManager:
         `with_messages=False` is for a reader that wants the row and not its
         ledger, and suppresses the load rather than dropping it afterwards —
         `noload` is the difference between not fetching a thread's messages and
-        fetching them to throw away. It skips the cache with them, because a
-        cached thread whose `messages` is empty is indistinguishable from one
-        nobody has ever spoken in, and `ensure` hands that copy to channels.
+        fetching them to throw away.
 
         Either way the model ledger stays behind: it hangs off a message, and
         `related_model_messages` is how a caller asks for it — dragging it here
@@ -185,9 +223,6 @@ class ThreadManager:
             thread = await session.get(Thread, thread_id, options=options)
             if thread is None:
                 return None
-
-        if with_messages:
-            self.cache_thread(thread)
         return thread
 
     async def list_threads(
@@ -219,22 +254,30 @@ class ThreadManager:
             )
         return list(rows)
 
-    def cache_thread(self, thread: Thread) -> None:
-        self.threads[thread.key] = thread
-        self.threads.move_to_end(thread.key)
-        while len(self.threads) > self.cache_size:
-            self.threads.popitem(last=False)
-
     async def store_message(self, message: ThreadMessage, thread: Thread) -> None:
-        """Persist a ledger row and re-sync the cached thread from the database."""
+        """Persist a ledger row.
+
+        The row is touched, not only appended to. `updated_at` fires on an update
+        of the thread and writing to its ledger is not one, so a session being
+        tailed right now would keep the timestamp it was created with and sink, in
+        a listing ordered by it, under threads nothing has ever said a word in.
+
+        A thread nobody has named takes its name from this row when a person wrote
+        it. The listing carries no messages, so the first thing said is the only
+        name a row has until a runtime grabs one of its own (`rename`).
+        """
         async with async_session() as session:
             session.add(message)
+            row = await session.get(Thread, thread.id)
+            if row is not None:
+                row.updated_at = datetime.now(UTC)
+                if (
+                    row.title is None
+                    and message.direction == "inbound"
+                    and message.actor_kind == "human"
+                ):
+                    row.title = thread_title(message.message_text)
             await session.commit()
-            reloaded = await session.get(Thread, thread.id)
-            if reloaded is not None:
-                await reloaded.messages
-                await reloaded.handoffs
-                self.cache_thread(reloaded)
 
     async def record_inbound(
         self,
@@ -367,11 +410,11 @@ class ThreadManager:
         trigger_message_id: uuid.UUID,
         active_agent_id: str,
     ) -> list[ThreadMessage]:
-        cached = await self.ensure(thread.key)
+        fresh = await self.ensure(thread.key)
 
         async with async_session() as session:
             expressions = [
-                ThreadMessage["thread_id"] == cached.id,
+                ThreadMessage["thread_id"] == fresh.id,
                 ThreadMessage["id"] <= trigger_message_id,
                 or_(
                     ThreadMessage["actor_kind"] != "agent",
@@ -379,10 +422,8 @@ class ThreadManager:
                     ThreadMessage["agent_tentacle_id"].is_(None),
                 ),
             ]
-            if cached.source_cursor_message_id is not None:
-                expressions.append(
-                    ThreadMessage["id"] > cached.source_cursor_message_id
-                )
+            if fresh.source_cursor_message_id is not None:
+                expressions.append(ThreadMessage["id"] > fresh.source_cursor_message_id)
             rows = await session.list(
                 ThreadMessage,
                 limit=None,
@@ -403,7 +444,6 @@ class ThreadManager:
             stored.source_cursor_message_id = message_id
             await session.commit()
         thread.source_cursor_message_id = message_id
-        self.cache_thread(thread)
         return thread
 
     async def record_handoff(
@@ -442,7 +482,6 @@ class ThreadManager:
             session.add(handoff)
             await session.commit()
         thread.handoffs.append(handoff)
-        self.cache_thread(thread)
         return handoff
 
     async def chat_message(self, profile: UserProfile, handle: str) -> ThreadMessage:

@@ -21,9 +21,9 @@ from octomate.reflex.state import (
     ReflexResult,
     ReflexState,
 )
-from octomate.reflex.suspender import HumanReviewSuspender, TeleportRequest
+from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.segments import MarkdownSegment
-from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
+from octomate.schemas.triage import SchemeDecision, SummonDecision
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channels.base import ChannelOutput
 from octomate.tentacles.channels.feelers.output import split_reply
@@ -34,17 +34,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     resume_batch_id: uuid.UUID | None = None
-    # Set by Teleport to resume the same agent against the forked history.
-    teleport_results: DeferredToolResults | None = None
-    # Set by Teleport instead of `teleport_results` when the teleport was reported
-    # as a decision (no pending call to resolve): the resumed run opens from this.
-    continuation_prompt: str | None = None
+    # Set by Teleport to resume the same agent where it landed, with its pending
+    # call resolved — against the forked history, or in place.
+    resume_results: DeferredToolResults | None = None
 
     @reflex_logfire.instrument("reflex.react", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
         """React, and leave the turn's workspace in the mirror however it ends.
 
         In a `finally` because a turn that raised still did whatever it did on
@@ -67,7 +65,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def react(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target
@@ -151,18 +149,16 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if state.user_profile is not None:
             capabilities.extend(await agent.user_capabilities(state.user_profile))
 
-        deferred_results = self.teleport_results
+        deferred_results = self.resume_results
         if self.resume_batch_id is not None:
             batch = await ctx.deps.action_manager.get_batch(self.resume_batch_id)
             deferred_results = batch.build_results()
         if deferred_results is not None:
             user_prompt: str | Sequence[UserContent] | None = None
-        elif self.continuation_prompt is not None:
-            user_prompt = self.continuation_prompt
         else:
             user_prompt = decision.summon or str(state.user_prompt or "")
 
-        suspender = HumanReviewSuspender(
+        suspender = ReflexSuspender(
             channel=target_channel,
             action_manager=ctx.deps.action_manager,
             conversation_manager=ctx.deps.conversation_manager,
@@ -392,6 +388,18 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     reply_thread_message_ids,
                     run_id=run_result.run_id,
                 )
+            if (
+                gateway_session is not None
+                and gateway_session.dispelling
+                and state.thread is not None
+            ):
+                # The agent said this thread's work is done: its tree goes now
+                # that the run is out of it, saved first and kept if that failed.
+                result = await ctx.deps.workspaces.dispel(state.thread)
+                span.set_attribute(
+                    "react.dispelled",
+                    result,
+                )
             if isinstance(output, DeferredToolRequests):
                 # `teleport` is resolved by the graph (fork + resume), not a human. The
                 # suspender classified it by its declared metadata kind and stashed it,
@@ -444,23 +452,6 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 )
                 return Scheme(
                     request=gateway_decision,
-                    origin=target,
-                    agent_id=agent.id,
-                )
-            if isinstance(gateway_decision, TeleportDecision):
-                # Recorded, not deferred: a runtime that cannot be suspended
-                # mid-run reported the move and finished its turn; the graph
-                # performs it now, exactly as it resolves a deferral.
-                span.set_attribute("react.action", gateway_decision.action)
-                reflex_logfire.info(
-                    "react -> teleport reported as a decision",
-                    crossing=str(gateway_decision.crossing),
-                )
-                return Teleport(
-                    request=TeleportRequest(
-                        hint=gateway_decision.hint,
-                        crossing=gateway_decision.crossing,
-                    ),
                     origin=target,
                     agent_id=agent.id,
                 )

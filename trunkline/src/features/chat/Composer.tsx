@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import type { SyntheticEvent } from 'react'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useConsole } from '@/state/console'
-import { useChannels, usePermissionModes, useRoutes } from '@/lib/api/hooks'
-import { shortModel } from '@/lib/api/live'
+import { usePermissionModes, useRoutes } from '@/lib/api/hooks'
+import { channelMeta, shortModel } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, microSection, mono } from '@/components/text'
 
@@ -305,13 +305,14 @@ export function Composer() {
   const ntModel = useConsole((s) => s.ntModel)
   const ntEffort = useConsole((s) => s.ntEffort)
   const { removeQueued } = useConsole((s) => s.actions)
-  const { data: channels } = useChannels()
 
   const isReview = useConsole((s) => s.pvOpen)
   const lastSes = detail?.sessions[detail.sessions.length - 1]
-  const routeChip = `${channels?.find((c) => c.id === selChannel)?.label.toLowerCase() ?? 'trunkline'}/${detail?.key ?? selThreadId}`
+  // The channel list is the connected tentacles only, so a native channel is not
+  // in it; its display name is the same table the sidebar reads.
+  const routeChip = `${channelMeta(selChannel).label.toLowerCase()}/${detail?.key ?? selThreadId}`
   const modelChip = ntOn ? `${ntAgent} · ${ntModel}[${ntEffort}]` : (lastSes?.route ?? '')
-  const [sesAgent, sesModel] = (lastSes?.route ?? 'claude · opus[1m]').split(' · ')
+  const [sesAgent, sesModel] = (lastSes?.route ?? '').split(' · ')
 
   useEffect(() => {
     aui.composer.setText('')
@@ -478,7 +479,7 @@ export function Composer() {
             <RouteSelector />
           ) : (
             <span
-              title="agent · model · effort — routing of this session"
+              title="agent · model — routing of this session"
               style={{
                 ...label(8, '.06em'),
                 background: 'var(--surface-raised)',
@@ -495,10 +496,15 @@ export function Composer() {
                 flexShrink: 0,
               }}
             >
-              <span style={{ color: 'var(--color-accent)' }}>{sesAgent}</span>
-              <span style={{ color: 'var(--fg-3)' }}>·</span>
-              <span style={{ color: 'var(--fg-1)' }}>{sesModel ?? ''}</span>
-              <span style={{ color: 'var(--fg-3)' }}>[high]</span>
+              <span style={{ color: 'var(--color-accent)' }}>{sesAgent || '—'}</span>
+              {/* A session nothing routed carries its runtime alone, and no read
+                  reports the effort a run went out at. */}
+              {sesModel && (
+                <>
+                  <span style={{ color: 'var(--fg-3)' }}>·</span>
+                  <span style={{ color: 'var(--fg-1)' }}>{sesModel}</span>
+                </>
+              )}
             </span>
           )}
           <span style={{ marginLeft: 8, flexShrink: 0 }}>

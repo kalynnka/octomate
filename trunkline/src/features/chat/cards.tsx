@@ -258,6 +258,10 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
   // An explicit toggle is remembered by uid and outlives the transition.
   const open = useConsole((s) => s.open[item.uid] ?? item.thinking)
   const { toggleCardOpen } = useConsole((s) => s.actions)
+  // A tailed runtime signs its thinking and keeps the text, so a replayed block
+  // arrives empty. That is worth saying on the row itself — the alternative is a
+  // card that opens on nothing and reads as a relay that dropped it.
+  const recorded = item.text.trim().length > 0
   return (
     <div
       id={`pm-${item.uid}`}
@@ -269,12 +273,26 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />
         <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Thinking</span>
         <span style={{ flex: 1 }} />
-        <span style={{ ...metaLine, color: 'var(--fg-3)' }}>{item.dur}</span>
+        <span style={{ ...metaLine, color: 'var(--fg-3)' }}>
+          {recorded || item.thinking ? item.dur : 'not recorded'}
+        </span>
       </div>
       <Fold open={open}>
         <div style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 12px' }}>
           <div style={{ borderLeft: '2px solid var(--line-divider)', padding: '6px 14px' }}>
-            <p style={{ margin: 0, ...serif(13), lineHeight: 1.65, color: 'var(--fg-2)', fontStyle: 'italic' }}>{item.text}</p>
+            <p
+              style={{
+                margin: 0,
+                ...serif(13),
+                lineHeight: 1.65,
+                color: recorded ? 'var(--fg-2)' : 'var(--fg-3)',
+                fontStyle: 'italic',
+              }}
+            >
+              {recorded
+                ? item.text
+                : 'The runtime signed this block and wrote no text with it — the reasoning never reached the transcript, so there was nothing to tail.'}
+            </p>
           </div>
         </div>
       </Fold>
@@ -669,7 +687,9 @@ function ApprovalRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: '
         >
           <span style={{ ...mono(10, 700), color, lineHeight: 1 }}>{approved ? '✓' : '○'}</span>
           <span style={{ ...label(8.5, '.12em'), color: 'var(--fg-1)' }}>
-            {approved ? 'approved by kalynnka — gh.create_issue dispatched' : 'dismissed by kalynnka — action dropped, run resumes'}
+            {approved
+              ? `approved by kalynnka — ${item.tool} dispatched`
+              : `dismissed by kalynnka — ${item.tool} dropped, run resumes`}
           </span>
           <span style={{ flex: 1, minWidth: 0, ...serif(12), fontStyle: 'italic', ...ghost3, ...ellipsis }}>
             {item.title.toLowerCase()}
@@ -687,7 +707,7 @@ function ApprovalRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: '
           <span style={{ flex: 1 }} />
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 1, ...microSection, color: 'var(--color-gold)', whiteSpace: 'nowrap' }}>
             <i style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--color-gold)', animation: 'trkPulse 1.2s infinite' }} />
-            Write · waiting · kalynnka
+            {item.tool} · waiting · kalynnka
           </span>
         </div>
         <p style={{ margin: '5px 0 0', ...serif(12.5), lineHeight: 1.65, color: 'var(--fg-2)' }}>{item.desc}</p>
@@ -698,9 +718,6 @@ function ApprovalRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: '
             style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}
           >
             Approve
-          </span>
-          <span className="hov-accent-fill" style={{ ...label(8.5, '.12em'), color: 'var(--on-panel)', background: 'var(--panel)', padding: '4px 10px', cursor: 'pointer' }}>
-            Read
           </span>
           <span
             onClick={() => resolveApproval(item.uid, 'dismissed')}
@@ -766,7 +783,7 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               <span style={{ ...mono(8), ...ghost3 }}>{item.resolvedT}</span>
             </div>
             <p style={{ margin: '6px 0 0', ...serif(13), lineHeight: 1.7, fontStyle: 'italic', color: 'var(--fg-1)' }}>“{item.answer}”</p>
-            <div style={{ marginTop: 8, ...microMeta, color: 'var(--fg-3)' }}>{item.via} · RUN_0521 resumed</div>
+            <div style={{ marginTop: 8, ...microMeta, color: 'var(--fg-3)' }}>{item.via}</div>
           </div>
         )}
       </div>
@@ -789,7 +806,7 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
             <span style={{ flex: 1 }} />
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 2, ...sectionLabel, color: 'var(--color-gold)', whiteSpace: 'nowrap' }}>
               <i style={{ width: 6, height: 6, borderRadius: 9999, background: 'var(--color-gold)', animation: 'trkPulse 1.2s infinite' }} />
-              Ask · waiting · kalynnka
+              {item.tool} · waiting · kalynnka
             </span>
           </div>
           <div

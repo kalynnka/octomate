@@ -16,10 +16,12 @@ import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, overload
 
+from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.thread import ATTRIBUTABLE_KINDS
 from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
@@ -34,9 +36,11 @@ from octomate.schemas.triage import (
     Destination,
     GatewayDecision,
     HereLanding,
+    HereTarget,
+    ProjectSummary,
     SchemeDecision,
     SchemeTarget,
-    Scrying,
+    ScryFacet,
     SendTarget,
     SummonDecision,
     SummonLanding,
@@ -51,7 +55,9 @@ from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 if TYPE_CHECKING:
     from pydantic_ai.settings import ThinkingEffort
 
+    from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
+    from octomate.managers.workspaces import WorkspaceManager
     from octomate.schemas.user import UserProfile
     from octomate.tentacles.agents.base import AgentTentacle
     from octomate.tentacles.channels.base import ChannelTentacle
@@ -113,10 +119,18 @@ class GatewaySession:
     # here or sub-thread to land on, every destination is a crossing, and a summon
     # or scheme is kicked as its own turn instead of being read after this one.
     native: bool = False
+    # What the project spells work with — a `teleport` that binds, `dispel`, the
+    # `projects` facet: the ledger a binding is written to and read from, and the
+    # registry and forks. Both None on a gateway built only to route.
+    threads: ThreadManager | None = None
+    workspaces: WorkspaceManager | None = None
     # Whether the mounted gateway offers the accomplice spells; `no_landing` names
     # `commission` as the fallback only when it is actually on offer.
     commissioning: bool = field(default=False, init=False)
     decision: GatewayDecision | None = field(default=None, init=False)
+    # Whether `dispel` was cast: the thread's workspace goes when the turn ends,
+    # the graph's doing once the run is out of it.
+    dispelling: bool = field(default=False, init=False)
     # Every route on this run's own channel but the current agent's own — the info
     # shared with the agent to decide where to go, and what a spell landing here
     # validates a chosen route against. A crossing validates against its own.
@@ -322,7 +336,8 @@ class GatewaySession:
 
     async def teleport_handles(self) -> list[str]:
         """Every handle `teleport` can land on. `here` is not among them at any
-        surface — a teleport that stayed put would be the agent simply carrying on.
+        surface — a teleport that stayed put would be the agent simply carrying on,
+        unless it carries a project, which `teleport` settles before asking here.
 
         A shared surface can only reach its own sub-thread. Everything said here
         comes with a teleport, and on a crossing that would republish what other
@@ -431,9 +446,48 @@ class GatewaySession:
             )
         return route
 
-    async def scry(self) -> Scrying:
-        """What this conversation can reach: the routes here, and everywhere else."""
-        return Scrying(routes=self.other_routes, destinations=await self.destinations())
+    @overload
+    async def scry(self, reveal: Literal["routes"]) -> list[AgentRoute]: ...
+
+    @overload
+    async def scry(self, reveal: Literal["destinations"]) -> list[Destination]: ...
+
+    @overload
+    async def scry(self, reveal: Literal["projects"]) -> list[ProjectSummary]: ...
+
+    async def scry(
+        self, reveal: ScryFacet
+    ) -> list[AgentRoute] | list[Destination] | list[ProjectSummary]:
+        """One facet of what this conversation can reach: the routes here, every
+        place it can go, or the projects it can be about. Only the asked facet is
+        computed — the places reach the identity registry."""
+        match reveal:
+            case "routes":
+                return self.other_routes
+            case "destinations":
+                return await self.destinations()
+            case "projects":
+                return await self.projects()
+
+    async def projects(self) -> list[ProjectSummary]:
+        """The projects this deployment can work on — a registered user's to see,
+        being theirs to bind; a visitor is refused rather than shown nothing."""
+        if (
+            self.users is None
+            or self.user_profile is None
+            or await self.users.owner(self.user_profile) is None
+        ):
+            raise GatewayRefusal(
+                "This session speaks for no registered user, and the projects are a "
+                "registered user's to see."
+            )
+        if self.workspaces is None:
+            raise RuntimeError("the project facet needs the workspace manager")
+        return [
+            ProjectSummary(name=project.name, description=project.description)
+            for project in self.workspaces.projects.list()
+            if project.enabled
+        ]
 
     async def summon(
         self,
@@ -456,7 +510,7 @@ class GatewaySession:
         if agent_id == self.current_agent_id:
             raise GatewayRefusal(
                 f"Cannot summon yourself {self.current_agent_id!r}. "
-                f"Call `{SCRY_TOOL_NAME}` to choose a valid route."
+                f'Call `{SCRY_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
             )
         landing: SummonLanding = HereLanding()
         # Against the routes of the channel it lands on: an agent is summonable
@@ -493,11 +547,22 @@ class GatewaySession:
         *,
         hint: str,
         destination: TeleportTarget = THREAD_TARGET,
+        project: str | None = None,
+        ref: str | None = None,
     ) -> TeleportDecision:
-        """Validate and record a teleport decision — the same agent continuing in a
-        new sub-thread. How the move happens is the caller's: Inkling's capability
-        turns it into a deferral the graph forks mid-run; a runtime that cannot be
-        suspended reports it and the graph forks after its turn.
+        """Validate and record a teleport decision — the same agent continuing
+        somewhere else, its history with it. How the move happens is the graph's:
+        the run ends on the decision and the Teleport node performs it.
+
+        A `project` makes the move one into that project's workspace: the thread
+        landed in is bound to it — a new sub-thread or crossing, or this thread
+        when `destination` is `here`, the one case a teleport may stay put. The
+        project and the ref are validated here, where a refusal reaches the model;
+        the binding itself is the graph's, on the thread that turns out to be
+        landed in. Binding is a trust act (a project's own `AGENTS.md` reaches the
+        agent as instructions), so it takes a registered user; only a thread binds,
+        and once — so staying put is refused for a DM or a group and for a thread
+        already about a project, before a mirror is synced for nothing.
 
         A native session is refused before any handle is read: its turn lives in a
         terminal Octomate does not drive, so there is nothing to relocate — only
@@ -509,31 +574,132 @@ class GatewaySession:
                 f"channel, or `{SCHEME_TOOL_NAME}` it into someone's direct "
                 "messages."
             )
-        handles = await self.teleport_handles()
-        if destination.handle not in handles:
-            raise GatewayRefusal(
-                self.no_landing(destination.handle, handles, spell="teleport")
-            )
-        crossing = (
-            await self.destination(destination.handle, spell="teleport")
-            if isinstance(destination, ChannelTarget)
-            else None
-        )
-        if crossing is not None and not any(
-            route.agent_id == self.current_agent_id for route in crossing.routes
+        if project is not None and (
+            self.users is None
+            or self.user_profile is None
+            or await self.users.owner(self.user_profile) is None
         ):
-            channel = self.channels[crossing.address.channel_tentacle_id]
             raise GatewayRefusal(
-                f"{channel.name} does not run you ({self.current_agent_id}), and a "
-                f"teleport takes you with it. Carry on here, or `{SUMMON_TOOL_NAME}` "
-                "an agent it does run."
+                "This session speaks for no registered user, and binding a thread to "
+                "a project is a registered user's act."
             )
+        if isinstance(destination, HereTarget):
+            if project is None:
+                raise GatewayRefusal(
+                    "A teleport that stays put is you carrying on. Name a project to "
+                    "bind this thread to, or somewhere to go."
+                )
+            if self.thread_id is None or self.threads is None:
+                raise RuntimeError(
+                    "a teleport that binds this thread needs the thread this turn "
+                    "is in, and the ledger it is written to"
+                )
+            thread = await self.threads.get(self.thread_id)
+            if thread is None:
+                raise RuntimeError(f"thread {self.thread_id} vanished")
+            if thread.kind not in ATTRIBUTABLE_KINDS:
+                raise GatewayRefusal(
+                    f"This conversation is a {thread.kind}, and a DM or a group chat "
+                    "outlives every project in it — only a thread binds. Teleport "
+                    f"with `destination` `thread` to open one about {project!r}."
+                )
+            current = await thread.project
+            if current is not None:
+                raise GatewayRefusal(
+                    f"This thread is already about {current.name!r}, and a thread "
+                    "binds once — a different project is a different thread, which "
+                    "`destination` `thread` opens."
+                )
+            crossing = None
+        else:
+            handles = await self.teleport_handles()
+            if destination.handle not in handles:
+                raise GatewayRefusal(
+                    self.no_landing(destination.handle, handles, spell="teleport")
+                )
+            crossing = (
+                await self.destination(destination.handle, spell="teleport")
+                if isinstance(destination, ChannelTarget)
+                else None
+            )
+            if crossing is not None and not any(
+                route.agent_id == self.current_agent_id for route in crossing.routes
+            ):
+                channel = self.channels[crossing.address.channel_tentacle_id]
+                raise GatewayRefusal(
+                    f"{channel.name} does not run you ({self.current_agent_id}), and "
+                    f"a teleport takes you with it. Carry on here, or "
+                    f"`{SUMMON_TOOL_NAME}` an agent it does run."
+                )
+        if project is not None:
+            if self.workspaces is None:
+                raise RuntimeError("a teleport into a project needs the workspaces")
+            registered = self.workspaces.projects.get(project)
+            if registered is None or not registered.enabled:
+                available = sorted(
+                    other.name
+                    for other in self.workspaces.projects.list()
+                    if other.enabled
+                )
+                raise GatewayRefusal(
+                    f"No project called {project!r} is registered here. "
+                    f"Available: {', '.join(available) or 'none'}."
+                )
+            # Ahead of the move, because a thread binds once: a ref that turns out
+            # not to resolve would otherwise leave the thread committed to the
+            # project with no way to ask again for the branch that was meant.
+            mirror = await self.workspaces.mirrors.sync(registered)
+            if ref is not None and not await run_git("ls-remote", str(mirror), ref):
+                raise GatewayRefusal(
+                    f"{registered.name!r} has no {ref!r} to start from. Name a "
+                    "branch, tag or commit its mirror has, or omit it for the "
+                    "default branch."
+                )
         decision = TeleportDecision(
             hint=hint,
             crossing=CrossingLanding(address=crossing.address) if crossing else None,
+            here=isinstance(destination, HereTarget),
+            project=project,
+            ref=ref,
         )
         self.decision = decision
         return decision
+
+    async def dispel(self) -> str:
+        """Record that this thread's workspace may go: its agent has said the work
+        in it is done. Validated here, where a refusal reaches the model; the
+        release is the graph's, once the turn ends and its work is saved, so no
+        tree is pulled out from under a run still in it.
+
+        No registered user is needed, unlike a binding: what a release costs is a
+        fork on the next turn, never work. A thread about no project has nothing
+        to release — its tree goes with the turn — and a native session runs in a
+        directory of its own that Octomate never forked."""
+        if self.native:
+            raise GatewayRefusal(
+                "This session lives in your terminal, in a directory of its own — "
+                "Octomate forked nothing for it, and has nothing to release."
+            )
+        if self.thread_id is None or self.threads is None:
+            raise RuntimeError(
+                "a dispel needs the thread this turn is in, and the ledger it is "
+                "read from"
+            )
+        thread = await self.threads.get(self.thread_id)
+        if thread is None:
+            raise RuntimeError(f"thread {self.thread_id} vanished")
+        if await thread.project is None:
+            raise GatewayRefusal(
+                "This thread is about no project, and its tree is thrown away when "
+                "this turn ends — there is nothing to release."
+            )
+        self.dispelling = True
+        return (
+            "Releasing this thread's workspace when this turn ends, once its work is "
+            "saved to the project's mirror. Nothing is lost — a later message here "
+            "forks it afresh from there — but finish up now: your working directory "
+            "goes with it."
+        )
 
     async def scheme(
         self,

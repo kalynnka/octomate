@@ -1,8 +1,8 @@
-"""OCTO-38 — a thread row says which surface it is, and only work can carry a project.
+"""A thread row says which surface it is, and only work can carry a project.
 
 `Thread.kind` records the surface when the row is created; `ThreadManager.ensure`
-refuses a project for a DM or a group chat rather than dropping it, and OCTO-52's
-`bind` refuses them the same way through the door that opens later.
+refuses a project for a DM or a group chat rather than dropping it, and
+`ThreadManager.bind` refuses them the same way through the door that opens later.
 """
 
 from __future__ import annotations
@@ -164,7 +164,7 @@ async def test_a_native_thread_keeps_the_attribution_octo_31_gives_it(
 async def test_a_chat_thread_binds_to_the_project_it_had_none_of(
     tmp_path: Path,
 ) -> None:
-    # OCTO-52: the attribution a chat thread has no way to be given at creation,
+    # The attribution a chat thread has no way to be given at creation,
     # arriving on the turn someone says what the thread is about.
     manager = ThreadManager(users=UserManager())
     project = await inky(tmp_path)
@@ -177,8 +177,8 @@ async def test_a_chat_thread_binds_to_the_project_it_had_none_of(
     attributed = await bound.project
     assert attributed is not None
     assert attributed.name == "inky"
-    # `ensure` hands channels the cached copy, so a binding the cache missed would
-    # be one every later turn in the thread still ran without.
+    # `ensure` re-reads the row, so every later turn in the thread runs with the
+    # binding.
     assert (await manager.ensure(SLACK_THREAD)).project_id == project.id
 
 

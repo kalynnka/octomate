@@ -273,8 +273,8 @@ async def test_owner_survives_cold_manager_reload() -> None:
     await first.kick(UserMessageSignal([_event(text="please debug")]))
     assert [stream.run_name for stream in first_claude.streams] == ["summon"]
 
-    # Fresh managers (empty caches) over the same DB: ownership reloads from the
-    # persisted handoff, so the follow-up routes to Claude without a new entry run.
+    # Fresh managers over the same DB: ownership reloads from the persisted
+    # handoff, so the follow-up routes to Claude without a new entry run.
     second, second_entry, second_claude = _build()
     await second.kick(
         UserMessageSignal([_event(text="more detail", thread_id="hint-thread")])

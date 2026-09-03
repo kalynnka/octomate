@@ -210,9 +210,10 @@ async def test_scry_tool_returns_other_routes() -> None:
     assert capability.toolset is not None
     scry = capability.toolset.tools[SCRY_TOOL_NAME].function
 
-    scrying = await scry(FAKE_CONTEXT)
+    routes = await scry(FAKE_CONTEXT, "routes")
+    places = await scry(FAKE_CONTEXT, "destinations")
 
-    assert scrying.routes == [
+    assert routes == [
         AgentRoute(
             agent_id="claude",
             model="opus",
@@ -223,7 +224,18 @@ async def test_scry_tool_returns_other_routes() -> None:
     # asker is registered. A sub-thread is not among them: `summon` names one
     # through its own literal, and a resolved handle is always somewhere a person
     # can be delivered to.
-    assert [one.handle for one in scrying.destinations] == ["here", "dm"]
+    assert [one.handle for one in places] == ["here", "dm"]
+
+
+async def test_scry_computes_only_the_facet_it_was_asked_for() -> None:
+    capability = _capability("shared_thread")
+    assert capability.toolset is not None
+    scry = capability.toolset.tools[SCRY_TOOL_NAME].function
+
+    await scry(FAKE_CONTEXT, "routes")
+
+    # The registry was never reached for the facet nobody asked for.
+    assert capability.session.computed_destinations is None
 
 
 async def test_summon_capability_rejects_self_summon() -> None:
@@ -431,10 +443,10 @@ async def test_teleport_refused_where_no_sub_thread_can_be_opened(
 
 def test_each_spell_declares_only_the_places_it_goes() -> None:
     """The schema is the refusal for a place a spell never goes, so the body never
-    has to be. `here` is where a summon hands over and a send delivers, but a
-    teleport that stayed put would just be the agent carrying on; `dm` is what a
-    scheme means, and a summon into someone's direct messages is a scheme by
-    another name."""
+    has to be. `here` is where a summon hands over and a send delivers, and where
+    a teleport stays put only to bind a project — the body refuses it without one;
+    `dm` is what a scheme means, and a summon into someone's direct messages is a
+    scheme by another name."""
     capability = _capability()
     assert capability.toolset is not None
 
@@ -443,7 +455,11 @@ def test_each_spell_declares_only_the_places_it_goes() -> None:
         "here",
         "thread",
     ]
-    assert _destination_kinds(capability, TELEPORT_TOOL_NAME) == ["channel", "thread"]
+    assert _destination_kinds(capability, TELEPORT_TOOL_NAME) == [
+        "channel",
+        "here",
+        "thread",
+    ]
     assert _destination_kinds(capability, SCHEME_TOOL_NAME) == ["channel", "dm"]
     assert _destination_kinds(capability, SEND_TOOL_NAME) == ["channel", "dm", "here"]
 
@@ -687,6 +703,9 @@ async def test_teleport_defers_a_crossing_with_the_far_account_named(
         "hint": "carrying on",
         "channel": "far",
         "user": "ou_alice",
+        "here": False,
+        "project": "",
+        "ref": "",
     }
 
 

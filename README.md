@@ -399,7 +399,7 @@ octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hoo
 
 A file, not an exported variable, and that is a security property rather than a convenience. An environment is inherited: everything a shell starts carries what it holds, this deployment's own Codex app-servers included, and a driven turn must speak as the human who kicked it and nobody else. `$OCTOMATE_CLI_SECRET` and `$OCTOMATE_CLI_URL` still resolve ahead of the files, for a container or a CI step with no home to write into. `OCTOMATE_CLI_` rather than the server's `OCTOMATE__` prefix, so nothing about a client credential reads as deployment config.
 
-Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying its bearer plus a static `X-Octomate-Client` header written at install time. The client header is attribution (which runtime); the bearer is identity (which human): a native session bearing a user's secret speaks for that person, and its spells light up on *their* linked accounts. Driven turns answer to the same rule — every run represents the human who kicked it, so a driven Codex turn's loopback call carries the kicker's own secret and nobody else's credential can drive it, while a turn kicked by an unregistered user simply runs without the spells. Rotation or revocation is only ever the admin editing the YAML. The trust statement, plainly: a user's secret holds the hook pipe's ledger writes plus the gateway's outbound sends and handoffs, under that user's name. Same trust domain (the operator's machines), same mitigations (per-user secrets, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags.
+Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying its bearer plus a static `X-Octomate-Client` header written at install time. The client header is attribution (which runtime); the bearer is identity (which human): a native session bearing a user's secret speaks for that person, and its spells light up on *their* linked accounts. Driven turns answer to the same rule — every run represents the human who kicked it, so a driven Codex turn's loopback call carries the kicker's own secret and nobody else's credential can drive it, while a turn kicked by an unregistered user simply runs without the spells. Rotation or revocation is only ever the admin editing the YAML. The trust statement, plainly: a user's secret holds the hook pipe's ledger writes plus the gateway's outbound sends, handoffs and project bindings, under that user's name. Same trust domain (the operator's machines), same mitigations (per-user secrets, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags.
 
 Point the runtimes' native sessions at it with the `mcp` commands — static MCP client config, written once:
 
@@ -472,3 +472,11 @@ The codebase keeps an octopus metaphor, and these are the words it uses:
 | **Ink** 🖊️ | per-channel client | What actually sends, edits and uploads on the platform. |
 | **Spill** 💧 | `SpillStore` | Where an oversized tool return goes, so it is read back on demand instead of re-sent every turn. |
 | **Awake** 🌊 | `AwakeSignal` | What arrives: a message, or a batch of answered actions coming back. |
+
+## License
+
+Copyright © 2026 Lu Hui.
+
+Octomate is free software under the [GNU Affero General Public License v3.0](LICENSE):
+use it, change it, and run it as you like. If you offer a modified version to others over
+a network, the AGPL asks you to offer them its source too.

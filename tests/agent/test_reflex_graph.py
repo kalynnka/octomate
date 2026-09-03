@@ -8,6 +8,7 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import ClassVar, cast
 
 import pytest
@@ -15,19 +16,20 @@ from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent, Ru
 from pydantic_ai.messages import ToolCallPart, UserPromptPart
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
-from octomate.config import (
-    AgentModelConfig,
-    ChannelConfig,
-    ChannelStreamConfig,
-)
+from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
+from octomate.config.mirrors import MirrorsConfig
 from octomate.config.users import UserConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
+from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import WorkspaceManager
+from octomate.managers.workspaces import MirrorManager, WorkspaceManager
+from octomate.managers.workspaces.base import thread_ref
+from octomate.managers.workspaces.mirrors import run_git
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
@@ -79,6 +81,8 @@ from tests.support.managers import (
     FakeThreadManager,
     FakeUserManager,
     RecordingWorkspaceManager,
+    a_project,
+    a_registry,
 )
 
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -439,11 +443,12 @@ async def test_reception_mounts_gate_capability() -> None:
     gate = _recorded_gate_capability(agent.turns[0])
     assert gate.toolset is not None
     scry = gate.toolset.tools[SCRY_TOOL_NAME].function
-    scrying = await scry(FAKE_CONTEXT)
-    assert scrying.routes == []
+    routes = await scry(FAKE_CONTEXT, "routes")
+    places = await scry(FAKE_CONTEXT, "destinations")
+    assert routes == []
     # One list for every spell: this run is a DM, so `dm` is not among them — it is
     # already where it would go — and nothing links this asker to another channel.
-    assert [one.handle for one in scrying.destinations] == ["here"]
+    assert [one.handle for one in places] == ["here"]
 
 
 async def test_non_stream_reception_presents_only_the_final_output() -> None:
@@ -502,7 +507,7 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
 
 
 async def test_a_finished_turn_saves_the_threads_workspace() -> None:
-    # OCTO-51: a turn is over when its answer is delivered, and that is when its
+    # A turn is over when its answer is delivered, and that is when its
     # work has to be somewhere the workspace going away cannot take it.
     address = _key("t1")
     agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
@@ -1560,10 +1565,11 @@ async def test_a_teleport_crossing_that_never_opens_resolves_in_place() -> None:
     assert far.sub_threads == []
 
 
-async def test_a_recorded_teleport_moves_the_turn_after_it_ends() -> None:
-    """A runtime that cannot be suspended mid-run reports a teleport as a decision;
-    the graph performs the same move it makes for a deferral, and the resumed run
-    opens from the hint rather than from a resolved call."""
+async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral() -> None:
+    """A runtime a tool result cannot suspend records the teleport as a decision,
+    is interrupted on it, and ends its turn as the same deferral Inkling raises;
+    the graph performs one move for both and resolves the call into the resumed
+    run."""
     address = _key()
     entry = FakeAgent(
         id="other",
@@ -1589,9 +1595,11 @@ async def test_a_recorded_teleport_moves_the_turn_after_it_ends() -> None:
     assert not isinstance(result, DeferredResult)
     assert len(entry.turns) == 2
     resumed = entry.turns[-1]
-    # No pending call to resolve — the hint is the resumed run's opening prompt.
-    assert resumed.deferred_results is None
-    assert resumed.prompt == "carrying on in a thread"
+    assert resumed.prompt is None
+    assert resumed.deferred_results is not None
+    assert resumed.deferred_results.calls == {
+        "call_teleport": "Continuing the conversation here."
+    }
     assert resumed.address.channel_thread_id == "hint-thread"
 
 
@@ -2013,3 +2021,129 @@ async def test_send_falls_back_to_here_when_the_platform_will_not_open() -> None
 
     assert im.opened_dms == ["alice"]
     assert all(chat_id == "team" for chat_id, *_ in im.sent)
+
+
+async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
+    in_memory_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    # Cast mid-run and performed after it: the turn's work reaches the mirror,
+    # then the tree goes, and the thread is left where a later turn resumes it.
+    root = tmp_path / "inky"
+    root.mkdir()
+    (root / "readme.md").write_text("hello")
+    workspaces = WorkspaceManager(
+        projects=await a_registry(a_project(root)),
+        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
+        workspaces_dir=tmp_path / "workspaces",
+    )
+    project = workspaces.projects.get("inky")
+    assert project is not None
+    threads = ThreadManager(users=UserManager())
+    address = ChannelAddress(
+        channel_tentacle_id="im",
+        chat_type="thread",
+        chat_id="c",
+        channel_thread_id="t1",
+        user_id="alice",
+    )
+    thread = await threads.ensure(address, project=project)
+    async with workspaces.open(thread.id, project) as workspace:
+        (workspace.path / "work.md").write_text("done")
+    agent = FakeAgent(
+        id="other",
+        reception_dispel=True,
+        reception_output="all done",
+        allow_reception_run=True,
+    )
+    im = _channel(stream=False)
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": im},
+        agent=agent,
+        workspaces=workspaces,
+    )
+    deps.thread_manager = threads
+    target = _source_target(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=deps,
+    )
+
+    assert not isinstance(result, DeferredResult)
+    assert workspaces.existing(thread.id) is None
+    mirror = workspaces.mirrors.path(project)
+    assert await run_git("show", f"{thread_ref(thread.id)}:work.md", cwd=mirror) == (
+        "done"
+    )
+
+
+async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
+    in_memory_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    # `here` with a project: the move is only into the workspace. The thread is
+    # bound and its tree forked before the agent resumes, with the call answered.
+    root = tmp_path / "inky"
+    root.mkdir()
+    (root / "readme.md").write_text("hello")
+    workspaces = WorkspaceManager(
+        projects=await a_registry(a_project(root)),
+        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
+        workspaces_dir=tmp_path / "workspaces",
+    )
+    threads = ThreadManager(users=UserManager())
+    address = ChannelAddress(
+        channel_tentacle_id="im",
+        chat_type="thread",
+        chat_id="c",
+        channel_thread_id="t1",
+        user_id="alice",
+    )
+    thread = await threads.ensure(address)
+    agent = FakeAgent(
+        id="other",
+        reception_teleport="into inky",
+        reception_teleport_destination="here",
+        reception_teleport_project="inky",
+        reception_output="carried on",
+        allow_reception_run=True,
+    )
+    im = _channel(stream=False)
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": im},
+        agent=agent,
+        workspaces=workspaces,
+    )
+    deps.thread_manager = threads
+    target = _source_target(address)
+
+    result = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=deps,
+    )
+
+    assert not isinstance(result, DeferredResult)
+    first, resumed = agent.turns
+    assert first.deferred_results is None
+    assert resumed.deferred_results is not None
+    assert resumed.deferred_results.calls == {
+        "call_teleport": "Continuing the conversation here, in the workspace of 'inky'."
+    }
+    assert resumed.address == address
+    bound = await threads.get(thread.id)
+    assert bound is not None
+    attributed = await bound.project
+    assert attributed is not None
+    assert attributed.name == "inky"
+    workspace = workspaces.existing(thread.id)
+    assert workspace is not None
+    assert (workspace / "readme.md").read_text() == "hello"
+    # And the agent's session was relocated to where the resumed run happens.
+    assert [cwd for _, cwd in agent.relocated] == [workspace]

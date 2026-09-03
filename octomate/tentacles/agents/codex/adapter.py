@@ -66,6 +66,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.messages import ModelRequest as PydanticModelRequest
+from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
 from octomate.capabilities.harness.events import StreamEvents
@@ -294,6 +295,18 @@ class CodexRunAccumulator:
             conversation_id=conversation_id,
         )
         return AgentRunResult(output=self.result_text, _state=state)
+
+    def build_deferred_result(
+        self, requests: DeferredToolRequests, *, run_id: str, conversation_id: str
+    ) -> AgentRunResult[DeferredToolRequests]:
+        """The run as it ended: interrupted for a deferral the graph resumes."""
+        state = GraphAgentState(
+            message_history=self.messages,
+            usage=self.usage,
+            run_id=run_id,
+            conversation_id=conversation_id,
+        )
+        return AgentRunResult(output=requests, _state=state)
 
     def build_structured_result(
         self,

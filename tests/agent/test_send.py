@@ -35,7 +35,6 @@ from octomate.schemas.triage import (
     HERE_TARGET,
     ChannelTarget,
     Destination,
-    Scrying,
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.agents.inkling.base import InklingOutput
@@ -326,26 +325,9 @@ async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
     assert capability.toolset is not None
     scry = capability.toolset.tools["scry"].function
 
-    scrying = await scry(cast(RunContext[Any], None))
+    places = await scry(cast(RunContext[Any], None), "destinations")
 
-    assert lark in scrying.destinations
-    assert "lark" in str(scrying)
-
-
-async def test_scry_does_not_file_this_conversation_as_somewhere_else() -> None:
-    # `scry` is the model's only view of where it can go, so the heading has to be
-    # true of every row under it: this chat is neither remote nor private.
-    # From a DM, where `here` is offered and `dm` is not: a group's main channel
-    # withholds `here`, so it could not tell a true heading from a false one.
-    capability = _gate(already_private=True)
-    scrying = Scrying(routes=[], destinations=await capability.session.destinations())
-
-    # `here` is this chat itself, so a heading promising somewhere else, or
-    # somewhere private, would be false of it.
-    assert "here" in [one.handle for one in scrying.destinations]
-    assert "privately" not in str(scrying)
-    assert "Where else" not in str(scrying)
-    assert "Where you can put this:" in str(scrying)
+    assert lark in places
 
 
 async def test_the_gate_works_out_where_else_the_asker_is(

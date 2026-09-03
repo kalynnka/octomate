@@ -19,6 +19,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import ClassVar, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
@@ -61,9 +62,10 @@ from octomate.config.agents import (
     CodexModelName,
     DeepseekModelName,
 )
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.triage import (
     DIRECT_TARGET,
+    DISPEL_TOOL_NAME,
     HERE_TARGET,
     SCHEME_TOOL_NAME,
     SUMMON_TOOL_NAME,
@@ -110,7 +112,9 @@ DEEPSEEK_MODELS: frozenset[DeepseekModelName] = frozenset(
 )
 
 
-def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRequests:
+def _teleport_requests(
+    hint: str, destination: str = "thread", project: str | None = None
+) -> DeferredToolRequests:
     """A reception run's `teleport` deferral — the suspender skips it and the graph
     forks + resumes. On the resumed run (deferred results present) the fake answers
     normally, so a teleport turn does not loop.
@@ -118,12 +122,12 @@ def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRe
     `destination` is the handle a model would name, and the metadata is what the gate
     puts there once it has resolved one: a crossing carries the far channel and the
     account on it, and `thread` carries neither."""
-    crossing = destination != "thread"
+    crossing = destination not in ("thread", "here")
     return DeferredToolRequests(
         calls=[
             ToolCallPart(
                 tool_name=TELEPORT_TOOL_NAME,
-                args={"hint": hint, "destination": destination},
+                args={"hint": hint, "destination": destination, "project": project},
                 tool_call_id="call_teleport",
             )
         ],
@@ -133,6 +137,9 @@ def _teleport_requests(hint: str, destination: str = "thread") -> DeferredToolRe
                 "hint": hint,
                 "channel": destination if crossing else "",
                 "user": "ou_alice" if crossing else "",
+                "here": destination == "here",
+                "project": project or "",
+                "ref": "",
             }
         },
     )
@@ -225,10 +232,16 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # the resumed run (deferred results present) falls through to `reception_output`.
     reception_teleport: str | None = None
     reception_teleport_destination: str = "thread"
-    # When set, the first reception run records a teleport decision directly on the
-    # mounted gateway's session — the way a non-deferring external runtime's MCP tool
-    # does — and ends its turn normally; the resumed run gets `reception_output`.
+    # The project the teleport carries, binding the thread landed in.
+    reception_teleport_project: str | None = None
+    # When set, the first reception run records a teleport decision on the mounted
+    # gateway's session — the way an external runtime's MCP tool does — and ends
+    # its turn as the same deferral, the way that runtime's tentacle does once
+    # interrupted on it; the resumed run gets `reception_output`.
     reception_recorded_teleport: str | None = None
+    # When set, the reception run casts `dispel` through the mounted gateway, the
+    # way a model does mid-run, and carries on to `reception_output`.
+    reception_dispel: bool = False
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
     allow_reception_run: bool = False
     models: dict[AgentRouteModelName, Model | str] = field(
@@ -259,6 +272,11 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     )
     turns: list[RecordedRun] = field(default_factory=list)
     streams: list[RecordedRun] = field(default_factory=list)
+    # Every `relocate` the graph asked for: the conversation's id and where to.
+    relocated: list[tuple[uuid.UUID, Path]] = field(default_factory=list)
+
+    async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
+        self.relocated.append((conversation.id, cwd))
 
     async def run(
         self,
@@ -314,14 +332,23 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             )
             if gateway is None:
                 raise AssertionError("a recorded teleport requires a mounted gateway")
-            await gateway.session.teleport(hint=recorded_teleport)
-            return AgentRunResult(self.reception_output)
+            decision = await gateway.session.teleport(hint=recorded_teleport)
+            deferral = decision.deferral("call_teleport")
+            if deferred_suspender is not None:
+                await deferred_suspender.suspend(deferral)
+            return AgentRunResult(deferral)
         if self.reception_teleport is not None and deferred_tool_results is None:
             output: FakeRunOutput = _teleport_requests(
-                self.reception_teleport, self.reception_teleport_destination
+                self.reception_teleport,
+                self.reception_teleport_destination,
+                self.reception_teleport_project,
             )
         else:
             output = self.reception_output
+        if self.reception_dispel:
+            await _gate_tool(capabilities, DISPEL_TOOL_NAME)(
+                cast(RunContext[None], None)
+            )
         scheme_decision = self.reception_scheme
         if scheme_decision is not None:
             # Cast once, like a model would: the receiving run in the DM must not
@@ -451,7 +478,11 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
 
         output: ChannelOutput | DeferredToolRequests
         if self.reception_teleport is not None and deferred_tool_results is None:
-            output = _teleport_requests(self.reception_teleport)
+            output = _teleport_requests(
+                self.reception_teleport,
+                self.reception_teleport_destination,
+                self.reception_teleport_project,
+            )
         else:
             output = self.reception_output
         if isinstance(output, DeferredToolRequests):

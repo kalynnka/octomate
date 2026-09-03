@@ -20,6 +20,7 @@ import type {
   SessionInfo,
   ThreadDetail,
   ThreadSummary,
+  ThreadUsage,
 } from './types'
 
 /**
@@ -120,14 +121,14 @@ function activeRoute(handoffs: ApiHandoff[]): {
 }
 
 /**
- * What a thread goes by in the sidebar. The relay serves threads without their
- * messages — the ledger is its own request — so there is no first line to name
- * a thread after until it is opened, and the surface it lives on is the honest
- * stand-in: the platform thread key, or the chat when the surface is not a
- * thread (a DM, a native session's own id).
+ * What a thread goes by in the sidebar. The row carries a name — the runtime's
+ * own where it grabbed one, else the line the thread opened with — and falls
+ * back to the surface it lives on for a thread nothing has been said in: the
+ * platform thread key, or the chat when the surface is not a thread (a DM, a
+ * native session's own id).
  */
 function threadLabel(t: ApiThread): string {
-  return t.channel_thread_id || t.chat_id || `#${t.id.slice(0, 6)}`
+  return t.title || t.channel_thread_id || t.chat_id || threadTag(t.id)
 }
 
 export function liveThreadSummary(t: ApiThread): ThreadSummary {
@@ -145,7 +146,7 @@ export function liveThreadSummary(t: ApiThread): ThreadSummary {
       agent === null && channel.native
         ? `${channel.label.toLowerCase()} · native`
         : routeLabel(agent, model),
-    tag: `#${t.id.slice(0, 6)}`,
+    tag: threadTag(t.id),
   }
 }
 
@@ -158,6 +159,12 @@ export function groupLiveThreads(
     ;(grouped[t.channel_tentacle_id] ??= []).push(liveThreadSummary(t))
   }
   return grouped
+}
+
+/** The 6-hex chip a thread goes by, off the tail of the row id — the head of a
+ *  uuid7 is a clock, so every thread of the same few hours shares it. */
+function threadTag(threadId: string): string {
+  return `#${threadId.replaceAll('-', '').slice(-6)}`
 }
 
 /** The 4-hex chip a session goes by, off the tail of the conversation it is. */
@@ -208,6 +215,7 @@ function liveSessions(
       return {
         n: `S${index + 1}`,
         id: sessionTag(conversation.id),
+        name: conversation.name ?? undefined,
         conversationId: conversation.id,
         route: handoff
           ? routeLabel(handoff.to_agent_tentacle_id, handoff.to_model)
@@ -219,7 +227,7 @@ function liveSessions(
         reason: ingested
           ? `${turns} turn${turns === 1 ? '' : 's'} tailed from the session's own transcript`
           : handoff?.reason || 'route claimed',
-        status: ingested ? 'ingested' : '',
+        status: ingested ? 'ingested' : conversation.status,
         tone: ingested ? 'teal' : index === 0 ? 'accent' : 'gold',
         anchor: anchors.get(conversation.id),
       }
@@ -368,9 +376,37 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? lastCwd.slice(root.length + 1)
         : lastCwd
 
-  const { agent, model } = activeRoute(thread.handoffs)
+  // What the thread cost, and what its last turn was carrying. Both come off the
+  // model messages the runs already hold for the replay — the provider's own
+  // numbers, summed here because nothing else reports them.
+  const usage: ThreadUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cacheRate: null,
+  }
+  let context = 0
+  for (const run of runs) {
+    for (const message of run.messages ?? []) {
+      if (message.kind !== 'response' || !message.usage) continue
+      const { input_tokens, output_tokens, cache_read_tokens, cache_write_tokens } =
+        message.usage
+      usage.input += input_tokens ?? 0
+      usage.output += output_tokens ?? 0
+      usage.cacheRead += cache_read_tokens ?? 0
+      usage.cacheWrite += cache_write_tokens ?? 0
+      // The last turn's own input is the context it ran with. Summing them would
+      // add every turn's context together, which is not a window.
+      context = (input_tokens ?? 0) + (cache_read_tokens ?? 0) + (cache_write_tokens ?? 0)
+    }
+  }
+  const read = usage.input + usage.cacheRead + usage.cacheWrite
+  usage.cacheRate = read > 0 ? usage.cacheRead / read : null
+
+  const { agent } = activeRoute(thread.handoffs)
   return {
-    key: thread.channel_thread_id || `#${thread.id.slice(0, 6)}`,
+    key: thread.channel_thread_id || threadTag(thread.id),
     live: true,
     channel: thread.channel_tentacle_id,
     project:
@@ -396,10 +432,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     msgCount: messages.length,
     sessions: liveSessions(thread.handoffs, own, anchors),
     ledger,
-    ctxK: 8,
-    usage: {
-      chip: routeLabel(agent, model),
-      tok: `${messages.length} msg`,
-    },
+    usage,
+    ctxK: Math.round(context / 1000),
   }
 }

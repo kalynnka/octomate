@@ -228,7 +228,6 @@ interface ConsoleState {
   running: boolean
   /** how many trailing ledger items are rendered; scroll-top reveals more */
   ledgerN: number
-  ctxBump: number
   notices: string[]
 
   // theme
@@ -405,6 +404,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       })
   }
 
+  // Streams open on this thread right now. Answering a feeler opens a second
+  // one while the run that raised it is still holding the first, so `running`
+  // lifts when the last of them closes rather than the first.
+  let openRuns = 0
+
   /**
    * Drive one live run: fold the SSE events into the live overlay, drop the
    * dispatch dots on the first real event, and settle `running` when the
@@ -417,6 +421,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     request: (onEvent: (event: WireEvent) => void) => Promise<void>,
     quietClose = 'stream closed without a result',
   ) => {
+    openRuns++
     let dead = false
     const alive = () => {
       if (!dead && get().selThreadId !== selId) dead = true
@@ -436,7 +441,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         patchLive((x) => (x.uid === uid ? ({ ...x, ...patchObj } as LedgerItem) : x))
       },
       done: () => {
-        if (alive()) set({ running: false })
+        if (alive() && openRuns === 1) set({ running: false })
       },
     })
     try {
@@ -452,13 +457,14 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     } catch (err) {
       fold.abort(`relay error — ${err instanceof Error ? err.message : String(err)}`)
     } finally {
+      openRuns--
       clearDots()
       if (get().selThreadId === selId) {
         if (dead) {
           // The user left and came back mid-run; the run has ended now, so
           // reload the ledger from the relay instead of showing a torn turn.
           void actions.selectThread(get().selChannel, selId)
-        } else {
+        } else if (openRuns === 0) {
           set({ running: false })
         }
       }
@@ -496,12 +502,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         live: [],
         running: false,
         ledgerN: LEDGER_PAGE,
-        ctxBump: 0,
         notices: [],
         ntOn: false,
         ntMenu: null,
         ntStarted: false,
         ntRouteId: null,
+        teleOpen: false,
         surface: ['trunkline', 'slack', 'lark', 'napcat'].includes(chId) ? chId : s.surface,
         mgmtSec: '',
         pvOpen: false,
@@ -704,42 +710,42 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     /* ---------------------------------------------------- feelers -------- */
     resolveApproval(uid: string, verdict: 'approved' | 'dismissed') {
-      const t = nowClock().slice(3)
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )
+      // The card's own state is what says whether it can still be answered. A
+      // run streaming is not: an agent that suspends inside a tool call holds
+      // its stream open until the answer arrives, so waiting for the stream to
+      // end is waiting for the thing the answer is what unblocks.
+      if (card?.kind !== 'approval' || card.state !== 'waiting') return
+      const t = nowClock().slice(0, 5)
       const mark = (it: LedgerItem): LedgerItem =>
         it.uid === uid && it.kind === 'approval' ? { ...it, state: verdict, resolvedT: t } : it
-      const isLive = card?.kind === 'approval' && card.batchId && card.actionId
-      // A live batch response launches the resumed run; don't mark the card
-      // while another run streams (the click is simply ignored).
-      if (isLive && get().running) return
       set((s) => ({
         detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(mark) },
         live: s.live.map(mark),
       }))
-      if (isLive && card.kind === 'approval' && card.batchId && card.actionId) {
+      if (card.batchId && card.actionId) {
         resolveLive(card.batchId, {
           approvals: { [card.actionId]: verdict === 'approved' },
         })
       }
     },
     answerAsk(uid: string, answer: string, via: string) {
-      const t = nowClock().slice(3)
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )
+      if (card?.kind !== 'ask' || card.state !== 'waiting') return
+      const t = nowClock().slice(0, 5)
       const mark = (it: LedgerItem): LedgerItem =>
         it.uid === uid && it.kind === 'ask'
           ? { ...it, state: 'answered' as const, answer, via, resolvedT: t }
           : it
-      const isLive = card?.kind === 'ask' && card.batchId && card.actionId
-      if (isLive && get().running) return
       set((s) => ({
         detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(mark) },
         live: s.live.map(mark),
       }))
-      if (isLive && card.kind === 'ask' && card.batchId && card.actionId) {
+      if (card.batchId && card.actionId) {
         resolveLive(card.batchId, { answers: { [card.actionId]: answer } })
       }
     },
@@ -1106,7 +1112,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         sel: null,
         draft: null,
         queue: [],
-        ctxBump: 0,
         detail: null,
         composer: '',
       })
@@ -1229,7 +1234,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     live: [],
     running: false,
     ledgerN: LEDGER_PAGE,
-    ctxBump: 0,
     notices: [],
     theme: loadTheme(),
     sysDark: false,

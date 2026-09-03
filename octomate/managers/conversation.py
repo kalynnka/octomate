@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -15,10 +14,7 @@ from pydantic_ai.messages import ToolCallPart
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
-from octomate.schemas.conversation import (
-    Conversation,
-    ConversationKey,
-)
+from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import ThreadMessage
@@ -36,20 +32,14 @@ class ConversationManager:
     rows. A thread owns one conversation per agent, so the identity is
     `(thread_id, agent_tentacle_id)`: every sender in a group thread keys to the
     same owning agent's conversation, regardless of who woke it.
-
-    The cache is the `Conversation` schema object itself — its `messages`
-    relation (an arcanus list) is the in-memory history. The database is the
-    source of truth; writes keep the cached transmuter object coherent after the
-    commit.
     """
 
-    def __init__(self, *, cache_size: int = 256) -> None:
-        self.cache_size = cache_size
-        self.conversations: OrderedDict[ConversationKey, Conversation] = OrderedDict()
+    def __init__(self) -> None:
         # Serializes first sightings: two concurrent ensures of one identity — a
         # session's follow task preparing while a hook pokes it, a commission fan-out
         # landing twice in one thread — must not both insert. Under the lock the
-        # loser re-checks the cache and becomes a hit instead of a UNIQUE violation.
+        # loser re-reads the row the winner committed instead of raising a UNIQUE
+        # violation.
         self.ensure_lock = asyncio.Lock()
 
     async def ensure(
@@ -72,17 +62,7 @@ class ConversationManager:
                 "a subagent conversation requires both subagent_id and "
                 "parent_conversation_id; a bare conversation takes neither"
             )
-        cache_key = ConversationKey(thread_id, agent_tentacle_id, subagent_id)
-        cached = self.conversations.get(cache_key)
-        if cached is not None:
-            self.conversations.move_to_end(cache_key)
-            return cached
-
         async with self.ensure_lock:
-            cached = self.conversations.get(cache_key)
-            if cached is not None:  # the racer that held the lock first created it
-                self.conversations.move_to_end(cache_key)
-                return cached
             async with async_session() as session:
                 conversation = await session.one_or_none(
                     Conversation,
@@ -104,32 +84,19 @@ class ConversationManager:
                 await conversation.runs
                 await conversation.messages
                 await session.commit()
-
-            self.cache_conversation(conversation)
             return conversation
 
-    def cache_conversation(self, conversation: Conversation) -> None:
-        cache_key = conversation.key
-        self.conversations[cache_key] = conversation
-        self.conversations.move_to_end(cache_key)
-        while len(self.conversations) > self.cache_size:
-            self.conversations.popitem(last=False)
-
     async def get(self, conversation_id: uuid.UUID) -> Conversation:
-        """Resolve a conversation by id — a cache hit or one fresh read; raises
-        on an unknown id. This is the by-id path for a run addressed at a
-        pre-ensured conversation (a commissioned accomplice's child context): the
-        caller ensured it and owns any thread/agent validation."""
-        for cached in self.conversations.values():
-            if cached.id == conversation_id:
-                return cached
+        """Resolve a conversation by id — one fresh read; raises on an unknown
+        id. This is the by-id path for a run addressed at a pre-ensured
+        conversation (a commissioned accomplice's child context): the caller
+        ensured it and owns any thread/agent validation."""
         async with async_session() as session:
             conversation = await session.get(Conversation, conversation_id)
             if conversation is None:
                 raise ValueError(f"unknown conversation {conversation_id}")
             await conversation.runs
             await conversation.messages
-        self.cache_conversation(conversation)
         return conversation
 
     async def link_parent_run(
@@ -155,8 +122,8 @@ class ConversationManager:
 
     async def subagents(self, parent_conversation_id: uuid.UUID) -> list[Conversation]:
         """The subagent conversations spawned from `parent_conversation_id` — the
-        live accomplices a `whisper` can reach. Rows only; callers resolve a chosen one
-        through `ensure` so the cache stays the single source of history."""
+        live accomplices a `whisper` can reach. Rows only; callers resolve a
+        chosen one through `ensure`."""
         async with async_session() as session:
             rows = await session.list(
                 Conversation,
@@ -193,9 +160,6 @@ class ConversationManager:
         return list(rows)
 
     async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
-        for conversation in self.conversations.values():
-            if conversation.id == conversation_id:
-                return conversation.thread_id
         async with async_session() as session:
             conversation = await session.get(Conversation, conversation_id)
         if conversation is None:
@@ -214,7 +178,7 @@ class ConversationManager:
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
-        """Persist a fresh agent run and keep the cached conversation in sync.
+        """Persist a fresh agent run.
         `cwd` is the directory the run happened in, None when its caller has none.
         `external_id`, when given, updates the conversation's resumable agent
         session handle in the same commit (external-runtime agents own their own
@@ -318,17 +282,14 @@ class ConversationManager:
         conversation_id: uuid.UUID,
         external_id: str | None,
     ) -> RunT:
-        """Persist a freshly built run and re-sync the cached conversation.
-        `external_id`, when given, updates the resumable agent-session handle in the
-        same commit.
+        """Persist a freshly built run. `external_id`, when given, updates the
+        resumable agent-session handle in the same commit.
 
-        Persist only the new run and its messages, then reload the conversation to
-        re-sync the cache. Re-merging the whole cached conversation graph (its prior
-        runs and their message collections) can make SQLAlchemy believe a message was
-        dropped from a stale run collection and null its NOT NULL `run_id`, raising an
-        IntegrityError; adding just the new run sidesteps that reconciliation entirely.
-        The cached `conversation` is detached, so it can't be refreshed in place — the
-        freshly loaded copy becomes the coherent cache the next ensure() returns.
+        Only the new run and its messages are added, never the caller's whole
+        conversation graph: re-merging it (prior runs and their message
+        collections) can make SQLAlchemy believe a message was dropped from a
+        stale run collection and null its NOT NULL `run_id`, raising an
+        IntegrityError.
         """
         async with async_session() as session:
             session.add(run)
@@ -338,10 +299,6 @@ class ConversationManager:
             if reloaded is not None:
                 reloaded.external_id = external_id
             await session.commit()
-            if reloaded is not None:
-                await reloaded.runs
-                await reloaded.messages
-                self.cache_conversation(reloaded)
         return run
 
     async def fork(
@@ -396,7 +353,7 @@ class ConversationManager:
                     for message in messages
                 ),
             )
-        # Only the new run is added, never the cached conversations themselves: the
+        # Only the new run is added, never the caller's conversations themselves: the
         # same reasoning as `persist_run`, and the handle moves by mutating the two
         # conversations as this session loads them.
         async with async_session() as session:
@@ -412,16 +369,9 @@ class ConversationManager:
                 moving_target.external_id = moving_source.external_id
                 moving_source.external_id = None
             await session.commit()
-            refreshed = await session.get(Conversation, target.id)
-            if refreshed is not None:
-                await refreshed.runs
-                await refreshed.messages
         if carry_handle:
-            # The cached transmuter mirrors the committed move; `refreshed` carries
-            # the target's new handle the same way.
+            # The caller's transmuter mirrors the committed move.
             source.external_id = None
-        if refreshed is not None:
-            self.cache_conversation(refreshed)
         return forked_run
 
     async def set_permission_mode(
@@ -448,7 +398,25 @@ class ConversationManager:
             stored.permission_mode = mode
             await session.commit()
         conversation.permission_mode = mode
-        self.cache_conversation(conversation)
+        return conversation
+
+    async def set_name(self, conversation: Conversation, name: str) -> Conversation:
+        """Store the name the runtime running this session grabbed for itself.
+
+        Only a runtime that names its own sessions has one to store, and it revises
+        it as the session goes on, so this overwrites. A name with nothing in it is
+        not one, and leaves the conversation as it was.
+        """
+        named = name.strip()
+        if not named or conversation.name == named:
+            return conversation
+        async with async_session() as session:
+            stored = await session.get(Conversation, conversation.id)
+            if stored is None:
+                raise ValueError(f"unknown conversation {conversation.id}")
+            stored.name = named
+            await session.commit()
+        conversation.name = named
         return conversation
 
     async def grant_session_tool(
@@ -458,20 +426,18 @@ class ConversationManager:
     ) -> None:
         """Persist an `allow for session` grant on the conversation, so the tool
         auto-approves on later turns."""
-        cached = await self.ensure(
+        fresh = await self.ensure(
             conversation.thread_id,
             agent_tentacle_id=conversation.agent_tentacle_id,
         )
-        if tool_name in cached.allowed_tools:
+        if tool_name in fresh.allowed_tools:
             return
         async with async_session() as session:
-            stored = await session.get(Conversation, cached.id)
+            stored = await session.get(Conversation, fresh.id)
             if stored is None:
                 return
             stored.allowed_tools = [*stored.allowed_tools, tool_name]
             await session.commit()
-        cached.allowed_tools = [*cached.allowed_tools, tool_name]
-        self.cache_conversation(cached)
 
     async def drop_trailing_deferral(
         self,
@@ -479,7 +445,7 @@ class ConversationManager:
     ) -> ModelResponse | None:
         """If the conversation's last message is an abandoned deferred-tool
         ModelResponse (a tool-call request a new user turn supersedes), delete
-        it from the database, refresh the cached conversation, and return it.
+        it from the database, remove it from the caller's copy, and return it.
         Without the delete the orphan would resurface mid-history on a cold
         reload, where it can no longer be recognized as a trailing deferral.
         """
@@ -498,7 +464,6 @@ class ConversationManager:
         for run in conversation.runs:
             if last in run.messages:
                 run.messages.remove(last)
-        self.cache_conversation(conversation)
         return last
 
     async def search_messages(

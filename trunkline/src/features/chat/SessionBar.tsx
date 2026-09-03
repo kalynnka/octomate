@@ -1,9 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useConsole } from '@/state/console'
-import { useChannels } from '@/lib/api/hooks'
+import { channelMeta } from '@/lib/api/live'
 import { mono } from '@/components/text'
 
 const vline = <i style={{ width: 1, height: 12, background: 'var(--trk-vline)', flexShrink: 0 }} />
+
+/** Token counts run to nine figures; the bar has room for four. */
+function count(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+  return String(n)
+}
 
 /** Live ledger clock — a functional status readout, ticking once a second. */
 function useClock() {
@@ -12,38 +19,45 @@ function useClock() {
     const t = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(t)
   }, [])
-  return `${now.toLocaleTimeString('en-GB', { hour12: false })}Z`
+  return now.toLocaleTimeString('en-GB', { hour12: false })
 }
 
 export function SessionBar() {
   const detail = useConsole((s) => s.detail)
   const selChannel = useConsole((s) => s.selChannel)
   const selThreadId = useConsole((s) => s.selThreadId)
-  const ctxBump = useConsole((s) => s.ctxBump)
   const ntOn = useConsole((s) => s.ntOn)
   const ntStarted = useConsole((s) => s.ntStarted)
-  const { data: channels } = useChannels()
   const clock = useClock()
 
   const lastSes = detail?.sessions[detail.sessions.length - 1]
   const sesChip = ntOn
     ? ntStarted
-      ? 'SES-0533 · active'
+      ? 'session live'
       : 'no session yet'
     : lastSes
-      ? `${lastSes.id} · ${lastSes.status}`
+      ? `${lastSes.name ?? lastSes.id}${lastSes.status ? ` · ${lastSes.status}` : ''}`
       : '—'
-  const routeChip = `${channels?.find((c) => c.id === selChannel)?.label.toLowerCase() ?? 'trunkline'}/${detail?.key ?? selThreadId}`
-  const base = ntOn ? 0 : (detail?.ctxK ?? 82)
-  const k = Math.min(196, base + ctxBump)
-  const ctxW = `${Math.round((k / 200) * 100)}%`
-  const usageChip = ntOn
-    ? ntStarted
-      ? 'Σ in 312 · cache 0 (0%) · out 84'
-      : 'Σ in 0 · cache 0 (—) · out 0'
-    : (detail?.usage.chip ?? '')
-  const tokChip = ntOn ? (ntStarted ? '312↑ 84↓' : '0↑ 0↓') : (detail?.usage.tok ?? '')
-  const tokOn = !(ntOn && !ntStarted)
+  // The channel list is the connected tentacles only, so a native channel is
+  // not in it; its display name is the same table the sidebar reads.
+  const routeChip = `${channelMeta(selChannel).label.toLowerCase()}/${detail?.key ?? selThreadId}`
+  // A thread that has not run yet is on nothing; one that has carries the
+  // provider's own numbers, summed off the runs.
+  const fresh = ntOn && !ntStarted
+  const use = fresh ? null : detail?.usage
+  const rate = use?.cacheRate == null ? '—' : `${Math.round(use.cacheRate * 100)}%`
+  const usageChip = use
+    ? `Σ in ${count(use.input)} · cache ${count(use.cacheRead)} (${rate}) · out ${count(use.output)}`
+    : fresh
+      ? 'Σ in 0 · cache 0 (—) · out 0'
+      : '—'
+  const ctxK = fresh ? 0 : detail?.ctxK
+  // The relay does not report the window a run had, and a run does not record
+  // its model. A turn carrying more than 200k was not on a 200k model, and the
+  // only larger one is 1M — so the reading picks between the two it can be.
+  const window = ctxK !== undefined && ctxK > 200 ? 1000 : 200
+  const ctxW = ctxK === undefined ? '0%' : `${Math.min(100, Math.round((ctxK / window) * 100))}%`
+  const msgChip = `${detail?.msgCount ?? 0} msg`
 
   const chip = (title: string, children: React.ReactNode, extra?: React.CSSProperties) => (
     <span
@@ -113,15 +127,11 @@ export function SessionBar() {
             >
               <i style={{ width: ctxW, background: 'var(--color-ghost)' }} />
             </i>
-            {k}k/200k
+            {ctxK === undefined ? '—' : `${count(ctxK * 1000)}`}/{window === 1000 ? '1M' : '200k'}
           </>
         ))}
-        {tokOn && (
-          <>
-            {vline}
-            {chip('tokens, last run', tokChip)}
-          </>
-        )}
+        {vline}
+        {chip('messages in this thread', msgChip)}
       </span>
     </div>
   )

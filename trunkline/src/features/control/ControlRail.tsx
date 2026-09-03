@@ -4,10 +4,12 @@ import { useRailDrag } from '@/lib/useRailDrag'
 import { TriStripe } from '@/components/TriStripe'
 import { ellipsis, label, mono } from '@/components/text'
 
+// Hints name what a section holds, never how much of it: no read counts any of
+// this yet, and a number here would be one nobody measured.
 const defs: { id: ControlSection; label: string; hint: string }[] = [
-  { id: 'agents', label: 'Agents', hint: '3 · 9 routes' },
-  { id: 'mcp', label: 'MCP', hint: '3 srv · 4 conn' },
-  { id: 'users', label: 'Users', hint: '6 identities' },
+  { id: 'agents', label: 'Agents', hint: 'routes · models' },
+  { id: 'mcp', label: 'MCP', hint: 'servers · connectors' },
+  { id: 'users', label: 'Users', hint: 'identities · grants' },
   { id: 'dash', label: 'Dashboard', hint: 'ledger · verbs' },
   { id: 'settings', label: 'Settings', hint: 'providers · hooks' },
 ]

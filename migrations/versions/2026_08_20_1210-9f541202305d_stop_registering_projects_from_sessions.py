@@ -1,6 +1,6 @@
 """stop registering projects from sessions
 
-Every project is declared now (OCTO-45): a native session filing work no longer
+Every project is declared now: a native session filing work no longer
 registers the directory it ran in, so `origin` — which recorded whether a row was
 declared or discovered by a Codex session — has nothing left to distinguish. Existing
 rows lose that history with the column, which is the intent rather than a cost.

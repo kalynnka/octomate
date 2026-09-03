@@ -80,9 +80,20 @@ def fresh_cli_settings() -> Iterator[None]:
 @pytest.fixture
 async def in_memory_engine(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> AsyncIterator[AsyncEngine]:
-    """An in-memory SQLite DB with all tables created, wired into `async_session`."""
-    engine = database.create_engine("sqlite+aiosqlite:///:memory:")
+    """A throwaway SQLite DB with all tables created, wired into `async_session`.
+
+    On disk under the test's own `tmp_path`, not `:memory:`. SQLAlchemy pools an
+    in-memory SQLite with `StaticPool` — every session in the process shares one
+    connection, because a second connection would open a second, empty database.
+    Two sessions open at once then interleave each other's transactions, which is
+    nothing like the `AsyncAdaptedQueuePool` production runs on and can leave a
+    write rolled out from under a reader. A file gets each session its own
+    connection and the WAL pragmas `create_engine` sets, so the concurrency a test
+    sees is the concurrency production sees.
+    """
+    engine = database.create_engine(f"sqlite+aiosqlite:///{tmp_path}/octomate-test.db")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

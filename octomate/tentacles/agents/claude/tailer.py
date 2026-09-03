@@ -32,6 +32,7 @@ from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.agents.claude.transcript import (
+    TranscriptAiTitleLine,
     TranscriptAssistantLine,
     TranscriptLine,
     TranscriptUserLine,
@@ -434,6 +435,25 @@ class ClaudeTranscriptTailer:
                 return
             if state.open_turn is not None:
                 self.fold(state, line, end)
+        elif isinstance(line, TranscriptAiTitleLine):
+            await self.record_title(state, line.ai_title)
+
+    async def record_title(self, state: TailState, title: str) -> None:
+        """Carry the name Claude gave this session onto the rows that show it.
+
+        The transcript restates the title on every turn and revises it as the work
+        turns out to be about something else, so the comparison — not the write —
+        is what runs per line. The thread takes it too: a native thread is its
+        session, and a name about the work beats the line the thread opened with.
+        """
+        conversation = state.conversation
+        if conversation is None or conversation.name == title.strip():
+            return
+        await self.conversation_manager.set_name(conversation, title)
+        thread = await self.thread_manager.ensure(
+            ThreadKey(CLAUDE_NATIVE_ID, "thread", state.session_id)
+        )
+        await self.thread_manager.rename(thread, title)
 
     @staticmethod
     def harvest_subagent_call(state: TailState, line: TranscriptUserLine) -> None:

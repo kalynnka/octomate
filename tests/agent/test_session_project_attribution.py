@@ -1,9 +1,9 @@
-"""OCTO-31 — a native session's thread carries the project it ran in.
+"""A native session's thread carries the project it ran in.
 
 Both ingests resolve the hook's own `cwd` through the registry when they create the
 session's thread, so sessions started in several repos stop being anonymous siblings.
 
-Neither runtime registers what it finds (OCTO-45): every project is declared, so a
+Neither runtime registers what it finds: every project is declared, so a
 session running where no project claims is filed under none — where it ran is recorded
 on the run either way.
 
@@ -131,7 +131,7 @@ async def test_a_claude_session_outside_every_project_registers_nothing(
 async def test_a_codex_session_outside_every_project_registers_nothing(
     tmp_path: Path,
 ) -> None:
-    # OCTO-45: every project is declared, so a directory nobody wrote down stays
+    # Every project is declared, so a directory nobody wrote down stays
     # unregistered — the thread is unfiled, and the run still records where it ran.
     elsewhere = repo(tmp_path / "elsewhere")
     octomate = Octomate(
@@ -184,7 +184,6 @@ async def test_both_runtimes_file_under_the_same_declared_project(
 
     assert first == "inky"
     assert second == "inky"
-    octomate.thread_manager.threads.clear()
     reloaded = await octomate.thread_manager.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-claude")
     )
@@ -361,7 +360,7 @@ async def tail_rollout(octomate: Octomate, rollout: Path) -> None:
 
 async def test_workspace_roots_register_nothing(tmp_path: Path) -> None:
     # A turn's workspace names the directories a session may work in; naming is not
-    # declaring (OCTO-45), so tailing it grows no registry.
+    # declaring, so tailing it grows no registry.
     inky, kraken = repo(tmp_path / "inky"), repo(tmp_path / "kraken")
     rollout = tmp_path / "rollout.jsonl"
     codex_rollout(rollout, inky, [inky, kraken])

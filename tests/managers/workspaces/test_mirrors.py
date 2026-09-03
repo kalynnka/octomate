@@ -1,4 +1,4 @@
-"""OCTO-46 — every project gets a mirror, and a mirror is always a git repository.
+"""Every project gets a mirror, and a mirror is always a git repository.
 
 A remote upstream is cloned and freshened by fetching; a directory upstream is
 `git init`'d and freshened by committing the folder's state, so a folder that was
@@ -362,7 +362,7 @@ async def test_reconcile_continues_past_a_failing_project(
 async def test_the_blank_mirror_is_an_empty_repository_with_a_head(
     tmp_path: Path,
 ) -> None:
-    # OCTO-50: what a thread in no project forks its workspace from — a mirror with
+    # What a thread in no project forks its workspace from — a mirror with
     # no upstream, made by the same `create` as every other. A repository with no
     # commit forks onto an unborn branch, where git refuses the ordinary things a
     # run does with one, so it gets an empty commit and nothing else.

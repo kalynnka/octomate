@@ -92,6 +92,7 @@ def test_the_instruction_names_the_tools_the_claude_way() -> None:
         "teleport",
         "scheme",
         "send",
+        "dispel",
         "search_thread_history",
     ):
         assert f"`mcp__gateway__{name}`" in GATEWAY_MCP_INSTRUCTION

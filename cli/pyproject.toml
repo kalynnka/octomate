@@ -2,6 +2,8 @@
 name = "octomate-cli"
 version = "0.0.1"
 description = "Octomate's client half: the operator CLI, native-session hook clients, and the transcript tail."
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 # Deliberately light — a client machine installs octomate-cli alone, and nothing here
 # may import the octomate server package.

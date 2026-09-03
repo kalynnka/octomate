@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, NamedTuple, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.settings import ThinkingEffort
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config.agents import AgentRouteModelName, Claim
 from octomate.schemas.conversation import ChannelAddress
@@ -27,8 +29,15 @@ SCRY_TOOL_NAME = "scry"
 SUMMON_TOOL_NAME = "summon"
 TELEPORT_TOOL_NAME = "teleport"
 SCHEME_TOOL_NAME = "scheme"
+DISPEL_TOOL_NAME = "dispel"
 COMMISSION_TOOL_NAME = "commission"
 WHISPER_TOOL_NAME = "whisper"
+# What one `scry` reveals. One facet per call, because each spell needs exactly one —
+# a route for `summon`, a place for anything that lands somewhere, a project for
+# `teleport` — and the routes alone run long enough that showing everything every time
+# buried the line the caller came for. A tool result is the only place a per-user
+# list can reach the model without forking a cached prompt segment.
+ScryFacet = Literal["routes", "destinations", "projects"]
 # The `teleport` deferral's declared metadata kind. The suspender and dispatch graph
 # classify the deferral by this kind rather than the tool name, so the gateway (which
 # emits it) and `reflex` (which resolves it) agree on one value without matching on
@@ -105,14 +114,15 @@ class ChannelTarget(SpellTarget):
 
 
 # One union per spell, naming exactly the places that spell can go. They differ:
-# `here` is where a summon hands over and a send delivers, but a teleport that
-# stayed put would just be the agent carrying on; `dm` is where a scheme lands,
-# and a summon into someone's direct messages is a scheme by another name.
+# `here` is where a summon hands over and a send delivers, and where a teleport
+# stays put only to bind this thread to a project — otherwise it would just be the
+# agent carrying on; `dm` is where a scheme lands, and a summon into someone's
+# direct messages is a scheme by another name.
 SummonTarget: TypeAlias = Annotated[
     HereTarget | ThreadTarget | ChannelTarget, Field(discriminator="kind")
 ]
 TeleportTarget: TypeAlias = Annotated[
-    ThreadTarget | ChannelTarget, Field(discriminator="kind")
+    HereTarget | ThreadTarget | ChannelTarget, Field(discriminator="kind")
 ]
 SchemeTarget: TypeAlias = Annotated[
     DirectTarget | ChannelTarget, Field(discriminator="kind")
@@ -149,8 +159,8 @@ class Destination:
     address: ChannelAddress
     # Who can take a handoff there, when that is not the same list as here: which
     # agents serve a channel is that channel's own config, so a place on another one
-    # answers with its own. Empty for this run's own surface, whose routes `Scrying`
-    # already carries whole, and for a place only `send` and `scheme` can reach.
+    # answers with its own. Empty for this run's own surface, whose routes `scry`
+    # already lists whole, and for a place only `send` and `scheme` can reach.
     routes: tuple[AgentRoute, ...] = ()
 
     def __str__(self) -> str:
@@ -244,11 +254,12 @@ class SchemeDecision(BaseModel):
 
 
 class TeleportDecision(BaseModel):
-    """The same agent continues in a new sub-thread; Reflex performs the move.
-
-    Inkling never records one — its teleport rides a deferral so the graph can fork
-    mid-run — but a runtime that cannot be suspended by a tool result reports the
-    same intent this way, and the graph forks after its turn ends instead.
+    """The same agent continues somewhere else, its history with it; Reflex
+    performs the move. A run ends on it — Inkling by deferring the call, a runtime
+    a tool result cannot suspend by being interrupted on the recorded decision and
+    ending its turn as the same deferral — and the graph resumes the agent in the
+    new place: a sub-thread, a crossing, or this very thread when the move is only
+    into a project's workspace.
     """
 
     action: Literal["teleport"] = "teleport"
@@ -258,37 +269,55 @@ class TeleportDecision(BaseModel):
         description="The far channel's direct messages when the teleport crosses, "
         "resolved by the gateway; None keeps it a sub-thread of the current chat.",
     )
+    here: bool = Field(
+        default=False,
+        description="Stay in this thread, opening nothing. Only a teleport that "
+        "binds a project stays put — otherwise it would be the agent carrying on.",
+    )
+    project: str | None = Field(
+        default=None,
+        description="The project the thread landed in is bound to, and whose "
+        "workspace the agent resumes in; None carries the conversation only.",
+    )
+    ref: str | None = Field(
+        default=None,
+        description="The branch, tag or commit that workspace starts from; None "
+        "for the project's default branch.",
+    )
+
+    def metadata(self) -> dict[str, str | bool]:
+        """What the deferral carries, as plain values: enough for the graph to
+        rebuild this decision at its boundary."""
+        crossing = self.crossing
+        return {
+            "kind": TELEPORT_DEFER_KIND,
+            "hint": self.hint,
+            "channel": crossing.address.channel_tentacle_id if crossing else "",
+            "user": crossing.address.user_id if crossing else "",
+            "here": self.here,
+            "project": self.project or "",
+            "ref": self.ref or "",
+        }
+
+    def deferral(self, tool_call_id: str) -> DeferredToolRequests:
+        """This move as the deferral the graph performs — what an interrupted
+        runtime's turn ends with, shaped as Inkling's own `CallDeferred` is."""
+        return DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    tool_name=TELEPORT_TOOL_NAME,
+                    args={"hint": self.hint, "project": self.project, "ref": self.ref},
+                    tool_call_id=tool_call_id,
+                )
+            ],
+            metadata={tool_call_id: self.metadata()},
+        )
 
 
 # Every decision a gateway can record for the graph to act on after the turn.
 GatewayDecision: TypeAlias = Annotated[
     SummonDecision | SchemeDecision | TeleportDecision, Field(discriminator="action")
 ]
-
-
-@dataclass(frozen=True)
-class Scrying:
-    """What `scry` reveals: who can take this on, and where else the asker is.
-
-    One tool result rather than two tools, because both answer the same question —
-    where can this conversation go — and a tool result is the only place a per-user
-    list can reach the model without forking a cached prompt segment.
-    """
-
-    # Who can take this on where the conversation already is. A place on another
-    # channel runs its own agents and lists them under itself.
-    routes: list[AgentRoute]
-    # Every place a spell can name, this conversation included — not only the remote
-    # ones. `GatewayCapability.linked_destinations` is the remote half; this is all.
-    destinations: list[Destination]
-
-    def __str__(self) -> str:
-        routes = "\n".join(str(route) for route in self.routes) or "- (none)"
-        places = "\n".join(str(one) for one in self.destinations) or "- (none)"
-        return (
-            f"Agents you can route to here:\n{routes}\n\n"
-            f"Where you can put this:\n{places}"
-        )
 
 
 @dataclass(frozen=True)
@@ -307,3 +336,18 @@ class AgentRoute:
 
     def __str__(self) -> str:
         return f"- agent_id={self.agent_id}, model={self.model!r}: {self.claim}"
+
+
+@dataclass(frozen=True)
+class ProjectSummary:
+    """One registered project, as a model choosing between them needs it."""
+
+    # Deliberately not the root: which absolute path a project is on the server is
+    # the operator's business, and naming it in a chat thread is how it leaks.
+    name: str
+    description: str | None
+
+    def __str__(self) -> str:
+        if self.description is None:
+            return f"- {self.name}"
+        return f"- {self.name}: {self.description}"

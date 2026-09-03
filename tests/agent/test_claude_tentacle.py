@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar, Literal, cast
 
@@ -22,13 +23,13 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import Message
 from pydantic import TypeAdapter
-from pydantic_ai import AgentRunResultEvent
+from pydantic_ai import AgentRunResultEvent, ToolDenied
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartStartEvent,
 )
-from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
@@ -36,12 +37,16 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import GatewaySession
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import SummonDecision
+from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.tentacles.agents.claude import ClaudeCodeTentacle
 from octomate.tentacles.agents.claude import base as claude_base
 from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
 from tests.support.agents import CLAUDE_MODELS
-from tests.support.managers import FakeConversation, FakeConversationManager
+from tests.support.managers import (
+    FakeConversation,
+    FakeConversationManager,
+    RecordingSuspender,
+)
 
 SummonDecisionAdapter = TypeAdapter(SummonDecision)
 
@@ -603,3 +608,160 @@ async def test_without_the_gateway_no_server_and_no_instruction(
     assert options.mcp_servers == {}
     assert options.system_prompt is None
     assert options.allowed_tools == []
+
+
+class BindingClaudeClient(FakeClaudeClient):
+    """A client whose run casts `teleport` into a project — the session records
+    the decision the way the in-process tool does — and whose stream then waits to
+    be interrupted, as the real CLI does."""
+
+    session: ClassVar[GatewaySession | None] = None
+    instances: ClassVar[list[BindingClaudeClient]] = []
+
+    def __init__(self, options: object = None, transport: object = None) -> None:
+        super().__init__(options, transport)
+        self.interrupted = False
+        self.released = asyncio.Event()
+        BindingClaudeClient.instances.append(self)
+
+    async def interrupt(self) -> None:
+        self.interrupted = True
+        self.released.set()
+
+    async def receive_response(self) -> AsyncIterator[Message]:
+        yield AssistantMessage(
+            content=[
+                TextBlock(text="binding"),
+                ToolUseBlock(
+                    id="t1",
+                    name="mcp__gateway__teleport",
+                    input={
+                        "hint": "into inky",
+                        "destination": {"kind": "here"},
+                        "project": "inky",
+                    },
+                ),
+            ],
+            model="m",
+        )
+        assert BindingClaudeClient.session is not None
+        BindingClaudeClient.session.decision = TeleportDecision(
+            hint="into inky", here=True, project="inky"
+        )
+        yield UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="bound")])
+        await self.released.wait()
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+            result="",
+        )
+
+
+async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", BindingClaudeClient)
+    BindingClaudeClient.instances = []
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    session = GatewaySession(channel_routes={}, current_agent_id="claude")
+    BindingClaudeClient.session = session
+    suspender = RecordingSuspender()
+
+    events = []
+    async with tentacle.run_stream_events(
+        "work on inky",
+        conversation_address=KEY,
+        thread_id=_THREAD,
+        run_name="react",
+        capabilities=[GatewayCapability(session=session)],
+        deferred_suspender=suspender,
+    ) as stream:
+        async for event in stream:
+            events.append(event)
+
+    [client] = BindingClaudeClient.instances
+    assert client.interrupted
+    assert isinstance(events[-1], AgentRunResultEvent)
+    output = events[-1].result.output
+    assert isinstance(output, DeferredToolRequests)
+    [call] = output.calls
+    assert call.tool_name == "teleport"
+    assert output.metadata[call.tool_call_id]["kind"] == "teleport"
+    assert output.metadata[call.tool_call_id]["project"] == "inky"
+    assert output.metadata[call.tool_call_id]["here"] is True
+    # Suspended through the one entry the graph resumes from, and recorded as far
+    # as it got.
+    assert suspender.suspended == [output]
+    [(fake, _label, _messages)] = conversations.runs
+    assert fake.external_id == "s1"
+
+
+async def test_a_resumed_run_opens_from_what_the_graph_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "claude", "")] = FakeConversation(
+        external_id="prev-sess"
+    )
+    tentacle = _tentacle(conversations)
+    results = DeferredToolResults(
+        calls={"call_bind": "This thread is about 'inky' now. Carry on."}
+    )
+
+    result = await tentacle.run(
+        None, conversation_address=KEY, thread_id=_THREAD, deferred_tool_results=results
+    )
+
+    assert result.output == "done"
+    # The CLI takes no tool result back: the resolution is its next prompt, on
+    # the session it already has.
+    assert FakeClaudeClient.last_prompt == "This thread is about 'inky' now. Carry on."
+    assert getattr(FakeClaudeClient.last_options, "resume", None) == "prev-sess"
+
+
+def test_a_resumed_prompt_speaks_answers_and_verdicts() -> None:
+    # A batch a person came back to: their answers as they typed them, and each
+    # verdict in a word — a CLI takes no tool result back, so this is its prompt.
+    tentacle = _tentacle(FakeConversationManager())
+    results = DeferredToolResults(
+        calls={"call_question": ["yes, the second one", "and merge it"]},
+        approvals={"call_rm": ToolDenied("not that directory"), "call_ls": True},
+    )
+
+    prompt = tentacle.resumed_prompt(results)
+
+    assert prompt == (
+        "yes, the second one\nand merge it\n\nDenied: not that directory\n\nApproved."
+    )
+
+
+async def test_relocating_a_conversation_moves_its_session_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Claude resumes a session only from the cwd it ran in. The graph says when
+    # (a teleport landed somewhere else); this is how — by session id, since a
+    # moved teleport forks the conversation and the directory it came from is not
+    # on record. Nothing to move before a session exists.
+    relocated: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        claude_base,
+        "relocate_session",
+        lambda session_id, *, cwd: relocated.append((session_id, cwd)),
+    )
+    tentacle = _tentacle(FakeConversationManager())
+
+    await tentacle.relocate(
+        cast(claude_base.Conversation, FakeConversation(external_id="prev-sess")),
+        cwd=Path("/workspaces/t1"),
+    )
+    await tentacle.relocate(
+        cast(claude_base.Conversation, FakeConversation()), cwd=Path("/workspaces/t1")
+    )
+
+    assert relocated == [("prev-sess", Path("/workspaces/t1"))]
