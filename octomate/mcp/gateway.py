@@ -1,6 +1,6 @@
 """The gateway as MCP: the routing spells, served to every runtime that is not Inkling.
 
-One FastMCP server, built by whoever mounts it. Its tools are typed functions whose
+One family on the server `octomate.mcp.server` composes. Its tools are typed functions whose
 contracts are Inkling's own tool docstrings and whose schemas come from the same
 shapes, so no two runtimes read two different tools; all that differs is the session
 a call runs against, which each tool takes as a FastMCP dependency the mounting side
@@ -18,17 +18,18 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from functools import wraps
-from inspect import cleandoc
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Annotated, ParamSpec, TypeVar
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token, get_http_headers
+from pydantic import Field
 from pydantic_ai.settings import ThinkingEffort
 
-from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.managers.gateway import GatewayRefusal, GatewaySession
 from octomate.managers.thread import ThreadManager
+from octomate.mcp.base import capability_contract
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
@@ -74,12 +75,6 @@ GATEWAY_SPELLS: tuple[str, ...] = (
     DISPEL_TOOL_NAME,
 )
 
-# The routing contract under the tools' bare names, which is how a runtime that
-# namespaces a server's tools reads them. It goes on the server rather than into a
-# prompt because a runtime that defers MCP tools behind a search shows the server's
-# own instructions as the namespace's card.
-GATEWAY_SERVER_INSTRUCTIONS = gateway_instructions(lambda name: name)
-
 # What a runtime a tool result cannot suspend is told: the decision is recorded, its
 # turn is interrupted on it, and the graph performs the move and resumes it there.
 TELEPORT_RECORDED = (
@@ -98,15 +93,6 @@ CLIENT_HEADER = "X-Octomate-Client"
 
 SpellP = ParamSpec("SpellP")
 SpellT = TypeVar("SpellT")
-
-
-def capability_contract(spell: Callable[..., Awaitable[SpellT]]) -> str:
-    """The docstring Inkling's toolset compiles, verbatim — a copy here would give
-    two models two different tools and drift silently."""
-    doc = spell.__doc__
-    if doc is None:
-        raise RuntimeError(f"{spell.__qualname__} has no docstring to project")
-    return cleandoc(doc)
 
 
 def spoken(
@@ -248,12 +234,13 @@ async def native_session(
     )
 
 
-def gateway_mcp(
+def mount_gateway(
+    mcp: FastMCP,
     current: GatewaySession,
     thread_manager: ThreadManager,
     kick: Callable[[GatewayHandoffSignal], None] | None = None,
-) -> FastMCP:
-    """The gateway's spells as an MCP server.
+) -> None:
+    """Register the gateway's spells on `mcp`.
 
     `current` is the FastMCP dependency each call resolves its session through —
     `Depends(...)` of a fixed session for a server mounted in-process for one turn,
@@ -262,7 +249,6 @@ def gateway_mcp(
     session's summon or scheme becomes its own turn at once, so only the served
     mount — the one place a native session can arrive — needs one.
     """
-    mcp = FastMCP(name=GATEWAY_SERVER_NAME, instructions=GATEWAY_SERVER_INSTRUCTIONS)
 
     @mcp.tool(
         name=SCRY_TOOL_NAME, description=capability_contract(GatewayCapability.scry)
@@ -282,7 +268,7 @@ def gateway_mcp(
         destination: SummonTarget,
         hint: str,
         reason: str,
-        summon: str,
+        summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
         session: GatewaySession = current,
     ) -> str:
@@ -326,7 +312,7 @@ def gateway_mcp(
     @spoken
     async def scheme(
         hint: str,
-        brief: str,
+        brief: Annotated[str, Field(max_length=8_000)],
         destination: SchemeTarget = DIRECT_TARGET,
         session: GatewaySession = current,
     ) -> str:
@@ -393,5 +379,3 @@ def gateway_mcp(
     @spoken
     async def dispel(session: GatewaySession = current) -> str:
         return await session.dispel()
-
-    return mcp

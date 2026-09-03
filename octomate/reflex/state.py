@@ -59,6 +59,26 @@ class ResponseTarget:
         )
 
 
+@dataclass(frozen=True)
+class PendingHandoff:
+    """A handoff one node decided, as far as it is known before it lands: the source
+    side. The target is what landing resolves — the decision's route, as the agent
+    is actually mounted — so React reads it there when it records the row, and
+    nothing here could name it without risking a second, drifting copy.
+
+    The source is who handed the conversation over, and where from as the row names
+    it: the conversation the deciding turn ran in, the last model message in it and
+    the run that left that message, read off the ledger rather than the run result
+    because the row's foreign keys hold only for what was persisted. A native summon
+    names its agent and nothing else, since the gateway cannot name the terminal
+    session it came from; a route that pins a thread's owner names nobody."""
+
+    source_agent_tentacle_id: str | None = None
+    source_conversation_id: uuid.UUID | None = None
+    source_run_id: str | None = None
+    source_model_message_id: uuid.UUID | None = None
+
+
 @dataclass
 class ReflexResult:
     decision: SummonDecision | None
@@ -102,8 +122,9 @@ class ReflexState:
     trigger_thread_message_id: uuid.UUID | None = None
     source_thread_address: ChannelAddress | None = None
     source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
-    claim_handoff: bool = False
-    handoff_from_agent_tentacle_id: str | None = None
+    # The handoff the next React records when it lands, or None when it records
+    # none.
+    handoff: PendingHandoff | None = None
     user_prompt: str | Sequence[UserContent] | None = None
     user_profile: UserProfile | None = None
 

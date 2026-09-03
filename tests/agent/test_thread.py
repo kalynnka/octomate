@@ -158,7 +158,7 @@ async def test_thread_round_trips_with_messages_and_handoffs() -> None:
             Handoff(
                 id=later_handoff_id,
                 thread_id=thread_id,
-                from_agent_tentacle_id="inkling",
+                source_agent_tentacle_id="inkling",
                 to_agent_tentacle_id="claude",
                 to_model="sonnet",
                 reason="Needs code work.",

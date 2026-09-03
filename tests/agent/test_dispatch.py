@@ -4,6 +4,7 @@ over the real ConversationManager/ThreadManager on in-memory SQLite."""
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 from typing import cast
 
@@ -84,6 +85,22 @@ def _event(
         channel_thread_id=thread_id,
         segments=[TextSegment(data={"text": text})],
     )
+
+
+async def _agent_rows(thread_id: uuid.UUID, text: str) -> list[ThreadMessage]:
+    """The agent's own rows in a thread, read off the ledger: what reception
+    recorded, before anyone's history tools come to search it."""
+    async with async_session() as session:
+        rows = await session.list(
+            ThreadMessage,
+            limit=None,
+            expressions=[
+                ThreadMessage["thread_id"] == thread_id,
+                ThreadMessage["actor_kind"] == "agent",
+                ThreadMessage["message_text"].ilike(f"%{text}%"),
+            ],
+        )
+    return list(rows)
 
 
 def _key(thread_id: str = "") -> ChannelAddress:
@@ -477,9 +494,7 @@ async def test_streamed_reception_persists_when_presentation_fails() -> None:
     await octomate.kick(UserMessageSignal([_event()]))
 
     thread = await octomate.thread_manager.ensure(_key())
-    chat_messages = await octomate.thread_manager.search_chat_messages(
-        thread.id, "survives render failure", actor_kind="agent"
-    )
+    chat_messages = await _agent_rows(thread.id, "survives render failure")
     assert len(chat_messages) == 1
     assert chat_messages[0].platform_message_id is None
 
@@ -553,9 +568,7 @@ async def test_reception_records_and_binds_outbound_thread_message() -> None:
             conversation.id, "all done", role="assistant"
         )
     )[0]
-    chat_messages = await octomate.thread_manager.search_chat_messages(
-        thread.id, "all done", actor_kind="agent"
-    )
+    chat_messages = await _agent_rows(thread.id, "all done")
     async with async_session() as session:
         stored_message = await session.one_or_none(
             ThreadMessage,
@@ -589,9 +602,7 @@ async def test_reception_persists_before_channel_presentation() -> None:
             conversation.id, "still persisted", role="assistant"
         )
     )[0]
-    chat_messages = await octomate.thread_manager.search_chat_messages(
-        thread.id, "still persisted", actor_kind="agent"
-    )
+    chat_messages = await _agent_rows(thread.id, "still persisted")
     assert len(chat_messages) == 1
     assert chat_messages[0].platform_message_id is None
     assert model_message is not None

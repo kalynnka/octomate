@@ -13,7 +13,7 @@ from typing import ClassVar, cast
 
 import pytest
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent, RunContext
-from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.messages import ToolCallPart, UserPromptPart
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -53,6 +53,7 @@ from octomate.schemas.awakes import (
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import (
@@ -73,6 +74,7 @@ from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, RecordingInk
 from tests.support.managers import (
     FakeActionManager,
+    FakeConversation,
     FakeConversationManager,
     FakeDeferredBatch,
     FakePresentedBatch,
@@ -846,6 +848,59 @@ async def test_summon_here_takes_over_current_conversation() -> None:
     assert second.turns[0].address == address
 
 
+async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
+    """The receiver's grant: the row a summon records points back at the
+    conversation the deciding turn ran in, that run, and its last message — the
+    handles the receiver's history tools read the source through."""
+    address = _key()
+    thread = _thread(address)
+    entry = FakeAgent(
+        id="other",
+        reception_summon=_summon(agent_id="second", destination=HereLanding()),
+        allow_reception_run=True,
+    )
+    second = FakeAgent(
+        id="second", reception_output="took over", allow_reception_run=True
+    )
+    im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    conversations = FakeConversationManager()
+    earlier = ModelRequest(
+        parts=[UserPromptPart(content="please debug")], run_id="run-1"
+    )
+    source = FakeConversation(
+        thread_id=thread.id, agent_tentacle_id="other", messages=[earlier]
+    )
+    conversations.store[(thread.id, "other", "")] = source
+    threads = FakeThreadManager()
+    # Registered, so the here-landing resolves to this thread and not a fresh row.
+    threads.threads_by_key[ThreadKey.from_address(address)] = thread
+    target = _source_target(address)
+
+    await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=ReflexDeps(
+            workspaces=RecordingWorkspaceManager(),
+            gateway=GatewayManager(),
+            channels={"im": im},
+            agents={"other": entry, "second": second},
+            conversation_manager=conversations,
+            thread_manager=threads,
+            action_manager=cast(DeferredActionManager, FakeActionManager()),
+        ),
+    )
+
+    [handoff] = threads.handoffs
+    assert handoff.source_agent_tentacle_id == "other"
+    assert handoff.source_conversation_id == source.id
+    assert handoff.source_run_id == "run-1"
+    assert handoff.source_model_message_id == earlier.id
+    receiver = await conversations.ensure(thread.id, agent_tentacle_id="second")
+    assert handoff.target_conversation_id == receiver.id
+
+
 def _group_key(thread_id: str = "") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="im",
@@ -1422,7 +1477,7 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
     threads = deps.thread_manager
     assert isinstance(threads, FakeThreadManager)
     [handoff] = threads.handoffs
-    assert handoff.from_agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert handoff.source_agent_tentacle_id == CLAUDE_NATIVE_ID
     assert handoff.to_agent_tentacle_id == "second"
     assert handoff.brief == "Please take this up over here."
 

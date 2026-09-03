@@ -15,6 +15,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent, StreamEvents
 from octomate.reflex.state import (
     DeferredResult,
+    PendingHandoff,
     ReflexDeps,
     ReflexGraphResult,
     ReflexResult,
@@ -98,7 +99,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if run_model is None:
             raise ValueError(f"agent {agent.id!r} has no configured model {model!r}")
         thread_id = state.thread.id if state.thread else None
-        if state.thread is not None and state.claim_handoff:
+        claim = state.handoff
+        if state.thread is not None and claim is not None:
             target_conversation = await ctx.deps.conversation_manager.ensure(
                 state.thread.id,
                 agent_tentacle_id=agent.id,
@@ -112,16 +114,18 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             ):
                 await ctx.deps.thread_manager.record_handoff(
                     state.thread,
-                    from_agent_tentacle_id=state.handoff_from_agent_tentacle_id,
+                    source_agent_tentacle_id=claim.source_agent_tentacle_id,
                     to_agent_tentacle_id=agent.id,
                     to_model=target_model,
                     reason=decision.reason,
                     hint=decision.hint,
                     brief=decision.summon,
+                    source_conversation_id=claim.source_conversation_id,
                     target_conversation_id=target_conversation.id,
+                    source_run_id=claim.source_run_id,
+                    source_model_message_id=claim.source_model_message_id,
                 )
-            state.claim_handoff = False
-            state.handoff_from_agent_tentacle_id = None
+            state.handoff = None
         target_channel = ctx.deps.channel(target)
         state.summon_routes = [
             route
@@ -415,6 +419,31 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 )
 
             gateway_decision = gateway_session.decision if gateway_session else None
+            if isinstance(gateway_decision, SchemeDecision | SummonDecision):
+                # Where this handoff came from, as the row records it: the
+                # conversation this turn ran in, as of its last message.
+                conversation = (
+                    await ctx.deps.conversation_manager.ensure(
+                        thread_id, agent_tentacle_id=agent.id
+                    )
+                    if thread_id is not None
+                    else None
+                )
+                last = (
+                    max(
+                        conversation.messages,
+                        key=lambda message: message.id,
+                        default=None,
+                    )
+                    if conversation is not None
+                    else None
+                )
+                state.handoff = PendingHandoff(
+                    source_agent_tentacle_id=agent.id,
+                    source_conversation_id=conversation.id if conversation else None,
+                    source_run_id=last.run_id if last else None,
+                    source_model_message_id=last.id if last else None,
+                )
             if isinstance(gateway_decision, SchemeDecision):
                 span.set_attribute("react.action", gateway_decision.action)
                 reflex_logfire.info(
@@ -429,8 +458,6 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             if isinstance(gateway_decision, SummonDecision):
                 state.decision = gateway_decision
                 state.target = target
-                state.claim_handoff = True
-                state.handoff_from_agent_tentacle_id = agent.id
                 state.run_name = "summon"
                 span.set_attribute("react.action", gateway_decision.action)
                 span.set_attribute("react.next_agent_id", gateway_decision.agent_id)

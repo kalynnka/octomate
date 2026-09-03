@@ -481,7 +481,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         )
         await self.octomate.thread_manager.record_handoff(
             thread,
-            from_agent_tentacle_id=None,
+            source_agent_tentacle_id=None,
             to_agent_tentacle_id=chosen.agent,
             to_model=chosen.model,
             reason="console route selection",

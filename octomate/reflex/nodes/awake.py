@@ -7,6 +7,7 @@ from pydantic_graph import BaseNode, End, GraphRunContext
 from octomate.reflex.nodes.resume_deferred import ResumeDeferred
 from octomate.reflex.nodes.route import Route
 from octomate.reflex.state import (
+    PendingHandoff,
     ReflexDeps,
     ReflexGraphResult,
     ReflexResult,
@@ -48,6 +49,9 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             ctx.state.source_target = source_target
             ctx.state.user_profile = self.signal.user_profile
             decision = self.signal.decision
+            ctx.state.handoff = PendingHandoff(
+                source_agent_tentacle_id=self.signal.agent_id
+            )
             if isinstance(decision, SchemeDecision):
                 return Scheme(
                     request=decision,
@@ -57,8 +61,6 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             ctx.state.decision = decision
             ctx.state.target = source_target
             ctx.state.run_name = "summon"
-            ctx.state.claim_handoff = True
-            ctx.state.handoff_from_agent_tentacle_id = self.signal.agent_id
             return Handoff()
 
         if not self.signal:

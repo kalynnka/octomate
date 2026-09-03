@@ -23,6 +23,7 @@ from fastmcp.exceptions import ToolError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.base import Octomate
+from octomate.capabilities.history import HISTORY_TOOLS
 from octomate.config.base import OctomateConfig
 from octomate.config.channels import AgentModelConfig, ChannelConfig
 from octomate.config.users import UserConfig
@@ -177,12 +178,12 @@ async def test_every_server_refuses_an_unauthenticated_call(
     assert response.headers["www-authenticate"].startswith("Bearer")
 
 
-async def test_a_user_secret_opens_the_gateway_and_its_six_spells() -> None:
+async def test_a_user_secret_opens_the_six_spells_and_the_history_tools() -> None:
     async with served(a_driven_deployment()) as (octomate, app):
         async with over(octomate, app, DRIVEN_BEARER) as client:
             tools = await client.list_tools()
 
-    assert [tool.name for tool in tools] == list(GATEWAY_SPELLS)
+    assert [tool.name for tool in tools] == [*GATEWAY_SPELLS, *HISTORY_TOOLS]
 
 
 async def test_a_served_call_runs_against_the_turn_its_header_names() -> None:

@@ -219,7 +219,13 @@ class SummonDecision(BaseModel):
     )
     effort: ThinkingEffort | None = None
     hint: str
-    summon: str
+    summon: str = Field(
+        max_length=8_000,
+        description="The receiver's whole opening prompt, refused over the cap rather "
+        "than trimmed: what it leaves out, the receiver reads back through the "
+        "handoff. Eight thousand characters is roughly two thousand tokens — the "
+        "size a distilled handoff runs to, and well short of a pasted transcript.",
+    )
 
     @property
     def key(self) -> AgentRouteKey:
@@ -240,7 +246,7 @@ class SchemeDecision(BaseModel):
         description="The line that opens the conversation over there. Nothing is "
         "posted where the request came from — the run's own reply closes that out."
     )
-    brief: str
+    brief: str = Field(max_length=8_000)
     destination: ChannelAddress = Field(
         description="Which direct messages, resolved by the gateway. The model names a "
         "handle; the address comes from the identity registry, never from the model."

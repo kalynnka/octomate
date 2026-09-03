@@ -91,6 +91,4 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             hint=self.request.hint,
             summon=self.request.brief,
         )
-        state.claim_handoff = True
-        state.handoff_from_agent_tentacle_id = self.agent_id
         return React()

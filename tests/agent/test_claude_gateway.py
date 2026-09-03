@@ -13,7 +13,8 @@ from fastmcp.dependencies import Depends
 from pydantic import JsonValue
 
 from octomate.managers.gateway import GatewaySession
-from octomate.mcp.gateway import TELEPORT_RECORDED, gateway_mcp
+from octomate.mcp.gateway import TELEPORT_RECORDED
+from octomate.mcp.server import octomate_mcp
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     AgentRoute,
@@ -63,7 +64,7 @@ def a_turn() -> GatewaySession:
 async def spells(
     session: GatewaySession,
 ) -> dict[str, SdkMcpTool[dict[str, JsonValue]]]:
-    server = gateway_mcp(Depends(lambda: session), FakeThreadManager())
+    server = octomate_mcp(Depends(lambda: session), FakeThreadManager())
     return {tool.name: sdk_gateway_tool(tool) for tool in await server.list_tools()}
 
 
@@ -85,7 +86,15 @@ async def test_the_server_config_is_the_sdk_in_process_shape() -> None:
 
 
 def test_the_instruction_names_the_tools_the_claude_way() -> None:
-    for name in ("scry", "summon", "teleport", "scheme", "send", "dispel"):
+    for name in (
+        "scry",
+        "summon",
+        "teleport",
+        "scheme",
+        "send",
+        "dispel",
+        "search_thread_history",
+    ):
         assert f"`mcp__gateway__{name}`" in GATEWAY_MCP_INSTRUCTION
     assert "{" not in GATEWAY_MCP_INSTRUCTION
     assert "commission" not in GATEWAY_MCP_INSTRUCTION

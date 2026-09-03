@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 from arcanus.materia.sqlalchemy import noload, selectinload
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, select
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
@@ -451,7 +451,7 @@ class ThreadManager:
         thread_or_address: Thread | ChannelAddress | ThreadKey,
         *,
         to_agent_tentacle_id: str,
-        from_agent_tentacle_id: str | None = None,
+        source_agent_tentacle_id: str | None = None,
         to_model: AgentRouteModelName | None = None,
         reason: str = "",
         hint: str = "",
@@ -467,7 +467,7 @@ class ThreadManager:
             thread = await self.ensure(thread_or_address)
         handoff = Handoff(
             thread_id=thread.id,
-            from_agent_tentacle_id=from_agent_tentacle_id,
+            source_agent_tentacle_id=source_agent_tentacle_id,
             to_agent_tentacle_id=to_agent_tentacle_id,
             to_model=to_model,
             reason=reason,
@@ -483,6 +483,38 @@ class ThreadManager:
             await session.commit()
         thread.handoffs.append(handoff)
         return handoff
+
+    async def chat_message(self, profile: UserProfile, handle: str) -> ThreadMessage:
+        """The chat message `handle` names within this person's history — the threads
+        they have spoken in, on this account or any the registry links to it. A row
+        id, or the `#msg:<id>` handle shown beside it: the platform's own id, which
+        is what a brief written from the other side of a handoff has to cite."""
+        if handle.startswith("#msg:"):
+            named = ThreadMessage["platform_message_id"] == handle.removeprefix("#msg:")
+        else:
+            named = ThreadMessage["id"] == uuid.UUID(handle)
+        senders = [
+            profile.id,
+            *(linked.id for linked in await self.users.linked_profiles(profile)),
+        ]
+        async with async_session() as session:
+            rows = await session.list(
+                ThreadMessage,
+                limit=2,
+                expressions=[
+                    named,
+                    ThreadMessage["thread_id"].in_(
+                        select(ThreadMessage["thread_id"]).where(
+                            ThreadMessage["sender_id"].in_(senders)
+                        )
+                    ),
+                ],
+            )
+        if not rows:
+            raise ValueError(f"no message {handle} in this person's history")
+        if len(rows) > 1:
+            raise ValueError(f"{handle} names more than one message; use a row id")
+        return rows[0]
 
     async def bind_messages(
         self,
@@ -558,14 +590,25 @@ class ThreadManager:
 
     async def search_chat_messages(
         self,
-        thread_id: uuid.UUID,
+        profile: UserProfile,
         query: str,
         *,
         actor_kind: ChannelActorKind | None = None,
         limit: int = 10,
     ) -> list[ThreadMessage]:
+        """The messages containing `query` across this person's history — the
+        threads they have spoken in, on this account or any the registry links to
+        it — oldest first. A visitor's history is one account's."""
+        senders = [
+            profile.id,
+            *(linked.id for linked in await self.users.linked_profiles(profile)),
+        ]
         expressions = [
-            ThreadMessage["thread_id"] == thread_id,
+            ThreadMessage["thread_id"].in_(
+                select(ThreadMessage["thread_id"]).where(
+                    ThreadMessage["sender_id"].in_(senders)
+                )
+            ),
             ThreadMessage["message_text"].ilike(f"%{query}%"),
         ]
         if actor_kind is not None:
