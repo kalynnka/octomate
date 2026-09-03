@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -68,6 +69,14 @@ class ThreadManager:
         # Every ledger row references its sender's registry profile — the host
         # constructs this manager around its one identity registry.
         self.users = users
+        # Serializes first sightings, as `ConversationManager` does for its own
+        # rows: two concurrent ensures of one key — a session's follow task
+        # preparing while a hook pokes it, two people replying at once in a chat
+        # with no thread row yet — must not both insert. Under the lock the loser
+        # re-reads the row the winner committed instead of raising a UNIQUE
+        # violation, which here escapes into `follow`'s handler and strands every
+        # later turn of the session.
+        self.ensure_lock = asyncio.Lock()
 
     async def ensure(
         self,
@@ -95,7 +104,9 @@ class ThreadManager:
                 f"{key} is a {key.kind} and cannot be attributed to project "
                 f"{project.name!r}: only a thread or a native_thread is work."
             )
-        async with async_session() as session:
+        # The lock spans the read, the insert and the commit: a loser that woke
+        # after the winner's read but before its commit would still find nothing.
+        async with self.ensure_lock, async_session() as session:
             thread = await session.one_or_none(
                 Thread,
                 expressions=[
