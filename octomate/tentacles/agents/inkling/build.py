@@ -78,11 +78,10 @@ def build_inkling(
             defer_loading=True,
         ),
         HistoryCapability(
-            octomate.conversations,
             octomate.thread_manager,
             id="history",
-            description="Search and page this thread's chat ledger and this "
-            "conversation's model ledger.",
+            description="Search and page every thread the person you are answering "
+            "has spoken in, on any of their linked accounts.",
             defer_loading=True,
         ),
         # User-scoped, so a visitor is never offered it: binding decides where a

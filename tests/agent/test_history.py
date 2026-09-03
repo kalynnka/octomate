@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from pydantic_ai import RunContext, RunUsage
+from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import (
     BinaryContent,
     TextContent,
@@ -30,6 +31,7 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.segments import TextSegment
+from octomate.schemas.user import UserProfile
 from tests.support.managers import a_thread
 
 
@@ -157,6 +159,7 @@ def _event(message_id: str, user_id: str, text: str) -> MessageEvent:
         chat_type="dm",
         chat_id="alice",
         user_id=user_id,
+        sender=UserProfile(channel_user_id=user_id, name=user_id.title()),
         segments=[TextSegment(data={"text": text})],
     )
 
@@ -275,42 +278,28 @@ async def test_pagination_includes_non_text_neighbours() -> None:
     assert await manager.messages_after(conversation.id, anchor.id, limit=10) == []
 
 
-async def test_history_tool_returns_messages_with_ids() -> None:
-    manager = ConversationManager()
-    conversation = await _seed(manager)
-    capability = HistoryCapability(manager, ThreadManager(users=UserManager()))
-    assert capability.toolset is not None
-    ctx = _ctx(conversation.id)
-    tools = await capability.toolset.get_tools(ctx)
+async def _profile(thread_manager: ThreadManager, user_id: str) -> UserProfile:
+    profile = await thread_manager.users.profile("dev_ui", user_id)
+    assert profile is not None
+    return profile
 
-    hits = await capability.toolset.call_tool(
-        "search_model_history",
-        {"query": "bug"},
-        ctx,
-        tools["search_model_history"],
+
+async def _bound(thread_manager: ThreadManager, user_id: str) -> HistoryCapability:
+    """The history capability as a run answering `user_id` mounts it."""
+    return await HistoryCapability(thread_manager).for_profile(
+        await _profile(thread_manager, user_id)
     )
-    assert [m.message_text for m in hits] == [
-        "find the auth bug",
-        "the bug is in login",
-    ]
-    assert all(m.id is not None for m in hits)
 
 
-async def test_history_thread_tools_follow_conversation_thread_id() -> None:
-    conversation_manager = ConversationManager()
+async def test_the_thread_tools_read_what_the_user_spoke_in() -> None:
     thread_manager = ThreadManager(users=UserManager())
     first = await thread_manager.record_inbound(
         _event("m1", "alice", "stored while asleep")
     )
     await thread_manager.record_inbound(_event("m2", "bob", "wake now"))
-    thread = await thread_manager.ensure(_key())
-    conversation = await conversation_manager.ensure(
-        thread.id,
-        agent_tentacle_id="inkling",
-    )
-    capability = HistoryCapability(conversation_manager, thread_manager)
+    capability = await _bound(thread_manager, "alice")
     assert capability.toolset is not None
-    ctx = _ctx(conversation.id)
+    ctx = _ctx(uuid.uuid4())
     tools = await capability.toolset.get_tools(ctx)
 
     hits = await capability.toolset.call_tool(
@@ -328,3 +317,70 @@ async def test_history_thread_tools_follow_conversation_thread_id() -> None:
 
     assert [message.message_text for message in hits] == ["stored while asleep"]
     assert [message.message_text for message in after] == ["wake now"]
+
+
+async def test_a_receiver_reads_every_thread_its_user_spoke_in() -> None:
+    """No grant: the person a run answers is the scope. Handed alice's work
+    anywhere, the receiver searches the chat she spoke in — bob's replies there
+    included — while bob's own direct messages, where she never spoke, are not
+    hers; read as bob, they are, and so is the chat he replied in."""
+    threads = ThreadManager(users=UserManager())
+    await threads.record_inbound(_event("m1", "alice", "find the auth bug"))
+    await threads.record_inbound(_event("m2", "bob", "the bug is in login"))
+    own = await threads.record_inbound(
+        MessageEvent(
+            tentacle_id="dev_ui",
+            message_id="b1",
+            chat_type="dm",
+            chat_id="bob",
+            user_id="bob",
+            sender=UserProfile(channel_user_id="bob", name="Bob"),
+            segments=[TextSegment(data={"text": "a bug of my own"})],
+        )
+    )
+    ctx = _ctx(uuid.uuid4())
+
+    async def search(capability: HistoryCapability) -> list[str | None]:
+        assert capability.toolset is not None
+        tools = await capability.toolset.get_tools(ctx)
+        hits = await capability.toolset.call_tool(
+            "search_thread_history",
+            {"query": "bug"},
+            ctx,
+            tools["search_thread_history"],
+        )
+        return [message.message_text for message in hits]
+
+    alice = await _bound(threads, "alice")
+    assert alice.toolset is not None
+    tools = await alice.toolset.get_tools(ctx)
+    before = await alice.toolset.call_tool(
+        "read_thread_history_before",
+        {"message_id": "#msg:m2", "limit": 5},
+        ctx,
+        tools["read_thread_history_before"],
+    )
+
+    assert await search(alice) == ["find the auth bug", "the bug is in login"]
+    assert [message.message_text for message in before] == ["find the auth bug"]
+    with pytest.raises(ModelRetry, match="no message"):
+        await alice.toolset.call_tool(
+            "read_thread_history_after",
+            {"message_id": str(own.id)},
+            ctx,
+            tools["read_thread_history_after"],
+        )
+    assert await search(await _bound(threads, "bob")) == [
+        "find the auth bug",
+        "the bug is in login",
+        "a bug of my own",
+    ]
+
+
+async def test_the_template_serves_no_run_itself() -> None:
+    """The mounted capability is bound per run by `for_profile`; the template's
+    own tools have nobody to read for and say so rather than reading nothing."""
+    capability = HistoryCapability(ThreadManager(users=UserManager()))
+
+    with pytest.raises(RuntimeError, match="mount the copy `for_profile` gives"):
+        await capability.search_thread_history("anything")
