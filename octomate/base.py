@@ -262,14 +262,23 @@ class Octomate:
         client. Each is served at `/<name>/mcp` behind the deployment's known
         bearers, and resolves the identity a call runs against from the request
         itself.
+
+        After the gateway come the channels' own servers: one per channel type
+        among the connected channels, built by the class, its tools resolving the
+        workspace from the session a call names — so two channels of one type
+        share one server (see `octomate.mcp.channel`).
         """
-        return [
-            gateway_mcp(
-                Depends(served_session(self)),
-                self.thread_manager,
-                kick=self.kick_soon,
-            )
+        gateway_session = Depends(served_session(self))
+        servers = [
+            gateway_mcp(gateway_session, self.thread_manager, kick=self.kick_soon)
         ]
+        # One build per channel class, however many workspaces share it, in the
+        # order the channels were connected.
+        for kind in dict.fromkeys(type(channel) for channel in self.channels.values()):
+            server = kind.mcp(gateway_session)
+            if server is not None:
+                servers.append(server)
+        return servers
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
         # The MCP servers are always served, never open: the gateway's spells send

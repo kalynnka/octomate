@@ -51,7 +51,10 @@ from octomate.tentacles.channels.feelers.output import (
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
+    from fastmcp import FastMCP
+
     from octomate.base import Octomate
+    from octomate.managers.gateway import GatewaySession
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +263,14 @@ class ChannelTentacle(
     @property
     def name(self) -> str:
         return self.self_profile.name
+
+    @classmethod
+    def mcp(cls, gateway_session: GatewaySession) -> FastMCP | None:
+        """This channel's own tools as an MCP server, or None for a channel that
+        offers none. Built by the class, not the instance: one server per channel
+        type, whose tools resolve the concrete tentacle from the session
+        `gateway_session` yields — see `octomate.mcp.channel`."""
+        return None
 
     @channel_logfire.instrument("ChannelTentacle {self.id} ingest")
     async def ingest(self, raw: RawT) -> None:
