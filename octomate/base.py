@@ -28,7 +28,8 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.mcp.base import KnownBearers
-from octomate.mcp.gateway import gateway_mcp, served_session
+from octomate.mcp.gateway import served_session
+from octomate.mcp.server import octomate_mcp
 from octomate.oauth.routes import oauth_router
 from octomate.reflex import (
     Awake,
@@ -254,17 +255,18 @@ class Octomate:
         task.add_done_callback(self.background.discard)
 
     def mcp_servers(self) -> list[FastMCP]:
-        """The MCP servers Octomate serves, one per tool family.
+        """The MCP servers Octomate serves: today the one `octomate.mcp.server`
+        composes, which every runtime's install config knows as `/gateway/mcp`.
 
-        Separate servers rather than one with namespaces: a runtime that defers MCP
-        tools behind a search does so per server, with the server's own instructions
-        as the family's card, and only a root server's instructions ever reach a
-        client. Each is served at `/<name>/mcp` behind the deployment's known
-        bearers, and resolves the identity a call runs against from the request
-        itself.
+        A list because a family that outgrows that server's card would be served
+        as one of its own: a runtime that defers MCP tools behind a search does so
+        per server, with the server's own instructions as the card, and only a
+        root server's instructions ever reach a client. Each is served at
+        `/<name>/mcp` behind the deployment's known bearers, and resolves the
+        identity a call runs against from the request itself.
         """
         return [
-            gateway_mcp(
+            octomate_mcp(
                 Depends(served_session(self)),
                 self.thread_manager,
                 kick=self.kick_soon,

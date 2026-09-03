@@ -114,6 +114,16 @@ class ThreadMessage(BaseTransmuter):
 
     model_messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
+    def __str__(self) -> str:
+        """One line of a page: the row id, the `#msg:<id>` handle a brief cites,
+        when, who, and what was said."""
+        handle = f" #msg:{self.platform_message_id}" if self.platform_message_id else ""
+        who = self.agent_tentacle_id or self.user_id or self.actor_kind
+        return (
+            f"{self.id}{handle} {self.happened_at:%Y-%m-%d %H:%M} "
+            f"{self.actor_kind} {who}: {self.message_text or ''}"
+        )
+
 
 @sqlalchemy_materia.bless(thread_models.MessageBinding)
 class MessageBinding(BaseTransmuter):
