@@ -101,6 +101,7 @@ def a_message(
     mentions: list[discord.User] | None = None,
     attachments: list[discord.Attachment] | None = None,
     reference: discord.MessageReference | None = None,
+    webhook_id: int | None = None,
 ) -> discord.Message:
     message = discord.Message.__new__(discord.Message)
     message.id = message_id
@@ -110,6 +111,7 @@ def a_message(
     message.mentions = list[discord.User | discord.Member](mentions or [])
     message.attachments = attachments or []
     message.reference = reference
+    message.webhook_id = webhook_id
     message.channel = channel
     message.guild = None if isinstance(channel, discord.DMChannel) else channel.guild
     return message
