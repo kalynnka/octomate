@@ -56,6 +56,7 @@ from tests.support.channels import (
     RecordingTimeline,
     bound,
 )
+from tests.support.managers import a_loaded_thread
 from tests.support.scenarios import (
     action_batch,
     message_sent,
@@ -126,7 +127,7 @@ async def test_ingest_dispatches_event_to_octomate(
     assert event.self_id == "bot"
     assert event.sender.channel_user_id == "alice"
 
-    thread = await octomate.thread_manager.ensure(address)
+    thread = await a_loaded_thread(octomate.thread_manager, address)
     assert thread.messages[-1].id == signal.trigger_thread_message_id
     assert thread.messages[-1].message_text == "hello"
 
@@ -167,8 +168,8 @@ async def test_group_mention_filter_records_unmentioned_events_before_ignore(
     assert isinstance(octomate, FakeOctomate)
     assert octomate.kicks == []
 
-    thread = await octomate.thread_manager.ensure(
-        _key(chat_type="group", chat_id="lobby")
+    thread = await a_loaded_thread(
+        octomate.thread_manager, _key(chat_type="group", chat_id="lobby")
     )
     assert [message.message_text for message in thread.messages] == ["hello"]
 

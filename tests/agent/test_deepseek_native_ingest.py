@@ -18,6 +18,7 @@ from octomate.tentacles.agents.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.agents.deepseek.ingest import DeepseekHookIngest
 from octomate.tentacles.agents.deepseek.tailer import DeepseekEventTailer, TailState
 from octomate.types.json import JsonObject, JsonValue
+from tests.support.managers import a_loaded_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -153,8 +154,8 @@ async def test_streamed_events_assemble_the_turn_and_its_ledger() -> None:
     assert run.source == "local"
     assert [message.message_text for message in run.messages] == ["inspect it", "done"]
 
-    thread = await octomate.thread_manager.ensure(
-        ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
+    thread = await a_loaded_thread(
+        octomate.thread_manager, ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
     )
     directions = [
         (message.direction, message.message_text) for message in thread.messages
@@ -204,8 +205,8 @@ async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
     request = next(m for m in run.messages if isinstance(m, ModelRequest))
     assert request.parts[0].content == "hi\n\nalso check the tests"
     assert run.source == "gateway"
-    thread = await octomate.thread_manager.ensure(
-        ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
+    thread = await a_loaded_thread(
+        octomate.thread_manager, ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
     )
     inbound = [m.message_text for m in thread.messages if m.direction == "inbound"]
     assert inbound == ["hi\n\nalso check the tests"]

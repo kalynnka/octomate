@@ -27,7 +27,6 @@ from octomate.schemas.thread import (
     DEEPSEEK_NATIVE_ID,
     Thread,
     ThreadKey,
-    ThreadMessageDirection,
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import deepseek_logfire
@@ -421,7 +420,9 @@ class DeepseekEventTailer:
             None,
         )
         if request is not None and turn.prompt_text:
-            inbound = self.existing_message(thread, run.id, "inbound")
+            inbound = await self.thread_manager.find_message(
+                thread.id, run.id, "inbound"
+            )
             if inbound is None:
                 inbound = await self.thread_manager.record_inbound(
                     MessageEvent(
@@ -448,7 +449,9 @@ class DeepseekEventTailer:
                 ),
                 None,
             )
-            outbound = self.existing_message(thread, run.id, "outbound")
+            outbound = await self.thread_manager.find_message(
+                thread.id, run.id, "outbound"
+            )
             if outbound is None:
                 outbound = await self.thread_manager.record_outbound(
                     thread,
@@ -461,17 +464,3 @@ class DeepseekEventTailer:
             await self.thread_manager.bind_assistant_replies(
                 [outbound.id], run_id=run.id
             )
-
-    @staticmethod
-    def existing_message(
-        thread: Thread, run_id: str, direction: ThreadMessageDirection
-    ):
-        return next(
-            (
-                message
-                for message in thread.messages
-                if message.platform_message_id == run_id
-                and message.direction == direction
-            ),
-            None,
-        )

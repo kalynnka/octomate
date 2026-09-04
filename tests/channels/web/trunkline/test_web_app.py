@@ -41,7 +41,7 @@ from octomate.tentacles.channels.web.trunkline.base import (
 )
 from octomate.types.permissions import InklingPermissionMode
 from tests.support.agents import build_non_stream_agent, build_scripted_agent
-from tests.support.managers import a_project, a_registry
+from tests.support.managers import a_loaded_thread, a_project, a_registry
 
 # The console drives one configured reception agent through octomate.kick.
 RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
@@ -224,7 +224,7 @@ async def test_directive_records_chat_ledger(
 
     await _post(channel, "hi there")
 
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await a_loaded_thread(octomate.thread_manager, _console_address())
     messages = list(thread.messages)
     inbound = [message for message in messages if message.direction == "inbound"]
     outbound = [message for message in messages if message.direction == "outbound"]

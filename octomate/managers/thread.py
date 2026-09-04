@@ -24,6 +24,7 @@ from octomate.schemas.thread import (
     Thread,
     ThreadKey,
     ThreadMessage,
+    ThreadMessageDirection,
 )
 from octomate.schemas.user import UserProfile
 
@@ -127,7 +128,6 @@ class ThreadManager:
                 )
                 session.add(thread)
             await session.flush()
-            await thread.messages
             await thread.handoffs
             await thread.project
             await session.commit()
@@ -202,13 +202,13 @@ class ThreadManager:
     async def get(
         self, thread_id: uuid.UUID, *, with_messages: bool = True
     ) -> Thread | None:
-        """The thread by primary key, or None. messages/handoffs are
-        lazy="selectin", so the get loads them with the row.
+        """The thread by primary key, or None — its handoffs with the row, its
+        ledger only when asked for.
 
-        `with_messages=False` is for a reader that wants the row and not its
-        ledger, and suppresses the load rather than dropping it afterwards —
-        `noload` is the difference between not fetching a thread's messages and
-        fetching them to throw away.
+        `with_messages=True` is the whole ledger, deliberately: it is what a reader
+        rebuilding a thread wants, and it is unbounded in a room, so a caller after
+        one row wants `find_message` and a caller after the recent ones wants
+        `chat_messages_before`.
 
         Either way the model ledger stays behind: it hangs off a message, and
         `related_model_messages` is how a caller asks for it — dragging it here
@@ -217,7 +217,7 @@ class ThreadManager:
         options = (
             [selectinload(Thread["messages"]).noload(ThreadMessage["model_messages"])]
             if with_messages
-            else [noload(Thread["messages"])]
+            else []
         )
         async with async_session() as session:
             thread = await session.get(Thread, thread_id, options=options)
@@ -249,7 +249,6 @@ class ThreadManager:
                 Thread,
                 limit=limit,
                 order_bys=[Thread["updated_at"].desc(), Thread["id"].desc()],
-                options=[noload(Thread["messages"])],
                 expressions=expressions,
             )
         return list(rows)
@@ -515,6 +514,35 @@ class ThreadManager:
         if len(rows) > 1:
             raise ValueError(f"{handle} names more than one message; use a row id")
         return rows[0]
+
+    async def find_message(
+        self,
+        thread_id: uuid.UUID,
+        platform_message_id: str,
+        direction: ThreadMessageDirection,
+    ) -> ThreadMessage | None:
+        """The thread's ledger row for one platform message — a turn's prompt, or
+        the reply that answered it. Oldest wins, as scanning the ordered ledger did.
+
+        Both halves of the key are indexed. The hooks and tailers ask this per turn,
+        on a ledger with no ceiling, so the row has to be found by the index rather
+        than by reading the room's whole tenure to match one id in Python.
+        """
+        async with async_session() as session:
+            rows = await session.list(
+                ThreadMessage,
+                limit=1,
+                order_bys=[ThreadMessage["happened_at"], ThreadMessage["id"]],
+                # The model ledger hangs off the row and no caller here reads it;
+                # `related_model_messages` is how someone asks.
+                options=[noload(ThreadMessage["model_messages"])],
+                expressions=[
+                    ThreadMessage["thread_id"] == thread_id,
+                    ThreadMessage["platform_message_id"] == platform_message_id,
+                    ThreadMessage["direction"] == direction,
+                ],
+            )
+        return rows[0] if rows else None
 
     async def bind_messages(
         self,

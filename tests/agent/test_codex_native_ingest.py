@@ -16,6 +16,7 @@ from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIng
 from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer, TailState
 from octomate.tentacles.agents.codex.transcript import rollout_line_adapter
 from octomate.tentacles.agents.locks import SessionLocks
+from tests.support.managers import a_loaded_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -230,8 +231,8 @@ async def test_driven_session_hooks_are_ignored() -> None:
             SENDER,
         )
 
-    thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    thread = await a_loaded_thread(
+        octomate.thread_manager, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     assert thread.messages == []
     await tailer.shutdown()
@@ -411,8 +412,8 @@ async def test_a_backfilled_row_is_dated_by_the_rollout_not_the_replay(
     # The stream alone: the live tier never saw this turn's prompt or answer.
     await stream_rollout(tailer, SESSION_ID, path)
 
-    thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    thread = await a_loaded_thread(
+        octomate.thread_manager, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     dated = {message.direction: message.happened_at for message in thread.messages}
     assert dated  # the tailer did write the ledger
@@ -447,8 +448,8 @@ async def test_a_live_turn_is_dated_when_it_happened(tmp_path: Path) -> None:
     )
 
     after = datetime.now(UTC)
-    thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    thread = await a_loaded_thread(
+        octomate.thread_manager, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     stamps = [message.happened_at for message in thread.messages]
     assert len(stamps) == 2
@@ -494,8 +495,8 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs() -> None:
     )
     tailer.detach_remote(state)
 
-    thread = await octomate.thread_manager.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    thread = await a_loaded_thread(
+        octomate.thread_manager, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     parent = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CODEX_NATIVE_ID

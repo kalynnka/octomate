@@ -84,6 +84,21 @@ async def a_registry(*projects: Project) -> ProjectManager:
     return manager
 
 
+async def a_loaded_thread(
+    manager: ThreadManager, address_or_key: ChannelAddress | ThreadKey
+) -> Thread:
+    """The thread this key names, carrying its chat ledger.
+
+    `ensure` does not load one — a room's ledger has no ceiling — so a test that
+    asserts on the rows it wrote asks for them, through the reader that says it
+    wants the whole thing.
+    """
+    thread = await manager.ensure(address_or_key)
+    loaded = await manager.get(thread.id)
+    assert loaded is not None
+    return loaded
+
+
 async def a_thread(chat_id: str = "chat") -> uuid.UUID:
     """A persisted `threads` row to hang conversations off, idempotent per
     `chat_id`. A conversation's `thread_id` is a real foreign key, so a bare
