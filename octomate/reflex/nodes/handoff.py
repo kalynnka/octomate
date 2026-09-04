@@ -73,7 +73,9 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 thread_strategy=far.thread_strategy,
                 mode="sub",
             )
-            state.thread = await ctx.deps.thread_manager.ensure(crossed)
+            state.thread = await ctx.deps.thread_manager.enter(
+                crossed, current=state.thread
+            )
             return React()
 
         # Below the crossing branch on purpose: a native handoff always crosses,
@@ -117,5 +119,7 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         state.target = target
         if target.address is not None and state.thread is not None:
-            state.thread = await ctx.deps.thread_manager.ensure(target.address)
+            state.thread = await ctx.deps.thread_manager.enter(
+                target.address, current=state.thread
+            )
         return React()

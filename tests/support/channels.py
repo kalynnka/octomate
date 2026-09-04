@@ -310,7 +310,12 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.sub_threads.append((address, hint_text))
         return ChannelAddress(
             channel_tentacle_id=address.channel_tentacle_id,
-            chat_type=address.chat_type,
+            # A thread, as Slack's and Lark's own do: an address carrying a
+            # `channel_thread_id` names a surface that ends, and both chromos read
+            # one back as `chat_type="thread"`. Keeping the chat's type here would
+            # make the fake the only thing in the tree producing a dm with a thread
+            # id, which the thread key has no way to file.
+            chat_type="thread",
             chat_id=address.chat_id,
             user_id=address.user_id,
             channel_thread_id="hint-thread",

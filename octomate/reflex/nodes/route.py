@@ -32,12 +32,16 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         source_address = source_target.address
 
-        thread = state.thread
-        active_agent_id = (
-            thread.active_agent_tentacle_id if thread is not None else None
+        # Who owns the chat, not who owns this kick: a chat room's sub-thread is
+        # opened fresh every time, and the owner a handoff pinned is the chat's.
+        chat = (
+            await ctx.deps.thread_manager.surface(state.thread)
+            if state.thread is not None
+            else None
         )
-        if thread is not None and active_agent_id is not None:
-            active_model = thread.active_model
+        active_agent_id = chat.active_agent_tentacle_id if chat is not None else None
+        if chat is not None and active_agent_id is not None:
+            active_model = chat.active_model
             ctx.deps.agent(active_agent_id)
             resolved = ctx.deps.resolve_agent(
                 source_address.channel_tentacle_id,

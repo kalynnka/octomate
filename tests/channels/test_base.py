@@ -174,6 +174,30 @@ async def test_group_mention_filter_records_unmentioned_events_before_ignore(
     assert [message.message_text for message in thread.messages] == ["hello"]
 
 
+async def test_a_re_delivery_is_recorded_once_and_woken_once(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """Slack re-sends on a missed ack. Answering twice is what the ledger's refusal
+    is for — without it the second delivery is a second turn."""
+    channel = FakeChannelTentacle(id="chan1")
+    delivery: RawMessage = {
+        "message_id": "m42",
+        "user_id": "alice",
+        "chat_id": "alice",
+        "chat_type": "dm",
+        "segments": [TextSegment(data={"text": "hello"})],
+    }
+
+    await channel.ingest(delivery)
+    await channel.ingest(delivery)
+
+    octomate = channel.octomate
+    assert isinstance(octomate, FakeOctomate)
+    assert len(octomate.kicks) == 1
+    thread = await a_loaded_thread(octomate.thread_manager, _key())
+    assert [message.message_text for message in thread.messages] == ["hello"]
+
+
 async def test_mention_filter_answers_an_unmentioned_private_thread(
     in_memory_engine: AsyncEngine,
 ) -> None:

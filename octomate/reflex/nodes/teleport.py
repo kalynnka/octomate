@@ -94,7 +94,9 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # for the same agent so follow-ups continue there, and resume against
             # the fork. The resumable handle moves with it, so an external runtime's
             # session continues in the new place rather than beside it.
-            landed = await ctx.deps.thread_manager.ensure(new_address)
+            landed = await ctx.deps.thread_manager.enter(
+                new_address, current=state.thread
+            )
             source_conversation = await ctx.deps.conversation_manager.ensure(
                 state.thread.id, agent_tentacle_id=self.agent_id
             )

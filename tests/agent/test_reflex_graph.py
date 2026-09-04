@@ -137,7 +137,9 @@ class DroppingChannel(FakeChannelTentacle):
 def _key(thread_id: str = "") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="im",
-        chat_type="dm",
+        # A thread id makes it a thread, which is how both chromos read one back:
+        # a surface carrying one ends, and only a chat that does not is a chat room.
+        chat_type="thread" if thread_id else "dm",
         chat_id="alice",
         user_id="alice",
         channel_thread_id=thread_id,
@@ -185,6 +187,7 @@ def _deps(
     action_manager: FakeActionManager | None = None,
     workspaces: WorkspaceManager | None = None,
     gateway: GatewayManager | None = None,
+    threads: FakeThreadManager | None = None,
 ) -> ReflexDeps:
     return ReflexDeps(
         workspaces=workspaces
@@ -193,7 +196,7 @@ def _deps(
         channels=dict(channels),
         agents={"inkling": agent, "other": agent, agent.id: agent},
         conversation_manager=conversations,
-        thread_manager=FakeThreadManager(),
+        thread_manager=threads or FakeThreadManager(),
         action_manager=cast(
             DeferredActionManager, action_manager or FakeActionManager()
         ),
@@ -897,7 +900,11 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
     assert handoff.source_conversation_id == source.id
     assert handoff.source_run_id == "run-1"
     assert handoff.source_model_message_id == earlier.id
-    receiver = await conversations.ensure(thread.id, agent_tentacle_id="second")
+    # The row pins who owns the chat, so it is the chat room's; the conversation
+    # that took over is the sub-thread's, which is where the turn ran.
+    assert handoff.thread_id == thread.id
+    [sub_thread] = threads.sub_threads
+    receiver = await conversations.ensure(sub_thread.id, agent_tentacle_id="second")
     assert handoff.target_conversation_id == receiver.id
 
 
@@ -1734,6 +1741,144 @@ async def test_awake_short_circuits_on_empty_prompt() -> None:
     assert im.sent == []
 
 
+def _chat_message(text: str = "hi") -> MessageEvent:
+    """A message in a dm — a chat room, so a kick on it answers in a sub-thread."""
+    return MessageEvent(
+        tentacle_id="im",
+        message_id="m1",
+        chat_type="dm",
+        chat_id="alice",
+        user_id="alice",
+        # The empty string `_key` uses, so both spell the same chat room: a channel
+        # reporting no thread writes `""` where another writes NULL, and the two are
+        # different rows.
+        channel_thread_id="",
+        segments=[TextSegment(data={"text": text})],
+    )
+
+
+async def test_a_chat_room_kick_runs_in_a_sub_thread() -> None:
+    """A dm has no end, so the turn does not run against it: Awake opens a thread
+    inside it and the run — and so the conversation, and so the model context —
+    belongs to that."""
+    agent = FakeAgent(id="other", allow_reception_run=True)
+    threads = FakeThreadManager()
+    conversations = FakeConversationManager()
+
+    await _run(
+        Awake(signal=UserMessageSignal([_chat_message()])),
+        state=ReflexState(),
+        deps=_deps(
+            threads=threads,
+            conversations=conversations,
+            channels={"im": _channel(stream=False)},
+            agent=agent,
+        ),
+    )
+
+    chat_room = await threads.ensure(_key())
+    [sub_thread] = threads.sub_threads
+    assert sub_thread.parent_thread_id == chat_room.id
+    assert agent.turns[0].thread_id == sub_thread.id
+    assert conversations.ensured == [(sub_thread.id, "other")]
+
+
+async def test_two_kicks_in_a_chat_room_do_not_share_a_conversation() -> None:
+    """The discontinuity, end to end: each kick answers in its own thread, so one
+    agent holds two conversations in one chat room and neither carries the other's
+    history."""
+    agent = FakeAgent(id="other", allow_reception_run=True)
+    threads = FakeThreadManager()
+    conversations = FakeConversationManager()
+    deps = _deps(
+        threads=threads,
+        conversations=conversations,
+        channels={"im": _channel(stream=False)},
+        agent=agent,
+    )
+
+    for _ in range(2):
+        await _run(
+            Awake(signal=UserMessageSignal([_chat_message()])),
+            state=ReflexState(),
+            deps=deps,
+        )
+
+    first, second = threads.sub_threads
+    assert first.id != second.id
+    assert conversations.ensured == [(first.id, "other"), (second.id, "other")]
+    assert len(conversations.store) == 2
+
+
+async def test_a_chat_rooms_owner_survives_the_next_kick() -> None:
+    """A sub-thread is new every kick, so the owner a handoff pinned cannot live
+    there. It lives on the chat room, and Route reads it through the surface."""
+    entry = FakeAgent(id="other", allow_reception_run=True)
+    owner = FakeAgent(
+        id="second", reception_output="still mine", allow_reception_run=True
+    )
+    threads = FakeThreadManager()
+    chat_room = await threads.ensure(_key())
+    await threads.record_handoff(chat_room, to_agent_tentacle_id="second")
+
+    deps = _deps(
+        threads=threads,
+        conversations=FakeConversationManager(),
+        channels={
+            "im": FakeChannelTentacle(config=_two_reception_config(stream=False))
+        },
+        agent=entry,
+    )
+    deps.agents["second"] = owner
+
+    result = await _run(
+        Awake(signal=UserMessageSignal([_chat_message()])),
+        state=ReflexState(),
+        deps=deps,
+    )
+
+    assert not isinstance(result, DeferredResult)
+    assert result.decision is not None
+    assert result.decision.agent_id == "second"
+    assert owner.turns[0].thread_id == threads.sub_threads[0].id
+
+
+async def test_a_resumed_deferral_returns_to_the_sub_thread_it_ran_in() -> None:
+    """The batch's address names the chat, which would start the answer over in a
+    fresh sub-thread. Its conversation names the thread the suspended run was
+    actually in, and that is what the resume continues."""
+    threads = FakeThreadManager()
+    conversations = FakeConversationManager()
+    sub_thread = await threads.enter(_key())
+    suspended = await conversations.ensure(sub_thread.id, agent_tentacle_id="other")
+    batch = FakeDeferredBatch(
+        source_address=_key(),
+        target_address=_key(),
+        requests=_requests(),
+        deferred_results=_deferred_results(),
+        run_name="react",
+        conversation_id=suspended.id,
+    )
+    agent = FakeAgent(
+        id="other", reception_output="resumed answer", allow_reception_run=True
+    )
+
+    await _run(
+        ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
+        state=ReflexState(),
+        deps=_deps(
+            threads=threads,
+            conversations=conversations,
+            channels={"im": _channel(stream=False)},
+            agent=agent,
+            action_manager=FakeActionManager(batch=batch),
+        ),
+    )
+
+    assert agent.turns[0].thread_id == sub_thread.id
+    assert threads.sub_threads == [sub_thread]
+
+
 async def test_awake_raises_for_unknown_channel_or_agent() -> None:
     agent = FakeAgent()
     conversations = FakeConversationManager()
@@ -1758,6 +1903,13 @@ async def test_awake_raises_for_unknown_channel_or_agent() -> None:
 async def test_resume_routes_reception_batch_to_run_reception() -> None:
     address = _key(thread_id="hint-thread")
     deferred_results = _deferred_results()
+    threads = FakeThreadManager()
+    conversations = FakeConversationManager()
+    # The batch names the conversation the suspended run was in, which is how the
+    # resume finds the thread it ran in — the suspender recorded exactly this.
+    suspended = await conversations.ensure(
+        (await threads.enter(address)).id, agent_tentacle_id="other"
+    )
     batch = FakeDeferredBatch(
         source_address=_key(),
         target_address=address,
@@ -1765,9 +1917,9 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
         deferred_results=deferred_results,
         run_name="react",
         target_mode="sub",
+        conversation_id=suspended.id,
     )
     agent = FakeAgent(id="other", reception_output="resumed answer")
-    conversations = FakeConversationManager()
     action_manager = FakeActionManager(batch=batch)
     im = _channel()
 
@@ -1775,6 +1927,7 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
         ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
         state=ReflexState(),
         deps=_deps(
+            threads=threads,
             conversations=conversations,
             channels={"im": im},
             agent=agent,
@@ -1813,6 +1966,11 @@ async def test_resume_rebinds_the_suspended_run_user() -> None:
     resolves their profile from the batch's source address, so React mounts the
     same per-user capabilities instead of silently running without them."""
     address = _key(thread_id="hint-thread")
+    threads = FakeThreadManager()
+    conversations = FakeConversationManager()
+    suspended = await conversations.ensure(
+        (await threads.enter(address)).id, agent_tentacle_id="other"
+    )
     batch = FakeDeferredBatch(
         source_address=_key(),
         target_address=address,
@@ -1820,10 +1978,12 @@ async def test_resume_rebinds_the_suspended_run_user() -> None:
         deferred_results=_deferred_results(),
         run_name="react",
         target_mode="sub",
+        conversation_id=suspended.id,
     )
     agent = ProfileRecordingAgent(id="other", reception_output="resumed answer")
     deps = _deps(
-        conversations=FakeConversationManager(),
+        threads=threads,
+        conversations=conversations,
         channels={"im": _channel()},
         agent=agent,
         action_manager=FakeActionManager(batch=batch),

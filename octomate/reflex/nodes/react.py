@@ -105,7 +105,10 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 state.thread.id,
                 agent_tentacle_id=agent.id,
             )
-            latest_handoff = state.thread.latest_handoff
+            # A handoff pins who owns the chat, so it is read and written there: a
+            # chat room's sub-thread is new every kick and would forget the owner.
+            chat = await ctx.deps.thread_manager.surface(state.thread)
+            latest_handoff = chat.latest_handoff
             target_model = model
             if (
                 latest_handoff is None
@@ -113,7 +116,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 or latest_handoff.to_model != target_model
             ):
                 await ctx.deps.thread_manager.record_handoff(
-                    state.thread,
+                    chat,
                     source_agent_tentacle_id=claim.source_agent_tentacle_id,
                     to_agent_tentacle_id=agent.id,
                     to_model=target_model,

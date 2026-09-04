@@ -39,7 +39,7 @@ from tests.support.channels import (
     NativeMessage,
     RecordingInk,
 )
-from tests.support.managers import a_loaded_thread
+from tests.support.managers import a_loaded_thread, the_sub_thread
 from tests.support.scenarios import mid_run_notice
 
 
@@ -80,7 +80,9 @@ def _event(
     return MessageEvent(
         tentacle_id=tentacle_id,
         message_id=message_id,
-        chat_type=chat_type,
+        # Promoted for the same reason `_key` promotes: both chromos read a message
+        # carrying a thread id back as a thread, whatever chat it arrived in.
+        chat_type="thread" if thread_id else chat_type,
         chat_id="team" if chat_type == "group" else "alice",
         user_id=user_id,
         channel_thread_id=thread_id,
@@ -107,7 +109,9 @@ async def _agent_rows(thread_id: uuid.UUID, text: str) -> list[ThreadMessage]:
 def _key(thread_id: str = "") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="im",
-        chat_type="dm",
+        # A thread id makes it a thread, which is how both chromos read one back:
+        # a surface carrying one ends, and only a chat that does not is a chat room.
+        chat_type="thread" if thread_id else "dm",
         chat_id="alice",
         user_id="alice",
         channel_thread_id=thread_id,
@@ -561,8 +565,10 @@ async def test_reception_records_and_binds_outbound_thread_message() -> None:
     await octomate.kick(UserMessageSignal([_event(text="please answer")]))
 
     thread = await octomate.thread_manager.ensure(_key())
+    # The chat everyone saw is the chat room's; the run that produced it happened
+    # in the sub-thread the kick opened, and so did the model messages.
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id="inkling"
+        (await the_sub_thread(thread)).id, agent_tentacle_id="inkling"
     )
     model_message = (
         await octomate.conversations.search_messages(
@@ -596,7 +602,7 @@ async def test_reception_persists_before_channel_presentation() -> None:
 
     thread = await octomate.thread_manager.ensure(_key())
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id="inkling"
+        (await the_sub_thread(thread)).id, agent_tentacle_id="inkling"
     )
     model_message = (
         await octomate.conversations.search_messages(

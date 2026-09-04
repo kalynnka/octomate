@@ -105,7 +105,22 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         await ctx.deps.action_manager.mark_batch(batch.id, "resuming")
         # The resumed agent run continues the batch's conversation, so bind the
         # thread that owns it (React reads state.thread for the run's thread_id).
-        state.thread = await ctx.deps.thread_manager.ensure(batch.target_address)
+        # Through the conversation and not the address: a chat room's kick ran in a
+        # sub-thread, and the address names the chat it was seen on, which would
+        # answer the deferral in a context the suspended run never had.
+        thread_id = await ctx.deps.conversation_manager.thread_id(batch.conversation_id)
+        if thread_id is None:
+            raise ValueError(
+                f"deferred batch {batch.id} names conversation "
+                f"{batch.conversation_id}, which does not exist"
+            )
+        thread = await ctx.deps.thread_manager.get(thread_id, with_messages=False)
+        if thread is None:
+            raise ValueError(
+                f"conversation {batch.conversation_id} names thread {thread_id}, "
+                "which does not exist"
+            )
+        state.thread = thread
         # The resumed run must serve the user the suspended run served: React
         # mounts their per-user capabilities (and the gate's identity) from
         # state.user_profile, and without it the run loses tools mid-conversation
