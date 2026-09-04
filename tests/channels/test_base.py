@@ -39,6 +39,7 @@ from octomate.schemas.segments import (
     AtSegment,
     ImageData,
     ImageSegment,
+    ReplySegment,
     TextSegment,
 )
 from octomate.schemas.todos import Todo
@@ -173,6 +174,29 @@ async def test_group_mention_filter_records_unmentioned_events_before_ignore(
         octomate.thread_manager, _key(chat_type="group", chat_id="lobby")
     )
     assert [message.message_text for message in thread.messages] == ["hello"]
+
+
+async def test_group_mention_filter_answers_a_reply_to_the_bot(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    channel = FakeChannelTentacle(id="chan1")
+
+    await channel.ingest(
+        {
+            "message_id": "m42",
+            "user_id": "alice",
+            "chat_id": "lobby",
+            "chat_type": "group",
+            "segments": [
+                ReplySegment(data={"id": "bot-message", "user_id": "bot"}),
+                TextSegment(data={"text": "continue"}),
+            ],
+        }
+    )
+
+    octomate = channel.octomate
+    assert isinstance(octomate, FakeOctomate)
+    assert len(octomate.kicks) == 1
 
 
 async def test_mention_filter_answers_an_unmentioned_private_thread(

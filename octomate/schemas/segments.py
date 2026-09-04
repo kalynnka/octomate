@@ -53,6 +53,9 @@ class MarkdownData(TypedDict):
 class ReplyData(TypedDict):
     id: str
     content: NotRequired[str]
+    # Resolved platform author, when known; lets a reply address that user without
+    # manufacturing a visible mention in the conversation.
+    user_id: NotRequired[str]
 
 
 class FileData(BaseModel):

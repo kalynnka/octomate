@@ -322,6 +322,7 @@ class ChannelTentacle(
                 thread = await self.octomate.thread_manager.ensure(address)
                 addressed = (
                     event.is_at(self.self_profile.channel_user_id)
+                    or event.replies_to(self.self_profile.channel_user_id)
                     or thread.active_agent_tentacle_id is not None
                 )
                 if not addressed:
