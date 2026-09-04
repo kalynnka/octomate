@@ -158,10 +158,18 @@ class Ink(ABC, Generic[MessageT]):
         chat_id: str,
         chat_type: str,
         messages: list[MessageT],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
-        """Send platform-native message payloads."""
+        """Send platform-native message payloads to a conversation destination.
+
+        `channel_thread_id` is the platform's external destination id: the thread
+        id on a thread surface, otherwise the chat id. `reply_to` references a
+        message within that destination. Platforms where thread and reply are the
+        same native field collapse them in their ink implementation.
+        """
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The chat id of this bot's 1:1 with `user_id`, opening it if needed.

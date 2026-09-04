@@ -1,7 +1,7 @@
 """Live replay against a real Lark app (`pytest tests/trigger/test_lark.py`).
 
 Each test replays a canonical scenario script through the real LarkTentacle
-into the chat configured under `trigger.lark` in octomate.yaml; pass/fail only
+into the chat configured under `trigger.lark` in trigger.yaml; pass/fail only
 checks that something was posted and no render failed — the human inspects the
 rendering in Lark. Every test of one pytest run replies under the SAME root:
 a session fixture posts a fresh, visible run notice and threads the replays
@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config import OctomateConfig
+from octomate.config import LarkChannelConfig, OctomateConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.lark import LarkTentacle
 from tests.support.channels import drive
@@ -42,8 +42,14 @@ def lark_run_thread(
 ) -> tuple[LarkTentacle, ChannelAddress]:
     """One tentacle and one run-notice root message, shared by the whole run."""
     config = live_config.channels.get("lark")
-    if config is None or not config.enabled or trigger_targets.lark is None:
-        pytest.skip("lark credentials/trigger target not configured in octomate.yaml")
+    if (
+        not isinstance(config, LarkChannelConfig)
+        or not config.enabled
+        or trigger_targets.lark is None
+    ):
+        pytest.skip(
+            "lark channel/trigger target not configured in channels.yaml/trigger.yaml"
+        )
     target = trigger_targets.lark
     channel = LarkTentacle("lark", Octomate(), config=config)
     main_key = ChannelAddress(

@@ -102,10 +102,14 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         chat_id: str,
         chat_type: str,
         messages: list[NapcatOutboundMessage],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
         first_msg_id: IMMessageID | None = None
+        if not reply_to and chat_type == "thread":
+            reply_to = channel_thread_id
         endpoint = "/send_private_msg" if chat_type == "dm" else "/send_group_msg"
         id_field = "user_id" if chat_type == "dm" else "group_id"
         for message in messages:

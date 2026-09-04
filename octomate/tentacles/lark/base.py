@@ -175,7 +175,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             address.chat_id or address.user_id,
             address.chat_type,
             self.chromo.outbound_markdown(hint_text),
-            None,
+            channel_thread_id=address.chat_id or address.user_id,
         )
         if message_id is None:
             return address

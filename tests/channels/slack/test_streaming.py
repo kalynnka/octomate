@@ -247,9 +247,10 @@ async def test_slack_consume_renders_image_and_card_segments(
     # the card posts as a blocks message.
     assert ink.appends == ["see:"]
     assert ink.uploads == [("C1", b"png-bytes", "reef.png", "1710000000.000100")]
-    sent_channel, _chat_type, messages, reply_to = ink.sent[0]
+    sent_channel, _chat_type, messages, reply_to, channel_thread_id = ink.sent[0]
     assert sent_channel == "C1"
-    assert reply_to == "1710000000.000100"
+    assert reply_to is None
+    assert channel_thread_id == "1710000000.000100"
     assert messages[0].blocks == [{"type": "divider"}]
 
 
@@ -306,9 +307,12 @@ async def test_slack_consume_renders_action_batch_blocks() -> None:
     )
 
     # The question renders first as a block-kit form in the source thread...
-    question_chat, _, question_messages, question_reply_to = ink.sent[0]
+    question_chat, _, question_messages, question_reply_to, channel_thread_id = (
+        ink.sent[0]
+    )
     assert question_chat == "C1"
-    assert question_reply_to == "1710000000.000100"
+    assert question_reply_to is None
+    assert channel_thread_id == "1710000000.000100"
     question_msg = question_messages[0]
     assert question_msg.text == "Octomate needs 1 question answered"
     assert question_msg.blocks is not None

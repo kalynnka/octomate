@@ -126,6 +126,8 @@ class VercelInk(Ink[BaseChunk]):
         chat_id: str,
         chat_type: str,
         messages: list[BaseChunk],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:

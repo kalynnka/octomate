@@ -591,11 +591,11 @@ class TimelineState:
 
     message_id: IMMessageID | None = None
     noticed: bool = False
-    # The first `ReplySegment` seen sets this to the message id the reply threads
-    # onto; send sites prefer it over the open-time thread target. Annotation-only
-    # here (no value) so dataclass subclasses that redeclare it keep their own
-    # defaults; `capture_reply` assigns it, the concrete states provide the
-    # field/default, and `reply_captured` keeps the first one from being overwritten.
+    # The first `ReplySegment` seen sets this to the referenced message id.
+    # Annotation-only here (no value) so dataclass subclasses that redeclare it
+    # keep their own defaults; `capture_reply` assigns it, the concrete states
+    # provide the field/default, and `reply_captured` keeps the first one from
+    # being overwritten.
     reply_to: str | None
     reply_captured: bool = False
     # Per-run context the timeline feeler injects when it creates the state, so
@@ -906,8 +906,7 @@ class TimelineState:
         await self.begin_entry()
 
     def capture_reply(self, reply_to: str | None) -> None:
-        """Apply the first reply target seen this run — it overrides the open-time
-        thread default; later reply segments are ignored."""
+        """Apply the first reply target seen this run; ignore later replies."""
         if reply_to is not None and not self.reply_captured:
             self.reply_to = reply_to
             self.reply_captured = True
@@ -1009,7 +1008,6 @@ async def present_markdown(
 ) -> IMMessageID | None:
     chat_id = address.chat_id or address.user_id
     chat_type = address.chat_type
-    reply_to = reply_to or address.channel_thread_id or None
     first_message_id: IMMessageID | None = None
     with channel_logfire.span(
         "default.markdown.present",
@@ -1023,7 +1021,8 @@ async def present_markdown(
                 chat_id,
                 chat_type,
                 [message],
-                reply_to,
+                reply_to=reply_to,
+                channel_thread_id=address.channel_thread_id or chat_id,
             )
             first_message_id = first_message_id or message_id
         span.set_attribute("message_id", str(first_message_id))
@@ -1089,7 +1088,8 @@ class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
                     chat_id,
                     address.chat_type,
                     [message],
-                    reply_to or address.channel_thread_id or None,
+                    reply_to=reply_to,
+                    channel_thread_id=address.channel_thread_id or chat_id,
                 )
                 first_message_id = first_message_id or message_id
             span.set_attribute("message_id", str(first_message_id))

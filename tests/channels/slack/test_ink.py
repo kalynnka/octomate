@@ -8,7 +8,31 @@ from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
 
 from octomate.tentacles.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT, SlackInk
+from octomate.tentacles.slack.schema import SlackOutboundMessage
 from tests.channels.slack.fakes import FakeSlackClient
+
+
+async def test_slack_ink_uses_external_destination_as_thread_only_on_threads() -> None:
+    client = FakeSlackClient()
+    ink = object.__new__(SlackInk)
+    ink.client = cast(AsyncWebClient, client)
+    message = SlackOutboundMessage(text="hello")
+
+    group_id = await ink.send_message("C1", "group", [message], channel_thread_id="C1")
+    thread_id = await ink.send_message(
+        "C1", "thread", [message], channel_thread_id="1710000000.000100"
+    )
+
+    assert group_id == "message-1"
+    assert thread_id == "message-2"
+    assert client.messages == [
+        {"channel": "C1", "text": "hello"},
+        {
+            "channel": "C1",
+            "text": "hello",
+            "thread_ts": "1710000000.000100",
+        },
+    ]
 
 
 async def test_slack_ink_uploads_long_markdown_instead_of_truncating() -> None:

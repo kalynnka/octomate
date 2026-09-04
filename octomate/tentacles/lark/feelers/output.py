@@ -109,17 +109,17 @@ class LarkMarkdownFeeler:
         if not markdown:
             return None
         chat_id = address.chat_id or address.user_id
-        reply_to = (
+        channel_thread_id = (
             address.channel_thread_id
             if address.channel_thread_id and address.channel_thread_id.startswith("om_")
-            else None
+            else chat_id
         )
         message_id = await self.ink.send_message(
             chat_id,
             address.chat_type,
             self.chromo.outbound_markdown(markdown),
-            reply_to,
-            reply_in_thread=reply_to is not None,
+            channel_thread_id=channel_thread_id,
+            reply_in_thread=channel_thread_id is not None,
         )
         if message_id is not None:
             return message_id
@@ -127,8 +127,8 @@ class LarkMarkdownFeeler:
             chat_id,
             address.chat_type,
             card_render_fallback_text(markdown),
-            reply_to,
-            reply_in_thread=reply_to is not None,
+            channel_thread_id=channel_thread_id,
+            reply_in_thread=channel_thread_id is not None,
         )
 
 
@@ -164,6 +164,7 @@ class LarkRunStateCards(TimelineState):
     address: ChannelAddress
     chat_id: str
     chat_type: str
+    channel_thread_id: str
     reply_to: str | None
     reply_in_thread: bool
     answer_batcher: TextStreamBatcher
@@ -204,6 +205,7 @@ class LarkRunStateCards(TimelineState):
             activity=activity,
             chat_id=self.chat_id,
             chat_type=self.chat_type,
+            channel_thread_id=self.channel_thread_id,
             reply_to=self.reply_to,
             reply_in_thread=self.reply_in_thread,
         )
@@ -221,7 +223,8 @@ class LarkRunStateCards(TimelineState):
                     content=raw_card,
                 )
             ],
-            self.reply_to,
+            reply_to=self.reply_to,
+            channel_thread_id=self.channel_thread_id,
             reply_in_thread=self.reply_in_thread,
         )
         if message_id is not None:
@@ -230,7 +233,8 @@ class LarkRunStateCards(TimelineState):
             self.chat_id,
             self.chat_type,
             card_render_fallback_text(raw_card),
-            self.reply_to,
+            reply_to=self.reply_to,
+            channel_thread_id=self.channel_thread_id,
             reply_in_thread=self.reply_in_thread,
         )
 
@@ -423,7 +427,8 @@ class LarkRunStateCards(TimelineState):
                             content=json.dumps({"image_key": image_key}),
                         )
                     ],
-                    self.reply_to,
+                    reply_to=self.reply_to,
+                    channel_thread_id=self.channel_thread_id,
                     reply_in_thread=self.reply_in_thread,
                 )
             case CardSegment():
@@ -460,6 +465,7 @@ class LarkRunStateCards(TimelineState):
                 self.chat_type,
                 self.answer_card,
                 reply_to=self.reply_to,
+                channel_thread_id=self.channel_thread_id,
                 reply_in_thread=self.reply_in_thread,
             )
             if self.answer_message_id is None:
@@ -522,18 +528,19 @@ class LarkTimelineFeeler(TimelineFeeler):
 
     @asynccontextmanager
     async def open(self, address: ChannelAddress) -> AsyncGenerator[LarkRunStateCards]:
-        reply_to = (
+        channel_thread_id = (
             address.channel_thread_id
             if address.channel_thread_id and address.channel_thread_id.startswith("om_")
-            else None
+            else address.chat_id or address.user_id
         )
         state = LarkRunStateCards(
             ink=self.ink,
             address=address,
             chat_id=address.chat_id or address.user_id,
             chat_type=address.chat_type,
-            reply_to=reply_to,
-            reply_in_thread=reply_to is not None,
+            channel_thread_id=channel_thread_id,
+            reply_to=None,
+            reply_in_thread=channel_thread_id is not None,
             answer_batcher=TextStreamBatcher(
                 flush_interval=self.stream_config.flush_interval,
                 min_chars=self.stream_config.min_chars,
@@ -564,6 +571,7 @@ class LarkSubagentTimelineState(SubagentTimelineState):
     activity: SubagentActivity
     chat_id: str
     chat_type: str
+    channel_thread_id: str
     reply_to: str | None
     reply_in_thread: bool
 
@@ -611,7 +619,8 @@ class LarkSubagentTimelineState(SubagentTimelineState):
             self.chat_id,
             self.chat_type,
             [LarkOutboundMessage(msg_type="interactive", content=payload)],
-            self.reply_to,
+            reply_to=self.reply_to,
+            channel_thread_id=self.channel_thread_id,
             reply_in_thread=self.reply_in_thread,
         )
         if self.card_id is None:
@@ -619,7 +628,8 @@ class LarkSubagentTimelineState(SubagentTimelineState):
                 self.chat_id,
                 self.chat_type,
                 card_render_fallback_text(payload),
-                self.reply_to,
+                reply_to=self.reply_to,
+                channel_thread_id=self.channel_thread_id,
                 reply_in_thread=self.reply_in_thread,
             )
 

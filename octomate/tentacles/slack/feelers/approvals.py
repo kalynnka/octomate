@@ -63,7 +63,9 @@ class SlackApprovalFeeler(ApprovalFeeler):
                     blocks=approval_blocks(actions),
                 )
             ],
-            address.channel_thread_id or None,
+            channel_thread_id=(
+                address.channel_thread_id or address.chat_id or address.user_id
+            ),
         )
         return {action.id: message_id for action in actions}
 

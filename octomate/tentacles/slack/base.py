@@ -422,7 +422,7 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             address.chat_id or address.user_id,
             address.chat_type,
             [SlackOutboundMessage(text=hint_text, markdown_text=hint_text)],
-            None,
+            channel_thread_id=address.chat_id or address.user_id,
         )
         if message_id is None:
             return address
