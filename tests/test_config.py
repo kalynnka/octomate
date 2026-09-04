@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from base64 import urlsafe_b64encode
 from pathlib import Path
 from typing import get_args
 
@@ -27,6 +28,7 @@ from octomate.config import (
     UserConfig,
 )
 from octomate.config.base import CONFIG_FILES, DEFAULTS_DIR, config_home
+from octomate.config.channels import SLACK_MCP_SCOPES
 from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
 from octomate.schemas.project import DirectoryUpstream, Project
@@ -1245,3 +1247,55 @@ def test_an_integration_without_a_type_is_refused() -> None:
         OctomateConfig.model_validate(
             {"integrations": {"linear_home": {"client_id": "lin_b"}}}
         )
+
+
+def slack_channel_block(**overrides: object) -> dict[str, object]:
+    return {
+        "type": "slack",
+        "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+        "app_id": "A-test",
+        "bot_token": "xoxb-test",
+        "app_token": "xapp-test",
+        **overrides,
+    }
+
+
+def test_a_slack_channel_offering_its_tools_needs_the_apps_oauth_client() -> None:
+    with pytest.raises(ValidationError, match="needs an `oauth` block"):
+        OctomateConfig.model_validate(
+            {
+                "agents": {"inkling": {"models": [{"name": "openai:gpt-4o"}]}},
+                "channels": {"slack": slack_channel_block(mcp=True)},
+            }
+        )
+
+
+def test_a_slack_oauth_client_stores_tokens_and_so_needs_the_key() -> None:
+    deployment = {
+        "agents": {"inkling": {"models": [{"name": "openai:gpt-4o"}]}},
+        "channels": {
+            "slack": slack_channel_block(
+                mcp=True, oauth={"client_id": "1.2", "client_secret": "shh"}
+            )
+        },
+    }
+
+    with pytest.raises(
+        ValidationError,
+        match=r"oauth\.encryption_key is required when channels\.slack\.oauth",
+    ):
+        OctomateConfig.model_validate(deployment)
+
+    config = OctomateConfig.model_validate(
+        {
+            **deployment,
+            "oauth": {"encryption_key": urlsafe_b64encode(bytes(range(32))).decode()},
+        }
+    )
+    slack = config.channels["slack"]
+    assert isinstance(slack, SlackChannelConfig)
+    assert slack.oauth is not None
+    # What the forwarded tools need and nothing that posts as the person.
+    assert slack.oauth.scopes == SLACK_MCP_SCOPES
+    assert "chat:write" not in slack.oauth.scopes
+    assert str(slack.oauth.callback_base_uri) == "http://localhost:8000/"

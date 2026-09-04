@@ -5,14 +5,18 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
+from fastmcp.exceptions import ToolError
 from pydantic import TypeAdapter, ValidationError
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.config import SlackChannelConfig
+from octomate.managers.oauth import OAuthConnector
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import (
     ChannelSurfaces,
     ChannelTentacle,
@@ -20,6 +24,7 @@ from octomate.tentacles.channel import (
 )
 from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.output import DefaultSegmentsFeeler
+from octomate.tentacles.mcp import McpTentacle
 from octomate.tentacles.slack.chromo import SlackChromo
 from octomate.tentacles.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.slack.feelers.approvals import (
@@ -41,6 +46,7 @@ from octomate.tentacles.slack.feelers.questions import (
     submitted_blocks,
 )
 from octomate.tentacles.slack.ink import SlackInk
+from octomate.tentacles.slack.oauth import SlackAuthorizationCodeOAuthFlow
 from octomate.tentacles.slack.schema import (
     SlackApprovalActionBody,
     SlackAssistantThreadEvent,
@@ -51,6 +57,7 @@ from octomate.tentacles.slack.schema import (
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.gateway import GatewaySession
 
 logger = logging.getLogger(__name__)
 SlackApprovalActionBodyAdapter = TypeAdapter(SlackApprovalActionBody)
@@ -73,11 +80,31 @@ IGNORED_SUBTYPES = frozenset(
 )
 
 
-class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
+SLACK_SERVER_INSTRUCTIONS = """\
+Slack's own tools, in the workspace this turn is on, acting as the person who
+drove the turn — never as the bot. They take Slack's own ids: a channel id (`C…`,
+or a user id for their direct messages), a message `ts`, a user id, a canvas id.
+Find them with `slack_search_channels`, `slack_search_users`, `slack_read_channel`
+and the searches, and read only what the person could have read themselves. Do
+not post as the person: to say something in the conversation, use the gateway's
+`send`.
+"""
+
+
+class SlackTentacle(
+    ChannelTentacle[SlackMessageEvent, SlackOutboundMessage], McpTentacle
+):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
         sub_thread=True, direct_message=True
     )
+    # Slack serves its tools itself and takes nothing but a user token — every
+    # call acts as the human who authorized it, never as the bot — which is
+    # exactly what `McpTentacle` proxies.
+    server_name = "slack"
+    label = "Slack"
+    upstream = "https://mcp.slack.com/mcp"
+    instructions = SLACK_SERVER_INSTRUCTIONS
     feelers: Feelers
     ink: SlackInk
     chromo: SlackChromo
@@ -151,6 +178,24 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             ask_questions=ask_questions,
             oauth=oauth,
         )
+        if config.oauth is not None:
+            # One connector per workspace, named after this channel: a person's
+            # Slack token is good for one workspace, and the app whose client it
+            # is belongs to this one. Registering a direct-HTTP transport is also
+            # what makes `Octomate.app` serve the start and callback routes.
+            octomate.oauth.register(
+                OAuthConnector(
+                    id=id,
+                    flow=SlackAuthorizationCodeOAuthFlow(
+                        client_id=config.oauth.client_id,
+                        client_secret=config.oauth.client_secret,
+                        scopes=config.oauth.scopes,
+                    ),
+                    callback_transport=DirectHttpOAuthCallbackTransport(
+                        config.oauth.callback_base_uri
+                    ),
+                )
+            )
 
     async def __aenter__(self) -> Self:
         await super().__aenter__()
@@ -169,6 +214,37 @@ class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
             await self.handler.close_async()
             self.handler = None
         await super().__aexit__(*exc)
+
+    @classmethod
+    def onbehalf(cls, session: GatewaySession) -> tuple[Self, UserProfile]:
+        """The Slack tentacle a call acts through and the person it acts as, both
+        the turn's own: the channel the conversation is on, and the registered
+        user who drove it. A call with neither — a native session, a turn on
+        another channel — is refused rather than pointed at some tentacle of
+        Octomate's choosing."""
+        address = session.conversation_address
+        if address is None:
+            raise ToolError(
+                "Slack's tools act in the workspace a turn is on, and this call has "
+                "no turn on a channel: a native session has nowhere in Slack to act."
+            )
+        channel = session.channels.get(address.channel_tentacle_id)
+        if not isinstance(channel, cls):
+            raise ToolError(
+                f"This turn is on {address.channel_tentacle_id}, not Slack; "
+                "Slack's tools act in the workspace a turn is on."
+            )
+        if not channel.config.mcp:
+            raise ToolError(
+                f"{channel.id} does not offer Slack's tools here: `mcp` is off in "
+                "its config."
+            )
+        if session.user_profile is None:
+            raise ToolError(
+                "Slack's tools act as the person who drove this turn, and nobody "
+                "registered did."
+            )
+        return channel, session.user_profile
 
     async def on_message(self, event: SlackMessageEvent, say: AsyncSay) -> None:
         subtype = event.get("subtype")

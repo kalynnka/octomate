@@ -13,6 +13,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Self
 
 import httpx
 import pytest
@@ -20,6 +21,7 @@ from fastapi import FastAPI
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
+from mcp.shared._httpx_utils import McpHttpClientFactory
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.base import Octomate
@@ -38,6 +40,7 @@ from octomate.mcp.gateway import (
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.mcp import McpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
@@ -151,7 +154,16 @@ class ToolsTentacle(FakeChannelTentacle, McpTentacle):
     per type however many instances are connected."""
 
     @classmethod
-    def mcp(cls, resolve_session: Callable[[], Awaitable[GatewaySession]]) -> FastMCP:
+    def onbehalf(cls, session: GatewaySession) -> tuple[Self, UserProfile]:
+        raise ToolError("a fake that serves no calls")
+
+    @classmethod
+    def mcp(
+        cls,
+        resolve_session: Callable[[], Awaitable[GatewaySession]],
+        *,
+        httpx_client_factory: McpHttpClientFactory | None = None,
+    ) -> FastMCP:
         return FastMCP("tools")
 
 

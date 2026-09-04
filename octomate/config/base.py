@@ -43,7 +43,7 @@ from pydantic_settings import (
 )
 
 from octomate.config.agents import AgentsConfig
-from octomate.config.channels import ChannelConfigVariant
+from octomate.config.channels import ChannelConfigVariant, SlackChannelConfig
 from octomate.config.integrations import IntegrationConfig
 from octomate.config.mcp import McpServerConfig
 from octomate.config.mirrors import MirrorsConfig
@@ -210,12 +210,20 @@ class OctomateConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_oauth_configuration(self) -> Self:
-        """Every enabled integration stores credentials, so one of them needs the key."""
-        enabled = [name for name, it in self.integrations.items() if it.enabled]
+        """Every enabled integration stores credentials, and so does a Slack channel
+        with an OAuth client: one of them needs the key."""
+        enabled = [
+            f"integrations.{name}"
+            for name, it in self.integrations.items()
+            if it.enabled
+        ] + [
+            f"channels.{name}.oauth"
+            for name, channel in self.channels.items()
+            if isinstance(channel, SlackChannelConfig) and channel.oauth is not None
+        ]
         if enabled and self.oauth.encryption_key is None:
-            names = ", ".join(f"integrations.{name}" for name in enabled)
             raise ValueError(
-                f"oauth.encryption_key is required when {names} is enabled"
+                f"oauth.encryption_key is required when {', '.join(enabled)} is enabled"
             )
         return self
 
