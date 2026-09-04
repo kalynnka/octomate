@@ -7,6 +7,7 @@ import pytest
 from pydantic_ai.messages import ModelRequest as RawModelRequest
 from pydantic_ai.messages import ModelResponse as RawModelResponse
 from pydantic_ai.messages import TextPart, UserPromptPart
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.config.users import UserConfig
@@ -22,6 +23,7 @@ from octomate.schemas.thread import (
     ThreadMessage,
 )
 from octomate.schemas.user import UserProfile
+from tests.support.managers import a_loaded_thread
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +64,9 @@ async def test_ensure_thread_ignores_sender_user_id() -> None:
     await manager.record_inbound(event("m1", "alice", "alpha"))
     await manager.record_inbound(event("m2", "bob", "beta"))
 
-    fresh_thread = await ThreadManager(users=UserManager()).ensure(address("charlie"))
+    fresh_thread = await a_loaded_thread(
+        ThreadManager(users=UserManager()), address("charlie")
+    )
 
     assert alice_thread.id == bob_thread.id == fresh_thread.id
     assert [message.user_id for message in fresh_thread.messages] == ["alice", "bob"]
@@ -380,7 +384,7 @@ async def test_history_written_late_still_sorts_where_it_happened() -> None:
         event("m-old", "alice", "this came first"), happened_at=earlier
     )
 
-    thread = await manager.ensure(ThreadKey.from_address(address()))
+    thread = await a_loaded_thread(manager, ThreadKey.from_address(address()))
     assert [m.message_text for m in thread.messages] == [
         "this came first",
         "and now this",
@@ -403,9 +407,54 @@ async def test_one_instant_keeps_the_order_it_was_written_in() -> None:
         event("m-2", "alice", "second"), happened_at=same
     )
 
-    thread = await manager.ensure(ThreadKey.from_address(address()))
+    thread = await a_loaded_thread(manager, ThreadKey.from_address(address()))
     assert [m.message_text for m in thread.messages] == ["first", "second"]
     assert first.id < second.id
+
+
+async def test_a_kick_never_reads_the_rooms_whole_ledger(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """The bound this manager exists to keep: a room's ledger has no ceiling, so
+    the reads a turn makes must not grow with its tenure.
+
+    `ensure` is what every inbound event and every tailer commit goes through, and
+    `find_message` is how the hooks ask whether they already wrote a turn's row.
+    Neither may fetch a chat row it was not asked for — the regression is a
+    `selectinload` creeping back onto either, which reads the whole room to answer
+    a question about one row.
+    """
+    manager = ThreadManager(users=UserManager())
+    for index in range(12):
+        await manager.record_inbound(event(f"m-{index}", "alice", f"line {index}"))
+
+    rows_read: list[str] = []
+
+    @sqlalchemy_event.listens_for(in_memory_engine.sync_engine, "before_cursor_execute")
+    def record(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        if "FROM thread_messages" in statement:
+            rows_read.append(statement)
+
+    thread = await manager.ensure(address())
+    assert rows_read == [], "ensure read the ledger it was not asked for"
+
+    found = await manager.find_message(thread.id, "m-7", "inbound")
+    assert found is not None
+    assert found.message_text == "line 7"
+    # One statement, and it carries the key rather than filtering in Python.
+    assert len(rows_read) == 1, rows_read
+    assert "platform_message_id" in rows_read[0]
+
+    # And the reader that does want the whole thing still gets it.
+    thread = await a_loaded_thread(manager, address())
+    assert len(list(thread.messages)) == 12
 
 
 async def test_a_row_is_never_undated() -> None:

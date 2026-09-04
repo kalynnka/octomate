@@ -21,7 +21,6 @@ from octomate.schemas.thread import (
     CODEX_NATIVE_ID,
     Thread,
     ThreadKey,
-    ThreadMessageDirection,
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
@@ -163,7 +162,11 @@ class CodexHookIngest:
         self, event: CodexHookInput, prompt: str, sender: UserProfile
     ) -> None:
         thread = await self.session_thread(event)
-        if event.turn_id and self.already_recorded(thread, event.turn_id, "inbound"):
+        # A hook can fire more than once (a retry, a repeated Stop); the per-turn
+        # turn_id + direction dedups so a re-fire is a no-op.
+        if event.turn_id and await self.octomate.thread_manager.find_message(
+            thread.id, event.turn_id, "inbound"
+        ):
             return
         await self.octomate.thread_manager.record_inbound(
             MessageEvent(
@@ -181,7 +184,9 @@ class CodexHookIngest:
         self, event: CodexHookInput, answer: str, sender: UserProfile
     ) -> None:
         thread = await self.session_thread(event)
-        if event.turn_id and self.already_recorded(thread, event.turn_id, "outbound"):
+        if event.turn_id and await self.octomate.thread_manager.find_message(
+            thread.id, event.turn_id, "outbound"
+        ):
             return
         await self.octomate.thread_manager.record_outbound(
             thread,
@@ -195,14 +200,8 @@ class CodexHookIngest:
         if not event.turn_id:
             return
         thread = await self.session_thread(event)
-        prompt = next(
-            (
-                message
-                for message in thread.messages
-                if message.platform_message_id == event.turn_id
-                and message.direction == "inbound"
-            ),
-            None,
+        prompt = await self.octomate.thread_manager.find_message(
+            thread.id, event.turn_id, "inbound"
         )
         if prompt is None or prompt.message_text is None:
             return
@@ -226,13 +225,4 @@ class CodexHookIngest:
             name=CODEX_NATIVE_ID,
             cwd=Path(event.cwd) if event.cwd else None,
             external_session_id=event.session_id,
-        )
-
-    @staticmethod
-    def already_recorded(
-        thread: Thread, turn_id: str, direction: ThreadMessageDirection
-    ) -> bool:
-        return any(
-            message.platform_message_id == turn_id and message.direction == direction
-            for message in thread.messages
         )

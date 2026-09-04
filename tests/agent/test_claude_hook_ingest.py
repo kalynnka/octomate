@@ -18,6 +18,7 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
+from tests.support.managers import a_loaded_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -72,7 +73,7 @@ async def stop(ingest: ClaudeHookIngest, prompt_id: str, answer: str) -> None:
 
 async def ledger(octomate: Octomate) -> list[tuple[str, str | None, str | None]]:
     """The thread's chat log as (direction, platform_message_id, text)."""
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     return [
         (m.direction, m.platform_message_id, m.message_text) for m in thread.messages
     ]
@@ -340,7 +341,7 @@ async def test_a_live_turn_is_dated_when_it_happened() -> None:
     await stop(ingest, "p1", "Here are the files.")
 
     after = datetime.now(UTC)
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     stamps = [message.happened_at for message in thread.messages]
     assert len(stamps) == 2
     assert all(stamp is not None and before <= stamp <= after for stamp in stamps)
@@ -363,7 +364,7 @@ async def test_the_ledger_row_belongs_to_the_bearers_user() -> None:
 
     await ingest.handle(hook("UserPromptSubmit", "p1", prompt="hi"), bearer)
 
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     [row] = thread.messages
     assert row.user_id == "lu"
     profile = await octomate.users.profile(CLAUDE_NATIVE_ID, "lu")

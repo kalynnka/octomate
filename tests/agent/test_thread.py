@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 from arcanus import Relation
+from arcanus.materia.sqlalchemy import selectinload
 from pydantic_ai.messages import ModelRequest as RawModelRequest
 from pydantic_ai.messages import UserPromptPart
 from sqlalchemy import inspect
@@ -176,6 +177,7 @@ async def test_thread_round_trips_with_messages_and_handoffs() -> None:
                 Thread["chat_id"] == "C123",
                 Thread["channel_thread_id"] == "1710000000.000001",
             ],
+            options=[selectinload(Thread["messages"])],
         )
         assert stored is not None
         await stored.messages
@@ -187,6 +189,7 @@ async def test_thread_round_trips_with_messages_and_handoffs() -> None:
         reloaded = await session.one_or_none(
             Thread,
             expressions=[Thread["id"] == stored.id],
+            options=[selectinload(Thread["messages"])],
         )
         assert reloaded is not None
         await reloaded.messages

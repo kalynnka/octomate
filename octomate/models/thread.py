@@ -207,7 +207,10 @@ class Thread(Base, TransmuterProxiedMixin):
         # the live turn that revealed it. It breaks ties, where one instant produced
         # several rows.
         order_by="(ThreadMessage.happened_at, ThreadMessage.id)",
-        lazy="selectin",
+        # A room's ledger has no ceiling, so nothing gets it by accident. Readers
+        # that want one row ask `ThreadManager.find_message`; readers that want the
+        # whole ledger say so with `selectinload`.
+        lazy="raise_on_sql",
     )
 
     handoffs: Mapped[list[Handoff]] = relationship(

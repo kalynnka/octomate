@@ -39,6 +39,7 @@ from tests.support.channels import (
     NativeMessage,
     RecordingInk,
 )
+from tests.support.managers import a_loaded_thread
 from tests.support.scenarios import mid_run_notice
 
 
@@ -477,7 +478,7 @@ async def test_streamed_reception_records_output_without_timeline_source() -> No
     await octomate.kick(UserMessageSignal([_event()]))
 
     target_address = channel.consumed[0][0]
-    thread = await octomate.thread_manager.ensure(target_address)
+    thread = await a_loaded_thread(octomate.thread_manager, target_address)
     outbounds = [m for m in thread.messages if m.direction == "outbound"]
     assert [m.message_text for m in outbounds] == ["final answer"]
 
