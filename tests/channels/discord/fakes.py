@@ -19,6 +19,21 @@ def a_user(
     return user
 
 
+def a_client_user(
+    user_id: int = 42,
+    *,
+    name: str = "Octomate",
+) -> discord.ClientUser:
+    user = discord.ClientUser.__new__(discord.ClientUser)
+    user.id = user_id
+    user.name = name
+    user.global_name = None
+    user.discriminator = "0"
+    user.bot = True
+    user.system = False
+    return user
+
+
 def a_guild(guild_id: int = 200) -> discord.Guild:
     guild = discord.Guild.__new__(discord.Guild)
     guild.id = guild_id
@@ -38,6 +53,7 @@ def a_text_channel(
 ) -> discord.TextChannel:
     channel = discord.TextChannel.__new__(discord.TextChannel)
     channel.id = channel_id
+    channel._type = 0
     channel.guild = guild or a_guild()
     return channel
 
@@ -51,6 +67,7 @@ def a_thread(
     channel = discord.Thread.__new__(discord.Thread)
     channel.id = thread_id
     channel.parent_id = parent_id
+    channel._type = discord.ChannelType.public_thread
     channel.guild = guild or a_guild()
     return channel
 
