@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import discord
-from pydantic import SecretStr
 
 from octomate.config import DiscordChannelConfig
 from octomate.schemas.conversation import ChannelAddress
@@ -46,7 +45,6 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
     client: discord.Client
     ink: DiscordInk
     chromo: DiscordChromo
-    bot_token: SecretStr
     gateway_task: asyncio.Task[None] | None
     ingest_tasks: set[asyncio.Task[None]]
     component_router: DiscordComponentRouter
@@ -74,7 +72,6 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
             chromo=self.chromo,
             config=config,
         )
-        self.bot_token = config.bot_token
         self.gateway_task = None
         self.ingest_tasks = set()
         approvals = DiscordApprovalFeeler(self.ink)
@@ -106,26 +103,52 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
         self.client.event(self.on_message)
 
     async def __aenter__(self) -> Self:
-        await self.client.login(self.bot_token.get_secret_value())
-        await super().__aenter__()
-        logger.info("Channel %s: connecting Discord Gateway client", self.id)
-        self.gateway_task = asyncio.create_task(
-            self.client.connect(reconnect=True),
-            name=f"discord:{self.id}",
-        )
-        await self.client.wait_until_ready()
-        logger.info("Channel %s: Discord Gateway client is ready", self.id)
-        return self
+        ready_task: asyncio.Task[None] | None = None
+        try:
+            assert isinstance(self.config, DiscordChannelConfig)
+            await self.client.login(self.config.bot_token.get_secret_value())
+            await super().__aenter__()
+            logger.info("Channel %s: connecting Discord Gateway client", self.id)
+            self.gateway_task = asyncio.create_task(
+                self.client.connect(reconnect=True),
+                name=f"discord:{self.id}",
+            )
+            ready_task = asyncio.create_task(
+                self.client.wait_until_ready(),
+                name=f"discord:{self.id}:ready",
+            )
+            done, _ = await asyncio.wait(
+                {self.gateway_task, ready_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if self.gateway_task in done:
+                await self.gateway_task
+                raise RuntimeError("Discord Gateway stopped before becoming ready")
+            await ready_task
+            logger.info("Channel %s: Discord Gateway client is ready", self.id)
+            return self
+        except BaseException:
+            if ready_task is not None:
+                ready_task.cancel()
+                await asyncio.gather(ready_task, return_exceptions=True)
+            await self.close()
+            raise
 
     async def __aexit__(self, *exc: object) -> None:
+        await self.close(*exc)
+
+    async def close(self, *exc: object) -> None:
         await self.client.close()
         if self.gateway_task is not None:
             gateway_task = self.gateway_task
             self.gateway_task = None
-            try:
-                await gateway_task
-            except asyncio.CancelledError:
-                pass
+            await asyncio.gather(gateway_task, return_exceptions=True)
+        ingest_tasks = list(self.ingest_tasks)
+        for task in ingest_tasks:
+            task.cancel()
+        if ingest_tasks:
+            await asyncio.gather(*ingest_tasks, return_exceptions=True)
+        self.ingest_tasks.clear()
         await super().__aexit__(*exc)
 
     async def on_message(self, message: discord.Message) -> None:

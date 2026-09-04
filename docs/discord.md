@@ -50,7 +50,7 @@ channels:
         model: anthropic:claude-sonnet-5
     stream:
       enabled: true
-      flush_interval: 0.5
+      flush_interval: 0.2
 ```
 
 Keep the bot token out of YAML and Git. Put it in the checkout's `.env` instead:

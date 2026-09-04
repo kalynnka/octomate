@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from typing import cast
 
 import discord
+import pytest
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -425,6 +427,81 @@ async def test_approval_callback_reloads_after_restart_and_resolves_once(
     assert events[-2:] == ["defer", "followup"]
     assert duplicate.followup.messages == [("This approval was already handled.", True)]
     assert len(octomate.kicks) == 1
+    await client.close()
+
+
+async def test_approval_callback_persists_before_settling_the_message(
+    in_memory_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = await create_batch(approval=True)
+    [approval_action] = batch.approvals
+    events: list[str] = []
+    octomate = ResolvingOctomate(events)
+    client = discord.Client(intents=discord.Intents.none())
+    DiscordComponentRouter(octomate).bind(client)
+    interaction = FakeInteraction(client, events)
+
+    async def fail_resolution(
+        response: DeferredActionBatchResponse,
+    ) -> DeferredActionBatch:
+        events.append("resolve")
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(octomate.deferred_actions, "resolve_batch", fail_resolution)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await DiscordApprovalButton(batch.id, approval_action.id, True).callback(
+            cast("discord.Interaction[discord.Client]", interaction)
+        )
+
+    assert events == ["defer", "resolve"]
+    assert interaction.edits == []
+    await client.close()
+
+
+async def test_unrelated_batches_do_not_wait_for_an_agent_run(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    first_batch = await create_batch(approval=True)
+    second_batch = await create_batch(approval=True)
+    [first_action] = first_batch.approvals
+    [second_action] = second_batch.approvals
+    events: list[str] = []
+    first_kick_started = asyncio.Event()
+    release_first_kick = asyncio.Event()
+
+    class SlowFirstKickOctomate(ResolvingOctomate):
+        async def kick(self, signal: DeferredActionBatchResponse) -> None:
+            self.events.append(f"kick:{signal.batch_id}")
+            self.kicks.append(signal)
+            if signal.batch_id == first_batch.id:
+                first_kick_started.set()
+                await release_first_kick.wait()
+
+    octomate = SlowFirstKickOctomate(events)
+    client = discord.Client(intents=discord.Intents.none())
+    DiscordComponentRouter(octomate).bind(client)
+    first_interaction = FakeInteraction(client, events)
+    second_interaction = FakeInteraction(client, events)
+
+    first_callback = asyncio.create_task(
+        DiscordApprovalButton(first_batch.id, first_action.id, True).callback(
+            cast("discord.Interaction[discord.Client]", first_interaction)
+        )
+    )
+    await first_kick_started.wait()
+    await asyncio.wait_for(
+        DiscordApprovalButton(second_batch.id, second_action.id, True).callback(
+            cast("discord.Interaction[discord.Client]", second_interaction)
+        ),
+        timeout=1,
+    )
+    release_first_kick.set()
+    await first_callback
+
+    assert len(second_interaction.edits) == 1
+    assert len(octomate.kicks) == 2
     await client.close()
 
 

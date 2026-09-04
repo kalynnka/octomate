@@ -36,7 +36,8 @@ class LarkStreamConfig(ChannelStreamConfig):
 
 
 class DiscordStreamConfig(ChannelStreamConfig):
-    flush_interval: float = 0.5
+    # discord.py follows Discord's dynamic route buckets; this only coalesces edits.
+    flush_interval: float = 0.2
 
 
 class NapcatStreamConfig(ChannelStreamConfig):

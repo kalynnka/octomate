@@ -39,7 +39,7 @@
 #     # Set OCTOMATE__CHANNELS__DISCORD__BOT_TOKEN in .env.
 #     stream:
 #       enabled: true
-#       flush_interval: 0.5
+#       flush_interval: 0.2
 #
 #   # Two Lark apps side by side: same `type`, different keys, separate threads.
 #   lark_main:

@@ -29,7 +29,7 @@ from octomate.tentacles.discord.feelers.output import DiscordTimelineFeeler
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from tests.support.channels import FakeChannelTentacle, drive
-from tests.support.scenarios import mid_run_notice, play, streamed_text
+from tests.support.scenarios import mid_run_notice, play, streamed_text, subagent_run
 
 
 @dataclass(frozen=True)
@@ -342,28 +342,41 @@ async def test_cancellation_settles_the_partial_answer_once() -> None:
     assert ink.typing_events == [("enter", "500"), ("exit", "500")]
 
 
-async def test_failed_edit_is_logged_and_not_retried(
+async def test_failed_stream_edit_falls_back_to_a_complete_message(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     ink = RecordingDiscordInk(fail_edits=True)
     channel = discord_channel(
         ink,
-        DiscordStreamConfig(
-            enabled=True,
-            flush_interval=999,
-            min_chars=10_000,
-            max_chars=10_000,
-        ),
+        DiscordStreamConfig(enabled=True, flush_interval=0, min_chars=1),
     )
 
     with caplog.at_level(logging.WARNING):
         message_id = await drive(
             channel,
             discord_address(),
-            play(streamed_text("broken")),
+            play(streamed_text("bro", "ken"), delay=0.01),
         )
 
-    assert message_id == "801"
-    assert len(ink.sends) == 1
-    assert [edit.content for edit in ink.edits] == ["broken"]
+    assert message_id == "802"
+    assert len(ink.sends) == 2
+    assert ink.sends[1].messages == (DiscordOutboundMessage(content="broken"),)
+    assert [edit.content for edit in ink.edits] == ["bro"]
     assert caplog.text.count("failed to edit message") == 1
+
+
+async def test_subagent_reports_render_as_independent_messages() -> None:
+    ink = RecordingDiscordInk()
+    channel = discord_channel(
+        ink,
+        DiscordStreamConfig(enabled=True, flush_interval=0, min_chars=1),
+    )
+
+    await drive(channel, discord_address(), play(subagent_run()))
+
+    subagent_edits = [
+        edit.content for edit in ink.edits if edit.content.startswith("**Subagent ·")
+    ]
+    assert len(subagent_edits) == 2
+    assert any("Append-Only" in content for content in subagent_edits)
+    assert any("Agent crash mid-response" in content for content in subagent_edits)

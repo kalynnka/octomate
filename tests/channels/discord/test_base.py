@@ -49,6 +49,8 @@ class FakeDiscordClient:
         self.user: FakeDiscordUser | None = None
         self.login_token: str | None = None
         self.connect_reconnect: bool | None = None
+        self.connect_error: Exception | None = None
+        self.become_ready = True
         self.ready = asyncio.Event()
         self.closed = asyncio.Event()
         self.lifecycle: list[str] = []
@@ -75,7 +77,10 @@ class FakeDiscordClient:
     async def connect(self, *, reconnect: bool) -> None:
         self.lifecycle.append("connect")
         self.connect_reconnect = reconnect
-        self.ready.set()
+        if self.connect_error is not None:
+            raise self.connect_error
+        if self.become_ready:
+            self.ready.set()
         await self.closed.wait()
 
     async def wait_until_ready(self) -> None:
@@ -140,6 +145,42 @@ async def test_gateway_lifecycle(
     assert channel.gateway_task is None
 
 
+async def test_gateway_start_failure_closes_all_resources(
+    config: DiscordChannelConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeDiscordClient.instances.clear()
+    monkeypatch.setattr(discord, "Client", FakeDiscordClient)
+    channel = DiscordTentacle("discord-main", Octomate(), config=config)
+    client = FakeDiscordClient.instances[0]
+    client.connect_error = RuntimeError("Gateway rejected the connection")
+
+    with pytest.raises(RuntimeError, match="Gateway rejected"):
+        await channel.__aenter__()
+
+    assert client.closed.is_set()
+    assert channel.gateway_task is None
+    assert channel.ink.http.is_closed
+
+
+async def test_cancelled_gateway_start_closes_the_detached_task(
+    config: DiscordChannelConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeDiscordClient.instances.clear()
+    monkeypatch.setattr(discord, "Client", FakeDiscordClient)
+    channel = DiscordTentacle("discord-main", Octomate(), config=config)
+    client = FakeDiscordClient.instances[0]
+    client.become_ready = False
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(channel.__aenter__(), timeout=0.01)
+
+    assert client.closed.is_set()
+    assert channel.gateway_task is None
+    assert channel.ink.http.is_closed
+
+
 async def test_message_listener_tracks_ingest_without_blocking(
     config: DiscordChannelConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -167,6 +208,34 @@ async def test_message_listener_tracks_ingest_without_blocking(
     release.set()
     await task
     await asyncio.sleep(0)
+    assert channel.ingest_tasks == set()
+
+
+async def test_gateway_shutdown_cancels_inflight_ingest(
+    config: DiscordChannelConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeDiscordClient.instances.clear()
+    monkeypatch.setattr(discord, "Client", FakeDiscordClient)
+    channel = DiscordTentacle("discord-main", Octomate(), config=config)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def ingest_until_cancelled(raw: discord.Message) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(channel, "ingest", ingest_until_cancelled)
+
+    async with channel:
+        await channel.on_message(a_message(a_dm_channel()))
+        await started.wait()
+        assert channel.ingest_tasks
+
+    assert cancelled.is_set()
     assert channel.ingest_tasks == set()
 
 

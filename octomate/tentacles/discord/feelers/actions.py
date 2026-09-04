@@ -5,7 +5,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, WeakValueDictionary
 
 import discord
 
@@ -32,7 +32,9 @@ class DiscordComponentRouter:
 
     def __init__(self, octomate: Octomate) -> None:
         self.octomate = octomate
-        self.callback_lock = asyncio.Lock()
+        self.callback_locks: WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
+            WeakValueDictionary()
+        )
 
     def bind(self, client: discord.Client) -> None:
         self.routers[client] = self
@@ -53,7 +55,8 @@ class DiscordComponentRouter:
         approved: bool,
         settle_message: Callable[[DeferredApproval], Awaitable[None]],
     ) -> DeferredApproval:
-        async with self.callback_lock:
+        callback_lock = self.callback_locks.setdefault(batch_id, asyncio.Lock())
+        async with callback_lock:
             try:
                 batch = await self.octomate.deferred_actions.get_batch(batch_id)
             except ValueError as error:
@@ -75,15 +78,17 @@ class DiscordComponentRouter:
             if batch.status != "pending" or action.status != "pending":
                 raise DiscordActionUnavailable("This approval was already handled.")
 
-            await settle_message(action)
-            await self.resolve_and_dispatch(
+            dispatch = await self.resolve(
                 DeferredActionBatchResponse(
                     batch_id=batch_id,
                     responder_id=responder_id,
                     approvals={action_id: approved},
                 )
             )
-            return action
+        await settle_message(action)
+        if dispatch is not None:
+            await self.octomate.kick(dispatch)
+        return action
 
     async def resolve_question(
         self,
@@ -94,7 +99,8 @@ class DiscordComponentRouter:
         answer: str | DiscordChoiceAnswer,
         settle_message: Callable[[DeferredQuestion, str], Awaitable[None]],
     ) -> DeferredQuestion:
-        async with self.callback_lock:
+        callback_lock = self.callback_locks.setdefault(batch_id, asyncio.Lock())
+        async with callback_lock:
             try:
                 batch = await self.octomate.deferred_actions.get_batch(batch_id)
             except ValueError as error:
@@ -126,37 +132,37 @@ class DiscordComponentRouter:
             else:
                 resolved_answer = answer
 
-            await settle_message(action, resolved_answer)
-            await self.resolve_and_dispatch(
+            dispatch = await self.resolve(
                 DeferredActionBatchResponse(
                     batch_id=batch_id,
                     responder_id=responder_id,
                     answers={action_id: resolved_answer},
                 )
             )
-            return action
+        await settle_message(action, resolved_answer)
+        if dispatch is not None:
+            await self.octomate.kick(dispatch)
+        return action
 
-    async def resolve_and_dispatch(
+    async def resolve(
         self,
         response: DeferredActionBatchResponse,
-    ) -> None:
+    ) -> DeferredActionBatchResponse | None:
         batch = await self.octomate.deferred_actions.resolve_batch(response)
         if not batch.completed:
-            return
-        await self.octomate.kick(
-            DeferredActionBatchResponse(
-                batch_id=batch.id,
-                responder_id=response.responder_id,
-                answers={
-                    action.id: action.result
-                    for action in batch.questions
-                    if action.status == "answered" and isinstance(action.result, str)
-                },
-                approvals={
-                    action.id: action.result
-                    for action in batch.approvals
-                    if action.status in {"approved", "denied"}
-                    and isinstance(action.result, bool)
-                },
-            )
+            return None
+        return DeferredActionBatchResponse(
+            batch_id=batch.id,
+            responder_id=response.responder_id,
+            answers={
+                action.id: action.result
+                for action in batch.questions
+                if action.status == "answered" and isinstance(action.result, str)
+            },
+            approvals={
+                action.id: action.result
+                for action in batch.approvals
+                if action.status in {"approved", "denied"}
+                and isinstance(action.result, bool)
+            },
         )

@@ -8,6 +8,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from octomate.capabilities.harness.events import (
+    SubagentActivity,
+    SubagentActivityStatus,
+)
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
@@ -23,6 +27,7 @@ from octomate.tentacles.feelers.output import (
     DefaultTimelineFeeler,
     IMMessageID,
     StreamFlusher,
+    SubagentTimelineState,
     TextStreamBatcher,
     TimelineFeeler,
     TimelineState,
@@ -69,6 +74,22 @@ class DiscordTimelineState(TimelineState):
     def __post_init__(self) -> None:
         self.text_flusher = StreamFlusher(self.flush_text)
 
+    @asynccontextmanager
+    async def open_subagent(
+        self,
+        activity: SubagentActivity,
+    ) -> AsyncGenerator[DiscordSubagentTimelineState]:
+        state = DiscordSubagentTimelineState(
+            ink=self.ink,
+            chromo=self.chromo,
+            activity=activity,
+            chat_id=self.chat_id,
+            chat_type=self.chat_type,
+            channel_thread_id=self.channel_thread_id,
+        )
+        await state.start()
+        yield state
+
     async def start_message(self) -> None:
         if self.current_message_id is not None:
             return
@@ -93,8 +114,6 @@ class DiscordTimelineState(TimelineState):
     ) -> None:
         if not text:
             return
-        if self.render_error is not None:
-            raise self.render_error
         self.noticed = True
 
         remaining_text = text
@@ -186,10 +205,29 @@ class DiscordTimelineState(TimelineState):
         self.answer_batcher.finish_all()
         await self.text_flusher.drain()
         await self.flush_text()
-        self.current_message_id = None
-        self.current_sent_len = 0
-        self.current_mentioned_user_ids.clear()
-        self.answer_batcher.reset()
+        render_error = self.render_error
+        try:
+            if render_error is not None:
+                message_id = await self.ink.send_message(
+                    self.chat_id,
+                    self.chat_type,
+                    [
+                        DiscordOutboundMessage(
+                            content=self.answer_batcher.full_text(),
+                            mentioned_user_ids=tuple(self.current_mentioned_user_ids),
+                        )
+                    ],
+                    channel_thread_id=self.channel_thread_id,
+                )
+                if message_id is None:
+                    raise render_error
+                self.last_message_id = message_id
+                self.render_error = None
+        finally:
+            self.current_message_id = None
+            self.current_sent_len = 0
+            self.current_mentioned_user_ids.clear()
+            self.answer_batcher.reset()
 
     async def rotate(self) -> None:
         await self.finish_text()
@@ -269,3 +307,69 @@ class DiscordTimelineFeeler(TimelineFeeler):
             finally:
                 await state.settle_subagents("failed")
                 await state.finish()
+
+
+@dataclass
+class DiscordSubagentTimelineState(SubagentTimelineState):
+    ink: DiscordInk
+    chromo: DiscordChromo
+    activity: SubagentActivity
+    chat_id: str
+    chat_type: str
+    channel_thread_id: str
+
+    message_id: IMMessageID | None = None
+    response: str = ""
+    status: SubagentActivityStatus | None = None
+
+    async def start(self) -> None:
+        self.message_id = await self.ink.send_message(
+            self.chat_id,
+            self.chat_type,
+            [
+                DiscordOutboundMessage(
+                    content=f"**Subagent · {self.activity.name}**\nStarting…"
+                )
+            ],
+            channel_thread_id=self.channel_thread_id,
+        )
+        if self.message_id is None:
+            raise RuntimeError("failed to create Discord subagent message")
+
+    async def append_response(self, delta: str) -> None:
+        if self.status is None and delta:
+            self.response += delta
+
+    async def settle(
+        self,
+        status: SubagentActivityStatus,
+        detail: str | None = None,
+    ) -> None:
+        if self.status is not None or self.message_id is None:
+            return
+        self.status = status
+        if detail:
+            self.response = f"{self.response}\n\n{detail}" if self.response else detail
+        terminal = {
+            "completed": "Completed",
+            "failed": "Failed",
+            "timed_out": "Timed out",
+            "cancelled": "Cancelled",
+        }[status]
+        content = f"**Subagent · {self.activity.name} — {terminal}**"
+        if self.response:
+            content = f"{content}\n\n{self.response}"
+        messages = self.chromo.outbound_markdown(content)
+        first, *remaining = messages
+        await self.ink.edit_message(
+            self.channel_thread_id,
+            self.message_id,
+            first.content,
+        )
+        if remaining:
+            await self.ink.send_message(
+                self.chat_id,
+                self.chat_type,
+                remaining,
+                channel_thread_id=self.channel_thread_id,
+            )

@@ -176,7 +176,7 @@ def test_channel_config_parses_supported_channels() -> None:
     assert config.channels["lark"].stream.min_chars == 20
     assert config.channels["napcat"].stream.enabled is False
     assert config.channels["discord"].stream.enabled is False
-    assert config.channels["discord"].stream.flush_interval == 0.5
+    assert config.channels["discord"].stream.flush_interval == 0.2
 
 
 def test_inkling_request_limit_defaults_to_256() -> None:
