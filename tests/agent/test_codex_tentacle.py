@@ -50,9 +50,9 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
-from octomate.tentacles.agents.codex import CodexTentacle
-from octomate.tentacles.agents.codex import base as codex_base
-from octomate.tentacles.channels.base import ChannelTentacle
+from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.codex import base as codex_base
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode
 from tests.support.agents import CODEX_MODELS

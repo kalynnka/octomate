@@ -20,8 +20,8 @@ from pydantic_ai.messages import (
 )
 
 from octomate.capabilities.harness.events import StreamEvents
-from octomate.tentacles.agents.deepseek.adapter import DeepseekRunAccumulator
-from octomate.tentacles.agents.deepseek.wire import SessionEventFrame
+from octomate.tentacles.deepseek.adapter import DeepseekRunAccumulator
+from octomate.tentacles.deepseek.wire import SessionEventFrame
 from octomate.types.json import JsonValue
 
 

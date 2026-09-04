@@ -37,9 +37,9 @@ from octomate.schemas.triage import (
     Destination,
 )
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.inkling.base import InklingOutput
-from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
-from octomate.tentacles.channels.base import ChannelSurfaces
+from octomate.tentacles.channel import ChannelSurfaces
+from octomate.tentacles.inkling.base import InklingOutput
+from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.channels import FakeChannelTentacle
 

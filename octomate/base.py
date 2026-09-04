@@ -45,9 +45,10 @@ from octomate.schemas.awakes import (
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.telemetry import octomate_logfire
-from octomate.tentacles.agents.base import AgentTentacle
+from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
-from octomate.tentacles.channels.base import ChannelTentacle
+from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.mcp import McpTentacle
 
 TentacleT = TypeVar("TentacleT", bound=Tentacle)
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ def log_style_for_index(index: int) -> Style:
 def short_log_name(name: str) -> str:
     """Chop a logger to its module so tags stay one word: our package prefix
     trims to the subsystem (`octomate.reflex.graph` -> `reflex`,
-    `octomate.tentacles.channels.base` -> `channels`), and a library logger to
+    `octomate.tentacles.feelers.output` -> `feelers`), and a library logger to
     its top-level module (`mcp.client.streamable_http` -> `mcp`; this also
     folds uvicorn's confusingly-named `uvicorn.error` into `uvicorn`)."""
     for prefix in ("octomate.tentacles.", "octomate."):
@@ -83,11 +84,13 @@ def short_log_name(name: str) -> str:
 
 # Shared subsystems front no tentacle, so they have neither a brand to claim nor a
 # connection index to step the wheel with. The host's own voice and the plumbing every
-# channel shares take a neutral color here, so they read as the structure around the
-# tentacles rather than as another hue competing with them.
+# channel shares — the channel component and the feelers — take a neutral color here,
+# so they read as the structure around the tentacles rather than as another hue
+# competing with them.
 SHARED_LOG_STYLES: dict[str, Style] = {
     "main": Style(color="bright_white", bold=True),
-    "channels": Style(color="grey62", bold=True),
+    "channel": Style(color="grey62", bold=True),
+    "feelers": Style(color="grey62", bold=True),
 }
 
 
@@ -263,21 +266,24 @@ class Octomate:
         bearers, and resolves the identity a call runs against from the request
         itself.
 
-        After the gateway come the channels' own servers: one per channel type
-        among the connected channels, built by the class, its tools resolving the
-        workspace from the session a call names — so two channels of one type
-        share one server (see `octomate.mcp.channel`).
+        After the gateway come the servers the tentacles serve themselves: one per
+        tentacle type composing `McpTentacle`, built by the class, its tools
+        resolving the instance — and the caller's own credential for it — from the
+        session a call names, so two tentacles of one type share one server.
         """
-        gateway_session = Depends(served_session(self))
+        resolve_session = served_session(self)
+        gateway_session = Depends(resolve_session)
         servers = [
             gateway_mcp(gateway_session, self.thread_manager, kick=self.kick_soon)
         ]
-        # One build per channel class, however many workspaces share it, in the
-        # order the channels were connected.
-        for kind in dict.fromkeys(type(channel) for channel in self.channels.values()):
-            server = kind.mcp(gateway_session)
-            if server is not None:
-                servers.append(server)
+        # One build per class, however many instances share it, in the order the
+        # tentacles were connected.
+        serving = (
+            type(tentacle)
+            for tentacle in (*self.agents.values(), *self.channels.values())
+            if isinstance(tentacle, McpTentacle)
+        )
+        servers.extend(kind.mcp(resolve_session) for kind in dict.fromkeys(serving))
         return servers
 
     def app(self, *, title: str = "Octomate") -> FastAPI:

@@ -81,9 +81,9 @@ from octomate.schemas.triage import (
     SummonDecision,
     SummonTarget,
 )
-from octomate.tentacles.agents.base import AgentTentacle
-from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
-from octomate.tentacles.channels.base import ChannelOutput
+from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.json import JsonObject
 from tests.support.scenarios import plain_answer, play
 

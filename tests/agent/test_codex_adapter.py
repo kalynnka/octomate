@@ -43,7 +43,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.tentacles.agents.codex.adapter import CodexRunAccumulator, map_usage
+from octomate.tentacles.codex.adapter import CodexRunAccumulator, map_usage
 
 
 def notification(method: str, payload: NotificationPayload) -> Notification:

@@ -16,7 +16,7 @@ from octomate.base import Octomate
 from octomate.config.users import UserConfig
 from octomate.managers.user import UserManager
 from octomate.mcp.base import KnownBearers
-from octomate.tentacles.agents.hooks import hook_guard, hook_sender
+from octomate.tentacles.hooks import hook_guard, hook_sender
 from tests.support.config import registered
 
 

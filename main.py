@@ -12,12 +12,12 @@ from octomate.managers.project import ProjectManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
-from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.codex import CodexTentacle
-from octomate.tentacles.agents.deepseek import DeepseekTentacle
-from octomate.tentacles.agents.inkling import build_inkling
 from octomate.tentacles.base import TentacleLogFormatter
-from octomate.tentacles.channels import build_channel
+from octomate.tentacles.channel import build_channel
+from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.deepseek import DeepseekTentacle
+from octomate.tentacles.inkling import build_inkling
 
 config = OctomateConfig()
 

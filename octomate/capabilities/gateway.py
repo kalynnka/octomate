@@ -80,7 +80,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from octomate.managers.conversation import ConversationManager
-    from octomate.tentacles.agents.base import AgentTentacle
+    from octomate.tentacles.agent import AgentTentacle
 
 # A commission holds the parent's live tool call open while the accomplice runs, so the
 # wait must not be unbounded (`approval_timeout` is the precedent). Seconds.

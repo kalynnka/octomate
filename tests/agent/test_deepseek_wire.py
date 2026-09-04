@@ -8,8 +8,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from octomate.tentacles.agents.deepseek.process import BANNER
-from octomate.tentacles.agents.deepseek.wire import (
+from octomate.tentacles.deepseek.process import BANNER
+from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     ClientRequest,
     ClientResponse,

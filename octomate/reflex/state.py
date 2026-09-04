@@ -34,8 +34,8 @@ from octomate.schemas.triage import (
     SummonDecision,
 )
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.base import AgentTentacle
-from octomate.tentacles.channels.base import (
+from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.channel import (
     ChannelOutput,
     ChannelTentacle,
     ThreadStrategy,

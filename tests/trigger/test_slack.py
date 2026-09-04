@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.schemas.conversation import ChannelAddress
-from octomate.tentacles.channels.slack import SlackTentacle
+from octomate.tentacles.slack import SlackTentacle
 from tests.support.channels import drive
 from tests.support.scenarios import (
     action_batch,

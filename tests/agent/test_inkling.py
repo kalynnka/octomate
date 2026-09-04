@@ -47,11 +47,11 @@ from octomate.managers.gateway import GatewaySession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.schemas.triage import TELEPORT_DEFER_KIND
-from octomate.tentacles.agents.inkling import (
+from octomate.tentacles.inkling import (
     InklingTentacle,
 )
-from octomate.tentacles.agents.inkling.base import InklingDeferrals, InklingOutput
-from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.inkling.base import InklingDeferrals, InklingOutput
+from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.permissions import AgentPermissionMode
 from tests.support.agents import (
     ScriptedOutput,

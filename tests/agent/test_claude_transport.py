@@ -3,7 +3,7 @@ from __future__ import annotations
 from claude_agent_sdk import ClaudeAgentOptions
 
 from octomate.config.agents import ClaudeSSHConfig
-from octomate.tentacles.agents.claude.transport import SSHTransport
+from octomate.tentacles.claude.transport import SSHTransport
 
 
 def _options(**kwargs: object) -> ClaudeAgentOptions:

@@ -19,13 +19,13 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
     QuestionRequest,
 )
-from octomate.tentacles.channels.lark.base import LarkTentacle
-from octomate.tentacles.channels.lark.feelers.actions import LarkCardAction
-from octomate.tentacles.channels.lark.feelers.approvals import (
+from octomate.tentacles.lark.base import LarkTentacle
+from octomate.tentacles.lark.feelers.actions import LarkCardAction
+from octomate.tentacles.lark.feelers.approvals import (
     LarkApprovalFeeler,
     approval_card_data,
 )
-from octomate.tentacles.channels.lark.feelers.questions import (
+from octomate.tentacles.lark.feelers.questions import (
     LarkAskQuestionFeeler,
     LarkQuestionActionValueAdapter,
     ask_question_card,
@@ -33,7 +33,7 @@ from octomate.tentacles.channels.lark.feelers.questions import (
     collect_answer,
     submitted_card_data,
 )
-from octomate.tentacles.channels.lark.ink import LarkInk
+from octomate.tentacles.lark.ink import LarkInk
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkCardsInk
 from tests.support.channels import FakeOctomate

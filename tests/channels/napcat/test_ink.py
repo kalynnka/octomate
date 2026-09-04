@@ -13,19 +13,19 @@ from websockets.asyncio.client import ClientConnection
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageData, ImageSegment, TextSegment
-from octomate.tentacles.channels.feelers.base import Feelers
-from octomate.tentacles.channels.feelers.deferred import (
+from octomate.tentacles.feelers.base import Feelers
+from octomate.tentacles.feelers.deferred import (
     PlainTextApprovalFeeler,
     PlainTextAskQuestionFeeler,
 )
-from octomate.tentacles.channels.feelers.oauth import PlainTextOAuthFeeler
-from octomate.tentacles.channels.feelers.output import (
+from octomate.tentacles.feelers.oauth import PlainTextOAuthFeeler
+from octomate.tentacles.feelers.output import (
     DefaultMarkdownFeeler,
     DefaultSegmentsFeeler,
     DefaultTimelineFeeler,
 )
-from octomate.tentacles.channels.napcat import NapcatChromo, NapcatInk, NapcatTentacle
-from octomate.tentacles.channels.napcat.schema import NapcatOutboundMessage
+from octomate.tentacles.napcat import NapcatChromo, NapcatInk, NapcatTentacle
+from octomate.tentacles.napcat.schema import NapcatOutboundMessage
 from tests.channels.napcat.fakes import FakeNapcatHTTP
 from tests.support.channels import drive
 from tests.support.scenarios import plain_answer, play
@@ -173,7 +173,7 @@ async def test_napcat_tentacle_connects_with_auth_header(monkeypatch) -> None:
 
     channel.sense = sense
     monkeypatch.setattr(
-        "octomate.tentacles.channels.napcat.base.connect",
+        "octomate.tentacles.napcat.base.connect",
         FakeConnect,
     )
 

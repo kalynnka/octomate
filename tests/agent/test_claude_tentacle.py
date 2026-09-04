@@ -38,9 +38,9 @@ from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import GatewaySession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
-from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.claude import base as claude_base
-from octomate.tentacles.agents.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from tests.support.agents import CLAUDE_MODELS
 from tests.support.managers import (
     FakeConversation,

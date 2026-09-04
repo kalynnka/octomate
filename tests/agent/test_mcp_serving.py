@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import httpx
 import pytest
 from fastapi import FastAPI
-from fastmcp import Client
+from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -37,10 +37,8 @@ from octomate.mcp.gateway import (
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
-from octomate.tentacles.channels.slack import SlackTentacle
-from octomate.tentacles.channels.slack.mcp import SLACK_SERVER_NAME
+from octomate.tentacles.mcp import McpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
-from tests.channels.slack.fakes import FakeSlackInk, ProbedSlackTentacle, slack_channel
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, FakeOctomate
 
@@ -143,81 +141,25 @@ async def a_driven_turn(octomate: Octomate) -> GatewaySession:
     return session
 
 
-def a_workspace() -> SlackTentacle:
-    """A Slack workspace as these tests connect it: no socket to open, its tools
-    on offer, probed as `bot` when the app starts."""
-    workspace = slack_channel(FakeSlackInk(), tentacle=ProbedSlackTentacle)
-    workspace.config = workspace.config.model_copy(update={"mcp": True})
-    return workspace
-
-
-async def a_slack_turn(octomate: Octomate, workspace: SlackTentacle) -> GatewaySession:
-    """A turn at the gateway driven in a thread on `workspace`, kicked by `lu`."""
-    session = GatewaySession(
-        channel_routes={workspace.id: []},
-        current_agent_id="codex",
-        channels={workspace.id: workspace},
-        conversation_id=uuid.uuid4(),
-        conversation_address=ChannelAddress(
-            channel_tentacle_id=workspace.id,
-            chat_type="group",
-            chat_id="C-room",
-            user_id="U-alice",
-            channel_thread_id="1700.0001",
-            shared=True,
-        ),
-        users=octomate.users,
-        user_profile=await octomate.users.profile("im", "alice"),
-    )
-    octomate.gateway.register(session)
-    return session
-
-
 def test_the_gateway_is_one_of_the_served_servers() -> None:
     assert "gateway" in SERVED
 
 
-def test_a_connected_channel_type_serves_one_server_for_all_its_workspaces() -> None:
+class ToolsTentacle(FakeChannelTentacle, McpTentacle):
+    """A channel composing the MCP component: served beside the gateway, once
+    per type however many instances are connected."""
+
+    @classmethod
+    def mcp(cls, resolve_session: Callable[[], Awaitable[GatewaySession]]) -> FastMCP:
+        return FastMCP("tools")
+
+
+def test_a_tentacle_composing_mcp_is_served_once_per_type() -> None:
     octomate = Octomate()
-    for id in ("slack-a", "slack-b"):
-        workspace = a_workspace()
-        workspace.id = id
-        octomate.connect(workspace)
+    octomate.connect(ToolsTentacle(id="a"))
+    octomate.connect(ToolsTentacle(id="b"))
 
-    assert [server.name for server in octomate.mcp_servers()] == [
-        GATEWAY_SERVER_NAME,
-        SLACK_SERVER_NAME,
-    ]
-
-
-async def test_a_served_slack_call_acts_in_the_workspace_its_turn_is_on() -> None:
-    octomate = a_driven_deployment()
-    workspace = octomate.connect(a_workspace())
-    async with served(octomate) as (octomate, app):
-        session = await a_slack_turn(octomate, workspace)
-        header = {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)}
-        async with over(octomate, app, header, server=SLACK_SERVER_NAME) as client:
-            tools = await client.list_tools()
-            result = await client.call_tool(
-                "react", {"message": "#msg:1700.0002", "emoji": "eyes"}
-            )
-
-    assert [tool.name for tool in tools] == ["react", "read_channel"]
-    assert result.data == "Reacted :eyes: to #msg:1700.0002."
-    ink = workspace.ink
-    assert isinstance(ink, FakeSlackInk)
-    assert ink.reactions == [("C-room", "1700.0002", "eyes")]
-
-
-async def test_a_served_slack_call_from_another_channels_turn_is_refused() -> None:
-    octomate = a_driven_deployment()
-    octomate.connect(a_workspace())
-    async with served(octomate) as (octomate, app):
-        session = await a_driven_turn(octomate)
-        header = {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)}
-        async with over(octomate, app, header, server=SLACK_SERVER_NAME) as client:
-            with pytest.raises(ToolError, match="not a Slack channel"):
-                await client.call_tool("read_channel", {})
+    assert [server.name for server in octomate.mcp_servers()] == ["gateway", "tools"]
 
 
 async def test_a_bare_deployment_is_served_locked() -> None:

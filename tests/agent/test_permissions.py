@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import pytest
 
-from octomate.tentacles.agents.base import AgentTentacle
-from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.codex import CodexTentacle
-from octomate.tentacles.agents.deepseek import DeepseekTentacle
-from octomate.tentacles.agents.inkling import InklingTentacle
+from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.deepseek import DeepseekTentacle
+from octomate.tentacles.inkling import InklingTentacle
 from octomate.types.permissions import PERMISSION_MODES, check_mode
 from octomate.types.threads import (
     CLAUDE_NATIVE_ID,

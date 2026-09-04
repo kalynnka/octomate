@@ -11,11 +11,11 @@ from octomate import Octomate
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.codex.hooks import CodexHookInput
-from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
-from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer, TailState
-from octomate.tentacles.agents.codex.transcript import rollout_line_adapter
-from octomate.tentacles.agents.locks import SessionLocks
+from octomate.tentacles.codex.hooks import CodexHookInput
+from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
+from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
+from octomate.tentacles.codex.transcript import rollout_line_adapter
+from octomate.tentacles.locks import SessionLocks
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 

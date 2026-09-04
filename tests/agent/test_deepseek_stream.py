@@ -32,7 +32,7 @@ from starlette.websockets import WebSocketDisconnect
 from octomate import Octomate
 from octomate.config.agents import DeepseekConfig
 from octomate.managers.user import UserManager
-from octomate.tentacles.agents.deepseek import DeepseekTentacle
+from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.types.json import JsonObject
 from tests.agent.test_deepseek_native_ingest import (
     LOG_LABEL,
