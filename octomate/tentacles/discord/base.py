@@ -16,6 +16,7 @@ from octomate.tentacles.channel import (
     ThreadStrategy,
 )
 from octomate.tentacles.discord.chromo import DiscordChromo
+from octomate.tentacles.discord.feelers.output import DiscordTimelineFeeler
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
 
@@ -63,6 +64,15 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
         self.bot_token = config.bot_token
         self.gateway_task = None
         self.ingest_tasks = set()
+        self.feelers.timeline = DiscordTimelineFeeler(
+            ink=self.ink,
+            chromo=self.chromo,
+            stream_config=config.stream,
+            ask_questions=self.feelers.ask_questions,
+            approvals=self.feelers.approvals,
+            oauth=self.feelers.oauth,
+            deferred_actions=self.octomate.deferred_actions,
+        )
         self.client.event(self.on_message)
 
     async def __aenter__(self) -> Self:

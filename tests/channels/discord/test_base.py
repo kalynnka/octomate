@@ -19,6 +19,7 @@ from octomate.tentacles.discord import (
     DiscordInk,
     DiscordTentacle,
 )
+from octomate.tentacles.discord.feelers.output import DiscordTimelineFeeler
 from tests.channels.discord.fakes import (
     a_client_user,
     a_dm_channel,
@@ -90,6 +91,7 @@ def test_build_channel_composes_discord_components(
     assert isinstance(channel, DiscordTentacle)
     assert isinstance(channel.ink, DiscordInk)
     assert isinstance(channel.chromo, DiscordChromo)
+    assert isinstance(channel.feelers.timeline, DiscordTimelineFeeler)
     assert channel.client.intents.message_content is True
     assert DiscordTentacle.thread_strategy == "flat_thread"
     assert DiscordTentacle.surfaces == ChannelSurfaces(

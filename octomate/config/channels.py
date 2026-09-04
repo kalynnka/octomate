@@ -35,6 +35,10 @@ class LarkStreamConfig(ChannelStreamConfig):
     min_chars: int = 20
 
 
+class DiscordStreamConfig(ChannelStreamConfig):
+    flush_interval: float = 0.5
+
+
 class NapcatStreamConfig(ChannelStreamConfig):
     enabled: bool = False
 
@@ -81,6 +85,7 @@ class LarkChannelConfig(ChannelConfig):
 class DiscordChannelConfig(ChannelConfig):
     type: Literal["discord"] = "discord"
     bot_token: SecretStr
+    stream: DiscordStreamConfig = Field(default_factory=DiscordStreamConfig)
 
 
 class VercelStreamConfig(ChannelStreamConfig):
