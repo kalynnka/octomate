@@ -47,10 +47,10 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.todos import Todo
-from octomate.tentacles.channels.base import ChannelOutput
-from octomate.tentacles.channels.slack.feelers import output as slack_output
-from octomate.tentacles.channels.slack.feelers.actions import SlackBlockAction
-from octomate.tentacles.channels.slack.feelers.questions import (
+from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.slack.feelers import output as slack_output
+from octomate.tentacles.slack.feelers.actions import SlackBlockAction
+from octomate.tentacles.slack.feelers.questions import (
     question_choice_block_id,
 )
 from octomate.types.json import JsonObject

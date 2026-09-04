@@ -25,11 +25,11 @@ from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import MessageBinding, ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.claude import tailer as tailer_mod
-from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
-from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
-from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer, TailState
-from octomate.tentacles.agents.locks import SessionLocks
+from octomate.tentacles.claude import tailer as tailer_mod
+from octomate.tentacles.claude.hooks import ClaudeHookInput
+from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
+from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer, TailState
+from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
 from tests.support.managers import a_loaded_thread
 

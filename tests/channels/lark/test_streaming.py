@@ -33,8 +33,8 @@ from octomate.capabilities.harness.events import (
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import CardData, CardSegment, ImageData, ImageSegment
 from octomate.schemas.todos import Todo
-from octomate.tentacles.channels.base import ChannelOutput
-from octomate.tentacles.channels.lark.schema import LarkStreamCard
+from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.lark.schema import LarkStreamCard
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 from tests.support.channels import (

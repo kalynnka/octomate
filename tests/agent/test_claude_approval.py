@@ -46,9 +46,9 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.claude import base as claude_base
-from octomate.tentacles.channels.base import ChannelTentacle
+from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import base as claude_base
 from tests.support.agents import CLAUDE_MODELS
 from tests.support.config import registered
 from tests.support.managers import (

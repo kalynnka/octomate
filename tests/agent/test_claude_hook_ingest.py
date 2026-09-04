@@ -15,9 +15,9 @@ from octomate.managers.user import UserManager
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
-from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
-from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
+from octomate.tentacles.claude.hooks import ClaudeHookInput
+from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
+from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from tests.support.managers import a_loaded_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")

@@ -13,7 +13,7 @@ from octomate.schemas.segments import (
     ReplySegment,
     TextSegment,
 )
-from octomate.tentacles.channels.lark import LarkChromo
+from octomate.tentacles.lark import LarkChromo
 from octomate.types.json import JsonObject
 
 JsonObjectAdapter = TypeAdapter(JsonObject)

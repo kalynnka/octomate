@@ -29,10 +29,11 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.tentacles.agents.deepseek import DeepseekTentacle
-from octomate.tentacles.agents.deepseek import base as deepseek_base
-from octomate.tentacles.agents.deepseek.client import DeepseekApiClient
-from octomate.tentacles.agents.deepseek.wire import (
+from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.deepseek import DeepseekTentacle
+from octomate.tentacles.deepseek import base as deepseek_base
+from octomate.tentacles.deepseek.client import DeepseekApiClient
+from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     ErrResult,
     MuxFrame,
@@ -44,7 +45,6 @@ from octomate.tentacles.agents.deepseek.wire import (
     SessionEventFrame,
     StreamErrorFrame,
 )
-from octomate.tentacles.channels.base import ChannelTentacle
 from octomate.types.json import JsonObject, JsonValue
 from tests.support.agents import DEEPSEEK_MODELS
 from tests.support.config import registered

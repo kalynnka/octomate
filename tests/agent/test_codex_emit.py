@@ -29,7 +29,7 @@ from octomate_cli.emit import (
     SECRET_ENV,
 )
 
-from octomate.tentacles.agents.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
+from octomate.tentacles.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
 
 SECRET = "the-hook-secret"
 PAYLOAD = {"hook_event_name": "Stop", "session_id": "s1", "turn_id": "t1"}

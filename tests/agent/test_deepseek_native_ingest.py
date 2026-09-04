@@ -14,9 +14,9 @@ from octomate import Octomate
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import DEEPSEEK_NATIVE_ID, ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.deepseek.hooks import DeepseekHookInput
-from octomate.tentacles.agents.deepseek.ingest import DeepseekHookIngest
-from octomate.tentacles.agents.deepseek.tailer import DeepseekEventTailer, TailState
+from octomate.tentacles.deepseek.hooks import DeepseekHookInput
+from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
+from octomate.tentacles.deepseek.tailer import DeepseekEventTailer, TailState
 from octomate.types.json import JsonObject, JsonValue
 from tests.support.managers import a_loaded_thread
 

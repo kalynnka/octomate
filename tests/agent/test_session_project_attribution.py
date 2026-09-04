@@ -25,12 +25,12 @@ from octomate import Octomate
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
-from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
-from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
-from octomate.tentacles.agents.codex.hooks import CodexHookInput
-from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
-from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.claude.hooks import ClaudeHookInput
+from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
+from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
+from octomate.tentacles.codex.hooks import CodexHookInput
+from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
+from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.support.managers import a_project, a_registry
 

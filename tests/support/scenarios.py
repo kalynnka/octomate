@@ -57,7 +57,7 @@ from octomate.schemas.segments import (
     MessageSegment,
 )
 from octomate.schemas.todos import Todo
-from octomate.tentacles.channels.base import ChannelOutput
+from octomate.tentacles.channel import ChannelOutput
 from octomate.types.json import JsonObject
 
 ChannelScript = list[ReactStreamEvent[ChannelOutput]]

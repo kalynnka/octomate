@@ -35,9 +35,9 @@ from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
-from octomate.tentacles.agents.inkling import InklingTentacle
-from octomate.tentacles.agents.inkling.base import InklingOutput
-from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.base import InklingOutput
+from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from tests.support.managers import a_project, a_registry
 
 ADDRESS = ChannelAddress(

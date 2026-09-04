@@ -29,9 +29,9 @@ from octomate.schemas.triage import (
     SummonDecision,
     ThreadLanding,
 )
-from octomate.tentacles.agents.inkling import InklingTentacle
-from octomate.tentacles.agents.inkling.base import InklingOutput
 from octomate.tentacles.base import Tentacle
+from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.base import InklingOutput
 from tests.support.agents import FakeAgent
 from tests.support.channels import (
     FakeChannelTentacle,

@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import httpx
 import pytest
 from fastapi import FastAPI
-from fastmcp import Client
+from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -29,10 +29,16 @@ from octomate.config.channels import AgentModelConfig, ChannelConfig
 from octomate.config.users import UserConfig
 from octomate.managers.gateway import GatewaySession
 from octomate.managers.user import UserManager
-from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
+from octomate.mcp.gateway import (
+    CLIENT_HEADER,
+    CONVERSATION_HEADER,
+    GATEWAY_SERVER_NAME,
+    GATEWAY_SPELLS,
+)
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
+from octomate.tentacles.mcp import McpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, FakeOctomate
@@ -60,8 +66,14 @@ async def served(
         yield octomate, app
 
 
-def over(octomate: Octomate, app: FastAPI, headers: dict[str, str]) -> Client:
-    """An MCP client speaking streamable HTTP into `app` without a socket."""
+def over(
+    octomate: Octomate,
+    app: FastAPI,
+    headers: dict[str, str],
+    server: str = GATEWAY_SERVER_NAME,
+) -> Client:
+    """An MCP client speaking streamable HTTP into `app` without a socket, at the
+    named server's mount."""
 
     def asgi(
         headers: dict[str, str] | None = None,
@@ -80,7 +92,7 @@ def over(octomate: Octomate, app: FastAPI, headers: dict[str, str]) -> Client:
 
     return Client(
         StreamableHttpTransport(
-            f"http://octomate/gateway{octomate.mcp_path}",
+            f"http://octomate/{server}{octomate.mcp_path}",
             headers=headers,
             httpx_client_factory=asgi,
         )
@@ -132,6 +144,23 @@ async def a_driven_turn(octomate: Octomate) -> GatewaySession:
 
 def test_the_gateway_is_one_of_the_served_servers() -> None:
     assert "gateway" in SERVED
+
+
+class ToolsTentacle(FakeChannelTentacle, McpTentacle):
+    """A channel composing the MCP component: served beside the gateway, once
+    per type however many instances are connected."""
+
+    @classmethod
+    def mcp(cls, resolve_session: Callable[[], Awaitable[GatewaySession]]) -> FastMCP:
+        return FastMCP("tools")
+
+
+def test_a_tentacle_composing_mcp_is_served_once_per_type() -> None:
+    octomate = Octomate()
+    octomate.connect(ToolsTentacle(id="a"))
+    octomate.connect(ToolsTentacle(id="b"))
+
+    assert [server.name for server in octomate.mcp_servers()] == ["gateway", "tools"]
 
 
 async def test_a_bare_deployment_is_served_locked() -> None:

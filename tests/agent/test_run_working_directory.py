@@ -27,17 +27,17 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.claude import base as claude_base
-from octomate.tentacles.agents.claude.hooks import ClaudeHookInput
-from octomate.tentacles.agents.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
-from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer
-from octomate.tentacles.agents.codex import CodexTentacle
-from octomate.tentacles.agents.codex import base as codex_base
-from octomate.tentacles.agents.codex.hooks import CodexHookInput
-from octomate.tentacles.agents.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
-from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer
-from octomate.tentacles.agents.locks import SessionLocks
+from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude.hooks import ClaudeHookInput
+from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
+from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
+from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.codex import base as codex_base
+from octomate.tentacles.codex.hooks import CodexHookInput
+from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
+from octomate.tentacles.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
 from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
