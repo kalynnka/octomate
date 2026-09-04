@@ -9,6 +9,7 @@ chat per channel:
     trigger:
       slack: {chat_id: D0123, user_id: U0123}
       lark: {chat_type: group, chat_id: oc_xxx, user_id: ou_xxx}
+      discord: {chat_type: group, chat_id: "123", user_id: "456"}
 
 `trigger.yaml` is not one of the config home's `CONFIG_FILES`, so it is invisible
 to the application. Tests skip cleanly when either piece is missing.
@@ -91,6 +92,7 @@ class TriggerTargets(BaseSettings):
 
     slack: TriggerTarget | None = None
     lark: TriggerTarget | None = None
+    discord: TriggerTarget | None = None
     napcat: TriggerTarget | None = None
 
     @classmethod
@@ -165,7 +167,12 @@ def trigger_targets() -> TriggerTargets:
         # No `trigger:` section in trigger.yaml — every trigger test skips.
         # model_construct bypasses the settings sources (which would re-read
         # the yaml and raise again).
-        return TriggerTargets.model_construct(slack=None, lark=None, napcat=None)
+        return TriggerTargets.model_construct(
+            slack=None,
+            lark=None,
+            discord=None,
+            napcat=None,
+        )
 
 
 @pytest.fixture
