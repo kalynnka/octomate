@@ -1,54 +1,69 @@
-"""History capability: thread-ledger search plus explicit model-ledger tools.
+"""History capability: the thread ledger of the person a run answers.
 
-Thread history is the user-facing thread ledger (`ThreadMessage`) and is the
-surface for `search_thread_history`. Model history is the agent conversation's
-`ModelMessage` stream and is available under explicit model-history names.
+Thread history is what people, bots and agents visibly said — `ThreadMessage` rows,
+including the ones that did not wake this agent. The model ledger is not offered
+here: it exists for audit and for rebuilding a conversation's context, not for a
+model to read.
+
+The scope is the person, not the thread: a run reads every thread the human it is
+answering has spoken in, on any account the registry links to them — this thread,
+their direct messages elsewhere, the chat a handoff came from. So the capability is
+user-scoped, bound per run by `for_profile`, and no tool takes a conversation id.
+
+The tools are methods with docstrings, as the gateway's spells are, so a runtime
+that reaches them some other way than pydantic-ai projects the same contracts.
 """
 
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from typing import Any
 
-from pydantic_ai import RunContext
 from pydantic_ai.agent.abstract import AgentInstructions
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.toolsets import (
-    AbstractToolset,
-    CombinedToolset,
-    FunctionToolset,
-)
+from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.toolsets import FunctionToolset
 
 from octomate.managers import ConversationManager, ThreadManager
-from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.thread import ChannelActorKind, ThreadMessage
+from octomate.schemas.user import UserProfile
 
-MODEL_HISTORY_INSTRUCTIONS = """\
+HISTORY_TOOLSET_ID = "history"
+
+# The instruction prose, templated only where a tool is named, so each runtime's
+# adapter renders one contract under its own tool naming — as the gateway's is.
+HISTORY_INSTRUCTION_TEMPLATE = """\
 ## Searching history
 
-You can inspect this agent conversation's model ledger:
+Thread history is what people, bots, and agents visibly said — in this thread, and
+in every other thread the person you are answering has spoken in, on any of their
+linked accounts. Messages that did not wake you are there too.
 
-- `search_model_history(query[, role])` searches your prompts, assistant
-  responses, tool calls, tool results, retries, and thinking.
-- `read_model_history_before(model_message_id)` /
-  `read_model_history_after(...)` page model messages around a model-history
-  result.
+- `{search_thread_history}` searches all of it for a substring, optionally by
+  actor kind. Prefer it when the user refers to what was said, here or elsewhere.
+- `{read_thread_history_before}` and `{read_thread_history_after}` page a thread
+  around a search hit, or around a `#msg:<id>` handle a brief cited.
 """
 
-THREAD_HISTORY_INSTRUCTIONS = """
-- Thread history is what people, bots, and agents visibly said in this thread,
-  including messages that did not wake you.
-- `search_thread_history(query[, actor_kind])` searches thread history. Prefer
-  it when the user refers to what people said.
-- `read_thread_history_before(thread_message_id)` /
-  `read_thread_history_after(...)` page thread messages around a thread-history
-  result.
-- `read_related_model_messages(thread_message_id)` and
-  `read_related_chat_messages(model_message_id)` jump between the two ledgers.
-"""
+# The tools, in the order the capability registers them — what a projection
+# offers, and what an adapter pre-allows, named statically.
+HISTORY_TOOLS: tuple[str, ...] = (
+    "search_thread_history",
+    "read_thread_history_before",
+    "read_thread_history_after",
+)
 
-HISTORY_INSTRUCTIONS = MODEL_HISTORY_INSTRUCTIONS + THREAD_HISTORY_INSTRUCTIONS
+
+def history_instructions(tool_name: Callable[[str], str]) -> str:
+    """The history instruction, each tool rendered by the caller's own naming."""
+    return HISTORY_INSTRUCTION_TEMPLATE.format(
+        **{name: tool_name(name) for name in HISTORY_TOOLS}
+    )
+
+
+HISTORY_INSTRUCTIONS = history_instructions(lambda name: name)
 
 
 def conversation_id(ctx: object) -> uuid.UUID:
@@ -71,137 +86,91 @@ async def thread_id(
     raise ValueError("thread history tools require a thread-backed conversation")
 
 
-def build_thread_history_toolset(
-    conversation_manager: ConversationManager,
-    thread_manager: ThreadManager,
-) -> FunctionToolset[Any]:
-    toolset: FunctionToolset[Any] = FunctionToolset(id="thread_history")
+@dataclass
+class HistoryCapability(AbstractCapability[Any]):
+    """Thread-history tools over the history of the person a run answers.
 
-    @toolset.tool
+    Mounted user-scoped: the tentacle asks `for_profile` for the copy bound to
+    that run's user and mounts that, so no tool has to ask who is asking.
+    """
+
+    # No default: the capability must read the host's ledger manager, never a
+    # private one with its own identity registry.
+    thread_manager: ThreadManager
+    # The person whose history the tools read. None on the mounted template,
+    # which serves no run itself.
+    profile: UserProfile | None = None
+    toolset: FunctionToolset[Any] | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        toolset: FunctionToolset[Any] = FunctionToolset(id=HISTORY_TOOLSET_ID)
+        # No tool takes the run context: the person is bound in, not read off it.
+        toolset.add_function(self.search_thread_history, takes_ctx=False)
+        toolset.add_function(self.read_thread_history_before, takes_ctx=False)
+        toolset.add_function(self.read_thread_history_after, takes_ctx=False)
+        self.toolset = toolset
+
+    async def for_profile(self, profile: UserProfile) -> HistoryCapability:
+        """This capability bound to one person. Everyone gets one: a visitor's
+        history is the threads their one account has spoken in."""
+        return replace(self, profile=profile)
+
+    @property
+    def reader(self) -> UserProfile:
+        if self.profile is None:
+            raise RuntimeError(
+                "history is read as a run's user: mount the copy `for_profile` gives"
+            )
+        return self.profile
+
+    async def anchor(self, handle: str) -> ThreadMessage:
+        """The message a paging tool is anchored on, with a refusal spoken as a
+        retry: a handle outside this person's history is not theirs to page."""
+        try:
+            return await self.thread_manager.chat_message(self.reader, handle)
+        except ValueError as refusal:
+            raise ModelRetry(str(refusal)) from refusal
+
     async def search_thread_history(
-        ctx: RunContext[Any],
+        self,
         query: str,
         actor_kind: ChannelActorKind | None = None,
         limit: int = 10,
     ) -> list[ThreadMessage]:
         """Find visible thread messages whose text contains `query`
-        (case-insensitive). Optionally restrict to an actor kind such as
-        "human", "agent", "bot", or "system"."""
-        return await thread_manager.search_chat_messages(
-            await thread_id(ctx, conversation_manager),
-            query,
-            actor_kind=actor_kind,
-            limit=limit,
+        (case-insensitive), across every thread the person you are answering has
+        spoken in — this one, their direct messages, other chats, on any of their
+        linked accounts. Optionally restrict to an actor kind such as "human",
+        "agent", "bot", or "system". Oldest first."""
+        return await self.thread_manager.search_chat_messages(
+            self.reader, query, actor_kind=actor_kind, limit=limit
         )
 
-    @toolset.tool
     async def read_thread_history_before(
-        ctx: RunContext[Any], message_id: str, limit: int = 10
+        self, message_id: str, limit: int = 10
     ) -> list[ThreadMessage]:
-        """The visible thread messages immediately preceding `message_id` in this
-        thread, oldest first."""
-        return await thread_manager.chat_messages_before(
-            await thread_id(ctx, conversation_manager),
-            uuid.UUID(message_id),
-            limit=limit,
+        """The visible thread messages immediately preceding `message_id` in its
+        thread, oldest first. `message_id` is a row id or a `#msg:<id>` handle, as
+        a search hit or a brief shows it; a message outside this person's history
+        is refused."""
+        anchor = await self.anchor(message_id)
+        return await self.thread_manager.chat_messages_before(
+            anchor.thread_id, anchor.id, limit=limit
         )
 
-    @toolset.tool
     async def read_thread_history_after(
-        ctx: RunContext[Any], message_id: str, limit: int = 10
+        self, message_id: str, limit: int = 10
     ) -> list[ThreadMessage]:
-        """The visible thread messages immediately following `message_id` in this
-        thread, oldest first."""
-        return await thread_manager.chat_messages_after(
-            await thread_id(ctx, conversation_manager),
-            uuid.UUID(message_id),
-            limit=limit,
+        """The visible thread messages immediately following `message_id` in its
+        thread, oldest first. `message_id` is a row id or a `#msg:<id>` handle, as
+        a search hit or a brief shows it; a message outside this person's history
+        is refused."""
+        anchor = await self.anchor(message_id)
+        return await self.thread_manager.chat_messages_after(
+            anchor.thread_id, anchor.id, limit=limit
         )
 
-    @toolset.tool
-    async def read_related_model_messages(
-        ctx: RunContext[Any], thread_message_id: str
-    ) -> list[ModelRequest | ModelResponse]:
-        """Model-ledger messages related to a visible chat message."""
-        await thread_id(ctx, conversation_manager)
-        return await thread_manager.related_model_messages(uuid.UUID(thread_message_id))
-
-    @toolset.tool
-    async def read_related_chat_messages(
-        ctx: RunContext[Any], model_message_id: str
-    ) -> list[ThreadMessage]:
-        """Visible thread messages related to a model-ledger message."""
-        await thread_id(ctx, conversation_manager)
-        return await conversation_manager.related_chat_messages(
-            uuid.UUID(model_message_id)
-        )
-
-    return toolset
-
-
-def build_model_history_toolset(
-    conversation_manager: ConversationManager,
-) -> FunctionToolset[Any]:
-    toolset: FunctionToolset[Any] = FunctionToolset(id="model_history")
-
-    @toolset.tool
-    async def search_model_history(
-        ctx: RunContext[Any],
-        query: str,
-        role: Literal["user", "assistant"] | None = None,
-        limit: int = 10,
-    ) -> list[ModelMessage]:
-        """Find model-ledger messages in this agent conversation whose text
-        contains `query` (case-insensitive). Optionally restrict by role."""
-        return await conversation_manager.search_messages(
-            conversation_id(ctx), query, role=role, limit=limit
-        )
-
-    @toolset.tool
-    async def read_model_history_before(
-        ctx: RunContext[Any], model_message_id: str, limit: int = 10
-    ) -> list[ModelMessage]:
-        """Model-ledger messages immediately preceding `model_message_id` in this
-        agent conversation, oldest first."""
-        return await conversation_manager.messages_before(
-            conversation_id(ctx), uuid.UUID(model_message_id), limit=limit
-        )
-
-    @toolset.tool
-    async def read_model_history_after(
-        ctx: RunContext[Any], model_message_id: str, limit: int = 10
-    ) -> list[ModelMessage]:
-        """Model-ledger messages immediately following `model_message_id` in this
-        agent conversation, oldest first."""
-        return await conversation_manager.messages_after(
-            conversation_id(ctx), uuid.UUID(model_message_id), limit=limit
-        )
-
-    return toolset
-
-
-@dataclass
-class HistoryCapability(AbstractCapability[Any]):
-    """Adds thread-history and model-history tools scoped to the run's conversation."""
-
-    conversation_manager: ConversationManager
-    # No default: the capability must read the host's ledger manager, never a
-    # private one with its own identity registry.
-    thread_manager: ThreadManager
-    toolset: AbstractToolset[Any] | None = field(default=None, init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        self.toolset = CombinedToolset(
-            (
-                build_model_history_toolset(self.conversation_manager),
-                build_thread_history_toolset(
-                    self.conversation_manager,
-                    self.thread_manager,
-                ),
-            )
-        )
-
-    def get_toolset(self) -> AbstractToolset[Any] | None:
+    def get_toolset(self) -> FunctionToolset[Any] | None:
         return self.toolset
 
     def get_instructions(self) -> AgentInstructions[Any] | None:

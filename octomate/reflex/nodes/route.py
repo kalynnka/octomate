@@ -7,6 +7,7 @@ from pydantic_graph import BaseNode, GraphRunContext
 
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
+    PendingHandoff,
     ReflexDeps,
     ReflexGraphResult,
     ReflexState,
@@ -57,8 +58,7 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 source_target,
                 mode="sub" if source_address.channel_thread_id else "main",
             )
-            state.claim_handoff = False
-            state.handoff_from_agent_tentacle_id = None
+            state.handoff = None
             return React()
 
         if (
@@ -86,8 +86,7 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 summon=str(state.user_prompt or ""),
             )
             state.target = replace(source_target, mode="sub")
-            state.claim_handoff = True
-            state.handoff_from_agent_tentacle_id = None
+            state.handoff = PendingHandoff()
             return React()
 
         # No active owner and not already in a flat thread: run the channel's default
@@ -110,6 +109,5 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         state.target = replace(
             source_target, mode="sub" if source_address.channel_thread_id else "main"
         )
-        state.claim_handoff = False
-        state.handoff_from_agent_tentacle_id = None
+        state.handoff = None
         return React()

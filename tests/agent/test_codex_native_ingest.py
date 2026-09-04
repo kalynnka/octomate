@@ -250,7 +250,7 @@ async def test_marked_session_start_is_ignored_before_the_sdk_returns_its_id() -
         SENDER,
     )
 
-    assert octomate.thread_manager.threads == {}
+    assert await octomate.thread_manager.list_threads() == []
     await tailer.shutdown()
 
 
@@ -615,9 +615,12 @@ async def test_guardian_rollout_is_not_ingested_as_a_subagent() -> None:
     )
     tailer.detach_remote(state)
 
+    thread = await octomate.thread_manager.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    )
     assert all(
         conversation.subagent_id == ""
-        for conversation in octomate.conversations.conversations.values()
+        for conversation in await octomate.conversations.for_thread(thread.id)
     )
     await tailer.shutdown()
 

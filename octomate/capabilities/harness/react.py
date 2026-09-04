@@ -75,8 +75,8 @@ ReactStreamEvent = TypeAliasType(
 @dataclass
 class ReactState:
     """The react graph holds no history of its own — only the identity needed to
-    fetch the live conversation from the ConversationManager (the cache + source
-    of truth). Every node `ensure()`s the conversation and reads its messages."""
+    fetch the live conversation from the ConversationManager. Every node
+    `ensure()`s the conversation and reads its messages."""
 
     conversation_address: ChannelAddress
     agent_tentacle_id: str
@@ -439,10 +439,9 @@ class RunAgent(
         )
         span.set_attribute("react.new_messages", len(new_messages))
         if new_messages:
-            # Recording keeps the cached conversation coherent, so the next
-            # RunAgent's ensure() picks up this turn from the manager — no copy in
-            # state. Only the prompt turn binds source messages; deferred resumes
-            # carry no new user request.
+            # Recording persists the turn, so the next RunAgent's ensure() picks
+            # it up from the manager — no copy in state. Only the prompt turn
+            # binds source messages; deferred resumes carry no new user request.
             await persistence.record(result.run_id, new_messages)
 
         if isinstance(result.output, DeferredToolRequests) and (

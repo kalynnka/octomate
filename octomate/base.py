@@ -28,7 +28,8 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.mcp.base import KnownBearers
-from octomate.mcp.gateway import gateway_mcp, served_session
+from octomate.mcp.gateway import served_session
+from octomate.mcp.server import octomate_mcp
 from octomate.oauth.routes import oauth_router
 from octomate.reflex import (
     Awake,
@@ -257,24 +258,27 @@ class Octomate:
         task.add_done_callback(self.background.discard)
 
     def mcp_servers(self) -> list[FastMCP]:
-        """The MCP servers Octomate serves, one per tool family.
+        """The MCP servers Octomate serves: the one `octomate.mcp.server` composes,
+        which every runtime's install config knows as `/gateway/mcp`, and after it
+        the servers the tentacles serve themselves.
 
-        Separate servers rather than one with namespaces: a runtime that defers MCP
-        tools behind a search does so per server, with the server's own instructions
-        as the family's card, and only a root server's instructions ever reach a
-        client. Each is served at `/<name>/mcp` behind the deployment's known
-        bearers, and resolves the identity a call runs against from the request
-        itself.
+        A list because a family that outgrows the first server's card would be
+        served as one of its own: a runtime that defers MCP tools behind a search
+        does so per server, with the server's own instructions as the card, and
+        only a root server's instructions ever reach a client. Each is served at
+        `/<name>/mcp` behind the deployment's known bearers, and resolves the
+        identity a call runs against from the request itself.
 
-        After the gateway come the servers the tentacles serve themselves: one per
-        tentacle type composing `McpTentacle`, built by the class, its tools
-        resolving the instance — and the caller's own credential for it — from the
-        session a call names, so two tentacles of one type share one server.
+        The tentacles' servers are one per tentacle type composing `McpTentacle`,
+        built by the class, its tools resolving the instance — and the caller's own
+        credential for it — from the session a call names, so two tentacles of one
+        type share one server.
         """
         resolve_session = served_session(self)
-        gateway_session = Depends(resolve_session)
         servers = [
-            gateway_mcp(gateway_session, self.thread_manager, kick=self.kick_soon)
+            octomate_mcp(
+                Depends(resolve_session), self.thread_manager, kick=self.kick_soon
+            )
         ]
         # One build per class, however many instances share it, in the order the
         # tentacles were connected.

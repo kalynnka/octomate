@@ -1,6 +1,7 @@
-"""The gateway projected into Claude's native tool mechanism.
+"""Octomate's MCP server projected into Claude's native tool mechanism.
 
-A driven Claude run mounts the gateway's MCP server in process, with the turn's
+A driven Claude run mounts the served server — the gateway's spells and the
+history tools — in process, with the turn's
 `GatewaySession` closed over — identity by closure, so nothing on the wire names a
 session, and the stdio control protocol carries the calls over an SSH transport
 unchanged. The server is the same one `/gateway/mcp` serves; this module only walks
@@ -16,9 +17,11 @@ from fastmcp.tools import Tool
 from pydantic import JsonValue, ValidationError
 
 from octomate.capabilities.gateway import gateway_instructions
+from octomate.capabilities.history import history_instructions
 from octomate.managers.gateway import GatewaySession
 from octomate.managers.thread import ThreadManager
-from octomate.mcp.gateway import GATEWAY_SERVER_NAME, gateway_mcp
+from octomate.mcp.gateway import GATEWAY_SERVER_NAME
+from octomate.mcp.server import octomate_mcp
 
 
 def gateway_tool_name(name: str) -> str:
@@ -26,8 +29,13 @@ def gateway_tool_name(name: str) -> str:
     return f"mcp__{GATEWAY_SERVER_NAME}__{name}"
 
 
-# The shared routing contract, rendered under Claude's tool naming.
-GATEWAY_MCP_INSTRUCTION = gateway_instructions(gateway_tool_name)
+# The shared routing contract and the history one, rendered under Claude's tool
+# naming.
+GATEWAY_MCP_INSTRUCTION = (
+    gateway_instructions(gateway_tool_name)
+    + "\n"
+    + history_instructions(gateway_tool_name)
+)
 
 
 def sdk_gateway_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
@@ -61,11 +69,13 @@ def sdk_gateway_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
 
 
 async def gateway_mcp_server(
-    session: GatewaySession, thread_manager: ThreadManager
+    session: GatewaySession,
+    thread_manager: ThreadManager,
 ) -> McpSdkServerConfig:
-    """The gateway as this turn's in-process server: every call runs against
-    `session`, and a delivering spell writes through `thread_manager`."""
-    server = gateway_mcp(Depends(lambda: session), thread_manager)
+    """The served server, mounted in process for this turn: every call runs against
+    `session`, and a delivering spell writes through `thread_manager`, which the
+    history tools read."""
+    server = octomate_mcp(Depends(lambda: session), thread_manager)
     return create_sdk_mcp_server(
         GATEWAY_SERVER_NAME,
         tools=[sdk_gateway_tool(tool) for tool in await server.list_tools()],

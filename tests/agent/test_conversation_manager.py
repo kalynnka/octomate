@@ -267,7 +267,7 @@ async def test_record_run_no_op_for_empty_list() -> None:
     assert list(reloaded.runs) == []
 
 
-async def test_record_run_syncs_cached_history() -> None:
+async def test_record_run_persists_history() -> None:
     service = ConversationManager()
     conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert list(conversation.messages) == []
@@ -290,8 +290,7 @@ async def test_record_run_syncs_cached_history() -> None:
         ],
     )
 
-    # record_agent_run keeps the cached conversation coherent; a hot ensure()
-    # (cache hit, no cold reload) reflects the new run.
+    # record_agent_run persisted the turn; a re-ensure reads it back.
     hot = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert len(list(hot.messages)) == 2
 
@@ -321,8 +320,8 @@ async def test_record_second_run_keeps_prior_run_messages() -> None:
         ],
     )
 
-    # The next turn records again through the SAME cached conversation reference
-    # (as a live tentacle holds it), whose run collection is stale vs the DB.
+    # The next turn records again through the SAME conversation reference (as a
+    # live tentacle holds it), whose run collection is stale vs the DB.
     await service.record_agent_run(
         first,
         run_id="run-2",
@@ -351,7 +350,7 @@ async def test_record_second_run_keeps_prior_run_messages() -> None:
     assert len(list(reloaded.messages)) == 4
 
 
-async def test_drop_trailing_deferral_removes_from_cache_and_db() -> None:
+async def test_drop_trailing_deferral_removes_from_db() -> None:
     service = ConversationManager()
     conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     await service.record_agent_run(
@@ -377,12 +376,12 @@ async def test_drop_trailing_deferral_removes_from_cache_and_db() -> None:
         ],
     )
 
-    # ensure() returns the conversation synced by record_agent_run.
+    # ensure() re-reads the conversation record_agent_run persisted.
     conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     dropped = await service.drop_trailing_deferral(conversation)
     assert dropped is not None
 
-    # The deferral is gone from the cache (hot) and the DB (cold reload).
+    # The deferral is gone for a re-ensure and for a fresh manager alike.
     hot = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert [type(m).__name__ for m in hot.messages] == ["ModelRequest"]
     cold = await ConversationManager().ensure(
@@ -503,9 +502,9 @@ async def test_fork_empty_source_is_noop() -> None:
 
 
 async def test_a_subagent_conversation_is_its_own_context() -> None:
-    """A subagent's conversation is distinct from the agent's own — in the
-    database and in the cache — so a child's history can never flatten into
-    the parent agent's model context."""
+    """A subagent's conversation is distinct from the agent's own, so a
+    child's history can never flatten into the parent agent's model
+    context."""
     service = ConversationManager()
     own = await service.ensure(await _thread(), agent_tentacle_id="claude")
     child = await service.ensure(
@@ -567,7 +566,7 @@ async def test_one_bare_conversation_per_agent_is_enforced() -> None:
     """The empty subagent_id is a value, not a NULL, exactly so the plain
     unique constraint can catch a duplicate bare (thread, agent) row — NULLs
     are distinct in a unique constraint and would wave it through. If this
-    raises nothing, the invariant the conversation cache rests on is gone."""
+    raises nothing, the invariant `ensure` rests on is gone."""
     await ConversationManager().ensure(await _thread(), agent_tentacle_id="inkling")
     async with async_session() as session:
         session.add(

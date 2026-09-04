@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -14,7 +15,12 @@ from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import MessageBinding, ThreadKey, ThreadMessage
+from octomate.schemas.thread import (
+    MessageBinding,
+    Thread,
+    ThreadKey,
+    ThreadMessage,
+)
 from octomate.schemas.user import UserProfile
 
 
@@ -60,6 +66,27 @@ async def test_ensure_thread_ignores_sender_user_id() -> None:
 
     assert alice_thread.id == bob_thread.id == fresh_thread.id
     assert [message.user_id for message in fresh_thread.messages] == ["alice", "bob"]
+
+
+async def test_concurrent_first_sightings_of_one_key_insert_once() -> None:
+    """The bug this manager was missing a guard for: two coroutines that miss
+    together both insert, and the loser trips the threads UNIQUE constraint —
+    which escapes into `follow`'s handler and strands the rest of the session.
+    A session's follow task preparing while a hook pokes it does exactly this,
+    and so do two people replying at once in a chat with no thread row yet."""
+    manager = ThreadManager(users=UserManager())
+    key = ThreadKey(
+        channel_tentacle_id="slack",
+        chat_type="thread",
+        chat_id="C123",
+        channel_thread_id="1.5",
+    )
+
+    threads = await asyncio.gather(*(manager.ensure(key) for _ in range(4)))
+
+    assert len({thread.id for thread in threads}) == 1
+    async with async_session() as session:
+        assert await session.count(Thread) == 1
 
 
 async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> None:
@@ -181,7 +208,7 @@ async def test_sender_line_leaves_an_undeclared_sender_as_a_visitor() -> None:
     assert "user:" not in str(stranger)
 
 
-async def test_record_handoff_syncs_active_owner_cache() -> None:
+async def test_record_handoff_updates_the_active_owner() -> None:
     manager = ThreadManager(users=UserManager())
     thread = await manager.ensure(address())
 
@@ -193,7 +220,7 @@ async def test_record_handoff_syncs_active_owner_cache() -> None:
     )
     await manager.record_handoff(
         thread,
-        from_agent_tentacle_id="inkling",
+        source_agent_tentacle_id="inkling",
         to_agent_tentacle_id="claude",
         to_model="sonnet",
         reason="Needs code work.",
@@ -215,8 +242,10 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
     first = await manager.record_inbound(event("m1", "alice", "alpha first"))
     second = await manager.record_inbound(event("m2", "bob", "beta second"))
     third = await manager.record_inbound(event("m3", "alice", "alpha third"))
+    alice = await manager.users.profile("slack", "alice")
+    assert alice is not None
 
-    hits = await manager.search_chat_messages(thread.id, "alpha")
+    hits = await manager.search_chat_messages(alice, "alpha")
     before = await manager.chat_messages_before(thread.id, third.id, limit=1)
     after = await manager.chat_messages_after(thread.id, first.id, limit=1)
 
@@ -402,3 +431,78 @@ async def test_a_row_is_never_undated() -> None:
 
     assert inbound.happened_at is not None
     assert outbound.happened_at is not None
+
+
+def said(
+    tentacle_id: str, message_id: str, user_id: str, text: str, at: float
+) -> MessageEvent:
+    """A direct message from `user_id` on `tentacle_id`, in their own chat."""
+    return MessageEvent(
+        tentacle_id=tentacle_id,
+        message_id=message_id,
+        timestamp=at,
+        user_id=user_id,
+        chat_id=user_id,
+        chat_type="dm",
+        sender=UserProfile(channel_user_id=user_id, name=user_id.title()),
+        segments=[TextSegment(data={"text": text})],
+    )
+
+
+async def test_a_persons_history_is_every_thread_their_accounts_spoke_in() -> None:
+    """Registered, alice is one person on slack and on lark: read as either
+    account, her history holds both threads. Bob's own direct messages, where she
+    never spoke, are his and not hers."""
+    users = UserManager(
+        {
+            "alice": UserConfig.model_validate(
+                {
+                    "secret": "alice-token",
+                    "profiles": {
+                        "slack": {"channel_user_id": "alice"},
+                        "lark": {"channel_user_id": "ou_alice"},
+                    },
+                }
+            )
+        }
+    )
+    await users.reconcile()
+    manager = ThreadManager(users=users)
+    await manager.record_inbound(event("m1", "alice", "alpha on slack"))
+    await manager.record_inbound(
+        said("lark", "l1", "ou_alice", "alpha on lark", 1710000001.0)
+    )
+    await manager.record_inbound(
+        said("slack", "b1", "bob", "alpha, bob alone", 1710000002.0)
+    )
+    alice = await users.profile("lark", "ou_alice")
+    bob = await users.profile("slack", "bob")
+    assert alice is not None
+    assert bob is not None
+
+    hers = await manager.search_chat_messages(alice, "alpha")
+    his = await manager.search_chat_messages(bob, "alpha")
+
+    assert [message.message_text for message in hers] == [
+        "alpha on slack",
+        "alpha on lark",
+    ]
+    assert [message.message_text for message in his] == ["alpha, bob alone"]
+
+
+async def test_chat_message_resolves_a_handle_within_a_persons_history() -> None:
+    manager = ThreadManager(users=UserManager())
+    first = await manager.record_inbound(event("1710000000.000002", "alice", "first"))
+    await manager.record_inbound(said("slack", "b1", "bob", "bob alone", 1710000001.0))
+    alice = await manager.users.profile("slack", "alice")
+    bob = await manager.users.profile("slack", "bob")
+    assert alice is not None
+    assert bob is not None
+
+    assert (await manager.chat_message(alice, "#msg:1710000000.000002")).id == first.id
+    assert (await manager.chat_message(alice, str(first.id))).id == first.id
+    with pytest.raises(ValueError, match="no message #msg:nope"):
+        await manager.chat_message(alice, "#msg:nope")
+    # Bob never spoke in alice's thread: her message is not his to name.
+    with pytest.raises(ValueError, match="no message"):
+        await manager.chat_message(bob, str(first.id))

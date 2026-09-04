@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from inspect import cleandoc
 from secrets import compare_digest
 
 from fastmcp.server.auth import AccessToken, TokenVerifier
@@ -49,3 +51,12 @@ class KnownBearers(TokenVerifier):
         # a served call downstream learns who it speaks for without trusting a
         # header.
         return AccessToken(token=token, client_id=principal, scopes=[])
+
+
+def capability_contract(spell: Callable[..., Awaitable[object]]) -> str:
+    """The docstring Inkling's toolset compiles, verbatim — a copy here would give
+    two models two different tools and drift silently."""
+    doc = spell.__doc__
+    if doc is None:
+        raise RuntimeError(f"{spell.__qualname__} has no docstring to project")
+    return cleandoc(doc)

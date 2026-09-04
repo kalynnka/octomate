@@ -274,7 +274,7 @@ class FakeThreadManager(ThreadManager):
         thread_or_address: Thread | ChannelAddress | ThreadKey,
         *,
         to_agent_tentacle_id: str,
-        from_agent_tentacle_id: str | None = None,
+        source_agent_tentacle_id: str | None = None,
         to_model: AgentRouteModelName | None = None,
         reason: str = "",
         hint: str = "",
@@ -291,7 +291,7 @@ class FakeThreadManager(ThreadManager):
         handoff = Handoff(
             id=uuid7(),
             thread_id=thread.id,
-            from_agent_tentacle_id=from_agent_tentacle_id,
+            source_agent_tentacle_id=source_agent_tentacle_id,
             to_agent_tentacle_id=to_agent_tentacle_id,
             to_model=to_model,
             reason=reason,

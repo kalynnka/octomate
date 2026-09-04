@@ -336,7 +336,7 @@ async def test_driven_session_hooks_are_ignored() -> None:
             )
         )
     assert ingest.tasks == set()
-    assert octomate.thread_manager.threads == {}
+    assert await octomate.thread_manager.list_threads() == []
 
 
 async def test_a_prompt_hook_creates_the_session_skeleton() -> None:

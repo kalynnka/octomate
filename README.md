@@ -153,8 +153,8 @@ the run is suspended in the database rather than parked in memory.
 The thread is where the work gets decided, so the tools that matter there are the ones
 for thinking with other people:
 
-- **Search what was already said** — this thread's chat ledger and the conversation's
-  model ledger, both queryable mid-run.
+- **Search what was already said** — every thread the person you are talking to has
+  spoken in, on any of their linked accounts, queryable mid-run.
 - **Split a topic without losing it.** `teleport` carries the history into its own
   sub-thread, so a tangent gets its own room instead of burying the main one.
 - **Hand the result to something that can land it.** Brainstorm with colleagues in the

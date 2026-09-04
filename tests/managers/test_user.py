@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Mapping
 
 import pytest
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -339,6 +340,54 @@ async def test_reconcile_claims_an_observed_visitor() -> None:
     assert claimed.id == visitor.id
     assert claimed.name == "Observed Name"
     assert (await manager.owner(claimed)) is not None
+
+
+async def test_reconcile_reads_the_declared_profiles_in_one_query(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """Seeding is one read for every declaration, not one per declaration. A
+    registry of any size would otherwise cost a round trip per declared account."""
+    manager = UserManager(
+        config(
+            {
+                "luhui": {
+                    "profiles": {
+                        "lark": profile_config("ou_1"),
+                        "slack": profile_config("U1"),
+                        "napcat": profile_config("9"),
+                    }
+                },
+                "kalynn": {
+                    "profiles": {
+                        "lark": profile_config("ou_2"),
+                        "slack": profile_config("U2"),
+                    }
+                },
+            }
+        )
+    )
+
+    selects: list[str] = []
+
+    @sqlalchemy_event.listens_for(in_memory_engine.sync_engine, "before_cursor_execute")
+    def record(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(statement)
+
+    await manager.reconcile()
+
+    # Three reads and no more: the stored users, the already-linked profiles, and
+    # the one that looks up all five declared accounts together.
+    profile_reads = [s for s in selects if "FROM user_profiles" in s]
+    assert len(profile_reads) == 2, profile_reads
+    assert await find_profile("napcat", "9") is not None
 
 
 async def test_config_seeds_a_never_seen_profile() -> None:
