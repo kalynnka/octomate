@@ -53,6 +53,14 @@ class ChannelConfig(BaseModel):
             "would have nothing to answer with."
         ),
     )
+    mcp: bool = Field(
+        default=False,
+        description=(
+            "Whether this channel offers its own MCP tools to the agents driven on "
+            "it. The server is one per channel type, so the flag decides what a "
+            "call may do here, never which tools an agent sees."
+        ),
+    )
 
 
 class SlackChannelConfig(ChannelConfig):

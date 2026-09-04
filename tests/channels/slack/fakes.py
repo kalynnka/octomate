@@ -18,19 +18,19 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channels.base import DownloadedImage, Ink
-from octomate.tentacles.channels.feelers.base import Feelers
-from octomate.tentacles.channels.feelers.output import (
+from octomate.tentacles.channel import DownloadedImage, Ink
+from octomate.tentacles.feelers.base import Feelers
+from octomate.tentacles.feelers.output import (
     DefaultMarkdownFeeler,
     DefaultSegmentsFeeler,
 )
-from octomate.tentacles.channels.slack import SlackChromo, SlackTentacle
-from octomate.tentacles.channels.slack.feelers.approvals import SlackApprovalFeeler
-from octomate.tentacles.channels.slack.feelers.oauth import SlackOAuthFeeler
-from octomate.tentacles.channels.slack.feelers.output import SlackTimelineFeeler
-from octomate.tentacles.channels.slack.feelers.questions import SlackAskQuestionFeeler
-from octomate.tentacles.channels.slack.ink import SlackInk as SlackInkType
-from octomate.tentacles.channels.slack.schema import SlackBlock, SlackOutboundMessage
+from octomate.tentacles.slack import SlackChromo, SlackTentacle
+from octomate.tentacles.slack.feelers.approvals import SlackApprovalFeeler
+from octomate.tentacles.slack.feelers.oauth import SlackOAuthFeeler
+from octomate.tentacles.slack.feelers.output import SlackTimelineFeeler
+from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
+from octomate.tentacles.slack.ink import SlackInk as SlackInkType
+from octomate.tentacles.slack.schema import SlackBlock, SlackOutboundMessage
 from octomate.types.json import JsonObject
 
 

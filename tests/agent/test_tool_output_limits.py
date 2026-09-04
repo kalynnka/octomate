@@ -26,7 +26,7 @@ from octomate import Octomate
 from octomate.config.agents import ToolOutputConfig
 from octomate.managers.spills import SpillStore
 from octomate.schemas.conversation import ChannelAddress
-from octomate.tentacles.agents.inkling import InklingTentacle
+from octomate.tentacles.inkling import InklingTentacle
 from tests.support.managers import FakeConversationManager
 
 # Well past the 10k-char band the capability defaults to.

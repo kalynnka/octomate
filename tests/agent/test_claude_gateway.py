@@ -22,7 +22,7 @@ from octomate.schemas.triage import (
     SummonDecision,
     ThreadLanding,
 )
-from octomate.tentacles.agents.claude.gateway import (
+from octomate.tentacles.claude.gateway import (
     GATEWAY_MCP_INSTRUCTION,
     gateway_mcp_server,
     sdk_gateway_tool,

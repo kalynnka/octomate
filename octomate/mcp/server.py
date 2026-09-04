@@ -33,15 +33,15 @@ SERVER_INSTRUCTIONS = (
 
 
 def octomate_mcp(
-    current: GatewaySession,
+    gateway_session: GatewaySession,
     thread_manager: ThreadManager,
     kick: Callable[[GatewayHandoffSignal], None] | None = None,
 ) -> FastMCP:
-    """The server, built by whoever mounts it: `current` resolves the session a
+    """The server, built by whoever mounts it: `gateway_session` resolves the session a
     call runs against, `thread_manager` is the ledger the spells write through and
     the history tools read, and `kick` is what a native session's summon or scheme
     needs to become its own turn — see `mount_gateway`."""
     mcp = FastMCP(name=GATEWAY_SERVER_NAME, instructions=SERVER_INSTRUCTIONS)
-    mount_gateway(mcp, current, thread_manager, kick)
-    mount_history(mcp, current, thread_manager)
+    mount_gateway(mcp, gateway_session, thread_manager, kick)
+    mount_history(mcp, gateway_session, thread_manager)
     return mcp

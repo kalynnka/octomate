@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import HttpUrl
 
-from octomate.tentacles.agents.deepseek.process import (
+from octomate.tentacles.deepseek.process import (
     NO_OPEN,
     DeepseekProcess,
     HarnessOptionUnsupportedError,

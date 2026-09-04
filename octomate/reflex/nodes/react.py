@@ -25,8 +25,8 @@ from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.triage import SchemeDecision, SummonDecision
 from octomate.telemetry import reflex_logfire
-from octomate.tentacles.channels.base import ChannelOutput
-from octomate.tentacles.channels.feelers.output import split_reply
+from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.feelers.output import split_reply
 
 logger = logging.getLogger(__name__)
 

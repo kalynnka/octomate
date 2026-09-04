@@ -32,10 +32,10 @@ HISTORY_PAGE_LIMIT = 50
 
 
 def mount_history(
-    mcp: FastMCP, current: GatewaySession, thread_manager: ThreadManager
+    mcp: FastMCP, gateway_session: GatewaySession, thread_manager: ThreadManager
 ) -> None:
     """Register the history tools on `mcp`, every call reading as the person the
-    session `current` resolves to speaks for — a driven turn's user, or the
+    session `gateway_session` resolves to speaks for — a driven turn's user, or the
     registered person a native session's bearer named."""
 
     def reader(session: GatewaySession) -> UserProfile:
@@ -68,7 +68,7 @@ def mount_history(
         query: str,
         actor_kind: ChannelActorKind | None = None,
         limit: int = 10,
-        session: GatewaySession = current,
+        session: GatewaySession = gateway_session,
     ) -> str:
         rows = await thread_manager.search_chat_messages(
             reader(session), query, actor_kind=actor_kind, limit=page(limit)
@@ -88,7 +88,7 @@ def mount_history(
         description=capability_contract(HistoryCapability.read_thread_history_before),
     )
     async def read_thread_history_before(
-        message_id: str, limit: int = 10, session: GatewaySession = current
+        message_id: str, limit: int = 10, session: GatewaySession = gateway_session
     ) -> str:
         found = await anchor(session, message_id)
         rows = await thread_manager.chat_messages_before(
@@ -109,7 +109,7 @@ def mount_history(
         description=capability_contract(HistoryCapability.read_thread_history_after),
     )
     async def read_thread_history_after(
-        message_id: str, limit: int = 10, session: GatewaySession = current
+        message_id: str, limit: int = 10, session: GatewaySession = gateway_session
     ) -> str:
         found = await anchor(session, message_id)
         rows = await thread_manager.chat_messages_after(

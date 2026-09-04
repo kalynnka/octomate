@@ -10,9 +10,9 @@ from lark_oapi.core.http import Transport
 from pydantic import SecretStr
 
 from octomate.schemas.conversation import ChannelAddress
-from octomate.tentacles.channels.lark import LarkTentacle
-from octomate.tentacles.channels.lark.ink import SDK_AEXECUTE, LarkInk, pools
-from octomate.tentacles.channels.lark.schema import LarkOutboundMessage
+from octomate.tentacles.lark import LarkTentacle
+from octomate.tentacles.lark.ink import SDK_AEXECUTE, LarkInk, pools
+from octomate.tentacles.lark.schema import LarkOutboundMessage
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 
 

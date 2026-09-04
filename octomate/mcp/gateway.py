@@ -236,25 +236,25 @@ async def native_session(
 
 def mount_gateway(
     mcp: FastMCP,
-    current: GatewaySession,
+    gateway_session: GatewaySession,
     thread_manager: ThreadManager,
     kick: Callable[[GatewayHandoffSignal], None] | None = None,
 ) -> None:
     """Register the gateway's spells on `mcp`.
 
-    `current` is the FastMCP dependency each call resolves its session through —
-    `Depends(...)` of a fixed session for a server mounted in-process for one turn,
-    of a per-request lookup for a server that answers over HTTP. `thread_manager`
-    is the ledger a delivering spell writes through. `kick` is how a native
-    session's summon or scheme becomes its own turn at once, so only the served
-    mount — the one place a native session can arrive — needs one.
+    `gateway_session` is the FastMCP dependency each call resolves its session
+    through — `Depends(...)` of a fixed session for a server mounted in-process for
+    one turn, of a per-request lookup for a server that answers over HTTP.
+    `thread_manager` is the ledger a delivering spell writes through. `kick` is how
+    a native session's summon or scheme becomes its own turn at once, so only the
+    served mount — the one place a native session can arrive — needs one.
     """
 
     @mcp.tool(
         name=SCRY_TOOL_NAME, description=capability_contract(GatewayCapability.scry)
     )
     @spoken
-    async def scry(reveal: ScryFacet, session: GatewaySession = current) -> str:
+    async def scry(reveal: ScryFacet, session: GatewaySession = gateway_session) -> str:
         # Lines, never the list: FastMCP renders an empty list as no content at all.
         return "\n".join(str(one) for one in await session.scry(reveal)) or "- (none)"
 
@@ -270,7 +270,7 @@ def mount_gateway(
         reason: str,
         summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
-        session: GatewaySession = current,
+        session: GatewaySession = gateway_session,
     ) -> str:
         sentence = await session.summon(
             agent_id=agent_id,
@@ -299,7 +299,7 @@ def mount_gateway(
         destination: TeleportTarget = THREAD_TARGET,
         project: str | None = None,
         ref: str | None = None,
-        session: GatewaySession = current,
+        session: GatewaySession = gateway_session,
     ) -> str:
         await session.teleport(
             hint=hint, destination=destination, project=project, ref=ref
@@ -314,7 +314,7 @@ def mount_gateway(
         hint: str,
         brief: Annotated[str, Field(max_length=8_000)],
         destination: SchemeTarget = DIRECT_TARGET,
-        session: GatewaySession = current,
+        session: GatewaySession = gateway_session,
     ) -> str:
         sentence = await session.scheme(hint=hint, brief=brief, destination=destination)
         if session.native:
@@ -332,7 +332,7 @@ def mount_gateway(
     async def send(
         segments: list[MessageSegment],
         destination: SendTarget = HERE_TARGET,
-        session: GatewaySession = current,
+        session: GatewaySession = gateway_session,
     ) -> str:
         # Delivered right here: a gateway `send` has no run stream to ride, so the
         # delivery React performs for Inkling's sends happens in the call instead —
@@ -377,5 +377,5 @@ def mount_gateway(
         name=DISPEL_TOOL_NAME, description=capability_contract(GatewayCapability.dispel)
     )
     @spoken
-    async def dispel(session: GatewaySession = current) -> str:
+    async def dispel(session: GatewaySession = gateway_session) -> str:
         return await session.dispel()

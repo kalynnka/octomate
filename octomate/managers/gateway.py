@@ -59,8 +59,8 @@ if TYPE_CHECKING:
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
     from octomate.schemas.user import UserProfile
-    from octomate.tentacles.agents.base import AgentTentacle
-    from octomate.tentacles.channels.base import ChannelTentacle
+    from octomate.tentacles.agent import AgentTentacle
+    from octomate.tentacles.channel import ChannelTentacle
 
 # Why `scheme` has nowhere to land, and the sentence each reason refuses with.
 PrivateBlocker = Literal["no_surface", "already_private", "no_user"]

@@ -14,8 +14,8 @@ import pytest
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channels.slack import base as slack_base
-from octomate.tentacles.channels.slack.schema import SlackMessageEvent
+from octomate.tentacles.slack import base as slack_base
+from octomate.tentacles.slack.schema import SlackMessageEvent
 from tests.channels.slack.fakes import FakeSlackInk, slack_channel
 
 

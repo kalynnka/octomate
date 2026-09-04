@@ -40,7 +40,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest as OctomateModelRequest
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, ThreadMessage
-from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import (
     ScriptedOutput,
     ScriptedTurn,

@@ -33,8 +33,8 @@ from octomate import Octomate
 from octomate.config import ClaudeCodeConfig
 from octomate.managers.user import UserManager
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.claude.tailer import ClaudeTranscriptTailer, TailState
+from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer, TailState
 from octomate.types.json import JsonObject
 from tests.agent.test_claude_tailer import (
     AGENT_ID,

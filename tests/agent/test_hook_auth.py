@@ -20,9 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig, CodexConfig, DeepseekConfig
 from octomate.managers.user import UserManager
-from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.codex import CodexTentacle
-from octomate.tentacles.agents.deepseek import DeepseekTentacle
+from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.deepseek import DeepseekTentacle
 from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, DEEPSEEK_MODELS
 from tests.support.config import registered
 

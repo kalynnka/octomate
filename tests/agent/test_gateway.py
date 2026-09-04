@@ -36,7 +36,7 @@ from octomate.schemas.triage import (
     ThreadLanding,
 )
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channels.base import ChannelSurfaces
+from octomate.tentacles.channel import ChannelSurfaces
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 

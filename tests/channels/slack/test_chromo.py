@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from octomate.schemas.segments import AtSegment, ImageSegment, TextSegment
-from octomate.tentacles.channels.slack import SlackChromo
+from octomate.tentacles.slack import SlackChromo
 from octomate.types.conversations import ChatType
 
 

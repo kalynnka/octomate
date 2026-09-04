@@ -17,7 +17,7 @@ from octomate.schemas.triage import (
     SummonDecision,
 )
 from octomate.telemetry import reflex_logfire
-from octomate.tentacles.channels.base import ChannelTentacle
+from octomate.tentacles.channel import ChannelTentacle
 
 
 @dataclass(frozen=True)

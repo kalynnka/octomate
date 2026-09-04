@@ -67,8 +67,8 @@ from octomate.schemas.triage import (
     ThreadLanding,
 )
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channels.base import ChannelSurfaces
-from octomate.tentacles.channels.feelers.output import TimelineState
+from octomate.tentacles.channel import ChannelSurfaces
+from octomate.tentacles.feelers.output import TimelineState
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, RecordingInk

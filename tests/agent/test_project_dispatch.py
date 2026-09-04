@@ -34,10 +34,10 @@ from octomate.managers.workspaces.base import thread_ref
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
-from octomate.tentacles.agents.claude import ClaudeCodeTentacle
-from octomate.tentacles.agents.claude import base as claude_base
-from octomate.tentacles.agents.codex import CodexTentacle
-from octomate.tentacles.agents.codex import base as codex_base
+from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.codex import base as codex_base
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
 from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, RecordingClaudeClient
 from tests.support.managers import FakeConversationManager, a_project, a_registry

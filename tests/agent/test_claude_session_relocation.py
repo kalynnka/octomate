@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from octomate.tentacles.agents.claude.transcript import (
+from octomate.tentacles.claude.transcript import (
     relocate_session,
     transcripts_dir,
 )

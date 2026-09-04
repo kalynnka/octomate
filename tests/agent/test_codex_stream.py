@@ -40,8 +40,8 @@ from octomate.managers.user import UserManager
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.agents.codex import CodexTentacle
-from octomate.tentacles.agents.codex.tailer import CodexTranscriptTailer, TailState
+from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
 from tests.agent.test_codex_native_ingest import (
     CHILD_THREAD_ID,
     CHILD_TURN_ONE,

@@ -62,15 +62,15 @@ from octomate.schemas.triage import (
     AgentRoute,
     Claim,
 )
-from octomate.tentacles.agents.base import AgentTentacle
-from octomate.tentacles.agents.inkling import build_mcp_toolsets
-from octomate.tentacles.agents.inkling.base import (
+from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.inkling import build_mcp_toolsets
+from octomate.tentacles.inkling.base import (
     InklingOutput,
     InklingTentacle,
 )
-from octomate.tentacles.agents.inkling.prompts import SYSTEM_PROMPT
-from octomate.tentacles.channels.base import ChannelTentacle
-from octomate.tentacles.channels.slack.base import SlackTentacle
+from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.slack.base import SlackTentacle
 from octomate.types.json import JsonObject
 
 DEFAULT_PROMPT = (
