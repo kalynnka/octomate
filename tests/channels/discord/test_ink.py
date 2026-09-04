@@ -35,6 +35,7 @@ class SendCall:
     allowed_mentions: discord.AllowedMentions
     reference: discord.PartialMessage | None
     mention_author: bool
+    view: discord.ui.View | None
 
 
 def mentioned_user_ids(mentions: discord.AllowedMentions) -> list[int]:
@@ -115,6 +116,7 @@ async def test_send_targets_thread_replies_once_and_closes_attachments(
         allowed_mentions: discord.AllowedMentions,
         reference: discord.PartialMessage | None = None,
         mention_author: bool = True,
+        view: discord.ui.View | None = None,
     ) -> discord.Message:
         calls.append(
             SendCall(
@@ -125,6 +127,7 @@ async def test_send_targets_thread_replies_once_and_closes_attachments(
                 allowed_mentions=allowed_mentions,
                 reference=reference,
                 mention_author=mention_author,
+                view=view,
             )
         )
         return a_message(destination, message_id=800 + len(calls))
@@ -135,11 +138,14 @@ async def test_send_targets_thread_replies_once_and_closes_attachments(
     image.write_bytes(b"image")
     document = tmp_path / "report.pdf"
     document.write_bytes(b"document")
+    view = discord.ui.View(timeout=None)
+    view.add_item(discord.ui.Button(label="Continue", url="https://example.com"))
     messages = [
         DiscordOutboundMessage(
             content="first <@42>",
             attachment_paths=(image, document),
             mentioned_user_ids=("42",),
+            view=view,
         ),
         DiscordOutboundMessage(content="second <@900>"),
     ]
@@ -161,6 +167,8 @@ async def test_send_targets_thread_replies_once_and_closes_attachments(
     assert calls[0].reference.channel is thread
     assert calls[1].reference is None
     assert calls[0].files_were_open == (True, True)
+    assert calls[0].view is view
+    assert calls[1].view is None
     assert all(file.fp.closed for file in calls[0].files)
     assert mentioned_user_ids(calls[0].allowed_mentions) == [42]
     assert mentioned_user_ids(calls[1].allowed_mentions) == []

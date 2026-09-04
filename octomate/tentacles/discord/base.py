@@ -16,9 +16,21 @@ from octomate.tentacles.channel import (
     ThreadStrategy,
 )
 from octomate.tentacles.discord.chromo import DiscordChromo
+from octomate.tentacles.discord.feelers.actions import DiscordComponentRouter
+from octomate.tentacles.discord.feelers.approvals import (
+    DiscordApprovalButton,
+    DiscordApprovalFeeler,
+)
+from octomate.tentacles.discord.feelers.oauth import DiscordOAuthFeeler
 from octomate.tentacles.discord.feelers.output import DiscordTimelineFeeler
+from octomate.tentacles.discord.feelers.questions import (
+    DiscordAskQuestionFeeler,
+    DiscordQuestionAnswerButton,
+    DiscordQuestionSelect,
+)
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
+from octomate.tentacles.feelers.base import Feelers
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -37,6 +49,7 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
     bot_token: SecretStr
     gateway_task: asyncio.Task[None] | None
     ingest_tasks: set[asyncio.Task[None]]
+    component_router: DiscordComponentRouter
 
     @property
     def log_names(self) -> tuple[str, ...]:
@@ -64,14 +77,31 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
         self.bot_token = config.bot_token
         self.gateway_task = None
         self.ingest_tasks = set()
-        self.feelers.timeline = DiscordTimelineFeeler(
-            ink=self.ink,
-            chromo=self.chromo,
-            stream_config=config.stream,
-            ask_questions=self.feelers.ask_questions,
-            approvals=self.feelers.approvals,
-            oauth=self.feelers.oauth,
-            deferred_actions=self.octomate.deferred_actions,
+        approvals = DiscordApprovalFeeler(self.ink)
+        ask_questions = DiscordAskQuestionFeeler(self.ink)
+        oauth = DiscordOAuthFeeler(self.ink)
+        self.feelers = Feelers(
+            markdown=self.feelers.markdown,
+            segments=self.feelers.segments,
+            approvals=approvals,
+            ask_questions=ask_questions,
+            oauth=oauth,
+            timeline=DiscordTimelineFeeler(
+                ink=self.ink,
+                chromo=self.chromo,
+                stream_config=config.stream,
+                ask_questions=ask_questions,
+                approvals=approvals,
+                oauth=oauth,
+                deferred_actions=self.octomate.deferred_actions,
+            ),
+        )
+        self.component_router = DiscordComponentRouter(self.octomate)
+        self.component_router.bind(self.client)
+        self.client.add_dynamic_items(
+            DiscordApprovalButton,
+            DiscordQuestionAnswerButton,
+            DiscordQuestionSelect,
         )
         self.client.event(self.on_message)
 

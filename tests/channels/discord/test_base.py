@@ -19,7 +19,10 @@ from octomate.tentacles.discord import (
     DiscordInk,
     DiscordTentacle,
 )
+from octomate.tentacles.discord.feelers.approvals import DiscordApprovalFeeler
+from octomate.tentacles.discord.feelers.oauth import DiscordOAuthFeeler
 from octomate.tentacles.discord.feelers.output import DiscordTimelineFeeler
+from octomate.tentacles.discord.feelers.questions import DiscordAskQuestionFeeler
 from tests.channels.discord.fakes import (
     a_client_user,
     a_dm_channel,
@@ -50,12 +53,19 @@ class FakeDiscordClient:
         self.closed = asyncio.Event()
         self.lifecycle: list[str] = []
         self.listeners: dict[str, DiscordMessageListener] = {}
+        self.dynamic_items: list[str] = []
         self.instances.append(self)
 
     def event(self, listener: DiscordMessageListener) -> DiscordMessageListener:
         self.lifecycle.append(f"event:{listener.__name__}")
         self.listeners[listener.__name__] = listener
         return listener
+
+    def add_dynamic_items(
+        self,
+        *items: type[discord.ui.DynamicItem[discord.ui.Item[discord.ui.View]]],
+    ) -> None:
+        self.dynamic_items.extend(item.__name__ for item in items)
 
     async def login(self, token: str) -> None:
         self.lifecycle.append("login")
@@ -92,6 +102,9 @@ def test_build_channel_composes_discord_components(
     assert isinstance(channel.ink, DiscordInk)
     assert isinstance(channel.chromo, DiscordChromo)
     assert isinstance(channel.feelers.timeline, DiscordTimelineFeeler)
+    assert isinstance(channel.feelers.approvals, DiscordApprovalFeeler)
+    assert isinstance(channel.feelers.ask_questions, DiscordAskQuestionFeeler)
+    assert isinstance(channel.feelers.oauth, DiscordOAuthFeeler)
     assert channel.client.intents.message_content is True
     assert DiscordTentacle.thread_strategy == "flat_thread"
     assert DiscordTentacle.surfaces == ChannelSurfaces(
@@ -108,6 +121,12 @@ async def test_gateway_lifecycle(
     monkeypatch.setattr(discord, "Client", FakeDiscordClient)
     channel = DiscordTentacle("discord-main", Octomate(), config=config)
     client = FakeDiscordClient.instances[0]
+
+    assert client.dynamic_items == [
+        "DiscordApprovalButton",
+        "DiscordQuestionAnswerButton",
+        "DiscordQuestionSelect",
+    ]
 
     async with channel:
         assert client.lifecycle[:2] == ["event:on_message", "login"]
