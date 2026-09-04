@@ -31,6 +31,7 @@ from uuid_utils import uuid7
 from octomate.config import ChannelConfig
 from octomate.config.channels import (
     ChannelConfigVariant,
+    DiscordChannelConfig,
     LarkChannelConfig,
     NapcatChannelConfig,
     SlackChannelConfig,
@@ -462,6 +463,10 @@ def build_channel(
             from octomate.tentacles.lark import LarkTentacle
 
             return LarkTentacle(id, octomate, config=config)
+        case DiscordChannelConfig():
+            from octomate.tentacles.discord import DiscordTentacle
+
+            return DiscordTentacle(id, octomate, config=config)
         case NapcatChannelConfig():
             from octomate.tentacles.napcat import NapcatTentacle
 

@@ -78,6 +78,11 @@ class LarkChannelConfig(ChannelConfig):
     stream: LarkStreamConfig = Field(default_factory=LarkStreamConfig)
 
 
+class DiscordChannelConfig(ChannelConfig):
+    type: Literal["discord"] = "discord"
+    bot_token: SecretStr
+
+
 class VercelStreamConfig(ChannelStreamConfig):
     # The dev UI renders tokens as they arrive; stream every event straight
     # through (the timeline feeler forwards raw events, so batching is moot).
@@ -127,6 +132,7 @@ class NapcatChannelConfig(ChannelConfig):
 ChannelConfigVariant: TypeAlias = Annotated[
     SlackChannelConfig
     | LarkChannelConfig
+    | DiscordChannelConfig
     | NapcatChannelConfig
     | TrunklineChannelConfig,
     Field(discriminator="type"),

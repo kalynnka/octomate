@@ -15,6 +15,7 @@ from octomate.config import (
     ClaudeSSHConfig,
     CodexConfig,
     DeepseekConfig,
+    DiscordChannelConfig,
     GitHubIntegrationConfig,
     InklingConfig,
     LarkChannelConfig,
@@ -154,6 +155,11 @@ def test_channel_config_parses_supported_channels() -> None:
                     "ws_url": "ws://127.0.0.1:3001",
                     "http_url": "http://127.0.0.1:3000",
                 },
+                "discord": {
+                    "type": "discord",
+                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+                    "bot_token": "discord-test",
+                },
             },
         }
     )
@@ -161,11 +167,13 @@ def test_channel_config_parses_supported_channels() -> None:
     assert isinstance(config.channels["slack"], SlackChannelConfig)
     assert isinstance(config.channels["lark"], LarkChannelConfig)
     assert isinstance(config.channels["napcat"], NapcatChannelConfig)
+    assert isinstance(config.channels["discord"], DiscordChannelConfig)
     assert config.channels["slack"].stream.flush_interval == 0.2
     assert config.channels["slack"].stream.min_chars == 20
     assert config.channels["lark"].stream.flush_interval == 0.2
     assert config.channels["lark"].stream.min_chars == 20
     assert config.channels["napcat"].stream.enabled is False
+    assert config.channels["discord"].stream.enabled is False
 
 
 def test_inkling_request_limit_defaults_to_256() -> None:

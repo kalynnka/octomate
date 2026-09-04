@@ -31,6 +31,13 @@
 #       flush_interval: 0.2
 #       min_chars: 20
 #
+#   discord:
+#     type: discord
+#     agents:
+#       - agent: inkling
+#         model: anthropic:claude-sonnet-5
+#     bot_token: ...
+#
 #   # Two Lark apps side by side: same `type`, different keys, separate threads.
 #   lark_main:
 #     type: lark
