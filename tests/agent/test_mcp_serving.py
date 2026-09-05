@@ -162,10 +162,10 @@ def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once
     octomate.connect(ToolsTentacle(id="a"))
     octomate.connect(ToolsTentacle(id="b"))
 
-    tentacles = octomate.mcp_tentacles()
+    tentacles = list(octomate.mcps.values())
     instructions = octomate_instructions(tentacles)
 
-    assert [tentacle.id for tentacle in tentacles] == ["a", "b"]
+    assert list(octomate.mcps) == ["a", "b"]
     assert f"`{CONNECT_TOOL}` with the provider's id (`a`, `b`)" in instructions
     assert instructions.count("A fake provider's own contract.") == 1
 

@@ -746,22 +746,34 @@ async def test_connect_rejects_duplicates() -> None:
     octomate.connect(FakeAgent())
     octomate.connect(FakeChannelTentacle())
 
-    with pytest.raises(ValueError, match="agent 'inkling' already connected"):
+    with pytest.raises(ValueError, match="tentacle 'inkling' already connected"):
         octomate.connect(FakeAgent())
-    with pytest.raises(ValueError, match="channel 'im' already connected"):
+    with pytest.raises(ValueError, match="tentacle 'im' already connected"):
         octomate.connect(FakeChannelTentacle())
 
 
-def test_connect_skips_unknown_tentacles(caplog: pytest.LogCaptureFixture) -> None:
+def test_connect_holds_a_tentacle_of_no_particular_kind() -> None:
+    # A bare tentacle — a provider that is neither agent nor channel — is held
+    # and bound like any other, and shows in no typed view.
     octomate = Octomate()
-    original = Octomate()
-    tentacle = Tentacle("unknown", original)
+    tentacle = Tentacle("bare", Octomate())
 
-    with caplog.at_level("WARNING", logger="octomate.base"):
-        result = octomate.connect(tentacle)
+    result = octomate.connect(tentacle)
 
     assert result is tentacle
-    assert tentacle.octomate is original
+    assert tentacle.octomate is octomate
+    assert octomate.tentacles == {"bare": tentacle}
     assert octomate.agents == {}
     assert octomate.channels == {}
-    assert "Skipping unknown tentacle unknown" in caplog.text
+
+
+def test_the_typed_views_follow_each_connect() -> None:
+    octomate = Octomate()
+    assert octomate.agents == {}
+
+    agent = octomate.connect(FakeAgent())
+    channel = octomate.connect(FakeChannelTentacle())
+
+    assert list(octomate.tentacles) == ["inkling", "im"]
+    assert octomate.agents == {"inkling": agent}
+    assert octomate.channels == {"im": channel}

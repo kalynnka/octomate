@@ -50,12 +50,13 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
-from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
+from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode
 from tests.support.agents import CODEX_MODELS
+from tests.support.channels import FakeChannelTentacle
 from tests.support.config import registered
 from tests.support.managers import (
     FakeConversation,
@@ -352,14 +353,16 @@ class FakeFeelers:
         return self.batch
 
 
-@dataclass
-class FakeChannel:
-    feelers: FakeFeelers
-    config: ChannelConfig = field(
-        default_factory=lambda: ChannelConfig(
+def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
+    """The `im` channel the tentacle presents approvals and questions through,
+    its feelers recording what was asked."""
+    channel = FakeChannelTentacle(
+        config=ChannelConfig(
             type="fake", agents=[AgentModelConfig(agent="inkling", model="test")]
         )
     )
+    channel.feelers = cast(Feelers, feelers)
+    return channel
 
 
 @dataclass
@@ -649,7 +652,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         config=registered(HOOK_SECRET.get_secret_value()),
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
+        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -694,7 +697,7 @@ async def test_question_requests_bridge_to_cards() -> None:
     octomate = Octomate(
         config=registered(HOOK_SECRET.get_secret_value()),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
+        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -748,7 +751,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         config=registered(HOOK_SECRET.get_secret_value()),
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
+        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -818,7 +821,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         config=registered(HOOK_SECRET.get_secret_value()),
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
+        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",

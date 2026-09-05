@@ -265,10 +265,10 @@ def test_every_slack_workspace_is_a_provider_and_slack_is_proxied_once() -> None
     a_workspace(octomate, FakeSlackInk())
     a_workspace(octomate, FakeSlackInk(), id="slack-b")
 
-    tentacles = octomate.mcp_tentacles()
+    tentacles = list(octomate.mcps.values())
     instructions = octomate_instructions(tentacles)
 
-    assert [tentacle.id for tentacle in tentacles] == ["slack", "slack-b"]
+    assert list(octomate.mcps) == ["slack", "slack-b"]
     assert f"`{CONNECT_TOOL}` with the provider's id (`slack`, `slack-b`)" in (
         instructions
     )

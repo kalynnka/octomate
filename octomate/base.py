@@ -4,10 +4,11 @@ import asyncio
 import colorsys
 import logging
 import zlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import InitVar, dataclass, field
 from functools import lru_cache
+from itertools import count
 from typing import TypeVar
 
 from fastapi import APIRouter, FastAPI, Request, Response
@@ -59,13 +60,14 @@ TENTACLE_START_TIMEOUT = 30.0
 GOLDEN_RATIO_CONJUGATE = 0.618033988749895
 
 
-def log_style_for_index(index: int) -> Style:
-    """A distinct, evenly-spread console color per connection index — golden-ratio
-    hue stepping keeps successive tentacles far apart on the color wheel without a
-    fixed palette."""
-    hue = (index * GOLDEN_RATIO_CONJUGATE) % 1.0
-    red, green, blue = colorsys.hsv_to_rgb(hue, 0.6, 1.0)
-    return Style(color=Color.from_rgb(red * 255, green * 255, blue * 255), bold=True)
+def log_styles() -> Iterator[Style]:
+    """Distinct, evenly-spread console colors, one per tentacle that claims none of
+    its own — golden-ratio hue stepping keeps successive ones far apart on the
+    color wheel without a fixed palette."""
+    for index in count():
+        hue = (index * GOLDEN_RATIO_CONJUGATE) % 1.0
+        red, green, blue = colorsys.hsv_to_rgb(hue, 0.6, 1.0)
+        yield Style(color=Color.from_rgb(red * 255, green * 255, blue * 255), bold=True)
 
 
 def short_log_name(name: str) -> str:
@@ -106,7 +108,7 @@ def muted_log_style(tag: str) -> Style:
 
 @dataclass
 class Octomate:
-    """Application host for shared services, agents, channels, and routers."""
+    """Application host for shared services, tentacles, and routers."""
 
     thread_manager: ThreadManager = field(init=False)
     conversations: ConversationManager = field(default_factory=ConversationManager)
@@ -122,8 +124,15 @@ class Octomate:
     config: OctomateConfig | None = None
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
-    agents: dict[str, AgentTentacle] = field(default_factory=dict)
-    channels: dict[str, ChannelTentacle] = field(default_factory=dict)
+    # Every connected tentacle by id, in connection order — the one registry. A
+    # tentacle composes its roles (a channel that is also an MCP provider), so
+    # the typed views below are readings of this dict, taken fresh each time: a
+    # router builder reads `channels` while `connect` is still mounting.
+    tentacles: dict[str, Tentacle] = field(default_factory=dict)
+    # The next console color for a tentacle with no brand of its own.
+    log_styles: Iterator[Style] = field(
+        default_factory=log_styles, init=False, repr=False
+    )
     routers: list[APIRouter] = field(default_factory=list)
     # Fire-and-forget graph turns (`kick_soon`), held strongly until they settle.
     background: set[asyncio.Task[None]] = field(default_factory=set, init=False)
@@ -158,30 +167,42 @@ class Octomate:
         """Every project's mirror, kept beside the registry for the same reason."""
         return self.workspaces.mirrors
 
+    @property
+    def agents(self) -> dict[str, AgentTentacle]:
+        """The tentacles that run turns, by id."""
+        return {
+            id: tentacle
+            for id, tentacle in self.tentacles.items()
+            if isinstance(tentacle, AgentTentacle)
+        }
+
+    @property
+    def channels(self) -> dict[str, ChannelTentacle]:
+        """The tentacles that front a platform, by id."""
+        return {
+            id: tentacle
+            for id, tentacle in self.tentacles.items()
+            if isinstance(tentacle, ChannelTentacle)
+        }
+
+    @property
+    def mcps(self) -> dict[str, McpTentacle]:
+        """The tentacles that proxy a provider's MCP server, by id — the providers
+        the served server's link tools know. The proxy is built per class, its
+        tools resolving the instance — and the caller's own credential for it —
+        from the session a call names, so two tentacles of one type share one."""
+        return {
+            id: tentacle
+            for id, tentacle in self.tentacles.items()
+            if isinstance(tentacle, McpTentacle)
+        }
+
     def connect(self, tentacle: TentacleT) -> TentacleT:
-        if isinstance(tentacle, ChannelTentacle):
-            tentacle.octomate = self
-            if tentacle.id in self.channels:
-                raise ValueError(f"channel {tentacle.id!r} already connected")
-            tentacle.log_color = tentacle.brand_color or log_style_for_index(
-                len(self.agents) + len(self.channels)
-            )
-            self.channels[tentacle.id] = tentacle
-        elif isinstance(tentacle, AgentTentacle):
-            tentacle.octomate = self
-            if tentacle.id in self.agents:
-                raise ValueError(f"agent {tentacle.id!r} already connected")
-            tentacle.log_color = tentacle.brand_color or log_style_for_index(
-                len(self.agents) + len(self.channels)
-            )
-            self.agents[tentacle.id] = tentacle
-        else:
-            logger.warning(
-                "Skipping unknown tentacle %s (%s)",
-                tentacle.id,
-                type(tentacle).__name__,
-            )
-            return tentacle
+        if tentacle.id in self.tentacles:
+            raise ValueError(f"tentacle {tentacle.id!r} already connected")
+        tentacle.octomate = self
+        tentacle.log_color = tentacle.brand_color or next(self.log_styles)
+        self.tentacles[tentacle.id] = tentacle
         # Mount the tentacle's HTTP surface now that it is bound and registered — a
         # router builder like the Vercel one looks itself up in `self.channels`.
         self.routers.extend(tentacle.routers())
@@ -192,7 +213,7 @@ class Octomate:
         id and dispatched color; a neutral style for the host's own subsystems;
         a stable muted hue for everything else, so every module is tellable at
         a glance."""
-        for tentacle in (*self.agents.values(), *self.channels.values()):
+        for tentacle in self.tentacles.values():
             if any(
                 logger_name == prefix or logger_name.startswith(f"{prefix}.")
                 for prefix in tentacle.log_names
@@ -252,18 +273,6 @@ class Octomate:
         self.background.add(task)
         task.add_done_callback(self.background.discard)
 
-    def mcp_tentacles(self) -> list[McpTentacle]:
-        """The providers the served server proxies: every tentacle composing
-        `McpTentacle`, in the order they were connected. The link tools know
-        each by its id; the proxy is built per class, its tools resolving the
-        instance — and the caller's own credential for it — from the session a
-        call names, so two tentacles of one type share one proxy."""
-        return [
-            tentacle
-            for tentacle in (*self.agents.values(), *self.channels.values())
-            if isinstance(tentacle, McpTentacle)
-        ]
-
     def app(self, *, title: str = "Octomate") -> FastAPI:
         # The one MCP server, which every runtime's install config knows as
         # `/octomate/mcp`, resolving the identity a call runs against from the
@@ -290,14 +299,15 @@ class Octomate:
                 # long-lived resources (agents: warm MCP sessions; channels:
                 # the inbound receive loop). Channels live on the inner stack so
                 # shutdown closes them first — nothing ingests into agents whose
-                # sessions are already torn down.
+                # sessions are already torn down; every other tentacle is on
+                # the outer one.
                 async with (
                     # Starlette runs no lifespan for a mounted app, and the MCP
                     # transport's task group lives in that lifespan; the endpoint
                     # answers only inside it. Outermost, so the server is up
                     # before any tentacle starts and down after the last stops.
                     mcp_app.lifespan(mcp_app),
-                    AsyncExitStack() as agent_stack,
+                    AsyncExitStack() as outer_stack,
                     AsyncExitStack() as channel_stack,
                 ):
 
@@ -324,13 +334,14 @@ class Octomate:
                         # and pays the listing latency once.
                         await asyncio.gather(
                             *(
-                                start(agent_stack, agent)
-                                for agent in self.agents.values()
-                            ),
-                            *(
-                                start(channel_stack, channel)
-                                for channel in self.channels.values()
-                            ),
+                                start(
+                                    channel_stack
+                                    if isinstance(tentacle, ChannelTentacle)
+                                    else outer_stack,
+                                    tentacle,
+                                )
+                                for tentacle in self.tentacles.values()
+                            )
                         )
 
                     # Serve immediately: MCP warms and channel sockets proceed in
@@ -399,7 +410,7 @@ class Octomate:
             self.thread_manager,
             kick=self.kick_soon,
             bearers=self.bearers,
-            tentacles=self.mcp_tentacles(),
+            tentacles=list(self.mcps.values()),
         )
         # Stateless: identity is per call, from the request, so there is nothing
         # for the transport to keep between calls. Mounted under the server's name
