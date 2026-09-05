@@ -7,22 +7,22 @@ from typing import get_args
 
 import pytest
 from openai_codex import CodexConfig as CodexSdkConfig
-from pydantic import SecretStr, ValidationError
+from pydantic import ValidationError
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config import (
     AgentModelConfig,
+    BareMcpConfig,
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     CodexConfig,
     DeepseekConfig,
     DiscordChannelConfig,
     DiscordStreamConfig,
-    GitHubIntegrationConfig,
+    GitHubMcpConfig,
     InklingConfig,
     LarkChannelConfig,
-    LinearIntegrationConfig,
-    McpServerConfig,
+    LinearMcpConfig,
     ModelConfig,
     NapcatChannelConfig,
     OctomateConfig,
@@ -771,50 +771,12 @@ def test_channel_inkling_routes_must_reference_configured_model() -> None:
     assert error["msg"] == "'openai:gpt-5.2' is not configured in agents.inkling.models"
 
 
-def test_each_connection_carries_its_own_warm_timeout() -> None:
-    # Both reuse the shared McpConfig, so the warm timeout is the same field, defaulting
-    # to 16s with no general fallback.
-    assert (
-        McpServerConfig(
-            url="https://mcp.linear.app/mcp", token=SecretStr("lin_x")
-        ).warm_timeout_seconds
-        == 16.0
-    )
-    assert (
-        GitHubIntegrationConfig(client_id="Iv1.test").mcp.warm_timeout_seconds == 16.0
-    )
-
-    config = OctomateConfig.model_validate(
-        {
-            "mcp": {
-                "linear": {
-                    "url": "https://mcp.linear.app/mcp",
-                    "token": "lin_x",
-                    "warm_timeout_seconds": 3.0,
-                },
-            },
-            "integrations": {
-                "github": {
-                    "type": "github",
-                    "client_id": "Iv1.test",
-                    "mcp": {"warm_timeout_seconds": 7.0},
-                },
-            },
-        }
-    )
-    assert config.mcp["linear"].warm_timeout_seconds == 3.0
-    assert config.integrations["github"] is not None
-    assert config.integrations["github"].mcp.warm_timeout_seconds == 7.0
-    # A partial mcp override still keeps the GitHub endpoint default.
-    assert config.integrations["github"].mcp.url == "https://api.githubcopilot.com/mcp/"
-
-
-def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
+def test_a_scope_github_does_not_define_is_refused() -> None:
     # GitHub ignores a scope it does not recognise and returns a token quietly
     # missing that access, so a typo has to fail here instead.
     config = OctomateConfig.model_validate(
         {
-            "integrations": {
+            "mcp": {
                 "github": {
                     "type": "github",
                     "client_id": "Iv1.test",
@@ -824,64 +786,72 @@ def test_github_integration_rejects_a_scope_github_does_not_define() -> None:
             "oauth": {"encryption_key": "x" * 43 + "="},
         }
     )
-    assert config.integrations["github"] is not None
-    assert config.integrations["github"].scopes == ["repo", "workflow"]
+    github = config.mcp["github"]
+    assert isinstance(github, GitHubMcpConfig)
+    assert github.scopes == ["repo", "workflow"]
 
     # Validated, not constructed: a scope arrives as untyped YAML.
     with pytest.raises(ValidationError, match="Input should be"):
-        GitHubIntegrationConfig.model_validate(
+        GitHubMcpConfig.model_validate(
             {"client_id": "Iv1.test", "scopes": ["workfl0w"]}
         )
 
 
-def test_github_integration_cache_size_default_and_override() -> None:
-    assert GitHubIntegrationConfig(client_id="Iv1.test").max_cached_users == 32
-
+def test_config_parses_each_mcp_tentacle_type() -> None:
     config = OctomateConfig.model_validate(
         {
-            "integrations": {
+            "mcp": {
                 "github": {
                     "type": "github",
-                    "client_id": "Iv1.test",
-                    "max_cached_users": 8,
-                }
-            }
-        }
-    )
-    assert config.integrations["github"] is not None
-    assert config.integrations["github"].max_cached_users == 8
-
-
-def test_config_parses_integrations_and_mcp_servers() -> None:
-    config = OctomateConfig.model_validate(
-        {
-            "integrations": {
-                "github": {
-                    "type": "github",
-                    "enabled": True,
                     "client_id": "Iv1.test",
                     "scopes": ["repo", "read:org"],
-                    "mcp": {"read_only": True},
+                    "read_only": True,
                 },
-            },
-            "mcp": {
-                "linear": {"url": "https://mcp.linear.app/mcp", "token": "lin_test"},
+                "linear": {
+                    "type": "bare",
+                    "url": "https://mcp.linear.app/mcp",
+                    "token": "lin_test",
+                },
             },
             "oauth": {"encryption_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="},
         }
     )
 
-    assert isinstance(config.integrations["github"], GitHubIntegrationConfig)
-    assert config.integrations["github"].enabled is True
-    assert config.integrations["github"].mcp.read_only is True
-    assert config.integrations["github"].client_id == "Iv1.test"
-    assert config.integrations["github"].scopes == ["repo", "read:org"]
-    assert config.integrations["github"].mcp.url == "https://api.githubcopilot.com/mcp/"
+    github = config.mcp["github"]
+    assert isinstance(github, GitHubMcpConfig)
+    assert github.enabled is True
+    assert github.read_only is True
+    assert github.client_id == "Iv1.test"
+    assert github.scopes == ["repo", "read:org"]
+    # A partial block still keeps the GitHub endpoint default.
+    assert github.url == "https://api.githubcopilot.com/mcp/"
 
     linear = config.mcp["linear"]
+    assert isinstance(linear, BareMcpConfig)
     assert linear.prefix is None
     assert linear.enabled is True
     assert linear.url == "https://mcp.linear.app/mcp"
+
+
+def test_a_linked_account_needs_the_encryption_key() -> None:
+    # The tokens it stores are what the key protects; a bare server stores none.
+    OctomateConfig.model_validate(
+        {
+            "mcp": {
+                "notion": {
+                    "type": "bare",
+                    "url": "https://mcp.notion.com/mcp",
+                    "token": "ntn_x",
+                }
+            }
+        }
+    )
+    with pytest.raises(
+        ValidationError, match=r"oauth\.encryption_key is required when mcp\.github"
+    ):
+        OctomateConfig.model_validate(
+            {"mcp": {"github": {"type": "github", "client_id": "Iv1.test"}}}
+        )
 
 
 def test_mcp_server_token_comes_from_the_environment(
@@ -891,18 +861,19 @@ def test_mcp_server_token_comes_from_the_environment(
     monkeypatch.setenv("OCTOMATE__MCP__LINEAR__TOKEN", "lin_from_env")
 
     config = OctomateConfig.model_validate(
-        {"mcp": {"linear": {"url": "https://mcp.linear.app/mcp"}}}
+        {"mcp": {"linear": {"type": "bare", "url": "https://mcp.linear.app/mcp"}}}
     )
 
-    assert config.mcp["linear"].token.get_secret_value() == "lin_from_env"
+    linear = config.mcp["linear"]
+    assert isinstance(linear, BareMcpConfig)
+    assert linear.token.get_secret_value() == "lin_from_env"
 
 
 def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # `type` too: it is the discriminator, so without it the block resolves to no
-    # provider at all — the local octomate.yaml used to supply it by accident.
-    monkeypatch.setenv("OCTOMATE__INTEGRATIONS__GITHUB__TYPE", "github")
-    monkeypatch.setenv("OCTOMATE__INTEGRATIONS__GITHUB__ENABLED", "true")
-    monkeypatch.setenv("OCTOMATE__INTEGRATIONS__GITHUB__CLIENT_ID", "Iv1.env")
+    # tentacle at all — the local octomate.yaml used to supply it by accident.
+    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__TYPE", "github")
+    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__CLIENT_ID", "Iv1.env")
     monkeypatch.setenv(
         "OCTOMATE__OAUTH__ENCRYPTION_KEY",
         "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
@@ -910,8 +881,9 @@ def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None
 
     config = OctomateConfig()
 
-    assert config.integrations["github"] is not None
-    assert config.integrations["github"].client_id == "Iv1.env"
+    github = config.mcp["github"]
+    assert isinstance(github, GitHubMcpConfig)
+    assert github.client_id == "Iv1.env"
     assert config.oauth.encryption_key is not None
 
 
@@ -1233,31 +1205,30 @@ def test_one_vendor_can_be_mounted_once_per_account() -> None:
     # anything the config has to invent.
     config = OctomateConfig.model_validate(
         {
-            "integrations": {
+            "mcp": {
                 "linear_work": {"type": "linear", "client_id": "lin_a"},
                 "linear_home": {
                     "type": "linear",
                     "client_id": "lin_b",
                     "callback_base_uri": "http://localhost:9000",
                 },
-            }
+            },
+            "oauth": {"encryption_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="},
         }
     )
 
-    work = config.integrations["linear_work"]
-    home = config.integrations["linear_home"]
-    assert isinstance(work, LinearIntegrationConfig)
-    assert isinstance(home, LinearIntegrationConfig)
+    work = config.mcp["linear_work"]
+    home = config.mcp["linear_home"]
+    assert isinstance(work, LinearMcpConfig)
+    assert isinstance(home, LinearMcpConfig)
     assert (work.client_id, home.client_id) == ("lin_a", "lin_b")
     assert str(home.callback_base_uri) == "http://localhost:9000/"
 
 
-def test_an_integration_without_a_type_is_refused() -> None:
-    # Nothing else in the block says which provider builds it.
+def test_an_mcp_block_without_a_type_is_refused() -> None:
+    # Nothing else in the block says which tentacle builds it.
     with pytest.raises(ValidationError, match="tag"):
-        OctomateConfig.model_validate(
-            {"integrations": {"linear_home": {"client_id": "lin_b"}}}
-        )
+        OctomateConfig.model_validate({"mcp": {"linear_home": {"client_id": "lin_b"}}})
 
 
 def slack_channel_block(**overrides: object) -> dict[str, object]:

@@ -64,7 +64,7 @@ async def octomate_mcp_server(
 ) -> McpSdkServerConfig:
     """The served server, mounted in process for this turn: every call runs
     against `session`, a delivering spell writes through `thread_manager`, which
-    the history tools read, and `tentacles` are the providers the turn may
+    the history tools read, and `tentacles` the MCP tentacles the turn may
     reach — listed now, as the person the turn is for."""
 
     async def fixed() -> GatewaySession:

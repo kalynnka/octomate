@@ -27,6 +27,7 @@ from typing_extensions import TypedDict
 
 from octomate import Octomate
 from octomate.capabilities.harness.events import (
+    OAuthAuthorizationEvent,
     SubagentActivity,
     SubagentActivityStatus,
     TodoEvent,
@@ -53,6 +54,7 @@ from octomate.tentacles.feelers.deferred import (
     ApprovalFeeler,
     QuestionFeeler,
 )
+from octomate.tentacles.feelers.oauth import OAuthFeeler
 from octomate.tentacles.feelers.output import (
     IMMessageID,
     SubagentTimelineState,
@@ -450,6 +452,21 @@ class NoopSegmentsFeeler:
         segments: list[MessageSegment],
     ) -> IMMessageID | None:
         return None
+
+
+class RecordingOAuthFeeler(OAuthFeeler[NativeMessage]):
+    """Records each authorization presented, event and all, instead of rendering
+    it — what a test of the linking tools reads back."""
+
+    def __init__(self, ink: Ink[NativeMessage]) -> None:
+        super().__init__(ink)
+        self.presented: list[tuple[ChannelAddress, OAuthAuthorizationEvent]] = []
+
+    async def send(
+        self, address: ChannelAddress, event: OAuthAuthorizationEvent
+    ) -> IMMessageID | None:
+        self.presented.append((address, event))
+        return "oauth-message"
 
 
 @dataclass

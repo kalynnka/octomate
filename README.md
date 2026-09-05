@@ -93,7 +93,7 @@ drives them, it does not reimplement them.
 | **claude** | Claude Agent SDK | ✅ hooks + transcript tailer | runs locally; 🚧 an SSH transport for running on another host is WIP |
 | **codex** | openai-codex SDK | ✅ hooks + rollout tailer | |
 | **deepseek** | DeepSeek Harness (`dsh`), over its `/api` gateway | ✅ hooks + event tailer | attaches to a `dsh web` you already run, and starts one only if nothing answers |
-| **inkling** | in-process pydantic-ai agent | — | any pydantic-ai supported providers or models; MCP toolsets, per-user OAuth integrations |
+| **inkling** | in-process pydantic-ai agent | — | any pydantic-ai supported providers or models; every MCP tentacle's tools, as the person who asked |
 
 The first three feed the native-session ingest above, so a session started in your
 terminal and a run summoned from Slack are the same kind of thing afterwards. `inkling`
@@ -338,8 +338,7 @@ server's files from the rest of `.octomate/` — the database and the client's
     users.yaml           registered humans and their per-channel ids
     projects.yaml        code locations an agent may run in
     providers.yaml       LLM credentials
-    integrations.yaml    per-user OAuth connectors
-    mcp.yaml             vendor MCP servers on one operator token
+    mcp.yaml             MCP tentacles: vendor servers, linked GitHub and Linear accounts
     observability.yaml   logging, logfire
     oauth.yaml           the key that encrypts stored tokens
 ```
@@ -459,7 +458,7 @@ nowhere otherwise.
 ## In progress
 
 - **Trunkline** — the web console above: usable, and still moving.
-- **Per-user OAuth integrations** — GitHub and Linear, each user authorizing their
+- **Linked-account MCP tentacles** — GitHub and Linear, each user linking their
   own account from their own channel, so an agent acts as the person who asked.
 
 ## Anatomy

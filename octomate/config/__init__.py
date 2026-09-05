@@ -37,14 +37,14 @@ from octomate.config.channels import (
     SlackStreamConfig,
 )
 from octomate.config.database import DatabaseSettings, database_settings
-from octomate.config.integrations import (
-    GitHubIntegrationConfig,
+from octomate.config.mcp import (
+    BareMcpConfig,
     GitHubMcpConfig,
-    IntegrationConfig,
-    LinearIntegrationConfig,
     LinearMcpConfig,
+    McpConfig,
+    McpConfigVariant,
+    OAuthMcpConfig,
 )
-from octomate.config.mcp import McpConfig, McpIntegrationConfig, McpServerConfig
 from octomate.config.mirrors import GitIdentity, MirrorsConfig
 from octomate.config.models import (
     AnthropicModelSettings,
@@ -106,15 +106,12 @@ __all__ = [  # noqa: RUF022
     "config_files",
     "config_home",
     # mcp
-    "McpConfig",
-    "McpIntegrationConfig",
-    "McpServerConfig",
-    # integrations
-    "IntegrationConfig",
-    "GitHubIntegrationConfig",
+    "BareMcpConfig",
     "GitHubMcpConfig",
-    "LinearIntegrationConfig",
     "LinearMcpConfig",
+    "McpConfig",
+    "McpConfigVariant",
+    "OAuthMcpConfig",
     # users
     "UserConfig",
     # mirrors

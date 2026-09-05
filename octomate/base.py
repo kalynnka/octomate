@@ -125,7 +125,7 @@ class Octomate:
     oauth_encryption_key: InitVar[SecretStr | None] = None
     oauth: OAuthManager = field(init=False)
     # Every connected tentacle by id, in connection order — the one registry. A
-    # tentacle composes its roles (a channel that is also an MCP provider), so
+    # tentacle composes its roles (a channel that is also an MCP tentacle), so
     # the typed views below are readings of this dict, taken fresh each time: a
     # router builder reads `channels` while `connect` is still mounting.
     tentacles: dict[str, Tentacle] = field(default_factory=dict)
@@ -187,14 +187,13 @@ class Octomate:
 
     @property
     def mcps(self) -> dict[str, McpTentacle]:
-        """The tentacles that proxy a provider's MCP server, by id — the providers
-        the served server's link tools know. The proxy is built per class, its
-        tools resolving the instance — and the caller's own credential for it —
-        from the session a call names, so two tentacles of one type share one."""
+        """The tentacles that proxy a provider's MCP server, by id — every one the
+        served server offers, each listing and calling as the person a turn is
+        for, whichever channel the turn is on."""
         return {
             id: tentacle
             for id, tentacle in self.tentacles.items()
-            if isinstance(tentacle, McpTentacle)
+            if isinstance(tentacle, McpTentacle) and tentacle.serving
         }
 
     def connect(self, tentacle: TentacleT) -> TentacleT:

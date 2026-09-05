@@ -285,31 +285,49 @@ async def test_a_caller_with_no_turn_is_listed_no_slack_tool() -> None:
     assert [tool.name for tool in tools] == LISTED_TO_ALL
 
 
-async def test_a_call_outside_a_slack_turn_is_refused() -> None:
+async def test_slacks_tools_act_as_the_person_from_any_channel() -> None:
+    # The person is the same everywhere, so a turn on another channel reaches
+    # their Slack too — once they have linked it, with the token Octomate holds.
+    octomate = a_deployment()
+    ink = FakeSlackInk()
+    channel = a_workspace(octomate, ink)
+    upstream, seen = a_slack_upstream()
+    upstream_app = upstream.http_app()
+    elsewhere = ChannelAddress(
+        channel_tentacle_id="im",
+        chat_type="group",
+        chat_id="room",
+        user_id="U1",
+        shared=True,
+    )
+    async with served(octomate) as (octomate, app):
+        away = await a_slack_turn(octomate, channel, elsewhere)
+        async with over(octomate, app, naming(away)) as client:
+            with pytest.raises(ToolError, match=f"`{CONNECT_TOOL}` with `slack`"):
+                await client.call_tool("slack_read_user_profile", {})
+
+        session = await a_slack_turn(octomate, channel, a_slack_thread())
+        async with over(octomate, app, naming(session)) as client:
+            await connected(app, ink, client)
+
+        async with (
+            upstream_app.router.lifespan_context(upstream_app),
+            in_memory(channel, away, httpx.ASGITransport(app=upstream_app)) as client,
+        ):
+            tools = await client.list_tools()
+            result = await client.call_tool("slack_read_user_profile", {})
+
+    assert "slack_read_user_profile" in [tool.name for tool in tools]
+    assert result.data == "steve.li"
+    assert seen == ["Bearer xoxp-user"]
+
+
+async def test_a_link_needs_a_channel_to_land_on() -> None:
     octomate = a_deployment()
     channel = a_workspace(octomate, FakeSlackInk())
     async with served(octomate) as (octomate, app):
-        elsewhere = await a_slack_turn(
-            octomate,
-            channel,
-            ChannelAddress(
-                channel_tentacle_id="im",
-                chat_type="group",
-                chat_id="room",
-                user_id="U1",
-                shared=True,
-            ),
-        )
-        async with over(octomate, app, naming(elsewhere)) as client:
-            with pytest.raises(ToolError, match="is on im, not Slack"):
-                await client.call_tool("slack_read_user_profile", {})
-
-        # Linking asks nothing of the turn's channel but a place to deliver the
-        # card; Slack's own refusal is for Slack's tools.
         nowhere = await a_slack_turn(octomate, channel, None)
         async with over(octomate, app, naming(nowhere)) as client:
-            with pytest.raises(ToolError, match="nowhere in Slack to act"):
-                await client.call_tool("slack_read_user_profile", {})
             with pytest.raises(ToolError, match="no turn on a channel"):
                 await client.call_tool(CONNECT_TOOL, SLACK)
 

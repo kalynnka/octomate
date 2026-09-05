@@ -13,7 +13,6 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import ClassVar, Self
 
 import httpx
 import pytest
@@ -41,8 +40,7 @@ from octomate.mcp.server import (
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
-from octomate.schemas.user import UserProfile
-from octomate.tentacles.mcp import McpTentacle
+from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, FakeOctomate
@@ -142,17 +140,15 @@ async def a_driven_turn(octomate: Octomate) -> GatewaySession:
     return session
 
 
-class ToolsTentacle(FakeChannelTentacle, McpTentacle):
+class ToolsTentacle(FakeChannelTentacle, OAuthMcpTentacle):
     """A channel composing the MCP component: a provider the link tools know by
-    its id, its type proxied on the one server once however many are connected."""
+    its id, acting as the person who linked it — nobody has, so it lists
+    nothing."""
 
-    label: ClassVar[str] = "Tools"
-    upstream: ClassVar[str] = "https://tools.example/mcp"
-    instructions: ClassVar[str] = "## Tools\n\nA fake provider's own contract.\n"
-
-    @classmethod
-    def onbehalf(cls, session: GatewaySession) -> tuple[Self, UserProfile]:
-        raise ToolError("a fake that serves no calls")
+    label = "Tools"
+    upstream = "https://tools.example/mcp"
+    instructions = "## Tools\n\nA fake provider's own contract.\n"
+    prefix = None
 
 
 def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once() -> (
@@ -168,6 +164,7 @@ def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once
     assert list(octomate.mcps) == ["a", "b"]
     assert f"`{CONNECT_TOOL}` with the provider's id (`a`, `b`)" in instructions
     assert instructions.count("A fake provider's own contract.") == 1
+    assert instructions.count("## Linking accounts") == 1
 
 
 def test_the_instructions_carry_the_linking_contract_only_with_a_provider() -> None:
@@ -181,9 +178,9 @@ def test_the_instructions_carry_the_linking_contract_only_with_a_provider() -> N
 
 
 async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> None:
-    # `onbehalf` refuses every call, so the proxy lists nothing; what a caller
+    # Nobody has linked the fake, so its proxy lists nothing; what a caller
     # sees is the linking pair, after Octomate's own families — and the pair
-    # knows only the providers served here.
+    # knows only the tentacles served here.
     octomate = a_driven_deployment()
     octomate.connect(ToolsTentacle(id="a"))
     async with served(octomate) as (octomate, app):

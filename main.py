@@ -18,6 +18,7 @@ from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import build_inkling
+from octomate.tentacles.mcp import build_mcp
 
 config = OctomateConfig()
 
@@ -126,8 +127,6 @@ def create_app() -> FastAPI:
                 inkling_config,
                 octomate,
                 registry=registry,
-                mcp=config.mcp,
-                integrations=config.integrations,
             )
         )
 
@@ -165,5 +164,9 @@ def create_app() -> FastAPI:
             octomate.connect(
                 build_channel(channel_id, channel_config, octomate),
             )
+
+    for mcp_id, mcp_config in config.mcp.items():
+        if mcp_config.enabled:
+            octomate.connect(build_mcp(mcp_id, mcp_config, octomate))
 
     return octomate.app(title="Octomate")

@@ -19,8 +19,8 @@ class McpConnectionAuth(httpx.Auth):
     Sitting on the transport rather than in a tool hook is what makes this cover
     the whole session: the same 401 answers the `initialize` that warms a session
     and the tool call that uses it, and only one of those two is anywhere a tool
-    hook can see. `McpToolsetCache.warm` logs a failure and moves on, so a revoked
-    token would otherwise fail quietly on every run forever.
+    hook can see. A proxied listing that fails is an empty listing, so a revoked
+    token would otherwise fail quietly on every turn forever.
 
     A 401 answering a bearer token is the provider saying the credential is gone,
     and there is nothing to retry — so it is reported once and the request is left
