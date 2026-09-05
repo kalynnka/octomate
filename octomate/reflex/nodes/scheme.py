@@ -75,7 +75,9 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             dm_thread.active_model if receiver else None,
         )
         state.run_name = "summon"
-        state.thread = dm_thread
+        state.thread = await ctx.deps.thread_manager.enter(
+            dm_address, current=state.thread
+        )
         state.target = ResponseTarget(
             channel_id=target.channel_tentacle_id,
             address=dm_address,

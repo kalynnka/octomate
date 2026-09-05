@@ -54,6 +54,7 @@ from websockets.exceptions import ConnectionClosed
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import DeepseekConfig
+from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -766,9 +767,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if not prompt_text:
             raise ValueError("DeepseekTentacle requires a non-empty text prompt")
         # dsh has no instructions channel on session.prompt, so run-level
-        # instructions (a spawner's framing, mostly) travel as prompt framing.
+        # instructions (a spawner's framing, mostly) travel inside the prompt —
+        # marked, because everything else in there is what somebody said.
         if isinstance(instructions, str) and instructions:
-            prompt_text = f"{instructions}\n\n{prompt_text}"
+            prompt_text = f"{tagged('instructions', instructions)}\n\n{prompt_text}"
 
         permission_mode = (
             conversation.permission_mode

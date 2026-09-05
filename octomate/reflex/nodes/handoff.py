@@ -62,7 +62,7 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         if isinstance(decision.destination, CrossingLanding):
             crossed = await open_crossing(
-                ctx, decision.destination, source_address, hint_text
+                ctx, decision.destination, source_address, hint_text, decision.agent_id
             )
             if crossed is None:
                 return End(ReflexResult(decision=None, target=source_target))
@@ -73,7 +73,9 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 thread_strategy=far.thread_strategy,
                 mode="sub",
             )
-            state.thread = await ctx.deps.thread_manager.ensure(crossed)
+            state.thread = await ctx.deps.thread_manager.enter(
+                crossed, current=state.thread
+            )
             return React()
 
         # Below the crossing branch on purpose: a native handoff always crosses,
@@ -96,6 +98,13 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     exc_info=True,
                 )
                 opened = target_address
+            if opened != target_address:
+                await ctx.deps.record_move(
+                    target_address,
+                    hint_text,
+                    agent_tentacle_id=decision.agent_id,
+                    platform_message_id=opened.channel_thread_id,
+                )
             group_main = target_address.shared and not target_address.channel_thread_id
             if opened == target_address and group_main:
                 # Nothing moved, and the surface it would fall back to is a group's
@@ -117,5 +126,7 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         state.target = target
         if target.address is not None and state.thread is not None:
-            state.thread = await ctx.deps.thread_manager.ensure(target.address)
+            state.thread = await ctx.deps.thread_manager.enter(
+                target.address, current=state.thread
+            )
         return React()

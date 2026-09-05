@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Self
 
 from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
 from pydantic import AfterValidator, ConfigDict, Field, model_validator
+from pydantic.dataclasses import dataclass
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
@@ -49,12 +49,22 @@ if TYPE_CHECKING:
 ATTRIBUTABLE_KINDS: frozenset[ThreadKind] = frozenset({"thread", "native_thread"})
 
 
+# One spelling for "no thread". A channel that reports it as `""` — Lark's does, for
+# a message carrying neither a root nor a thread id — would otherwise file the same
+# chat under a second row, and under the other of the two unique indexes at that,
+# since `""` is not NULL and NULL is what the chat-room index looks for.
+ChannelThreadId = Annotated[
+    str | None,
+    AfterValidator(lambda thread_id: thread_id or None),
+]
+
+
 @dataclass(frozen=True)
 class ThreadKey:
     channel_tentacle_id: str
     chat_type: ChatType
     chat_id: str
-    channel_thread_id: str | None = None
+    channel_thread_id: ChannelThreadId = None
 
     @classmethod
     def from_address(cls, address: ChannelAddress) -> ThreadKey:
@@ -183,6 +193,14 @@ class Thread(BaseTransmuter):
         default=None,
         description=("The platform's own thread id; None unless `kind` is `thread`."),
     )
+    parent_thread_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "The thread this one was opened inside — a kick in a chat room works "
+            "in a thread of its own, while the chat everyone sees stays on the chat "
+            "room. None for a thread nobody opened; one level deep, never a chain."
+        ),
+    )
     title: str | None = Field(
         default=None,
         description=(
@@ -216,6 +234,8 @@ class Thread(BaseTransmuter):
         exclude=True,
         description="The project this thread's work is in, eagerly loaded.",
     )
+    parent: Relation[Thread | None] = Field(default_factory=Relation, frozen=True)
+
     messages: RelationCollection[ThreadMessage] = Relationships()
     handoffs: RelationCollection[Handoff] = Relationships()
 

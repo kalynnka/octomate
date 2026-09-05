@@ -70,7 +70,9 @@ async def _post(
         id=chat_id,
         messages=[
             UIMessage(
-                id="m1",
+                # Its own id, as the AI SDK gives each message: the ledger keeps one
+                # row per delivery, so two prompts sharing an id would be one send.
+                id=f"m-{prompt}",
                 role="user",
                 parts=[TextUIPart(type="text", text=prompt)],
             )

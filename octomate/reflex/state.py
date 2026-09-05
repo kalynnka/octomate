@@ -25,8 +25,10 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, GatewaySession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.prompts import tagged
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.thread import Thread
+from octomate.schemas.segments import MarkdownSegment
+from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
     ResponseTargetMode,
@@ -39,6 +41,14 @@ from octomate.tentacles.channel import (
     ChannelOutput,
     ChannelTentacle,
     ThreadStrategy,
+)
+
+# Inside the marking, where an editor puts its own: the tag says this is not the
+# ask, and the sentence says why — an agent that answers the recap replies to what
+# was settled hours ago.
+RECAP_HEADER = (
+    "Recent messages in this chat. They are context and have been answered "
+    "already — do not reply to them."
 )
 
 
@@ -246,6 +256,77 @@ class ReflexDeps:
             return AgentModelConfig(agent=matched.agent, model=model)
         return matched or configs[0]
 
+    async def render_chat(
+        self, messages: list[ThreadMessage], *, ceiling: int = 0
+    ) -> str:
+        """The ledger rows as one transcript: who spoke, under which identities, and
+        the `#msg:<id>` handle a brief would cite them by.
+
+        Each message is its segments, as they render themselves — the same body an
+        inbound event shows. `message_text` would be the shorter route and the wrong
+        one: it keeps only text and markdown, so a message that was a picture or a
+        quoted reply arrives as nothing at all.
+
+        `ceiling` cuts each message. It is 0 for the messages a turn must answer —
+        those are the work — and set for the chat behind them, where one pasted log
+        would otherwise be the whole slice.
+        """
+        parts: list[str] = []
+        for message in messages:
+            text = "\n".join(str(segment) for segment in message.segments)
+            if not text:
+                continue
+            if ceiling and len(text) > ceiling:
+                text = f"{text[:ceiling]}…"
+            sender = await message.sender
+            display_name = (
+                (sender.name or sender.nickname or "anonymous")
+                if sender is not None
+                else "anonymous"
+            )
+            owner = sender.user.peek() if sender is not None else None
+            ids = (
+                f"{message.user_id}, user:{owner.username}"
+                if owner is not None
+                else message.user_id
+            )
+            platform_id = (
+                f" #msg:{message.platform_message_id}"
+                if message.platform_message_id
+                else ""
+            )
+            parts.append(f"{display_name} ({ids}){platform_id}:\n{text}")
+        return "\n\n".join(parts)
+
+    async def record_move(
+        self,
+        address: ChannelAddress,
+        text: str,
+        *,
+        agent_tentacle_id: str,
+        platform_message_id: str | None = None,
+    ) -> None:
+        """Write the line a move leaves behind to the ledger of the chat it left.
+
+        A person already sees it — the channel posted it, and a thread opened here
+        hangs off it. The turn that comes next does not: a chat room's recap is built
+        from the ledger, and a move nobody recorded leaves a chat in which the work
+        simply stops. An agent reading that answers what was carried away ten minutes
+        ago.
+
+        The row carries the opener's own platform id, so the ledger and the platform
+        name the same message rather than two.
+        """
+        await self.thread_manager.record_outbound(
+            address,
+            agent_tentacle_id=agent_tentacle_id,
+            segments=[MarkdownSegment(data={"text": text})],
+            sender=self.channel(address.channel_tentacle_id).self_profile,
+            platform_message_id=platform_message_id,
+            message_text=text,
+            raw=text,
+        )
+
     async def load_pending_prompt(
         self,
         state: ReflexState,
@@ -272,29 +353,34 @@ class ReflexDeps:
         state.source_thread_address = source_target.address
         state.source_thread_message_ids = [message.id for message in messages]
 
-        parts: list[str] = []
-        for message in messages:
-            text = message.message_text or message.raw
-            if not text:
-                continue
-            sender = await message.sender
-            display_name = (
-                (sender.name or sender.nickname or "anonymous")
-                if sender is not None
-                else "anonymous"
-            )
-            owner = sender.user.peek() if sender is not None else None
-            ids = (
-                f"{message.user_id}, user:{owner.username}"
-                if owner is not None
-                else message.user_id
-            )
-            platform_id = (
-                f" #msg:{message.platform_message_id}"
-                if message.platform_message_id
-                else ""
-            )
-            parts.append(f"{display_name} ({ids}){platform_id}:\n{text}")
-        prompt = "\n\n".join(parts)
-        if prompt:
-            state.user_prompt = prompt
+        asked = await self.render_chat(messages)
+        if not asked:
+            return
+        recap = await self.chat_recap(state, messages[0])
+        # The messages the turn must answer are the body, unmarked. What was said
+        # before them is the system's addition and stands in a tag.
+        state.user_prompt = f"{recap}\n\n{asked}" if recap else asked
+
+    async def chat_recap(self, state: ReflexState, earliest: ThreadMessage) -> str:
+        """What was said in this chat room before the messages the turn must answer.
+
+        Only a kick in a dm or a group chat needs it: that runs in a thread of its
+        own, so its model context starts empty every time and the agent would answer
+        a chat it cannot see. A thread carries its own history in the conversation
+        and gets none of this — its context is already the whole of the work.
+
+        The chat is the parent's, so the rows come from there; how many, and how much
+        of each, is the channel's to say.
+        """
+        thread = state.thread
+        source_target = state.source_target
+        if thread is None or thread.parent_thread_id is None or source_target is None:
+            return ""
+        recap = self.channel(source_target).config.recap
+        if not recap.messages:
+            return ""
+        messages = await self.thread_manager.chat_messages_before(
+            thread.parent_thread_id, earliest.id, limit=recap.messages
+        )
+        rendered = await self.render_chat(messages, ceiling=recap.characters)
+        return tagged("chat_recap", f"{RECAP_HEADER}\n\n{rendered}" if rendered else "")

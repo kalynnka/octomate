@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
+from arcanus.materia.sqlalchemy import selectinload
 from pydantic_ai.messages import ModelRequest as RawModelRequest
 from pydantic_ai.messages import ModelResponse as RawModelResponse
 from pydantic_ai.messages import TextPart, UserPromptPart
@@ -17,6 +18,7 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import (
+    ATTRIBUTABLE_KINDS,
     MessageBinding,
     Thread,
     ThreadKey,
@@ -91,6 +93,55 @@ async def test_concurrent_first_sightings_of_one_key_insert_once() -> None:
     assert len({thread.id for thread in threads}) == 1
     async with async_session() as session:
         assert await session.count(Thread) == 1
+
+
+async def test_a_re_delivered_message_is_recorded_once() -> None:
+    """A platform re-sends when it misses an ack, and the second send is the same
+    message. Recording is idempotent: asking again is answered with the row that
+    already exists, not with a second one."""
+    manager = ThreadManager(users=UserManager())
+    thread = await manager.ensure(address())
+    first = await manager.record_inbound(event("m1", "alice", "hello"))
+
+    again = await manager.record_inbound(event("m1", "alice", "hello"))
+
+    assert again.id == first.id
+    loaded = await manager.get(thread.id)
+    assert loaded is not None
+    assert [message.id for message in loaded.messages] == [first.id]
+
+
+async def test_a_message_the_platform_never_named_is_always_recorded() -> None:
+    """There is nothing to recognise it by, so refusing one would drop real
+    messages rather than duplicates."""
+    manager = ThreadManager(users=UserManager())
+    thread = await manager.ensure(address())
+
+    first = await manager.record_inbound(event("", "alice", "hello"))
+    second = await manager.record_inbound(event("", "alice", "hello"))
+
+    assert first.id != second.id
+    loaded = await manager.get(thread.id)
+    assert loaded is not None
+    assert len(loaded.messages) == 2
+
+
+async def test_a_reply_may_share_the_id_of_the_message_it_answers() -> None:
+    """A native runtime files a turn's prompt and its answer under one id — the
+    pair is what its transcript names — so direction is part of the key."""
+    manager = ThreadManager(users=UserManager())
+    thread = await manager.ensure(address())
+
+    inbound = await manager.record_inbound(event("m1", "alice", "asked"))
+    outbound = await manager.record_outbound(
+        thread,
+        agent_tentacle_id="inkling",
+        segments=[TextSegment(data={"text": "answered"})],
+        sender=UserProfile(channel_user_id="bot", name="Bot"),
+        platform_message_id="m1",
+    )
+
+    assert outbound.platform_message_id == inbound.platform_message_id
 
 
 async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> None:
@@ -555,3 +606,158 @@ async def test_chat_message_resolves_a_handle_within_a_persons_history() -> None
     # Bob never spoke in alice's thread: her message is not his to name.
     with pytest.raises(ValueError, match="no message"):
         await manager.chat_message(bob, str(first.id))
+
+
+def chat_room() -> ThreadKey:
+    return ThreadKey(channel_tentacle_id="slack", chat_type="dm", chat_id="D9")
+
+
+async def test_a_chat_room_can_hold_more_than_one_sub_thread() -> None:
+    """The key that pins one row per chat would otherwise refuse the second: a
+    sub-thread shares its chat room's address, having none of its own."""
+    manager = ThreadManager(users=UserManager())
+    parent = await manager.ensure(chat_room())
+
+    first = await manager.open_sub_thread(parent)
+    second = await manager.open_sub_thread(parent)
+
+    assert first.id != second.id
+    assert first.parent_thread_id == parent.id
+    assert second.parent_thread_id == parent.id
+    # The chat room's own address is untouched, and still resolves to it.
+    assert (await manager.ensure(chat_room())).id == parent.id
+
+
+async def test_a_sub_thread_shares_its_chat_rooms_address() -> None:
+    """Nothing is invented here. A channel sends a reply to whatever
+    `channel_thread_id` holds, so a made-up one would be posted at the platform —
+    and sharing the chat room's is what makes a sub-thread's key resolve to it."""
+    manager = ThreadManager(users=UserManager())
+    parent = await manager.ensure(chat_room())
+
+    child = await manager.open_sub_thread(parent)
+
+    assert child.channel_thread_id == parent.channel_thread_id
+    assert (await manager.ensure(chat_room())).id == parent.id
+    # Its kind is the chat room's, so it stays out of ATTRIBUTABLE_KINDS and
+    # carries no project — work in a dm or a group chat is not attributable, and a
+    # sub-thread does not change that.
+    assert child.kind == "dm"
+    assert child.kind not in ATTRIBUTABLE_KINDS
+
+
+async def test_a_chat_room_is_one_row_however_its_address_is_spelled() -> None:
+    """A channel reporting no thread writes `""` where another writes NULL. They
+    name the same chat, and a key that kept both spellings would file it twice —
+    under different unique indexes, so neither would catch the other."""
+    manager = ThreadManager(users=UserManager())
+    blank = ThreadKey(
+        channel_tentacle_id="slack",
+        chat_type="dm",
+        chat_id="D9",
+        channel_thread_id="",
+    )
+
+    assert blank.channel_thread_id is None
+    assert blank == chat_room()
+    assert (await manager.ensure(blank)).id == (await manager.ensure(chat_room())).id
+
+
+async def test_entering_a_chat_room_opens_a_sub_thread() -> None:
+    """What a kick in a dm or a group chat actually runs in."""
+    manager = ThreadManager(users=UserManager())
+
+    entered = await manager.enter(chat_room())
+
+    assert entered.parent_thread_id == (await manager.ensure(chat_room())).id
+
+
+async def test_entering_a_thread_is_the_thread_itself() -> None:
+    """A thread is a piece of work already, so nothing is opened inside it and the
+    turn runs where it always did."""
+    manager = ThreadManager(users=UserManager())
+
+    entered = await manager.enter(address())
+
+    assert entered.parent_thread_id is None
+    assert entered.id == (await manager.ensure(address())).id
+
+
+async def test_each_kick_in_a_chat_room_enters_its_own_sub_thread() -> None:
+    """The discontinuity this whole shape exists for: two kicks in one chat room
+    answer in two threads, and so in two model contexts."""
+    manager = ThreadManager(users=UserManager())
+
+    first = await manager.enter(chat_room())
+    second = await manager.enter(chat_room())
+
+    assert first.id != second.id
+    assert first.parent_thread_id == second.parent_thread_id
+
+
+async def test_entering_the_chat_room_a_turn_is_in_keeps_its_sub_thread() -> None:
+    """An agent taking the conversation over in place is still answering the same
+    kick, and a second sub-thread would split one answer across two contexts."""
+    manager = ThreadManager(users=UserManager())
+    entered = await manager.enter(chat_room())
+
+    again = await manager.enter(chat_room(), current=entered)
+
+    assert again.id == entered.id
+
+
+async def test_a_chat_room_nests_one_level() -> None:
+    """The rule that keeps `surface` a single hop rather than a walk."""
+    manager = ThreadManager(users=UserManager())
+    parent = await manager.ensure(chat_room())
+    child = await manager.open_sub_thread(parent)
+
+    with pytest.raises(ValueError, match="nests one level"):
+        await manager.open_sub_thread(child)
+
+
+async def test_a_sub_threads_surface_is_its_chat_room() -> None:
+    """The split this whole shape rests on: the work is the sub-thread's, the
+    surface is the chat room, and one call says which is which."""
+    manager = ThreadManager(users=UserManager())
+    parent = await manager.ensure(chat_room())
+    child = await manager.open_sub_thread(parent)
+
+    assert (await manager.surface(child)).id == parent.id
+    # A thread nobody opened is its own surface, so the caller never branches.
+    assert (await manager.surface(parent)).id == parent.id
+
+
+async def test_a_listing_names_chat_rooms_and_not_their_sub_threads() -> None:
+    """A listing names the surfaces a person can open. A chat room's sub-threads
+    are reached through it, and a busy one would otherwise bury every other."""
+    manager = ThreadManager(users=UserManager())
+    parent = await manager.ensure(chat_room())
+    await manager.open_sub_thread(parent)
+    await manager.open_sub_thread(parent)
+    work = await manager.ensure(address())
+
+    listed = {thread.id for thread in await manager.list_threads()}
+
+    assert listed == {parent.id, work.id}
+
+
+async def test_the_parent_relation_loads_the_chat_room_when_asked() -> None:
+    """`remote_side` points the self-reference at the parent rather than at the
+    children, and `raise_on_sql` keeps it off every read that did not ask: a listing
+    that fetched each row's parent would read the same chat rooms over again."""
+    manager = ThreadManager(users=UserManager())
+    parent = await manager.ensure(chat_room())
+    child = await manager.open_sub_thread(parent)
+
+    async with async_session() as session:
+        rows = await session.list(
+            Thread,
+            limit=1,
+            options=[selectinload(Thread["parent"])],
+            expressions=[Thread["id"] == child.id],
+        )
+        loaded = rows[0].parent.peek()
+
+    assert loaded is not None
+    assert loaded.id == parent.id

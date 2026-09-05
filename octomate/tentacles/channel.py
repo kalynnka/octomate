@@ -313,13 +313,26 @@ class ChannelTentacle(
                 chat_type=event.chat_type,
                 shared=event.shared,
             )
+            thread = await self.octomate.thread_manager.ensure(address)
+            if event.message_id and await self.octomate.thread_manager.find_message(
+                thread.id, event.message_id, "inbound"
+            ):
+                # The platform sent this one before, so it is already answered or
+                # being answered now. Warn rather than debug: a channel doing this
+                # often is a channel whose acks are not landing.
+                logger.warning(
+                    "Channel %s: ignored a re-delivery of message %s in %s",
+                    self.id,
+                    event.message_id,
+                    address,
+                )
+                return
             thread_message = await self.octomate.thread_manager.record_inbound(event)
             if self.config.mention_only and event.shared:
                 # Only a surface others can read has to be addressed, and a thread an
                 # agent already owns counts as addressed — its next turn continues
                 # work that is already this agent's. A group main pins no owner, so
                 # there it stays the mention.
-                thread = await self.octomate.thread_manager.ensure(address)
                 addressed = (
                     event.is_at(self.self_profile.channel_user_id)
                     or event.replies_to(self.self_profile.channel_user_id)
