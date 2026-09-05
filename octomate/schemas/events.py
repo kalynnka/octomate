@@ -3,7 +3,12 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import UserContent
 
-from octomate.schemas.segments import AtSegment, MessageSegment, TextSegment
+from octomate.schemas.segments import (
+    AtSegment,
+    MessageSegment,
+    ReplySegment,
+    TextSegment,
+)
 from octomate.schemas.user import UserProfile
 from octomate.types.conversations import ChatType
 
@@ -50,6 +55,12 @@ class MessageEvent(BaseModel):
     def is_at(self, user_id: str | None = None) -> bool:
         return user_id is not None and any(
             isinstance(seg, AtSegment) and seg.data.user_id == user_id
+            for seg in self.segments
+        )
+
+    def replies_to(self, user_id: str | None = None) -> bool:
+        return user_id is not None and any(
+            isinstance(seg, ReplySegment) and seg.data.get("user_id") == user_id
             for seg in self.segments
         )
 

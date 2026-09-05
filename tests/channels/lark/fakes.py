@@ -34,7 +34,7 @@ class FakeLarkInk(LarkInk):
         self.replies: list[tuple[str, str, str, bool]] = []
         self.stream_cards: list[tuple[str, str]] = []
         self.stream_messages: list[
-            tuple[str, str, LarkStreamCard, str | None, bool]
+            tuple[str, str, LarkStreamCard, str | None, bool, str]
         ] = []
         self.stream_updates: list[tuple[LarkStreamCard, str, int]] = []
         self.finalized: list[tuple[LarkStreamCard, int]] = []
@@ -93,11 +93,19 @@ class FakeLarkInk(LarkInk):
         chat_type: str,
         card: LarkStreamCard,
         *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None:
         self.stream_messages.append(
-            (chat_id, chat_type, card, reply_to, reply_in_thread)
+            (
+                chat_id,
+                chat_type,
+                card,
+                reply_to,
+                reply_in_thread,
+                channel_thread_id,
+            )
         )
         return f"stream-{len(self.stream_messages)}"
 
@@ -127,8 +135,8 @@ class FakeLarkInk(LarkInk):
 
 @dataclass
 class FakeLarkCardsInk:
-    sent: list[tuple[str, str, list[LarkOutboundMessage], str | None, bool]] = field(
-        default_factory=list
+    sent: list[tuple[str, str, list[LarkOutboundMessage], str | None, bool, str]] = (
+        field(default_factory=list)
     )
     # What `open_dm` answers, so a test says whether this platform has anywhere
     # private to reach the user; `opened` records who was asked for.
@@ -144,10 +152,21 @@ class FakeLarkCardsInk:
         chat_id: str,
         chat_type: str,
         messages: list[LarkOutboundMessage],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str:
-        self.sent.append((chat_id, chat_type, messages, reply_to, reply_in_thread))
+        self.sent.append(
+            (
+                chat_id,
+                chat_type,
+                messages,
+                reply_to,
+                reply_in_thread,
+                channel_thread_id,
+            )
+        )
         return f"lark-{len(self.sent)}"
 
 

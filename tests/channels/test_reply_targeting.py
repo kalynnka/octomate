@@ -1,9 +1,10 @@
-"""Outbound reply-to + mention segments.
+"""Outbound reply-to, thread-destination, and mention segments.
 
 `ReplySegment` and `AtSegment` are part of the `MessageSegment` output vocabulary.
-The first reply anywhere in the list is threaded as the platform `reply_to` (and
-every reply is stripped from the body, never rendered as `[reply: …]` text); a
-mention encodes to each platform's native ping token.
+The first reply anywhere in the list becomes the platform `reply_to` without
+discarding the conversation's thread destination (and every reply is stripped
+from the body, never rendered as `[reply: …]` text); a mention encodes to each
+platform's native ping token.
 """
 
 from __future__ import annotations
@@ -72,7 +73,7 @@ async def test_send_tool_accepts_reply_and_mention() -> None:
     assert result.metadata == [MessageSentEvent(segments=segments)]
 
 
-async def test_default_segments_feeler_threads_leading_reply() -> None:
+async def test_default_segments_feeler_keeps_thread_destination_with_reply() -> None:
     ink = RecordingInk()
     feeler = DefaultSegmentsFeeler(ink=ink, chromo=FakeChromo())
 
@@ -84,9 +85,10 @@ async def test_default_segments_feeler_threads_leading_reply() -> None:
         ],
     )
 
-    chat_id, _chat_type, messages, reply_to, _thread = ink.sent[0]
+    chat_id, _chat_type, messages, reply_to, _in_thread, channel_thread_id = ink.sent[0]
     assert chat_id == "alice"
-    assert reply_to == "msg-42"  # the reply id overrides the conversation thread
+    assert reply_to == "msg-42"
+    assert channel_thread_id == "thread-1"
     assert messages == [{"text": "answer"}]  # body excludes the reply token
 
 
@@ -96,7 +98,8 @@ async def test_default_segments_feeler_falls_back_to_thread() -> None:
 
     await feeler.present(_key(), [MarkdownSegment(data={"text": "answer"})])
 
-    assert ink.sent[0][3] == "thread-1"
+    assert ink.sent[0][3] is None
+    assert ink.sent[0][5] == "thread-1"
 
 
 async def test_napcat_segments_feeler_threads_leading_reply() -> None:
@@ -111,8 +114,11 @@ async def test_napcat_segments_feeler_threads_leading_reply() -> None:
         ],
     )
 
-    _chat_id, _chat_type, messages, reply_to, _thread = ink.sent[0]
+    _chat_id, _chat_type, messages, reply_to, _in_thread, channel_thread_id = ink.sent[
+        0
+    ]
     assert reply_to == "999"
+    assert channel_thread_id == "thread-1"
     assert cast(Any, messages[0]).segments == [{"type": "text", "data": {"text": "hi"}}]
 
 

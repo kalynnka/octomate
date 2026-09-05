@@ -35,6 +35,11 @@ class LarkStreamConfig(ChannelStreamConfig):
     min_chars: int = 20
 
 
+class DiscordStreamConfig(ChannelStreamConfig):
+    # discord.py follows Discord's dynamic route buckets; this only coalesces edits.
+    flush_interval: float = 0.2
+
+
 class NapcatStreamConfig(ChannelStreamConfig):
     enabled: bool = False
 
@@ -107,6 +112,12 @@ class LarkChannelConfig(ChannelConfig):
     stream: LarkStreamConfig = Field(default_factory=LarkStreamConfig)
 
 
+class DiscordChannelConfig(ChannelConfig):
+    type: Literal["discord"] = "discord"
+    bot_token: SecretStr
+    stream: DiscordStreamConfig = Field(default_factory=DiscordStreamConfig)
+
+
 class VercelStreamConfig(ChannelStreamConfig):
     # The dev UI renders tokens as they arrive; stream every event straight
     # through (the timeline feeler forwards raw events, so batching is moot).
@@ -156,6 +167,7 @@ class NapcatChannelConfig(ChannelConfig):
 ChannelConfigVariant: TypeAlias = Annotated[
     SlackChannelConfig
     | LarkChannelConfig
+    | DiscordChannelConfig
     | NapcatChannelConfig
     | TrunklineChannelConfig,
     Field(discriminator="type"),

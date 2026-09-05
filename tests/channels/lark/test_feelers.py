@@ -142,7 +142,7 @@ async def test_lark_feelers_send_approval_and_question_cards() -> None:
 
     assert approval_message_ids == {approval.id: "lark-1"}
     assert question_message_ids == {questions[0].id: "lark-2"}
-    assert ink.sent[0][3:] == ("om_parent", True)
+    assert ink.sent[0][3:] == (None, True, "om_parent")
     approval_content = _loaded_json_object(ink.sent[0][2][0].content)
     approval_elements = _json_objects(approval_content["elements"])
     approval_actions = _json_objects(approval_elements[2]["actions"])

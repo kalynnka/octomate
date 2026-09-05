@@ -9,9 +9,9 @@ Three things, in that order:
 - **Collect.** Claude Code, Codex, DeepSeek Harness, or a run you drove from chat —
   every turn lands in one record, including the sessions you start yourself in your own
   terminal or app.
-- **Spread.** The same thread reaches Slack, Lark, the web console and QQ, rendered
-  natively on each. You go on working where you already work — and more channels are
-  on the way.
+- **Spread.** The same thread reaches Slack, Lark, Discord, the web console and Napcat,
+  rendered natively on each. You go on working where you already work — and more
+  channels are on the way.
 - **Offer.** That history, and the tools built on it, are available from any of those
   surfaces — searchable mid-run, resumable later, handed to a different agent when the
   one that started is not the one that should finish.
@@ -51,6 +51,7 @@ approval buttons — and the thread it belongs to is the same thread on every su
 |---|---|---|
 | **Slack** | Slack Bolt, Socket Mode | ready |
 | **Lark / Feishu** | lark-oapi, WebSocket long connection | ready |
+| **Discord** | discord.py, Gateway WebSocket | ready |
 | **Trunkline** | the web console, over `/api/trunkline` | 🚧 WIP |
 | **QQ (NapCat)** | NapCat, OneBot WebSocket | 🚧 WIP |
 
@@ -286,7 +287,9 @@ ENV
 
 Restart, and `@`-mention the bot in a channel or DM it. `agents[0]` is what answers by
 default; the rest are summon candidates. Lark is the same shape with `type: lark` and an
-`app_id`/`app_secret` pair.
+`app_id`/`app_secret` pair. Discord uses `type: discord` plus one environment-backed
+bot token; its [private-app setup and live verification](docs/discord.md) cover the
+required intent and least-privilege invite.
 
 ### 3. Add the web console
 
@@ -331,7 +334,7 @@ server's files from the rest of `.octomate/` — the database and the client's
   config/
     octomate.yaml        host, port, mcp_path, db_url
     agents.yaml          claude, codex, deepseek, inkling
-    channels.yaml        slack, lark, napcat, trunkline
+    channels.yaml        slack, lark, discord, napcat, trunkline
     users.yaml           registered humans and their per-channel ids
     projects.yaml        code locations an agent may run in
     providers.yaml       LLM credentials
@@ -424,7 +427,8 @@ Unlike the hooks — whose scripts resolve the address and credential each time 
 |   +-- reflex/                # The run graph - nodes, state, and the suspender
 |   +-- tentacles/
 |   |   +-- agents/             # claude, codex, deepseek, inkling - adapters, ingest, tailers, hooks
-|   |   `-- channels/           # slack, lark, napcat, trunkline - and the feelers they draw with
+|   |   `-- channels/           # slack, lark, discord, napcat, trunkline
+|   |                           # - and their feelers
 |   +-- capabilities/          # Tools agents are given: gateway, ask, todos, history, harness
 |   +-- managers/              # Threads, conversations, deferred actions, spills, users
 |   +-- schemas/               # Pydantic/Arcanus transmuters - the persisted domain types
@@ -465,7 +469,7 @@ The codebase keeps an octopus metaphor, and these are the words it uses:
 | Body part | Concept | What it is |
 |---|---|---|
 | **Octomate** 🐙 | `octomate/base.py` | The coordinator. Owns every tentacle, and the managers they share. |
-| **Tentacle** 🦑 | `ChannelTentacle` | One per configured channel, keyed by instance: Slack, Lark, NapCat, Trunkline. |
+| **Tentacle** 🦑 | `ChannelTentacle` | One per configured channel, keyed by instance: Slack, Lark, Discord, NapCat, Trunkline. |
 | **Agent tentacle** 🧠 | `AgentTentacle` | One per agent: claude, codex, deepseek, inkling. |
 | **Reflex** ⚡ | `octomate/reflex/` | The graph a signal runs through, from waking to a result or a suspension. |
 | **Feeler** 🫧 | `feelers/` | The view. Decides how a streamed run event is rendered on a channel — timeline, segments and markdown, plus the cards you answer. |

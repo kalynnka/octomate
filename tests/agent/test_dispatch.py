@@ -141,6 +141,8 @@ class FailingSendInk(RecordingInk):
         chat_id: str,
         chat_type: str,
         messages: list[NativeMessage],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None:
@@ -370,7 +372,8 @@ async def test_teleport_forks_history_into_a_sub_thread_and_resumes() -> None:
     assert channel.sub_threads[0][1] == "Let's move to a thread"
     thread_address = _key(thread_id="hint-thread")
     assert entry.turns[-1].address == thread_address
-    assert channel.sent[-1][3] == "hint-thread"
+    assert channel.sent[-1][3] is None
+    assert channel.sent[-1][5] == "hint-thread"
     assert channel.sent[-1][2][0]["text"] == "continued in the thread"
     # (fork's history copy is unit-tested in test_conversation_manager; the fake
     # agent short-circuits react, so it records no messages to fork here.)

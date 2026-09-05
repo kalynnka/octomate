@@ -156,11 +156,13 @@ class SlackInk(Ink[SlackOutboundMessage]):
         chat_id: str,
         chat_type: str,
         messages: list[SlackOutboundMessage],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
         first_msg_id: IMMessageID | None = None
-        thread_ts = reply_to
+        thread_ts = reply_to or (channel_thread_id if chat_type == "thread" else None)
         for msg in messages:
             try:
                 markdown_text = msg.markdown_text or msg.text
