@@ -13,7 +13,6 @@ from inspect import cleandoc
 
 import pytest
 from fastmcp import Client, FastMCP
-from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -24,7 +23,7 @@ from octomate.managers.gateway import GatewaySession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import GATEWAY_SPELLS, TELEPORT_RECORDED
-from octomate.mcp.server import octomate_mcp
+from octomate.mcp.server import gateway_tool, history_tool, octomate_mcp
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -41,7 +40,7 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import FakeThreadManager
+from tests.support.managers import FakeThreadManager, fixed_session
 
 CLAUDE_ROUTE = AgentRoute(
     agent_id="claude",
@@ -76,7 +75,7 @@ def a_turn() -> tuple[FastMCP, GatewaySession, FakeChannelTentacle, FakeThreadMa
             shared=True,
         ),
     )
-    server = octomate_mcp(Depends(lambda: session), threads)
+    server = octomate_mcp(fixed_session(session), threads)
     return server, session, channel, threads
 
 
@@ -117,7 +116,7 @@ async def a_native_call(
         user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
         native=True,
     )
-    server = octomate_mcp(Depends(lambda: session), threads, kick=kicks.append)
+    server = octomate_mcp(fixed_session(session), threads, kick=kicks.append)
     return server, session, channel, threads, kicks
 
 
@@ -129,29 +128,34 @@ async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
     tools = await server.list_tools()
 
     assert [tool.name for tool in tools] == [
-        "scry",
-        "summon",
-        "teleport",
-        "scheme",
-        "send",
-        "dispel",
-        *HISTORY_TOOLS,
+        "gateway_scry",
+        "gateway_summon",
+        "gateway_teleport",
+        "gateway_scheme",
+        "gateway_send",
+        "gateway_dispel",
+        "history_search",
+        "history_read_before",
+        "history_read_after",
     ]
     # What an adapter pre-allows is this same list, named statically.
-    assert [*GATEWAY_SPELLS, *HISTORY_TOOLS] == [tool.name for tool in tools]
+    assert [
+        *map(gateway_tool, GATEWAY_SPELLS),
+        *map(history_tool, HISTORY_TOOLS),
+    ] == [tool.name for tool in tools]
 
 
 async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
     server, _session, _channel, _threads = a_turn()
     contracts = {
-        "scry": GatewayCapability.scry,
-        "summon": GatewayCapability.summon,
-        "teleport": GatewayCapability.teleport,
-        "scheme": GatewayCapability.scheme,
-        "send": GatewayCapability.send,
-        "dispel": GatewayCapability.dispel,
-        "search_thread_history": HistoryCapability.search_thread_history,
-        "read_thread_history_after": HistoryCapability.read_thread_history_after,
+        "gateway_scry": GatewayCapability.scry,
+        "gateway_summon": GatewayCapability.summon,
+        "gateway_teleport": GatewayCapability.teleport,
+        "gateway_scheme": GatewayCapability.scheme,
+        "gateway_send": GatewayCapability.send,
+        "gateway_dispel": GatewayCapability.dispel,
+        "history_search": HistoryCapability.search_thread_history,
+        "history_read_after": HistoryCapability.read_thread_history_after,
     }
 
     tools = {tool.name: tool for tool in await server.list_tools()}
@@ -161,8 +165,12 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
         assert doc is not None
         assert tools[name].description == cleandoc(doc)
     # And the contract is the model-facing one, not a paraphrase.
-    assert "copied exactly from a `scry` route" in (tools["summon"].description or "")
-    assert "do NOT repeat it in your final reply" in (tools["send"].description or "")
+    assert "copied exactly from a `scry` route" in (
+        tools["gateway_summon"].description or ""
+    )
+    assert "do NOT repeat it in your final reply" in (
+        tools["gateway_send"].description or ""
+    )
 
 
 def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
@@ -172,9 +180,9 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     # Inkling has no skill loader, so its handoff guidance rides here.
     assert "### Writing a brief" in inkling
 
-    mcp = gateway_instructions(lambda name: f"mcp__gateway__{name}")
+    mcp = gateway_instructions(gateway_tool)
     for name in ("scry", "summon", "teleport", "scheme", "send", "dispel"):
-        assert f"`mcp__gateway__{name}`" in mcp
+        assert f"`gateway_{name}`" in mcp
     assert "{" not in mcp
     assert "commission" not in mcp
     # The other runtimes bring their own handoff skills.
@@ -198,7 +206,7 @@ async def test_summon_records_the_decision_it_validated() -> None:
     server, session, _channel, _threads = a_turn()
 
     async with Client(server) as client:
-        result = await client.call_tool("summon", SUMMON_ARGUMENTS)
+        result = await client.call_tool("gateway_summon", SUMMON_ARGUMENTS)
 
     assert result.data == "Summoning claude (opus) → thread."
     assert session.decision == SummonDecision(
@@ -218,7 +226,9 @@ async def test_a_refusal_reaches_the_caller_as_the_same_sentence() -> None:
 
     async with Client(server) as client:
         with pytest.raises(ToolError) as refusal:
-            await client.call_tool("summon", {**SUMMON_ARGUMENTS, "agent_id": "nobody"})
+            await client.call_tool(
+                "gateway_summon", {**SUMMON_ARGUMENTS, "agent_id": "nobody"}
+            )
 
     # Verbatim — the sentence Inkling's `ModelRetry` carries, with no wrapper
     # prose around it.
@@ -234,7 +244,8 @@ async def test_arguments_are_validated_before_policy_runs() -> None:
         # against the tool's own schema before any policy is consulted.
         with pytest.raises(ToolError, match="destination"):
             await client.call_tool(
-                "summon", {**SUMMON_ARGUMENTS, "destination": {"kind": "everywhere"}}
+                "gateway_summon",
+                {**SUMMON_ARGUMENTS, "destination": {"kind": "everywhere"}},
             )
 
     assert session.decision is None
@@ -248,7 +259,7 @@ async def test_a_brief_over_the_cap_is_refused_before_policy_runs() -> None:
         # does any other bad argument, before the spell runs.
         with pytest.raises(ToolError, match="at most 8000 characters"):
             await client.call_tool(
-                "summon", {**SUMMON_ARGUMENTS, "summon": "x" * 8_001}
+                "gateway_summon", {**SUMMON_ARGUMENTS, "summon": "x" * 8_001}
             )
 
     assert session.decision is None
@@ -258,7 +269,9 @@ async def test_teleport_records_and_tells_the_runtime_to_wrap_up() -> None:
     server, session, _channel, _threads = a_turn()
 
     async with Client(server) as client:
-        result = await client.call_tool("teleport", {"hint": "carrying on in a thread"})
+        result = await client.call_tool(
+            "gateway_teleport", {"hint": "carrying on in a thread"}
+        )
 
     assert result.data == TELEPORT_RECORDED
     assert isinstance(session.decision, TeleportDecision)
@@ -271,7 +284,7 @@ async def test_send_here_delivers_immediately_to_the_conversation() -> None:
 
     async with Client(server) as client:
         result = await client.call_tool(
-            "send",
+            "gateway_send",
             {"segments": [{"type": "markdown", "data": {"text": "halfway there"}}]},
         )
 
@@ -287,7 +300,7 @@ async def test_send_to_dm_opens_it_and_lands_there() -> None:
 
     async with Client(server) as client:
         result = await client.call_tool(
-            "send",
+            "gateway_send",
             {
                 "segments": [{"type": "markdown", "data": {"text": "the summary"}}],
                 "destination": {"kind": "dm"},
@@ -306,8 +319,8 @@ async def test_a_native_session_scries_only_crossings(
     server, session, _channel, _threads, _kicks = await a_native_call()
 
     async with Client(server) as client:
-        routes = await client.call_tool("scry", {"reveal": "routes"})
-        places = await client.call_tool("scry", {"reveal": "destinations"})
+        routes = await client.call_tool("gateway_scry", {"reveal": "routes"})
+        places = await client.call_tool("gateway_scry", {"reveal": "destinations"})
 
     # No conversation of its own: nothing to route to here, and neither built-in
     # landing exists — everywhere it can go is the linked account's crossing.
@@ -322,9 +335,9 @@ async def test_a_native_session_with_no_linked_accounts_scries_nowhere(
     server, session, _channel, _threads, kicks = await a_native_call(linked=False)
 
     async with Client(server) as client:
-        result = await client.call_tool("scry", {"reveal": "destinations"})
+        result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
         with pytest.raises(ToolError) as refusal:
-            await client.call_tool("summon", SUMMON_ARGUMENTS)
+            await client.call_tool("gateway_summon", SUMMON_ARGUMENTS)
 
     # Registered, so the session knows who it speaks for — but the user has no
     # account anywhere a destination could light up.
@@ -342,7 +355,7 @@ async def test_a_native_teleport_is_refused_honestly(
 
     async with Client(server) as client:
         with pytest.raises(ToolError) as refusal:
-            await client.call_tool("teleport", {"hint": "moving over"})
+            await client.call_tool("gateway_teleport", {"hint": "moving over"})
 
     assert str(refusal.value).startswith(
         "This session lives in your terminal — Octomate cannot relocate it."
@@ -358,7 +371,7 @@ async def test_a_native_send_here_is_refused(
     async with Client(server) as client:
         with pytest.raises(ToolError) as refusal:
             await client.call_tool(
-                "send",
+                "gateway_send",
                 {"segments": [{"type": "markdown", "data": {"text": "hello"}}]},
             )
 
@@ -377,7 +390,7 @@ async def test_a_native_send_to_dm_is_refused(
     async with Client(server) as client:
         with pytest.raises(ToolError) as refusal:
             await client.call_tool(
-                "send",
+                "gateway_send",
                 {
                     "segments": [{"type": "markdown", "data": {"text": "hello"}}],
                     "destination": {"kind": "dm"},
@@ -397,7 +410,7 @@ async def test_a_native_send_delivers_to_a_crossing(
 
     async with Client(server) as client:
         result = await client.call_tool(
-            "send",
+            "gateway_send",
             {
                 "segments": [{"type": "markdown", "data": {"text": "for you"}}],
                 "destination": {"kind": "channel", "channel": "im"},
@@ -419,7 +432,7 @@ async def test_a_native_summon_kicks_its_handoff_at_once(
 
     async with Client(server) as client:
         result = await client.call_tool(
-            "summon",
+            "gateway_summon",
             {**SUMMON_ARGUMENTS, "destination": {"kind": "channel", "channel": "im"}},
         )
 
@@ -445,7 +458,7 @@ async def test_a_native_scheme_kicks_its_handoff_at_once(
 
     async with Client(server) as client:
         result = await client.call_tool(
-            "scheme",
+            "gateway_scheme",
             {
                 "hint": "carrying on with you directly",
                 "brief": "The operator asked for a summary.",
@@ -493,7 +506,7 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
             channel_tentacle_id="im", chat_type="dm", chat_id="landing", user_id="alice"
         ),
     )
-    return octomate_mcp(Depends(lambda: session), threads)
+    return octomate_mcp(fixed_session(session), threads)
 
 
 async def test_a_driven_turn_reads_every_thread_its_user_spoke_in(
@@ -502,18 +515,14 @@ async def test_a_driven_turn_reads_every_thread_its_user_spoke_in(
     server = await a_turn_of_alices(in_memory_engine)
 
     async with Client(server) as client:
-        hits = await client.call_tool("search_thread_history", {"query": "bug"})
+        hits = await client.call_tool("history_search", {"query": "bug"})
         after = await client.call_tool(
-            "read_thread_history_after", {"message_id": "#msg:m1", "limit": 1}
+            "history_read_after", {"message_id": "#msg:m1", "limit": 1}
         )
         with pytest.raises(ToolError, match="no message #msg:b1"):
-            await client.call_tool(
-                "read_thread_history_after", {"message_id": "#msg:b1"}
-            )
+            await client.call_tool("history_read_after", {"message_id": "#msg:b1"})
         with pytest.raises(ToolError, match="over the page"):
-            await client.call_tool(
-                "search_thread_history", {"query": "bug", "limit": 500}
-            )
+            await client.call_tool("history_search", {"query": "bug", "limit": 500})
 
     lines = hits.data.splitlines()
     # Bob's own direct messages are not alice's history: two hits, not three.
@@ -563,9 +572,9 @@ async def test_a_native_session_reads_its_users_history(
         user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
         native=True,
     )
-    server = octomate_mcp(Depends(lambda: session), threads)
+    server = octomate_mcp(fixed_session(session), threads)
 
     async with Client(server) as client:
-        hits = await client.call_tool("search_thread_history", {"query": "auth"})
+        hits = await client.call_tool("history_search", {"query": "auth"})
 
     assert " human alice: remember the auth bug" in hits.data

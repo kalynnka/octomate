@@ -72,7 +72,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
-from octomate.mcp.gateway import GATEWAY_SERVER_NAME
+from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
@@ -91,12 +91,9 @@ from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.claude.gateway import (
-    GATEWAY_MCP_INSTRUCTION,
-    gateway_mcp_server,
-)
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
+from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.claude.transcript import relocate_session
 from octomate.tentacles.hooks import hook_guard, hook_sender
@@ -671,20 +668,21 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             ),
             None,
         )
-        # The turn's gateway, mounted in process with the session closed over —
-        # identity by closure, nothing on the wire names it. Its spells take the
+        # The turn's server, mounted in process with the session closed over —
+        # identity by closure, nothing on the wire names it. Its tools take the
         # normal tool-approval route like any other MCP tool; deliberately
         # nothing goes into `allowed_tools`.
         mcp_servers: dict[str, McpServerConfig] = {}
+        served = self.octomate.mcp_tentacles()
         if gateway_session is not None:
-            mcp_servers[GATEWAY_SERVER_NAME] = await gateway_mcp_server(
-                gateway_session, self.octomate.thread_manager
+            mcp_servers[OCTOMATE_SERVER_NAME] = await octomate_mcp_server(
+                gateway_session, self.octomate.thread_manager, served
             )
         appended = "\n\n".join(
             part
             for part in (
                 instructions if isinstance(instructions, str) else None,
-                GATEWAY_MCP_INSTRUCTION if gateway_session is not None else None,
+                octomate_instructions(served) if gateway_session is not None else None,
             )
             if part
         )

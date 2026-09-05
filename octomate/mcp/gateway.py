@@ -48,21 +48,12 @@ from octomate.schemas.triage import (
     SummonTarget,
     TeleportTarget,
 )
-from octomate.types.threads import (
-    CLAUDE_NATIVE_ID,
-    CODEX_NATIVE_ID,
-    DEEPSEEK_NATIVE_ID,
-    NATIVE_TENTACLE_IDS,
-)
+from octomate.types.threads import NATIVE_TENTACLE_IDS
 
 if TYPE_CHECKING:
     # Runtime dependency runs the other way (the host builds and mounts this
     # module's servers); the resolver only needs the host's type here.
     from octomate.base import Octomate
-
-# The MCP server name every runtime mounts the gateway under. Claude and dsh name a
-# server's tools `mcp__<server>__<tool>`, Codex namespaces them `mcp__<server>`.
-GATEWAY_SERVER_NAME = "gateway"
 
 # The spells the gateway offers, in the order it registers them. `commission` and
 # `whisper` are deliberately absent: external runtimes bring their own subagents.
@@ -122,10 +113,10 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[GatewaySession]
     resolves to the session registered while that run is in flight — a bearer
     other than the kicker's is refused, so no user can drive another's turn. A
     native session names its runtime with `CLIENT_HEADER`, written once at
-    install time, and gets `native_session` built for the bearer's user — if its
-    runtime's `native_gateway` flag allows one. Identity is asserted by config
-    and credential either way, never chosen by the model, so a call carrying
-    neither header is refused outright rather than guessed at."""
+    install time, and gets `native_session` built for the bearer's user.
+    Identity is asserted by config and credential either way, never chosen by
+    the model, so a call carrying neither header is refused outright rather than
+    guessed at."""
 
     async def resolve() -> GatewaySession:
         headers = get_http_headers()
@@ -193,26 +184,9 @@ async def native_session(
     person: anchored on a transient profile of theirs, its destinations are
     their own linked accounts. The call is still attributed to a runtime, never
     to a terminal session, so the session has no thread and no address — every
-    destination is a crossing. Availability is the runtime's own
-    `native_gateway` flag, and that refusal is the only real control: a static
-    MCP config puts the tools in every session once installed.
+    destination is a crossing. A static MCP config puts the tools in every
+    session once installed, and the bearer is the only control.
     """
-    config = octomate.config
-    native_config = (
-        {
-            CLAUDE_NATIVE_ID: config.agents.claude,
-            CODEX_NATIVE_ID: config.agents.codex,
-            DEEPSEEK_NATIVE_ID: config.agents.deepseek,
-        }[client]
-        if config is not None
-        else None
-    )
-    if native_config is None or not native_config.native_gateway:
-        agent = client.removesuffix("-native")
-        raise ToolError(
-            f"The gateway is not offered to {client} sessions: `agents.{agent}` "
-            f"is not configured here, or its `native_gateway` is off."
-        )
     profile = await octomate.users.native_profile(client, username)
     if profile is None:
         raise RuntimeError(

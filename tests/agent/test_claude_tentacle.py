@@ -578,7 +578,7 @@ async def test_a_gateway_capability_mounts_the_in_process_server(
     options = FakeClaudeClient.last_options
     assert isinstance(options, ClaudeAgentOptions)
     assert isinstance(options.mcp_servers, dict)
-    gateway = options.mcp_servers["gateway"]
+    gateway = options.mcp_servers["octomate"]
     assert gateway.get("type") == "sdk"
     # Ordinary MCP tools on the normal approval route: nothing is pre-allowed.
     assert options.allowed_tools == []
@@ -587,7 +587,7 @@ async def test_a_gateway_capability_mounts_the_in_process_server(
     append = options.system_prompt.get("append")
     assert isinstance(append, str)
     assert append.startswith("House rules.\n\n")
-    assert "`mcp__gateway__scry`" in append
+    assert "`gateway_scry`" in append
 
 
 async def test_without_the_gateway_no_server_and_no_instruction(
@@ -634,7 +634,7 @@ class BindingClaudeClient(FakeClaudeClient):
                 TextBlock(text="binding"),
                 ToolUseBlock(
                     id="t1",
-                    name="mcp__gateway__teleport",
+                    name="mcp__octomate__gateway_teleport",
                     input={
                         "hint": "into inky",
                         "destination": {"kind": "here"},

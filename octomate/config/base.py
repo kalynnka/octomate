@@ -58,7 +58,7 @@ from octomate.schemas.project import Project
 OCTOMATE_HOME_ENV = "OCTOMATE_HOME"
 
 # One file per subsystem, in the order they are read. `octomate.yaml` carries the
-# host's own settings (host, port, mcp_path, db_url) and comes first so a later
+# host's own settings (host, port, db_url) and comes first so a later
 # file cannot be shadowed by it.
 CONFIG_FILES: tuple[str, ...] = (
     "octomate.yaml",
@@ -120,14 +120,6 @@ class OctomateConfig(BaseSettings):
 
     host: IPvAnyAddress = IPv4Address("127.0.0.1")
     port: Annotated[int, Field(ge=1, le=65535)] = 8000
-
-    mcp_path: Annotated[
-        str,
-        Field(
-            description="The MCP endpoint under each served server's mount: the "
-            "gateway answers at `/gateway` followed by this path."
-        ),
-    ] = "/mcp"
 
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

@@ -332,7 +332,7 @@ server's files from the rest of `.octomate/` — the database and the client's
   octomate.db            the deployment's data
   cli.toml               the client's own config — not the server's
   config/
-    octomate.yaml        host, port, mcp_path, db_url
+    octomate.yaml        host, port, db_url
     agents.yaml          claude, codex, deepseek, inkling
     channels.yaml        slack, lark, discord, napcat, trunkline
     users.yaml           registered humans and their per-channel ids
@@ -392,9 +392,9 @@ octomate configure --url http://<host>:<port>    # ~/.config/octomate/cli.toml, 
 
 # 3. point your runtimes at it, once there is something to resolve
 octomate claude hooks install                    # merges handlers into ~/.claude/settings.json
-octomate claude mcp install                      # this project's mcpServers.gateway
+octomate claude mcp install                      # this project's mcpServers.octomate
 octomate codex hooks install                     # merges handlers into ~/.codex/hooks.json
-octomate codex mcp install                       # [mcp_servers.gateway] in ~/.codex/config.toml
+octomate codex mcp install                       # [mcp_servers.octomate] in ~/.codex/config.toml
 octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hooks.json + a patch row
 ```
 
@@ -402,18 +402,18 @@ octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hoo
 
 A file, not an exported variable, and that is a security property rather than a convenience. An environment is inherited: everything a shell starts carries what it holds, this deployment's own Codex app-servers included, and a driven turn must speak as the human who kicked it and nobody else. `$OCTOMATE_CLI_SECRET` and `$OCTOMATE_CLI_URL` still resolve ahead of the files, for a container or a CI step with no home to write into. `OCTOMATE_CLI_` rather than the server's `OCTOMATE__` prefix, so nothing about a client credential reads as deployment config.
 
-Native sessions can also *route*: with `agents.<agent>.native_gateway` on (the default), a session in your terminal reaches the same gateway spells the driven agents get — over `/gateway/mcp`, carrying its bearer plus a static `X-Octomate-Client` header written at install time. The client header is attribution (which runtime); the bearer is identity (which human): a native session bearing a user's secret speaks for that person, and its spells light up on *their* linked accounts. Driven turns answer to the same rule — every run represents the human who kicked it, so a driven Codex turn's loopback call carries the kicker's own secret and nobody else's credential can drive it, while a turn kicked by an unregistered user simply runs without the spells. Rotation or revocation is only ever the admin editing the YAML. The trust statement, plainly: a user's secret holds the hook pipe's ledger writes plus the gateway's outbound sends, handoffs and project bindings, under that user's name. Same trust domain (the operator's machines), same mitigations (per-user secrets, HTTPS off-box), plus the `native_gateway` and per-connection `gateway` flags.
+Native sessions can also *route*: a session in your terminal reaches the same gateway spells the driven agents get — over `/octomate/mcp`, carrying its bearer plus a static `X-Octomate-Client` header written at install time. The client header is attribution (which runtime); the bearer is identity (which human): a native session bearing a user's secret speaks for that person, and its spells light up on *their* linked accounts. Driven turns answer to the same rule — every run represents the human who kicked it, so a driven Codex turn's loopback call carries the kicker's own secret and nobody else's credential can drive it, while a turn kicked by an unregistered user simply runs without the spells. Rotation or revocation is only ever the admin editing the YAML. The trust statement, plainly: a user's secret holds the hook pipe's ledger writes plus the gateway's outbound sends, handoffs and project bindings, under that user's name. Same trust domain (the operator's machines), same mitigations (per-user secrets, HTTPS off-box), plus the per-connection `gateway` flag.
 
 Point the runtimes' native sessions at it with the `mcp` commands — static MCP client config, written once:
 
 ```bash
-octomate claude mcp install    # this project's mcpServers.gateway in ~/.claude.json
+octomate claude mcp install    # this project's mcpServers.octomate in ~/.claude.json
                                # (--scope user: every project; --scope project: ./.mcp.json)
-octomate codex mcp install     # [mcp_servers.gateway] in ~/.codex/config.toml
+octomate codex mcp install     # [mcp_servers.octomate] in ~/.codex/config.toml
 octomate deepseek mcp install  # a dsh-mcp-client row in $DSH_HOME/cordis.patch.yml
 ```
 
-Unlike the hooks — whose scripts resolve the address and credential each time one fires — a static entry is read by the runtime itself, so `mcp install` resolves both once and writes them into the file. All three embed the literal credential, and rotating it means re-running install. None of them names an environment variable: a driven Codex app-server is a child of the host and reads `~/.codex/config.toml` itself, so an entry resolving a variable would hand every driven turn whichever credential that host's environment happened to carry. A driven turn pins `mcp_servers.gateway` for the length of its process instead — wired to its kicker, or switched off.
+Unlike the hooks — whose scripts resolve the address and credential each time one fires — a static entry is read by the runtime itself, so `mcp install` resolves both once and writes them into the file. All three embed the literal credential, and rotating it means re-running install. None of them names an environment variable: a driven Codex app-server is a child of the host and reads `~/.codex/config.toml` itself, so an entry resolving a variable would hand every driven turn whichever credential that host's environment happened to carry. A driven turn pins `mcp_servers.octomate` for the length of its process instead — wired to its kicker, or switched off.
 
 ---
 

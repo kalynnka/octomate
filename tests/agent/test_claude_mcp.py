@@ -1,4 +1,5 @@
-"""Driven Claude's gateway: the same server, walked into the SDK's tool shape.
+"""Driven Claude's MCP server: the same served server, walked into the SDK's tool
+shape.
 
 The handlers close over one turn's `GatewaySession`, so what these tests pin is
 the translation — the spell runs against the session, the sentence comes back as
@@ -9,12 +10,11 @@ wording verbatim, which is how Claude retries from it natively.
 from __future__ import annotations
 
 from claude_agent_sdk import SdkMcpTool
-from fastmcp.dependencies import Depends
 from pydantic import JsonValue
 
 from octomate.managers.gateway import GatewaySession
 from octomate.mcp.gateway import TELEPORT_RECORDED
-from octomate.mcp.server import octomate_mcp
+from octomate.mcp.server import octomate_instructions, octomate_mcp
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     AgentRoute,
@@ -22,13 +22,9 @@ from octomate.schemas.triage import (
     SummonDecision,
     ThreadLanding,
 )
-from octomate.tentacles.claude.gateway import (
-    GATEWAY_MCP_INSTRUCTION,
-    gateway_mcp_server,
-    sdk_gateway_tool,
-)
+from octomate.tentacles.claude.mcp import octomate_mcp_server, sdk_tool
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import FakeThreadManager
+from tests.support.managers import FakeThreadManager, fixed_session
 
 CLAUDE_ROUTE = AgentRoute(
     agent_id="claude",
@@ -64,8 +60,8 @@ def a_turn() -> GatewaySession:
 async def spells(
     session: GatewaySession,
 ) -> dict[str, SdkMcpTool[dict[str, JsonValue]]]:
-    server = octomate_mcp(Depends(lambda: session), FakeThreadManager())
-    return {tool.name: sdk_gateway_tool(tool) for tool in await server.list_tools()}
+    server = octomate_mcp(fixed_session(session), FakeThreadManager())
+    return {tool.name: sdk_tool(tool) for tool in await server.list_tools()}
 
 
 def the_text(result: dict[str, JsonValue]) -> str:
@@ -79,32 +75,37 @@ def the_text(result: dict[str, JsonValue]) -> str:
 
 
 async def test_the_server_config_is_the_sdk_in_process_shape() -> None:
-    config = await gateway_mcp_server(a_turn(), FakeThreadManager())
+    config = await octomate_mcp_server(a_turn(), FakeThreadManager())
 
     assert config["type"] == "sdk"
-    assert config["name"] == "gateway"
+    assert config["name"] == "octomate"
 
 
-def test_the_instruction_names_the_tools_the_claude_way() -> None:
+def test_the_instruction_names_the_tools_by_their_served_names() -> None:
+    # Claude lists them as `mcp__octomate__<tool>` and resolves that itself, as
+    # it does for every MCP server's instructions.
+    instruction = octomate_instructions([])
+
     for name in (
-        "scry",
-        "summon",
-        "teleport",
-        "scheme",
-        "send",
-        "dispel",
-        "search_thread_history",
+        "gateway_scry",
+        "gateway_summon",
+        "gateway_teleport",
+        "gateway_scheme",
+        "gateway_send",
+        "gateway_dispel",
+        "history_search",
     ):
-        assert f"`mcp__gateway__{name}`" in GATEWAY_MCP_INSTRUCTION
-    assert "{" not in GATEWAY_MCP_INSTRUCTION
-    assert "commission" not in GATEWAY_MCP_INSTRUCTION
+        assert f"`{name}`" in instruction
+    assert "mcp__" not in instruction
+    assert "{" not in instruction
+    assert "commission" not in instruction
 
 
 async def test_summon_records_the_decision_and_answers_with_the_sentence() -> None:
     session = a_turn()
     tools = await spells(session)
 
-    result = await tools["summon"].handler(dict(SUMMON_ARGUMENTS))
+    result = await tools["gateway_summon"].handler(dict(SUMMON_ARGUMENTS))
 
     assert the_text(result) == "Summoning claude (opus) → thread."
     assert "is_error" not in result
@@ -124,7 +125,9 @@ async def test_a_refusal_is_an_error_result_carrying_the_same_sentence() -> None
     session = a_turn()
     tools = await spells(session)
 
-    result = await tools["summon"].handler({**SUMMON_ARGUMENTS, "agent_id": "nobody"})
+    result = await tools["gateway_summon"].handler(
+        {**SUMMON_ARGUMENTS, "agent_id": "nobody"}
+    )
 
     # Verbatim — the sentence Inkling's `ModelRetry` carries.
     assert the_text(result).startswith("Invalid summon route (agent_id='nobody'")
@@ -138,7 +141,7 @@ async def test_arguments_are_validated_before_policy_runs() -> None:
 
     # The bad destination kind is the input under test: schema validation refuses
     # it before any policy is consulted, and the refusal is a retryable error.
-    result = await tools["summon"].handler(
+    result = await tools["gateway_summon"].handler(
         {**SUMMON_ARGUMENTS, "destination": {"kind": "everywhere"}}
     )
 
@@ -151,7 +154,9 @@ async def test_teleport_tells_the_runtime_to_wrap_up() -> None:
     session = a_turn()
     tools = await spells(session)
 
-    result = await tools["teleport"].handler({"hint": "carrying on in a thread"})
+    result = await tools["gateway_teleport"].handler(
+        {"hint": "carrying on in a thread"}
+    )
 
     assert the_text(result) == TELEPORT_RECORDED
     assert session.decision is not None

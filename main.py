@@ -79,7 +79,6 @@ def create_app() -> FastAPI:
             config=config.workspaces,
         ),
         oauth_encryption_key=config.oauth.encryption_key,
-        mcp_path=config.mcp_path,
     )
 
     console_handler = logging.StreamHandler()

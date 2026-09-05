@@ -25,9 +25,9 @@ from octomate_cli.jsontypes import JsonObject, JsonValue
 from octomate_cli.mcp import (
     CLAUDE_NATIVE_CLIENT,
     CLIENT_HEADER,
-    GATEWAY_SERVER_KEY,
-    gateway_secret,
-    gateway_url,
+    OCTOMATE_SERVER_KEY,
+    octomate_secret,
+    octomate_url,
 )
 
 # The events the hook pipe registers and the server acts on. `UserPromptSubmit` and
@@ -348,7 +348,7 @@ def tail(
 
 
 mcp_typer = typer.Typer(
-    help="Manage the gateway MCP entry for native Claude Code sessions.",
+    help="Manage the Octomate MCP entry for native Claude Code sessions.",
     no_args_is_help=True,
 )
 claude_typer.add_typer(mcp_typer, name="mcp")
@@ -402,16 +402,16 @@ def mcp_install(
     scope: McpScopeOption = McpScope.local,
     file: McpFileOption = None,
 ) -> None:
-    """Point native Claude Code sessions at the served gateway.
+    """Point native Claude Code sessions at the served MCP server.
 
-    Writes the gateway entry — the gateway's URL, the bearer, and the runtime
+    Writes the entry — the server's URL, the bearer, and the runtime
     attribution header — resolved once, now: unlike the hooks, a static entry is
     read by Claude itself, so the file holds the literal credential and rotating
     it means re-running install. Everything else in the file is kept, and
     re-running replaces the entry in place.
     """
-    target = gateway_url(url)
-    secret = gateway_secret()
+    target = octomate_url(url)
+    secret = octomate_secret()
     path = mcp_config_file(scope, file)
     document = load_settings(path)
     if scope is McpScope.local:
@@ -428,7 +428,7 @@ def mcp_install(
     servers = container.setdefault("mcpServers", {})
     if not isinstance(servers, dict):
         raise typer.BadParameter(f"{path} has a non-object 'mcpServers' section")
-    servers[GATEWAY_SERVER_KEY] = {
+    servers[OCTOMATE_SERVER_KEY] = {
         "type": "http",
         "url": target,
         "headers": {
@@ -437,7 +437,7 @@ def mcp_install(
         },
     }
     write_settings(path, document)
-    typer.echo(f"Installed the gateway MCP entry → {target}")
+    typer.echo(f"Installed the Octomate MCP entry → {target}")
     typer.echo(f"  file:   {path}")
     if scope is McpScope.local:
         typer.echo(f"  scope:  local ({Path.cwd()})")
@@ -452,7 +452,7 @@ def mcp_install(
 def mcp_uninstall(
     scope: McpScopeOption = McpScope.local, file: McpFileOption = None
 ) -> None:
-    """Remove the gateway MCP entry, leaving every other server and setting."""
+    """Remove the Octomate MCP entry, leaving every other server and setting."""
     path = mcp_config_file(scope, file)
     document = load_settings(path)
     key = str(Path.cwd())
@@ -463,10 +463,10 @@ def mcp_uninstall(
     else:
         container = document
     servers = container.get("mcpServers") if container is not None else None
-    if not isinstance(servers, dict) or GATEWAY_SERVER_KEY not in servers:
-        typer.echo(f"No gateway MCP entry in {path}")
+    if not isinstance(servers, dict) or OCTOMATE_SERVER_KEY not in servers:
+        typer.echo(f"No Octomate MCP entry in {path}")
         raise typer.Exit()
-    del servers[GATEWAY_SERVER_KEY]
+    del servers[OCTOMATE_SERVER_KEY]
     if not servers and container is not None:
         del container["mcpServers"]
         # A local install into a fresh file created the project entry too; an
@@ -476,14 +476,14 @@ def mcp_uninstall(
             if not projects:
                 del document["projects"]
     write_settings(path, document)
-    typer.echo(f"Removed the gateway MCP entry from {path}")
+    typer.echo(f"Removed the Octomate MCP entry from {path}")
 
 
 @mcp_typer.command("show")
 def mcp_show(
     scope: McpScopeOption = McpScope.local, file: McpFileOption = None
 ) -> None:
-    """Show the gateway MCP entry, credential masked."""
+    """Show the Octomate MCP entry, credential masked."""
     path = mcp_config_file(scope, file)
     document = load_settings(path)
     if scope is McpScope.local:
@@ -494,13 +494,13 @@ def mcp_show(
     else:
         container = document
     servers = container.get("mcpServers") if isinstance(container, dict) else None
-    entry = servers.get(GATEWAY_SERVER_KEY) if isinstance(servers, dict) else None
+    entry = servers.get(OCTOMATE_SERVER_KEY) if isinstance(servers, dict) else None
     if not isinstance(entry, dict):
-        typer.echo(f"No gateway MCP entry in {path}")
+        typer.echo(f"No Octomate MCP entry in {path}")
         raise typer.Exit()
     headers = entry.get("headers")
     client = headers.get(CLIENT_HEADER) if isinstance(headers, dict) else None
-    typer.echo(f"Gateway MCP entry in {path}:")
+    typer.echo(f"Octomate MCP entry in {path}:")
     typer.echo(f"  url:    {entry.get('url')}")
     typer.echo(f"  client: {client}")
     typer.echo("  auth:   Bearer ***")

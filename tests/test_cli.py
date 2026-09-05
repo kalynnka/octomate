@@ -20,8 +20,8 @@ from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT
 from octomate_cli.main import app
 from typer.testing import CliRunner
 
-from octomate.config.base import OctomateConfig
 from octomate.mcp import gateway as served_gateway
+from octomate.mcp import server as served
 from octomate.types import threads
 
 runner = CliRunner()
@@ -713,9 +713,9 @@ def test_claude_mcp_install_writes_the_entry_beside_everything_else(
     document = read(path)
     assert document["model"] == "opus"
     assert document["mcpServers"]["other"] == {"type": "stdio"}
-    assert document["mcpServers"]["gateway"] == {
+    assert document["mcpServers"]["octomate"] == {
         "type": "http",
-        "url": "http://127.0.0.1:9999/gateway/mcp",
+        "url": "http://127.0.0.1:9999/octomate/mcp",
         "headers": {
             "Authorization": "Bearer the-secret",
             "X-Octomate-Client": "claude-native",
@@ -746,8 +746,8 @@ def test_claude_mcp_reinstall_replaces_the_entry_in_place(
     )
 
     servers = read(path)["mcpServers"]
-    assert list(servers) == ["gateway"]
-    assert servers["gateway"]["url"] == "http://minidock.local:8000/gateway/mcp"
+    assert list(servers) == ["octomate"]
+    assert servers["octomate"]["url"] == "http://minidock.local:8000/octomate/mcp"
 
 
 def test_claude_mcp_uninstall_keeps_foreign_servers(
@@ -797,7 +797,7 @@ def test_claude_mcp_show_masks_the_credential(
     )
 
     assert result.exit_code == 0
-    assert "http://127.0.0.1:9999/gateway/mcp" in result.output
+    assert "http://127.0.0.1:9999/octomate/mcp" in result.output
     assert "Bearer ***" in result.output
     assert "the-secret" not in result.output
 
@@ -828,9 +828,9 @@ def test_claude_mcp_local_install_nests_under_the_project(
     assert document["projects"]["/elsewhere"] == {
         "mcpServers": {"other": {"type": "stdio"}}
     }
-    assert document["projects"][str(Path.cwd())]["mcpServers"]["gateway"] == {
+    assert document["projects"][str(Path.cwd())]["mcpServers"]["octomate"] == {
         "type": "http",
-        "url": "http://127.0.0.1:9999/gateway/mcp",
+        "url": "http://127.0.0.1:9999/octomate/mcp",
         "headers": {
             "Authorization": "Bearer the-secret",
             "X-Octomate-Client": "claude-native",
@@ -878,7 +878,7 @@ def test_claude_mcp_show_reads_the_local_entry(
     result = runner.invoke(claude_typer, ["mcp", "show", "--file", str(path)])
 
     assert result.exit_code == 0
-    assert "http://127.0.0.1:9999/gateway/mcp" in result.output
+    assert "http://127.0.0.1:9999/octomate/mcp" in result.output
     assert "the-secret" not in result.output
 
 
@@ -938,8 +938,8 @@ def test_codex_mcp_install_preserves_comments_and_foreign_tables(
     table = tomllib.loads(text)
     assert table["model"] == "gpt-5.5"
     assert table["mcp_servers"]["logfire"] == {"url": "https://logfire.dev/mcp"}
-    assert table["mcp_servers"]["gateway"] == {
-        "url": "http://127.0.0.1:9999/gateway/mcp",
+    assert table["mcp_servers"]["octomate"] == {
+        "url": "http://127.0.0.1:9999/octomate/mcp",
         "http_headers": {
             "Authorization": "Bearer the-secret",
             "X-Octomate-Client": "codex-native",
@@ -968,8 +968,8 @@ def test_codex_mcp_reinstall_and_uninstall_leave_the_operators_file(
 
     table = tomllib.loads(path.read_text())
     assert (
-        table["mcp_servers"]["gateway"]["url"]
-        == "http://minidock.local:8000/gateway/mcp"
+        table["mcp_servers"]["octomate"]["url"]
+        == "http://minidock.local:8000/octomate/mcp"
     )
 
     result = runner.invoke(
@@ -979,7 +979,7 @@ def test_codex_mcp_reinstall_and_uninstall_leave_the_operators_file(
     text = path.read_text()
     assert "# machine prefs" in text
     table = tomllib.loads(text)
-    assert "gateway" not in table["mcp_servers"]
+    assert "octomate" not in table["mcp_servers"]
     assert table["mcp_servers"]["logfire"] == {"url": "https://l/mcp"}
 
 
@@ -993,7 +993,7 @@ def test_codex_mcp_show_masks_the_embedded_credential(
     result = runner.invoke(codex_typer, ["mcp", "show", "--config-file", str(path)])
 
     assert result.exit_code == 0
-    assert "http://127.0.0.1:9999/gateway/mcp" in result.output
+    assert "http://127.0.0.1:9999/octomate/mcp" in result.output
     assert "the-secret" not in result.output
 
 
@@ -1021,16 +1021,16 @@ def test_deepseek_mcp_install_writes_the_gateway_row_beside_the_hooks_row(
 
     text = (tmp_path / "cordis.patch.yml").read_text()
     assert "octomate-hooks" in text  # the hooks row survives beside the new one
-    assert text.count("serverName: gateway") == 1
+    assert text.count("serverName: octomate") == 1
     rows = yaml.safe_load(text)
     [gateway_row] = [
         row["insert"][0] for row in rows if row["insert"][0]["id"] == "octomate-gateway"
     ]
     assert gateway_row["name"] == "@deepseek-ai/dsh-mcp-client"
     assert gateway_row["config"] == {
-        "serverName": "gateway",
+        "serverName": "octomate",
         "transport": "streamable-http",
-        "url": "http://127.0.0.1:9999/gateway/mcp",
+        "url": "http://127.0.0.1:9999/octomate/mcp",
         "headers": {
             "Authorization": "Bearer the-secret",
             "X-Octomate-Client": "deepseek-native",
@@ -1065,19 +1065,16 @@ def test_deepseek_mcp_show_masks_the_credential(
     result = runner.invoke(deepseek_typer, ["mcp", "show", "--home", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert "serverName: gateway" in result.output
+    assert "serverName: octomate" in result.output
     assert "Bearer ***" in result.output
     assert "the-secret" not in result.output
 
 
-def test_the_cli_gateway_literals_match_the_servers() -> None:
-    """The CLI cannot import the server package, so its `/gateway/mcp`, header,
+def test_the_cli_literals_match_the_server() -> None:
+    """The CLI cannot import the server package, so its `/octomate/mcp`, header,
     and client-id literals are copies — this test is what holds them together."""
-    default_mcp_path = OctomateConfig.model_fields["mcp_path"].default
-    assert cli_mcp.GATEWAY_MCP_PATH == (
-        f"/{served_gateway.GATEWAY_SERVER_NAME}{default_mcp_path}"
-    )
-    assert cli_mcp.GATEWAY_SERVER_KEY == served_gateway.GATEWAY_SERVER_NAME
+    assert cli_mcp.OCTOMATE_MCP_PATH == served.OCTOMATE_MCP_PATH
+    assert cli_mcp.OCTOMATE_SERVER_KEY == served.OCTOMATE_SERVER_NAME
     assert cli_mcp.CLIENT_HEADER == served_gateway.CLIENT_HEADER
     assert cli_mcp.CLAUDE_NATIVE_CLIENT == threads.CLAUDE_NATIVE_ID
     assert cli_mcp.CODEX_NATIVE_CLIENT == threads.CODEX_NATIVE_ID

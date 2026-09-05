@@ -20,7 +20,6 @@ from typing import cast
 
 import pytest
 from fastmcp import Client
-from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
@@ -38,7 +37,12 @@ from octomate.mcp.server import octomate_mcp
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import HERE_TARGET, ProjectSummary, TeleportDecision
 from octomate.schemas.user import UserProfile
-from tests.support.managers import FakeThreadManager, a_project, a_registry
+from tests.support.managers import (
+    FakeThreadManager,
+    a_project,
+    a_registry,
+    fixed_session,
+)
 
 CHAT = ThreadKey("im", "thread", "c", "t1")
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -321,21 +325,21 @@ async def test_an_mcp_runtime_reads_the_list_and_hears_a_refusal_as_a_tool_error
     tmp_path: Path,
 ) -> None:
     harness = await a_harness(tmp_path)
-    server = octomate_mcp(Depends(lambda: harness.session), FakeThreadManager())
+    server = octomate_mcp(fixed_session(harness.session), FakeThreadManager())
 
     async with Client(server) as client:
-        listed = await client.call_tool("scry", {"reveal": "projects"})
+        listed = await client.call_tool("gateway_scry", {"reveal": "projects"})
         with pytest.raises(ToolError, match=r"Available: inky\."):
             await client.call_tool(
-                "teleport",
+                "gateway_teleport",
                 {"hint": "h", "destination": {"kind": "here"}, "project": "kraken"},
             )
         with pytest.raises(ToolError, match="about no project"):
-            await client.call_tool("dispel", {})
+            await client.call_tool("gateway_dispel", {})
         project = harness.workspaces.projects.get("inky")
         assert project is not None
         await harness.threads.bind(harness.thread.id, project)
-        dispelled = await client.call_tool("dispel", {})
+        dispelled = await client.call_tool("gateway_dispel", {})
 
     assert listed.data == "- inky"
     assert harness.session.dispelling

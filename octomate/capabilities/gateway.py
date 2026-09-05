@@ -89,7 +89,7 @@ COMMISSION_TIMEOUT = 900.0
 
 # The instruction prose, templated only where a spell is named: each runtime's
 # adapter renders the same contract under its own tool naming (`scry` for Inkling,
-# `mcp__gateway__scry` for an MCP runtime). Everything else — argument names, the
+# `gateway_scry` on the served server). Everything else — argument names, the
 # `here`/`thread`/`dm` handles — is the shared vocabulary and stays literal.
 GATEWAY_INSTRUCTION_TEMPLATE = """\
 ## Gateway — decide where this conversation goes and who handles it
@@ -207,8 +207,8 @@ use an `at` segment with their user id.
 
 def gateway_instructions(tool_name: Callable[[str], str]) -> str:
     """The gateway's routing instruction, each spell rendered by the caller's own tool
-    naming — the identity for Inkling, `mcp__gateway__…` for an MCP runtime — so every
-    agent reads one contract under the names it can actually call."""
+    naming — the identity for Inkling, `gateway_…` on the served server — so every
+    agent reads one contract under the names its runtime lists the tools by."""
     names = {
         "scry": tool_name(SCRY_TOOL_NAME),
         "summon": tool_name(SUMMON_TOOL_NAME),

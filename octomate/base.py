@@ -11,9 +11,6 @@ from functools import lru_cache
 from typing import TypeVar
 
 from fastapi import APIRouter, FastAPI, Request, Response
-from fastmcp import FastMCP
-from fastmcp.dependencies import Depends
-from fastmcp.server.http import StarletteWithLifespan
 from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
@@ -119,8 +116,6 @@ class Octomate:
     users: UserManager = field(default_factory=UserManager)
     workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
     gateway: GatewayManager = field(default_factory=GatewayManager)
-    # The MCP endpoint under each served server's mount: `/<name>` + `mcp_path`.
-    mcp_path: str = "/mcp"
     # The deployment config the host was built from. What a tentacle reads for
     # serving facts the app object itself does not model — above all the uvicorn
     # bind port, which only the config knows.
@@ -257,55 +252,24 @@ class Octomate:
         self.background.add(task)
         task.add_done_callback(self.background.discard)
 
-    def mcp_servers(self) -> list[FastMCP]:
-        """The MCP servers Octomate serves: the one `octomate.mcp.server` composes,
-        which every runtime's install config knows as `/gateway/mcp`, and after it
-        the servers the tentacles serve themselves.
-
-        A list because a family that outgrows the first server's card would be
-        served as one of its own: a runtime that defers MCP tools behind a search
-        does so per server, with the server's own instructions as the card, and
-        only a root server's instructions ever reach a client. Each is served at
-        `/<name>/mcp` behind the deployment's known bearers, and resolves the
-        identity a call runs against from the request itself.
-
-        The tentacles' servers are one per tentacle type composing `McpTentacle`,
-        built by the class, its tools resolving the instance — and the caller's own
-        credential for it — from the session a call names, so two tentacles of one
-        type share one server.
-        """
-        resolve_session = served_session(self)
-        servers = [
-            octomate_mcp(
-                Depends(resolve_session), self.thread_manager, kick=self.kick_soon
-            )
-        ]
-        # One build per class, however many instances share it, in the order the
-        # tentacles were connected.
-        serving = (
-            type(tentacle)
+    def mcp_tentacles(self) -> list[McpTentacle]:
+        """The providers the served server proxies: every tentacle composing
+        `McpTentacle`, in the order they were connected. The link tools know
+        each by its id; the proxy is built per class, its tools resolving the
+        instance — and the caller's own credential for it — from the session a
+        call names, so two tentacles of one type share one proxy."""
+        return [
+            tentacle
             for tentacle in (*self.agents.values(), *self.channels.values())
             if isinstance(tentacle, McpTentacle)
-        )
-        servers.extend(kind.mcp(resolve_session) for kind in dict.fromkeys(serving))
-        return servers
+        ]
 
     def app(self, *, title: str = "Octomate") -> FastAPI:
-        # The MCP servers are always served, never open: the gateway's spells send
-        # to real channels and hand conversations to other agents, so every call
+        # The one MCP server, which every runtime's install config knows as
+        # `/octomate/mcp`, resolving the identity a call runs against from the
+        # request itself. Always served, never open: the gateway's spells send to
+        # real channels and hand conversations to other agents, so every call
         # authenticates against the registered users' own secrets — which locks
-        # the endpoints outright until a user is registered. One verifier for the
-        # whole group — the same credentials, and the same principals, as the
-        # hook routers.
-        mcp_apps: dict[str, StarletteWithLifespan] = {}
-        verifier = self.bearers
-        for server in self.mcp_servers():
-            server.auth = verifier
-            # Stateless: identity is per call, from the request, so there is
-            # nothing for the transport to keep between calls.
-            mcp_apps[server.name] = server.http_app(
-                path=self.mcp_path, stateless_http=True
-            )
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -329,15 +293,13 @@ class Octomate:
                 # sessions are already torn down.
                 async with (
                     # Starlette runs no lifespan for a mounted app, and the MCP
-                    # transport's task group lives in that lifespan; an endpoint
-                    # answers only inside it. Outermost, so the servers are up
+                    # transport's task group lives in that lifespan; the endpoint
+                    # answers only inside it. Outermost, so the server is up
                     # before any tentacle starts and down after the last stops.
-                    AsyncExitStack() as mcp_stack,
+                    mcp_app.lifespan(mcp_app),
                     AsyncExitStack() as agent_stack,
                     AsyncExitStack() as channel_stack,
                 ):
-                    for mcp_app in mcp_apps.values():
-                        await mcp_stack.enter_async_context(mcp_app.lifespan(mcp_app))
 
                     async def start(stack: AsyncExitStack, tentacle: Tentacle) -> None:
                         # Isolate + time-bound each start so one slow or hung
@@ -427,10 +389,22 @@ class Octomate:
         for router in self.routers:
             app.include_router(router)
 
-        # Mounted apps rather than routers: the MCP transport speaks all three
+        # A mounted app rather than a router: the MCP transport speaks all three
         # methods on one path, reads and writes the stream itself, and carries
-        # its own bearer check.
-        for name, mcp_app in mcp_apps.items():
-            app.mount(f"/{name}", mcp_app, name=name)
+        # its own bearer check — the deployment's known bearers, the same
+        # credentials and principals as the hook routers, which locks the
+        # endpoint outright until a user is registered.
+        mcp = octomate_mcp(
+            served_session(self),
+            self.thread_manager,
+            kick=self.kick_soon,
+            bearers=self.bearers,
+            tentacles=self.mcp_tentacles(),
+        )
+        # Stateless: identity is per call, from the request, so there is nothing
+        # for the transport to keep between calls. Mounted under the server's name
+        # below, this path is the tail of `OCTOMATE_MCP_PATH`.
+        mcp_app = mcp.http_app(path="/mcp", stateless_http=True)
+        app.mount(f"/{mcp.name}", mcp_app, name=mcp.name)
 
         return app

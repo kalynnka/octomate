@@ -81,14 +81,15 @@ IGNORED_SUBTYPES = frozenset(
 )
 
 
-SLACK_SERVER_INSTRUCTIONS = """\
+SLACK_MCP_INSTRUCTIONS = """\
+## Slack
+
 Slack's own tools, in the workspace this turn is on, acting as the person who
 drove the turn — never as the bot. They take Slack's own ids: a channel id (`C…`,
 or a user id for their direct messages), a message `ts`, a user id, a canvas id.
 Find them with `slack_search_channels`, `slack_search_users`, `slack_read_channel`
 and the searches, and read only what the person could have read themselves. Do
-not post as the person: to say something in the conversation, use the gateway's
-`send`.
+not post as the person: to say something in the conversation, use `gateway_send`.
 """
 
 
@@ -103,10 +104,9 @@ class SlackTentacle(
     # Slack serves its tools itself and takes nothing but a user token — every
     # call acts as the human who authorized it, never as the bot — which is
     # exactly what `McpTentacle` proxies.
-    server_name = "slack"
     label = "Slack"
     upstream = "https://mcp.slack.com/mcp"
-    instructions = SLACK_SERVER_INSTRUCTIONS
+    instructions = SLACK_MCP_INSTRUCTIONS
     feelers: Feelers
     ink: SlackInk
     chromo: SlackChromo
