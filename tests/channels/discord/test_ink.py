@@ -35,7 +35,7 @@ class SendCall:
     allowed_mentions: discord.AllowedMentions
     reference: discord.PartialMessage | None
     mention_author: bool
-    view: discord.ui.View | None
+    view: discord.ui.View | discord.ui.LayoutView | None
 
 
 def mentioned_user_ids(mentions: discord.AllowedMentions) -> list[int]:
@@ -116,7 +116,7 @@ async def test_send_targets_thread_replies_once_and_closes_attachments(
         allowed_mentions: discord.AllowedMentions,
         reference: discord.PartialMessage | None = None,
         mention_author: bool = True,
-        view: discord.ui.View | None = None,
+        view: discord.ui.View | discord.ui.LayoutView | None = None,
     ) -> discord.Message:
         calls.append(
             SendCall(
@@ -177,6 +177,44 @@ async def test_send_targets_thread_replies_once_and_closes_attachments(
         assert call.allowed_mentions.roles is False
         assert call.allowed_mentions.replied_user is False
         assert call.mention_author is False
+
+
+async def test_send_layout_view_without_message_content(
+    client: discord.Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = a_text_channel(400)
+    layout = discord.ui.LayoutView(timeout=None)
+    layout.add_item(discord.ui.Container(discord.ui.TextDisplay("Question")))
+    sent_content: list[str | None] = []
+
+    async def send(
+        destination: discord.TextChannel,
+        content: str | None = None,
+        *,
+        allowed_mentions: discord.AllowedMentions,
+        mention_author: bool = True,
+        view: discord.ui.LayoutView,
+    ) -> discord.Message:
+        assert destination is channel
+        assert allowed_mentions.everyone is False
+        assert mention_author is False
+        assert view is layout
+        sent_content.append(content)
+        return a_message(destination, message_id=800)
+
+    monkeypatch.setattr(client, "get_channel", lambda channel_id: channel)
+    monkeypatch.setattr(discord.TextChannel, "send", send)
+
+    message_id = await DiscordInk(client).send_message(
+        str(channel.id),
+        "group",
+        [DiscordOutboundMessage(view=layout)],
+        channel_thread_id=str(channel.id),
+    )
+
+    assert message_id == "800"
+    assert sent_content == [None]
 
 
 async def test_send_propagates_reply_failure_and_still_closes_attachments(

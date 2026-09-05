@@ -24,7 +24,6 @@ class DiscordSendKwargs(TypedDict, total=False):
     allowed_mentions: discord.AllowedMentions
     reference: discord.PartialMessage
     mention_author: bool
-    view: discord.ui.View
 
 
 class DiscordInk(Ink[DiscordOutboundMessage]):
@@ -135,11 +134,18 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
                 )
                 if files:
                     payload["files"] = files
-                if message.view is not None:
-                    payload["view"] = message.view
                 if index == 0 and reference is not None:
                     payload["reference"] = reference
-                sent = await destination.send(message.content or None, **payload)
+                if isinstance(message.view, discord.ui.LayoutView):
+                    sent = await destination.send(view=message.view, **payload)
+                elif message.view is not None:
+                    sent = await destination.send(
+                        message.content or None,
+                        view=message.view,
+                        **payload,
+                    )
+                else:
+                    sent = await destination.send(message.content or None, **payload)
             finally:
                 for file in files:
                     file.close()

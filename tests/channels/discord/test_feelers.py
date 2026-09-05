@@ -37,12 +37,14 @@ from octomate.tentacles.discord.feelers.approvals import (
 from octomate.tentacles.discord.feelers.oauth import DiscordOAuthFeeler
 from octomate.tentacles.discord.feelers.questions import (
     QUESTION_ANSWER_CUSTOM_ID_TEMPLATE,
-    QUESTION_SELECT_CUSTOM_ID_TEMPLATE,
+    QUESTION_CHOICE_CUSTOM_ID_TEMPLATE,
+    QUESTION_NAV_CUSTOM_ID_TEMPLATE,
     DiscordAskQuestionFeeler,
     DiscordQuestionAnswerButton,
+    DiscordQuestionChoiceButton,
     DiscordQuestionModal,
-    DiscordQuestionSelect,
-    question_resolution_content,
+    DiscordQuestionNavButton,
+    question_summary_content,
 )
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
@@ -94,8 +96,8 @@ class RecordingDiscordUIInk(DiscordInk):
 
 @dataclass(frozen=True)
 class InteractionEdit:
-    content: str
-    view: discord.ui.View
+    content: str | None
+    view: discord.ui.View | discord.ui.LayoutView | None
     allowed_mentions: discord.AllowedMentions
 
 
@@ -142,8 +144,8 @@ class FakeInteraction:
     async def edit_original_response(
         self,
         *,
-        content: str,
-        view: discord.ui.View,
+        content: str | None,
+        view: discord.ui.View | discord.ui.LayoutView | None,
         allowed_mentions: discord.AllowedMentions,
     ) -> None:
         self.events.append("edit")
@@ -154,6 +156,14 @@ class FakeInteraction:
                 allowed_mentions=allowed_mentions,
             )
         )
+
+
+def layout_text(view: discord.ui.LayoutView) -> str:
+    return "\n".join(
+        item.content
+        for item in view.walk_children()
+        if isinstance(item, discord.ui.TextDisplay)
+    )
 
 
 class ResolvingOctomate(Octomate):
@@ -262,7 +272,7 @@ def question(
     )
 
 
-async def test_discord_feelers_render_one_persistent_message_per_action() -> None:
+async def test_discord_feelers_render_one_question_navigator_per_batch() -> None:
     ink = RecordingDiscordUIInk()
     approval_action = approval()
     choice_question = question("Environment?", choices=["prod", "stage", "dev"])
@@ -278,8 +288,8 @@ async def test_discord_feelers_render_one_persistent_message_per_action() -> Non
     )
 
     assert approval_ids == {approval_action.id: "801"}
-    assert question_ids == {choice_question.id: "802", text_question.id: "803"}
-    assert len(ink.sent) == 3
+    assert question_ids == {choice_question.id: "802", text_question.id: "802"}
+    assert len(ink.sent) == 2
     assert all(call.channel_thread_id == "500" for call in ink.sent)
     approval_message = ink.sent[0].message
     assert "git status" in approval_message.content
@@ -293,20 +303,47 @@ async def test_discord_feelers_render_one_persistent_message_per_action() -> Non
     assert all(len(item.custom_id) <= 100 for item in approval_buttons)
     assert all("git status" not in item.custom_id for item in approval_buttons)
 
-    choice_view = ink.sent[1].message.view
-    assert choice_view is not None
-    choice_select = choice_view.children[0]
-    assert isinstance(choice_select, DiscordQuestionSelect)
-    assert [option.label for option in choice_select.item.options] == [
+    question_message = ink.sent[1].message
+    choice_view = question_message.view
+    assert isinstance(choice_view, discord.ui.LayoutView)
+    [container] = choice_view.children
+    assert isinstance(container, discord.ui.Container)
+    text_display, choices_row, separator, navigation_row = container.children
+    assert isinstance(text_display, discord.ui.TextDisplay)
+    assert isinstance(choices_row, discord.ui.ActionRow)
+    assert isinstance(separator, discord.ui.Separator)
+    assert isinstance(navigation_row, discord.ui.ActionRow)
+    content = layout_text(choice_view)
+    assert "Question 1 of 2" in content
+    assert "Environment?" in content
+    assert "Why?" not in content
+    first_choice, second_choice, third_choice, other_button, next_button = (
+        item
+        for item in choice_view.walk_children()
+        if isinstance(
+            item,
+            DiscordQuestionChoiceButton
+            | DiscordQuestionAnswerButton
+            | DiscordQuestionNavButton,
+        )
+    )
+    assert isinstance(first_choice, DiscordQuestionChoiceButton)
+    assert isinstance(second_choice, DiscordQuestionChoiceButton)
+    assert isinstance(third_choice, DiscordQuestionChoiceButton)
+    assert [
+        first_choice.item.label,
+        second_choice.item.label,
+        third_choice.item.label,
+    ] == [
         "prod",
         "stage",
         "dev",
     ]
-    assert isinstance(choice_view.children[1], DiscordQuestionAnswerButton)
-    text_view = ink.sent[2].message.view
-    assert text_view is not None
-    assert len(text_view.children) == 1
-    assert isinstance(text_view.children[0], DiscordQuestionAnswerButton)
+    assert isinstance(other_button, DiscordQuestionAnswerButton)
+    assert other_button.item.label == "Other…"
+    assert isinstance(next_button, DiscordQuestionNavButton)
+    assert next_button.operation == "next"
+    assert next_button.item.disabled
 
 
 def test_discord_action_content_stays_within_message_limit() -> None:
@@ -324,9 +361,10 @@ def test_discord_action_content_stays_within_message_limit() -> None:
     )
 
     rendered_approval = approval_content(approval_action)
-    rendered_answer = question_resolution_content(
-        question("q" * 500),
-        answer="a" * 4000,
+    long_answer = question("q" * 500)
+    rendered_answer = question_summary_content(
+        [long_answer],
+        {long_answer.id: "a" * 4000},
         responder_id="100",
     )
 
@@ -415,7 +453,9 @@ async def test_approval_callback_reloads_after_restart_and_resolves_once(
     assert (resolved.status, resolved.responder_id) == ("approved", "100")
     assert reloaded.status == "resolved"
     [edit] = interaction.edits
+    assert edit.content is not None
     assert "Approved by <@100>" in edit.content
+    assert edit.view is not None
     assert all(
         isinstance(item, DiscordApprovalButton) and item.item.disabled
         for item in edit.view.children
@@ -532,10 +572,11 @@ async def test_approval_callback_rejects_unknown_and_mismatched_actions(
     await client.close()
 
 
-async def test_question_select_and_modal_resolve_one_action_at_a_time(
+async def test_question_navigator_preserves_drafts_and_submits_the_batch(
     in_memory_engine: AsyncEngine,
 ) -> None:
     exact_choice = "a" * 120
+    exact_text = "  keep this spacing  "
     batch = await create_batch(
         questions=[
             {"question": "Environment?", "choices": ["prod", exact_choice]},
@@ -546,103 +587,180 @@ async def test_question_select_and_modal_resolve_one_action_at_a_time(
     events: list[str] = []
     octomate = ResolvingOctomate(events)
     client = discord.Client(intents=discord.Intents.none())
-    DiscordComponentRouter(octomate).bind(client)
+    router = DiscordComponentRouter(octomate)
+    router.bind(client)
 
-    original_select = DiscordQuestionSelect(
+    original_choice = DiscordQuestionChoiceButton(
         batch.id,
         first.id,
-        first.args.get("choices") or [],
+        1,
+        exact_choice,
     )
-    select_match = QUESTION_SELECT_CUSTOM_ID_TEMPLATE.fullmatch(
-        original_select.custom_id
+    choice_match = QUESTION_CHOICE_CUSTOM_ID_TEMPLATE.fullmatch(
+        original_choice.custom_id
     )
-    assert select_match is not None
-    plain_select = discord.ui.Select(
-        custom_id=original_select.custom_id,
-        options=original_select.item.options,
+    assert choice_match is not None
+    choice_interaction = FakeInteraction(client, events)
+    restored_choice = await DiscordQuestionChoiceButton.from_custom_id(
+        cast("discord.Interaction[discord.Client]", choice_interaction),
+        discord.ui.Button(
+            label=original_choice.item.label,
+            custom_id=original_choice.custom_id,
+        ),
+        choice_match,
     )
-    select_interaction = FakeInteraction(client, events)
-    restored_select = await DiscordQuestionSelect.from_custom_id(
-        cast("discord.Interaction[discord.Client]", select_interaction),
-        plain_select,
-        select_match,
-    )
-    # Discord refreshes this public `values` result from the interaction payload
-    # before invoking the callback; set its backing value to emulate that dispatch.
-    restored_select.item._values = ["1"]
-
-    await restored_select.callback(
-        cast("discord.Interaction[discord.Client]", select_interaction)
+    await restored_choice.callback(
+        cast("discord.Interaction[discord.Client]", choice_interaction)
     )
 
     assert events == ["defer", "edit"]
     assert octomate.kicks == []
-    partially_resolved = await octomate.deferred_actions.get_batch(batch.id)
-    first_reloaded, second_reloaded = sorted(partially_resolved.questions)
-    assert first_reloaded.result == exact_choice
-    assert first_reloaded.status == "answered"
-    assert second_reloaded.status == "pending"
-    assert partially_resolved.status == "pending"
-    assert (
-        len(
-            cast(DiscordQuestionSelect, select_interaction.edits[0].view.children[0])
-            .item.options[1]
-            .label
-        )
-        == 100
+    [second_page] = choice_interaction.edits
+    assert isinstance(second_page.view, discord.ui.LayoutView)
+    second_page_content = layout_text(second_page.view)
+    assert "Question 2 of 2" in second_page_content
+    assert "Why?" in second_page_content
+    blocked_submit = next(
+        item
+        for item in second_page.view.walk_children()
+        if isinstance(item, DiscordQuestionNavButton) and item.operation == "submit"
     )
+    assert blocked_submit.item.disabled
+    write_answer = next(
+        item
+        for item in second_page.view.walk_children()
+        if isinstance(item, DiscordQuestionAnswerButton)
+    )
+    assert write_answer.item.label == "Write an answer…"
+    drafted = await octomate.deferred_actions.get_batch(batch.id)
+    first_draft, second_draft = sorted(drafted.questions)
+    assert (first_draft.result, first_draft.status) == (None, "pending")
+    assert (second_draft.result, second_draft.status) == (None, "pending")
+    assert drafted.status == "pending"
+    assert router.question_answers == {batch.id: {first.id: exact_choice}}
+    assert original_choice.item.label is not None
+    assert len(original_choice.item.label) == 80
 
-    original_button = DiscordQuestionAnswerButton(batch.id, second.id)
-    button_match = QUESTION_ANSWER_CUSTOM_ID_TEMPLATE.fullmatch(
-        original_button.custom_id
+    blocked_submit_match = QUESTION_NAV_CUSTOM_ID_TEMPLATE.fullmatch(
+        blocked_submit.custom_id
     )
-    assert button_match is not None
-    button_interaction = FakeInteraction(client, events)
-    restored_button = await DiscordQuestionAnswerButton.from_custom_id(
-        cast("discord.Interaction[discord.Client]", button_interaction),
-        discord.ui.Button(label="Answer", custom_id=original_button.custom_id),
-        button_match,
+    assert blocked_submit_match is not None
+    blocked_submit_interaction = FakeInteraction(client, events)
+    restored_blocked_submit = await DiscordQuestionNavButton.from_custom_id(
+        cast("discord.Interaction[discord.Client]", blocked_submit_interaction),
+        discord.ui.Button(label="Submit", custom_id=blocked_submit.custom_id),
+        blocked_submit_match,
     )
-    await restored_button.callback(
-        cast("discord.Interaction[discord.Client]", button_interaction)
+    await restored_blocked_submit.callback(
+        cast("discord.Interaction[discord.Client]", blocked_submit_interaction)
     )
-    modal = button_interaction.response.modal
+    assert blocked_submit_interaction.followup.messages == [
+        ("Answer every question before submitting.", True)
+    ]
+
+    original_answer = DiscordQuestionAnswerButton(batch.id, second.id)
+    answer_match = QUESTION_ANSWER_CUSTOM_ID_TEMPLATE.fullmatch(
+        original_answer.custom_id
+    )
+    assert answer_match is not None
+    answer_interaction = FakeInteraction(client, events)
+    restored_answer = await DiscordQuestionAnswerButton.from_custom_id(
+        cast("discord.Interaction[discord.Client]", answer_interaction),
+        discord.ui.Button(label="Answer", custom_id=original_answer.custom_id),
+        answer_match,
+    )
+    await restored_answer.callback(
+        cast("discord.Interaction[discord.Client]", answer_interaction)
+    )
+    modal = answer_interaction.response.modal
     assert isinstance(modal, DiscordQuestionModal)
-    assert len(modal.custom_id) <= 100
-    exact_text = "  keep this spacing  "
+    question_display = next(
+        item for item in modal.children if isinstance(item, discord.ui.TextDisplay)
+    )
+    assert question_display.content == "**Why?**"
     modal.answer._value = exact_text
     modal_interaction = FakeInteraction(client, events, user_id=101)
-
     await modal.on_submit(
         cast("discord.Interaction[discord.Client]", modal_interaction)
     )
 
-    assert events == [
-        "defer",
-        "edit",
-        "send_modal",
-        "defer",
-        "edit",
-        "kick",
-    ]
+    modal_view = modal_interaction.edits[0].view
+    assert isinstance(modal_view, discord.ui.LayoutView)
+    modal_content = layout_text(modal_view)
+    assert "Question 2 of 2" in modal_content
+    assert f"**Answer:** {exact_text}" in modal_content
+    assert octomate.kicks == []
+
+    second_page_view = modal_view
+    previous = next(
+        item
+        for item in second_page_view.walk_children()
+        if isinstance(item, DiscordQuestionNavButton) and item.operation == "back"
+    )
+    previous_match = QUESTION_NAV_CUSTOM_ID_TEMPLATE.fullmatch(previous.custom_id)
+    assert previous_match is not None
+    previous_interaction = FakeInteraction(client, events)
+    restored_previous = await DiscordQuestionNavButton.from_custom_id(
+        cast("discord.Interaction[discord.Client]", previous_interaction),
+        discord.ui.Button(label="Previous", custom_id=previous.custom_id),
+        previous_match,
+    )
+    await restored_previous.callback(
+        cast("discord.Interaction[discord.Client]", previous_interaction)
+    )
+
+    [first_page] = previous_interaction.edits
+    assert isinstance(first_page.view, discord.ui.LayoutView)
+    first_page_content = layout_text(first_page.view)
+    assert "Question 1 of 2" in first_page_content
+    assert f"**Answer:** {exact_choice}" in first_page_content
+    selected_choice = next(
+        item
+        for item in first_page.view.walk_children()
+        if isinstance(item, DiscordQuestionChoiceButton) and item.choice_index == 1
+    )
+    assert selected_choice.item.style is discord.ButtonStyle.primary
+
+    submit = next(
+        item
+        for item in second_page_view.walk_children()
+        if isinstance(item, DiscordQuestionNavButton) and item.operation == "submit"
+    )
+    assert not submit.item.disabled
+    submit_match = QUESTION_NAV_CUSTOM_ID_TEMPLATE.fullmatch(submit.custom_id)
+    assert submit_match is not None
+    submit_interaction = FakeInteraction(client, events, user_id=101)
+    restored_submit = await DiscordQuestionNavButton.from_custom_id(
+        cast("discord.Interaction[discord.Client]", submit_interaction),
+        discord.ui.Button(label="Submit", custom_id=submit.custom_id),
+        submit_match,
+    )
+    await restored_submit.callback(
+        cast("discord.Interaction[discord.Client]", submit_interaction)
+    )
+
+    [summary] = submit_interaction.edits
+    assert isinstance(summary.view, discord.ui.LayoutView)
+    summary_content = layout_text(summary.view)
+    assert "Answers submitted" in summary_content
+    assert exact_choice in summary_content
+    assert exact_text in summary_content
+    assert "Answered by <@101>" in summary_content
     assert [kick.answers for kick in octomate.kicks] == [
         {first.id: exact_choice, second.id: exact_text},
     ]
     resolved = await octomate.deferred_actions.get_batch(batch.id)
-    first_reloaded, second_reloaded = sorted(resolved.questions)
-    assert first_reloaded.result == exact_choice
-    assert second_reloaded.result == exact_text
-    assert second_reloaded.responder_id == "101"
+    assert [action.status for action in sorted(resolved.questions)] == [
+        "answered",
+        "answered",
+    ]
     assert resolved.status == "resolved"
-    assert "keep this spacing" in modal_interaction.edits[0].content
-    assert all(
-        isinstance(item, DiscordQuestionSelect | DiscordQuestionAnswerButton)
-        and item.item.disabled
-        for item in modal_interaction.edits[0].view.children
-    )
+    assert router.question_answers == {}
 
     stale = FakeInteraction(client, events)
-    await restored_select.callback(cast("discord.Interaction[discord.Client]", stale))
-    assert stale.followup.messages == [("This question was already answered.", True)]
+    await restored_choice.callback(cast("discord.Interaction[discord.Client]", stale))
+    assert stale.followup.messages == [
+        ("These questions were already submitted.", True)
+    ]
     assert len(octomate.kicks) == 1
     await client.close()

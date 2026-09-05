@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import discord
+from rich.style import Style
 
 from octomate.config import DiscordChannelConfig
 from octomate.schemas.conversation import ChannelAddress
@@ -25,7 +26,8 @@ from octomate.tentacles.discord.feelers.output import DiscordTimelineFeeler
 from octomate.tentacles.discord.feelers.questions import (
     DiscordAskQuestionFeeler,
     DiscordQuestionAnswerButton,
-    DiscordQuestionSelect,
+    DiscordQuestionChoiceButton,
+    DiscordQuestionNavButton,
 )
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
+    brand_color: ClassVar[Style | None] = Style(color="#5865F2", bold=True)
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
         sub_thread=True, direct_message=True
@@ -98,7 +101,8 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
         self.client.add_dynamic_items(
             DiscordApprovalButton,
             DiscordQuestionAnswerButton,
-            DiscordQuestionSelect,
+            DiscordQuestionChoiceButton,
+            DiscordQuestionNavButton,
         )
         self.client.event(self.on_message)
 

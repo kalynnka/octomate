@@ -33,6 +33,7 @@ from pydantic import BaseModel
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
+from rich.style import Style
 from uuid_utils import uuid7
 
 from octomate.capabilities.harness.events import (
@@ -371,6 +372,8 @@ SSE_HEADERS = {
 
 class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
     """Channel that serves the Trunkline web console over `octomate.kick`."""
+
+    brand_color: ClassVar[Style | None] = Style(color="#D4621A", bold=True)
 
     # Routing only: the chromo always sets a thread_id, so a directive continues
     # its own thread without triage. There is no seam to open a sub-thread and no

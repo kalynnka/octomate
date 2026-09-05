@@ -10,7 +10,10 @@ from weakref import WeakKeyDictionary, WeakValueDictionary
 import discord
 
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.schemas.deferred import (
+    DeferredApproval,
+    DeferredQuestion,
+)
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -35,6 +38,7 @@ class DiscordComponentRouter:
         self.callback_locks: WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
             WeakValueDictionary()
         )
+        self.question_answers: dict[uuid.UUID, dict[uuid.UUID, str]] = {}
 
     def bind(self, client: discord.Client) -> None:
         self.routers[client] = self
@@ -90,37 +94,44 @@ class DiscordComponentRouter:
             await self.octomate.kick(dispatch)
         return action
 
-    async def resolve_question(
+    async def load_questions(
+        self,
+        batch_id: uuid.UUID,
+    ) -> tuple[list[DeferredQuestion], dict[uuid.UUID, str]]:
+        try:
+            batch = await self.octomate.deferred_actions.get_batch(batch_id)
+        except ValueError as error:
+            raise DiscordActionUnavailable(
+                "These questions are no longer available."
+            ) from error
+        if batch.status != "pending" or any(
+            action.status != "pending" for action in batch.questions
+        ):
+            raise DiscordActionUnavailable("These questions were already submitted.")
+        return sorted(batch.questions), self.question_answers.setdefault(batch_id, {})
+
+    async def save_question_answer(
         self,
         *,
         batch_id: uuid.UUID,
         action_id: uuid.UUID,
-        responder_id: str,
         answer: str | DiscordChoiceAnswer,
-        settle_message: Callable[[DeferredQuestion, str], Awaitable[None]],
-    ) -> DeferredQuestion:
+    ) -> tuple[list[DeferredQuestion], dict[uuid.UUID, str]]:
         callback_lock = self.callback_locks.setdefault(batch_id, asyncio.Lock())
         async with callback_lock:
-            try:
-                batch = await self.octomate.deferred_actions.get_batch(batch_id)
-            except ValueError as error:
-                raise DiscordActionUnavailable(
-                    "This question is no longer available."
-                ) from error
+            actions, answers = await self.load_questions(batch_id)
             action = next(
-                (
-                    candidate
-                    for candidate in batch.questions
-                    if candidate.id == action_id
-                ),
+                (candidate for candidate in actions if candidate.id == action_id),
                 None,
             )
             if action is None or action.batch_id != batch_id:
                 raise DiscordActionUnavailable(
                     "This question does not belong to this request."
                 )
-            if batch.status != "pending" or action.status != "pending":
-                raise DiscordActionUnavailable("This question was already answered.")
+            if action.status != "pending":
+                raise DiscordActionUnavailable(
+                    "These questions were already submitted."
+                )
 
             if isinstance(answer, DiscordChoiceAnswer):
                 choices = action.args.get("choices") or []
@@ -131,18 +142,40 @@ class DiscordComponentRouter:
                 resolved_answer = choices[answer.index]
             else:
                 resolved_answer = answer
+            answers[action_id] = resolved_answer
+            return actions, answers
 
+    async def submit_questions(
+        self,
+        *,
+        batch_id: uuid.UUID,
+        responder_id: str,
+        settle_message: Callable[
+            [list[DeferredQuestion], dict[uuid.UUID, str]], Awaitable[None]
+        ],
+    ) -> list[DeferredQuestion]:
+        callback_lock = self.callback_locks.setdefault(batch_id, asyncio.Lock())
+        async with callback_lock:
+            actions, stored_answers = await self.load_questions(batch_id)
+            answers = dict(stored_answers)
+            if any(action.id not in answers for action in actions):
+                raise DiscordActionUnavailable(
+                    "Answer every question before submitting."
+                )
             dispatch = await self.resolve(
                 DeferredActionBatchResponse(
                     batch_id=batch_id,
                     responder_id=responder_id,
-                    answers={action_id: resolved_answer},
+                    answers={
+                        action.id: answers.get(action.id, "") for action in actions
+                    },
                 )
             )
-        await settle_message(action, resolved_answer)
+            self.question_answers.pop(batch_id, None)
+        await settle_message(actions, answers)
         if dispatch is not None:
             await self.octomate.kick(dispatch)
-        return action
+        return actions
 
     async def resolve(
         self,

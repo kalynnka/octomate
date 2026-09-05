@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import TypeAdapter, ValidationError
+from rich.style import Style
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
@@ -74,6 +75,7 @@ IGNORED_SUBTYPES = frozenset(
 
 
 class SlackTentacle(ChannelTentacle[SlackMessageEvent, SlackOutboundMessage]):
+    brand_color: ClassVar[Style | None] = Style(color="#746576", bold=True)
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
         sub_thread=True, direct_message=True

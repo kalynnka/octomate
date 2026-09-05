@@ -118,6 +118,21 @@ def test_build_channel_composes_discord_components(
     )
 
 
+def test_discord_logs_use_brand_color_after_connection(
+    config: DiscordChannelConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    octomate = Octomate()
+    monkeypatch.setattr(discord, "Client", FakeDiscordClient)
+    channel = DiscordTentacle("discord-main", octomate, config=config)
+    octomate.connect(channel)
+
+    assert octomate.log_tag("discord.client") == (
+        "discord-main",
+        DiscordTentacle.brand_color,
+    )
+
+
 async def test_gateway_lifecycle(
     config: DiscordChannelConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -130,7 +145,8 @@ async def test_gateway_lifecycle(
     assert client.dynamic_items == [
         "DiscordApprovalButton",
         "DiscordQuestionAnswerButton",
-        "DiscordQuestionSelect",
+        "DiscordQuestionChoiceButton",
+        "DiscordQuestionNavButton",
     ]
 
     async with channel:
