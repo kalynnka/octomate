@@ -16,6 +16,7 @@ async def open_crossing(
     landing: CrossingLanding,
     source_address: ChannelAddress,
     hint_text: str,
+    agent_tentacle_id: str,
 ) -> ChannelAddress | None:
     """Open a sub-thread of this person's direct messages on another channel and
     return where it landed, or None when nothing moved.
@@ -60,11 +61,18 @@ async def open_crossing(
         return None
     origin = source_address.channel_tentacle_id
     try:
-        await ctx.deps.channel(origin).feelers.markdown.present(
+        announced = await ctx.deps.channel(origin).feelers.markdown.present(
             source_address, hint_text
         )
     except Exception:
         logger.warning(
             "Channel %s failed to announce the crossing", origin, exc_info=True
+        )
+    else:
+        await ctx.deps.record_move(
+            source_address,
+            hint_text,
+            agent_tentacle_id=agent_tentacle_id,
+            platform_message_id=announced,
         )
     return opened

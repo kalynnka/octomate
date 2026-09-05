@@ -615,6 +615,44 @@ async def test_a_channel_can_turn_the_recap_off() -> None:
     assert "the auth bug is in login" not in prompt
 
 
+async def test_a_summon_into_a_sub_thread_leaves_a_row_in_the_room() -> None:
+    """The opener is a real message in the room — the new thread hangs off it — but
+    it went out through the ink, not the ledger. The room's next kick reads the
+    ledger, so without the row the work just stops mid-chat with nothing saying
+    where it went."""
+    octomate = Octomate()
+    entry = FakeAgent(
+        reception_summon=SummonDecision(
+            action="summon",
+            agent_id="claude",
+            model="opus",
+            destination=ThreadLanding(),
+            reason="needs code work",
+            hint="Working on it",
+            summon="Please debug this.",
+        ),
+        allow_reception_run=True,
+    )
+    claude = FakeAgent(
+        id="claude", reception_output="debugged", allow_reception_run=True
+    )
+    channel = FakeChannelTentacle(config=_summon_config(stream=False))
+    _register_agents(octomate, entry, claude)
+    octomate.connect(channel)
+
+    await octomate.kick(UserMessageSignal([_event(text="please debug")]))
+
+    room = await a_loaded_thread(octomate.thread_manager, _key())
+    [opener] = [
+        message for message in room.messages if message.message_text == "Working on it"
+    ]
+    assert opener.direction == "outbound"
+    assert opener.agent_tentacle_id == "claude"
+    # The opener's own id, so the ledger and the platform name one message: it is
+    # the message the sub-thread hangs off.
+    assert opener.platform_message_id == "hint-thread"
+
+
 def _inkling(octomate: Octomate, stream_text: str) -> InklingTentacle:
     async def stream(
         messages: list[ModelMessage],

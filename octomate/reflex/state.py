@@ -27,6 +27,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.prompts import tagged
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
@@ -296,6 +297,35 @@ class ReflexDeps:
             )
             parts.append(f"{display_name} ({ids}){platform_id}:\n{text}")
         return "\n\n".join(parts)
+
+    async def record_move(
+        self,
+        address: ChannelAddress,
+        text: str,
+        *,
+        agent_tentacle_id: str,
+        platform_message_id: str | None = None,
+    ) -> None:
+        """Write the line a move leaves behind to the ledger of the chat it left.
+
+        A person already sees it — the channel posted it, and a thread opened here
+        hangs off it. The turn that comes next does not: a chat room's recap is built
+        from the ledger, and a move nobody recorded leaves a chat in which the work
+        simply stops. An agent reading that answers what was carried away ten minutes
+        ago.
+
+        The row carries the opener's own platform id, so the ledger and the platform
+        name the same message rather than two.
+        """
+        await self.thread_manager.record_outbound(
+            address,
+            agent_tentacle_id=agent_tentacle_id,
+            segments=[MarkdownSegment(data={"text": text})],
+            sender=self.channel(address.channel_tentacle_id).self_profile,
+            platform_message_id=platform_message_id,
+            message_text=text,
+            raw=text,
+        )
 
     async def load_pending_prompt(
         self,

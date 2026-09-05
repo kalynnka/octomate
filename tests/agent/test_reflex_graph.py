@@ -1357,6 +1357,27 @@ async def test_summon_crosses_into_a_sub_thread_of_their_dms_elsewhere(
     assert im.recording_ink.sent[-1][2][0]["text"] == "Working on it"
 
 
+async def test_a_crossing_leaves_a_row_in_the_chat_it_left(
+    in_memory_engine: None,
+) -> None:
+    """The group is told, and so is its ledger. A chat room's recap is built from
+    that ledger, so a move nobody recorded leaves a chat in which the work simply
+    stops — and the next kick answers what was carried away."""
+    im = _channel(stream=False)
+    state, deps, _far, _entry, second = await _crossing_state(im)
+
+    await _run(React(), state=state, deps=deps)
+
+    threads = cast(FakeThreadManager, deps.thread_manager)
+    [recorded] = [
+        message
+        for message in threads.outbounds
+        if message.message_text == "Working on it"
+    ]
+    assert recorded.direction == "outbound"
+    assert recorded.agent_tentacle_id == second.id
+
+
 async def test_a_crossing_that_opens_no_sub_thread_leaves_the_dms_unclaimed(
     in_memory_engine: None,
 ) -> None:

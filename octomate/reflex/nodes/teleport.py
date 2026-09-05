@@ -57,7 +57,9 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # thread is what gets bound. Nothing to open.
             pass
         elif crossing is not None:
-            crossed = await open_crossing(ctx, crossing, origin_address, hint)
+            crossed = await open_crossing(
+                ctx, crossing, origin_address, hint, self.agent_id
+            )
             if crossed is not None:
                 far = ctx.deps.channel(crossed.channel_tentacle_id)
                 new_target = ResponseTarget(
@@ -71,6 +73,13 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             if channel.surfaces.sub_thread and not origin_address.channel_thread_id:
                 try:
                     new_address = await channel.start_sub_thread(origin_address, hint)
+                    if new_address != origin_address:
+                        await ctx.deps.record_move(
+                            origin_address,
+                            hint,
+                            agent_tentacle_id=self.agent_id,
+                            platform_message_id=new_address.channel_thread_id,
+                        )
                     new_target = replace(origin, address=new_address, mode="sub")
                 except Exception:
                     logger.warning(
