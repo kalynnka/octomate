@@ -16,8 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.harness.agent import Agent
-from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
+from octomate.config import (
+    AgentModelConfig,
+    ChannelConfig,
+    ChannelStreamConfig,
+)
+from octomate.config.channels import ChatRecapConfig
 from octomate.database import async_session
+from octomate.prompts import untagged
+from octomate.reflex.state import RECAP_HEADER
 from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
@@ -528,6 +535,84 @@ async def test_kick_builds_prompt_from_pending_thread_messages() -> None:
         "anonymous (alice) #msg:m3:\nwake now"
     )
     assert entry.turns[0].source_thread_message_ids == [m.id for m in stored]
+
+
+async def _kicked_twice(
+    recap: ChatRecapConfig | None = None,
+    *,
+    thread_id: str = "",
+) -> FakeAgent:
+    """Two kicks on one surface, with the first one's messages settled behind the
+    prompt cursor — which is the state a second kick actually arrives in."""
+    octomate = Octomate()
+    entry = FakeAgent(reception_output="handled", allow_reception_run=True)
+    config = _entry_config(stream=False)
+    if recap is not None:
+        config = config.model_copy(update={"recap": recap})
+    channel = FakeChannelTentacle(config=config)
+    _register_agents(octomate, entry)
+    octomate.connect(channel)
+
+    settled = _event(
+        message_id="m1", text="the auth bug is in login", thread_id=thread_id
+    )
+    first = await octomate.thread_manager.record_inbound(settled)
+    await octomate.kick(
+        UserMessageSignal([settled], trigger_thread_message_id=first.id)
+    )
+    thread = await octomate.thread_manager.ensure(_key(thread_id=thread_id))
+    await octomate.thread_manager.advance_prompt_cursor(thread, first.id)
+
+    asking = _event(message_id="m2", text="what did we decide", thread_id=thread_id)
+    second = await octomate.thread_manager.record_inbound(asking)
+    await octomate.kick(
+        UserMessageSignal([asking], trigger_thread_message_id=second.id)
+    )
+    return entry
+
+
+async def test_a_chat_room_kick_sees_the_chat_before_it() -> None:
+    """A kick in a dm runs in a thread of its own, so its model context starts
+    empty — without the chat in front of the prompt it answers a chat it cannot
+    see."""
+    entry = await _kicked_twice()
+
+    prompt = str(entry.turns[-1].prompt)
+    assert prompt.startswith("<chat_recap>")
+    assert RECAP_HEADER in prompt
+    assert "the auth bug is in login" in prompt
+    # What a person wrote is the body, outside the marking — and it is all that is
+    # left once a render takes the system's own additions back out.
+    assert untagged(prompt) == "anonymous (alice) #msg:m2:\nwhat did we decide"
+    # Context, not the ask: only what the turn must answer is bound as a source.
+    assert len(entry.turns[-1].source_thread_message_ids) == 1
+
+
+async def test_a_thread_kick_gets_no_recap() -> None:
+    """A thread's context is the conversation it already carries, and repeating it
+    in the prompt would send the same messages twice."""
+    entry = await _kicked_twice(thread_id="t1")
+
+    prompt = str(entry.turns[-1].prompt)
+    assert "<chat_recap>" not in prompt
+    assert "the auth bug is in login" not in prompt
+
+
+async def test_the_recap_is_cut_at_the_configured_ceiling() -> None:
+    """One pasted log would otherwise be the whole slice."""
+    entry = await _kicked_twice(ChatRecapConfig(messages=16, characters=11))
+
+    prompt = str(entry.turns[-1].prompt)
+    assert "the auth bug\u2026" not in prompt
+    assert "the auth bu\u2026" in prompt
+
+
+async def test_a_channel_can_turn_the_recap_off() -> None:
+    entry = await _kicked_twice(ChatRecapConfig(messages=0))
+
+    prompt = str(entry.turns[-1].prompt)
+    assert "<chat_recap>" not in prompt
+    assert "the auth bug is in login" not in prompt
 
 
 def _inkling(octomate: Octomate, stream_text: str) -> InklingTentacle:

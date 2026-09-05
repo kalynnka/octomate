@@ -5,6 +5,7 @@ agent/channel/managers. End-to-end behavior lives in test_dispatch.py."""
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 import pytest
+from arcanus import Relation
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent, RunContext
 from pydantic_ai.messages import ToolCallPart, UserPromptPart
 from pydantic_ai.settings import ThinkingEffort
@@ -54,8 +56,13 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest
-from octomate.schemas.segments import MarkdownSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.segments import (
+    ImageData,
+    ImageSegment,
+    MarkdownSegment,
+    TextSegment,
+)
+from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
     SCRY_TOOL_NAME,
     AgentRoute,
@@ -1754,6 +1761,34 @@ def _chat_message(text: str = "hi") -> MessageEvent:
         # different rows.
         channel_thread_id="",
         segments=[TextSegment(data={"text": text})],
+    )
+
+
+async def test_a_picture_reaches_the_prompt_as_itself() -> None:
+    """`message_text` keeps only text and markdown, so a message that was a picture
+    used to arrive as the platform's raw payload or as nothing. A segment renders
+    itself, which is what the prompt should carry."""
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": _channel(stream=False)},
+        agent=FakeAgent(id="other"),
+    )
+    message = ThreadMessage(
+        thread_id=uuid.uuid4(),
+        platform_message_id="m9",
+        direction="inbound",
+        actor_kind="human",
+        user_id="alice",
+        sender_id=uuid.uuid4(),
+        sender=Relation(UserProfile(channel_tentacle_id="im", channel_user_id="alice")),
+        segments=[
+            TextSegment(data={"text": "look at this"}),
+            ImageSegment(data=ImageData(file="/tmp/shot.png", name="shot.png")),
+        ],
+    )
+
+    assert await deps.render_chat([message]) == (
+        "anonymous (alice) #msg:m9:\nlook at this\n[image: shot.png | /tmp/shot.png]"
     )
 
 

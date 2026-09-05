@@ -499,8 +499,16 @@ async def test_instructions_frame_the_prompt(
 
     [prompt_payload] = calls_of("session.prompt")
     assert isinstance(prompt_payload, dict)
+    # Marked, because dsh has no instructions channel and everything else in the
+    # prompt is what somebody said — the brief stays the body.
     assert prompt_payload["content"] == [
-        {"type": "text", "text": "You are an accomplice.\n\nwork the brief"}
+        {
+            "type": "text",
+            "text": (
+                "<instructions>\nYou are an accomplice.\n</instructions>"
+                "\n\nwork the brief"
+            ),
+        }
     ]
 
 

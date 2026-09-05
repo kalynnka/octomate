@@ -39,11 +39,40 @@ class NapcatStreamConfig(ChannelStreamConfig):
     enabled: bool = False
 
 
+class ChatRecapConfig(BaseModel):
+    """What a kick in a dm or a group chat is shown of the chat it woke in.
+
+    Those surfaces have no end, so a kick answers in a thread of its own and its
+    model context starts empty every time. Without this the agent answers a chat it
+    cannot see; with all of it, the context grows with the chat room's tenure, which
+    is the thing the sub-thread exists to stop.
+    """
+
+    messages: int = Field(
+        default=16,
+        ge=0,
+        description=(
+            "How many of the chat's recent messages go in front of the prompt. "
+            "0 shows none, which leaves a kick with only what woke it."
+        ),
+    )
+    characters: int = Field(
+        default=1000,
+        ge=0,
+        description=(
+            "Where each of those messages is cut. They are context, not the thing "
+            "being answered, and one pasted log would otherwise be the whole slice. "
+            "0 leaves them whole."
+        ),
+    )
+
+
 class ChannelConfig(BaseModel):
     type: str
     mention_only: bool = True
     enabled: bool = True
     stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)
+    recap: ChatRecapConfig = Field(default_factory=ChatRecapConfig)
     agents: list[AgentModelConfig] = Field(
         min_length=1,
         description=(
