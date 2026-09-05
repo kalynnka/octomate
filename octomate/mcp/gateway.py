@@ -27,7 +27,7 @@ from pydantic import Field
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.managers.gateway import GatewayRefusal, GatewaySession
+from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import capability_contract
 from octomate.schemas.awakes import GatewayHandoffSignal
@@ -48,21 +48,12 @@ from octomate.schemas.triage import (
     SummonTarget,
     TeleportTarget,
 )
-from octomate.types.threads import (
-    CLAUDE_NATIVE_ID,
-    CODEX_NATIVE_ID,
-    DEEPSEEK_NATIVE_ID,
-    NATIVE_TENTACLE_IDS,
-)
+from octomate.types.threads import NATIVE_TENTACLE_IDS
 
 if TYPE_CHECKING:
     # Runtime dependency runs the other way (the host builds and mounts this
     # module's servers); the resolver only needs the host's type here.
     from octomate.base import Octomate
-
-# The MCP server name every runtime mounts the gateway under. Claude and dsh name a
-# server's tools `mcp__<server>__<tool>`, Codex namespaces them `mcp__<server>`.
-GATEWAY_SERVER_NAME = "gateway"
 
 # The spells the gateway offers, in the order it registers them. `commission` and
 # `whisper` are deliberately absent: external runtimes bring their own subagents.
@@ -113,7 +104,7 @@ def spoken(
     return cast
 
 
-def served_session(octomate: Octomate) -> Callable[[], Awaitable[GatewaySession]]:
+def served_session(octomate: Octomate) -> Callable[[], Awaitable[OctomateSession]]:
     """The session a call served over HTTP runs against.
 
     Every call speaks for the registered user its verified bearer names. A driven
@@ -122,12 +113,12 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[GatewaySession]
     resolves to the session registered while that run is in flight — a bearer
     other than the kicker's is refused, so no user can drive another's turn. A
     native session names its runtime with `CLIENT_HEADER`, written once at
-    install time, and gets `native_session` built for the bearer's user — if its
-    runtime's `native_gateway` flag allows one. Identity is asserted by config
-    and credential either way, never chosen by the model, so a call carrying
-    neither header is refused outright rather than guessed at."""
+    install time, and gets `native_session` built for the bearer's user.
+    Identity is asserted by config and credential either way, never chosen by
+    the model, so a call carrying neither header is refused outright rather than
+    guessed at."""
 
-    async def resolve() -> GatewaySession:
+    async def resolve() -> OctomateSession:
         headers = get_http_headers()
         access = get_access_token()
         principal = access.client_id if access is not None else None
@@ -186,40 +177,23 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[GatewaySession]
 
 async def native_session(
     octomate: Octomate, client: str, username: str
-) -> GatewaySession:
+) -> OctomateSession:
     """An ephemeral gateway for one native call, never registered.
 
     `username` is the verified bearer's owner, so the session speaks for that
     person: anchored on a transient profile of theirs, its destinations are
     their own linked accounts. The call is still attributed to a runtime, never
     to a terminal session, so the session has no thread and no address — every
-    destination is a crossing. Availability is the runtime's own
-    `native_gateway` flag, and that refusal is the only real control: a static
-    MCP config puts the tools in every session once installed.
+    destination is a crossing. A static MCP config puts the tools in every
+    session once installed, and the bearer is the only control.
     """
-    config = octomate.config
-    native_config = (
-        {
-            CLAUDE_NATIVE_ID: config.agents.claude,
-            CODEX_NATIVE_ID: config.agents.codex,
-            DEEPSEEK_NATIVE_ID: config.agents.deepseek,
-        }[client]
-        if config is not None
-        else None
-    )
-    if native_config is None or not native_config.native_gateway:
-        agent = client.removesuffix("-native")
-        raise ToolError(
-            f"The gateway is not offered to {client} sessions: `agents.{agent}` "
-            f"is not configured here, or its `native_gateway` is off."
-        )
     profile = await octomate.users.native_profile(client, username)
     if profile is None:
         raise RuntimeError(
             f"the bearer verified as {username!r} but the registry holds no such "
             "user — reconciliation runs before serving, so this is a wiring bug"
         )
-    return GatewaySession(
+    return OctomateSession(
         channel_routes=octomate.gateway.available_routes(
             octomate.channels, octomate.agents
         ),
@@ -236,13 +210,13 @@ async def native_session(
 
 def mount_gateway(
     mcp: FastMCP,
-    gateway_session: GatewaySession,
+    octomate_session: OctomateSession,
     thread_manager: ThreadManager,
     kick: Callable[[GatewayHandoffSignal], None] | None = None,
 ) -> None:
     """Register the gateway's spells on `mcp`.
 
-    `gateway_session` is the FastMCP dependency each call resolves its session
+    `octomate_session` is the FastMCP dependency each call resolves its session
     through — `Depends(...)` of a fixed session for a server mounted in-process for
     one turn, of a per-request lookup for a server that answers over HTTP.
     `thread_manager` is the ledger a delivering spell writes through. `kick` is how
@@ -254,7 +228,9 @@ def mount_gateway(
         name=SCRY_TOOL_NAME, description=capability_contract(GatewayCapability.scry)
     )
     @spoken
-    async def scry(reveal: ScryFacet, session: GatewaySession = gateway_session) -> str:
+    async def scry(
+        reveal: ScryFacet, session: OctomateSession = octomate_session
+    ) -> str:
         # Lines, never the list: FastMCP renders an empty list as no content at all.
         return "\n".join(str(one) for one in await session.scry(reveal)) or "- (none)"
 
@@ -270,7 +246,7 @@ def mount_gateway(
         reason: str,
         summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
-        session: GatewaySession = gateway_session,
+        session: OctomateSession = octomate_session,
     ) -> str:
         sentence = await session.summon(
             agent_id=agent_id,
@@ -299,7 +275,7 @@ def mount_gateway(
         destination: TeleportTarget = THREAD_TARGET,
         project: str | None = None,
         ref: str | None = None,
-        session: GatewaySession = gateway_session,
+        session: OctomateSession = octomate_session,
     ) -> str:
         await session.teleport(
             hint=hint, destination=destination, project=project, ref=ref
@@ -314,7 +290,7 @@ def mount_gateway(
         hint: str,
         brief: Annotated[str, Field(max_length=8_000)],
         destination: SchemeTarget = DIRECT_TARGET,
-        session: GatewaySession = gateway_session,
+        session: OctomateSession = octomate_session,
     ) -> str:
         sentence = await session.scheme(hint=hint, brief=brief, destination=destination)
         if session.native:
@@ -332,7 +308,7 @@ def mount_gateway(
     async def send(
         segments: list[MessageSegment],
         destination: SendTarget = HERE_TARGET,
-        session: GatewaySession = gateway_session,
+        session: OctomateSession = octomate_session,
     ) -> str:
         # Delivered right here: a gateway `send` has no run stream to ride, so the
         # delivery React performs for Inkling's sends happens in the call instead —
@@ -377,5 +353,5 @@ def mount_gateway(
         name=DISPEL_TOOL_NAME, description=capability_contract(GatewayCapability.dispel)
     )
     @spoken
-    async def dispel(session: GatewaySession = gateway_session) -> str:
+    async def dispel(session: OctomateSession = octomate_session) -> str:
         return await session.dispel()

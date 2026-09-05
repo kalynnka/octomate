@@ -370,12 +370,6 @@ export interface McpServerRow {
   status: string
 }
 
-export interface IntegrationRow {
-  name: string
-  flow: string
-  line: string
-}
-
 export interface ConnectionRow {
   user: string
   connector: string
@@ -424,7 +418,6 @@ export interface ControlData {
   agents: AgentInfo[]
   agentRoutes: AgentRouteDef[]
   mcpRows: McpServerRow[]
-  integrations: IntegrationRow[]
   connections: ConnectionRow[]
   users: UserRow[]
   providers: ProviderRow[]

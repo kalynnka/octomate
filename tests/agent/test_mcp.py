@@ -1,44 +1,48 @@
+"""The MCP tentacles: a vendor's server spoken to with one operator
+credential, a person's Linear or GitHub — all under `mcp:` — composed from config,
+proxied on the served server as the caller, and mounted in process by Inkling for
+the person of its turn.
+"""
+
 from __future__ import annotations
 
-import uuid
 from base64 import urlsafe_b64encode
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 
-from fastmcp.client.transports import StreamableHttpTransport
+import httpx
+import pytest
+from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_http_headers
 from pydantic import AnyHttpUrl, SecretStr
-from pydantic_ai.mcp import MCPToolset
+from pydantic_ai import RunContext
+from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models import Model
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests
-from pydantic_ai.toolsets import (
-    AbstractToolset,
-    DeferredLoadingToolset,
-    FunctionToolset,
-    PrefixedToolset,
-)
+from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
+from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.mcp import McpToolsetCache
-from octomate.config import GitHubMcpConfig, McpServerConfig
-from octomate.config.integrations import (
-    GitHubIntegrationConfig,
-    LinearIntegrationConfig,
-    LinearMcpConfig,
-)
+from octomate.capabilities.mcp import TentaclesToolset, tentacles_capability
+from octomate.config import BareMcpConfig, GitHubMcpConfig, LinearMcpConfig
 from octomate.config.users import UserConfig
 from octomate.database import async_session
-from octomate.integrations import (
-    GitHubCapability,
-    LinearCapability,
-    build_integration,
-)
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
-from octomate.oauth.base import McpConnectionAuth
-from octomate.oauth.github import GitHubDeviceOAuthFlow
-from octomate.oauth.linear import LinearAuthorizationCodeOAuthFlow
+from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
+from octomate.mcp.server import tentacles_mcp
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
     DeviceOAuthFlow,
@@ -49,12 +53,21 @@ from octomate.schemas.oauth import (
 )
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.inkling import InklingTentacle, build_mcp_toolsets
+from octomate.tentacles.github import GitHubTentacle
+from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
+from octomate.tentacles.linear import LinearTentacle
+from octomate.tentacles.mcp import BareMcpTentacle, OAuthMcpTentacle, build_mcp
+from tests.channels.slack.test_mcp import into
+from tests.support.managers import FakeConversationManager, fixed_session
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
+LINEAR_URL = "https://mcp.linear.app/mcp"
 
-GITHUB_CONNECTOR_ID = "github"
+
+@pytest.fixture(autouse=True)
+async def db(in_memory_engine: AsyncEngine) -> None:
+    return
 
 
 class StaticGitHubFlow(DeviceOAuthFlow):
@@ -79,30 +92,28 @@ class StaticGitHubFlow(DeviceOAuthFlow):
         )
 
 
-async def github_host_and_profile() -> tuple[
-    Octomate,
-    UserProfile,
-    GitHubCapability,
-]:
+class Provider(OAuthMcpTentacle):
+    """A person's account with some provider, linked under `gh`, over a server
+    that stands in for the vendor's."""
+
+    label = "Provider"
+    upstream = "https://mcp.example/mcp"
+    instructions = "## Provider\n\nThe provider's own contract.\n"
+    prefix = "gh"
+
+
+async def a_linked_host() -> tuple[Octomate, Provider, UserProfile]:
+    """A host whose registered `alice` may link `gh`, with her Slack profile."""
     users = UserManager(
         {
             "alice": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "slack": {"channel_user_id": "U1"},
-                        "lark": {"channel_user_id": "L1"},
-                    }
-                }
+                {"profiles": {"slack": {"channel_user_id": "U1"}}}
             )
         }
     )
     host = Octomate(users=users, oauth_encryption_key=ENCRYPTION_KEY)
-    github = GitHubCapability(
-        manager=host.oauth,
-        connector=host.oauth.register(
-            OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=StaticGitHubFlow())
-        ),
-    )
+    tentacle = host.connect(Provider("gh", host))
+    host.oauth.register(OAuthConnector(id="gh", flow=StaticGitHubFlow()))
     await users.reconcile()
     async with async_session() as session:
         profile = await session.one_or_none(
@@ -110,128 +121,314 @@ async def github_host_and_profile() -> tuple[
             expressions=[UserProfile["channel_user_id"] == "U1"],
         )
     assert profile is not None
-    return host, profile, github
+    return host, tentacle, profile
 
 
-def _prefixed(toolset: AbstractToolset[None]) -> PrefixedToolset[None]:
-    # Each server is wrapped DeferredLoadingToolset -> PrefixedToolset -> MCPToolset.
-    assert isinstance(toolset, DeferredLoadingToolset)
-    prefixed = toolset.wrapped
-    assert isinstance(prefixed, PrefixedToolset)
-    return prefixed
+def an_upstream(tool: str) -> tuple[FastMCP, list[str]]:
+    """A provider's server as far as one tool goes, recording the bearer each
+    call arrived with."""
+    seen: list[str] = []
+    upstream = FastMCP("upstream")
+
+    @upstream.tool(name=tool)
+    async def answer() -> str:
+        """What the provider says of its tool."""
+        seen.append(get_http_headers(include_all=True).get("authorization", ""))
+        return "answered"
+
+    return upstream, seen
 
 
-def _toolset(toolset: AbstractToolset[None]) -> MCPToolset[None]:
-    inner = _prefixed(toolset).wrapped
-    assert isinstance(inner, MCPToolset)
-    return inner
+def a_turn(profile: UserProfile | None = None) -> OctomateSession:
+    """A turn by `profile`, or by nobody registered — the session a proxied call
+    resolves to."""
+    return OctomateSession(
+        channel_routes={}, current_agent_id="inkling", user_profile=profile
+    )
 
 
-def _transport(toolset: AbstractToolset[None]) -> StreamableHttpTransport:
-    transport = _toolset(toolset).client.transport
-    assert isinstance(transport, StreamableHttpTransport)
-    return transport
+@asynccontextmanager
+async def upstream_of(
+    upstream: FastMCP,
+) -> AsyncIterator[httpx.AsyncBaseTransport]:
+    """`upstream` served, as a transport a proxy's client can be routed into."""
+    app = upstream.http_app()
+    async with app.router.lifespan_context(app):
+        yield httpx.ASGITransport(app=app)
 
 
-def _auth(toolset: AbstractToolset[None]) -> McpConnectionAuth:
-    # The credential rides the transport's auth rather than a fixed header, so the
-    # same object that sends it sees the 401 that retires it.
-    auth = _transport(toolset).auth
-    assert isinstance(auth, McpConnectionAuth)
-    return auth
-
-
-LINEAR_URL = "https://mcp.linear.app/mcp"
-
-
-def test_no_servers_returns_empty() -> None:
-    assert build_mcp_toolsets({}) == []
-
-
-def test_disabled_server_is_skipped() -> None:
-    server = McpServerConfig(url=LINEAR_URL, token=SecretStr("lin_x"), enabled=False)
-    assert build_mcp_toolsets({"linear": server}) == []
-
-
-def test_github_toolset_is_deferred_with_bearer_header() -> None:
-    manager = Octomate().oauth
-    connector = manager.register(
-        OAuthConnector(
-            id=GITHUB_CONNECTOR_ID,
-            flow=GitHubDeviceOAuthFlow(client_id="Iv1.test", scopes=[]),
+@asynccontextmanager
+async def proxied(
+    tentacle: BareMcpTentacle | OAuthMcpTentacle,
+    session: OctomateSession,
+    upstream: FastMCP,
+) -> AsyncIterator[Client]:
+    """The tentacles' server for `session`, `tentacle`'s upstream being `upstream`."""
+    async with upstream_of(upstream) as transport:
+        server = tentacles_mcp(
+            fixed_session(session), [tentacle], httpx_client_factory=into(transport)
         )
+        async with Client(server) as client:
+            yield client
+
+
+def an_inkling(
+    octomate: Octomate,
+    *,
+    model: Model | None = None,
+    toolsets: Sequence[AbstractToolset[None]] = (),
+) -> InklingTentacle:
+    """An Inkling on `octomate`, its conversations kept in memory."""
+    agent: Agent[None, InklingOutput] = Agent(
+        model or TestModel(),
+        deps_type=type(None),
+        name="octomate-inkling",
+        output_type=[str, list[MessageSegment], DeferredToolRequests],
+        toolsets=list(toolsets),
     )
-    capability = GitHubCapability(
-        manager=manager,
-        connector=connector,
-        profile=UserProfile(channel_tentacle_id="slack", channel_user_id="U1"),
-        access_token=SecretStr("github-oauth-token"),
+    return InklingTentacle(
+        "inkling", octomate, agent=agent, conversation_manager=FakeConversationManager()
     )
-    assert capability.toolset is not None
-
-    assert _toolset(capability.toolset).id == "github"
-    assert _prefixed(capability.toolset).prefix == "github"
-    transport = _transport(capability.toolset)
-    assert transport.url == "https://api.githubcopilot.com/mcp/"
-    auth = _auth(capability.toolset)
-    assert auth.access_token.get_secret_value() == "github-oauth-token"
 
 
-def test_github_read_only_selects_readonly_endpoint() -> None:
-    manager = Octomate().oauth
-    connector = manager.register(
-        OAuthConnector(
-            id=GITHUB_CONNECTOR_ID,
-            flow=GitHubDeviceOAuthFlow(client_id="Iv1.test", scopes=[]),
+async def test_a_bare_server_speaks_the_operator_credential_for_everyone() -> None:
+    tentacle = BareMcpTentacle(
+        "linear",
+        Octomate(),
+        config=BareMcpConfig(url=LINEAR_URL, token=SecretStr("lin_x")),
+    )
+    upstream, seen = an_upstream("list_issues")
+
+    # A turn by nobody registered still speaks: the credential is the
+    # deployment's, and the key is the prefix its tools carry.
+    async with proxied(tentacle, a_turn(), upstream) as client:
+        tools = await client.list_tools()
+        result = await client.call_tool("linear_list_issues", {})
+
+    assert [tool.name for tool in tools] == ["linear_list_issues"]
+    assert result.data == "answered"
+    assert seen == ["Bearer lin_x"]
+
+
+async def test_an_explicit_prefix_overrides_the_key() -> None:
+    tentacle = BareMcpTentacle(
+        "linear",
+        Octomate(),
+        config=BareMcpConfig(prefix="lin", url=LINEAR_URL, token=SecretStr("x")),
+    )
+    upstream, _seen = an_upstream("list_issues")
+
+    async with proxied(tentacle, a_turn(), upstream) as client:
+        tools = await client.list_tools()
+
+    assert [tool.name for tool in tools] == ["lin_list_issues"]
+
+
+def test_bootstrap_composes_each_mcp_type_and_keys_it_by_name() -> None:
+    # `type` is the only place a provider is named; the configured key is the
+    # tentacle id, the connector id and the prefix throughout.
+    host = Octomate()
+    notion = build_mcp(
+        "notion",
+        BareMcpConfig(url="https://mcp.notion.com/mcp", token=SecretStr("ntn_x")),
+        host,
+    )
+    github = build_mcp("gh", GitHubMcpConfig(client_id="Iv1.test"), host)
+    linear = build_mcp("linear_home", LinearMcpConfig(client_id="lin"), host)
+
+    assert isinstance(notion, BareMcpTentacle)
+    assert isinstance(github, GitHubTentacle)
+    assert isinstance(linear, LinearTentacle)
+    assert (notion.id, notion.prefix, notion.upstream) == (
+        "notion",
+        "notion",
+        "https://mcp.notion.com/mcp",
+    )
+    assert (github.id, github.prefix, github.upstream) == (
+        "gh",
+        "gh",
+        "https://api.githubcopilot.com/mcp/",
+    )
+    assert (linear.id, linear.prefix, linear.upstream) == (
+        "linear_home",
+        "linear_home",
+        LINEAR_URL,
+    )
+    assert sorted(host.oauth.connectors) == ["gh", "linear_home"]
+    # Only the authorization-code half carries a transport, and it is what makes
+    # `Octomate.app` serve the routes its URIs point at.
+    assert host.oauth.connector("gh").callback_transport is None
+    assert isinstance(
+        host.oauth.connector("linear_home").callback_transport,
+        DirectHttpOAuthCallbackTransport,
+    )
+
+
+def test_two_accounts_of_one_vendor_get_their_own_connectors_and_prefixes() -> None:
+    host = Octomate()
+    work = build_mcp("linear_work", LinearMcpConfig(client_id="a"), host)
+    home = build_mcp("linear_home", LinearMcpConfig(client_id="b"), host)
+
+    # Separate connectors, so separate stored connections and separate tool
+    # names — the model is never offered two identically named sets.
+    assert sorted(host.oauth.connectors) == ["linear_home", "linear_work"]
+    assert (work.prefix, home.prefix) == ("linear_work", "linear_home")
+
+
+def test_a_configured_prefix_overrides_the_id() -> None:
+    # The id is durable — it keys stored connections — so the prefix is what
+    # moves when one vendor is mounted twice.
+    linear = build_mcp(
+        "linear_personal", LinearMcpConfig(client_id="a", prefix="linme"), Octomate()
+    )
+
+    assert (linear.id, linear.prefix) == ("linear_personal", "linme")
+
+
+def test_read_only_selects_the_readonly_endpoint() -> None:
+    github = build_mcp(
+        "gh", GitHubMcpConfig(client_id="Iv1.test", read_only=True), Octomate()
+    )
+
+    assert github.upstream == "https://api.githubcopilot.com/mcp/readonly"
+
+
+async def test_a_linked_person_speaks_with_their_own_token() -> None:
+    host, tentacle, profile = await a_linked_host()
+    upstream, seen = an_upstream("list_repos")
+
+    async with proxied(tentacle, a_turn(profile), upstream) as client:
+        unlinked = await client.list_tools()
+        with pytest.raises(ToolError, match=f"`{CONNECT_TOOL}` with `gh`"):
+            await client.call_tool("gh_list_repos", {})
+        await host.oauth.start(profile, "gh")
+        await host.oauth.complete_latest(profile, "gh")
+        linked = await client.list_tools()
+        result = await client.call_tool("gh_list_repos", {})
+
+    # Before the link: the linking pair and nothing of the provider's. After:
+    # the provider's tools under the prefix, called as the person.
+    assert [tool.name for tool in unlinked] == [CONNECT_TOOL, CONFIRM_TOOL]
+    assert [tool.name for tool in linked] == [
+        CONNECT_TOOL,
+        CONFIRM_TOOL,
+        "gh_list_repos",
+    ]
+    assert result.data == "answered"
+    assert seen == ["Bearer github-user-token"]
+
+
+async def test_a_turn_by_nobody_registered_gets_nothing_of_a_persons_provider() -> None:
+    _host, tentacle, _profile = await a_linked_host()
+    upstream, seen = an_upstream("list_repos")
+
+    async with proxied(tentacle, a_turn(), upstream) as client:
+        tools = await client.list_tools()
+        with pytest.raises(ToolError, match="nobody registered did"):
+            await client.call_tool("gh_list_repos", {})
+
+    assert [tool.name for tool in tools] == [CONNECT_TOOL, CONFIRM_TOOL]
+    assert seen == []
+
+
+async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn() -> (
+    None
+):
+    _host, tentacle, profile = await a_linked_host()
+    ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
+
+    capability = tentacles_capability(a_turn(profile), [tentacle])
+    toolset = capability.get_toolset()
+    assert toolset is not None
+    tools = await toolset.get_tools(ctx)
+    instructions = await toolset.get_instructions(ctx)
+
+    # Deferred behind a catalog line, so a listing that differs per person never
+    # touches the prompt prefix; before the link, the linking pair and nothing of
+    # the provider's, under the served contract.
+    assert capability.defer_loading
+    assert capability.id == "tentacles"
+    assert "Provider" in str(capability.description)
+    assert isinstance(instructions, str)
+    assert "## Linking accounts" in instructions
+    assert "The provider's own contract." in instructions
+    assert set(tools) == {CONNECT_TOOL, CONFIRM_TOOL}
+
+
+async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retry() -> (
+    None
+):
+    host, tentacle, profile = await a_linked_host()
+    upstream, seen = an_upstream("list_repos")
+    ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
+
+    async with upstream_of(upstream) as transport:
+        toolset = TentaclesToolset(
+            tentacles_mcp(
+                fixed_session(a_turn(profile)),
+                [tentacle],
+                httpx_client_factory=into(transport),
+            )
         )
-    )
-    capability = GitHubCapability(
-        manager=manager,
-        connector=connector,
-        mcp_config=GitHubMcpConfig(read_only=True),
-        profile=UserProfile(channel_tentacle_id="slack", channel_user_id="U1"),
-        access_token=SecretStr("github-oauth-token"),
-    )
-    assert capability.toolset is not None
+        before = await toolset.get_tools(ctx)
+        with pytest.raises(ModelRetry, match=f"`{CONNECT_TOOL}` with `gh`"):
+            await toolset.call_tool("gh_list_repos", {}, ctx, before[CONNECT_TOOL])
+        await host.oauth.start(profile, "gh")
+        await host.oauth.complete_latest(profile, "gh")
+        after = await toolset.get_tools(ctx)
+        answer = await toolset.call_tool(
+            "gh_list_repos", {}, ctx, after["gh_list_repos"]
+        )
 
+    # No client between the run and the server: a refusal is the retry Inkling
+    # corrects from, worded as every other runtime reads it; once linked, the
+    # call goes as the person and what comes back is what the provider said.
+    assert "gh_list_repos" not in before
     assert (
-        _transport(capability.toolset).url
-        == "https://api.githubcopilot.com/mcp/readonly"
+        after["gh_list_repos"].tool_def.description
+        == "What the provider says of its tool."
     )
+    assert answer == "answered"
+    assert seen == ["Bearer github-user-token"]
 
 
-def test_server_takes_its_id_and_prefix_from_its_key() -> None:
-    server = McpServerConfig(url=LINEAR_URL, token=SecretStr("lin_x"))
+async def test_a_run_mounts_the_tentacles_for_its_octomate_session() -> None:
+    host, _tentacle, profile = await a_linked_host()
+    offered: list[tuple[dict[str, bool], str | None]] = []
 
-    (toolset,) = build_mcp_toolsets({"linear": server})
+    async def reply(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        offered.append(
+            (
+                {tool.name: tool.defer_loading for tool in info.function_tools},
+                info.instructions,
+            )
+        )
+        yield "noted"
 
-    assert _toolset(toolset).id == "linear"
-    assert _prefixed(toolset).prefix == "linear"
-    assert _transport(toolset).url == LINEAR_URL
-    assert _transport(toolset).headers == {"Authorization": "Bearer lin_x"}
-
-
-def test_explicit_prefix_overrides_the_key() -> None:
-    server = McpServerConfig(prefix="lin", url=LINEAR_URL, token=SecretStr("lin_x"))
-
-    (toolset,) = build_mcp_toolsets({"linear": server})
-
-    assert _toolset(toolset).id == "linear"
-    assert _prefixed(toolset).prefix == "lin"
-
-
-def test_every_configured_server_is_mounted() -> None:
-    # The builder knows no vendors: it mounts whatever `mcp` holds.
-    servers = {
-        "linear": McpServerConfig(url=LINEAR_URL, token=SecretStr("lin_x")),
-        "notion": McpServerConfig(
-            url="https://mcp.notion.com/mcp", token=SecretStr("n_x")
+    inkling = an_inkling(
+        host, model=FunctionModel(stream_function=reply, model_name="scripted")
+    )
+    async with inkling.run_stream_events(
+        "hello",
+        conversation_address=ChannelAddress(
+            channel_tentacle_id="slack", chat_type="dm", chat_id="D1", user_id="U1"
         ),
-    }
+        thread_id=uuid7(),
+        capabilities=[GatewayCapability(session=a_turn(profile))],
+    ) as stream:
+        async for _event in stream:
+            pass
 
-    toolsets = build_mcp_toolsets(servers)
-
-    assert [_toolset(ts).id for ts in toolsets] == ["linear", "notion"]
+    # The tentacles reach the model deferred, for the session its gateway
+    # capability carries: the catalog line, the tool that loads them, and their
+    # tools flagged so the model layer keeps them off the wire until discovered.
+    [(tools, instructions)] = offered
+    assert tools["load_capability"] is False
+    assert (tools[CONNECT_TOOL], tools[CONFIRM_TOOL]) == (True, True)
+    assert instructions is not None
+    assert "- tentacles: The tools of Provider" in instructions
 
 
 class SpyToolset(FunctionToolset[None]):
@@ -273,34 +470,9 @@ class FailingToolset(FunctionToolset[None]):
         return None
 
 
-def _tentacle_with(toolset: AbstractToolset[None]) -> InklingTentacle:
-    octomate = Octomate()
-    agent: Agent[None, InklingOutput] = Agent(
-        TestModel(),
-        deps_type=type(None),
-        name="octomate-inkling",
-        output_type=[str, list[MessageSegment], DeferredToolRequests],
-        toolsets=[toolset],
-    )
-    return InklingTentacle("inkling", octomate, agent=agent)
-
-
-def github_tentacle(
-    host: Octomate,
-    github: GitHubCapability,
-) -> InklingTentacle:
-    agent: Agent[None, InklingOutput] = Agent(
-        TestModel(),
-        deps_type=type(None),
-        name="octomate-inkling",
-        output_type=[str, list[MessageSegment], DeferredToolRequests],
-    )
-    return InklingTentacle("inkling", host, agent=agent, capabilities=[github])
-
-
 async def test_entering_tentacle_enters_agent_toolsets_once() -> None:
     spy = SpyToolset()
-    tentacle = _tentacle_with(spy)
+    tentacle = an_inkling(Octomate(), toolsets=[spy])
 
     async with tentacle:
         # Warming runs behind the enter; the warm state is what the task settles.
@@ -312,7 +484,7 @@ async def test_entering_tentacle_enters_agent_toolsets_once() -> None:
 
 
 async def test_warm_up_failure_does_not_abort_startup() -> None:
-    tentacle = _tentacle_with(FailingToolset())
+    tentacle = an_inkling(Octomate(), toolsets=[FailingToolset()])
 
     # A transient MCP `initialize` failure while warming must not propagate out of
     # tentacle startup or its background warm task; the agent is left unentered so
@@ -320,331 +492,3 @@ async def test_warm_up_failure_does_not_abort_startup() -> None:
     async with tentacle:
         assert tentacle.warm_task is not None
         await tentacle.warm_task
-
-
-async def test_unconnected_slack_user_receives_github_oauth_tools(
-    in_memory_engine: AsyncEngine,
-) -> None:
-    host, profile, github = await github_host_and_profile()
-
-    capabilities = await github_tentacle(host, github).user_capabilities(profile)
-
-    assert len(capabilities) == 1
-    assert isinstance(capabilities[0], GitHubCapability)
-    assert capabilities[0].access_token is None
-
-
-async def test_github_capability_instances_reuse_connector_and_mcp_session(
-    in_memory_engine: AsyncEngine,
-) -> None:
-    host, profile, github = await github_host_and_profile()
-    spy = SpyToolset()
-    github.mcp_toolset_factory = lambda profile, access_token: spy
-    await host.oauth.start(profile, "github")
-    await host.oauth.complete_latest(profile, "github")
-    tentacle = github_tentacle(host, github)
-
-    # Two runs, two copies of the mounted capability — sharing its connector and the
-    # one warm MCP session it holds.
-    async with tentacle:
-        [first] = await tentacle.user_capabilities(profile)
-        [second] = await tentacle.user_capabilities(profile)
-
-        assert isinstance(first, GitHubCapability)
-        assert isinstance(second, GitHubCapability)
-        assert first is not github
-        assert second is not github
-        assert first.connector is github.connector
-        assert second.connector is github.connector
-        assert host.oauth.connector("github") is github.connector
-        assert first.toolset is spy
-        assert second.toolset is spy
-        assert (spy.entered, spy.exited) == (1, 0)
-
-        async with spy:
-            pass
-        assert (spy.entered, spy.exited) == (2, 1)
-
-    assert (spy.entered, spy.exited) == (2, 2)
-
-
-async def test_connected_slack_user_receives_their_github_mcp_token(
-    in_memory_engine: AsyncEngine,
-) -> None:
-    host, profile, github = await github_host_and_profile()
-    await host.oauth.start(profile, "github")
-    await host.oauth.complete_latest(profile, "github")
-
-    capabilities = await github_tentacle(host, github).user_capabilities(profile)
-
-    assert len(capabilities) == 1
-    capability = capabilities[0]
-    assert isinstance(capability, GitHubCapability)
-    assert capability.toolset is not None
-    assert (
-        _auth(capability.toolset).access_token.get_secret_value() == "github-user-token"
-    )
-
-
-async def test_visitor_receives_no_github_connection_tools(
-    in_memory_engine: AsyncEngine,
-) -> None:
-    host, _profile, github = await github_host_and_profile()
-    visitor = await host.users.ensure_profile(
-        "slack",
-        UserProfile(channel_user_id="visitor", name="Visitor"),
-    )
-
-    capabilities = await github_tentacle(host, github).user_capabilities(visitor)
-
-    assert capabilities == []
-
-
-async def test_registered_user_connects_from_any_channel(
-    in_memory_engine: AsyncEngine,
-) -> None:
-    # The `users:` registry is the authority on who may connect, not the channel
-    # they happen to be speaking from — every channel can present an authorization.
-    host, _profile, github = await github_host_and_profile()
-    async with async_session() as session:
-        lark_profile = await session.one_or_none(
-            UserProfile,
-            expressions=[UserProfile["channel_user_id"] == "L1"],
-        )
-    assert lark_profile is not None
-
-    [capability] = await github_tentacle(host, github).user_capabilities(lark_profile)
-
-    assert isinstance(capability, GitHubCapability)
-    assert capability.access_token is None
-
-
-async def test_cache_reuses_and_warms_a_key_once() -> None:
-    cache = McpToolsetCache()
-    spy = SpyToolset()
-    key = uuid.uuid4()
-
-    async with cache:
-        first = await cache.acquire(
-            kind="github",
-            key=key,
-            fingerprint="t1",
-            max_entries=32,
-            warm_timeout=16.0,
-            build=lambda: spy,
-        )
-        # A cache hit does not call build again; the same warm session is returned.
-        second = await cache.acquire(
-            kind="github",
-            key=key,
-            fingerprint="t1",
-            max_entries=32,
-            warm_timeout=16.0,
-            build=lambda: SpyToolset(),
-        )
-        assert first is spy
-        assert second is spy
-        assert (spy.entered, spy.exited) == (1, 0)
-
-    assert (spy.entered, spy.exited) == (1, 1)
-
-
-async def test_cache_rebuilds_and_closes_on_fingerprint_change() -> None:
-    cache = McpToolsetCache()
-    old, new = SpyToolset(), SpyToolset()
-    key = uuid.uuid4()
-
-    async with cache:
-        first = await cache.acquire(
-            kind="github",
-            key=key,
-            fingerprint="old",
-            max_entries=32,
-            warm_timeout=16.0,
-            build=lambda: old,
-        )
-        second = await cache.acquire(
-            kind="github",
-            key=key,
-            fingerprint="new",
-            max_entries=32,
-            warm_timeout=16.0,
-            build=lambda: new,
-        )
-        assert first is old
-        assert second is new
-        # A changed credential closes the stale session before serving the new one.
-        assert (old.entered, old.exited) == (1, 1)
-        assert (new.entered, new.exited) == (1, 0)
-
-    assert (new.entered, new.exited) == (1, 1)
-
-
-async def test_cache_evicts_least_recently_used_per_kind() -> None:
-    cache = McpToolsetCache()
-    keys = [uuid.uuid4() for _ in range(3)]
-    spies = [SpyToolset() for _ in range(3)]
-
-    async with cache:
-        for key, spy in zip(keys, spies, strict=False):
-            await cache.acquire(
-                kind="github",
-                key=key,
-                fingerprint="t",
-                max_entries=2,
-                warm_timeout=16.0,
-                build=lambda spy=spy: spy,
-            )
-        # Admitting the third session past the bound evicts and closes the first.
-        assert (spies[0].entered, spies[0].exited) == (1, 1)
-        assert (spies[1].entered, spies[1].exited) == (1, 0)
-        assert (spies[2].entered, spies[2].exited) == (1, 0)
-
-
-async def test_cache_touch_refreshes_lru_recency() -> None:
-    cache = McpToolsetCache()
-    keys = [uuid.uuid4() for _ in range(3)]
-    spies = [SpyToolset() for _ in range(3)]
-
-    async def acquire(index: int) -> None:
-        await cache.acquire(
-            kind="github",
-            key=keys[index],
-            fingerprint="t",
-            max_entries=2,
-            warm_timeout=16.0,
-            build=lambda: spies[index],
-        )
-
-    async with cache:
-        await acquire(0)
-        await acquire(1)
-        # Re-acquiring keys[0] makes keys[1] the least-recently-used entry.
-        await acquire(0)
-        await acquire(2)
-        assert (spies[1].entered, spies[1].exited) == (1, 1)
-        assert (spies[0].entered, spies[0].exited) == (1, 0)
-        assert (spies[2].entered, spies[2].exited) == (1, 0)
-
-
-async def test_cache_bounds_each_kind_independently() -> None:
-    cache = McpToolsetCache()
-    github_spy, linear_spy = SpyToolset(), SpyToolset()
-
-    async with cache:
-        await cache.acquire(
-            kind="github",
-            key=uuid.uuid4(),
-            fingerprint="t",
-            max_entries=1,
-            warm_timeout=16.0,
-            build=lambda: github_spy,
-        )
-        await cache.acquire(
-            kind="linear",
-            key=uuid.uuid4(),
-            fingerprint="t",
-            max_entries=1,
-            warm_timeout=16.0,
-            build=lambda: linear_spy,
-        )
-        # A one-slot bound on github does not evict a different kind's session.
-        assert (github_spy.entered, github_spy.exited) == (1, 0)
-        assert (linear_spy.entered, linear_spy.exited) == (1, 0)
-
-
-def test_an_integration_prefix_overrides_its_connector_id() -> None:
-    # One vendor mounted twice — a bare company server and a personal OAuth
-    # connection — would otherwise offer the model two sets of identically named
-    # tools. The connector id is durable (it keys stored connections), so the
-    # prefix is what moves.
-    manager = Octomate().oauth
-    connector = manager.register(
-        OAuthConnector(
-            id="linear_personal",
-            flow=LinearAuthorizationCodeOAuthFlow(
-                client_id="lin_client", client_secret=None, scopes=["read"]
-            ),
-            callback_transport=DirectHttpOAuthCallbackTransport(
-                AnyHttpUrl("http://127.0.0.1:8000")
-            ),
-        )
-    )
-    capability = LinearCapability(
-        manager=manager,
-        connector=connector,
-        mcp_config=LinearMcpConfig(prefix="linme"),
-        profile=UserProfile(channel_tentacle_id="lark", channel_user_id="OU1"),
-        access_token=SecretStr("linear-token"),
-    )
-    assert capability.toolset is not None
-
-    # The session keeps the connector's name; only what the model reads changes.
-    assert _toolset(capability.toolset).id == "linear_personal"
-    assert _prefixed(capability.toolset).prefix == "linme"
-
-
-def test_an_integration_prefix_defaults_to_its_connector_id() -> None:
-    manager = Octomate().oauth
-    connector = manager.register(
-        OAuthConnector(
-            id="linear_personal",
-            flow=LinearAuthorizationCodeOAuthFlow(
-                client_id="lin_client", client_secret=None, scopes=["read"]
-            ),
-            callback_transport=DirectHttpOAuthCallbackTransport(
-                AnyHttpUrl("http://127.0.0.1:8000")
-            ),
-        )
-    )
-    capability = LinearCapability(
-        manager=manager,
-        connector=connector,
-        profile=UserProfile(channel_tentacle_id="lark", channel_user_id="OU1"),
-        access_token=SecretStr("linear-token"),
-    )
-    assert capability.toolset is not None
-
-    assert _prefixed(capability.toolset).prefix == "linear_personal"
-
-
-def test_bootstrap_composes_each_type_and_keys_it_by_name() -> None:
-    # `type` is the only place a provider is named; everything below the connector
-    # is provider-neutral, and the configured key is the connector id throughout.
-    manager = Octomate().oauth
-    github = build_integration(
-        "gh", GitHubIntegrationConfig(type="github", client_id="Iv1.test"), manager
-    )
-    linear = build_integration(
-        "linear_home", LinearIntegrationConfig(type="linear", client_id="lin"), manager
-    )
-
-    assert isinstance(github, GitHubCapability)
-    assert isinstance(linear, LinearCapability)
-    assert sorted(manager.connectors) == ["gh", "linear_home"]
-    assert github.id == "gh"
-    assert linear.id == "linear_home"
-    # Only the authorization-code half carries a transport, and it is what makes
-    # `Octomate.app` serve the routes its URIs point at.
-    assert manager.connector("gh").callback_transport is None
-    assert isinstance(
-        manager.connector("linear_home").callback_transport,
-        DirectHttpOAuthCallbackTransport,
-    )
-
-
-def test_two_accounts_of_one_vendor_get_their_own_connectors() -> None:
-    manager = Octomate().oauth
-    work = build_integration(
-        "linear_work", LinearIntegrationConfig(type="linear", client_id="a"), manager
-    )
-    home = build_integration(
-        "linear_home", LinearIntegrationConfig(type="linear", client_id="b"), manager
-    )
-
-    # Separate connectors, so separate stored connections and separate tool names —
-    # the model is never offered two identically named sets.
-    assert sorted(manager.connectors) == ["linear_home", "linear_work"]
-    assert work.toolset is None
-    assert home.toolset is None
-    assert work.connector.id != home.connector.id

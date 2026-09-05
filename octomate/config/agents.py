@@ -288,13 +288,6 @@ class ClaudeCodeConfig(AgentConfig):
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned).",
     )
-    native_gateway: bool = Field(
-        default=True,
-        description="Whether anonymous claude-native sessions may cast the served "
-        "gateway spells over `/gateway/mcp`. The bearer still authenticates every "
-        "call; this is the runtime's own switch, matched against the "
-        "X-Octomate-Client header a static install writes.",
-    )
     permission_mode: ClaudePermissionMode = Field(
         default="default",
         description=(
@@ -379,13 +372,6 @@ class CodexConfig(AgentConfig):
         description="Per-model claims (ability/efforts). A model with no claim "
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned).",
-    )
-    native_gateway: bool = Field(
-        default=True,
-        description="Whether anonymous codex-native sessions may cast the served "
-        "gateway spells over `/gateway/mcp`. The bearer still authenticates every "
-        "call; this is the runtime's own switch, matched against the "
-        "X-Octomate-Client header a static install writes.",
     )
     permission_mode: CodexPermissionMode = Field(
         default="user_review",
@@ -543,13 +529,6 @@ class DeepseekConfig(AgentConfig):
         "advertises nothing: it is not offered as a route, so it cannot be "
         "summoned (or commissioned). DeepSeek's efforts collapse to off/high/max, "
         "so claims should offer `[low, medium, high, xhigh]` at most.",
-    )
-    native_gateway: bool = Field(
-        default=True,
-        description="Whether anonymous deepseek-native sessions may cast the served "
-        "gateway spells over `/gateway/mcp`. The bearer still authenticates every "
-        "call; this is the runtime's own switch, matched against the "
-        "X-Octomate-Client header a static install writes.",
     )
     efforts: dict[ThinkingEffort, str] = Field(
         default_factory=lambda: {

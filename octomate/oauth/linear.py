@@ -5,7 +5,7 @@ opens, the PKCE token exchange behind it, the refresh that keeps a day-long toke
 alive, and the viewer lookup that names the connection. It knows nothing about
 agents, capabilities or MCP: application bootstrap composes this flow with a
 callback transport into an `OAuthConnector`, registers it on the `OAuthManager`, and
-hands that connector to `LinearCapability`.
+hands that connector to `LinearTentacle`.
 
 Linear has no device grant, so this is the first flow that needs a browser to come
 back somewhere — which is the whole reason the callback transports exist.
@@ -21,7 +21,7 @@ from secrets import token_urlsafe
 import httpx
 from pydantic import AnyHttpUrl, BaseModel, SecretStr, TypeAdapter
 
-from octomate.config.integrations import LinearScope
+from octomate.config.mcp.linear import LinearScope
 from octomate.schemas.oauth import (
     AuthorizationCodeOAuthFlow,
     AuthorizationRequest,

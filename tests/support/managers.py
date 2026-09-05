@@ -10,7 +10,7 @@ them the parent row SQLite's foreign keys require.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +25,7 @@ from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
@@ -122,6 +123,18 @@ async def a_thread(chat_id: str = "chat") -> uuid.UUID:
         ThreadKey(channel_tentacle_id="test", chat_type="dm", chat_id=chat_id)
     )
     return thread.id
+
+
+def fixed_session(
+    session: OctomateSession,
+) -> Callable[[], Awaitable[OctomateSession]]:
+    """The resolver an MCP server mounted in-process for one turn closes over:
+    every call of it is this session's."""
+
+    async def resolve() -> OctomateSession:
+        return session
+
+    return resolve
 
 
 @dataclass

@@ -29,7 +29,6 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek import base as deepseek_base
 from octomate.tentacles.deepseek.client import DeepseekApiClient
@@ -45,8 +44,10 @@ from octomate.tentacles.deepseek.wire import (
     SessionEventFrame,
     StreamErrorFrame,
 )
+from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject, JsonValue
 from tests.support.agents import DEEPSEEK_MODELS
+from tests.support.channels import FakeChannelTentacle
 from tests.support.config import registered
 from tests.support.managers import (
     FakeConversation,
@@ -249,14 +250,16 @@ class FakeFeelers:
         return self.batch
 
 
-@dataclass
-class FakeChannel:
-    feelers: FakeFeelers
-    config: ChannelConfig = field(
-        default_factory=lambda: ChannelConfig(
+def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
+    """The `im` channel the tentacle presents approvals and questions through,
+    its feelers recording what was asked."""
+    channel = FakeChannelTentacle(
+        config=ChannelConfig(
             type="fake", agents=[AgentModelConfig(agent="inkling", model="test")]
         )
     )
+    channel.feelers = cast(Feelers, feelers)
+    return channel
 
 
 @dataclass
@@ -323,7 +326,7 @@ def interaction_octomate(
         config=registered("the-hook-secret"),
         conversations=conversations or FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
+        tentacles={"im": a_channel(feelers)},
     )
 
 

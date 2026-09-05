@@ -136,16 +136,16 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             if route.agent_id != agent.id
         ]
         capabilities: list[AgentCapability[None]] = []
-        gateway_session = await ctx.deps.gateway_session(
+        octomate_session = await ctx.deps.octomate_session(
             agent,
             user_profile=state.user_profile,
             thread_id=thread_id,
             conversation_address=target_address,
         )
-        if gateway_session is not None:
+        if octomate_session is not None:
             capabilities.append(
                 GatewayCapability(
-                    session=gateway_session,
+                    session=octomate_session,
                     conversations=ctx.deps.conversation_manager,
                 )
             )
@@ -178,7 +178,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         # Registered before anything is presented: a second turn racing this
         # conversation is refused here, loudly, not after it has started streaming.
         with (
-            ctx.deps.gateway.driving(gateway_session),
+            ctx.deps.gateway.driving(octomate_session),
             reflex_logfire.span(
                 "react",
                 channel_id=target_address.channel_tentacle_id,
@@ -392,8 +392,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     run_id=run_result.run_id,
                 )
             if (
-                gateway_session is not None
-                and gateway_session.dispelling
+                octomate_session is not None
+                and octomate_session.dispelling
                 and state.thread is not None
             ):
                 # The agent said this thread's work is done: its tree goes now
@@ -421,7 +421,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     )
                 )
 
-            gateway_decision = gateway_session.decision if gateway_session else None
+            gateway_decision = octomate_session.decision if octomate_session else None
             if isinstance(gateway_decision, SchemeDecision | SummonDecision):
                 # Where this handoff came from, as the row records it: the
                 # conversation this turn ran in, as of its last message.

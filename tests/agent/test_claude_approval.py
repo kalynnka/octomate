@@ -46,10 +46,11 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.feelers.base import Feelers
 from tests.support.agents import CLAUDE_MODELS
+from tests.support.channels import FakeChannelTentacle
 from tests.support.config import registered
 from tests.support.managers import (
     FakeConversation,
@@ -77,14 +78,16 @@ class FakeFeelers:
         return self.batch
 
 
-@dataclass
-class FakeChannel:
-    feelers: FakeFeelers
-    config: ChannelConfig = field(
-        default_factory=lambda: ChannelConfig(
+def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
+    """The `im` channel the tentacle presents approvals and questions through,
+    its feelers recording what was asked."""
+    channel = FakeChannelTentacle(
+        config=ChannelConfig(
             type="fake", agents=[AgentModelConfig(agent="inkling", model="test")]
         )
     )
+    channel.feelers = cast(Feelers, feelers)
+    return channel
 
 
 @dataclass
@@ -207,7 +210,7 @@ def _build(
         config=registered(HOOK_SECRET.get_secret_value()),
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, dam),
-        channels=cast(dict[str, ChannelTentacle], {"im": FakeChannel(feelers=feelers)}),
+        tentacles={"im": a_channel(feelers)},
     )
     tentacle = ClaudeCodeTentacle(
         "claude",

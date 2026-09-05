@@ -1,11 +1,31 @@
-# Bare vendor MCP servers connected over Streamable HTTP with one operator token,
-# mounted process-wide. Tools are deferred-loaded until the model discovers them
-# through ToolSearch.
+# MCP tentacles: a provider's MCP server, proxied on Octomate's own server as the
+# caller. The key names the tentacle — the prefix its tools carry and, for a
+# linked account, the connector its tokens live under — so one vendor can be
+# mounted once per account. `type` picks the tentacle that builds it.
+#
+# Enabling a `github` or `linear` block requires `oauth.encryption_key`; boot
+# refuses without it.
 
 # mcp:
-#   notion:                     # the key names the server: MCP session id and tool prefix
+#   notion:                       # one operator token for every caller
+#     type: bare
 #     url: https://mcp.notion.com/mcp
-#     token: ntn_xxx            # or OCTOMATE__MCP__NOTION__TOKEN
-#     prefix: nt                # tool-name prefix (default: the key above)
-#     enabled: true             # default: true
-#     warm_timeout_seconds: 16  # seconds to warm this server (default 16)
+#     token: ntn_xxx              # or OCTOMATE__MCP__NOTION__TOKEN
+#     prefix: nt                  # tool-name prefix (default: the key above)
+#     enabled: true               # default: true
+#   github:                       # device flow: the user types a code, no callback
+#     type: github
+#     client_id: Iv1.xxxxx        # required — OAuth App with Device Flow enabled
+#     scopes: [repo, read:org]    # fixed at authorization; widening = reconnect
+#     read_only: false            # true => the /readonly endpoint variant
+#     prefix: gh                  # tool-name prefix (default: the key above)
+#   linear_me:                    # authorization code: approved in a browser
+#     type: linear
+#     client_id: xxxxx            # required — OAuth application in Linear settings
+#     client_secret: xxxxx        # optional (PKCE covers it); prefer the env var
+#     # Where the authorizing BROWSER reaches Octomate, not where the internet
+#     # does — Linear redirects the user agent, it never connects here. Register
+#     # <callback_base_uri>/oauth/<key>/callback on the Linear application; it
+#     # must match character for character.
+#     callback_base_uri: http://localhost:8000
+#     scopes: [read, write]

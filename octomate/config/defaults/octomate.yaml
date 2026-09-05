@@ -18,10 +18,6 @@
 # into thread history. The value comes from the user: they run `octomate configure`
 # on their own machine and hand you what it printed.
 
-# The MCP endpoint under each served server's mount — the gateway answers at
-# /gateway/mcp by default.
-# mcp_path: /mcp
-
 # Where the database lives, read by both the app engine and alembic. The default is
 # relative to the working directory, so each checkout keeps its own history even
 # when they share a config home. OCTOMATE_DB_URL overrides it.

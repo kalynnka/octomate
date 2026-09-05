@@ -468,7 +468,7 @@ def build_channel(
 ) -> ChannelTentacle:
     """Compose one configured channel into its tentacle.
 
-    The one place a `type:` becomes a platform, mirroring `build_integration`. The
+    The one place a `type:` becomes a platform, mirroring `build_mcp`. The
     configured key is the tentacle id throughout, which is what lets one platform be
     mounted more than once — two Lark apps are two keys, and nothing below here
     learns that they share a class.

@@ -26,7 +26,7 @@ from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import AgentModelConfig, ChannelConfig
 from octomate.config.users import UserConfig
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import MarkdownSegment, MessageSegment
@@ -60,7 +60,7 @@ def _gate(
     `chat_type` overrides the type the surface reports without changing whether it
     is private — an assistant pane is a thread only one person can read."""
     return GatewayCapability(
-        session=GatewaySession(
+        session=OctomateSession(
             channel_routes={},
             current_agent_id="inkling",
             channels={

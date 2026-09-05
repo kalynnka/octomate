@@ -214,33 +214,6 @@ export function ControlPage() {
                   color: 'var(--fg-3)',
                 }}
               >
-                Integrations · per-user oauth
-              </div>
-              {data.integrations.map((i) => (
-                <div key={i.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 16px' }}>
-                  <span style={{ ...mono(9.5, 700), color: 'var(--fg-1)', width: 58, flexShrink: 0 }}>{i.name}</span>
-                  <span
-                    style={{
-                      ...label(7.5, '.1em'),
-                      color: 'var(--color-teal)',
-                      border: '1px solid var(--color-teal)',
-                      padding: '1px 5px',
-                    }}
-                  >
-                    {i.flow}
-                  </span>
-                  <span style={{ ...mono(8), color: 'var(--fg-3)', flex: 1, ...ellipsis }}>{i.line}</span>
-                </div>
-              ))}
-              <div
-                style={{
-                  borderTop: '1px solid var(--line-color)',
-                  margin: '5px 16px 0',
-                  padding: '6px 0 2px',
-                  ...sectionLabel,
-                  color: 'var(--fg-3)',
-                }}
-              >
                 Connections
               </div>
               {data.connections.map((c) => (

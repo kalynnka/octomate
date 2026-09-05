@@ -13,7 +13,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.config import AgentModelConfig, ChannelConfig
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.users import UserConfig
-from octomate.managers.gateway import GatewayManager, GatewaySession, PrivateBlocker
+from octomate.managers.gateway import GatewayManager, OctomateSession, PrivateBlocker
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.messages import SEND_TOOL_NAME
@@ -84,7 +84,7 @@ def _capability(
     passed. `test_reflex_graph` covers how the real channels reach each shape."""
     chat_type, shared, thread_id = SHAPES[shape]
     capability = GatewayCapability(
-        session=GatewaySession(
+        session=OctomateSession(
             channel_routes={"im": [CLAUDE_ROUTE, INKLING_ROUTE]},
             current_agent_id="inkling",
             channels={"im": channel or FakeChannelTentacle()},
@@ -333,7 +333,7 @@ async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
     move to — reading the type alone would offer `scheme` a surface beside the one
     it is already in, under whatever agent owns that."""
     capability = GatewayCapability(
-        session=GatewaySession(
+        session=OctomateSession(
             channel_routes={},
             current_agent_id="inkling",
             channels={"im": FakeChannelTentacle()},
@@ -842,8 +842,8 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
     )
 
 
-def _registered_session() -> GatewaySession:
-    session = GatewaySession(channel_routes={}, current_agent_id="inkling")
+def _registered_session() -> OctomateSession:
+    session = OctomateSession(channel_routes={}, current_agent_id="inkling")
     session.conversation_id = uuid7()
     return session
 
@@ -862,7 +862,7 @@ def test_the_manager_finds_a_session_by_its_conversation_while_registered() -> N
 def test_a_session_without_a_conversation_cannot_be_registered() -> None:
     with pytest.raises(ValueError, match="conversation id"):
         GatewayManager().register(
-            GatewaySession(channel_routes={}, current_agent_id="inkling")
+            OctomateSession(channel_routes={}, current_agent_id="inkling")
         )
 
 
@@ -872,7 +872,7 @@ def test_a_second_turn_on_a_live_conversation_is_refused_not_queued() -> None:
     # refused outright, and the slot frees only when the holder's turn ends.
     manager = GatewayManager()
     first = _registered_session()
-    second = GatewaySession(channel_routes={}, current_agent_id="inkling")
+    second = OctomateSession(channel_routes={}, current_agent_id="inkling")
     second.conversation_id = first.conversation_id
     assert first.conversation_id is not None
 
@@ -905,7 +905,7 @@ def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
     manager = GatewayManager()
     with manager.driving(None):
         assert manager.sessions == {}
-    with manager.driving(GatewaySession(channel_routes={}, current_agent_id="i")):
+    with manager.driving(OctomateSession(channel_routes={}, current_agent_id="i")):
         assert manager.sessions == {}
 
 

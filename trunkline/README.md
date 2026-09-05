@@ -144,9 +144,9 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
 6. **`GET /api/agents`** — agent tentacles with models, effort ranges, state,
    pool/hook info (`octomate/config/agents.py`, `config/models.py`; Agents
    page — `/api/trunkline/routes` covers only route ids).
-7. **`GET /api/mcp` · `GET /api/integrations` · `GET /api/connections`** —
-    MCP servers with warm/cold status, OAuth connectors, per-user grants
-    (`config/mcp.py`, `config/integrations.py`, `OAuthManager`; MCP page).
+7. **`GET /api/mcp` · `GET /api/connections`** — MCP tentacles with warm/cold
+    status, OAuth connectors, per-user grants (`config/mcp.py`, `OAuthManager`;
+    MCP page).
 8. **`GET /api/users`** — users + linked channel profiles + grant state
     (`UserManager`; Users page).
 9. **`GET /api/stats` · `GET /api/activity`** — dashboard tiles, gateway-verb

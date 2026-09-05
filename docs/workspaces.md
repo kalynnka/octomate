@@ -241,7 +241,7 @@ waits for the turn rather than happening in the call.
 **Every driven runtime can call it.** `teleport` with a `project`, `dispel`, and
 the `projects` facet of `scry` are gateway spells: Inkling mounts them as a capability, a driven
 Claude turn as its in-process MCP server, a driven Codex turn over the served
-`/gateway/mcp`. A native session may scry the projects but neither teleport nor
+`/octomate/mcp`. A native session may scry the projects but neither teleport nor
 dispel — its work is wherever its terminal is, and there is no tree to fork for
 it (a native teleport, still to come, is the door for that). dsh mounts no gateway on a driven
 turn, so a chat thread

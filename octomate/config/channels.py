@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, Self, TypeAlias
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr, model_validator
 
 from octomate.config.agents import AgentRouteModelName
 
@@ -97,12 +97,122 @@ class ChannelConfig(BaseModel):
     )
 
 
+# Every user-token scope Slack's MCP server advertises in its authorization-server
+# metadata. A literal for the same reason `GitHubScope` is one: a misspelled scope
+# is otherwise only discovered at the consent screen.
+SlackUserScope: TypeAlias = Literal[
+    "canvases:read",
+    "canvases:write",
+    "channels:history",
+    "channels:read",
+    "channels:write",
+    "chat:write",
+    "emoji:read",
+    "files:read",
+    "files:write",
+    "groups:history",
+    "groups:read",
+    "groups:write",
+    "im:history",
+    "im:read",
+    "im:write",
+    "lists:read",
+    "lists:write",
+    "mpim:history",
+    "mpim:read",
+    "mpim:write",
+    "reactions:read",
+    "reactions:write",
+    "search:read.files",
+    "search:read.im",
+    "search:read.mpim",
+    "search:read.private",
+    "search:read.public",
+    "search:read.users",
+    "users:read",
+    "users:read.email",
+]
+
+# What the tools Octomate forwards need, from Slack's own table: the searches,
+# reading channels, threads and profiles, drafting, and canvases. No `chat:write`:
+# the tools that post as the person are not forwarded.
+SLACK_MCP_SCOPES: list[SlackUserScope] = [
+    "search:read.public",
+    "search:read.private",
+    "search:read.mpim",
+    "search:read.im",
+    "search:read.files",
+    "search:read.users",
+    "channels:history",
+    "groups:history",
+    "mpim:history",
+    "im:history",
+    "channels:read",
+    "groups:read",
+    "im:read",
+    "mpim:read",
+    "users:read",
+    "users:read.email",
+    "canvases:read",
+    "canvases:write",
+]
+
+
+class SlackOAuthClientConfig(BaseModel):
+    """The Slack app as the OAuth client its MCP server takes user tokens from.
+
+    Slack's MCP server acts as a person, never as the bot, so a channel that offers
+    it has each user authorize once; the app's client id and secret are what make
+    that authorization a confidential one. The app is the one `app_id` names, with
+    the "Slack Model Context Protocol (MCP) Server" feature switched on under
+    Agents in its settings.
+    """
+
+    client_id: str = Field(
+        description="The app's client id, from Basic Information → App Credentials."
+    )
+    client_secret: SecretStr = Field(
+        description="The app's client secret, from the same page. Prefer the "
+        "environment over YAML."
+    )
+    callback_base_uri: AnyHttpUrl = Field(
+        default=AnyHttpUrl("http://localhost:8000"),
+        description="Where the authorizing BROWSER reaches this deployment — not "
+        "where the internet does, since Slack only redirects the user agent and "
+        "never connects here. `<this>/oauth/<channel key>/callback` is the redirect "
+        "URL the app must register under OAuth & Permissions, character for "
+        "character.",
+    )
+    scopes: list[SlackUserScope] = Field(
+        default_factory=lambda: list(SLACK_MCP_SCOPES),
+        description="The user-token scopes each person is asked for when they "
+        "connect; the app lists the same under User Token Scopes. Fixed at "
+        "authorization: widening this later means every connected user reconnects.",
+    )
+
+
 class SlackChannelConfig(ChannelConfig):
     type: Literal["slack"] = "slack"
     app_id: str
     bot_token: SecretStr
     app_token: SecretStr
     stream: SlackStreamConfig = Field(default_factory=SlackStreamConfig)
+    oauth: SlackOAuthClientConfig | None = Field(
+        default=None,
+        description="The app as an OAuth client, which its own MCP tools need: "
+        "they act as the person who authorized them, so every user connects once. "
+        "Required when `mcp` is on.",
+    )
+
+    @model_validator(mode="after")
+    def validate_mcp_has_a_client(self) -> Self:
+        if self.mcp and self.oauth is None:
+            raise ValueError(
+                "a Slack channel with `mcp: true` needs an `oauth` block: its MCP "
+                "tools act as the person who authorized them, and the app's client "
+                "id and secret are what that authorization takes"
+            )
+        return self
 
 
 class LarkChannelConfig(ChannelConfig):
