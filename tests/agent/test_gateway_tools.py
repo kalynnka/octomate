@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
 from octomate.capabilities.history import HISTORY_TOOLS, HistoryCapability
 from octomate.config.users import UserConfig
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import GATEWAY_SPELLS, TELEPORT_RECORDED
@@ -58,12 +58,12 @@ SUMMON_ARGUMENTS = {
 }
 
 
-def a_turn() -> tuple[FastMCP, GatewaySession, FakeChannelTentacle, FakeThreadManager]:
+def a_turn() -> tuple[FastMCP, OctomateSession, FakeChannelTentacle, FakeThreadManager]:
     """The gateway as a driven runtime mounts it for one turn on a group main: every
     call against one fixed session, delivering through the fakes handed back."""
     channel = FakeChannelTentacle()
     threads = FakeThreadManager()
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         channels={"im": channel},
@@ -83,7 +83,7 @@ async def a_native_call(
     *, linked: bool = True
 ) -> tuple[
     FastMCP,
-    GatewaySession,
+    OctomateSession,
     FakeChannelTentacle,
     FakeThreadManager,
     list[GatewayHandoffSignal],
@@ -108,7 +108,7 @@ async def a_native_call(
         }
     )
     await users.reconcile()
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id=CLAUDE_NATIVE_ID,
         channels={"im": channel},
@@ -174,7 +174,7 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
 
 
 def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
-    session = GatewaySession(channel_routes={}, current_agent_id="inkling")
+    session = OctomateSession(channel_routes={}, current_agent_id="inkling")
     inkling = GatewayCapability(session=session).get_instructions()
     assert inkling.startswith(gateway_instructions(lambda name: name))
     # Inkling has no skill loader, so its handoff guidance rides here.
@@ -497,7 +497,7 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
     await threads.record_inbound(said("b1", "bob", "bob", "a bug of my own"))
     alice = await threads.users.profile("im", "alice")
     assert alice is not None
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={"im": []},
         current_agent_id="claude",
         channels={"im": FakeChannelTentacle()},
@@ -564,7 +564,7 @@ async def test_a_native_session_reads_its_users_history(
             segments=[TextSegment(data={"text": "remember the auth bug"})],
         )
     )
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={"im": []},
         current_agent_id=CLAUDE_NATIVE_ID,
         channels={"im": FakeChannelTentacle()},

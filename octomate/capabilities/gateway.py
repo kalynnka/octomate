@@ -22,7 +22,7 @@ opaque on its own, so the instruction opens with plain words for what they actua
   where the channel registry and the run's own address already are.
 
 The policy itself — what each spell may name, and the decision it records — lives on
-`octomate.managers.gateway.GatewaySession`; this capability is Inkling's translation
+`octomate.managers.gateway.OctomateSession`; this capability is Inkling's translation
 of it into pydantic-ai: refusals become `ModelRetry`, a teleport becomes a deferral,
 and a send rides the run event stream. The accomplice spells stay wholly here — they
 spawn pydantic-ai runs, which no other runtime's gateway offers.
@@ -50,7 +50,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from octomate.capabilities.harness.events import MessageSentEvent
-from octomate.managers.gateway import GatewayRefusal, GatewaySession
+from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
@@ -242,7 +242,7 @@ refine or extend that work instead of commissioning a new accomplice.
 @dataclass
 class GatewayCapability(AbstractCapability[None]):
     # The turn's policy and decision slot, shared with the graph that acts on it.
-    session: GatewaySession
+    session: OctomateSession
     # What running an accomplice takes, beyond the session's own deps. None on a
     # gateway built only to route, which then does not offer the accomplice spells.
     conversations: ConversationManager | None = None

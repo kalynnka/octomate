@@ -35,7 +35,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import Claim, ClaudeCodeConfig
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.tentacles.claude import ClaudeCodeTentacle
@@ -562,7 +562,7 @@ async def test_a_gateway_capability_mounts_the_in_process_server(
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
-    session = GatewaySession(channel_routes={}, current_agent_id="claude")
+    session = OctomateSession(channel_routes={}, current_agent_id="claude")
 
     async with tentacle.run_stream_events(
         "fix it",
@@ -615,7 +615,7 @@ class BindingClaudeClient(FakeClaudeClient):
     the decision the way the in-process tool does — and whose stream then waits to
     be interrupted, as the real CLI does."""
 
-    session: ClassVar[GatewaySession | None] = None
+    session: ClassVar[OctomateSession | None] = None
     instances: ClassVar[list[BindingClaudeClient]] = []
 
     def __init__(self, options: object = None, transport: object = None) -> None:
@@ -668,7 +668,7 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
     BindingClaudeClient.instances = []
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
-    session = GatewaySession(channel_routes={}, current_agent_id="claude")
+    session = OctomateSession(channel_routes={}, current_agent_id="claude")
     BindingClaudeClient.session = session
     suspender = RecordingSuspender()
 

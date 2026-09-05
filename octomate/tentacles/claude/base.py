@@ -660,7 +660,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # own CLAUDE.md and .claude/settings.json — the useful half of "work on this
         # project". Setting it to ["project"] would be the same behavior spelled
         # loudly; setting it to [] would silently drop a repo's instructions.
-        gateway_session = next(
+        octomate_session = next(
             (
                 capability.session
                 for capability in capabilities or ()
@@ -674,15 +674,15 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # nothing goes into `allowed_tools`.
         mcp_servers: dict[str, McpServerConfig] = {}
         served = list(self.octomate.mcps.values())
-        if gateway_session is not None:
+        if octomate_session is not None:
             mcp_servers[OCTOMATE_SERVER_NAME] = await octomate_mcp_server(
-                gateway_session, self.octomate.thread_manager, served
+                octomate_session, self.octomate.thread_manager, served
             )
         appended = "\n\n".join(
             part
             for part in (
                 instructions if isinstance(instructions, str) else None,
-                octomate_instructions(served) if gateway_session is not None else None,
+                octomate_instructions(served) if octomate_session is not None else None,
             )
             if part
         )
@@ -794,8 +794,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                         yield event
                     if (
                         not interrupted
-                        and gateway_session is not None
-                        and isinstance(gateway_session.decision, TeleportDecision)
+                        and octomate_session is not None
+                        and isinstance(octomate_session.decision, TeleportDecision)
                     ):
                         # Moving mid-run: the move is the graph's to perform, and
                         # this process is still where it was, so the turn ends now
@@ -842,7 +842,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     source_thread,
                     source_message_ids[-1],
                 )
-            moving = gateway_session.decision if gateway_session is not None else None
+            moving = octomate_session.decision if octomate_session is not None else None
             if isinstance(moving, TeleportDecision):
                 if deferred_suspender is None:
                     raise RuntimeError(

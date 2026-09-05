@@ -21,7 +21,7 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.config.users import UserConfig
 from octomate.database import async_session
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import (
     OAuthConnector,
     OAuthManager,
@@ -686,7 +686,7 @@ def provider(manager: OAuthManager, connector_id: str) -> Provider:
 
 def a_session(
     profile: UserProfile | None, channel: FakeChannelTentacle | None = None
-) -> GatewaySession:
+) -> OctomateSession:
     """A turn by `profile`, on `channel`'s private surface when there is one."""
     address = (
         ChannelAddress(
@@ -698,7 +698,7 @@ def a_session(
         if channel is not None and profile is not None
         else None
     )
-    return GatewaySession(
+    return OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         channels={"im": channel} if channel is not None else {},

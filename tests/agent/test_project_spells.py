@@ -30,7 +30,7 @@ from octomate.config.mirrors import MirrorsConfig
 from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers import ThreadManager, UserManager
-from octomate.managers.gateway import GatewayRefusal, GatewaySession
+from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.mcp.server import octomate_mcp
@@ -55,7 +55,7 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 
 @dataclass
 class Harness:
-    session: GatewaySession
+    session: OctomateSession
     workspaces: WorkspaceManager
     threads: ThreadManager
     thread: Thread
@@ -97,7 +97,7 @@ async def a_harness(
     users, profile = await a_registered_profile()
     threads = ThreadManager(users=users)
     thread = await threads.ensure(key)
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         users=users,
@@ -275,7 +275,7 @@ async def test_a_native_session_may_list_but_neither_move_nor_dispel(
 
 async def test_a_gateway_built_without_the_managers_is_a_wiring_bug() -> None:
     users, profile = await a_registered_profile()
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={}, current_agent_id="inkling", users=users, user_profile=profile
     )
 

@@ -40,7 +40,7 @@ from octomate import Octomate
 from octomate.config import AgentModelConfig, ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.managers.deferred import DeferredActionManager
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
@@ -1110,7 +1110,7 @@ def a_kicker(octomate: Octomate, secret: str = "lu-token") -> UserProfile:
     return UserProfile(channel_tentacle_id="im", channel_user_id="alice", user_id=lu.id)
 
 
-async def test_a_registered_gateway_session_wires_the_launch_config(
+async def test_a_registered_octomate_session_wires_the_launch_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
@@ -1122,7 +1122,7 @@ async def test_a_registered_gateway_session_wires_the_launch_config(
     )
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
     octomate.gateway.register(
-        GatewaySession(
+        OctomateSession(
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
@@ -1158,7 +1158,7 @@ async def test_a_registered_gateway_session_wires_the_launch_config(
     )
 
 
-async def test_a_turn_without_a_gateway_session_launches_clean(
+async def test_a_turn_without_a_octomate_session_launches_clean(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Clean means the server is turned off, not merely left unmentioned: the
@@ -1194,7 +1194,7 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
     )
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
     octomate.gateway.register(
-        GatewaySession(
+        OctomateSession(
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
@@ -1242,7 +1242,7 @@ async def test_a_gateway_wiring_flip_evicts_the_pooled_client(
         assert (FakeCodex.builds, FakeCodex.closed) == (1, 0)
 
         conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
-        session = GatewaySession(
+        session = OctomateSession(
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
@@ -1267,7 +1267,7 @@ async def test_a_registered_gateway_without_a_served_endpoint_refuses(
     octomate = Octomate(conversations=conversations)
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
     octomate.gateway.register(
-        GatewaySession(
+        OctomateSession(
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
@@ -1290,7 +1290,7 @@ class BindingFakeTurn(FakeTurn):
     notification — the session records the decision the way the served tool does
     — and then runs out, as an interrupted app-server turn does."""
 
-    session: ClassVar[GatewaySession | None] = None
+    session: ClassVar[OctomateSession | None] = None
 
     async def stream(self) -> AsyncIterator[Notification]:
         first, *rest = FakeCodex.script
@@ -1333,7 +1333,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         config=OctomateConfig(port=8123),
     )
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={},
         current_agent_id="codex",
         conversation_id=conversation.id,

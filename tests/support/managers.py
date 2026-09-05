@@ -25,7 +25,7 @@ from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
@@ -126,12 +126,12 @@ async def a_thread(chat_id: str = "chat") -> uuid.UUID:
 
 
 def fixed_session(
-    session: GatewaySession,
-) -> Callable[[], Awaitable[GatewaySession]]:
+    session: OctomateSession,
+) -> Callable[[], Awaitable[OctomateSession]]:
     """The resolver an MCP server mounted in-process for one turn closes over:
     every call of it is this session's."""
 
-    async def resolve() -> GatewaySession:
+    async def resolve() -> OctomateSession:
         return session
 
     return resolve

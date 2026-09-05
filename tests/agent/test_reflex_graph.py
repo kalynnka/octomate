@@ -618,7 +618,7 @@ async def test_a_turn_with_no_thread_saves_nothing() -> None:
     assert host.saved == []
 
 
-async def test_react_keys_the_gateway_session_by_the_turns_conversation() -> None:
+async def test_react_keys_the_octomate_session_by_the_turns_conversation() -> None:
     """React ensures the same (thread, agent) conversation the run resolves, so an
     external runtime's tool call finds this turn's session by the conversation id
     it already knows — and nothing stays registered once the turn ends."""

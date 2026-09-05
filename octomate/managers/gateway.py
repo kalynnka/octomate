@@ -1,6 +1,6 @@
 """Gateway policy: where a conversation can go, decided the same way for every agent.
 
-`GatewaySession` is one turn's gateway — the route and destination resolution, the
+`OctomateSession` is one turn's gateway — the route and destination resolution, the
 validation of what a spell names, and the typed decision it records for the reflex
 graph to act on after the turn. It speaks no pydantic-ai: the Inkling capability
 translates its refusals into `ModelRetry` and its teleport into a deferral, and any
@@ -82,7 +82,7 @@ class GatewayRefusal(Exception):
 
 
 @dataclass
-class GatewaySession:
+class OctomateSession:
     """One turn's gateway: the policy the spells share, and the decision they record.
 
     Built per turn by whoever drives one — the react node for a driven agent — and
@@ -751,7 +751,7 @@ class GatewaySession:
 
 
 class GatewayManager:
-    """The live gateway sessions, one per driven turn, keyed by conversation id.
+    """The live Octomate sessions, one per driven turn, keyed by conversation id.
 
     In-process on purpose: a session is only meaningful while its turn is in
     flight, so a restart rightly forgets them all. An external runtime's tool call
@@ -759,9 +759,9 @@ class GatewayManager:
     driving it."""
 
     def __init__(self) -> None:
-        self.sessions: dict[uuid.UUID, GatewaySession] = {}
+        self.sessions: dict[uuid.UUID, OctomateSession] = {}
 
-    def register(self, session: GatewaySession) -> None:
+    def register(self, session: OctomateSession) -> None:
         """Hold the conversation for `session`, first arrival only.
 
         Nothing else serialises turns of one conversation, so two can overlap; an
@@ -770,7 +770,7 @@ class GatewayManager:
         first's. So the second is refused outright rather than queued or ignored.
         """
         if session.conversation_id is None:
-            raise ValueError("a registered gateway session needs its conversation id")
+            raise ValueError("a registered Octomate session needs its conversation id")
         holder = self.sessions.get(session.conversation_id)
         if holder is not None and holder is not session:
             raise RuntimeError(
@@ -779,7 +779,7 @@ class GatewayManager:
             )
         self.sessions[session.conversation_id] = session
 
-    def unregister(self, session: GatewaySession) -> None:
+    def unregister(self, session: OctomateSession) -> None:
         # Only its own entry — a session that was never registered (no conversation
         # id, or refused) removes nothing.
         if (
@@ -788,7 +788,7 @@ class GatewayManager:
         ):
             del self.sessions[session.conversation_id]
 
-    def get(self, conversation_id: uuid.UUID) -> GatewaySession | None:
+    def get(self, conversation_id: uuid.UUID) -> OctomateSession | None:
         return self.sessions.get(conversation_id)
 
     def available_routes(
@@ -818,7 +818,7 @@ class GatewayManager:
         }
 
     @contextmanager
-    def driving(self, session: GatewaySession | None) -> Generator[None]:
+    def driving(self, session: OctomateSession | None) -> Generator[None]:
         """The registration span of one driven turn: external tool calls reach
         `session` only while the run that mounted it is in flight, and a second
         turn of the same conversation is refused at the door. Tolerates a gateway

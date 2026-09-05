@@ -28,7 +28,7 @@ from mcp.shared._httpx_utils import McpHttpClientFactory
 
 from octomate.capabilities.gateway import gateway_instructions
 from octomate.capabilities.history import history_instructions
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import mount_gateway
@@ -76,7 +76,7 @@ def octomate_instructions(tentacles: Sequence[McpTentacle]) -> str:
 
 
 def tentacles_mcp(
-    resolve_session: Callable[[], Awaitable[GatewaySession]],
+    resolve_session: Callable[[], Awaitable[OctomateSession]],
     tentacles: Sequence[McpTentacle],
     *,
     httpx_client_factory: McpHttpClientFactory | None = None,
@@ -105,7 +105,7 @@ def tentacles_mcp(
 
 
 def octomate_mcp(
-    resolve_session: Callable[[], Awaitable[GatewaySession]],
+    resolve_session: Callable[[], Awaitable[OctomateSession]],
     thread_manager: ThreadManager,
     kick: Callable[[GatewayHandoffSignal], None] | None = None,
     *,

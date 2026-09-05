@@ -42,7 +42,7 @@ from octomate.config.mcp import (
     LinearMcpConfig,
     McpConfigVariant,
 )
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.oauth.base import McpConnectionAuth
 from octomate.tentacles.base import Tentacle
@@ -102,13 +102,13 @@ class McpTentacle(Tentacle, ABC):
         return True
 
     @abstractmethod
-    async def auth(self, session: GatewaySession) -> httpx.Auth:
+    async def auth(self, session: OctomateSession) -> httpx.Auth:
         """The credential a call from `session` speaks to the upstream with — or a
         `ToolError` saying why the session has none."""
 
     def provider(
         self,
-        resolve_session: Callable[[], Awaitable[GatewaySession]],
+        resolve_session: Callable[[], Awaitable[OctomateSession]],
         *,
         httpx_client_factory: McpHttpClientFactory | None = None,
     ) -> Provider:
@@ -140,7 +140,7 @@ class OAuthMcpTentacle(McpTentacle):
     they linked under this tentacle's id — the connector the concrete tentacle
     registers there. The server's `oauth` family is how the link happens."""
 
-    async def auth(self, session: GatewaySession) -> httpx.Auth:
+    async def auth(self, session: OctomateSession) -> httpx.Auth:
         profile = session.user_profile
         if profile is None:
             raise ToolError(
@@ -175,7 +175,7 @@ class BareMcpTentacle(McpTentacle):
         self.prefix = config.prefix or id
         self.token = config.token
 
-    async def auth(self, session: GatewaySession) -> httpx.Auth:
+    async def auth(self, session: OctomateSession) -> httpx.Auth:
         return McpConnectionAuth(self.token, self.unauthorized)
 
     async def unauthorized(self) -> None:

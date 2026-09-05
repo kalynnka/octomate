@@ -729,9 +729,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
 
         capabilities = list(capabilities or [])
         # The MCP tentacles the host holds act as the person the turn is for, which
-        # is what the gateway session carries; a run without one has nobody for
+        # is what the Octomate session carries; a run without one has nobody for
         # them to act as.
-        gateway_session = next(
+        octomate_session = next(
             (
                 capability.session
                 for capability in capabilities
@@ -739,9 +739,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             ),
             None,
         )
-        if gateway_session is not None and self.octomate.mcps:
+        if octomate_session is not None and self.octomate.mcps:
             capabilities.append(
-                tentacles_capability(gateway_session, list(self.octomate.mcps.values()))
+                tentacles_capability(
+                    octomate_session, list(self.octomate.mcps.values())
+                )
             )
         # The react graph carries only the thread/agent identity; each node fetches
         # the live conversation (and its history) from the ConversationManager, the

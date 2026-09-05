@@ -32,7 +32,7 @@ from octomate.config import AgentModelConfig, SlackChannelConfig, SlackStreamCon
 from octomate.config.base import OctomateConfig
 from octomate.config.channels import SlackOAuthClientConfig
 from octomate.config.users import UserConfig
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import CONVERSATION_HEADER
@@ -139,10 +139,10 @@ def a_workspace(
 
 async def a_slack_turn(
     octomate: Octomate, channel: SlackTentacle, address: ChannelAddress | None
-) -> GatewaySession:
+) -> OctomateSession:
     """A turn at the gateway kicked by `steve`, on `address` — a Slack thread,
     another channel, or nowhere at all."""
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={channel.id: []},
         current_agent_id="codex",
         channels={channel.id: channel, "im": FakeChannelTentacle()},
@@ -166,7 +166,7 @@ def a_slack_thread() -> ChannelAddress:
     )
 
 
-def naming(session: GatewaySession) -> dict[str, str]:
+def naming(session: OctomateSession) -> dict[str, str]:
     return {**BEARER, CONVERSATION_HEADER: str(session.conversation_id)}
 
 
@@ -246,7 +246,9 @@ def into(transport: httpx.AsyncBaseTransport) -> McpHttpClientFactory:
 
 @asynccontextmanager
 async def in_memory(
-    channel: SlackTentacle, session: GatewaySession, transport: httpx.AsyncBaseTransport
+    channel: SlackTentacle,
+    session: OctomateSession,
+    transport: httpx.AsyncBaseTransport,
 ) -> AsyncIterator[Client]:
     """The server mounted for one fixed turn on `channel`, Slack's upstream being
     `transport`."""

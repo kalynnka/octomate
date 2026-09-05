@@ -43,7 +43,7 @@ from octomate.capabilities.harness.react import (
     RunAgent,
 )
 from octomate.capabilities.todos import TodoCapability
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.schemas.triage import TELEPORT_DEFER_KIND
@@ -74,7 +74,7 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
             AskCapability(),
             TodoCapability(),
             GatewayCapability(
-                session=GatewaySession(channel_routes={}, current_agent_id="inkling")
+                session=OctomateSession(channel_routes={}, current_agent_id="inkling")
             ),
         ],
         system_prompt=SYSTEM_PROMPT,
@@ -356,7 +356,7 @@ async def test_a_teleport_reaches_the_suspender_under_a_bypassing_posture() -> N
         deferred_suspender=suspender,
         capabilities=[
             GatewayCapability(
-                session=GatewaySession(channel_routes={}, current_agent_id="inkling")
+                session=OctomateSession(channel_routes={}, current_agent_id="inkling")
             )
         ],
     )
@@ -395,7 +395,7 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
         capabilities=[
             AskCapability(),
             GatewayCapability(
-                session=GatewaySession(channel_routes={}, current_agent_id="inkling")
+                session=OctomateSession(channel_routes={}, current_agent_id="inkling")
             ),
         ],
         system_prompt=SYSTEM_PROMPT,

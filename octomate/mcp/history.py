@@ -15,7 +15,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from octomate.capabilities.history import HistoryCapability
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import capability_contract
 from octomate.schemas.thread import ChannelActorKind, ThreadMessage
@@ -39,13 +39,13 @@ HISTORY_TOOL_NAMES: dict[str, str] = {
 
 
 def mount_history(
-    mcp: FastMCP, gateway_session: GatewaySession, thread_manager: ThreadManager
+    mcp: FastMCP, octomate_session: OctomateSession, thread_manager: ThreadManager
 ) -> None:
     """Register the history tools on `mcp`, every call reading as the person the
-    session `gateway_session` resolves to speaks for — a driven turn's user, or the
+    session `octomate_session` resolves to speaks for — a driven turn's user, or the
     registered person a native session's bearer named."""
 
-    def reader(session: GatewaySession) -> UserProfile:
+    def reader(session: OctomateSession) -> UserProfile:
         if session.user_profile is None:
             raise ToolError(
                 "This session speaks for nobody, and history is a person's: there "
@@ -53,7 +53,7 @@ def mount_history(
             )
         return session.user_profile
 
-    async def anchor(session: GatewaySession, handle: str) -> ThreadMessage:
+    async def anchor(session: OctomateSession, handle: str) -> ThreadMessage:
         try:
             return await thread_manager.chat_message(reader(session), handle)
         except ValueError as refusal:
@@ -75,7 +75,7 @@ def mount_history(
         query: str,
         actor_kind: ChannelActorKind | None = None,
         limit: int = 10,
-        session: GatewaySession = gateway_session,
+        session: OctomateSession = octomate_session,
     ) -> str:
         rows = await thread_manager.search_chat_messages(
             reader(session), query, actor_kind=actor_kind, limit=page(limit)
@@ -95,7 +95,7 @@ def mount_history(
         description=capability_contract(HistoryCapability.read_thread_history_before),
     )
     async def read_thread_history_before(
-        message_id: str, limit: int = 10, session: GatewaySession = gateway_session
+        message_id: str, limit: int = 10, session: OctomateSession = octomate_session
     ) -> str:
         found = await anchor(session, message_id)
         rows = await thread_manager.chat_messages_before(
@@ -116,7 +116,7 @@ def mount_history(
         description=capability_contract(HistoryCapability.read_thread_history_after),
     )
     async def read_thread_history_after(
-        message_id: str, limit: int = 10, session: GatewaySession = gateway_session
+        message_id: str, limit: int = 10, session: OctomateSession = octomate_session
     ) -> str:
         found = await anchor(session, message_id)
         rows = await thread_manager.chat_messages_after(

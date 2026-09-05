@@ -3,7 +3,7 @@ server lists a turn, mounted in process for one run.
 
 Inkling runs in this process, so nothing goes over the wire — not even in
 memory: the tentacles' server is called as the object it is, no client and no
-transport between them. The run's gateway session is closed over, every
+transport between them. The run's Octomate session is closed over, every
 tentacle lists and calls as the person that session is for, and the linking
 pair is there beside them. The spells and the history Inkling has as
 capabilities of its own, so what it mounts here is the tentacles' server
@@ -28,7 +28,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_core import SchemaValidator, core_schema
 
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.mcp.server import tentacles_mcp
 from octomate.tentacles.mcp import McpTentacle
 
@@ -94,12 +94,12 @@ class TentaclesToolset(AbstractToolset[None]):
 
 
 def tentacles_capability(
-    session: GatewaySession, tentacles: Sequence[McpTentacle]
+    session: OctomateSession, tentacles: Sequence[McpTentacle]
 ) -> Toolset[None]:
     """The capability a run mounts: the tentacles' server built over `session`,
     deferred behind a catalog line naming what it holds."""
 
-    async def fixed() -> GatewaySession:
+    async def fixed() -> OctomateSession:
         return session
 
     server = tentacles_mcp(fixed, tentacles)

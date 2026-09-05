@@ -27,7 +27,7 @@ from octomate.capabilities.history import HISTORY_TOOLS
 from octomate.config.base import OctomateConfig
 from octomate.config.channels import AgentModelConfig, ChannelConfig
 from octomate.config.users import UserConfig
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
@@ -118,10 +118,10 @@ def a_driven_deployment() -> Octomate:
     )
 
 
-async def a_driven_turn(octomate: Octomate) -> GatewaySession:
+async def a_driven_turn(octomate: Octomate) -> OctomateSession:
     """A turn at the gateway, as React registers one: the session a served call
     naming its conversation runs against, kicked by `lu`'s reconciled account."""
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={"im": []},
         current_agent_id="codex",
         channels={"im": FakeChannelTentacle()},

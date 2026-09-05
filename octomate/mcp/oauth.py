@@ -25,7 +25,7 @@ from octomate.capabilities.harness.events import (
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import NoPendingAuthorization
 from octomate.schemas.oauth import (
     AuthorizationLink,
@@ -79,11 +79,11 @@ def oauth_instructions(tentacles: Sequence[OAuthMcpTentacle]) -> str:
 
 def mount_oauth(
     mcp: FastMCP,
-    gateway_session: GatewaySession,
+    octomate_session: OctomateSession,
     tentacles: Sequence[OAuthMcpTentacle],
 ) -> None:
     """Register the link tools on `mcp` for `tentacles`, the ones the server
-    links, every call resolved through `gateway_session` to the turn it belongs
+    links, every call resolved through `octomate_session` to the turn it belongs
     to."""
     mapping = {tentacle.id: tentacle for tentacle in tentacles}
     ids = ", ".join(f"`{id}`" for id in mapping)
@@ -97,7 +97,7 @@ def mount_oauth(
             )
         return tentacle
 
-    def person(session: GatewaySession) -> UserProfile:
+    def person(session: OctomateSession) -> UserProfile:
         if session.user_profile is None:
             raise ToolError(
                 "A link authorizes the person who drove this turn, and nobody "
@@ -115,7 +115,7 @@ def mount_oauth(
         ),
     )
     async def connect(
-        provider: ProviderId, session: GatewaySession = gateway_session
+        provider: ProviderId, session: OctomateSession = octomate_session
     ) -> str:
         tentacle = named(provider)
         profile = person(session)
@@ -164,7 +164,7 @@ def mount_oauth(
         ),
     )
     async def confirm(
-        provider: ProviderId, session: GatewaySession = gateway_session
+        provider: ProviderId, session: OctomateSession = octomate_session
     ) -> str:
         tentacle = named(provider)
         profile = person(session)

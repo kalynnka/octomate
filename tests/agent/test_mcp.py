@@ -37,7 +37,7 @@ from octomate.capabilities.mcp import TentaclesToolset, tentacles_capability
 from octomate.config import BareMcpConfig, GitHubMcpConfig, LinearMcpConfig
 from octomate.config.users import UserConfig
 from octomate.database import async_session
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
@@ -139,10 +139,10 @@ def an_upstream(tool: str) -> tuple[FastMCP, list[str]]:
     return upstream, seen
 
 
-def a_turn(profile: UserProfile | None = None) -> GatewaySession:
+def a_turn(profile: UserProfile | None = None) -> OctomateSession:
     """A turn by `profile`, or by nobody registered — the session a proxied call
     resolves to."""
-    return GatewaySession(
+    return OctomateSession(
         channel_routes={}, current_agent_id="inkling", user_profile=profile
     )
 
@@ -160,7 +160,7 @@ async def upstream_of(
 @asynccontextmanager
 async def proxied(
     tentacle: BareMcpTentacle | OAuthMcpTentacle,
-    session: GatewaySession,
+    session: OctomateSession,
     upstream: FastMCP,
 ) -> AsyncIterator[Client]:
     """The tentacles' server for `session`, `tentacle`'s upstream being `upstream`."""
@@ -392,7 +392,7 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
     assert seen == ["Bearer github-user-token"]
 
 
-async def test_a_run_mounts_the_tentacles_for_its_gateway_session() -> None:
+async def test_a_run_mounts_the_tentacles_for_its_octomate_session() -> None:
     host, _tentacle, profile = await a_linked_host()
     offered: list[tuple[dict[str, bool], str | None]] = []
 

@@ -22,7 +22,7 @@ from octomate.capabilities.gateway import (
     ACCOMPLICE_INSTRUCTION,
     GatewayCapability,
 )
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
@@ -83,7 +83,7 @@ async def _gate(
     }
     conversations = conversations or FakeConversationManager()
     gate = GatewayCapability(
-        session=GatewaySession(
+        session=OctomateSession(
             channel_routes={"im": [CLAUDE_ROUTE]},
             current_agent_id="inkling",
             agents=agents,
@@ -301,7 +301,7 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
 
 async def test_a_gate_without_commission_deps_offers_no_commission() -> None:
     bare = GatewayCapability(
-        session=GatewaySession(
+        session=OctomateSession(
             channel_routes={"im": [CLAUDE_ROUTE]}, current_agent_id="inkling"
         )
     )

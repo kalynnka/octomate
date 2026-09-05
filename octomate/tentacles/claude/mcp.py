@@ -2,7 +2,7 @@
 
 A driven Claude run mounts the served server — the gateway's spells, the history
 tools, and every proxied provider's tools with the linking pair — in process,
-with the turn's `GatewaySession` closed over — identity by closure, so nothing on
+with the turn's `OctomateSession` closed over — identity by closure, so nothing on
 the wire names a session, and the stdio control protocol carries the calls over
 an SSH transport unchanged. The server is the same one `/octomate/mcp` serves;
 this module only walks its tools into the SDK's own tool shape and translates
@@ -21,7 +21,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool
 from pydantic import JsonValue, ValidationError
 
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_mcp
 from octomate.tentacles.mcp import McpTentacle
@@ -58,7 +58,7 @@ def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
 
 
 async def octomate_mcp_server(
-    session: GatewaySession,
+    session: OctomateSession,
     thread_manager: ThreadManager,
     tentacles: Sequence[McpTentacle] = (),
 ) -> McpSdkServerConfig:
@@ -67,7 +67,7 @@ async def octomate_mcp_server(
     the history tools read, and `tentacles` the MCP tentacles the turn may
     reach — listed now, as the person the turn is for."""
 
-    async def fixed() -> GatewaySession:
+    async def fixed() -> OctomateSession:
         return session
 
     server = octomate_mcp(fixed, thread_manager, tentacles=tentacles)

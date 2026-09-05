@@ -1,7 +1,7 @@
 """Driven Claude's MCP server: the same served server, walked into the SDK's tool
 shape.
 
-The handlers close over one turn's `GatewaySession`, so what these tests pin is
+The handlers close over one turn's `OctomateSession`, so what these tests pin is
 the translation — the spell runs against the session, the sentence comes back as
 the tool's text, and a refusal arrives as an `is_error` result carrying Inkling's
 wording verbatim, which is how Claude retries from it natively.
@@ -12,7 +12,7 @@ from __future__ import annotations
 from claude_agent_sdk import SdkMcpTool
 from pydantic import JsonValue
 
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.mcp.gateway import TELEPORT_RECORDED
 from octomate.mcp.server import octomate_instructions, octomate_mcp
 from octomate.schemas.conversation import ChannelAddress
@@ -42,8 +42,8 @@ SUMMON_ARGUMENTS = {
 }
 
 
-def a_turn() -> GatewaySession:
-    return GatewaySession(
+def a_turn() -> OctomateSession:
+    return OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         channels={"im": FakeChannelTentacle()},
@@ -58,7 +58,7 @@ def a_turn() -> GatewaySession:
 
 
 async def spells(
-    session: GatewaySession,
+    session: OctomateSession,
 ) -> dict[str, SdkMcpTool[dict[str, JsonValue]]]:
     server = octomate_mcp(fixed_session(session), FakeThreadManager())
     return {tool.name: sdk_tool(tool) for tool in await server.list_tools()}

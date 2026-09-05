@@ -574,7 +574,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 deployment = self.octomate.config
                 if deployment is None:
                     raise RuntimeError(
-                        "this turn's gateway session is registered, but the host "
+                        "this turn's Octomate session is registered, but the host "
                         "cannot name the served MCP endpoint to wire it to: "
                         "Octomate.config must be set"
                     )

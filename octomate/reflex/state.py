@@ -22,7 +22,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
-from octomate.managers.gateway import GatewayManager, GatewaySession
+from octomate.managers.gateway import GatewayManager, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.prompts import tagged
@@ -187,14 +187,14 @@ class ReflexDeps:
         session, so external callers find nothing live for it."""
         return frozenset(id for id, agent in self.agents.items() if agent.gateway)
 
-    async def gateway_session(
+    async def octomate_session(
         self,
         agent: AgentTentacle,
         *,
         user_profile: UserProfile | None,
         thread_id: uuid.UUID | None,
         conversation_address: ChannelAddress,
-    ) -> GatewaySession | None:
+    ) -> OctomateSession | None:
         """One turn's gateway for `agent`, or None for an agent whose flag is off.
 
         Built from the host's own registries, every channel's and not just this
@@ -206,7 +206,7 @@ class ReflexDeps:
         """
         if agent.id not in self.gateway_agents:
             return None
-        session = GatewaySession(
+        session = OctomateSession(
             channel_routes=self.available_routes,
             current_agent_id=agent.id,
             channels=self.channels,
