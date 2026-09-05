@@ -30,9 +30,7 @@ from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import (
     CODEX_NATIVE_ID,
-    Thread,
     ThreadKey,
-    ThreadMessageDirection,
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
@@ -585,7 +583,9 @@ class CodexTranscriptTailer:
         # than this replay's: each message carries the time of the line that produced
         # it, which is when the turn really happened.
         if request is not None and prompt:
-            inbound = self.existing_message(thread, run.id, "inbound")
+            inbound = await self.thread_manager.find_message(
+                thread.id, run.id, "inbound"
+            )
             if inbound is None:
                 inbound = await self.thread_manager.record_inbound(
                     MessageEvent(
@@ -616,7 +616,9 @@ class CodexTranscriptTailer:
                 ),
                 None,
             )
-            outbound = self.existing_message(thread, run.id, "outbound")
+            outbound = await self.thread_manager.find_message(
+                thread.id, run.id, "outbound"
+            )
             if outbound is None:
                 outbound = await self.thread_manager.record_outbound(
                     thread,
@@ -761,17 +763,3 @@ class CodexTranscriptTailer:
                     metadata=codex_metadata(),
                 )
             )
-
-    @staticmethod
-    def existing_message(
-        thread: Thread, turn_id: str, direction: ThreadMessageDirection
-    ):
-        return next(
-            (
-                message
-                for message in thread.messages
-                if message.platform_message_id == turn_id
-                and message.direction == direction
-            ),
-            None,
-        )

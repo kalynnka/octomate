@@ -84,7 +84,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             mode="main",
         )
         ctx.state.source_target = source_target
-        ctx.state.thread = await ctx.deps.thread_manager.ensure(address)
+        ctx.state.thread = await ctx.deps.thread_manager.enter(address)
         ctx.state.trigger_thread_message_id = self.signal.trigger_thread_message_id
         ctx.state.user_profile = self.signal.messages[-1].sender
 

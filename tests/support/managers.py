@@ -84,6 +84,36 @@ async def a_registry(*projects: Project) -> ProjectManager:
     return manager
 
 
+async def a_loaded_thread(
+    manager: ThreadManager, address_or_key: ChannelAddress | ThreadKey
+) -> Thread:
+    """The thread this key names, carrying its chat ledger.
+
+    `ensure` does not load one — a room's ledger has no ceiling — so a test that
+    asserts on the rows it wrote asks for them, through the reader that says it
+    wants the whole thing.
+    """
+    thread = await manager.ensure(address_or_key)
+    loaded = await manager.get(thread.id)
+    assert loaded is not None
+    return loaded
+
+
+async def the_sub_thread(chat_room: Thread) -> Thread:
+    """The one sub-thread a chat room's single kick opened.
+
+    A kick in a dm or a group chat answers in a thread of its own, so a test that
+    wants the conversation the run happened in asks here rather than at the chat
+    room, which holds only what everyone saw.
+    """
+    async with async_session() as session:
+        rows = await session.list(
+            Thread, expressions=[Thread["parent_thread_id"] == chat_room.id]
+        )
+    assert len(rows) == 1, f"expected one sub-thread of {chat_room.id}, got {len(rows)}"
+    return rows[0]
+
+
 async def a_thread(chat_id: str = "chat") -> uuid.UUID:
     """A persisted `threads` row to hang conversations off, idempotent per
     `chat_id`. A conversation's `thread_id` is a real foreign key, so a bare
@@ -228,6 +258,9 @@ class FakeUserManager(UserManager):
 class FakeThreadManager(ThreadManager):
     users: UserManager = field(default_factory=FakeUserManager)
     threads_by_key: dict[ThreadKey, Thread] = field(default_factory=dict)
+    # Kept apart from `threads_by_key`: a sub-thread shares its chat room's key,
+    # and nothing ever looks one up by address.
+    sub_threads: list[Thread] = field(default_factory=list)
     handoffs: list[Handoff] = field(default_factory=list)
     outbounds: list[ThreadMessage] = field(default_factory=list)
     assistant_reply_bindings: list[tuple[list[uuid.UUID], str]] = field(
@@ -262,11 +295,31 @@ class FakeThreadManager(ThreadManager):
             self.threads_by_key[key] = thread
         return thread
 
+    async def open_sub_thread(self, parent: Thread) -> Thread:
+        key = parent.key
+        thread = Thread(
+            id=uuid7(),
+            channel_tentacle_id=key.channel_tentacle_id,
+            chat_type=key.chat_type,
+            chat_id=key.chat_id,
+            channel_thread_id=key.channel_thread_id,
+            kind=key.kind,
+            parent_thread_id=parent.id,
+            project=Relation(None),
+        )
+        self.sub_threads.append(thread)
+        return thread
+
     async def get(
         self, thread_id: uuid.UUID, *, with_messages: bool = True
     ) -> Thread | None:
         return next(
-            (one for one in self.threads_by_key.values() if one.id == thread_id), None
+            (
+                one
+                for one in (*self.threads_by_key.values(), *self.sub_threads)
+                if one.id == thread_id
+            ),
+            None,
         )
 
     async def record_handoff(
@@ -396,6 +449,9 @@ class FakeDeferredBatch:
     target_address: ChannelAddress
     requests: DeferredToolRequests
     deferred_results: DeferredToolResults
+    # The conversation the suspended run was in — which names the thread it ran
+    # in, and so the sub-thread a chat room's kick opened.
+    conversation_id: uuid.UUID = field(default_factory=uuid.uuid4)
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     agent_tentacle_id: str = "inkling"
     run_name: str | None = "react"

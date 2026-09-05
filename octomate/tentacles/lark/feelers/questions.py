@@ -49,10 +49,10 @@ class LarkAskQuestionFeeler(QuestionFeeler):
     ) -> dict[UUID, IMMessageID | None]:
         if not actions:
             return {}
-        reply_to = (
+        channel_thread_id = (
             address.channel_thread_id
             if address.channel_thread_id and address.channel_thread_id.startswith("om_")
-            else None
+            else address.chat_id or address.user_id
         )
         message_id = await self.ink.send_message(
             address.chat_id or address.user_id,
@@ -63,8 +63,8 @@ class LarkAskQuestionFeeler(QuestionFeeler):
                     content=ask_question_card(actions),
                 )
             ],
-            reply_to,
-            reply_in_thread=reply_to is not None,
+            channel_thread_id=channel_thread_id,
+            reply_in_thread=channel_thread_id is not None,
         )
         return {action.id: message_id for action in actions}
 

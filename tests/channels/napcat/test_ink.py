@@ -39,8 +39,16 @@ async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
         segments=[{"type": "text", "data": {"text": "hello"}}]
     )
 
-    group_id = await ink.send_message("2002", "group", [message], reply_to="1001")
-    private_id = await ink.send_message("3003", "dm", [message])
+    group_id = await ink.send_message(
+        "2002",
+        "group",
+        [message],
+        reply_to="1001",
+        channel_thread_id="2002",
+    )
+    private_id = await ink.send_message(
+        "3003", "dm", [message], channel_thread_id="3003"
+    )
 
     assert group_id == "msg-1"
     assert private_id == "msg-1"

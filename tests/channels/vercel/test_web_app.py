@@ -27,6 +27,7 @@ from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.vercel import VercelTentacle, build_vercel_router
 from octomate.tentacles.vercel.base import ROUTE_SEP
 from tests.support.agents import build_non_stream_agent, build_scripted_agent
+from tests.support.managers import a_loaded_thread
 
 # The dev UI drives one configured reception agent through octomate.kick.
 RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
@@ -69,7 +70,9 @@ async def _post(
         id=chat_id,
         messages=[
             UIMessage(
-                id="m1",
+                # Its own id, as the AI SDK gives each message: the ledger keeps one
+                # row per delivery, so two prompts sharing an id would be one send.
+                id=f"m-{prompt}",
                 role="user",
                 parts=[TextUIPart(type="text", text=prompt)],
             )
@@ -176,7 +179,7 @@ async def test_handle_request_records_chat_ledger(
         user_id="dev",
         channel_thread_id="chat-1",
     )
-    thread = await octomate.thread_manager.ensure(address)
+    thread = await a_loaded_thread(octomate.thread_manager, address)
     messages = list(thread.messages)
     inbound = [message for message in messages if message.direction == "inbound"]
     outbound = [message for message in messages if message.direction == "outbound"]

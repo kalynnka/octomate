@@ -31,6 +31,7 @@ from uuid_utils import uuid7
 from octomate.config import ChannelConfig
 from octomate.config.channels import (
     ChannelConfigVariant,
+    DiscordChannelConfig,
     LarkChannelConfig,
     NapcatChannelConfig,
     SlackChannelConfig,
@@ -157,10 +158,18 @@ class Ink(ABC, Generic[MessageT]):
         chat_id: str,
         chat_type: str,
         messages: list[MessageT],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
-        """Send platform-native message payloads."""
+        """Send platform-native message payloads to a conversation destination.
+
+        `channel_thread_id` is the platform's external destination id: the thread
+        id on a thread surface, otherwise the chat id. `reply_to` references a
+        message within that destination. Platforms where thread and reply are the
+        same native field collapse them in their ink implementation.
+        """
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The chat id of this bot's 1:1 with `user_id`, opening it if needed.
@@ -304,15 +313,29 @@ class ChannelTentacle(
                 chat_type=event.chat_type,
                 shared=event.shared,
             )
+            thread = await self.octomate.thread_manager.ensure(address)
+            if event.message_id and await self.octomate.thread_manager.find_message(
+                thread.id, event.message_id, "inbound"
+            ):
+                # The platform sent this one before, so it is already answered or
+                # being answered now. Warn rather than debug: a channel doing this
+                # often is a channel whose acks are not landing.
+                logger.warning(
+                    "Channel %s: ignored a re-delivery of message %s in %s",
+                    self.id,
+                    event.message_id,
+                    address,
+                )
+                return
             thread_message = await self.octomate.thread_manager.record_inbound(event)
             if self.config.mention_only and event.shared:
                 # Only a surface others can read has to be addressed, and a thread an
                 # agent already owns counts as addressed — its next turn continues
                 # work that is already this agent's. A group main pins no owner, so
                 # there it stays the mention.
-                thread = await self.octomate.thread_manager.ensure(address)
                 addressed = (
                     event.is_at(self.self_profile.channel_user_id)
+                    or event.replies_to(self.self_profile.channel_user_id)
                     or thread.active_agent_tentacle_id is not None
                 )
                 if not addressed:
@@ -462,6 +485,10 @@ def build_channel(
             from octomate.tentacles.lark import LarkTentacle
 
             return LarkTentacle(id, octomate, config=config)
+        case DiscordChannelConfig():
+            from octomate.tentacles.discord import DiscordTentacle
+
+            return DiscordTentacle(id, octomate, config=config)
         case NapcatChannelConfig():
             from octomate.tentacles.napcat import NapcatTentacle
 

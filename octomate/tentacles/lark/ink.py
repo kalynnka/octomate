@@ -287,6 +287,8 @@ class LarkInk(Ink[LarkOutboundMessage]):
         chat_id: str,
         chat_type: str,
         messages: list[LarkOutboundMessage],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
@@ -296,6 +298,12 @@ class LarkInk(Ink[LarkOutboundMessage]):
         # `om_` replies by.
         receive_id_type = "open_id" if chat_id.startswith("ou_") else "chat_id"
         first_msg_id: IMMessageID | None = None
+        if (
+            not reply_to
+            and chat_type == "thread"
+            and channel_thread_id.startswith("om_")
+        ):
+            reply_to = channel_thread_id
         for msg in messages:
             try:
                 if reply_to:
@@ -324,6 +332,8 @@ class LarkInk(Ink[LarkOutboundMessage]):
         chat_id: str,
         chat_type: str,
         text: str,
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
@@ -338,7 +348,8 @@ class LarkInk(Ink[LarkOutboundMessage]):
                     ),
                 )
             ],
-            reply_to,
+            reply_to=reply_to,
+            channel_thread_id=channel_thread_id,
             reply_in_thread=reply_in_thread,
         )
 
@@ -373,6 +384,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
         chat_type: str,
         card: LarkStreamCard,
         *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
@@ -388,7 +400,8 @@ class LarkInk(Ink[LarkOutboundMessage]):
             chat_id,
             chat_type,
             [msg],
-            reply_to,
+            reply_to=reply_to,
+            channel_thread_id=channel_thread_id,
             reply_in_thread=reply_in_thread,
         )
 

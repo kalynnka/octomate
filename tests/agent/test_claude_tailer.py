@@ -31,6 +31,7 @@ from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer, TailState
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
+from tests.support.managers import a_loaded_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -386,7 +387,7 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger() -> None:
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
 
     # The hooks wrote the human ledger for both turns.
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     ledger = {(m.direction, m.platform_message_id) for m in thread.messages}
     assert {("inbound", "p1"), ("outbound", "p1")} <= ledger
     assert {("inbound", "p2"), ("outbound", "p2")} <= ledger
@@ -536,7 +537,7 @@ async def test_a_streamed_session_creates_the_human_ledger() -> None:
     # No hooks ever ran, so the commit creates the ledger from the transcript.
     await stream_in(tailer, TURN_ONE + TURN_TWO)
 
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     ledger = [(m.direction, m.platform_message_id) for m in thread.messages]
     assert ledger == [
         ("inbound", "p1"),
@@ -565,7 +566,7 @@ async def test_the_commit_reuses_live_ledger_rows() -> None:
 
     await stream_in(tailer, TURN_ONE + TURN_TWO)
 
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     inbound_p1 = [
         m
         for m in thread.messages
@@ -602,7 +603,7 @@ async def test_a_backfilled_row_is_dated_by_the_transcript_not_the_replay() -> N
 
     await stream_in(tailer, TURN_ONE)
 
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     dated = {message.direction: message.happened_at for message in thread.messages}
     assert dated  # the commit did write the ledger
 
@@ -629,7 +630,7 @@ async def test_commit_redates_the_hooks_ledger_to_the_transcript_clock() -> None
     await stream_in(tailer, TURN_ONE)
 
     (p1,) = await runs_of(octomate)
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     dated = {message.direction: message.happened_at for message in thread.messages}
     assert dated["inbound"] == datetime(2026, 7, 9, 10, 0, 1, tzinfo=UTC)
     assert dated["inbound"] == p1.started_at  # one clock: prompt row == run start
@@ -771,7 +772,7 @@ async def test_a_subagent_transcript_becomes_a_child_run() -> None:
     assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
 
     # The child conversation names its parent; the ledger never mentions the child.
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     parent = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
     )
@@ -944,7 +945,7 @@ async def test_an_event_carrying_agent_id_never_touches_the_parent_turn() -> Non
         SENDER,
     )
 
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
     assert thread.messages == []  # no inbound, no outbound: the ledger is the human's
     assert await runs_of(octomate) == []
     assert tailer.sessions == {}

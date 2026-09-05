@@ -20,8 +20,12 @@ async def test_lark_ink_selects_group_and_private_targets() -> None:
     ink = FakeLarkInk()
     message = LarkOutboundMessage(msg_type="interactive", content="{}")
 
-    group_id = await ink.send_message("oc_group", "group", [message])
-    private_id = await ink.send_message("ou_user", "dm", [message])
+    group_id = await ink.send_message(
+        "oc_group", "group", [message], channel_thread_id="oc_group"
+    )
+    private_id = await ink.send_message(
+        "ou_user", "dm", [message], channel_thread_id="ou_user"
+    )
 
     assert group_id == "created-1"
     assert private_id == "created-2"
@@ -37,7 +41,7 @@ async def test_lark_ink_keeps_the_open_id_target_of_a_p2p_topic() -> None:
     ink = FakeLarkInk()
     message = LarkOutboundMessage(msg_type="interactive", content="{}")
 
-    await ink.send_message("ou_user", "thread", [message])
+    await ink.send_message("ou_user", "thread", [message], channel_thread_id="ou_user")
 
     assert ink.created == [("ou_user", "open_id", "interactive", "{}")]
 
@@ -49,7 +53,13 @@ async def test_lark_ink_replies_to_first_message_unless_threaded() -> None:
         LarkOutboundMessage(msg_type="interactive", content="two"),
     ]
 
-    first_id = await ink.send_message("oc_group", "group", messages, "om_parent")
+    first_id = await ink.send_message(
+        "oc_group",
+        "group",
+        messages,
+        channel_thread_id="oc_group",
+        reply_to="om_parent",
+    )
 
     assert first_id == "reply-1"
     assert ink.replies == [("om_parent", "interactive", "one", False)]
@@ -67,7 +77,8 @@ async def test_lark_ink_replies_to_each_message_when_threaded() -> None:
         "oc_group",
         "group",
         messages,
-        "om_parent",
+        channel_thread_id="oc_group",
+        reply_to="om_parent",
         reply_in_thread=True,
     )
 

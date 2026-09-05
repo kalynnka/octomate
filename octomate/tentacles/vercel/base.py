@@ -32,6 +32,7 @@ from pydantic_ai.ui.vercel_ai.response_types import (
     ToolInputAvailableChunk,
     ToolOutputAvailableChunk,
 )
+from rich.style import Style
 
 from octomate.capabilities.harness.events import (
     StreamEvents,
@@ -126,6 +127,8 @@ class VercelInk(Ink[BaseChunk]):
         chat_id: str,
         chat_type: str,
         messages: list[BaseChunk],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
@@ -288,6 +291,7 @@ class VercelSubagentTimelineState(SubagentTimelineState):
 class VercelTentacle(ChannelTentacle[RequestData, BaseChunk]):
     """Channel that serves the pydantic-ai Vercel dev UI over `octomate.kick`."""
 
+    brand_color: ClassVar[Style | None] = Style(color="bright_white", bold=True)
     SDK_VERSION: ClassVar[Literal[6]] = 6
     # Routing only: the chromo always sets a thread_id, so a reply continues its
     # own chat without triage. There is no seam to open a sub-thread and no DM

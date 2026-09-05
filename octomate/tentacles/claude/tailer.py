@@ -23,10 +23,7 @@ from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import (
     CLAUDE_NATIVE_ID,
-    Thread,
     ThreadKey,
-    ThreadMessage,
-    ThreadMessageDirection,
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
@@ -835,7 +832,9 @@ class ClaudeTranscriptTailer:
         # than this replay's: `stamp` gave each message the time of the line that
         # produced it, which is when the turn really happened.
         if prompt_request is not None:
-            inbound = self.existing_message(thread, run.id, "inbound")
+            inbound = await self.thread_manager.find_message(
+                thread.id, run.id, "inbound"
+            )
             if inbound is None:
                 inbound = await self.thread_manager.record_inbound(
                     MessageEvent(
@@ -868,7 +867,9 @@ class ClaudeTranscriptTailer:
                 ),
                 None,
             )
-            outbound = self.existing_message(thread, run.id, "outbound")
+            outbound = await self.thread_manager.find_message(
+                thread.id, run.id, "outbound"
+            )
             if outbound is None:
                 outbound = await self.thread_manager.record_outbound(
                     thread,
@@ -883,19 +884,6 @@ class ClaudeTranscriptTailer:
             await self.thread_manager.bind_assistant_replies(
                 [outbound.id], run_id=run.id
             )
-
-    def existing_message(
-        self, thread: Thread, prompt_id: str, direction: ThreadMessageDirection
-    ) -> ThreadMessage | None:
-        return next(
-            (
-                message
-                for message in thread.messages
-                if message.platform_message_id == prompt_id
-                and message.direction == direction
-            ),
-            None,
-        )
 
     def emit(self, state: TailState, event: StreamEvents[str]) -> None:
         try:

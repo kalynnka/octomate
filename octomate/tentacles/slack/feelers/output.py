@@ -545,7 +545,7 @@ class SlackTimelineState(TimelineState):
                     self.channel,
                     self.chat_type,
                     [SlackOutboundMessage(text="[card]", blocks=blocks)],
-                    self.thread_ts,
+                    channel_thread_id=self.thread_ts,
                 )
             case _:
                 await self.answer_delta(str(segment))

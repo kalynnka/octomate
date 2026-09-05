@@ -16,8 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.harness.agent import Agent
-from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
+from octomate.config import (
+    AgentModelConfig,
+    ChannelConfig,
+    ChannelStreamConfig,
+)
+from octomate.config.channels import ChatRecapConfig
 from octomate.database import async_session
+from octomate.prompts import untagged
+from octomate.reflex.state import RECAP_HEADER
 from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
@@ -39,6 +46,7 @@ from tests.support.channels import (
     NativeMessage,
     RecordingInk,
 )
+from tests.support.managers import a_loaded_thread, the_sub_thread
 from tests.support.scenarios import mid_run_notice
 
 
@@ -79,7 +87,9 @@ def _event(
     return MessageEvent(
         tentacle_id=tentacle_id,
         message_id=message_id,
-        chat_type=chat_type,
+        # Promoted for the same reason `_key` promotes: both chromos read a message
+        # carrying a thread id back as a thread, whatever chat it arrived in.
+        chat_type="thread" if thread_id else chat_type,
         chat_id="team" if chat_type == "group" else "alice",
         user_id=user_id,
         channel_thread_id=thread_id,
@@ -106,7 +116,9 @@ async def _agent_rows(thread_id: uuid.UUID, text: str) -> list[ThreadMessage]:
 def _key(thread_id: str = "") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="im",
-        chat_type="dm",
+        # A thread id makes it a thread, which is how both chromos read one back:
+        # a surface carrying one ends, and only a chat that does not is a chat room.
+        chat_type="thread" if thread_id else "dm",
         chat_id="alice",
         user_id="alice",
         channel_thread_id=thread_id,
@@ -129,6 +141,8 @@ class FailingSendInk(RecordingInk):
         chat_id: str,
         chat_type: str,
         messages: list[NativeMessage],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None:
@@ -358,7 +372,8 @@ async def test_teleport_forks_history_into_a_sub_thread_and_resumes() -> None:
     assert channel.sub_threads[0][1] == "Let's move to a thread"
     thread_address = _key(thread_id="hint-thread")
     assert entry.turns[-1].address == thread_address
-    assert channel.sent[-1][3] == "hint-thread"
+    assert channel.sent[-1][3] is None
+    assert channel.sent[-1][5] == "hint-thread"
     assert channel.sent[-1][2][0]["text"] == "continued in the thread"
     # (fork's history copy is unit-tested in test_conversation_manager; the fake
     # agent short-circuits react, so it records no messages to fork here.)
@@ -477,7 +492,7 @@ async def test_streamed_reception_records_output_without_timeline_source() -> No
     await octomate.kick(UserMessageSignal([_event()]))
 
     target_address = channel.consumed[0][0]
-    thread = await octomate.thread_manager.ensure(target_address)
+    thread = await a_loaded_thread(octomate.thread_manager, target_address)
     outbounds = [m for m in thread.messages if m.direction == "outbound"]
     assert [m.message_text for m in outbounds] == ["final answer"]
 
@@ -525,6 +540,122 @@ async def test_kick_builds_prompt_from_pending_thread_messages() -> None:
     assert entry.turns[0].source_thread_message_ids == [m.id for m in stored]
 
 
+async def _kicked_twice(
+    recap: ChatRecapConfig | None = None,
+    *,
+    thread_id: str = "",
+) -> FakeAgent:
+    """Two kicks on one surface, with the first one's messages settled behind the
+    prompt cursor — which is the state a second kick actually arrives in."""
+    octomate = Octomate()
+    entry = FakeAgent(reception_output="handled", allow_reception_run=True)
+    config = _entry_config(stream=False)
+    if recap is not None:
+        config = config.model_copy(update={"recap": recap})
+    channel = FakeChannelTentacle(config=config)
+    _register_agents(octomate, entry)
+    octomate.connect(channel)
+
+    settled = _event(
+        message_id="m1", text="the auth bug is in login", thread_id=thread_id
+    )
+    first = await octomate.thread_manager.record_inbound(settled)
+    await octomate.kick(
+        UserMessageSignal([settled], trigger_thread_message_id=first.id)
+    )
+    thread = await octomate.thread_manager.ensure(_key(thread_id=thread_id))
+    await octomate.thread_manager.advance_prompt_cursor(thread, first.id)
+
+    asking = _event(message_id="m2", text="what did we decide", thread_id=thread_id)
+    second = await octomate.thread_manager.record_inbound(asking)
+    await octomate.kick(
+        UserMessageSignal([asking], trigger_thread_message_id=second.id)
+    )
+    return entry
+
+
+async def test_a_chat_room_kick_sees_the_chat_before_it() -> None:
+    """A kick in a dm runs in a thread of its own, so its model context starts
+    empty — without the chat in front of the prompt it answers a chat it cannot
+    see."""
+    entry = await _kicked_twice()
+
+    prompt = str(entry.turns[-1].prompt)
+    assert prompt.startswith("<chat_recap>")
+    assert RECAP_HEADER in prompt
+    assert "the auth bug is in login" in prompt
+    # What a person wrote is the body, outside the marking — and it is all that is
+    # left once a render takes the system's own additions back out.
+    assert untagged(prompt) == "anonymous (alice) #msg:m2:\nwhat did we decide"
+    # Context, not the ask: only what the turn must answer is bound as a source.
+    assert len(entry.turns[-1].source_thread_message_ids) == 1
+
+
+async def test_a_thread_kick_gets_no_recap() -> None:
+    """A thread's context is the conversation it already carries, and repeating it
+    in the prompt would send the same messages twice."""
+    entry = await _kicked_twice(thread_id="t1")
+
+    prompt = str(entry.turns[-1].prompt)
+    assert "<chat_recap>" not in prompt
+    assert "the auth bug is in login" not in prompt
+
+
+async def test_the_recap_is_cut_at_the_configured_ceiling() -> None:
+    """One pasted log would otherwise be the whole slice."""
+    entry = await _kicked_twice(ChatRecapConfig(messages=16, characters=11))
+
+    prompt = str(entry.turns[-1].prompt)
+    assert "the auth bug\u2026" not in prompt
+    assert "the auth bu\u2026" in prompt
+
+
+async def test_a_channel_can_turn_the_recap_off() -> None:
+    entry = await _kicked_twice(ChatRecapConfig(messages=0))
+
+    prompt = str(entry.turns[-1].prompt)
+    assert "<chat_recap>" not in prompt
+    assert "the auth bug is in login" not in prompt
+
+
+async def test_a_summon_into_a_sub_thread_leaves_a_row_in_the_room() -> None:
+    """The opener is a real message in the room — the new thread hangs off it — but
+    it went out through the ink, not the ledger. The room's next kick reads the
+    ledger, so without the row the work just stops mid-chat with nothing saying
+    where it went."""
+    octomate = Octomate()
+    entry = FakeAgent(
+        reception_summon=SummonDecision(
+            action="summon",
+            agent_id="claude",
+            model="opus",
+            destination=ThreadLanding(),
+            reason="needs code work",
+            hint="Working on it",
+            summon="Please debug this.",
+        ),
+        allow_reception_run=True,
+    )
+    claude = FakeAgent(
+        id="claude", reception_output="debugged", allow_reception_run=True
+    )
+    channel = FakeChannelTentacle(config=_summon_config(stream=False))
+    _register_agents(octomate, entry, claude)
+    octomate.connect(channel)
+
+    await octomate.kick(UserMessageSignal([_event(text="please debug")]))
+
+    room = await a_loaded_thread(octomate.thread_manager, _key())
+    [opener] = [
+        message for message in room.messages if message.message_text == "Working on it"
+    ]
+    assert opener.direction == "outbound"
+    assert opener.agent_tentacle_id == "claude"
+    # The opener's own id, so the ledger and the platform name one message: it is
+    # the message the sub-thread hangs off.
+    assert opener.platform_message_id == "hint-thread"
+
+
 def _inkling(octomate: Octomate, stream_text: str) -> InklingTentacle:
     async def stream(
         messages: list[ModelMessage],
@@ -560,8 +691,10 @@ async def test_reception_records_and_binds_outbound_thread_message() -> None:
     await octomate.kick(UserMessageSignal([_event(text="please answer")]))
 
     thread = await octomate.thread_manager.ensure(_key())
+    # The chat everyone saw is the chat room's; the run that produced it happened
+    # in the sub-thread the kick opened, and so did the model messages.
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id="inkling"
+        (await the_sub_thread(thread)).id, agent_tentacle_id="inkling"
     )
     model_message = (
         await octomate.conversations.search_messages(
@@ -595,7 +728,7 @@ async def test_reception_persists_before_channel_presentation() -> None:
 
     thread = await octomate.thread_manager.ensure(_key())
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id="inkling"
+        (await the_sub_thread(thread)).id, agent_tentacle_id="inkling"
     )
     model_message = (
         await octomate.conversations.search_messages(

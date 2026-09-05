@@ -131,7 +131,7 @@ class RecordingInk(Ink[NativeMessage]):
         default_factory=lambda: UserProfile(channel_user_id="bot", name="Bot")
     )
     user_profiles: dict[str, UserProfile] = field(default_factory=dict)
-    sent: list[tuple[str, str, list[NativeMessage], str | None, bool]] = field(
+    sent: list[tuple[str, str, list[NativeMessage], str | None, bool, str]] = field(
         default_factory=list
     )
     downloads: dict[str, DownloadedImage] = field(default_factory=dict)
@@ -175,10 +175,21 @@ class RecordingInk(Ink[NativeMessage]):
         chat_id: str,
         chat_type: str,
         messages: list[NativeMessage],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str | None:
-        self.sent.append((chat_id, chat_type, messages, reply_to, reply_in_thread))
+        self.sent.append(
+            (
+                chat_id,
+                chat_type,
+                messages,
+                reply_to,
+                reply_in_thread,
+                channel_thread_id,
+            )
+        )
         return f"sent-{len(self.sent)}"
 
 
@@ -257,7 +268,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     )
 
     recording_ink: RecordingInk
-    sent: list[tuple[str, str, list[NativeMessage], str | None, bool]]
+    sent: list[tuple[str, str, list[NativeMessage], str | None, bool, str]]
     consumed: list[tuple[ChannelAddress, IMMessageID | None]]
     sub_threads: list[tuple[ChannelAddress, str]]
     opened_dms: list[str]
@@ -310,7 +321,12 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.sub_threads.append((address, hint_text))
         return ChannelAddress(
             channel_tentacle_id=address.channel_tentacle_id,
-            chat_type=address.chat_type,
+            # A thread, as Slack's and Lark's own do: an address carrying a
+            # `channel_thread_id` names a surface that ends, and both chromos read
+            # one back as `chat_type="thread"`. Keeping the chat's type here would
+            # make the fake the only thing in the tree producing a dm with a thread
+            # id, which the thread key has no way to file.
+            chat_type="thread",
             chat_id=address.chat_id,
             user_id=address.user_id,
             channel_thread_id="hint-thread",

@@ -111,7 +111,9 @@ class Thread(Base, TransmuterProxiedMixin):
             "chat_type",
             "chat_id",
             unique=True,
-            sqlite_where=text("channel_thread_id IS NULL"),
+            # A chat room's sub-threads share its address — they have none of
+            # their own — so the key that pins one row per chat has to let them past.
+            sqlite_where=text("channel_thread_id IS NULL AND parent_thread_id IS NULL"),
         ),
     )
 
@@ -137,6 +139,20 @@ class Thread(Base, TransmuterProxiedMixin):
         comment=(
             "The platform's own thread id — a Slack thread_ts, a Lark sub-thread's "
             "root message. NULL unless kind is thread."
+        ),
+    )
+
+    parent_thread_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("threads.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+        comment=(
+            "The thread this one was opened inside. A dm and a group chat have no "
+            "end, so the work of answering one message there is a thread of its own, "
+            "while the chat everyone sees stays on the chat room. NULL for a thread "
+            "nobody opened. One level deep: a sub-thread never becomes a parent, so "
+            "a thread's ledger is its own or its parent's, never further up."
         ),
     )
 
@@ -196,6 +212,17 @@ class Thread(Base, TransmuterProxiedMixin):
     # wants the row, not the id.
     project: Mapped[Project | None] = relationship("Project", lazy="selectin")
 
+    # `remote_side` because both ends are this table: it names the side the foreign
+    # key points at, which is what makes this the child's view of its parent rather
+    # than the parent's of its children. Loaded only when a reader says so —
+    # `ThreadManager.surface` answers the one question anybody asks of it, and a
+    # listing that fetched every parent would read the same chat rooms over again.
+    parent: Mapped[Thread | None] = relationship(
+        "Thread",
+        remote_side="Thread.id",
+        lazy="raise_on_sql",
+    )
+
     messages: Mapped[list[ThreadMessage]] = relationship(
         "ThreadMessage",
         back_populates="thread",
@@ -207,7 +234,10 @@ class Thread(Base, TransmuterProxiedMixin):
         # the live turn that revealed it. It breaks ties, where one instant produced
         # several rows.
         order_by="(ThreadMessage.happened_at, ThreadMessage.id)",
-        lazy="selectin",
+        # A room's ledger has no ceiling, so nothing gets it by accident. Readers
+        # that want one row ask `ThreadManager.find_message`; readers that want the
+        # whole ledger say so with `selectinload`.
+        lazy="raise_on_sql",
     )
 
     handoffs: Mapped[list[Handoff]] = relationship(
@@ -231,6 +261,21 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
     """One user-facing message in a thread's chat ledger."""
 
     __tablename__ = "thread_messages"
+    # One row per delivery. A platform re-sends a message when it misses an ack, and
+    # the second send is the same message — a duplicate here is a duplicate in
+    # everyone's scroll-back and a second turn answering what is already answered.
+    # `direction` is part of the key because a native runtime files a turn's prompt
+    # and the answer to it under one id: the pair is what its transcript names.
+    __table_args__ = (
+        Index(
+            "uq_thread_messages_delivery",
+            "thread_id",
+            "platform_message_id",
+            "direction",
+            unique=True,
+            sqlite_where=text("platform_message_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
 

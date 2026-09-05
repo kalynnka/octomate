@@ -22,8 +22,6 @@ from octomate.schemas.thread import (
     CLAUDE_NATIVE_ID,
     Thread,
     ThreadKey,
-    ThreadMessage,
-    ThreadMessageDirection,
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
@@ -279,8 +277,10 @@ class ClaudeHookIngest:
         self, event: ClaudeHookInput, prompt: str, sender: UserProfile
     ) -> None:
         thread = await self.session_thread(event)
-        if event.prompt_id and self.already_recorded(
-            thread, event.prompt_id, "inbound"
+        # A hook can fire more than once (retries, a repeated `Stop`); the per-turn
+        # prompt_id + direction dedups so a re-fire is a no-op.
+        if event.prompt_id and await self.octomate.thread_manager.find_message(
+            thread.id, event.prompt_id, "inbound"
         ):
             return
         await self.octomate.thread_manager.record_inbound(
@@ -312,7 +312,9 @@ class ClaudeHookIngest:
         if not event.prompt_id:
             return  # no per-turn key: nothing to write a run under
         thread = await self.session_thread(event)
-        prompt = self.recorded_prompt(thread, event.prompt_id)
+        prompt = await self.octomate.thread_manager.find_message(
+            thread.id, event.prompt_id, "inbound"
+        )
         if prompt is None or prompt.message_text is None:
             # The prompt hook never landed (Octomate came up mid-turn). Leave the turn
             # to the tailer, which rebuilds it from the transcript either way.
@@ -344,25 +346,12 @@ class ClaudeHookIngest:
             external_session_id=event.session_id,
         )
 
-    def recorded_prompt(self, thread: Thread, prompt_id: str) -> ThreadMessage | None:
-        """The turn's inbound ledger row, as `record_prompt` wrote it — the prompt's text
-        and the time it arrived."""
-        return next(
-            (
-                message
-                for message in thread.messages
-                if message.platform_message_id == prompt_id
-                and message.direction == "inbound"
-            ),
-            None,
-        )
-
     async def record_answer(
         self, event: ClaudeHookInput, answer: str, sender: UserProfile
     ) -> None:
         thread = await self.session_thread(event)
-        if event.prompt_id and self.already_recorded(
-            thread, event.prompt_id, "outbound"
+        if event.prompt_id and await self.octomate.thread_manager.find_message(
+            thread.id, event.prompt_id, "outbound"
         ):
             return
         await self.octomate.thread_manager.record_outbound(
@@ -371,14 +360,4 @@ class ClaudeHookIngest:
             segments=[MarkdownSegment(data={"text": answer})],
             sender=sender,
             platform_message_id=event.prompt_id or "",
-        )
-
-    def already_recorded(
-        self, thread: Thread, prompt_id: str, direction: ThreadMessageDirection
-    ) -> bool:
-        """A hook can fire more than once (retries, a repeated `Stop`); the per-turn
-        `prompt_id` + direction dedups so a re-fire is a no-op."""
-        return any(
-            message.platform_message_id == prompt_id and message.direction == direction
-            for message in thread.messages
         )

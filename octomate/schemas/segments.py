@@ -9,7 +9,7 @@ from pydantic_ai import BinaryContent
 from pydantic_ai.messages import UserContent
 from typing_extensions import TypedDict
 
-from octomate.types.json import JsonObject
+from octomate.types.json import JsonObject, JsonValue
 
 
 class TextData(TypedDict):
@@ -53,6 +53,9 @@ class MarkdownData(TypedDict):
 class ReplyData(TypedDict):
     id: str
     content: NotRequired[str]
+    # Resolved platform author, when known; lets a reply address that user without
+    # manufacturing a visible mention in the conversation.
+    user_id: NotRequired[str]
 
 
 class FileData(BaseModel):
@@ -146,7 +149,17 @@ class FileSegment(Segment):
     data: FileData
 
     def __str__(self) -> str:
-        return f"[file: {self.data.name or self.data.file}]"
+        # The path as well as the name, as an image gives: a reader that wants to
+        # open the thing needs where it is, and a named file used to hide it.
+        return f"[file: {self.data.name or 'file'} | {self.data.file}]"
+
+
+# Where a card keeps the words it shows. Slack hangs them off `text`, Lark off
+# `content`, and both nest those under a title; the rest of a payload is layout —
+# `tag`, `type`, `template` — which nobody reads off a screen. A button's `value` is
+# not here on purpose: that is the callback the platform sends back, not what the
+# button says.
+CARD_TEXT_KEYS = frozenset({"text", "content", "title", "alt_text"})
 
 
 class CardSegment(Segment):
@@ -154,7 +167,25 @@ class CardSegment(Segment):
     data: CardData
 
     def __str__(self) -> str:
-        return "[card]"
+        """`[card]` alone said only that something was there. What was on it is the
+        part worth having: a card is where a decision gets asked for, and one nobody
+        can read is a hole in the transcript at exactly that point.
+
+        A card is a different shape on every platform, so this looks for the keys
+        that carry words rather than for a structure — walked in the order the
+        payload lays them out, which is the order they were shown in.
+        """
+        shown: list[str] = []
+        stack: list[tuple[str, JsonValue]] = [("", self.data.payload)]
+        while stack:
+            key, node = stack.pop()
+            if key in CARD_TEXT_KEYS and isinstance(node, str) and node:
+                shown.append(node)
+            elif isinstance(node, dict):
+                stack.extend(reversed(list(node.items())))
+            elif isinstance(node, list):
+                stack.extend((key, item) for item in reversed(node))
+        return "\n".join(["[card]", *shown])
 
 
 MessageSegment = Annotated[

@@ -13,6 +13,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTriggerResponse,
 )
 from pydantic import TypeAdapter, ValidationError
+from rich.style import Style
 
 from octomate.config import LarkChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -73,6 +74,7 @@ def log_card_action_result(channel_id: str, task: asyncio.Task[None]) -> None:
 
 
 class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
+    brand_color: ClassVar[Style | None] = Style(color="#666D82", bold=True)
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
         sub_thread=True, direct_message=True
@@ -175,7 +177,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             address.chat_id or address.user_id,
             address.chat_type,
             self.chromo.outbound_markdown(hint_text),
-            None,
+            channel_thread_id=address.chat_id or address.user_id,
         )
         if message_id is None:
             return address

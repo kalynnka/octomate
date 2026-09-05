@@ -35,8 +35,41 @@ class LarkStreamConfig(ChannelStreamConfig):
     min_chars: int = 20
 
 
+class DiscordStreamConfig(ChannelStreamConfig):
+    # discord.py follows Discord's dynamic route buckets; this only coalesces edits.
+    flush_interval: float = 0.2
+
+
 class NapcatStreamConfig(ChannelStreamConfig):
     enabled: bool = False
+
+
+class ChatRecapConfig(BaseModel):
+    """What a kick in a dm or a group chat is shown of the chat it woke in.
+
+    Those surfaces have no end, so a kick answers in a thread of its own and its
+    model context starts empty every time. Without this the agent answers a chat it
+    cannot see; with all of it, the context grows with the chat room's tenure, which
+    is the thing the sub-thread exists to stop.
+    """
+
+    messages: int = Field(
+        default=16,
+        ge=0,
+        description=(
+            "How many of the chat's recent messages go in front of the prompt. "
+            "0 shows none, which leaves a kick with only what woke it."
+        ),
+    )
+    characters: int = Field(
+        default=1000,
+        ge=0,
+        description=(
+            "Where each of those messages is cut. They are context, not the thing "
+            "being answered, and one pasted log would otherwise be the whole slice. "
+            "0 leaves them whole."
+        ),
+    )
 
 
 class ChannelConfig(BaseModel):
@@ -44,6 +77,7 @@ class ChannelConfig(BaseModel):
     mention_only: bool = True
     enabled: bool = True
     stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)
+    recap: ChatRecapConfig = Field(default_factory=ChatRecapConfig)
     agents: list[AgentModelConfig] = Field(
         min_length=1,
         description=(
@@ -188,6 +222,12 @@ class LarkChannelConfig(ChannelConfig):
     stream: LarkStreamConfig = Field(default_factory=LarkStreamConfig)
 
 
+class DiscordChannelConfig(ChannelConfig):
+    type: Literal["discord"] = "discord"
+    bot_token: SecretStr
+    stream: DiscordStreamConfig = Field(default_factory=DiscordStreamConfig)
+
+
 class VercelStreamConfig(ChannelStreamConfig):
     # The dev UI renders tokens as they arrive; stream every event straight
     # through (the timeline feeler forwards raw events, so batching is moot).
@@ -237,6 +277,7 @@ class NapcatChannelConfig(ChannelConfig):
 ChannelConfigVariant: TypeAlias = Annotated[
     SlackChannelConfig
     | LarkChannelConfig
+    | DiscordChannelConfig
     | NapcatChannelConfig
     | TrunklineChannelConfig,
     Field(discriminator="type"),

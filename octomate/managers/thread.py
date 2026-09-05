@@ -24,6 +24,7 @@ from octomate.schemas.thread import (
     Thread,
     ThreadKey,
     ThreadMessage,
+    ThreadMessageDirection,
 )
 from octomate.schemas.user import UserProfile
 
@@ -86,6 +87,9 @@ class ThreadManager:
     ) -> Thread:
         """The thread this key names, created if it is new.
 
+        A key names a surface, so it resolves the thread nobody opened. A chat
+        room's sub-threads share its address and are reached by id, through it.
+
         `project` attributes a thread being created and is ignored for one that
         already exists: a thread's project is frozen once the row is written, so
         declaring a project later attributes new threads rather than rewriting old
@@ -114,6 +118,9 @@ class ThreadManager:
                     Thread["chat_type"] == key.chat_type,
                     Thread["chat_id"] == key.chat_id,
                     Thread["channel_thread_id"] == key.channel_thread_id,
+                    # A sub-thread shares its chat room's address, so a key names
+                    # the thread nobody opened — the line the unique index draws.
+                    Thread["parent_thread_id"].is_(None),
                 ],
             )
             if thread is None:
@@ -127,11 +134,92 @@ class ThreadManager:
                 )
                 session.add(thread)
             await session.flush()
-            await thread.messages
             await thread.handoffs
             await thread.project
             await session.commit()
         return thread
+
+    async def open_sub_thread(self, parent: Thread) -> Thread:
+        """The thread one kick in `parent` does its work in.
+
+        A dm and a group chat have no end, so a conversation held against one would
+        accumulate for as long as the chat room does. Answering happens in a thread
+        of its own instead, and everything a thread already governs governs it — one
+        conversation per agent, runs continuing one by one. Only the chat everyone
+        sees stays on the chat room, which is what `surface` resolves back to.
+
+        Opened, never looked up: a sub-thread has no address of its own to be found
+        by, and each kick wants its own. A redelivered event therefore opens a
+        second — that is a duplicate to stop where it is made, in the ledger, not
+        here.
+        """
+        if parent.parent_thread_id is not None:
+            raise ValueError(
+                f"thread {parent.id} is already a sub-thread of "
+                f"{parent.parent_thread_id}: a chat room nests one level"
+            )
+        key = parent.key
+        thread = Thread(
+            channel_tentacle_id=key.channel_tentacle_id,
+            chat_type=key.chat_type,
+            chat_id=key.chat_id,
+            # The chat room's own, verbatim: the platform never made this thread, so
+            # there is no id of its own to carry, and anything invented here would be
+            # sent back to the platform as a real one. Sharing the address is what
+            # makes a sub-thread's key resolve to the chat room it was opened in.
+            channel_thread_id=key.channel_thread_id,
+            kind=key.kind,
+            parent_thread_id=parent.id,
+        )
+        async with async_session() as session:
+            session.add(thread)
+            await session.flush()
+            await thread.handoffs
+            await thread.project
+            await session.commit()
+        return thread
+
+    async def enter(
+        self,
+        address_or_key: ChannelAddress | ThreadKey,
+        *,
+        current: Thread | None = None,
+    ) -> Thread:
+        """The thread a turn arriving at this surface does its work in.
+
+        A thread and a native thread are a piece of work already, so the turn runs in
+        the one the key names. A dm and a group chat are not — they have no end, and a
+        conversation held against one would accumulate for as long as the chat room
+        does — so the turn runs in a sub-thread opened inside the chat room instead.
+
+        `current` is the thread the turn is already in, and it is kept when this
+        surface is the chat room that thread was opened in: an agent taking the
+        conversation over in place is still answering the same kick, and a second
+        sub-thread would split one answer across two model contexts.
+        """
+        surface = await self.ensure(address_or_key)
+        if current is not None and current.parent_thread_id == surface.id:
+            return current
+        if surface.kind in ATTRIBUTABLE_KINDS:
+            return surface
+        return await self.open_sub_thread(surface)
+
+    async def surface(self, thread: Thread) -> Thread:
+        """The surface this thread is on: itself, or the chat room it was opened in.
+
+        A sub-thread has none of its own — no address, no chat ledger, no prompt
+        cursor — so this is the one place the split between where a run happens and
+        where it is seen gets made. Nesting is one level, so it never walks.
+        """
+        if thread.parent_thread_id is None:
+            return thread
+        parent = await self.get(thread.parent_thread_id, with_messages=False)
+        if parent is None:
+            raise ValueError(
+                f"thread {thread.id} names parent {thread.parent_thread_id}, "
+                "which does not exist"
+            )
+        return parent
 
     async def rename(self, thread: Thread, title: str) -> Thread:
         """Give the thread the name the runtime running it grabbed for itself.
@@ -202,13 +290,13 @@ class ThreadManager:
     async def get(
         self, thread_id: uuid.UUID, *, with_messages: bool = True
     ) -> Thread | None:
-        """The thread by primary key, or None. messages/handoffs are
-        lazy="selectin", so the get loads them with the row.
+        """The thread by primary key, or None — its handoffs with the row, its
+        ledger only when asked for.
 
-        `with_messages=False` is for a reader that wants the row and not its
-        ledger, and suppresses the load rather than dropping it afterwards —
-        `noload` is the difference between not fetching a thread's messages and
-        fetching them to throw away.
+        `with_messages=True` is the whole ledger, deliberately: it is what a reader
+        rebuilding a thread wants, and it is unbounded in a room, so a caller after
+        one row wants `find_message` and a caller after the recent ones wants
+        `chat_messages_before`.
 
         Either way the model ledger stays behind: it hangs off a message, and
         `related_model_messages` is how a caller asks for it — dragging it here
@@ -217,7 +305,7 @@ class ThreadManager:
         options = (
             [selectinload(Thread["messages"]).noload(ThreadMessage["model_messages"])]
             if with_messages
-            else [noload(Thread["messages"])]
+            else []
         )
         async with async_session() as session:
             thread = await session.get(Thread, thread_id, options=options)
@@ -232,24 +320,24 @@ class ThreadManager:
         limit: int = 100,
     ) -> list[Thread]:
         """Threads most recently touched first — one channel's, or every
-        channel's when `channel_tentacle_id` is None.
+        channel's when `channel_tentacle_id` is None. Sub-threads are not listed;
+        the threads a chat room's kicks work in are reached through the chat room.
 
         Handoffs come with the rows (lazy="selectin", one batched pass); the
         ledgers do not. A listing that loaded them would read every message of
         every thread it names, and no caller has ever wanted that — the one
         reader of a thread's messages asks for that thread.
         """
-        expressions = (
-            []
-            if channel_tentacle_id is None
-            else [Thread["channel_tentacle_id"] == channel_tentacle_id]
-        )
+        # Sub-threads are left out: a listing names the surfaces a person can open,
+        # and the threads a chat room's kicks work in are reached through it.
+        expressions = [Thread["parent_thread_id"].is_(None)]
+        if channel_tentacle_id is not None:
+            expressions.append(Thread["channel_tentacle_id"] == channel_tentacle_id)
         async with async_session() as session:
             rows = await session.list(
                 Thread,
                 limit=limit,
                 order_bys=[Thread["updated_at"].desc(), Thread["id"].desc()],
-                options=[noload(Thread["messages"])],
                 expressions=expressions,
             )
         return list(rows)
@@ -287,7 +375,22 @@ class ThreadManager:
         agent_tentacle_id: str | None = None,
         happened_at: datetime | None = None,
     ) -> ThreadMessage:
-        """Write the event to the thread's ledger.
+        """Write the event to the thread's ledger, or hand back the row it is
+        already on.
+
+        A platform re-sends a message when it misses an ack — Slack does — and the
+        second send is the same message, not a second one. Writing it twice would put
+        a duplicate in everyone's scroll-back, so one delivery is one row and asking
+        again is answered with the row that exists.
+
+        Only a message the platform named can be recognised — an event with no
+        `message_id` is always recorded, because there is nothing to match it on.
+        Two deliveries racing this read both reach the insert, and the ledger's
+        unique key refuses the loser loudly rather than letting it through.
+
+        Recording is idempotent; answering is not. A caller that wakes a turn on
+        what it records asks `find_message` first, because a row that already exists
+        is a message somebody is already answering.
 
         Swaps `event.sender` for its registry row as a side effect, so the
         event's sender line resolves the owning identity via `event.sender.user`.
@@ -305,6 +408,13 @@ class ThreadManager:
                 channel_thread_id=event.channel_thread_id,
             )
         )
+        platform_message_id = event.message_id or None
+        if platform_message_id is not None:
+            recorded = await self.find_message(
+                thread.id, platform_message_id, "inbound"
+            )
+            if recorded is not None:
+                return recorded
         if happened_at is None and event.timestamp > 0:
             happened_at = datetime.fromtimestamp(event.timestamp, UTC)
         sender = await self.users.ensure_profile(
@@ -315,7 +425,7 @@ class ThreadManager:
         event.sender = sender
         message = ThreadMessage(
             thread_id=thread.id,
-            platform_message_id=event.message_id or None,
+            platform_message_id=platform_message_id,
             reply_id=event.reply_id,
             happened_at=happened_at or datetime.now(UTC),
             direction="inbound",
@@ -410,6 +520,8 @@ class ThreadManager:
         trigger_message_id: uuid.UUID,
         active_agent_id: str,
     ) -> list[ThreadMessage]:
+        # A sub-thread's key is the chat room's, so this resolves the chat either
+        # way — which is where both the ledger and the cursor are.
         fresh = await self.ensure(thread.key)
 
         async with async_session() as session:
@@ -515,6 +627,35 @@ class ThreadManager:
         if len(rows) > 1:
             raise ValueError(f"{handle} names more than one message; use a row id")
         return rows[0]
+
+    async def find_message(
+        self,
+        thread_id: uuid.UUID,
+        platform_message_id: str,
+        direction: ThreadMessageDirection,
+    ) -> ThreadMessage | None:
+        """The thread's ledger row for one platform message — a turn's prompt, or
+        the reply that answered it. Oldest wins, as scanning the ordered ledger did.
+
+        Both halves of the key are indexed. The hooks and tailers ask this per turn,
+        on a ledger with no ceiling, so the row has to be found by the index rather
+        than by reading the room's whole tenure to match one id in Python.
+        """
+        async with async_session() as session:
+            rows = await session.list(
+                ThreadMessage,
+                limit=1,
+                order_bys=[ThreadMessage["happened_at"], ThreadMessage["id"]],
+                # The model ledger hangs off the row and no caller here reads it;
+                # `related_model_messages` is how someone asks.
+                options=[noload(ThreadMessage["model_messages"])],
+                expressions=[
+                    ThreadMessage["thread_id"] == thread_id,
+                    ThreadMessage["platform_message_id"] == platform_message_id,
+                    ThreadMessage["direction"] == direction,
+                ],
+            )
+        return rows[0] if rows else None
 
     async def bind_messages(
         self,

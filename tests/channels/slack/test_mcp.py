@@ -166,7 +166,7 @@ def naming(session: GatewaySession) -> dict[str, str]:
 
 def button_url(ink: FakeSlackInk) -> str:
     """The one link the workspace was sent: the button on the card in `ink`."""
-    [(_, _, [message], _)] = ink.sent
+    [(_, _, [message], _, _)] = ink.sent
     assert message.blocks is not None
     elements = message.blocks[-1]["elements"]
     assert isinstance(elements, list)
@@ -325,7 +325,7 @@ async def test_the_link_goes_to_their_direct_messages_and_nowhere_else() -> None
 
     # Asked from a shared thread, so the card went to `U1`'s own DM, and the
     # model was given nothing it could repeat into the thread.
-    [(chat_id, chat_type, _, _)] = ink.sent
+    [(chat_id, chat_type, _, _, _)] = ink.sent
     assert (chat_id, chat_type) == ("D-U1", "dm")
     link = button_url(ink)
     assert link.startswith("http://localhost:8000/oauth/slack/start/")

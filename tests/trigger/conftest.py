@@ -9,6 +9,7 @@ chat per channel:
     trigger:
       slack: {chat_id: D0123, user_id: U0123}
       lark: {chat_type: group, chat_id: oc_xxx, user_id: ou_xxx}
+      discord: {chat_type: group, chat_id: "123", user_id: "456"}
 
 `trigger.yaml` is not one of the config home's `CONFIG_FILES`, so it is invisible
 to the application. Tests skip cleanly when either piece is missing.
@@ -46,6 +47,7 @@ from octomate.config.base import OCTOMATE_HOME_ENV, config_home
 # Real images for the showcase live in tests/src/images (see tests/src/README);
 # the generated 1x1 transparent PNG below is only the fallback when none is there.
 SCENARIO_SRC = Path(__file__).parent.parent / "src" / "images"
+CHECKOUT_DOTENV = Path(__file__).parent.parent.parent / ".env"
 IMAGE_PATTERNS = ("*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp")
 SCENARIO_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
@@ -64,6 +66,10 @@ class TriggerTarget(BaseModel):
     chat_id: str
     user_id: str
     thread_id: str = ""
+
+
+class LiveOctomateConfig(OctomateConfig):
+    model_config = SettingsConfigDict(env_file=CHECKOUT_DOTENV)
 
 
 @contextmanager
@@ -86,6 +92,7 @@ class TriggerTargets(BaseSettings):
 
     slack: TriggerTarget | None = None
     lark: TriggerTarget | None = None
+    discord: TriggerTarget | None = None
     napcat: TriggerTarget | None = None
 
     @classmethod
@@ -142,9 +149,13 @@ def pytest_collection_modifyitems(
 
 @pytest.fixture(scope="session")
 def live_config() -> Iterator[OctomateConfig]:
-    """The real deployment, which the suite-wide isolation otherwise hides."""
+    """The real deployment, which the suite-wide isolation otherwise hides.
+
+    The regular suite disables the settings classes' dotenv source for the whole
+    session, so this live opt-out must name the checkout's mirrored file directly.
+    """
     with real_config_home():
-        yield OctomateConfig()
+        yield LiveOctomateConfig()
 
 
 @pytest.fixture(scope="session")
@@ -153,10 +164,15 @@ def trigger_targets() -> TriggerTargets:
         with real_config_home():
             return TriggerTargets()
     except KeyError:
-        # No `trigger:` section in octomate.yaml — every trigger test skips.
+        # No `trigger:` section in trigger.yaml — every trigger test skips.
         # model_construct bypasses the settings sources (which would re-read
         # the yaml and raise again).
-        return TriggerTargets.model_construct(slack=None, lark=None, napcat=None)
+        return TriggerTargets.model_construct(
+            slack=None,
+            lark=None,
+            discord=None,
+            napcat=None,
+        )
 
 
 @pytest.fixture
